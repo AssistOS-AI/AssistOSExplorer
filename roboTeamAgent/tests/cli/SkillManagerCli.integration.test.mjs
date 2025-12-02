@@ -90,11 +90,9 @@ fast
         }
     });
 
-    describe('LLMAgent.complete() - Direct API calls', () => {
+    describe('LLMAgent.executePrompt() - Direct API calls', () => {
         it('should get a valid response from the LLM', async () => {
-            const response = await llmAgent.complete({
-                prompt: 'What is 2 + 2? Reply with just the number.',
-            });
+            const response = await llmAgent.executePrompt('What is 2 + 2? Reply with just the number.');
 
             assert.ok(response, 'Should receive a response');
             assert.ok(typeof response === 'string', 'Response should be a string');
@@ -102,8 +100,7 @@ fast
         });
 
         it('should handle conversation history', async () => {
-            const response = await llmAgent.complete({
-                prompt: 'What number did I just ask about?',
+            const response = await llmAgent.executePrompt('What number did I just ask about?', {
                 history: [
                     { role: 'user', message: 'Remember the number 42.' },
                     { role: 'assistant', message: 'I will remember 42.' },
@@ -308,9 +305,9 @@ export async function action({ topic }, { llmAgent }) {
                 }
 
                 // Actually use the LLM
-                const response = await context.llmAgent.complete({
-                    prompt: `Tell a one-liner joke about ${args.topic || 'testing'}.`,
-                });
+                const response = await context.llmAgent.executePrompt(
+                    `Tell a one-liner joke about ${args.topic || 'testing'}.`
+                );
 
                 return response;
             };
