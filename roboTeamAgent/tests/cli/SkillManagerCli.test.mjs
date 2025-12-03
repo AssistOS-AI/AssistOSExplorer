@@ -3,18 +3,18 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { SkillManagerCli } from '../src/SkillManagerCli.mjs';
+import { RecursiveSkilledAgent } from 'achilles-agent-lib/RecursiveSkilledAgents';
 import { LLMAgent } from 'achilles-agent-lib/LLMAgents';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const builtInSkillsDir = path.join(__dirname, '..', 'src', '.AchillesSkills');
 
 /**
- * Unit tests for the skill-based SkillManagerCli.
+ * Unit tests for RecursiveSkilledAgent with additionalSkillRoots.
  * Tests the structural and file-system aspects without requiring actual LLM API calls.
  */
 
-describe('SkillManagerCli - Initialization', () => {
+describe('RecursiveSkilledAgent - Initialization', () => {
     let tempDir;
     let skillsDir;
     let agent;
@@ -35,57 +35,33 @@ describe('SkillManagerCli - Initialization', () => {
     });
 
     it('should initialize with default options', () => {
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
 
-        assert.ok(agent.workingDir, 'Should have workingDir set');
-        assert.equal(agent.workingDir, tempDir, 'workingDir should match');
+        assert.ok(agent.startDir, 'Should have startDir set');
+        assert.equal(agent.startDir, tempDir, 'startDir should match');
         assert.ok(agent.llmAgent, 'Should have llmAgent set');
-        assert.ok(agent.skilledAgent, 'Should have skilledAgent set');
-        assert.ok(agent.context, 'Should have context object');
+        assert.ok(agent.skillCatalog, 'Should have skillCatalog');
     });
 
-    it('should set up builtInSkillsDir correctly', () => {
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+    it('should store additionalSkillRoots', () => {
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
 
-        assert.ok(agent.builtInSkillsDir, 'Should have builtInSkillsDir');
-        assert.ok(agent.builtInSkillsDir.includes('.AchillesSkills'), 'builtInSkillsDir should point to .AchillesSkills');
-    });
-
-    it('should create .AchillesSkills directory if it does not exist', () => {
-        const newDir = path.join(__dirname, 'temp_create_' + Date.now());
-
-        new SkillManagerCli({
-            workingDir: newDir,
-            llmAgent: realLLMAgent,
-        });
-
-        assert.ok(fs.existsSync(path.join(newDir, '.AchillesSkills')), '.AchillesSkills should be created');
-
-        fs.rmSync(newDir, { recursive: true, force: true });
-    });
-
-    it('should have context with all required properties', () => {
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
-            llmAgent: realLLMAgent,
-        });
-
-        assert.ok(agent.context.workingDir, 'Context should have workingDir');
-        assert.ok(agent.context.skillsDir, 'Context should have skillsDir');
-        assert.ok(agent.context.skilledAgent, 'Context should have skilledAgent');
-        assert.ok(agent.context.llmAgent, 'Context should have llmAgent');
-        assert.ok(agent.context.logger, 'Context should have logger');
+        assert.ok(agent.additionalSkillRoots, 'Should have additionalSkillRoots');
+        assert.ok(agent.additionalSkillRoots.includes(builtInSkillsDir), 'additionalSkillRoots should include built-in skills');
     });
 
     it('should use console as default logger', () => {
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
 
@@ -100,8 +76,9 @@ describe('SkillManagerCli - Initialization', () => {
             error: (msg) => logs.push({ level: 'error', msg }),
         };
 
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
             logger: customLogger,
         });
@@ -110,7 +87,7 @@ describe('SkillManagerCli - Initialization', () => {
     });
 });
 
-describe('SkillManagerCli - Built-in Skills Discovery', () => {
+describe('RecursiveSkilledAgent - Built-in Skills Discovery', () => {
     let tempDir;
     let agent;
     let realLLMAgent;
@@ -120,8 +97,9 @@ describe('SkillManagerCli - Built-in Skills Discovery', () => {
         fs.mkdirSync(tempDir, { recursive: true });
         realLLMAgent = new LLMAgent({ name: 'builtin-test-agent' });
 
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
     });
@@ -138,67 +116,67 @@ describe('SkillManagerCli - Built-in Skills Discovery', () => {
     });
 
     it('should have list-skills skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('list-skills');
+        const skill = agent.getSkillRecord('list-skills');
         assert.ok(skill, 'list-skills skill should exist');
     });
 
     it('should have read-skill skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('read-skill');
+        const skill = agent.getSkillRecord('read-skill');
         assert.ok(skill, 'read-skill skill should exist');
     });
 
     it('should have write-skill skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('write-skill');
+        const skill = agent.getSkillRecord('write-skill');
         assert.ok(skill, 'write-skill skill should exist');
     });
 
     it('should have delete-skill skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('delete-skill');
+        const skill = agent.getSkillRecord('delete-skill');
         assert.ok(skill, 'delete-skill skill should exist');
     });
 
     it('should have validate-skill skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('validate-skill');
+        const skill = agent.getSkillRecord('validate-skill');
         assert.ok(skill, 'validate-skill skill should exist');
     });
 
     it('should have get-template skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('get-template');
+        const skill = agent.getSkillRecord('get-template');
         assert.ok(skill, 'get-template skill should exist');
     });
 
     it('should have update-section skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('update-section');
+        const skill = agent.getSkillRecord('update-section');
         assert.ok(skill, 'update-section skill should exist');
     });
 
     it('should have preview-changes skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('preview-changes');
+        const skill = agent.getSkillRecord('preview-changes');
         assert.ok(skill, 'preview-changes skill should exist');
     });
 
     it('should have generate-code skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('generate-code');
+        const skill = agent.getSkillRecord('generate-code');
         assert.ok(skill, 'generate-code skill should exist');
     });
 
     it('should have test-code skill', () => {
-        const skill = agent.skilledAgent.getSkillRecord('test-code');
+        const skill = agent.getSkillRecord('test-code');
         assert.ok(skill, 'test-code skill should exist');
     });
 
     it('should have skill-manager orchestrator', () => {
-        const skill = agent.skilledAgent.getSkillRecord('skill-manager');
+        const skill = agent.getSkillRecord('skill-manager');
         assert.ok(skill, 'skill-manager skill should exist');
     });
 
     it('should have skill-refiner orchestrator', () => {
-        const skill = agent.skilledAgent.getSkillRecord('skill-refiner');
+        const skill = agent.getSkillRecord('skill-refiner');
         assert.ok(skill, 'skill-refiner skill should exist');
     });
 });
 
-describe('SkillManagerCli - getSkills method', () => {
+describe('RecursiveSkilledAgent - getSkills method', () => {
     let tempDir;
     let agent;
     let realLLMAgent;
@@ -208,8 +186,9 @@ describe('SkillManagerCli - getSkills method', () => {
         fs.mkdirSync(tempDir, { recursive: true });
         realLLMAgent = new LLMAgent({ name: 'getskills-test-agent' });
 
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
     });
@@ -235,7 +214,7 @@ describe('SkillManagerCli - getSkills method', () => {
     });
 });
 
-describe('SkillManagerCli - reloadSkills method', () => {
+describe('RecursiveSkilledAgent - reloadSkills method', () => {
     let tempDir;
     let skillsDir;
     let agent;
@@ -248,8 +227,9 @@ describe('SkillManagerCli - reloadSkills method', () => {
         fs.mkdirSync(skillsDir);
         realLLMAgent = new LLMAgent({ name: 'reload-test-agent' });
 
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
     });
@@ -294,7 +274,7 @@ describe('SkillManagerCli - reloadSkills method', () => {
     });
 });
 
-describe('SkillManagerCli - executeSkill method', () => {
+describe('RecursiveSkilledAgent - executePrompt method', () => {
     let tempDir;
     let agent;
     let realLLMAgent;
@@ -304,8 +284,9 @@ describe('SkillManagerCli - executeSkill method', () => {
         fs.mkdirSync(tempDir, { recursive: true });
         realLLMAgent = new LLMAgent({ name: 'execute-test-agent' });
 
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
     });
@@ -316,20 +297,20 @@ describe('SkillManagerCli - executeSkill method', () => {
         }
     });
 
-    it('should have executeSkill method', () => {
-        assert.equal(typeof agent.executeSkill, 'function', 'Should have executeSkill method');
+    it('should have executePrompt method', () => {
+        assert.equal(typeof agent.executePrompt, 'function', 'Should have executePrompt method');
     });
 
-    it('should have processPrompt method', () => {
-        assert.equal(typeof agent.processPrompt, 'function', 'Should have processPrompt method');
+    it('should have getSkills method', () => {
+        assert.equal(typeof agent.getSkills, 'function', 'Should have getSkills method');
     });
 
-    it('should have startREPL method', () => {
-        assert.equal(typeof agent.startREPL, 'function', 'Should have startREPL method');
+    it('should have reloadSkills method', () => {
+        assert.equal(typeof agent.reloadSkills, 'function', 'Should have reloadSkills method');
     });
 });
 
-describe('SkillManagerCli - User Skills Discovery', () => {
+describe('RecursiveSkilledAgent - User Skills Discovery', () => {
     let tempDir;
     let skillsDir;
     let realLLMAgent;
@@ -356,12 +337,13 @@ describe('SkillManagerCli - User Skills Discovery', () => {
             '# User Code Skill\n\n## Summary\nA user-defined code skill.'
         );
 
-        const agent = new SkillManagerCli({
-            workingDir: tempDir,
+        const agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
 
-        const skill = agent.skilledAgent.getSkillRecord('UserCodeSkill');
+        const skill = agent.getSkillRecord('UserCodeSkill');
         assert.ok(skill, 'Should discover user code skill');
         assert.equal(skill.type, 'code', 'Should be of type code');
     });
@@ -374,37 +356,23 @@ describe('SkillManagerCli - User Skills Discovery', () => {
             '# User Orchestrator\n\n## Summary\nA user-defined orchestrator skill.\n\n## Instructions\nRoute requests.\n\n## Allowed-Skills\n- list-skills'
         );
 
-        const agent = new SkillManagerCli({
-            workingDir: tempDir,
+        const agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
 
-        const skill = agent.skilledAgent.getSkillRecord('UserOrchSkill');
+        const skill = agent.getSkillRecord('UserOrchSkill');
         assert.ok(skill, 'Should discover user orchestrator skill');
         assert.equal(skill.type, 'orchestrator', 'Should be of type orchestrator');
     });
 });
 
-describe('SkillManagerCli - Error Handling', () => {
+describe('RecursiveSkilledAgent - Error Handling', () => {
     let realLLMAgent;
 
     before(() => {
         realLLMAgent = new LLMAgent({ name: 'error-test-agent' });
-    });
-
-    it('should handle missing working directory gracefully', () => {
-        const baseDir = path.join('/tmp', 'achilles_missing_' + Date.now());
-        const missingDir = path.join(baseDir, 'deep', 'nested');
-
-        const agent = new SkillManagerCli({
-            workingDir: missingDir,
-            llmAgent: realLLMAgent,
-        });
-
-        assert.ok(agent, 'Agent should be created');
-        assert.ok(fs.existsSync(path.join(missingDir, '.AchillesSkills')), 'Should create .AchillesSkills');
-
-        fs.rmSync(baseDir, { recursive: true, force: true });
     });
 
     it('should handle empty skills directory', () => {
@@ -412,8 +380,9 @@ describe('SkillManagerCli - Error Handling', () => {
         fs.mkdirSync(tempDir, { recursive: true });
         fs.mkdirSync(path.join(tempDir, '.AchillesSkills'));
 
-        const agent = new SkillManagerCli({
-            workingDir: tempDir,
+        const agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: realLLMAgent,
         });
 
@@ -438,8 +407,9 @@ describe('SkillManagerCli - Error Handling', () => {
         );
 
         assert.doesNotThrow(() => {
-            new SkillManagerCli({
-                workingDir: tempDir,
+            new RecursiveSkilledAgent({
+                startDir: tempDir,
+                additionalSkillRoots: [builtInSkillsDir],
                 llmAgent: realLLMAgent,
             });
         });

@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { SkillManagerCli } from '../src/SkillManagerCli.mjs';
+import { RecursiveSkilledAgent } from 'achilles-agent-lib/RecursiveSkilledAgents';
 import { LLMAgent } from 'achilles-agent-lib/LLMAgents';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const builtInSkillsDir = path.join(__dirname, '..', 'src', '.AchillesSkills');
 
 /**
  * Integration tests that make actual LLM API calls.
@@ -19,7 +20,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Run with: node --test tests/skill-manager/SkillManagerAgent.integration.test.mjs
  */
 
-describe('SkillManagerCli Integration Tests (Real LLM Calls)', () => {
+describe('RecursiveSkilledAgent Integration Tests (Real LLM Calls)', () => {
     let tempDir;
     let skillsDir;
     let agent;
@@ -74,9 +75,10 @@ fast
         // Create real LLMAgent
         llmAgent = new LLMAgent({ name: 'integration-test-agent' });
 
-        // Create SkillManagerCli
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        // Create RecursiveSkilledAgent with built-in skills
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: llmAgent,
         });
 
@@ -141,7 +143,7 @@ fast
         });
     });
 
-    describe('SkillManagerCli skill execution', () => {
+    describe('RecursiveSkilledAgent skill execution', () => {
         it('should have built-in skills registered', () => {
             const skills = agent.getSkills();
             assert.ok(skills.length > 5, 'Should have built-in skills');
@@ -159,7 +161,7 @@ fast
             const { action } = await import('../src/.AchillesSkills/list-skills/list-skills.mjs');
 
             const result = await action('', {
-                skilledAgent: agent.skilledAgent,
+                skilledAgent: agent,
                 llmAgent: agent.llmAgent,
             });
 
@@ -173,7 +175,7 @@ fast
             const { action } = await import('../src/.AchillesSkills/get-template/get-template.mjs');
 
             const result = await action('cskill', {
-                skilledAgent: agent.skilledAgent,
+                skilledAgent: agent,
                 llmAgent: agent.llmAgent,
             });
 
@@ -183,18 +185,17 @@ fast
         });
     });
 
-    describe('Skill context integration', () => {
-        it('should have context with all required properties', () => {
-            // Verify the agent's context is properly initialized
-            assert.ok(agent.context.workingDir, 'Context should have workingDir');
-            assert.ok(agent.context.skillsDir, 'Context should have skillsDir');
-            assert.ok(agent.context.skilledAgent, 'Context should have skilledAgent');
-            assert.ok(agent.context.llmAgent, 'Context should have llmAgent');
+    describe('Skill agent properties', () => {
+        it('should have core agent properties', () => {
+            // Verify the agent has required properties
+            assert.ok(agent.startDir, 'Agent should have startDir');
+            assert.ok(agent.llmAgent, 'Agent should have llmAgent');
+            assert.ok(agent.skillCatalog, 'Agent should have skillCatalog');
         });
 
-        it('should have getUserSkills method', () => {
-            const userSkills = agent.getUserSkills();
-            assert.ok(Array.isArray(userSkills), 'getUserSkills should return an array');
+        it('should have getSkills method', () => {
+            const skills = agent.getSkills();
+            assert.ok(Array.isArray(skills), 'getSkills should return an array');
         });
     });
 });
@@ -254,8 +255,9 @@ export async function action({ topic }, { llmAgent }) {
 
         llmAgent = new LLMAgent({ name: 'interactive-test-agent' });
 
-        agent = new SkillManagerCli({
-            workingDir: tempDir,
+        agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: llmAgent,
         });
     });
@@ -268,7 +270,7 @@ export async function action({ topic }, { llmAgent }) {
 
     describe('Interactive skill discovery', () => {
         it('should discover interactive skills', () => {
-            const interactiveSkills = agent.skilledAgent.listSkillsByType('interactive');
+            const interactiveSkills = agent.listSkillsByType('interactive');
             assert.ok(interactiveSkills.length >= 1, 'Should discover interactive skill');
             assert.ok(
                 interactiveSkills.some(s => s.shortName === 'TestJoker'),
@@ -372,15 +374,16 @@ This skill has no prompt section.
 `
         );
 
-        const agent = new SkillManagerCli({
-            workingDir: tempDir,
+        const agent = new RecursiveSkilledAgent({
+            startDir: tempDir,
+            additionalSkillRoots: [builtInSkillsDir],
             llmAgent: llmAgent,
         });
 
         // Import and call list-skills action directly
         const { action } = await import('../src/.AchillesSkills/list-skills/list-skills.mjs');
         const result = await action('', {
-            skilledAgent: agent.skilledAgent,
+            skilledAgent: agent,
             llmAgent: agent.llmAgent,
         });
 
