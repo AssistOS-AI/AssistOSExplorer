@@ -10,6 +10,8 @@ const skillsDir = path.join(__dirname, '..', '.AchillesSkills');
 /**
  * Unit tests for the individual skill modules (.mjs files).
  * These test the action functions directly without LLM calls.
+ *
+ * Action signature convention: action(recursiveSkilledAgent, prompt)
  */
 
 describe('list-skills module', () => {
@@ -46,22 +48,24 @@ describe('list-skills module', () => {
     });
 
     it('should list skills from skilledAgent catalog', async () => {
-        const mockSkilledAgent = {
+        const mockAgent = {
+            startDir: tempDir,
             skillCatalog: new Map([
                 ['test-skill', { name: 'test-skill', type: 'code', shortName: 'TestSkill', descriptor: { summary: 'Test' }, skillDir: '/test' }],
             ]),
         };
 
-        const result = await action('', { skilledAgent: mockSkilledAgent });
+        const result = await action(mockAgent, '');
         assert.ok(result.includes('test-skill') || result.includes('TestSkill'), 'Should include skill name');
     });
 
     it('should return message when no skills', async () => {
-        const mockSkilledAgent = {
+        const mockAgent = {
+            startDir: tempDir,
             skillCatalog: new Map(),
         };
 
-        const result = await action('', { skilledAgent: mockSkilledAgent });
+        const result = await action(mockAgent, '');
         assert.ok(result.includes('No skills'), 'Should indicate no skills');
     });
 });
@@ -98,28 +102,31 @@ describe('read-skill module', () => {
     });
 
     it('should return error when skillName not provided', async () => {
-        const result = await action('', { skillsDir: tempSkillsDir });
+        const mockAgent = { startDir: tempDir };
+        const result = await action(mockAgent, '');
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
     it('should read skill file content', async () => {
-        const mockSkilledAgent = {
+        const mockAgent = {
+            startDir: tempDir,
             getSkillRecord: (name) => ({
                 skillDir: path.join(tempSkillsDir, 'ReadTestSkill'),
                 filePath: path.join(tempSkillsDir, 'ReadTestSkill', 'cskill.md'),
             }),
         };
 
-        const result = await action('ReadTestSkill', { skillsDir: tempSkillsDir, skilledAgent: mockSkilledAgent });
+        const result = await action(mockAgent, 'ReadTestSkill');
         assert.ok(result.includes('Read Test Skill'), 'Should include skill content');
     });
 
     it('should return error for non-existent skill', async () => {
-        const mockSkilledAgent = {
+        const mockAgent = {
+            startDir: tempDir,
             getSkillRecord: () => null,
         };
 
-        const result = await action('NonExistent', { skillsDir: tempSkillsDir, skilledAgent: mockSkilledAgent });
+        const result = await action(mockAgent, 'NonExistent');
         assert.ok(result.includes('not found') || result.includes('Error'), 'Should indicate not found');
     });
 });
@@ -149,13 +156,14 @@ describe('write-skill module', () => {
     });
 
     it('should create new skill file', async () => {
+        const mockAgent = { startDir: tempDir };
         const input = JSON.stringify({
             skillName: 'NewWriteSkill',
             fileName: 'cskill.md',
             content: '# New Write Skill\n\n## Summary\nWritten skill.',
         });
 
-        const result = await action(input, { skillsDir: tempSkillsDir });
+        const result = await action(mockAgent, input);
         assert.ok(result.includes('Written') || result.includes('Created'), 'Should indicate success');
 
         const filePath = path.join(tempSkillsDir, 'NewWriteSkill', 'cskill.md');
@@ -163,13 +171,15 @@ describe('write-skill module', () => {
     });
 
     it('should return error for invalid JSON', async () => {
-        const result = await action('not json', { skillsDir: tempSkillsDir });
+        const mockAgent = { startDir: tempDir };
+        const result = await action(mockAgent, 'not json');
         assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
     });
 
     it('should return error when required fields missing', async () => {
+        const mockAgent = { startDir: tempDir };
         const input = JSON.stringify({ skillName: 'Test' });
-        const result = await action(input, { skillsDir: tempSkillsDir });
+        const result = await action(mockAgent, input);
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate missing fields');
     });
 });
@@ -204,21 +214,24 @@ describe('delete-skill module', () => {
     });
 
     it('should return error when skillName not provided', async () => {
-        const result = await action('', { skillsDir: tempSkillsDir });
+        const mockAgent = { startDir: tempDir };
+        const result = await action(mockAgent, '');
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
     it('should delete existing skill', async () => {
+        const mockAgent = { startDir: tempDir };
         const skillDir = path.join(tempSkillsDir, 'SkillToDelete');
         assert.ok(fs.existsSync(skillDir), 'Skill should exist before delete');
 
-        const result = await action('SkillToDelete', { skillsDir: tempSkillsDir });
+        const result = await action(mockAgent, 'SkillToDelete');
         assert.ok(result.includes('Deleted') || result.includes('deleted'), 'Should indicate deleted');
         assert.ok(!fs.existsSync(skillDir), 'Skill should not exist after delete');
     });
 
     it('should return error for non-existent skill', async () => {
-        const result = await action('NonExistentSkill', { skillsDir: tempSkillsDir });
+        const mockAgent = { startDir: tempDir };
+        const result = await action(mockAgent, 'NonExistentSkill');
         assert.ok(result.includes('not found') || result.includes('Error'), 'Should indicate not found');
     });
 });
@@ -264,19 +277,21 @@ describe('validate-skill module', () => {
     });
 
     it('should return error when skillName not provided', async () => {
-        const result = await action('', { skillsDir: tempSkillsDir });
+        const mockAgent = { startDir: tempDir };
+        const result = await action(mockAgent, '');
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
     it('should validate valid skill', async () => {
-        const mockSkilledAgent = {
+        const mockAgent = {
+            startDir: tempDir,
             getSkillRecord: () => ({
                 skillDir: path.join(tempSkillsDir, 'ValidSkill'),
                 filePath: path.join(tempSkillsDir, 'ValidSkill', 'cskill.md'),
             }),
         };
 
-        const result = await action('ValidSkill', { skillsDir: tempSkillsDir, skilledAgent: mockSkilledAgent });
+        const result = await action(mockAgent, 'ValidSkill');
         assert.ok(result.includes('Validation') || result.includes('Valid'), 'Should show validation result');
     });
 });
@@ -294,27 +309,32 @@ describe('get-template module', () => {
     });
 
     it('should return error when skillType not provided', async () => {
-        const result = await action('', {});
+        const mockAgent = { startDir: '/tmp' };
+        const result = await action(mockAgent, '');
         assert.ok(result.includes('Error') || result.includes('required') || result.includes('Available'), 'Should indicate error or list types');
     });
 
     it('should return template for tskill', async () => {
-        const result = await action('tskill', {});
+        const mockAgent = { startDir: '/tmp' };
+        const result = await action(mockAgent, 'tskill');
         assert.ok(result.includes('# ') || result.includes('Template'), 'Should include template');
     });
 
     it('should return template for cskill', async () => {
-        const result = await action('cskill', {});
+        const mockAgent = { startDir: '/tmp' };
+        const result = await action(mockAgent, 'cskill');
         assert.ok(result.includes('# ') || result.includes('Template'), 'Should include template');
     });
 
     it('should return template for oskill', async () => {
-        const result = await action('oskill', {});
+        const mockAgent = { startDir: '/tmp' };
+        const result = await action(mockAgent, 'oskill');
         assert.ok(result.includes('# ') || result.includes('Template'), 'Should include template');
     });
 
     it('should return error for unknown type', async () => {
-        const result = await action('unknowntype', {});
+        const mockAgent = { startDir: '/tmp' };
+        const result = await action(mockAgent, 'unknowntype');
         assert.ok(result.includes('Error') || result.includes('Unknown') || result.includes('Available'), 'Should indicate unknown type');
     });
 });
@@ -351,12 +371,14 @@ describe('update-section module', () => {
     });
 
     it('should return error for invalid JSON', async () => {
-        const result = await action('not json', { skillsDir: tempSkillsDir });
+        const mockAgent = { startDir: tempDir };
+        const result = await action(mockAgent, 'not json');
         assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
     });
 
     it('should update section content', async () => {
-        const mockSkilledAgent = {
+        const mockAgent = {
+            startDir: tempDir,
             getSkillRecord: () => ({
                 skillDir: path.join(tempSkillsDir, 'UpdateSkill'),
                 filePath: path.join(tempSkillsDir, 'UpdateSkill', 'cskill.md'),
@@ -369,7 +391,7 @@ describe('update-section module', () => {
             content: 'Updated summary content.',
         });
 
-        const result = await action(input, { skillsDir: tempSkillsDir, skilledAgent: mockSkilledAgent });
+        const result = await action(mockAgent, input);
         assert.ok(result.includes('Updated') || result.includes('updated'), 'Should indicate updated');
 
         const content = fs.readFileSync(path.join(tempSkillsDir, 'UpdateSkill', 'cskill.md'), 'utf8');
@@ -409,29 +431,32 @@ describe('preview-changes module', () => {
     });
 
     it('should return error for invalid JSON', async () => {
-        const result = await action('not json', { skillsDir: tempSkillsDir });
+        const mockAgent = { startDir: tempDir };
+        const result = await action(mockAgent, 'not json');
         assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
     });
 
     it('should show diff for existing file', async () => {
+        const mockAgent = { startDir: tempDir };
         const input = JSON.stringify({
             skillName: 'PreviewSkill',
             fileName: 'cskill.md',
             newContent: '# Preview Skill\n\n## Summary\nNew content.',
         });
 
-        const result = await action(input, { skillsDir: tempSkillsDir });
+        const result = await action(mockAgent, input);
         assert.ok(result.includes('DIFF') || result.includes('-') || result.includes('+'), 'Should show diff');
     });
 
     it('should show new file content for non-existent file', async () => {
+        const mockAgent = { startDir: tempDir };
         const input = JSON.stringify({
             skillName: 'PreviewSkill',
             fileName: 'newfile.md',
             newContent: '# New File Content',
         });
 
-        const result = await action(input, { skillsDir: tempSkillsDir });
+        const result = await action(mockAgent, input);
         assert.ok(result.includes('NEW FILE') || result.includes('New File Content'), 'Should show new file');
     });
 });
@@ -470,18 +495,20 @@ export default { testFunc };`
     });
 
     it('should return error when skillName not provided', async () => {
-        const result = await action('', { skillsDir: tempSkillsDir });
+        const mockAgent = { startDir: tempDir };
+        const result = await action(mockAgent, '');
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
     it('should load and test generated module', async () => {
-        const mockSkilledAgent = {
+        const mockAgent = {
+            startDir: tempDir,
             getSkillRecord: () => ({
                 skillDir: path.join(tempSkillsDir, 'TestCodeSkill'),
             }),
         };
 
-        const result = await action('TestCodeSkill', { skillsDir: tempSkillsDir, skilledAgent: mockSkilledAgent });
+        const result = await action(mockAgent, 'TestCodeSkill');
         assert.ok(result.includes('Module loaded') || result.includes('Exports') || result.includes('testFunc'), 'Should show module info');
     });
 
@@ -491,13 +518,14 @@ export default { testFunc };`
         fs.mkdirSync(noCodeDir);
         fs.writeFileSync(path.join(noCodeDir, 'cskill.md'), '# No Code');
 
-        const mockSkilledAgent = {
+        const mockAgent = {
+            startDir: tempDir,
             getSkillRecord: () => ({
                 skillDir: noCodeDir,
             }),
         };
 
-        const result = await action('NoCodeSkill', { skillsDir: tempSkillsDir, skilledAgent: mockSkilledAgent });
+        const result = await action(mockAgent, 'NoCodeSkill');
         assert.ok(result.includes('No generated code') || result.includes('Error'), 'Should indicate no generated code');
     });
 });
@@ -515,12 +543,14 @@ describe('skill-refiner module', () => {
     });
 
     it('should return error when skillName not provided', async () => {
-        const result = await action('', { skillsDir: '/tmp' });
+        const mockAgent = { startDir: '/tmp' };
+        const result = await action(mockAgent, '');
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
     it('should return error when llmAgent not provided', async () => {
-        const result = await action('someSkill', { skillsDir: '/tmp' });
+        const mockAgent = { startDir: '/tmp' };
+        const result = await action(mockAgent, 'someSkill');
         assert.ok(result.includes('Error') || result.includes('LLM'), 'Should indicate LLM required');
     });
 });

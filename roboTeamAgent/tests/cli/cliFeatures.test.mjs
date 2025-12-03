@@ -1,19 +1,24 @@
 /**
  * Tests for CLI features including module exports, REPLSession, and history navigation.
+ *
+ * Updated to use RecursiveSkilledAgent (SkillManagerCli was removed).
  */
 
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 // ============================================================================
 // index.mjs Export Tests
 // ============================================================================
 
 describe('index.mjs exports', () => {
-    it('should export SkillManagerCli', async () => {
-        const { SkillManagerCli } = await import('../src/index.mjs');
-        assert.ok(SkillManagerCli, 'SkillManagerCli should be exported');
-        assert.strictEqual(typeof SkillManagerCli, 'function', 'SkillManagerCli should be a class');
+    it('should export RecursiveSkilledAgent', async () => {
+        const { RecursiveSkilledAgent } = await import('../src/index.mjs');
+        assert.ok(RecursiveSkilledAgent, 'RecursiveSkilledAgent should be exported');
+        assert.strictEqual(typeof RecursiveSkilledAgent, 'function', 'RecursiveSkilledAgent should be a class');
     });
 
     it('should export REPLSession', async () => {
@@ -54,6 +59,12 @@ describe('index.mjs exports', () => {
         assert.strictEqual(typeof showHistory, 'function', 'showHistory should be a function');
         assert.strictEqual(typeof searchHistory, 'function', 'searchHistory should be a function');
     });
+
+    it('should export builtInSkillsDir constant', async () => {
+        const { builtInSkillsDir } = await import('../src/index.mjs');
+        assert.ok(builtInSkillsDir, 'builtInSkillsDir should be exported');
+        assert.ok(typeof builtInSkillsDir === 'string', 'builtInSkillsDir should be a string path');
+    });
 });
 
 // ============================================================================
@@ -61,25 +72,51 @@ describe('index.mjs exports', () => {
 // ============================================================================
 
 describe('REPLSession', () => {
-    it('should instantiate with a SkillManagerCli instance', async () => {
+    it('should instantiate with a RecursiveSkilledAgent instance', async () => {
         const { REPLSession } = await import('../src/REPLSession.mjs');
-        const { SkillManagerCli } = await import('../src/SkillManagerCli.mjs');
+        const { RecursiveSkilledAgent } = await import('achilles-agent-lib/RecursiveSkilledAgents');
+        const { LLMAgent } = await import('achilles-agent-lib/LLMAgents');
+        const { builtInSkillsDir } = await import('../src/index.mjs');
 
-        const cli = new SkillManagerCli({ workingDir: process.cwd() });
-        const session = new REPLSession(cli);
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repl-test-'));
+        try {
+            const llmAgent = new LLMAgent({ name: 'test' });
+            const agent = new RecursiveSkilledAgent({
+                startDir: tempDir,
+                additionalSkillRoots: [builtInSkillsDir],
+                llmAgent,
+            });
 
-        assert.ok(session, 'REPLSession should be created');
-        assert.strictEqual(session.cli, cli, 'REPLSession should store cli reference');
+            const session = new REPLSession(agent, { workingDir: tempDir });
+
+            assert.ok(session, 'REPLSession should be created');
+            assert.strictEqual(session.agent, agent, 'REPLSession should store agent reference');
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 
     it('should have start method', async () => {
         const { REPLSession } = await import('../src/REPLSession.mjs');
-        const { SkillManagerCli } = await import('../src/SkillManagerCli.mjs');
+        const { RecursiveSkilledAgent } = await import('achilles-agent-lib/RecursiveSkilledAgents');
+        const { LLMAgent } = await import('achilles-agent-lib/LLMAgents');
+        const { builtInSkillsDir } = await import('../src/index.mjs');
 
-        const cli = new SkillManagerCli({ workingDir: process.cwd() });
-        const session = new REPLSession(cli);
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repl-test-'));
+        try {
+            const llmAgent = new LLMAgent({ name: 'test' });
+            const agent = new RecursiveSkilledAgent({
+                startDir: tempDir,
+                additionalSkillRoots: [builtInSkillsDir],
+                llmAgent,
+            });
 
-        assert.strictEqual(typeof session.start, 'function', 'REPLSession should have start method');
+            const session = new REPLSession(agent, { workingDir: tempDir });
+
+            assert.strictEqual(typeof session.start, 'function', 'REPLSession should have start method');
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 });
 
@@ -328,10 +365,6 @@ describe('Arrow key history navigation logic', () => {
 // Comprehensive HistoryManager Tests
 // ============================================================================
 
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-
 function createTempDir(prefix = 'test-') {
     return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -550,198 +583,6 @@ describe('HistoryManager - Comprehensive', () => {
             const historyFile = path.join(tempDir, '.skill-manager-history');
             const content = fs.readFileSync(historyFile, 'utf-8');
             assert.strictEqual(content.trim(), '');
-        });
-    });
-});
-
-// ============================================================================
-// Slash Commands - Full Suite
-// ============================================================================
-
-describe('Slash Commands - Full Suite', () => {
-    let tempDir;
-    let SkillManagerCli;
-    let cli;
-
-    beforeEach(async () => {
-        tempDir = createTempDir('slash-test-');
-        const module = await import('../src/SkillManagerCli.mjs');
-        SkillManagerCli = module.SkillManagerCli;
-        cli = new SkillManagerCli({ workingDir: tempDir });
-    });
-
-    describe('isSlashCommand', () => {
-        it('should detect slash commands', () => {
-            assert.strictEqual(cli.isSlashCommand('/help'), true);
-            assert.strictEqual(cli.isSlashCommand('/ls'), true);
-            assert.strictEqual(cli.isSlashCommand('/read skill'), true);
-            assert.strictEqual(cli.isSlashCommand('/ '), true);
-        });
-
-        it('should not detect non-slash commands', () => {
-            assert.strictEqual(cli.isSlashCommand('help'), false);
-            assert.strictEqual(cli.isSlashCommand('list skills'), false);
-            assert.strictEqual(cli.isSlashCommand(''), false);
-            assert.strictEqual(cli.isSlashCommand('  /help'), false);
-        });
-    });
-
-    describe('parseSlashCommand', () => {
-        it('should parse command without arguments', () => {
-            const result = cli.parseSlashCommand('/help');
-            assert.deepStrictEqual(result, { command: 'help', args: '' });
-        });
-
-        it('should parse command with single argument', () => {
-            const result = cli.parseSlashCommand('/read my-skill');
-            assert.deepStrictEqual(result, { command: 'read', args: 'my-skill' });
-        });
-
-        it('should parse command with multiple arguments', () => {
-            const result = cli.parseSlashCommand('/write new-skill tskill');
-            assert.deepStrictEqual(result, { command: 'write', args: 'new-skill tskill' });
-        });
-
-        it('should handle extra whitespace', () => {
-            const result = cli.parseSlashCommand('/read   my-skill  ');
-            assert.strictEqual(result.command, 'read');
-            assert.strictEqual(result.args.trim(), 'my-skill');
-        });
-
-        it('should return null for invalid input', () => {
-            assert.strictEqual(cli.parseSlashCommand('not a command'), null);
-            assert.strictEqual(cli.parseSlashCommand(''), null);
-        });
-
-        it('should lowercase command name', () => {
-            const result = cli.parseSlashCommand('/READ skill');
-            assert.strictEqual(result.command, 'read');
-        });
-    });
-
-    describe('SLASH_COMMANDS definition', () => {
-        it('should have all expected commands defined', async () => {
-            const { SkillManagerCli } = await import('../src/SkillManagerCli.mjs');
-            const commands = SkillManagerCli.SLASH_COMMANDS;
-            // Note: help, ?, commands are built-in handlers, not in SLASH_COMMANDS
-            const expectedCommands = [
-                'ls', 'list', 'read', 'write', 'delete', 'validate',
-                'template', 'update', 'preview', 'generate', 'test',
-                'refine', 'exec',
-            ];
-            for (const cmd of expectedCommands) {
-                assert.ok(commands[cmd], `Command /${cmd} should be defined`);
-            }
-        });
-
-        it('should have required properties for each command', async () => {
-            const { SkillManagerCli } = await import('../src/SkillManagerCli.mjs');
-            const commands = SkillManagerCli.SLASH_COMMANDS;
-            for (const [name, def] of Object.entries(commands)) {
-                assert.ok(def.description, `/${name} should have description`);
-                assert.ok(def.usage, `/${name} should have usage`);
-            }
-        });
-
-        it('should map to valid skills', async () => {
-            const { SkillManagerCli } = await import('../src/SkillManagerCli.mjs');
-            const commands = SkillManagerCli.SLASH_COMMANDS;
-            const skillCommands = Object.entries(commands).filter(([, def]) => def.skill);
-            assert.ok(skillCommands.length > 0, 'Some commands should map to skills');
-        });
-    });
-
-    describe('_getSlashCompletions', () => {
-        it('should complete "/" with all commands', () => {
-            const [completions] = cli._getSlashCompletions('/');
-            assert.ok(completions.length > 0, 'Should have completions');
-            assert.ok(completions.some(c => c.startsWith('/ls')), 'Should include /ls');
-            assert.ok(completions.some(c => c.startsWith('/help')), 'Should include /help');
-        });
-
-        it('should complete partial command names', () => {
-            const [completions] = cli._getSlashCompletions('/re');
-            assert.ok(completions.some(c => c.startsWith('/read')), 'Should include /read');
-            assert.ok(completions.some(c => c.startsWith('/refine')), 'Should include /refine');
-        });
-
-        it('should complete /template with skill types', () => {
-            const [completions] = cli._getSlashCompletions('/template ');
-            assert.ok(completions.includes('/template tskill'), 'Should include tskill');
-            assert.ok(completions.includes('/template cskill'), 'Should include cskill');
-        });
-
-        it('should filter template completions', () => {
-            const [completions] = cli._getSlashCompletions('/template t');
-            assert.ok(completions.includes('/template tskill'), 'Should include tskill');
-            assert.ok(!completions.includes('/template cskill'), 'Should not include cskill');
-        });
-    });
-
-    describe('_getInputHint', () => {
-        it('should return null for non-slash input', () => {
-            assert.strictEqual(cli._getInputHint('list skills'), null);
-        });
-
-        it('should return hint for just /', () => {
-            const hint = cli._getInputHint('/');
-            assert.ok(hint, 'Should return hint');
-            // Note: case-sensitive - "Type a command" not "type a command"
-            assert.ok(hint.includes('command'), 'Should mention command');
-        });
-
-        it('should return usage hint for commands requiring args', () => {
-            const hint = cli._getInputHint('/read');
-            assert.ok(hint, 'Should return hint');
-            assert.ok(hint.includes('<skill>') || hint.includes('skill'), 'Should mention skill argument');
-        });
-
-        it('should return description when args provided', () => {
-            const hint = cli._getInputHint('/read my-skill');
-            assert.ok(hint, 'Should return hint');
-        });
-
-        it('should suggest alternatives for partial matches', () => {
-            const hint = cli._getInputHint('/re');
-            assert.ok(hint, 'Should return hint');
-        });
-
-        it('should show error for unknown commands', () => {
-            const hint = cli._getInputHint('/nonexistent');
-            assert.ok(hint, 'Should return hint');
-            assert.ok(hint.toLowerCase().includes('unknown'), 'Should indicate unknown command');
-        });
-    });
-
-    describe('executeSlashCommand', () => {
-        it('should handle /help command', async () => {
-            const result = await cli.executeSlashCommand('help', '');
-            assert.strictEqual(result.handled, true);
-            // Note: /help prints to console, doesn't return result
-        });
-
-        it('should handle /? command', async () => {
-            const result = await cli.executeSlashCommand('?', '');
-            assert.strictEqual(result.handled, true);
-        });
-
-        it('should return error for unknown command', async () => {
-            const result = await cli.executeSlashCommand('nonexistent', '');
-            assert.strictEqual(result.handled, false);
-            assert.ok(result.error, 'Should have error message');
-        });
-
-        it('should return usage error when required args missing', async () => {
-            const result = await cli.executeSlashCommand('read', '');
-            // Note: returns handled: true with error, not handled: false
-            assert.strictEqual(result.handled, true);
-            assert.ok(result.error, 'Should have error message');
-            assert.ok(result.error.includes('Usage'), 'Should show usage');
-        });
-
-        it('should execute /ls command', async () => {
-            const result = await cli.executeSlashCommand('ls', '');
-            assert.strictEqual(result.handled, true);
         });
     });
 });
@@ -973,29 +814,29 @@ describe('CommandSelector - Full Suite', () => {
 
 describe('buildCommandList - Full Suite', () => {
     let buildCommandList;
-    let SkillManagerCli;
+    let SlashCommandHandler;
 
     beforeEach(async () => {
         const cmdModule = await import('../src/CommandSelector.mjs');
         buildCommandList = cmdModule.buildCommandList;
-        const cliModule = await import('../src/SkillManagerCli.mjs');
-        SkillManagerCli = cliModule.SkillManagerCli;
+        const handlerModule = await import('../src/SlashCommandHandler.mjs');
+        SlashCommandHandler = handlerModule.SlashCommandHandler;
     });
 
-    it('should build command list from SLASH_COMMANDS', () => {
-        const commands = buildCommandList(SkillManagerCli.SLASH_COMMANDS);
+    it('should build command list from COMMANDS', () => {
+        const commands = buildCommandList(SlashCommandHandler.COMMANDS);
         assert.ok(Array.isArray(commands), 'Should return array');
         assert.ok(commands.length > 0, 'Should have commands');
     });
 
     it('should include /help command', () => {
-        const commands = buildCommandList(SkillManagerCli.SLASH_COMMANDS);
+        const commands = buildCommandList(SlashCommandHandler.COMMANDS);
         const helpCmd = commands.find(c => c.name === '/help');
         assert.ok(helpCmd, 'Should include /help');
     });
 
     it('should have required properties for each command', () => {
-        const commands = buildCommandList(SkillManagerCli.SLASH_COMMANDS);
+        const commands = buildCommandList(SlashCommandHandler.COMMANDS);
         for (const cmd of commands) {
             assert.ok(cmd.name, 'Command should have name');
             assert.ok(cmd.description, 'Command should have description');
@@ -1005,111 +846,16 @@ describe('buildCommandList - Full Suite', () => {
     });
 
     it('should sort commands alphabetically', () => {
-        const commands = buildCommandList(SkillManagerCli.SLASH_COMMANDS);
+        const commands = buildCommandList(SlashCommandHandler.COMMANDS);
         const names = commands.map(c => c.name);
         const sorted = [...names].sort();
         assert.deepStrictEqual(names, sorted, 'Commands should be sorted');
     });
 
     it('should deduplicate aliases', () => {
-        const commands = buildCommandList(SkillManagerCli.SLASH_COMMANDS);
+        const commands = buildCommandList(SlashCommandHandler.COMMANDS);
         const listCommands = commands.filter(c => c.name === '/list' || c.name === '/ls');
         assert.ok(listCommands.length <= 2, 'Should deduplicate aliases');
-    });
-});
-
-// ============================================================================
-// CLI Features Integration Tests
-// ============================================================================
-
-describe('CLI Features Integration - Full Suite', () => {
-    let tempDir;
-    let SkillManagerCli;
-    let HistoryManager;
-    let cli;
-
-    beforeEach(async () => {
-        tempDir = createTempDir('cli-integration-');
-        const cliModule = await import('../src/SkillManagerCli.mjs');
-        SkillManagerCli = cliModule.SkillManagerCli;
-        const histModule = await import('../src/HistoryManager.mjs');
-        HistoryManager = histModule.HistoryManager;
-        cli = new SkillManagerCli({ workingDir: tempDir });
-    });
-
-    it('should have historyManager initialized', () => {
-        assert.ok(cli.historyManager, 'Should have historyManager');
-        assert.ok(cli.historyManager instanceof HistoryManager, 'Should be HistoryManager instance');
-    });
-
-    it('should store history in working directory', () => {
-        cli.historyManager.add('test command');
-        const historyFile = path.join(tempDir, '.skill-manager-history');
-        assert.ok(fs.existsSync(historyFile), 'History file should be in working dir');
-    });
-
-    it('getHistoryManager should return history manager', () => {
-        const hm = cli.getHistoryManager();
-        assert.strictEqual(hm, cli.historyManager);
-    });
-
-    it('slash commands should work with CLI context', async () => {
-        const skillDir = path.join(tempDir, '.AchillesSkills', 'test-skill');
-        fs.mkdirSync(skillDir, { recursive: true });
-        fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Test Skill\n\nA test skill.');
-        cli.reloadSkills();
-        const result = await cli.executeSlashCommand('ls', '');
-        assert.strictEqual(result.handled, true);
-    });
-
-    it('should have all slash command methods', () => {
-        assert.strictEqual(typeof cli.isSlashCommand, 'function');
-        assert.strictEqual(typeof cli.parseSlashCommand, 'function');
-        assert.strictEqual(typeof cli.executeSlashCommand, 'function');
-        assert.strictEqual(typeof cli._getSlashCompletions, 'function');
-        assert.strictEqual(typeof cli._getInputHint, 'function');
-    });
-});
-
-// ============================================================================
-// needsSkillArg property Tests
-// ============================================================================
-
-describe('needsSkillArg property', () => {
-    let SkillManagerCli;
-
-    beforeEach(async () => {
-        const module = await import('../src/SkillManagerCli.mjs');
-        SkillManagerCli = module.SkillManagerCli;
-    });
-
-    it('commands that operate on skills should have needsSkillArg: true', () => {
-        const commands = SkillManagerCli.SLASH_COMMANDS;
-        const skillOperatingCommands = ['read', 'delete', 'validate', 'generate', 'test', 'refine', 'exec'];
-
-        for (const cmd of skillOperatingCommands) {
-            if (commands[cmd]) {
-                assert.strictEqual(
-                    commands[cmd].needsSkillArg,
-                    true,
-                    `/${cmd} should have needsSkillArg: true`
-                );
-            }
-        }
-    });
-
-    it('commands that do not operate on skills should not have needsSkillArg', () => {
-        const commands = SkillManagerCli.SLASH_COMMANDS;
-        const nonSkillCommands = ['help', '?', 'commands', 'ls', 'list'];
-
-        for (const cmd of nonSkillCommands) {
-            if (commands[cmd]) {
-                assert.ok(
-                    !commands[cmd].needsSkillArg,
-                    `/${cmd} should not have needsSkillArg: true`
-                );
-            }
-        }
     });
 });
 

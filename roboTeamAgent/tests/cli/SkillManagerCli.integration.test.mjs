@@ -158,12 +158,10 @@ fast
 
         it('should execute list-skills action directly', async () => {
             // Import action directly like other tests do
+            // Action signature: action(recursiveSkilledAgent, prompt)
             const { action } = await import('../src/.AchillesSkills/list-skills/list-skills.mjs');
 
-            const result = await action('', {
-                skilledAgent: agent,
-                llmAgent: agent.llmAgent,
-            });
+            const result = await action(agent, '');
 
             assert.ok(result, 'Should return a result');
             assert.ok(typeof result === 'string', 'Result should be a string');
@@ -172,12 +170,10 @@ fast
 
         it('should execute get-template action directly', async () => {
             // Import action directly like other tests do
+            // Action signature: action(recursiveSkilledAgent, prompt)
             const { action } = await import('../src/.AchillesSkills/get-template/get-template.mjs');
 
-            const result = await action('cskill', {
-                skilledAgent: agent,
-                llmAgent: agent.llmAgent,
-            });
+            const result = await action(agent, 'cskill');
 
             assert.ok(result, 'Should return a result');
             assert.ok(typeof result === 'string', 'Result should be a string');
