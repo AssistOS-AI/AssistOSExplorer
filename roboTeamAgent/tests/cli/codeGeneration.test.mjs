@@ -17,6 +17,78 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let generateCodeAction;
 let testCodeAction;
 
+/**
+ * Create a mock agent with all required methods for skill modules
+ */
+function createMockAgent(options = {}) {
+    const {
+        startDir,
+        skillCatalog = new Map(),
+        additionalSkillRoots = [],
+        llmAgent = null,
+    } = options;
+
+    const skillsDir = path.join(startDir, '.AchillesSkills');
+
+    return {
+        startDir,
+        skillCatalog,
+        additionalSkillRoots,
+        llmAgent,
+
+        // Getter methods
+        getStartDir() {
+            return startDir;
+        },
+        getSkillsDir() {
+            return skillsDir;
+        },
+        getAdditionalSkillRoots() {
+            return additionalSkillRoots;
+        },
+
+        // Skill lookup methods
+        getSkillRecord(name) {
+            return skillCatalog.get(name) || null;
+        },
+        getSkills() {
+            return Array.from(skillCatalog.values());
+        },
+        findSkillFile(skillName) {
+            const record = skillCatalog.get(skillName);
+            if (record?.filePath) {
+                return { filePath: record.filePath, type: record.type, record };
+            }
+            // Fallback to filesystem
+            const skillDir = path.join(skillsDir, skillName);
+            const fileTypes = ['cskill.md', 'tskill.md', 'iskill.md', 'oskill.md', 'pskill.md'];
+            for (const filename of fileTypes) {
+                const filePath = path.join(skillDir, filename);
+                if (fs.existsSync(filePath)) {
+                    return { filePath, type: filename.replace('.md', ''), record: { skillDir } };
+                }
+            }
+            // Final fallback: just return skillDir if it exists
+            if (fs.existsSync(skillDir)) {
+                return { filePath: null, type: null, record: { skillDir } };
+            }
+            return null;
+        },
+        getUserSkills() {
+            const builtInRoot = additionalSkillRoots[0];
+            if (!builtInRoot) return Array.from(skillCatalog.values());
+            return Array.from(skillCatalog.values()).filter(
+                s => !s.skillDir?.startsWith(builtInRoot)
+            );
+        },
+        isBuiltInSkill(skillRecord) {
+            const builtInRoot = additionalSkillRoots[0];
+            if (!builtInRoot) return false;
+            return skillRecord?.skillDir?.startsWith(builtInRoot) ?? false;
+        },
+    };
+}
+
 // Sample skill definitions for each type
 const SKILL_DEFINITIONS = {
     tskill: `# Test Product
@@ -168,20 +240,20 @@ describe('Code Generation for All Skill Types', () => {
 
     describe('generate-code action', () => {
         it('should return error when skillName not provided', async () => {
-            const mockAgent = { startDir: tempDir };
+            const mockAgent = createMockAgent({ startDir: tempDir });
             const result = await generateCodeAction(mockAgent, '');
             assert.ok(result.includes('Error'), 'Should return error');
             assert.ok(result.includes('skillName'), 'Should mention skillName');
         });
 
         it('should return error when skill not found', async () => {
-            const mockAgent = { startDir: tempDir, getSkillRecord: () => null };
+            const mockAgent = createMockAgent({ startDir: tempDir });
             const result = await generateCodeAction(mockAgent, 'NonExistentSkill');
             assert.ok(result.includes('Error') || result.includes('not found'), 'Should return error');
         });
 
         it('should return error when llmAgent not provided', async () => {
-            const mockAgent = { startDir: tempDir, getSkillRecord: () => null };
+            const mockAgent = createMockAgent({ startDir: tempDir });
             const result = await generateCodeAction(mockAgent, 'TestTskillSkill');
             assert.ok(result.includes('Error'), 'Should return error');
             assert.ok(result.includes('LLM') || result.includes('not found'), 'Should mention LLM or not found');
@@ -267,14 +339,18 @@ export default {
                 },
             };
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
                 llmAgent: mockLlmAgent,
-                getSkillRecord: () => ({
-                    skillDir,
-                    filePath: path.join(skillDir, 'tskill.md'),
-                }),
-            };
+                skillCatalog: new Map([
+                    ['TestTskillSkill', {
+                        name: 'TestTskillSkill',
+                        skillDir,
+                        filePath: path.join(skillDir, 'tskill.md'),
+                        type: 'tskill',
+                    }],
+                ]),
+            });
 
             const result = await generateCodeAction(mockAgent, 'TestTskillSkill');
 
@@ -333,14 +409,18 @@ export default { specs, action };`;
                 },
             };
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
                 llmAgent: mockLlmAgent,
-                getSkillRecord: () => ({
-                    skillDir,
-                    filePath: path.join(skillDir, 'iskill.md'),
-                }),
-            };
+                skillCatalog: new Map([
+                    ['TestIskillSkill', {
+                        name: 'TestIskillSkill',
+                        skillDir,
+                        filePath: path.join(skillDir, 'iskill.md'),
+                        type: 'iskill',
+                    }],
+                ]),
+            });
 
             const result = await generateCodeAction(mockAgent, 'TestIskillSkill');
 
@@ -411,14 +491,18 @@ export default { specs, action };`;
                 },
             };
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
                 llmAgent: mockLlmAgent,
-                getSkillRecord: () => ({
-                    skillDir,
-                    filePath: path.join(skillDir, 'oskill.md'),
-                }),
-            };
+                skillCatalog: new Map([
+                    ['TestOskillSkill', {
+                        name: 'TestOskillSkill',
+                        skillDir,
+                        filePath: path.join(skillDir, 'oskill.md'),
+                        type: 'oskill',
+                    }],
+                ]),
+            });
 
             const result = await generateCodeAction(mockAgent, 'TestOskillSkill');
 
@@ -488,14 +572,18 @@ export default { specs, action };`;
                 },
             };
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
                 llmAgent: mockLlmAgent,
-                getSkillRecord: () => ({
-                    skillDir,
-                    filePath: path.join(skillDir, 'cskill.md'),
-                }),
-            };
+                skillCatalog: new Map([
+                    ['TestCskillSkill', {
+                        name: 'TestCskillSkill',
+                        skillDir,
+                        filePath: path.join(skillDir, 'cskill.md'),
+                        type: 'cskill',
+                    }],
+                ]),
+            });
 
             const result = await generateCodeAction(mockAgent, 'TestCskillSkill');
 
@@ -531,14 +619,14 @@ describe('Code Testing for All Skill Types', () => {
 
     describe('test-code action', () => {
         it('should return error when skillName not provided', async () => {
-            const mockAgent = { startDir: tempDir };
+            const mockAgent = createMockAgent({ startDir: tempDir });
             const result = await testCodeAction(mockAgent, '');
             assert.ok(result.includes('Error'), 'Should return error');
             assert.ok(result.includes('skillName'), 'Should mention skillName');
         });
 
         it('should return error when skill directory not found', async () => {
-            const mockAgent = { startDir: tempDir, getSkillRecord: () => null };
+            const mockAgent = createMockAgent({ startDir: tempDir });
             const result = await testCodeAction(mockAgent, 'NonExistentSkill');
             assert.ok(result.includes('Error') || result.includes('not found'), 'Should return error');
         });
@@ -549,10 +637,12 @@ describe('Code Testing for All Skill Types', () => {
             fs.mkdirSync(emptySkillDir);
             fs.writeFileSync(path.join(emptySkillDir, 'cskill.md'), '# Empty\n## Summary\nTest');
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
-                getSkillRecord: () => ({ skillDir: emptySkillDir }),
-            };
+                skillCatalog: new Map([
+                    ['EmptySkill', { name: 'EmptySkill', skillDir: emptySkillDir, type: 'cskill' }],
+                ]),
+            });
             const result = await testCodeAction(mockAgent, 'EmptySkill');
             assert.ok(result.includes('Error') || result.includes('No generated code'), 'Should return error');
         });
@@ -585,10 +675,12 @@ export function validateRecord(record) {
 export default { validator_name, presenter_name, validateRecord };`
             );
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
-                getSkillRecord: () => ({ skillDir }),
-            };
+                skillCatalog: new Map([
+                    ['TskillTest', { name: 'TskillTest', skillDir, type: 'tskill' }],
+                ]),
+            });
             const result = await testCodeAction(mockAgent, 'TskillTest');
 
             assert.ok(result.includes('Module loaded'), 'Should load module');
@@ -598,10 +690,12 @@ export default { validator_name, presenter_name, validateRecord };`
         });
 
         it('should execute tskill functions with test input', async () => {
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
-                getSkillRecord: () => ({ skillDir: path.join(skillsDir, 'TskillTest') }),
-            };
+                skillCatalog: new Map([
+                    ['TskillTest', { name: 'TskillTest', skillDir: path.join(skillsDir, 'TskillTest'), type: 'tskill' }],
+                ]),
+            });
             const result = await testCodeAction(mockAgent, JSON.stringify({ skillName: 'TskillTest', testInput: { name: 'test' } }));
 
             assert.ok(result.includes('Module loaded'), 'Should load module');
@@ -631,10 +725,12 @@ export async function action(args, context) {
 export default { specs, action };`
             );
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
-                getSkillRecord: () => ({ skillDir }),
-            };
+                skillCatalog: new Map([
+                    ['IskillTest', { name: 'IskillTest', skillDir, type: 'iskill' }],
+                ]),
+            });
             const result = await testCodeAction(mockAgent, 'IskillTest');
 
             assert.ok(result.includes('Module loaded'), 'Should load module');
@@ -668,10 +764,12 @@ export async function action(input, context) {
 export default { specs, action };`
             );
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
-                getSkillRecord: () => ({ skillDir }),
-            };
+                skillCatalog: new Map([
+                    ['OskillTest', { name: 'OskillTest', skillDir, type: 'oskill' }],
+                ]),
+            });
             const result = await testCodeAction(mockAgent, 'OskillTest');
 
             assert.ok(result.includes('Module loaded'), 'Should load module');
@@ -704,10 +802,12 @@ export async function action(input, context) {
 export default { specs, action };`
             );
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
-                getSkillRecord: () => ({ skillDir }),
-            };
+                skillCatalog: new Map([
+                    ['CskillTest', { name: 'CskillTest', skillDir, type: 'cskill' }],
+                ]),
+            });
             const result = await testCodeAction(mockAgent, 'CskillTest');
 
             assert.ok(result.includes('Module loaded'), 'Should load module');
@@ -730,10 +830,12 @@ export default { specs, action };`
 };`
             );
 
-            const mockAgent = {
+            const mockAgent = createMockAgent({
                 startDir: tempDir,
-                getSkillRecord: () => ({ skillDir }),
-            };
+                skillCatalog: new Map([
+                    ['SyntaxErrorSkill', { name: 'SyntaxErrorSkill', skillDir, type: 'cskill' }],
+                ]),
+            });
             const result = await testCodeAction(mockAgent, 'SyntaxErrorSkill');
 
             assert.ok(result.includes('Failed to load') || result.includes('Error'), 'Should indicate load failure');
@@ -787,14 +889,18 @@ export default { validator_product_id, validateRecord };`;
             },
         };
 
-        const mockAgent = {
+        const mockAgent = createMockAgent({
             startDir: tempDir,
             llmAgent: mockLlmAgent,
-            getSkillRecord: () => ({
-                skillDir,
-                filePath: path.join(skillDir, 'tskill.md'),
-            }),
-        };
+            skillCatalog: new Map([
+                ['IntegrationTskill', {
+                    name: 'IntegrationTskill',
+                    skillDir,
+                    filePath: path.join(skillDir, 'tskill.md'),
+                    type: 'tskill',
+                }],
+            ]),
+        });
 
         // Generate
         const genResult = await generateCodeAction(mockAgent, 'IntegrationTskill');
@@ -828,14 +934,18 @@ export default { specs, action };`;
             },
         };
 
-        const mockAgent = {
+        const mockAgent = createMockAgent({
             startDir: tempDir,
             llmAgent: mockLlmAgent,
-            getSkillRecord: () => ({
-                skillDir,
-                filePath: path.join(skillDir, 'iskill.md'),
-            }),
-        };
+            skillCatalog: new Map([
+                ['IntegrationIskill', {
+                    name: 'IntegrationIskill',
+                    skillDir,
+                    filePath: path.join(skillDir, 'iskill.md'),
+                    type: 'iskill',
+                }],
+            ]),
+        });
 
         const genResult = await generateCodeAction(mockAgent, 'IntegrationIskill');
         assert.ok(genResult.includes('Generated'), 'Should generate code');
@@ -869,14 +979,18 @@ export default { specs, action };`;
             },
         };
 
-        const mockAgent = {
+        const mockAgent = createMockAgent({
             startDir: tempDir,
             llmAgent: mockLlmAgent,
-            getSkillRecord: () => ({
-                skillDir,
-                filePath: path.join(skillDir, 'oskill.md'),
-            }),
-        };
+            skillCatalog: new Map([
+                ['IntegrationOskill', {
+                    name: 'IntegrationOskill',
+                    skillDir,
+                    filePath: path.join(skillDir, 'oskill.md'),
+                    type: 'oskill',
+                }],
+            ]),
+        });
 
         const genResult = await generateCodeAction(mockAgent, 'IntegrationOskill');
         assert.ok(genResult.includes('Generated'), 'Should generate code');
@@ -908,14 +1022,18 @@ export default { specs, action };`;
             },
         };
 
-        const mockAgent = {
+        const mockAgent = createMockAgent({
             startDir: tempDir,
             llmAgent: mockLlmAgent,
-            getSkillRecord: () => ({
-                skillDir,
-                filePath: path.join(skillDir, 'cskill.md'),
-            }),
-        };
+            skillCatalog: new Map([
+                ['IntegrationCskill', {
+                    name: 'IntegrationCskill',
+                    skillDir,
+                    filePath: path.join(skillDir, 'cskill.md'),
+                    type: 'cskill',
+                }],
+            ]),
+        });
 
         const genResult = await generateCodeAction(mockAgent, 'IntegrationCskill');
         assert.ok(genResult.includes('Generated'), 'Should generate code');
