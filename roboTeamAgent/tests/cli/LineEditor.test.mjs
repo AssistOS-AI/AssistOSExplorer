@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { LineEditor, KEYS_REFERENCE } from '../src/LineEditor.mjs';
+import { LineEditor, KEYS_REFERENCE } from '../src/ui/LineEditor.mjs';
 
 describe('LineEditor', () => {
     let editor;

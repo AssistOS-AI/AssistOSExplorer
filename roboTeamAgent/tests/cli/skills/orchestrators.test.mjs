@@ -41,10 +41,10 @@ describe('OpsSkill (cskill for file operations)', () => {
 // skill-manager Orchestrator Tests
 // ============================================================================
 
-describe('skill-manager orchestrator', () => {
+describe('skills-orchestrator', () => {
     it('should have valid oskill.md definition', async () => {
-        const skillPath = path.join(SKILLS_BASE, 'skill-manager', 'oskill.md');
-        assert.ok(fs.existsSync(skillPath), 'skill-manager oskill.md should exist');
+        const skillPath = path.join(SKILLS_BASE, 'skills-orchestrator', 'oskill.md');
+        assert.ok(fs.existsSync(skillPath), 'skills-orchestrator oskill.md should exist');
 
         const content = fs.readFileSync(skillPath, 'utf8');
         assert.ok(content.includes('## Instructions'), 'Should have Instructions section');
@@ -52,7 +52,7 @@ describe('skill-manager orchestrator', () => {
     });
 
     it('should list all expected allowed skills', async () => {
-        const skillPath = path.join(SKILLS_BASE, 'skill-manager', 'oskill.md');
+        const skillPath = path.join(SKILLS_BASE, 'skills-orchestrator', 'oskill.md');
         const content = fs.readFileSync(skillPath, 'utf8');
 
         const expectedSkills = [
@@ -76,7 +76,7 @@ describe('skill-manager orchestrator', () => {
     });
 
     it('should have intent definitions', async () => {
-        const skillPath = path.join(SKILLS_BASE, 'skill-manager', 'oskill.md');
+        const skillPath = path.join(SKILLS_BASE, 'skills-orchestrator', 'oskill.md');
         const content = fs.readFileSync(skillPath, 'utf8');
 
         assert.ok(content.includes('## Intents'), 'Should have Intents section');
@@ -86,7 +86,7 @@ describe('skill-manager orchestrator', () => {
     });
 
     it('should have example usage in instructions', async () => {
-        const skillPath = path.join(SKILLS_BASE, 'skill-manager', 'oskill.md');
+        const skillPath = path.join(SKILLS_BASE, 'skills-orchestrator', 'oskill.md');
         const content = fs.readFileSync(skillPath, 'utf8');
 
         assert.ok(content.includes('Example') || content.includes('example'), 'Should include examples');

@@ -165,9 +165,9 @@ describe('RecursiveSkilledAgent - Built-in Skills Discovery', () => {
         assert.ok(skill, 'test-code skill should exist');
     });
 
-    it('should have skill-manager orchestrator', () => {
-        const skill = agent.getSkillRecord('skill-manager');
-        assert.ok(skill, 'skill-manager skill should exist');
+    it('should have skills-orchestrator', () => {
+        const skill = agent.getSkillRecord('skills-orchestrator');
+        assert.ok(skill, 'skills-orchestrator skill should exist');
     });
 
     it('should have skill-refiner orchestrator', () => {

@@ -30,9 +30,8 @@ describe('Skills Directory Structure', () => {
         'generate-code',
         'test-code',
         'skill-refiner',
-        'skill-manager',
+        'skills-orchestrator',
         'execute-skill',
-        'OpsSkill',
     ];
 
     for (const skillName of expectedSkills) {
