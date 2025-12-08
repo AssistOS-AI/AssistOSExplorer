@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { RecursiveSkilledAgent } from 'achilles-agent-lib/RecursiveSkilledAgents';
-import { LLMAgent } from 'achilles-agent-lib/LLMAgents';
+import { RecursiveSkilledAgent } from 'achillesAgentLib/RecursiveSkilledAgents';
+import { LLMAgent } from 'achillesAgentLib/LLMAgents';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const builtInSkillsDir = path.join(__dirname, '..', 'src', '.AchillesSkills');

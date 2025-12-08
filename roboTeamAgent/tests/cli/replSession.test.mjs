@@ -15,8 +15,8 @@ import os from 'node:os';
 describe('REPLSession', () => {
     it('should instantiate with a RecursiveSkilledAgent instance', async () => {
         const { REPLSession } = await import('../src/repl/REPLSession.mjs');
-        const { RecursiveSkilledAgent } = await import('achilles-agent-lib/RecursiveSkilledAgents');
-        const { LLMAgent } = await import('achilles-agent-lib/LLMAgents');
+        const { RecursiveSkilledAgent } = await import('achillesAgentLib/RecursiveSkilledAgents');
+        const { LLMAgent } = await import('achillesAgentLib/LLMAgents');
         const { builtInSkillsDir } = await import('../src/index.mjs');
 
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repl-test-'));
@@ -39,8 +39,8 @@ describe('REPLSession', () => {
 
     it('should have start method', async () => {
         const { REPLSession } = await import('../src/repl/REPLSession.mjs');
-        const { RecursiveSkilledAgent } = await import('achilles-agent-lib/RecursiveSkilledAgents');
-        const { LLMAgent } = await import('achilles-agent-lib/LLMAgents');
+        const { RecursiveSkilledAgent } = await import('achillesAgentLib/RecursiveSkilledAgents');
+        const { LLMAgent } = await import('achillesAgentLib/LLMAgents');
         const { builtInSkillsDir } = await import('../src/index.mjs');
 
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repl-test-'));

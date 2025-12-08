@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { RecursiveSkilledAgent } from 'achilles-agent-lib/RecursiveSkilledAgents';
-import { LLMAgent } from 'achilles-agent-lib/LLMAgents';
+import { RecursiveSkilledAgent } from 'achillesAgentLib/RecursiveSkilledAgents';
+import { LLMAgent } from 'achillesAgentLib/LLMAgents';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const builtInSkillsDir = path.join(__dirname, '..', 'src', '.AchillesSkills');
@@ -277,7 +277,7 @@ export async function action({ topic }, { llmAgent }) {
 
     describe('runInteractiveSkill with real LLM', () => {
         it('should execute interactive skill with llmAgent in context', async () => {
-            const { runInteractiveSkill } = await import('achilles-agent-lib/InteractiveSkillsSubsystem/executor/runInteractiveSkill.mjs');
+            const { runInteractiveSkill } = await import('achillesAgentLib/InteractiveSkillsSubsystem/executor/runInteractiveSkill.mjs');
 
             let contextReceived = null;
 
