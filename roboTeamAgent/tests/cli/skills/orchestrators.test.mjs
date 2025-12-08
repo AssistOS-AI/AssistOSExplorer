@@ -1,5 +1,5 @@
 /**
- * Tests for orchestrator skill definitions: OpsSkill, skill-manager, skill-refiner
+ * Tests for orchestrator skill definitions: skill-manager, skill-refiner
  *
  * These tests verify the skill definition files are valid and contain expected content.
  */
@@ -12,30 +12,6 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_BASE = path.join(__dirname, '../../src/.AchillesSkills');
-
-// ============================================================================
-// OpsSkill Tests
-// ============================================================================
-
-describe('OpsSkill (cskill for file operations)', () => {
-    it('should have valid cskill.md definition', async () => {
-        const opsSkillPath = path.join(SKILLS_BASE, 'OpsSkill', 'cskill.md');
-        assert.ok(fs.existsSync(opsSkillPath), 'OpsSkill cskill.md should exist');
-
-        const content = fs.readFileSync(opsSkillPath, 'utf8');
-        assert.ok(content.includes('## Summary'), 'Should have Summary section');
-        assert.ok(content.includes('## Prompt'), 'Should have Prompt section');
-        assert.ok(content.includes('## LLM Mode'), 'Should have LLM Mode section');
-    });
-
-    it('should contain file operation instructions', async () => {
-        const opsSkillPath = path.join(SKILLS_BASE, 'OpsSkill', 'cskill.md');
-        const content = fs.readFileSync(opsSkillPath, 'utf8');
-
-        assert.ok(content.includes('file') || content.includes('File'), 'Should mention file operations');
-        assert.ok(content.includes('Node.js') || content.includes('node:fs'), 'Should mention Node.js');
-    });
-});
 
 // ============================================================================
 // skill-manager Orchestrator Tests
