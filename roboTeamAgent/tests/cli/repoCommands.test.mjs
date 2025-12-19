@@ -1163,3 +1163,303 @@ describe('SlashCommandHandler - _syncAgentSkillRoots', () => {
         assert.strictEqual(agentRoots.length, 2, 'Should still have 2 roots (no duplicates)');
     });
 });
+
+// ============================================================================
+// /edit-repo Command Tests
+// ============================================================================
+
+describe('SlashCommandHandler - /edit-repo', () => {
+    let SlashCommandHandler;
+    let RepoManager;
+    let tempDir;
+    let globalReposDir;
+
+    beforeEach(async () => {
+        const slashModule = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const repoModule = await import('../skill-manager/src/lib/RepoManager.mjs');
+        SlashCommandHandler = slashModule.SlashCommandHandler;
+        RepoManager = repoModule.RepoManager;
+
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'edit-repo-test-'));
+        globalReposDir = path.join(tempDir, 'global-repos');
+        fs.mkdirSync(globalReposDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        if (tempDir && fs.existsSync(tempDir)) {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('should toggle editable status for a repository', async () => {
+        const localRepo = path.join(tempDir, 'my-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'skill-1'), { recursive: true });
+
+        const repoManager = new RepoManager({
+            workingDir: tempDir,
+            globalReposDir,
+        });
+
+        await repoManager.addRepository({ source: localRepo, name: 'my-repo' });
+
+        // Verify initially not editable
+        let repos = repoManager.listRepositories();
+        assert.strictEqual(repos[0].editable, false);
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+            getRepositories: () => repoManager.listRepositories(),
+        });
+
+        // Execute /edit-repo
+        const result = await handler.executeSlashCommand('edit-repo', 'my-repo', {
+            context: { repoManager },
+        });
+
+        assert.strictEqual(result.handled, true);
+        assert.ok(result.result.includes('can now be edited'));
+
+        // Verify now editable
+        repos = repoManager.listRepositories();
+        assert.strictEqual(repos[0].editable, true);
+
+        // Toggle back
+        const result2 = await handler.executeSlashCommand('edit-repo', 'my-repo', {
+            context: { repoManager },
+        });
+
+        assert.ok(result2.result.includes('is now read-only'));
+        repos = repoManager.listRepositories();
+        assert.strictEqual(repos[0].editable, false);
+    });
+
+    it('should return error for non-existent repository', async () => {
+        const repoManager = new RepoManager({
+            workingDir: tempDir,
+            globalReposDir,
+        });
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+            getRepositories: () => repoManager.listRepositories(),
+        });
+
+        const result = await handler.executeSlashCommand('edit-repo', 'non-existent', {
+            context: { repoManager },
+        });
+
+        assert.strictEqual(result.handled, true);
+        assert.ok(result.error.includes('not found'));
+    });
+});
+
+// ============================================================================
+// /add-repo --editable Flag Tests
+// ============================================================================
+
+describe('SlashCommandHandler - /add-repo --editable', () => {
+    let SlashCommandHandler;
+    let RepoManager;
+    let tempDir;
+    let globalReposDir;
+
+    beforeEach(async () => {
+        const slashModule = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const repoModule = await import('../skill-manager/src/lib/RepoManager.mjs');
+        SlashCommandHandler = slashModule.SlashCommandHandler;
+        RepoManager = repoModule.RepoManager;
+
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'add-repo-editable-test-'));
+        globalReposDir = path.join(tempDir, 'global-repos');
+        fs.mkdirSync(globalReposDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        if (tempDir && fs.existsSync(tempDir)) {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('should add repo as non-editable by default', async () => {
+        const localRepo = path.join(tempDir, 'my-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'skill-1'), { recursive: true });
+
+        const repoManager = new RepoManager({
+            workingDir: tempDir,
+            globalReposDir,
+        });
+
+        const mockAgent = {
+            getAdditionalSkillRoots: () => [],
+            reloadSkills: () => {},
+        };
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+            getRepositories: () => repoManager.listRepositories(),
+        });
+
+        await handler.executeSlashCommand('add-repo', localRepo, {
+            context: { repoManager, skilledAgent: mockAgent },
+        });
+
+        const repos = repoManager.listRepositories();
+        assert.strictEqual(repos.length, 1);
+        assert.strictEqual(repos[0].editable, false);
+    });
+
+    it('should add repo as editable when --editable flag is present', async () => {
+        const localRepo = path.join(tempDir, 'my-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'skill-1'), { recursive: true });
+
+        const repoManager = new RepoManager({
+            workingDir: tempDir,
+            globalReposDir,
+        });
+
+        const mockAgent = {
+            getAdditionalSkillRoots: () => [],
+            reloadSkills: () => {},
+        };
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+            getRepositories: () => repoManager.listRepositories(),
+        });
+
+        await handler.executeSlashCommand('add-repo', `${localRepo} --editable`, {
+            context: { repoManager, skilledAgent: mockAgent },
+        });
+
+        const repos = repoManager.listRepositories();
+        assert.strictEqual(repos.length, 1);
+        assert.strictEqual(repos[0].editable, true);
+    });
+
+    it('should add repo as editable when -e flag is present', async () => {
+        const localRepo = path.join(tempDir, 'my-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'skill-1'), { recursive: true });
+
+        const repoManager = new RepoManager({
+            workingDir: tempDir,
+            globalReposDir,
+        });
+
+        const mockAgent = {
+            getAdditionalSkillRoots: () => [],
+            reloadSkills: () => {},
+        };
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+            getRepositories: () => repoManager.listRepositories(),
+        });
+
+        await handler.executeSlashCommand('add-repo', `${localRepo} -e`, {
+            context: { repoManager, skilledAgent: mockAgent },
+        });
+
+        const repos = repoManager.listRepositories();
+        assert.strictEqual(repos.length, 1);
+        assert.strictEqual(repos[0].editable, true);
+    });
+
+    it('should handle --editable with name argument', async () => {
+        const localRepo = path.join(tempDir, 'my-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'skill-1'), { recursive: true });
+
+        const repoManager = new RepoManager({
+            workingDir: tempDir,
+            globalReposDir,
+        });
+
+        const mockAgent = {
+            getAdditionalSkillRoots: () => [],
+            reloadSkills: () => {},
+        };
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+            getRepositories: () => repoManager.listRepositories(),
+        });
+
+        await handler.executeSlashCommand('add-repo', `${localRepo} custom-name --editable`, {
+            context: { repoManager, skilledAgent: mockAgent },
+        });
+
+        const repos = repoManager.listRepositories();
+        assert.strictEqual(repos.length, 1);
+        assert.strictEqual(repos[0].name, 'custom-name');
+        assert.strictEqual(repos[0].editable, true);
+    });
+});
+
+// ============================================================================
+// /repos Display Tests with Editable
+// ============================================================================
+
+describe('SlashCommandHandler - /repos editable display', () => {
+    let SlashCommandHandler;
+    let RepoManager;
+    let tempDir;
+    let globalReposDir;
+
+    beforeEach(async () => {
+        const slashModule = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const repoModule = await import('../skill-manager/src/lib/RepoManager.mjs');
+        SlashCommandHandler = slashModule.SlashCommandHandler;
+        RepoManager = repoModule.RepoManager;
+
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repos-display-test-'));
+        globalReposDir = path.join(tempDir, 'global-repos');
+        fs.mkdirSync(globalReposDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        if (tempDir && fs.existsSync(tempDir)) {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('should show editable status in /repos output', async () => {
+        const repo1 = path.join(tempDir, 'repo1');
+        const repo2 = path.join(tempDir, 'repo2');
+        fs.mkdirSync(path.join(repo1, '.AchillesSkills', 'skill'), { recursive: true });
+        fs.mkdirSync(path.join(repo2, '.AchillesSkills', 'skill'), { recursive: true });
+
+        const repoManager = new RepoManager({
+            workingDir: tempDir,
+            globalReposDir,
+        });
+
+        await repoManager.addRepository({ source: repo1, name: 'repo1', editable: false });
+        await repoManager.addRepository({ source: repo2, name: 'repo2', editable: true });
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+            getRepositories: () => repoManager.listRepositories(),
+        });
+
+        const result = await handler.executeSlashCommand('repos', '', {
+            context: { repoManager },
+        });
+
+        assert.strictEqual(result.handled, true);
+        assert.ok(result.result.includes('read-only'), 'Should show read-only for repo1');
+        assert.ok(result.result.includes('editable'), 'Should show editable for repo2');
+    });
+});

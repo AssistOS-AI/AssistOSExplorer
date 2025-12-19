@@ -898,3 +898,187 @@ describe('RepoManager - Config Migration', () => {
         assert.strictEqual(manager.config.repositories.length, 1);
     });
 });
+
+// ============================================================================
+// Editable Flag Tests
+// ============================================================================
+
+describe('RepoManager - Editable Flag', () => {
+    let RepoManager;
+    let tempDir;
+    let globalReposDir;
+
+    beforeEach(async () => {
+        const module = await import('../skill-manager/src/lib/RepoManager.mjs');
+        RepoManager = module.RepoManager;
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'editable-test-'));
+        globalReposDir = path.join(tempDir, 'global-repos');
+        fs.mkdirSync(globalReposDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        if (tempDir && fs.existsSync(tempDir)) {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it('should default editable to false when adding repository', async () => {
+        const localRepo = path.join(tempDir, 'local-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'my-skill'), { recursive: true });
+
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+        await manager.addRepository({ source: localRepo, name: 'test-repo' });
+
+        const repos = manager.listRepositories();
+        assert.strictEqual(repos.length, 1);
+        assert.strictEqual(repos[0].editable, false);
+    });
+
+    it('should set editable to true when --editable flag is passed', async () => {
+        const localRepo = path.join(tempDir, 'local-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'my-skill'), { recursive: true });
+
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+        await manager.addRepository({ source: localRepo, name: 'test-repo', editable: true });
+
+        const repos = manager.listRepositories();
+        assert.strictEqual(repos.length, 1);
+        assert.strictEqual(repos[0].editable, true);
+    });
+
+    it('should toggle editable status with setRepositoryEditable', async () => {
+        const localRepo = path.join(tempDir, 'local-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'my-skill'), { recursive: true });
+
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+        await manager.addRepository({ source: localRepo, name: 'test-repo' });
+
+        // Initially not editable
+        let repos = manager.listRepositories();
+        assert.strictEqual(repos[0].editable, false);
+
+        // Enable editing
+        const result1 = manager.setRepositoryEditable('test-repo', true);
+        assert.strictEqual(result1.success, true);
+        repos = manager.listRepositories();
+        assert.strictEqual(repos[0].editable, true);
+
+        // Disable editing
+        const result2 = manager.setRepositoryEditable('test-repo', false);
+        assert.strictEqual(result2.success, true);
+        repos = manager.listRepositories();
+        assert.strictEqual(repos[0].editable, false);
+    });
+
+    it('should throw error when setting editable on non-existent repo', () => {
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+
+        assert.throws(
+            () => manager.setRepositoryEditable('non-existent', true),
+            /not found/
+        );
+    });
+
+    it('should include editable field in listRepositories output', async () => {
+        const localRepo = path.join(tempDir, 'local-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'my-skill'), { recursive: true });
+
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+        await manager.addRepository({ source: localRepo, name: 'test-repo' });
+
+        const repos = manager.listRepositories();
+        assert.ok('editable' in repos[0], 'listRepositories should include editable field');
+    });
+
+    it('should return only editable repos from getEditableSkillRoots', async () => {
+        const repo1 = path.join(tempDir, 'repo1');
+        const repo2 = path.join(tempDir, 'repo2');
+        fs.mkdirSync(path.join(repo1, '.AchillesSkills', 'skill1'), { recursive: true });
+        fs.mkdirSync(path.join(repo2, '.AchillesSkills', 'skill2'), { recursive: true });
+
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+        await manager.addRepository({ source: repo1, name: 'repo1', editable: false });
+        await manager.addRepository({ source: repo2, name: 'repo2', editable: true });
+
+        const editableRoots = manager.getEditableSkillRoots();
+        assert.strictEqual(editableRoots.length, 1);
+        assert.ok(editableRoots[0].includes('repo2'));
+    });
+
+    it('should return all enabled repos from getEnabledSkillRoots', async () => {
+        const repo1 = path.join(tempDir, 'repo1');
+        const repo2 = path.join(tempDir, 'repo2');
+        fs.mkdirSync(path.join(repo1, '.AchillesSkills', 'skill1'), { recursive: true });
+        fs.mkdirSync(path.join(repo2, '.AchillesSkills', 'skill2'), { recursive: true });
+
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+        await manager.addRepository({ source: repo1, name: 'repo1', editable: false });
+        await manager.addRepository({ source: repo2, name: 'repo2', editable: true });
+
+        const enabledRoots = manager.getEnabledSkillRoots();
+        assert.strictEqual(enabledRoots.length, 2); // Both are enabled, regardless of editable
+    });
+
+    it('should correctly identify skill repo info with getSkillRepoInfo', async () => {
+        const localRepo = path.join(tempDir, 'local-repo');
+        const skillsPath = path.join(localRepo, '.AchillesSkills');
+        fs.mkdirSync(path.join(skillsPath, 'my-skill'), { recursive: true });
+
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+        await manager.addRepository({ source: localRepo, name: 'test-repo', editable: false });
+
+        // Skill from non-editable repo
+        const skillDir = path.join(skillsPath, 'my-skill');
+        const info = manager.getSkillRepoInfo(skillDir);
+        assert.strictEqual(info.isFromRepo, true);
+        assert.strictEqual(info.repoName, 'test-repo');
+        assert.strictEqual(info.editable, false);
+
+        // Enable editing
+        manager.setRepositoryEditable('test-repo', true);
+        const info2 = manager.getSkillRepoInfo(skillDir);
+        assert.strictEqual(info2.editable, true);
+    });
+
+    it('should treat non-repo skills as editable', () => {
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+
+        // Skill not from any repo
+        const localSkillDir = path.join(tempDir, 'local-skills', 'my-skill');
+        const info = manager.getSkillRepoInfo(localSkillDir);
+        assert.strictEqual(info.isFromRepo, false);
+        assert.strictEqual(info.editable, true);
+    });
+
+    it('should persist editable status across restarts', async () => {
+        const localRepo = path.join(tempDir, 'local-repo');
+        fs.mkdirSync(path.join(localRepo, '.AchillesSkills', 'my-skill'), { recursive: true });
+
+        // First instance - add repo with editable
+        const manager1 = new RepoManager({ workingDir: tempDir, globalReposDir });
+        await manager1.addRepository({ source: localRepo, name: 'test-repo', editable: true });
+
+        // Second instance - should load persisted config
+        const manager2 = new RepoManager({ workingDir: tempDir, globalReposDir });
+        const repos = manager2.listRepositories();
+        assert.strictEqual(repos[0].editable, true);
+    });
+
+    it('should treat missing editable field as false (backward compatibility)', () => {
+        // Create config without editable field
+        const configPath = path.join(tempDir, '.skill-manager.json');
+        const oldConfig = {
+            version: 1,
+            repositories: [
+                { name: 'old-repo', source: '/path', type: 'local', enabled: true },
+            ],
+        };
+        fs.writeFileSync(configPath, JSON.stringify(oldConfig), 'utf8');
+
+        const manager = new RepoManager({ workingDir: tempDir, globalReposDir });
+        const repos = manager.listRepositories();
+
+        // Should default to false when editable field is missing
+        assert.strictEqual(repos[0].editable, false);
+    });
+});
