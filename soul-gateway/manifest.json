@@ -1,0 +1,50 @@
+{
+    "container": "node:20-slim",
+    "agent": "bash /code/startup.sh",
+    "cli": "bash /code/cli.sh",
+    "about": "Soul Gateway — LLM proxy with Soul Family policies, full content logging, and operations dashboard",
+    "profiles": {
+        "default": {
+            "env": {
+                "PORT": {
+                    "required": false,
+                    "default": "8042"
+                },
+                "UPSTREAM_URL": {
+                    "required": false,
+                    "default": "http://host.docker.internal:8317",
+                    "description": "CLIProxyAPI upstream URL"
+                },
+                "PGHOST": {
+                    "required": false,
+                    "default": "host.docker.internal"
+                },
+                "PGPORT": {
+                    "required": false,
+                    "default": "5432"
+                },
+                "PGUSER": {
+                    "required": false,
+                    "default": "postgres"
+                },
+                "PGPASSWORD": {
+                    "required": false,
+                    "default": "postgres"
+                },
+                "PGDATABASE": {
+                    "required": false,
+                    "default": "postgres"
+                },
+                "ENCRYPTION_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "AES-256 key for API key encryption (auto-generated if empty)"
+                }
+            },
+            "ports": [
+                "0.0.0.0:8042:8042"
+            ],
+            "install": "bash /code/install.sh"
+        }
+    }
+}
