@@ -3,6 +3,9 @@
     "agent": "bash /code/startup.sh",
     "cli": "bash /code/cli.sh",
     "about": "Soul Gateway — LLM proxy with Soul Family policies, full content logging, and operations dashboard",
+    "enable": [
+        "postgres"
+    ],
     "profiles": {
         "default": {
             "env": {
@@ -12,12 +15,12 @@
                 },
                 "UPSTREAM_URL": {
                     "required": false,
-                    "default": "http://host.docker.internal:8317",
+                    "default": "https://proxy.axiologic.dev",
                     "description": "CLIProxyAPI upstream URL"
                 },
                 "PGHOST": {
                     "required": false,
-                    "default": "host.docker.internal"
+                    "default": "host.containers.internal"
                 },
                 "PGPORT": {
                     "required": false,
@@ -39,6 +42,15 @@
                     "required": false,
                     "default": "",
                     "description": "AES-256 key for API key encryption (auto-generated if empty)"
+                },
+                "WORKSPACE_PATH": {
+                    "required": false,
+                    "default": ""
+                },
+                "DEFAULT_PROXY_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for authenticating with cliproxyapi upstream"
                 }
             },
             "ports": [

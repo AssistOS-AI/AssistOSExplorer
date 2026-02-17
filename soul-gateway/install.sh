@@ -9,15 +9,18 @@ echo "=== Soul Gateway: Install ==="
 
 # Create persistent storage
 mkdir -p "$SHARED_DIR/config"
+mkdir -p "$APP_DIR"
 
-# Copy application from code mount to app directory
-if [ ! -d "$APP_DIR" ]; then
-    mkdir -p "$APP_DIR"
+# Copy application to /app — check multiple locations
+if [ -d "$CODE_DIR/app/src" ]; then
+    echo "Copying app from /code/app/"
+    cp -r "$CODE_DIR/app/"* "$APP_DIR/"
+elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway-app/src" ]; then
+    echo "Copying app from workspace repos"
+    cp -r "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway-app/"* "$APP_DIR/"
+else
+    echo "Warning: soul-gateway-app not found, will attempt on startup"
 fi
-
-cp -r "$CODE_DIR/../soul-gateway-app/"* "$APP_DIR/" 2>/dev/null || {
-    echo "Warning: soul-gateway-app not found in code mount, will copy on startup"
-}
 
 # Install dependencies
 if [ -f "$APP_DIR/package.json" ]; then
