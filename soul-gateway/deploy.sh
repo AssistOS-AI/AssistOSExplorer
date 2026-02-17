@@ -6,37 +6,49 @@ set -e
 
 WORKSPACE="$HOME/soulGateway"
 PLOINKY="$HOME/ploinky/bin/ploinky"
-REPO_URL="https://github.com/PloinkyRepos/file-parser.git"
-REPO_DIR="$HOME/code/file-parser"
+PROXIES_REPO="https://github.com/PloinkyRepos/proxies.git"
+BASIC_REPO="https://github.com/PloinkyRepos/Basic.git"
+CODE_DIR="$HOME/code"
 
 echo "=== Soul Gateway Deploy ==="
 
-# 1. Clone or pull the repo
-if [ -d "$REPO_DIR/.git" ]; then
-  echo "Pulling latest code..."
-  cd "$REPO_DIR"
+# 1. Clone or pull the proxies repo
+if [ -d "$CODE_DIR/proxies/.git" ]; then
+  echo "Pulling latest proxies..."
+  cd "$CODE_DIR/proxies"
   git fetch origin main
   git reset --hard origin/main
 else
-  echo "Cloning repo..."
-  mkdir -p "$(dirname "$REPO_DIR")"
-  git clone "$REPO_URL" "$REPO_DIR"
+  echo "Cloning proxies repo..."
+  mkdir -p "$CODE_DIR"
+  git clone "$PROXIES_REPO" "$CODE_DIR/proxies"
 fi
 
-# 2. Create workspace if needed
+# 2. Clone or pull the basic repo
+if [ -d "$CODE_DIR/basic/.git" ]; then
+  echo "Pulling latest basic..."
+  cd "$CODE_DIR/basic"
+  git fetch origin main
+  git reset --hard origin/main
+else
+  echo "Cloning basic repo..."
+  git clone "$BASIC_REPO" "$CODE_DIR/basic"
+fi
+
+# 3. Create workspace
 mkdir -p "$WORKSPACE"
 cd "$WORKSPACE"
 
-# 3. Register repos with ploinky if not already done
-if [ ! -d "$WORKSPACE/.ploinky/repos/proxies" ]; then
-  echo "Initializing ploinky workspace..."
-  mkdir -p "$WORKSPACE/.ploinky/repos"
-  ln -sfn "$REPO_DIR/proxies" "$WORKSPACE/.ploinky/repos/proxies"
-  ln -sfn "$REPO_DIR/basic" "$WORKSPACE/.ploinky/repos/basic"
+# 4. Register repos with ploinky (symlink to source)
+mkdir -p "$WORKSPACE/.ploinky/repos"
+ln -sfn "$CODE_DIR/proxies" "$WORKSPACE/.ploinky/repos/proxies"
+ln -sfn "$CODE_DIR/basic" "$WORKSPACE/.ploinky/repos/basic"
+
+if [ ! -f "$WORKSPACE/.ploinky/enabled_repos.json" ]; then
   echo '["basic","proxies"]' > "$WORKSPACE/.ploinky/enabled_repos.json"
 fi
 
-# 4. Set ploinky vars for soul-gateway
+# 5. Set ploinky vars for soul-gateway
 echo "Configuring env vars..."
 $PLOINKY var UPSTREAM_URL "https://proxy.axiologic.dev"
 $PLOINKY var PGHOST "host.containers.internal"
@@ -46,18 +58,6 @@ $PLOINKY var PGPASSWORD "${PGPASSWORD}"
 $PLOINKY var PGDATABASE "keycloak"
 $PLOINKY var DEFAULT_PROXY_API_KEY "${DEFAULT_PROXY_API_KEY}"
 
-# 5. Update the app code in the ploinky repos
-echo "Syncing soul-gateway-app..."
-if [ -d "$WORKSPACE/.ploinky/repos/proxies/soul-gateway/app" ]; then
-  rm -rf "$WORKSPACE/.ploinky/repos/proxies/soul-gateway/app"
-fi
-# Only copy if repos are real dirs (not symlinks)
-if [ -L "$WORKSPACE/.ploinky/repos/proxies" ]; then
-  echo "Repos are symlinked, code is already up to date."
-else
-  cp -a "$REPO_DIR/proxies/soul-gateway-app" "$WORKSPACE/.ploinky/repos/proxies/soul-gateway/app"
-fi
-
 # 6. Stop existing soul-gateway if running
 if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "soul-gateway.*soulGateway"; then
   echo "Stopping existing soul-gateway..."
@@ -65,7 +65,7 @@ if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "soul-gateway.*soulGate
   $PLOINKY clean soul-gateway 2>&1 || true
 fi
 
-# 7. Start soul-gateway (postgres from basic will be started via enable)
+# 7. Start soul-gateway
 echo "Starting soul-gateway..."
 $PLOINKY start soul-gateway 2>&1
 
