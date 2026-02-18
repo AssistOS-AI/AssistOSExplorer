@@ -51,6 +51,11 @@
                     "required": false,
                     "default": "",
                     "description": "API key for authenticating with cliproxyapi upstream"
+                },
+                "DASHBOARD_PASSWORD": {
+                    "required": false,
+                    "default": "",
+                    "description": "Password for dashboard access (empty = no auth)"
                 }
             },
             "ports": [
