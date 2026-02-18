@@ -15,11 +15,11 @@ mkdir -p "$APP_DIR"
 if [ -d "$CODE_DIR/app/src" ]; then
     echo "Copying app from /code/app/"
     cp -r "$CODE_DIR/app/"* "$APP_DIR/"
-elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway-app/src" ]; then
+elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/app/src" ]; then
     echo "Copying app from workspace repos"
-    cp -r "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway-app/"* "$APP_DIR/"
+    cp -r "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/app/"* "$APP_DIR/"
 else
-    echo "Warning: soul-gateway-app not found, will attempt on startup"
+    echo "Warning: soul-gateway app not found, will attempt on startup"
 fi
 
 # Install dependencies

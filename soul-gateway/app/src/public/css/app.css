@@ -1,0 +1,19 @@
+[x-cloak] { display: none !important; }
+
+.mockup-code {
+  background: oklch(0.2 0.01 260);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+.mockup-code pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.table td, .table th {
+  vertical-align: middle;
+}
+
+.log-row-error { background: oklch(0.25 0.05 25) !important; }
+.log-row-blocked { background: oklch(0.25 0.05 60) !important; }
+.log-row-slow { background: oklch(0.25 0.03 85) !important; }

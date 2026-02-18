@@ -13,8 +13,8 @@ mkdir -p "$SHARED_DIR/config"
 # Copy/update application from code mount
 if [ -d "$CODE_DIR/app/src" ]; then
     cp -r "$CODE_DIR/app/"* "$APP_DIR/"
-elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway-app/src" ]; then
-    cp -r "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway-app/"* "$APP_DIR/"
+elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/app/src" ]; then
+    cp -r "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/app/"* "$APP_DIR/"
 fi
 
 # Install deps if needed

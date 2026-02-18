@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soul Gateway</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="min-h-screen bg-base-200">
+  <div x-data="app()" x-init="init()">
+    <!-- Navbar -->
+    <div class="navbar bg-base-100 shadow-lg">
+      <div class="navbar-start">
+        <div class="dropdown">
+          <label tabindex="0" class="btn btn-ghost lg:hidden">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h8m-8 6h16" /></svg>
+          </label>
+          <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-100 rounded-box w-52">
+            <template x-for="p in pages" :key="p.id">
+              <li><a :class="{'active': page === p.id}" @click="navigate(p.id)" x-text="p.label"></a></li>
+            </template>
+          </ul>
+        </div>
+        <a class="btn btn-ghost text-xl" @click="navigate('logs')">Soul Gateway</a>
+      </div>
+      <div class="navbar-center hidden lg:flex">
+        <ul class="menu menu-horizontal px-1">
+          <template x-for="p in pages" :key="p.id">
+            <li><a :class="{'active': page === p.id}" @click="navigate(p.id)" x-text="p.label"></a></li>
+          </template>
+        </ul>
+      </div>
+      <div class="navbar-end">
+        <div class="flex items-center gap-2">
+          <div class="badge badge-sm" :class="wsConnected ? 'badge-success' : 'badge-error'" x-text="wsConnected ? 'Live' : 'Offline'"></div>
+          <div class="text-xs opacity-50" x-show="streamMode" x-text="streamMode === 'ws' ? 'WS' : 'SSE'"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="container mx-auto p-4">
+      <!-- Logs Page -->
+      <div x-show="page === 'logs'" x-cloak>
+        <div x-data="logsPage()" x-init="init()">
+          <!-- Filters -->
+          <div class="card bg-base-100 shadow mb-4">
+            <div class="card-body py-3">
+              <div class="flex flex-wrap gap-2 items-end">
+                <div class="form-control">
+                  <label class="label label-text text-xs">Family</label>
+                  <select class="select select-bordered select-sm" x-model="filters.family_id" @change="loadLogs()">
+                    <option value="">All</option>
+                    <template x-for="f in families" :key="f.id">
+                      <option :value="f.id" x-text="f.name"></option>
+                    </template>
+                  </select>
+                </div>
+                <div class="form-control">
+                  <label class="label label-text text-xs">Soul ID</label>
+                  <input type="text" class="input input-bordered input-sm w-36" x-model="filters.soul_id" @keyup.enter="loadLogs()" placeholder="e.g. agent-1">
+                </div>
+                <div class="form-control">
+                  <label class="label label-text text-xs">Model</label>
+                  <input type="text" class="input input-bordered input-sm w-36" x-model="filters.model" @keyup.enter="loadLogs()">
+                </div>
+                <div class="form-control">
+                  <label class="label label-text text-xs">Status</label>
+                  <select class="select select-bordered select-sm" x-model="filters.status" @change="loadLogs()">
+                    <option value="">All</option>
+                    <option value="success">Success</option>
+                    <option value="error">Errors</option>
+                    <option value="blocked">Blocked</option>
+                  </select>
+                </div>
+                <div class="form-control">
+                  <label class="label label-text text-xs">Keyword</label>
+                  <input type="text" class="input input-bordered input-sm w-48" x-model="filters.keyword" @keyup.enter="loadLogs()" placeholder="Search prompts/responses...">
+                </div>
+                <button class="btn btn-primary btn-sm" @click="loadLogs()">Search</button>
+                <button class="btn btn-ghost btn-sm" @click="resetFilters()">Reset</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Logs Table -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <div class="overflow-x-auto">
+                <table class="table table-sm table-zebra">
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>Time</th>
+                      <th>Family</th>
+                      <th>Soul ID</th>
+                      <th>Model</th>
+                      <th>Latency</th>
+                      <th>Tokens</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="log in logs" :key="log.id">
+                      <tr>
+                        <td colspan="9" class="p-0">
+                          <div x-data="{open: false}">
+                            <div class="flex items-center cursor-pointer hover:bg-base-200 px-4 py-2"
+                                 :class="logRowClass(log)" @click="open = !open; if(open && !log._detail) loadLogDetail(log)">
+                              <div class="w-6"><svg :class="{'rotate-90': open}" class="w-4 h-4 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
+                              <div class="w-40 text-xs" x-text="formatTime(log.started_at)"></div>
+                              <div class="w-28" x-text="log.family_name || '-'"></div>
+                              <div class="w-28 truncate" x-text="log.soul_id || '-'"></div>
+                              <div class="w-36 truncate" x-text="log.resolved_model || log.requested_model || '-'"></div>
+                              <div class="w-20 text-right" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
+                              <div class="w-20 text-right" x-text="log.total_tokens || '-'"></div>
+                              <div class="w-32 flex gap-1 flex-wrap">
+                                <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
+                                <span x-show="log.blocked_by_blacklist" class="badge badge-warning badge-xs">Blocked</span>
+                                <span x-show="log.is_truncated" class="badge badge-xs" style="background:#f59e0b;color:#000">Truncated</span>
+                                <span x-show="log.is_slow" class="badge badge-xs" style="background:#eab308;color:#000">Slow</span>
+                                <span x-show="log.prompt_size_warning" class="badge badge-info badge-xs">Large</span>
+                                <span x-show="!log.error_type && !log.blocked_by_blacklist && log.status_code === 200" class="badge badge-success badge-xs">OK</span>
+                              </div>
+                            </div>
+                            <!-- Expanded Detail -->
+                            <div x-show="open" x-transition class="px-8 py-4 bg-base-200 border-t border-base-300">
+                              <template x-if="log._detail">
+                                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                  <div>
+                                    <h4 class="font-bold mb-2">Request Messages</h4>
+                                    <div class="mockup-code text-xs max-h-96 overflow-auto">
+                                      <pre><code x-text="JSON.stringify(log._detail.request_messages, null, 2)"></code></pre>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <h4 class="font-bold mb-2">Response</h4>
+                                    <div class="mockup-code text-xs max-h-96 overflow-auto">
+                                      <pre><code x-text="log._detail.response_content || '(empty)'"></code></pre>
+                                    </div>
+                                  </div>
+                                  <div class="lg:col-span-2">
+                                    <div class="stats stats-horizontal shadow w-full text-xs">
+                                      <div class="stat py-2"><div class="stat-title text-xs">Prompt Tokens</div><div class="stat-value text-sm" x-text="log._detail.prompt_tokens || 0"></div></div>
+                                      <div class="stat py-2"><div class="stat-title text-xs">Completion Tokens</div><div class="stat-value text-sm" x-text="log._detail.completion_tokens || 0"></div></div>
+                                      <div class="stat py-2"><div class="stat-title text-xs">TTFB</div><div class="stat-value text-sm" x-text="(log._detail.ttfb_ms || 0) + 'ms'"></div></div>
+                                      <div class="stat py-2"><div class="stat-title text-xs">Retries</div><div class="stat-value text-sm" x-text="log._detail.retry_count || 0"></div></div>
+                                      <div class="stat py-2"><div class="stat-title text-xs">Stop Reason</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </template>
+                              <template x-if="!log._detail">
+                                <span class="loading loading-spinner loading-sm"></span>
+                              </template>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <!-- Pagination -->
+              <div class="flex justify-between items-center p-4" x-show="total > 0">
+                <div class="text-sm" x-text="'Showing ' + (offset+1) + '-' + Math.min(offset+limit, total) + ' of ' + total"></div>
+                <div class="join">
+                  <button class="join-item btn btn-sm" :disabled="offset === 0" @click="offset -= limit; loadLogs()">Prev</button>
+                  <button class="join-item btn btn-sm" :disabled="offset + limit >= total" @click="offset += limit; loadLogs()">Next</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Costs Page -->
+      <div x-show="page === 'costs'" x-cloak>
+        <div x-data="costsPage()" x-init="init()">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div class="card bg-base-100 shadow">
+              <div class="card-body">
+                <h2 class="card-title text-sm">Tokens by Family</h2>
+                <canvas x-ref="familyTokenChart" height="200"></canvas>
+              </div>
+            </div>
+            <div class="card bg-base-100 shadow">
+              <div class="card-body">
+                <h2 class="card-title text-sm">Tokens by Model</h2>
+                <canvas x-ref="modelTokenChart" height="200"></canvas>
+              </div>
+            </div>
+            <div class="card bg-base-100 shadow lg:col-span-2">
+              <div class="card-body">
+                <h2 class="card-title text-sm">Token Usage Trend</h2>
+                <canvas x-ref="tokenTrendChart" height="150"></canvas>
+              </div>
+            </div>
+            <div class="card bg-base-100 shadow lg:col-span-2">
+              <div class="card-body p-0">
+                <table class="table table-sm">
+                  <thead><tr><th>Family</th><th>Requests</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Total Tokens</th></tr></thead>
+                  <tbody>
+                    <template x-for="r in familyCosts" :key="r.family_name">
+                      <tr>
+                        <td x-text="r.family_name"></td>
+                        <td x-text="r.request_count"></td>
+                        <td x-text="Number(r.prompt_tokens || 0).toLocaleString()"></td>
+                        <td x-text="Number(r.completion_tokens || 0).toLocaleString()"></td>
+                        <td class="font-bold" x-text="Number(r.total_tokens || 0).toLocaleString()"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Errors Page -->
+      <div x-show="page === 'errors'" x-cloak>
+        <div x-data="errorsPage()" x-init="init()">
+          <div class="stats shadow mb-4 w-full">
+            <div class="stat"><div class="stat-title">Total Requests</div><div class="stat-value text-lg" x-text="summary.total_requests || 0"></div></div>
+            <div class="stat"><div class="stat-title">Errors</div><div class="stat-value text-lg text-error" x-text="summary.error_count || 0"></div></div>
+            <div class="stat"><div class="stat-title">Blocked</div><div class="stat-value text-lg text-warning" x-text="summary.blocked_count || 0"></div></div>
+            <div class="stat"><div class="stat-title">Rate Limited</div><div class="stat-value text-lg text-info" x-text="summary.rate_limited_count || 0"></div></div>
+            <div class="stat"><div class="stat-title">Truncated</div><div class="stat-value text-lg" x-text="summary.truncated_count || 0"></div></div>
+            <div class="stat"><div class="stat-title">Slow</div><div class="stat-value text-lg" x-text="summary.slow_count || 0"></div></div>
+          </div>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title text-sm">Error Rates Over Time</h2>
+              <canvas x-ref="errorChart" height="200"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Families Management Page -->
+      <div x-show="page === 'families'" x-cloak>
+        <div x-data="familiesPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Soul Families</h2>
+            <button class="btn btn-primary btn-sm" @click="showCreate = true">Create Family</button>
+          </div>
+          <!-- Create/Edit Modal -->
+          <dialog class="modal" :class="{'modal-open': showCreate}">
+            <div class="modal-box">
+              <h3 class="font-bold text-lg" x-text="editing ? 'Edit Family' : 'Create Family'"></h3>
+              <div class="form-control"><label class="label">Name</label><input type="text" class="input input-bordered" x-model="form.name"></div>
+              <div class="form-control"><label class="label">Description</label><textarea class="textarea textarea-bordered" x-model="form.description"></textarea></div>
+              <div class="form-control"><label class="label">RPM Limit</label><input type="number" class="input input-bordered" x-model.number="form.rpm_limit"></div>
+              <div class="form-control"><label class="label">TPM Limit</label><input type="number" class="input input-bordered" x-model.number="form.tpm_limit"></div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showCreate = false; editing = null">Cancel</button>
+                <button class="btn btn-primary" @click="save()">Save</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showCreate = false; editing = null"></div>
+          </dialog>
+          <!-- Table -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Description</th><th>RPM</th><th>TPM</th><th>Created</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="f in families" :key="f.id">
+                    <tr>
+                      <td x-text="f.name" class="font-mono"></td>
+                      <td x-text="f.description || '-'"></td>
+                      <td x-text="f.rpm_limit"></td>
+                      <td x-text="Number(f.tpm_limit).toLocaleString()"></td>
+                      <td x-text="formatDate(f.created_at)"></td>
+                      <td class="flex gap-1">
+                        <button class="btn btn-ghost btn-xs" @click="edit(f)">Edit</button>
+                        <button class="btn btn-error btn-xs" @click="remove(f)">Delete</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Models Management Page -->
+      <div x-show="page === 'models'" x-cloak>
+        <div x-data="modelsPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Model Configs</h2>
+            <button class="btn btn-primary btn-sm" @click="showCreate = true">Add Model</button>
+          </div>
+          <dialog class="modal" :class="{'modal-open': showCreate}">
+            <div class="modal-box">
+              <h3 class="font-bold text-lg" x-text="editing ? 'Edit Model' : 'Add Model'"></h3>
+              <div class="form-control"><label class="label">Name</label><input type="text" class="input input-bordered" x-model="form.name" :disabled="!!editing"></div>
+              <div class="form-control"><label class="label">Upstream Model</label>
+                <select class="select select-bordered" x-model="form.upstream_model">
+                  <option value="" disabled>Select upstream model...</option>
+                  <template x-for="um in upstreamModels" :key="um">
+                    <option :value="um" x-text="um"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="form-control"><label class="label">Mode</label><select class="select select-bordered" x-model="form.mode"><option>deep</option><option>fast</option></select></div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showCreate = false; editing = null">Cancel</button>
+                <button class="btn btn-primary" @click="save()" x-text="editing ? 'Save' : 'Create'"></button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showCreate = false; editing = null"></div>
+          </dialog>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Upstream</th><th>Mode</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="m in models" :key="m.id">
+                    <tr :class="{'opacity-40': !m.is_enabled}">
+                      <td x-text="m.name" class="font-mono"></td>
+                      <td x-text="m.upstream_model" class="font-mono"></td>
+                      <td><span class="badge badge-sm" :class="m.mode === 'deep' ? 'badge-primary' : 'badge-secondary'" x-text="m.mode"></span></td>
+                      <td><input type="checkbox" class="toggle toggle-sm" :checked="m.is_enabled" @change="toggle(m)"></td>
+                      <td class="flex gap-1">
+                        <button class="btn btn-ghost btn-xs" @click="edit(m)">Edit</button>
+                        <button class="btn btn-error btn-xs" @click="remove(m)">Delete</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Keys Management Page -->
+      <div x-show="page === 'keys'" x-cloak>
+        <div x-data="keysPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">API Keys</h2>
+            <button class="btn btn-primary btn-sm" @click="showCreate = true">Create Key</button>
+          </div>
+          <dialog class="modal" :class="{'modal-open': showCreate}">
+            <div class="modal-box">
+              <h3 class="font-bold text-lg">Create API Key</h3>
+              <div class="form-control"><label class="label">Family</label>
+                <select class="select select-bordered" x-model="form.family_id">
+                  <template x-for="f in families" :key="f.id"><option :value="f.id" x-text="f.name"></option></template>
+                </select>
+              </div>
+              <div class="form-control"><label class="label">Label</label><input type="text" class="input input-bordered" x-model="form.label"></div>
+              <div class="form-control"><label class="label">Type</label>
+                <select class="select select-bordered" x-model="form.key_type"><option>permanent</option><option>session</option></select>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showCreate = false">Cancel</button>
+                <button class="btn btn-primary" @click="create()">Create</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showCreate = false"></div>
+          </dialog>
+          <!-- Show created key -->
+          <div x-show="newKey" class="alert alert-info mb-4">
+            <div class="flex-1">
+              <span class="font-bold">New API Key (copy now, it won't be shown again):</span>
+              <code class="ml-2 select-all" x-text="newKey"></code>
+            </div>
+            <div class="flex gap-1">
+              <button class="btn btn-sm" x-data="{copied: false}" @click="navigator.clipboard.writeText(newKey); copied = true; setTimeout(() => copied = false, 2000)" x-text="copied ? 'Copied!' : 'Copy'"></button>
+              <button class="btn btn-ghost btn-sm" @click="newKey = ''">Dismiss</button>
+            </div>
+          </div>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Label</th><th>Key</th><th>Family</th><th>Type</th><th>Last Used</th><th>Created</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="k in keys" :key="k.id">
+                    <tr :class="{'opacity-40': k.is_revoked}">
+                      <td x-text="k.label || '-'"></td>
+                      <td class="font-mono text-xs opacity-60" x-text="k.key_hint || '-'"></td>
+                      <td x-text="k.family_name"></td>
+                      <td><span class="badge badge-sm" x-text="k.key_type"></span></td>
+                      <td x-text="k.last_used_at ? formatDate(k.last_used_at) : 'Never'"></td>
+                      <td x-text="formatDate(k.created_at)"></td>
+                      <td><span class="badge badge-sm" :class="k.is_revoked ? 'badge-error' : 'badge-success'" x-text="k.is_revoked ? 'Revoked' : 'Active'"></span></td>
+                      <td><button class="btn btn-error btn-xs" :disabled="k.is_revoked" @click="revoke(k)">Revoke</button></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Blacklist Management Page -->
+      <div x-show="page === 'blacklist'" x-cloak>
+        <div x-data="blacklistPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Blacklist Rules</h2>
+            <button class="btn btn-primary btn-sm" @click="showCreate = true">Add Rule</button>
+          </div>
+          <dialog class="modal" :class="{'modal-open': showCreate}">
+            <div class="modal-box">
+              <h3 class="font-bold text-lg" x-text="editing ? 'Edit Rule' : 'Add Rule'"></h3>
+              <div class="form-control"><label class="label">Pattern</label><input type="text" class="input input-bordered" x-model="form.pattern"></div>
+              <div class="form-control"><label class="label">Match Type</label>
+                <select class="select select-bordered" x-model="form.match_type"><option>substring</option><option>exact</option><option>regex</option></select>
+              </div>
+              <div class="form-control"><label class="label">Description</label><input type="text" class="input input-bordered" x-model="form.description"></div>
+              <div class="form-control"><label class="label">Family (empty = global)</label>
+                <select class="select select-bordered" x-model="form.family_id">
+                  <option value="">Global</option>
+                  <template x-for="f in families" :key="f.id"><option :value="f.id" x-text="f.name"></option></template>
+                </select>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showCreate = false; editing = null">Cancel</button>
+                <button class="btn btn-primary" @click="save()">Save</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showCreate = false; editing = null"></div>
+          </dialog>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Pattern</th><th>Type</th><th>Family</th><th>Description</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="r in rules" :key="r.id">
+                    <tr>
+                      <td class="font-mono text-xs" x-text="r.pattern"></td>
+                      <td><span class="badge badge-sm" x-text="r.match_type"></span></td>
+                      <td x-text="r.family_id ? 'Scoped' : 'Global'"></td>
+                      <td x-text="r.description || '-'"></td>
+                      <td><input type="checkbox" class="toggle toggle-sm" :checked="r.is_enabled" @change="toggleEnabled(r)"></td>
+                      <td class="flex gap-1">
+                        <button class="btn btn-ghost btn-xs" @click="edit(r)">Edit</button>
+                        <button class="btn btn-error btn-xs" @click="remove(r)">Delete</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="/js/app.mjs"></script>
+</body>
+</html>
