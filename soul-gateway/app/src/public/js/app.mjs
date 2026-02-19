@@ -212,14 +212,34 @@ function logsPage() {
     filteredTree() {
       if (!this.search) return this.tree;
       const q = this.search.toLowerCase();
-      return this.tree.filter(f =>
-        f.name.toLowerCase().includes(q) ||
-        f.keys.some(k =>
-          k.label.toLowerCase().includes(q) ||
-          k.hint.toLowerCase().includes(q) ||
-          k.agents.some(a => a.name.toLowerCase().includes(q))
-        )
-      );
+      const result = [];
+
+      for (const f of this.tree) {
+        const familyMatch = f.name.toLowerCase().includes(q);
+        const filteredKeys = [];
+
+        for (const k of f.keys) {
+          const keyMatch = k.label.toLowerCase().includes(q) || k.hint.toLowerCase().includes(q);
+          const filteredAgents = k.agents.filter(a => a.name.toLowerCase().includes(q));
+
+          if (familyMatch || keyMatch || filteredAgents.length > 0) {
+            filteredKeys.push({
+              ...k,
+              agents: keyMatch || familyMatch ? k.agents : filteredAgents,
+              expanded: true,
+            });
+          }
+        }
+
+        if (familyMatch || filteredKeys.length > 0) {
+          result.push({
+            ...f,
+            keys: familyMatch && filteredKeys.length === 0 ? f.keys : filteredKeys,
+            expanded: true,
+          });
+        }
+      }
+      return result;
     },
 
     async selectSession(session) {
