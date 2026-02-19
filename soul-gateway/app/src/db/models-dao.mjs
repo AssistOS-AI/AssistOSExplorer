@@ -18,21 +18,23 @@ export async function getModelById(id) {
   return rows[0] || null;
 }
 
-export async function createModel({ name, display_name, upstream_model, mode, input_price, output_price }) {
+export async function createModel({ name, display_name, provider_key, provider_model, mode, input_price, output_price }) {
   const { rows } = await query(`
-    INSERT INTO model_configs (name, display_name, upstream_model, mode, input_price, output_price)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO model_configs (name, display_name, provider_key, provider_model, mode, input_price, output_price)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *
-  `, [name, display_name || name, upstream_model, mode || 'deep', input_price || 0, output_price || 0]);
+  `, [name, display_name || name, provider_key, provider_model, mode || 'deep', input_price || 0, output_price || 0]);
   return rows[0];
 }
+
+const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'mode', 'input_price', 'output_price', 'is_enabled'];
 
 export async function updateModel(id, fields) {
   const sets = [];
   const values = [];
   let idx = 1;
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined && ['name', 'display_name', 'upstream_model', 'mode', 'input_price', 'output_price', 'is_enabled'].includes(key)) {
+    if (value !== undefined && UPDATABLE_FIELDS.includes(key)) {
       sets.push(`${key} = $${idx}`);
       values.push(value);
       idx++;

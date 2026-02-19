@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS model_configs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT UNIQUE NOT NULL,
     display_name TEXT,
-    upstream_model TEXT NOT NULL,
+    upstream_model TEXT,
+    provider_key TEXT,
+    provider_model TEXT,
     mode TEXT DEFAULT 'deep',
     input_price NUMERIC DEFAULT 0,
     output_price NUMERIC DEFAULT 0,
@@ -64,6 +66,8 @@ CREATE TABLE IF NOT EXISTS call_logs (
     family_name TEXT,
     soul_id TEXT,
     api_key_id UUID,
+    agent_name TEXT,
+    session_id UUID,
     -- request
     requested_model TEXT,
     resolved_model TEXT,
@@ -111,6 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_call_logs_model_started ON call_logs(resolved_mod
 CREATE INDEX IF NOT EXISTS idx_call_logs_started ON call_logs(started_at);
 CREATE INDEX IF NOT EXISTS idx_call_logs_error ON call_logs(error_type) WHERE error_type IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_call_logs_blocked ON call_logs(blocked_by_blacklist) WHERE blocked_by_blacklist = true;
+CREATE INDEX IF NOT EXISTS idx_call_logs_session ON call_logs(api_key_id, session_id, started_at);
 
 -- Rate Limit State
 CREATE TABLE IF NOT EXISTS rate_limit_state (

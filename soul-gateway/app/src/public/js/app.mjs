@@ -36,6 +36,7 @@ function app() {
     page: 'logs',
     pages: [
       { id: 'logs', label: 'Logs' },
+      { id: 'sessions', label: 'Sessions' },
       { id: 'costs', label: 'Usage' },
       { id: 'errors', label: 'Errors' },
       { id: 'families', label: 'Families' },
@@ -329,21 +330,28 @@ function familiesPage() {
 function modelsPage() {
   return {
     models: [],
-    upstreamModels: [],
+    providers: [],
     showCreate: false,
     editing: null,
-    form: { name: '', upstream_model: '', mode: 'deep' },
+    form: { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0 },
 
     async init() {
-      [this.models, this.upstreamModels] = await Promise.all([
+      [this.models, this.providers] = await Promise.all([
         api.get('/api/v1/models'),
-        api.get('/api/v1/models/upstream'),
+        api.get('/api/v1/models/providers'),
       ]);
     },
 
     edit(m) {
       this.editing = m;
-      this.form = { name: m.name, upstream_model: m.upstream_model, mode: m.mode };
+      this.form = {
+        name: m.name,
+        provider_key: m.provider_key || '',
+        provider_model: m.provider_model || '',
+        mode: m.mode,
+        input_price: m.input_price || 0,
+        output_price: m.output_price || 0,
+      };
       this.showCreate = true;
     },
 
@@ -355,7 +363,7 @@ function modelsPage() {
       }
       this.showCreate = false;
       this.editing = null;
-      this.form = { name: '', upstream_model: '', mode: 'deep' };
+      this.form = { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0 };
       this.models = await api.get('/api/v1/models');
     },
 
@@ -369,6 +377,127 @@ function modelsPage() {
       await api.put(`/api/v1/models/${m.id}/toggle`, {});
       this.models = await api.get('/api/v1/models');
     },
+  };
+}
+
+// ---- Sessions Explorer Page (Tree View) ----
+function sessionsPage() {
+  return {
+    treeData: [],
+    tree: [],
+    search: '',
+    selectedNode: null,
+    selectedLogs: [],
+    logsTotal: 0,
+    logsOffset: 0,
+    logsLimit: 50,
+
+    async init() {
+      this.treeData = await api.get('/api/v1/tree');
+      this.buildTree();
+    },
+
+    buildTree() {
+      const familyMap = new Map();
+
+      for (const row of this.treeData) {
+        const fid = row.family_id || '_none';
+        if (!familyMap.has(fid)) {
+          familyMap.set(fid, {
+            type: 'family',
+            id: fid,
+            name: row.family_name || 'No Family',
+            keys: new Map(),
+            expanded: false,
+          });
+        }
+        const family = familyMap.get(fid);
+
+        const kid = row.api_key_id || '_none';
+        if (!family.keys.has(kid)) {
+          family.keys.set(kid, {
+            type: 'key',
+            id: kid,
+            label: row.key_label || row.key_hint || kid.slice(0, 8),
+            hint: row.key_hint || '',
+            agents: new Map(),
+            expanded: false,
+          });
+        }
+        const key = family.keys.get(kid);
+
+        const aname = row.agent_name || 'unknown';
+        if (!key.agents.has(aname)) {
+          key.agents.set(aname, {
+            type: 'agent',
+            name: aname,
+            sessions: [],
+            expanded: false,
+          });
+        }
+        const agent = key.agents.get(aname);
+
+        if (row.session_id) {
+          agent.sessions.push({
+            type: 'session',
+            id: row.session_id,
+            request_count: Number(row.request_count || 0),
+            total_tokens: Number(row.total_tokens || 0),
+            total_cost: Number(row.total_cost || 0),
+            first_request: row.first_request,
+            last_request: row.last_request,
+          });
+        }
+      }
+
+      // Convert to array structure
+      this.tree = Array.from(familyMap.values()).map(f => ({
+        ...f,
+        keys: Array.from(f.keys.values()).map(k => ({
+          ...k,
+          agents: Array.from(k.agents.values()),
+        })),
+      }));
+    },
+
+    filteredTree() {
+      if (!this.search) return this.tree;
+      const q = this.search.toLowerCase();
+      return this.tree.filter(f =>
+        f.name.toLowerCase().includes(q) ||
+        f.keys.some(k =>
+          k.label.toLowerCase().includes(q) ||
+          k.hint.toLowerCase().includes(q) ||
+          k.agents.some(a => a.name.toLowerCase().includes(q))
+        )
+      );
+    },
+
+    async selectSession(session) {
+      this.selectedNode = session;
+      this.logsOffset = 0;
+      await this.loadSessionLogs();
+    },
+
+    async selectAgent(agent, keyId) {
+      this.selectedNode = { type: 'agent', name: agent.name, keyId };
+      this.logsOffset = 0;
+      const params = new URLSearchParams({ agent_name: agent.name, api_key_id: keyId, limit: this.logsLimit, offset: 0 });
+      const result = await api.get(`/api/v1/logs?${params}`);
+      this.selectedLogs = result.rows || [];
+      this.logsTotal = result.total || 0;
+    },
+
+    async loadSessionLogs() {
+      if (!this.selectedNode || this.selectedNode.type !== 'session') return;
+      const result = await api.get(`/api/v1/sessions/${this.selectedNode.id}/logs?limit=${this.logsLimit}&offset=${this.logsOffset}`);
+      this.selectedLogs = result.rows || [];
+      this.logsTotal = result.total || 0;
+    },
+
+    formatTime, formatDate,
+    formatCost(v) { return v ? '$' + Number(v).toFixed(4) : '-'; },
+    formatTokens(v) { return v ? Number(v).toLocaleString() : '-'; },
   };
 }
 

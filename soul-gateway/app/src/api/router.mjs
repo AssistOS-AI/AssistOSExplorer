@@ -6,6 +6,7 @@ import { handleBlacklist } from './blacklist.mjs';
 import { handleLogs } from './logs.mjs';
 import { handleMetrics } from './metrics.mjs';
 import { handleExport } from './export.mjs';
+import { handleAgents } from './agents.mjs';
 import { handleSseStream } from '../ws/log-stream.mjs';
 
 /**
@@ -32,8 +33,8 @@ export async function apiRouter(req, res, pathname, query) {
   }
 
   // Models
-  if (pathname === '/api/v1/models/upstream') {
-    if (method === 'GET') return handleModels.upstreamModels(req, res);
+  if (pathname === '/api/v1/models/providers') {
+    if (method === 'GET') return handleModels.providers(req, res);
   }
   if (pathname === '/api/v1/models') {
     if (method === 'GET') return handleModels.list(req, res, query);
@@ -68,6 +69,21 @@ export async function apiRouter(req, res, pathname, query) {
   if (params) {
     if (method === 'PUT') return handleBlacklist.update(req, res, params);
     if (method === 'DELETE') return handleBlacklist.remove(req, res, params);
+  }
+
+  // Agents & Sessions
+  if (pathname === '/api/v1/agents') {
+    if (method === 'GET') return handleAgents.list(req, res, query);
+  }
+  if (pathname === '/api/v1/sessions') {
+    if (method === 'GET') return handleAgents.sessions(req, res, query);
+  }
+  params = matchPath('/api/v1/sessions/:id/logs', pathname);
+  if (params) {
+    if (method === 'GET') return handleAgents.sessionLogs(req, res, params, query);
+  }
+  if (pathname === '/api/v1/tree') {
+    if (method === 'GET') return handleAgents.tree(req, res);
   }
 
   // Logs

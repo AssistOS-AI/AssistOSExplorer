@@ -1,6 +1,6 @@
 import { readJsonBody, sendJson, sendError } from '../utils/http-helpers.mjs';
 import * as dao from '../db/models-dao.mjs';
-import { config } from '../config.mjs';
+import { listProviders } from 'achillesAgentLib/utils/LLMProviders/providers/providerRegistry.mjs';
 
 export const handleModels = {
   async list(req, res, query) {
@@ -26,8 +26,8 @@ export const handleModels = {
 
   async create(req, res) {
     const body = await readJsonBody(req);
-    if (!body?.name || !body?.upstream_model) {
-      return sendError(res, 400, 'name and upstream_model are required');
+    if (!body?.name || !body?.provider_key || !body?.provider_model) {
+      return sendError(res, 400, 'name, provider_key, and provider_model are required');
     }
     try {
       const model = await dao.createModel(body);
@@ -57,19 +57,7 @@ export const handleModels = {
     sendJson(res, { ok: true });
   },
 
-  async upstreamModels(req, res) {
-    try {
-      const url = `${config.upstreamUrl.replace(/\/+$/, '')}/v1/models`;
-      const resp = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${config.defaultProxyApiKey}` },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!resp.ok) return sendJson(res, []);
-      const data = await resp.json();
-      const models = (data.data || []).map(m => m.id).sort();
-      sendJson(res, models);
-    } catch {
-      sendJson(res, []);
-    }
+  async providers(req, res) {
+    sendJson(res, listProviders());
   },
 };

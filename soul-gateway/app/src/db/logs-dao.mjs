@@ -4,6 +4,7 @@ export async function insertLog(log) {
   const { rows } = await query(`
     INSERT INTO call_logs (
       family_id, family_name, soul_id, api_key_id,
+      agent_name, session_id,
       requested_model, resolved_model, mode, is_streaming,
       request_messages, request_size_bytes,
       response_content, status_code, stop_reason, error_type, error_message,
@@ -16,19 +17,21 @@ export async function insertLog(log) {
       started_at, completed_at
     ) VALUES (
       $1, $2, $3, $4,
-      $5, $6, $7, $8,
-      $9, $10,
-      $11, $12, $13, $14, $15,
-      $16, $17, $18,
-      $19, $20, $21,
-      $22, $23, $24,
-      $25, $26, $27,
-      $28, $29, $30,
-      $31, $32, $33,
-      $34, $35
+      $5, $6,
+      $7, $8, $9, $10,
+      $11, $12,
+      $13, $14, $15, $16, $17,
+      $18, $19, $20,
+      $21, $22, $23,
+      $24, $25, $26,
+      $27, $28, $29,
+      $30, $31, $32,
+      $33, $34, $35,
+      $36, $37
     ) RETURNING id, started_at
   `, [
     log.family_id, log.family_name, log.soul_id, log.api_key_id,
+    log.agent_name, log.session_id,
     log.requested_model, log.resolved_model, log.mode, log.is_streaming,
     JSON.stringify(log.request_messages), log.request_size_bytes,
     log.response_content, log.status_code, log.stop_reason, log.error_type, log.error_message,
@@ -43,7 +46,7 @@ export async function insertLog(log) {
   return rows[0];
 }
 
-export async function queryLogs({ family_id, soul_id, model, from, to, status, keyword, limit, offset }) {
+export async function queryLogs({ family_id, soul_id, model, from, to, status, keyword, session_id, agent_name, limit, offset }) {
   const conditions = [];
   const params = [];
   let idx = 1;
@@ -53,6 +56,8 @@ export async function queryLogs({ family_id, soul_id, model, from, to, status, k
   if (model) { conditions.push(`resolved_model = $${idx++}`); params.push(model); }
   if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
   if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
+  if (session_id) { conditions.push(`session_id = $${idx++}`); params.push(session_id); }
+  if (agent_name) { conditions.push(`agent_name = $${idx++}`); params.push(agent_name); }
   if (status === 'error') { conditions.push(`error_type IS NOT NULL`); }
   if (status === 'blocked') { conditions.push(`blocked_by_blacklist = true`); }
   if (status === 'success') { conditions.push(`error_type IS NULL AND blocked_by_blacklist = false`); }
@@ -72,7 +77,8 @@ export async function queryLogs({ family_id, soul_id, model, from, to, status, k
   const [countResult, dataResult] = await Promise.all([
     query(`SELECT COUNT(*) as total FROM call_logs ${where}`, params),
     query(`
-      SELECT id, family_id, family_name, soul_id,
+      SELECT id, family_id, family_name, soul_id, api_key_id,
+             agent_name, session_id,
              requested_model, resolved_model, mode, is_streaming,
              status_code, stop_reason, error_type, error_message,
              latency_ms, ttfb_ms, prompt_tokens, completion_tokens, total_tokens,
@@ -110,5 +116,128 @@ export async function getLogsForExport({ family_id, from, to, format }) {
 
   const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
   const { rows } = await query(`SELECT * FROM call_logs ${where} ORDER BY started_at DESC`, params);
+  return rows;
+}
+
+// --- Agent & Session queries ---
+
+/**
+ * List distinct agents seen, optionally filtered by family and/or API key.
+ */
+export async function listAgents({ family_id, api_key_id } = {}) {
+  const conditions = [];
+  const params = [];
+  let idx = 1;
+
+  if (family_id) { conditions.push(`family_id = $${idx++}`); params.push(family_id); }
+  if (api_key_id) { conditions.push(`api_key_id = $${idx++}`); params.push(api_key_id); }
+
+  const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+  const { rows } = await query(`
+    SELECT agent_name,
+           COUNT(*) as request_count,
+           MIN(started_at) as first_seen,
+           MAX(started_at) as last_seen
+    FROM call_logs ${where}
+    GROUP BY agent_name
+    ORDER BY last_seen DESC
+  `, params);
+  return rows;
+}
+
+/**
+ * List sessions for a given key+agent combination.
+ */
+export async function listSessions({ api_key_id, agent_name, family_id, limit, offset } = {}) {
+  const conditions = [];
+  const params = [];
+  let idx = 1;
+
+  if (family_id) { conditions.push(`family_id = $${idx++}`); params.push(family_id); }
+  if (api_key_id) { conditions.push(`api_key_id = $${idx++}`); params.push(api_key_id); }
+  if (agent_name) { conditions.push(`agent_name = $${idx++}`); params.push(agent_name); }
+  conditions.push(`session_id IS NOT NULL`);
+
+  const where = 'WHERE ' + conditions.join(' AND ');
+  const lim = Math.min(parseInt(limit) || 50, 200);
+  const off = parseInt(offset) || 0;
+
+  const { rows } = await query(`
+    SELECT session_id,
+           agent_name,
+           api_key_id,
+           COUNT(*) as request_count,
+           SUM(total_tokens) as total_tokens,
+           SUM(total_cost) as total_cost,
+           MIN(started_at) as started_at,
+           MAX(started_at) as last_request_at,
+           COUNT(*) FILTER (WHERE error_type IS NOT NULL) as error_count
+    FROM call_logs ${where}
+    GROUP BY session_id, agent_name, api_key_id
+    ORDER BY last_request_at DESC
+    LIMIT $${idx++} OFFSET $${idx++}
+  `, [...params, lim, off]);
+
+  return rows;
+}
+
+/**
+ * Get logs for a specific session.
+ */
+export async function getSessionLogs(sessionId, { limit, offset } = {}) {
+  const lim = Math.min(parseInt(limit) || 100, 500);
+  const off = parseInt(offset) || 0;
+
+  const [countResult, dataResult] = await Promise.all([
+    query(`SELECT COUNT(*) as total FROM call_logs WHERE session_id = $1`, [sessionId]),
+    query(`
+      SELECT id, family_id, family_name, soul_id, api_key_id,
+             agent_name, session_id,
+             requested_model, resolved_model, mode, is_streaming,
+             status_code, stop_reason, error_type, error_message,
+             latency_ms, ttfb_ms, prompt_tokens, completion_tokens, total_tokens,
+             input_cost, output_cost, total_cost,
+             retry_count, blocked_by_blacklist,
+             started_at, completed_at
+      FROM call_logs
+      WHERE session_id = $1
+      ORDER BY started_at ASC
+      LIMIT $2 OFFSET $3
+    `, [sessionId, lim, off]),
+  ]);
+
+  return {
+    total: parseInt(countResult.rows[0].total),
+    limit: lim,
+    offset: off,
+    rows: dataResult.rows,
+  };
+}
+
+/**
+ * Tree-view aggregation: families → keys → agents → sessions.
+ */
+export async function getTreeData() {
+  const { rows } = await query(`
+    SELECT
+      f.id as family_id,
+      f.name as family_name,
+      ak.id as api_key_id,
+      ak.label as key_label,
+      ak.key_hint,
+      cl.agent_name,
+      cl.session_id,
+      COUNT(*) as request_count,
+      SUM(cl.total_tokens) as total_tokens,
+      SUM(cl.total_cost) as total_cost,
+      MIN(cl.started_at) as first_request,
+      MAX(cl.started_at) as last_request
+    FROM call_logs cl
+    LEFT JOIN soul_gateway.api_keys ak ON cl.api_key_id = ak.id
+    LEFT JOIN soul_gateway.soul_families f ON cl.family_id = f.id
+    WHERE cl.started_at >= NOW() - INTERVAL '30 days'
+    GROUP BY f.id, f.name, ak.id, ak.label, ak.key_hint, cl.agent_name, cl.session_id
+    ORDER BY last_request DESC
+  `);
   return rows;
 }

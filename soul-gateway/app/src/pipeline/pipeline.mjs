@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { readJsonBody, sendError } from '../utils/http-helpers.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { authenticate } from './auth.mjs';
@@ -12,6 +13,8 @@ import { checkResponse } from './response-checker.mjs';
 import { insertLog } from '../db/logs-dao.mjs';
 import { broadcastLog } from '../ws/log-stream.mjs';
 import { broadcastToSoul } from '../ws/soul-stream.mjs';
+import { parseAgentName } from '../utils/agent-parser.mjs';
+import { resolveSession } from './session-resolver.mjs';
 import { BlacklistError, SoulGatewayError } from '../utils/errors.mjs';
 
 const log = createLogger('pipeline');
@@ -22,6 +25,7 @@ const log = createLogger('pipeline');
 export async function pipeline(req, res) {
   const startedAt = new Date();
   const startTime = Date.now();
+  const requestId = `chatcmpl-${randomUUID()}`;
 
   let authCtx = null;
   let body = null;
@@ -38,6 +42,12 @@ export async function pipeline(req, res) {
     logEntry.soul_id = authCtx.soul_id;
     logEntry.api_key_id = authCtx.api_key_id;
 
+    // 2. Agent & session identification
+    const agentName = req.headers['x-soul-agent'] || parseAgentName(req.headers['user-agent']);
+    const sessionId = req.headers['x-soul-session'] || await resolveSession(authCtx.api_key_id, agentName);
+    logEntry.agent_name = agentName;
+    logEntry.session_id = sessionId;
+
     // Parse body
     body = await readJsonBody(req);
     if (!body || !body.messages || !body.model) {
@@ -48,7 +58,7 @@ export async function pipeline(req, res) {
     logEntry.is_streaming = !!body.stream;
     logEntry.request_messages = body.messages;
 
-    // 2. Blacklist scan
+    // 3. Blacklist scan
     try {
       await checkBlacklist(body.messages, authCtx.family_id);
     } catch (err) {
@@ -67,72 +77,51 @@ export async function pipeline(req, res) {
       throw err;
     }
 
-    // 3. Rate limit
+    // 4. Rate limit
     await checkRateLimit(authCtx.family_id, authCtx.rpm_limit, authCtx.tpm_limit);
 
-    // 4. Model routing
+    // 5. Model routing
     modelInfo = await resolveModel(body.model, authCtx);
     logEntry.resolved_model = modelInfo.resolvedModel;
     logEntry.mode = modelInfo.mode;
 
-    // 5. Prompt size check
+    // 6. Prompt size check
     const promptCheck = checkPromptSize(body.messages);
     logEntry.request_size_bytes = promptCheck.requestSizeBytes;
     logEntry.prompt_size_warning = promptCheck.promptSizeWarning;
 
-    // 6. Build upstream body
-    const upstreamBody = {
-      ...body,
-      model: modelInfo.upstreamModel,
-    };
+    // 7. Extract LLM params from the request body
+    const llmParams = {};
+    if (body.temperature !== undefined) llmParams.temperature = body.temperature;
+    if (body.max_tokens !== undefined) llmParams.max_tokens = body.max_tokens;
+    if (body.top_p !== undefined) llmParams.top_p = body.top_p;
+    if (body.frequency_penalty !== undefined) llmParams.frequency_penalty = body.frequency_penalty;
+    if (body.presence_penalty !== undefined) llmParams.presence_penalty = body.presence_penalty;
+    if (body.stop !== undefined) llmParams.stop = body.stop;
 
-    // 7. Dispatch with retry
-    const { response, retryCount, retryReason, retriesDetail, errorClassification } =
-      await dispatchWithRetry(upstreamBody, !!body.stream);
+    // 8. Dispatch with retry
+    const { generator, retryCount, retryReason, retriesDetail } =
+      await dispatchWithRetry(body.messages, modelInfo, llmParams);
 
     logEntry.retry_count = retryCount;
     logEntry.retry_reason = retryReason;
     logEntry.retries_detail = retriesDetail;
 
-    // Handle upstream error (non-retryable or exhausted retries)
-    if (!response.ok) {
-      let errorBody;
-      try { errorBody = await response.json(); } catch { errorBody = {}; }
-
-      logEntry.status_code = response.status;
-      logEntry.error_type = errorClassification?.type || 'upstream_error';
-      logEntry.error_message = errorBody?.error?.message || `Upstream returned ${response.status}`;
-      logEntry.completed_at = new Date();
-      logEntry.latency_ms = Date.now() - startTime;
-      await safeInsertLog(logEntry);
-
-      // Forward the upstream error as-is
-      const errStatus = response.status;
-      const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
-      if (errStatus === 429) {
-        const retryAfter = response.headers.get('retry-after');
-        if (retryAfter) headers['Retry-After'] = retryAfter;
-      }
-      res.writeHead(errStatus, headers);
-      res.end(JSON.stringify(errorBody));
-      return;
-    }
-
-    // 8. Stream tap / non-streaming response
+    // 9. Stream tap / non-streaming response
     let result;
     if (body.stream) {
-      result = await tapStream(response, res, startTime);
+      result = await tapStream(generator, res, startTime, requestId);
     } else {
-      result = await handleNonStreaming(response, res, startTime);
+      result = await handleNonStreaming(generator, res, startTime, requestId);
     }
 
-    // 9. Cost calculation
+    // 10. Cost calculation
     const costs = calculateCost(result.usage, modelInfo.inputPrice, modelInfo.outputPrice);
 
-    // 10. Response checks
+    // 11. Response checks
     const flags = checkResponse(result.stopReason, Date.now() - startTime);
 
-    // 11. Write full call log
+    // 12. Write full call log
     logEntry.response_content = result.content;
     logEntry.status_code = result.error ? 502 : 200;
     logEntry.stop_reason = result.stopReason;
@@ -156,7 +145,7 @@ export async function pipeline(req, res) {
 
     const inserted = await safeInsertLog(logEntry);
 
-    // 12. Broadcast to WebSocket subscribers
+    // 13. Broadcast to WebSocket subscribers
     const broadcastEntry = { ...logEntry, id: inserted?.id };
     broadcastLog(broadcastEntry);
     if (authCtx.soul_id) broadcastToSoul(authCtx.soul_id, broadcastEntry);
@@ -175,6 +164,9 @@ export async function pipeline(req, res) {
       logEntry.error_message = err.message;
       logEntry.latency_ms = latencyMs;
       logEntry.completed_at = new Date();
+      logEntry.retry_count = err.retryCount ?? logEntry.retry_count;
+      logEntry.retry_reason = err.retryReason ?? logEntry.retry_reason;
+      logEntry.retries_detail = err.retriesDetail ?? logEntry.retries_detail;
       await safeInsertLog(logEntry);
 
       if (!res.headersSent) {

@@ -63,6 +63,14 @@ async function migrate(p) {
   await p.query(sql);
   // Add key_hint column to api_keys if missing
   await p.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_hint TEXT`);
+  // Add provider_key and provider_model to model_configs
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS provider_key TEXT`);
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS provider_model TEXT`);
+  // Make upstream_model nullable (no longer required)
+  await p.query(`ALTER TABLE model_configs ALTER COLUMN upstream_model DROP NOT NULL`);
+  // Add agent_name and session_id to call_logs
+  await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS agent_name TEXT`);
+  await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS session_id UUID`);
 }
 
 async function ensurePartitions() {
@@ -121,18 +129,6 @@ async function seedDefaults() {
     `);
     const familyId = rows[0].id;
 
-    // Create a default API key if we have one from the environment
-    if (config.defaultProxyApiKey) {
-      const { sha256, encrypt } = await import('../utils/crypto.mjs');
-      const keyHash = sha256(config.defaultProxyApiKey);
-      const encKey = encrypt(config.defaultProxyApiKey);
-      await query(`
-        INSERT INTO api_keys (family_id, key_hash, encrypted_key, label)
-        VALUES ($1, $2, $3, 'default-key')
-        ON CONFLICT (key_hash) DO NOTHING
-      `, [familyId, keyHash, encKey]);
-      log.info('Seeded default API key');
-    }
   }
 
   // Seed model configs if none exist
@@ -140,20 +136,20 @@ async function seedDefaults() {
   if (models.length === 0) {
     log.info('Seeding model configs...');
     const defaultModels = [
-      { name: 'axiologic-deep', upstream: 'claude-opus-4.6', mode: 'deep', inputPrice: 5, outputPrice: 25 },
-      { name: 'axiologic-fast', upstream: 'claude-sonnet-4.5', mode: 'fast', inputPrice: 1, outputPrice: 5 },
-      { name: 'axiologic-ultra', upstream: 'gpt-5.3-codex', mode: 'deep', inputPrice: 3, outputPrice: 15 },
-      { name: 'claude-opus-4.6', upstream: 'claude-opus-4.6', mode: 'deep', inputPrice: 5, outputPrice: 25 },
-      { name: 'claude-sonnet-4.5', upstream: 'claude-sonnet-4.5', mode: 'fast', inputPrice: 1, outputPrice: 5 },
-      { name: 'gpt-5.3-codex', upstream: 'gpt-5.3-codex', mode: 'deep', inputPrice: 3, outputPrice: 15 },
-      { name: 'gemini-2.5-pro', upstream: 'gemini-2.5-pro', mode: 'deep', inputPrice: 1.25, outputPrice: 10 },
+      { name: 'axiologic-deep', providerKey: 'axiologic_proxy', providerModel: 'claude-opus-4.6', mode: 'deep', inputPrice: 5, outputPrice: 25 },
+      { name: 'axiologic-fast', providerKey: 'axiologic_proxy', providerModel: 'claude-sonnet-4.5', mode: 'fast', inputPrice: 1, outputPrice: 5 },
+      { name: 'axiologic-ultra', providerKey: 'axiologic_proxy', providerModel: 'gpt-5.3-codex', mode: 'deep', inputPrice: 3, outputPrice: 15 },
+      { name: 'claude-opus-4.6', providerKey: 'anthropic', providerModel: 'claude-opus-4-6', mode: 'deep', inputPrice: 5, outputPrice: 25 },
+      { name: 'claude-sonnet-4.5', providerKey: 'anthropic', providerModel: 'claude-sonnet-4-5', mode: 'fast', inputPrice: 3, outputPrice: 15 },
+      { name: 'gpt-5.3-codex', providerKey: 'openai', providerModel: 'gpt-5.3-codex', mode: 'deep', inputPrice: 3, outputPrice: 15 },
+      { name: 'gemini-2.5-pro', providerKey: 'google', providerModel: 'gemini-2.5-pro', mode: 'deep', inputPrice: 1.25, outputPrice: 10 },
     ];
     for (const m of defaultModels) {
       await query(`
-        INSERT INTO model_configs (name, upstream_model, mode, input_price, output_price)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO model_configs (name, provider_key, provider_model, mode, input_price, output_price)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (name) DO NOTHING
-      `, [m.name, m.upstream, m.mode, m.inputPrice, m.outputPrice]);
+      `, [m.name, m.providerKey, m.providerModel, m.mode, m.inputPrice, m.outputPrice]);
     }
     log.info('Seeded model configs');
   }

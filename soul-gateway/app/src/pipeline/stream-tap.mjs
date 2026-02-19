@@ -1,22 +1,18 @@
-import { parseSSEStream } from '../utils/sse-parser.mjs';
 import { createLogger } from '../utils/logger.mjs';
 
 const log = createLogger('stream-tap');
 
 /**
- * Tap into an SSE stream to accumulate content and extract metadata.
- * Pipes the stream through to the client response while collecting data.
+ * Consume achillesAgentLib typed chunks from a streaming generator,
+ * re-encode them as OpenAI SSE, and pipe to the client.
  *
- * Returns: { content, usage, stopReason, ttfbMs }
+ * @param {AsyncGenerator} generator - achillesAgentLib streaming generator
+ * @param {http.ServerResponse} clientRes
+ * @param {number} startTime - Date.now() at request start
+ * @param {string} requestId - Unique ID for the SSE response
+ * @returns {{ content, usage, stopReason, ttfbMs, error }}
  */
-export async function tapStream(upstreamResponse, clientRes, startTime) {
-  let content = '';
-  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  let stopReason = null;
-  let ttfbMs = null;
-  let firstChunk = true;
-
-  // Set SSE headers on client response
+export async function tapStream(generator, clientRes, startTime, requestId) {
   clientRes.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -24,54 +20,74 @@ export async function tapStream(upstreamResponse, clientRes, startTime) {
     'Access-Control-Allow-Origin': '*',
   });
 
+  let content = '';
+  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  let stopReason = null;
+  let ttfbMs = null;
+
   try {
-    for await (const frame of parseSSEStream(upstreamResponse.body)) {
-      if (firstChunk) {
-        ttfbMs = Date.now() - startTime;
-        firstChunk = false;
-      }
+    for await (const chunk of generator) {
+      if (chunk.type === 'text_delta') {
+        if (ttfbMs === null) ttfbMs = Date.now() - startTime;
+        content += chunk.text;
 
-      if (frame.done) {
-        // Send [DONE] to client
-        clientRes.write('data: [DONE]\n\n');
-        break;
-      }
+        // Re-encode as OpenAI SSE chunk
+        clientRes.write(`data: ${JSON.stringify({
+          id: requestId,
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: { content: chunk.text }, finish_reason: null }],
+        })}\n\n`);
 
-      // Forward raw SSE frame to client
-      const raw = frame.data;
-      clientRes.write(`data: ${raw}\n\n`);
-
-      // Extract metadata from parsed data
-      if (frame.parsedData) {
-        const data = frame.parsedData;
-
-        // Accumulate content
-        const delta = data.choices?.[0]?.delta;
-        if (delta?.content) {
-          content += delta.content;
-        }
-
-        // Check finish reason
-        const finish = data.choices?.[0]?.finish_reason;
-        if (finish) {
-          stopReason = finish;
-        }
-
-        // Extract usage (usually in the last chunk)
-        if (data.usage) {
+      } else if (chunk.type === 'done') {
+        content = chunk.fullText || content;
+        if (chunk.usage) {
           usage = {
-            prompt_tokens: data.usage.prompt_tokens || usage.prompt_tokens,
-            completion_tokens: data.usage.completion_tokens || usage.completion_tokens,
-            total_tokens: data.usage.total_tokens || usage.total_tokens,
+            prompt_tokens: chunk.usage.prompt_tokens || 0,
+            completion_tokens: chunk.usage.completion_tokens || 0,
+            total_tokens: chunk.usage.total_tokens || (chunk.usage.prompt_tokens || 0) + (chunk.usage.completion_tokens || 0),
           };
         }
+        stopReason = 'stop';
+
+        // Send finish chunk with usage
+        const finishChunk = {
+          id: requestId,
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        };
+        if (chunk.usage) finishChunk.usage = chunk.usage;
+        clientRes.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
+        clientRes.write('data: [DONE]\n\n');
+
+      } else if (chunk.type === 'error') {
+        const errMsg = chunk.error?.message || 'Unknown streaming error';
+        log.error('Mid-stream error from provider', { error: errMsg });
+        try {
+          clientRes.write(`data: ${JSON.stringify({
+            id: requestId,
+            object: 'chat.completion.chunk',
+            choices: [{ index: 0, delta: {}, finish_reason: 'error' }],
+            error: { type: 'mid_stream_error', message: errMsg },
+          })}\n\n`);
+          clientRes.write('data: [DONE]\n\n');
+        } catch { /* client may have disconnected */ }
+
+        return {
+          content,
+          usage,
+          stopReason: null,
+          ttfbMs,
+          error: { type: 'mid_stream_error', message: errMsg },
+        };
       }
+      // Ignore thinking_delta and other unknown chunk types
     }
   } catch (err) {
     log.error('Stream tap error', { error: err.message });
-    // Try to send error event to client
     try {
-      clientRes.write(`data: ${JSON.stringify({ error: { type: 'mid_stream_error', message: err.message } })}\n\n`);
+      clientRes.write(`data: ${JSON.stringify({
+        error: { type: 'mid_stream_error', message: err.message },
+      })}\n\n`);
       clientRes.write('data: [DONE]\n\n');
     } catch { /* client may have disconnected */ }
 
@@ -90,31 +106,65 @@ export async function tapStream(upstreamResponse, clientRes, startTime) {
 }
 
 /**
- * Handle non-streaming response: read full body, send to client.
- * Returns: { content, usage, stopReason }
+ * Handle a non-streaming request by buffering all chunks from the generator
+ * and returning a complete OpenAI JSON response.
+ *
+ * @param {AsyncGenerator} generator - achillesAgentLib streaming generator
+ * @param {http.ServerResponse} clientRes
+ * @param {number} startTime
+ * @param {string} requestId
+ * @returns {{ content, usage, stopReason, ttfbMs, error }}
  */
-export async function handleNonStreaming(upstreamResponse, clientRes, startTime) {
-  const body = await upstreamResponse.text();
-  const ttfbMs = Date.now() - startTime;
+export async function handleNonStreaming(generator, clientRes, startTime, requestId) {
+  let content = '';
+  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  let stopReason = 'stop';
+  let ttfbMs = null;
 
-  let data;
   try {
-    data = JSON.parse(body);
-  } catch {
+    for await (const chunk of generator) {
+      if (chunk.type === 'text_delta') {
+        if (ttfbMs === null) ttfbMs = Date.now() - startTime;
+        content += chunk.text;
+      } else if (chunk.type === 'done') {
+        content = chunk.fullText || content;
+        if (chunk.usage) {
+          usage = {
+            prompt_tokens: chunk.usage.prompt_tokens || 0,
+            completion_tokens: chunk.usage.completion_tokens || 0,
+            total_tokens: chunk.usage.total_tokens || (chunk.usage.prompt_tokens || 0) + (chunk.usage.completion_tokens || 0),
+          };
+        }
+      } else if (chunk.type === 'error') {
+        const errMsg = chunk.error?.message || 'Unknown error';
+        clientRes.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        clientRes.end(JSON.stringify({ error: { type: 'upstream_error', message: errMsg } }));
+        return { content, usage, stopReason: null, ttfbMs, error: { type: 'upstream_error', message: errMsg } };
+      }
+    }
+  } catch (err) {
     clientRes.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    clientRes.end(JSON.stringify({ error: { type: 'upstream_error', message: 'Invalid upstream response' } }));
-    return { content: '', usage: {}, stopReason: null, ttfbMs, error: { type: 'upstream_error', message: 'Invalid JSON from upstream' } };
+    clientRes.end(JSON.stringify({ error: { type: 'upstream_error', message: err.message } }));
+    return { content: '', usage, stopReason: null, ttfbMs, error: { type: 'upstream_error', message: err.message } };
   }
 
-  clientRes.writeHead(upstreamResponse.status, {
+  // Build complete OpenAI response
+  const responseBody = JSON.stringify({
+    id: requestId,
+    object: 'chat.completion',
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content },
+      finish_reason: stopReason,
+    }],
+    usage,
+  });
+
+  clientRes.writeHead(200, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
   });
-  clientRes.end(body);
-
-  const content = data.choices?.[0]?.message?.content || '';
-  const usage = data.usage || {};
-  const stopReason = data.choices?.[0]?.finish_reason || null;
+  clientRes.end(responseBody);
 
   return { content, usage, stopReason, ttfbMs, error: null };
 }

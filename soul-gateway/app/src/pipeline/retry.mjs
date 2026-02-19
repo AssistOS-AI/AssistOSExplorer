@@ -1,4 +1,4 @@
-import { dispatchUpstream, classifyError } from './upstream-dispatch.mjs';
+import { dispatchUpstream, classifyProviderError, classifyError } from './upstream-dispatch.mjs';
 import { config } from '../config.mjs';
 import { createLogger } from '../utils/logger.mjs';
 
@@ -6,9 +6,18 @@ const log = createLogger('retry');
 
 /**
  * Dispatch upstream with retry logic.
- * Returns { response, retryCount, retryReason, retriesDetail }.
+ *
+ * achillesAgentLib's callLLMStreaming throws errors synchronously (before
+ * yielding chunks) for connection/auth failures. We retry on those.
+ * Once chunks start flowing, retry is not possible — errors are passed
+ * through to stream-tap.
+ *
+ * @param {Array} messages - OpenAI-format messages
+ * @param {object} routeResult - From model-router
+ * @param {object} params - LLM parameters
+ * @returns {{ generator, retryCount, retryReason, retriesDetail }}
  */
-export async function dispatchWithRetry(body, isStreaming) {
+export async function dispatchWithRetry(messages, routeResult, params) {
   const maxRetries = config.maxRetries;
   let lastError = null;
   const retriesDetail = [];
@@ -18,94 +27,67 @@ export async function dispatchWithRetry(body, isStreaming) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120_000); // 2 min timeout per attempt
 
-      const response = await dispatchUpstream(body, isStreaming, controller.signal);
+      const generator = await dispatchUpstream(messages, routeResult, params, controller.signal);
+
+      // Peek at the first chunk to verify the generator works.
+      // If the provider fails immediately (auth error, connection refused),
+      // the first .next() will throw.
+      const first = await generator.next();
       clearTimeout(timeout);
 
-      // Success or non-retryable error
-      if (response.ok) {
+      if (first.done) {
+        // Empty generator — unlikely but handle gracefully
         return {
-          response,
+          generator: emptyGenerator(),
           retryCount: attempt,
           retryReason: attempt > 0 ? lastError?.type : null,
           retriesDetail: retriesDetail.length > 0 ? retriesDetail : null,
         };
       }
 
-      // Read error body
-      let errorBody = null;
-      try {
-        errorBody = await response.clone().json();
-      } catch { /* ignore */ }
+      // Wrap the generator to prepend the first chunk we already consumed
+      return {
+        generator: prependChunk(first.value, generator),
+        retryCount: attempt,
+        retryReason: attempt > 0 ? lastError?.type : null,
+        retriesDetail: retriesDetail.length > 0 ? retriesDetail : null,
+      };
 
-      const classification = classifyError(response.status, errorBody);
+    } catch (err) {
+      // Classify the error
+      const upstreamErr = err.classification ? err : classifyProviderError(err, routeResult.providerKey);
+      const classification = upstreamErr.classification || classifyError(upstreamErr.status || 0);
 
       if (classification.critical) {
-        log.critical('Upstream authentication failure — check cliproxyapi API key', {
-          status: response.status,
+        log.error('Provider authentication failure', {
+          provider: routeResult.providerKey,
+          status: upstreamErr.status,
         });
       }
 
-      if (!classification.retryable || attempt >= maxRetries) {
-        // Return the error response as-is for the pipeline to handle
-        return {
-          response,
-          retryCount: attempt,
-          retryReason: classification.type,
-          retriesDetail: retriesDetail.length > 0 ? retriesDetail : null,
-          errorClassification: classification,
-        };
-      }
-
-      // Compute delay
       const effectiveMaxRetries = classification.maxRetries ?? maxRetries;
-      if (attempt >= effectiveMaxRetries) {
-        return {
-          response,
-          retryCount: attempt,
-          retryReason: classification.type,
-          retriesDetail: retriesDetail.length > 0 ? retriesDetail : null,
-          errorClassification: classification,
-        };
+
+      if (!classification.retryable || attempt >= effectiveMaxRetries) {
+        // Non-retryable or exhausted retries — re-throw for pipeline to handle
+        upstreamErr.retryCount = attempt;
+        upstreamErr.retryReason = classification.type;
+        upstreamErr.retriesDetail = retriesDetail.length > 0 ? retriesDetail : null;
+        upstreamErr.errorClassification = classification;
+        throw upstreamErr;
       }
 
-      let delayMs = computeDelay(attempt, response, errorBody);
+      const delayMs = computeDelay(attempt);
 
       retriesDetail.push({
         attempt: attempt + 1,
-        status: response.status,
+        status: upstreamErr.status || 0,
         error_type: classification.type,
         delay_ms: delayMs,
       });
 
       log.warn(`Retrying (${attempt + 1}/${maxRetries})`, {
-        status: response.status,
+        provider: routeResult.providerKey,
         type: classification.type,
-        delayMs,
-      });
-
-      await sleep(delayMs);
-      lastError = classification;
-
-    } catch (err) {
-      // Network-level error (ECONNREFUSED, etc.)
-      const classification = {
-        retryable: true,
-        type: err.type || 'connection_error',
-      };
-
-      if (attempt >= maxRetries) {
-        throw err;
-      }
-
-      let delayMs = computeDelay(attempt, null, null);
-      retriesDetail.push({
-        attempt: attempt + 1,
-        status: 0,
-        error_type: classification.type,
-        delay_ms: delayMs,
-      });
-
-      log.warn(`Retrying after network error (${attempt + 1}/${maxRetries})`, {
         error: err.message,
         delayMs,
       });
@@ -116,22 +98,16 @@ export async function dispatchWithRetry(body, isStreaming) {
   }
 }
 
-function computeDelay(attempt, response, errorBody) {
-  // Check Retry-After header
-  if (response) {
-    const retryAfter = response.headers.get('retry-after');
-    if (retryAfter) {
-      const secs = parseInt(retryAfter, 10);
-      if (!isNaN(secs)) return secs * 1000;
-    }
-  }
+async function* emptyGenerator() {
+  yield { type: 'done', fullText: '', usage: {} };
+}
 
-  // Check reset_seconds from body (model_cooldown)
-  if (errorBody?.reset_seconds) {
-    return errorBody.reset_seconds * 1000;
-  }
+async function* prependChunk(firstChunk, generator) {
+  yield firstChunk;
+  yield* generator;
+}
 
-  // Exponential backoff with jitter
+function computeDelay(attempt) {
   const base = config.initialDelayMs * Math.pow(config.backoffMultiplier, attempt);
   const capped = Math.min(base, config.maxDelayMs);
   const jitter = capped * (config.jitterPercent / 100) * (Math.random() * 2 - 1);

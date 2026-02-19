@@ -2,11 +2,11 @@ import { getModelByName } from '../db/models-dao.mjs';
 import { ModelNotFoundError } from '../utils/errors.mjs';
 
 /**
- * Resolve the requested model to an upstream model name.
+ * Resolve the requested model to a provider/model pair.
  * 1. Check family model_mapping for remapping
- * 2. Look up model_configs for the upstream name
+ * 2. Look up model_configs for provider_key + provider_model
  * 3. Validate against family allowed_models (if set)
- * Returns: { resolvedModel, upstreamModel, mode, inputPrice, outputPrice }
+ * Returns: { resolvedModel, providerKey, providerModel, mode, inputPrice, outputPrice }
  */
 export async function resolveModel(requestedModel, familyContext) {
   const { model_mapping, allowed_models } = familyContext;
@@ -34,9 +34,17 @@ export async function resolveModel(requestedModel, familyContext) {
     }
   }
 
+  const providerKey = modelConfig.provider_key;
+  const providerModel = modelConfig.provider_model;
+
+  if (!providerKey || !providerModel) {
+    throw new ModelNotFoundError(`${modelName} (missing provider configuration)`);
+  }
+
   return {
     resolvedModel: modelName,
-    upstreamModel: modelConfig.upstream_model,
+    providerKey,
+    providerModel,
     mode: modelConfig.mode,
     inputPrice: parseFloat(modelConfig.input_price) || 0,
     outputPrice: parseFloat(modelConfig.output_price) || 0,

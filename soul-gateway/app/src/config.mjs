@@ -1,6 +1,5 @@
 export const config = {
   port: parseInt(process.env.PORT || '8042', 10),
-  upstreamUrl: process.env.UPSTREAM_URL || 'https://proxy.axiologic.dev',
 
   // Dashboard auth
   dashboardPassword: process.env.DASHBOARD_PASSWORD || '',
@@ -11,8 +10,8 @@ export const config = {
   // Encryption
   encryptionKey: process.env.ENCRYPTION_KEY || '',
 
-  // Default proxy API key (from /shared/proxy_api_key)
-  defaultProxyApiKey: process.env.DEFAULT_PROXY_API_KEY || '',
+  // achillesAgentLib LLMConfig.json path override (optional)
+  llmConfigPath: process.env.LLM_CONFIG_PATH || '',
 
   // Rate limiting defaults
   defaultRpmLimit: 60,
@@ -31,4 +30,8 @@ export const config = {
 
   // Log retention
   retentionDays: 90,
+
+  // Session timeout (ms) — requests from the same key+agent
+  // beyond this gap start a new session
+  sessionTimeoutMs: 30 * 60 * 1000, // 30 minutes
 };
