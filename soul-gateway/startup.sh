@@ -33,6 +33,11 @@ if [ -f "/shared/proxy_api_key" ]; then
     export DEFAULT_PROXY_API_KEY=$(cat /shared/proxy_api_key)
 fi
 
+# Map DEFAULT_PROXY_API_KEY to achillesAgentLib provider env vars
+if [ -n "$DEFAULT_PROXY_API_KEY" ]; then
+    export AXIOLOGIC_PROXY_API_KEY="${AXIOLOGIC_PROXY_API_KEY:-$DEFAULT_PROXY_API_KEY}"
+fi
+
 export PORT="${PORT:-8042}"
 
 cd "$APP_DIR"
