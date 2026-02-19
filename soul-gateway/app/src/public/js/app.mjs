@@ -36,7 +36,6 @@ function app() {
     page: 'logs',
     pages: [
       { id: 'logs', label: 'Logs' },
-      { id: 'sessions', label: 'Sessions' },
       { id: 'costs', label: 'Usage' },
       { id: 'errors', label: 'Errors' },
       { id: 'families', label: 'Families' },
@@ -114,55 +113,156 @@ function app() {
   };
 }
 
-// ---- Logs Page ----
+// ---- Logs Page (Tree View) ----
 function logsPage() {
   return {
-    logs: [],
-    families: [],
-    filters: { family_id: '', soul_id: '', model: '', status: '', keyword: '' },
-    total: 0, limit: 50, offset: 0,
+    treeData: [],
+    tree: [],
+    search: '',
+    selectedNode: null,
+    selectedLogs: [],
+    logsTotal: 0,
+    logsOffset: 0,
+    logsLimit: 50,
+    expandedDetail: null,
 
     async init() {
-      this.families = await api.get('/api/v1/soul-families');
-      await this.loadLogs();
+      this.treeData = await api.get('/api/v1/tree');
+      this.buildTree();
 
-      // Listen for live logs
+      // Listen for live logs and refresh tree
       window.addEventListener('soul-log', (e) => {
-        this.logs.unshift(e.detail);
-        if (this.logs.length > this.limit) this.logs.pop();
-        this.total++;
+        // Add to selected logs if relevant
+        if (this.selectedNode && this.selectedLogs.length > 0) {
+          const log = e.detail;
+          const matches = this.selectedNode.type === 'agent'
+            ? log.agent_name === this.selectedNode.name
+            : log.session_id === this.selectedNode.id;
+          if (matches) {
+            this.selectedLogs.unshift(log);
+            if (this.selectedLogs.length > this.logsLimit) this.selectedLogs.pop();
+            this.logsTotal++;
+          }
+        }
       });
     },
 
-    async loadLogs() {
-      const params = new URLSearchParams();
-      Object.entries(this.filters).forEach(([k, v]) => { if (v) params.set(k, v); });
-      params.set('limit', this.limit);
-      params.set('offset', this.offset);
-      const result = await api.get(`/api/v1/logs?${params}`);
-      this.logs = result.rows || [];
-      this.total = result.total || 0;
+    buildTree() {
+      const familyMap = new Map();
+
+      for (const row of this.treeData) {
+        const fid = row.family_id || '_none';
+        if (!familyMap.has(fid)) {
+          familyMap.set(fid, {
+            type: 'family',
+            id: fid,
+            name: row.family_name || 'No Family',
+            keys: new Map(),
+            expanded: false,
+          });
+        }
+        const family = familyMap.get(fid);
+
+        const kid = row.api_key_id || '_none';
+        if (!family.keys.has(kid)) {
+          family.keys.set(kid, {
+            type: 'key',
+            id: kid,
+            label: row.key_label || row.key_hint || kid.slice(0, 8),
+            hint: row.key_hint || '',
+            agents: new Map(),
+            expanded: false,
+          });
+        }
+        const key = family.keys.get(kid);
+
+        const aname = row.agent_name || 'unknown';
+        if (!key.agents.has(aname)) {
+          key.agents.set(aname, {
+            type: 'agent',
+            name: aname,
+            sessions: [],
+            expanded: false,
+          });
+        }
+        const agent = key.agents.get(aname);
+
+        if (row.session_id) {
+          agent.sessions.push({
+            type: 'session',
+            id: row.session_id,
+            request_count: Number(row.request_count || 0),
+            total_tokens: Number(row.total_tokens || 0),
+            total_cost: Number(row.total_cost || 0),
+            first_request: row.first_request,
+            last_request: row.last_request,
+          });
+        }
+      }
+
+      this.tree = Array.from(familyMap.values()).map(f => ({
+        ...f,
+        keys: Array.from(f.keys.values()).map(k => ({
+          ...k,
+          agents: Array.from(k.agents.values()),
+        })),
+      }));
     },
 
-    resetFilters() {
-      this.filters = { family_id: '', soul_id: '', model: '', status: '', keyword: '' };
-      this.offset = 0;
-      this.loadLogs();
+    filteredTree() {
+      if (!this.search) return this.tree;
+      const q = this.search.toLowerCase();
+      return this.tree.filter(f =>
+        f.name.toLowerCase().includes(q) ||
+        f.keys.some(k =>
+          k.label.toLowerCase().includes(q) ||
+          k.hint.toLowerCase().includes(q) ||
+          k.agents.some(a => a.name.toLowerCase().includes(q))
+        )
+      );
     },
 
-    async loadLogDetail(log) {
-      const detail = await api.get(`/api/v1/logs/${log.id}`);
-      log._detail = detail;
+    async selectSession(session) {
+      this.selectedNode = session;
+      this.logsOffset = 0;
+      this.expandedDetail = null;
+      await this.loadSelectedLogs();
     },
 
-    logRowClass(log) {
-      if (log.error_type) return 'log-row-error';
-      if (log.blocked_by_blacklist) return 'log-row-blocked';
-      if (log.is_slow) return 'log-row-slow';
-      return '';
+    async selectAgent(agent, keyId) {
+      this.selectedNode = { type: 'agent', name: agent.name, keyId };
+      this.logsOffset = 0;
+      this.expandedDetail = null;
+      await this.loadSelectedLogs();
+    },
+
+    async loadSelectedLogs() {
+      if (!this.selectedNode) return;
+      let result;
+      if (this.selectedNode.type === 'session') {
+        result = await api.get(`/api/v1/sessions/${this.selectedNode.id}/logs?limit=${this.logsLimit}&offset=${this.logsOffset}`);
+      } else {
+        const params = new URLSearchParams({ agent_name: this.selectedNode.name, api_key_id: this.selectedNode.keyId, limit: this.logsLimit, offset: this.logsOffset });
+        result = await api.get(`/api/v1/logs?${params}`);
+      }
+      this.selectedLogs = result.rows || [];
+      this.logsTotal = result.total || 0;
+    },
+
+    async toggleDetail(log) {
+      if (this.expandedDetail === log.id) {
+        this.expandedDetail = null;
+        return;
+      }
+      if (!log._detail) {
+        log._detail = await api.get(`/api/v1/logs/${log.id}`);
+      }
+      this.expandedDetail = log.id;
     },
 
     formatTime, formatDate,
+    formatCost(v) { return v ? '$' + Number(v).toFixed(4) : '-'; },
+    formatTokens(v) { return v ? Number(v).toLocaleString() : '-'; },
   };
 }
 
@@ -377,127 +477,6 @@ function modelsPage() {
       await api.put(`/api/v1/models/${m.id}/toggle`, {});
       this.models = await api.get('/api/v1/models');
     },
-  };
-}
-
-// ---- Sessions Explorer Page (Tree View) ----
-function sessionsPage() {
-  return {
-    treeData: [],
-    tree: [],
-    search: '',
-    selectedNode: null,
-    selectedLogs: [],
-    logsTotal: 0,
-    logsOffset: 0,
-    logsLimit: 50,
-
-    async init() {
-      this.treeData = await api.get('/api/v1/tree');
-      this.buildTree();
-    },
-
-    buildTree() {
-      const familyMap = new Map();
-
-      for (const row of this.treeData) {
-        const fid = row.family_id || '_none';
-        if (!familyMap.has(fid)) {
-          familyMap.set(fid, {
-            type: 'family',
-            id: fid,
-            name: row.family_name || 'No Family',
-            keys: new Map(),
-            expanded: false,
-          });
-        }
-        const family = familyMap.get(fid);
-
-        const kid = row.api_key_id || '_none';
-        if (!family.keys.has(kid)) {
-          family.keys.set(kid, {
-            type: 'key',
-            id: kid,
-            label: row.key_label || row.key_hint || kid.slice(0, 8),
-            hint: row.key_hint || '',
-            agents: new Map(),
-            expanded: false,
-          });
-        }
-        const key = family.keys.get(kid);
-
-        const aname = row.agent_name || 'unknown';
-        if (!key.agents.has(aname)) {
-          key.agents.set(aname, {
-            type: 'agent',
-            name: aname,
-            sessions: [],
-            expanded: false,
-          });
-        }
-        const agent = key.agents.get(aname);
-
-        if (row.session_id) {
-          agent.sessions.push({
-            type: 'session',
-            id: row.session_id,
-            request_count: Number(row.request_count || 0),
-            total_tokens: Number(row.total_tokens || 0),
-            total_cost: Number(row.total_cost || 0),
-            first_request: row.first_request,
-            last_request: row.last_request,
-          });
-        }
-      }
-
-      // Convert to array structure
-      this.tree = Array.from(familyMap.values()).map(f => ({
-        ...f,
-        keys: Array.from(f.keys.values()).map(k => ({
-          ...k,
-          agents: Array.from(k.agents.values()),
-        })),
-      }));
-    },
-
-    filteredTree() {
-      if (!this.search) return this.tree;
-      const q = this.search.toLowerCase();
-      return this.tree.filter(f =>
-        f.name.toLowerCase().includes(q) ||
-        f.keys.some(k =>
-          k.label.toLowerCase().includes(q) ||
-          k.hint.toLowerCase().includes(q) ||
-          k.agents.some(a => a.name.toLowerCase().includes(q))
-        )
-      );
-    },
-
-    async selectSession(session) {
-      this.selectedNode = session;
-      this.logsOffset = 0;
-      await this.loadSessionLogs();
-    },
-
-    async selectAgent(agent, keyId) {
-      this.selectedNode = { type: 'agent', name: agent.name, keyId };
-      this.logsOffset = 0;
-      const params = new URLSearchParams({ agent_name: agent.name, api_key_id: keyId, limit: this.logsLimit, offset: 0 });
-      const result = await api.get(`/api/v1/logs?${params}`);
-      this.selectedLogs = result.rows || [];
-      this.logsTotal = result.total || 0;
-    },
-
-    async loadSessionLogs() {
-      if (!this.selectedNode || this.selectedNode.type !== 'session') return;
-      const result = await api.get(`/api/v1/sessions/${this.selectedNode.id}/logs?limit=${this.logsLimit}&offset=${this.logsOffset}`);
-      this.selectedLogs = result.rows || [];
-      this.logsTotal = result.total || 0;
-    },
-
-    formatTime, formatDate,
-    formatCost(v) { return v ? '$' + Number(v).toFixed(4) : '-'; },
-    formatTokens(v) { return v ? Number(v).toLocaleString() : '-'; },
   };
 }
 

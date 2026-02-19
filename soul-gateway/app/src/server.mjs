@@ -59,7 +59,7 @@ export function createAppServer() {
         return serveDashboard(req, res, pathname);
       }
       // Dashboard SPA routes (client-side routing)
-      if (['logs', 'sessions', 'costs', 'errors', 'families', 'models', 'keys', 'blacklist'].some(p => pathname === `/${p}`)) {
+      if (['logs', 'costs', 'errors', 'families', 'models', 'keys', 'blacklist'].some(p => pathname === `/${p}`)) {
         return serveDashboard(req, res, '/');
       }
 
