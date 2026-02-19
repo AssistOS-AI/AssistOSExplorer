@@ -13,6 +13,6 @@
   },
   "dependencies": {
     "pg": "^8.13.1",
-    "achillesAgentLib": "file:../../../ploinky/node_modules/achillesAgentLib"
+    "achillesAgentLib": "github:outfinityResearch/achillesAgentLib"
   }
 }
