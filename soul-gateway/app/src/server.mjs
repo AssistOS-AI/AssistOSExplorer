@@ -32,19 +32,19 @@ export function createAppServer() {
         return sendJson(res, { status: 'ok', uptime: process.uptime() });
       }
 
-      // OpenAI-compatible agent endpoints
-      if (pathname === '/v1/chat/completions' && req.method === 'POST') {
+      // OpenAI-compatible agent endpoints (support both /v1/... and /... paths)
+      if ((pathname === '/v1/chat/completions' || pathname === '/chat/completions') && req.method === 'POST') {
         return await pipeline(req, res);
       }
       // Anthropic Messages API passthrough
-      if (pathname === '/v1/messages' && req.method === 'POST') {
+      if ((pathname === '/v1/messages' || pathname === '/messages') && req.method === 'POST') {
         return await anthropicProxy(req, res);
       }
-      // OpenAI Responses API passthrough
-      if (pathname === '/v1/responses' && req.method === 'POST') {
+      // OpenAI Responses API passthrough (support both /v1/responses and /responses)
+      if ((pathname === '/v1/responses' || pathname === '/responses') && req.method === 'POST') {
         return await openaiResponsesProxy(req, res);
       }
-      if (pathname === '/v1/models' && req.method === 'GET') {
+      if ((pathname === '/v1/models' || pathname === '/models') && req.method === 'GET') {
         // Handled by API router (lists models for the authenticated family)
         return await apiRouter(req, res, pathname, query);
       }
