@@ -121,9 +121,9 @@ export async function anthropicProxy(req, res) {
       );
     }
 
-    // 8. Build upstream URL — baseURL in LLMConfig is a full endpoint path,
-    //    so extract the origin and append /v1/messages
-    const upstreamUrl = new URL(baseURL).origin + '/v1/messages';
+    // 8. Build upstream URL — baseURL in LLMConfig is the full endpoint path
+    //    (e.g. https://api.anthropic.com/v1/messages), use it directly
+    const upstreamUrl = baseURL;
 
     // Replace model with provider_model in the body
     const upstreamBody = JSON.stringify({ ...body, model: modelInfo.providerModel });
