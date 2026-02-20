@@ -509,6 +509,9 @@ function modelsPage() {
   return {
     models: [],
     providers: [],
+    providerModels: [],
+    loadingProviderModels: false,
+    providerModelsError: '',
     showCreate: false,
     editing: null,
     form: { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0 },
@@ -518,6 +521,29 @@ function modelsPage() {
         api.get('/api/v1/models'),
         api.get('/api/v1/models/providers'),
       ]);
+    },
+
+    async fetchProviderModels() {
+      const key = this.form.provider_key;
+      if (!key) { this.providerModels = []; return; }
+      this.loadingProviderModels = true;
+      this.providerModelsError = '';
+      this.providerModels = [];
+      try {
+        const models = await api.get(`/api/v1/models/providers/${encodeURIComponent(key)}/models`);
+        if (Array.isArray(models)) {
+          this.providerModels = models;
+        } else if (models?.error) {
+          this.providerModelsError = models.error.message || 'Failed to load models';
+        }
+      } catch (e) {
+        this.providerModelsError = 'Failed to fetch models';
+      }
+      this.loadingProviderModels = false;
+      // Keep current selection if it's in the list, otherwise clear
+      if (this.providerModels.length && !this.providerModels.includes(this.form.provider_model)) {
+        this.form.provider_model = '';
+      }
     },
 
     edit(m) {
@@ -531,6 +557,7 @@ function modelsPage() {
         output_price: m.output_price || 0,
       };
       this.showCreate = true;
+      this.fetchProviderModels();
     },
 
     async save() {
@@ -542,6 +569,7 @@ function modelsPage() {
       this.showCreate = false;
       this.editing = null;
       this.form = { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0 };
+      this.providerModels = [];
       this.models = await api.get('/api/v1/models');
     },
 

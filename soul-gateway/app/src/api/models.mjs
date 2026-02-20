@@ -1,6 +1,15 @@
 import { readJsonBody, sendJson, sendError } from '../utils/http-helpers.mjs';
 import * as dao from '../db/models-dao.mjs';
 import { listProviders } from 'achillesAgentLib/utils/LLMProviders/providers/providerRegistry.mjs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+function loadLLMConfig() {
+  // Clear cache so we always get fresh config
+  const configPath = require.resolve('achillesAgentLib/LLMConfig.json');
+  delete require.cache[configPath];
+  return require(configPath);
+}
 
 export const handleModels = {
   async list(req, res, query) {
@@ -59,5 +68,40 @@ export const handleModels = {
 
   async providers(req, res) {
     sendJson(res, listProviders());
+  },
+
+  async providerModels(req, res, params) {
+    const key = params.key;
+    const config = loadLLMConfig();
+    const provider = config.providers?.[key];
+    if (!provider) return sendError(res, 404, `Provider "${key}" not found in LLMConfig`);
+
+    // Derive /models URL from baseURL (strip /chat/completions, /messages, /completions, /responses)
+    let baseURL = provider.baseURL
+      .replace(/\/chat\/completions\/?$/, '')
+      .replace(/\/messages\/?$/, '')
+      .replace(/\/completions\/?$/, '')
+      .replace(/\/responses\/?$/, '');
+    const modelsURL = baseURL + '/models';
+
+    // Get API key from env
+    const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : '';
+
+    try {
+      const resp = await fetch(modelsURL, {
+        headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) {
+        return sendError(res, 502, `Provider returned ${resp.status}: ${await resp.text()}`);
+      }
+      const data = await resp.json();
+      // Handle both OpenAI format { data: [...] } and plain array
+      const models = Array.isArray(data) ? data : (data.data || []);
+      const ids = models.map(m => m.id || m.name).filter(Boolean).sort();
+      sendJson(res, ids);
+    } catch (err) {
+      sendError(res, 502, `Failed to fetch models from ${key}: ${err.message}`);
+    }
   },
 };

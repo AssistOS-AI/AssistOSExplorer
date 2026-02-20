@@ -33,6 +33,10 @@ export async function apiRouter(req, res, pathname, query) {
   }
 
   // Models
+  params = matchPath('/api/v1/models/providers/:key/models', pathname);
+  if (params) {
+    if (method === 'GET') return handleModels.providerModels(req, res, params);
+  }
   if (pathname === '/api/v1/models/providers') {
     if (method === 'GET') return handleModels.providers(req, res);
   }

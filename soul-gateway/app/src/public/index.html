@@ -426,14 +426,22 @@
               <h3 class="font-bold text-lg" x-text="editing ? 'Edit Model' : 'Add Model'"></h3>
               <div class="form-control"><label class="label">Name</label><input type="text" class="input input-bordered" x-model="form.name" :disabled="!!editing"></div>
               <div class="form-control"><label class="label">Provider</label>
-                <select class="select select-bordered" x-model="form.provider_key">
+                <select class="select select-bordered" x-model="form.provider_key" @change="fetchProviderModels()">
                   <option value="" disabled>Select provider...</option>
                   <template x-for="p in providers" :key="p">
                     <option :value="p" x-text="p"></option>
                   </template>
                 </select>
               </div>
-              <div class="form-control"><label class="label">Provider Model</label><input type="text" class="input input-bordered" x-model="form.provider_model" placeholder="e.g. claude-opus-4-6"></div>
+              <div class="form-control"><label class="label">Provider Model</label>
+                <select class="select select-bordered" x-model="form.provider_model" :disabled="loadingProviderModels">
+                  <option value="" disabled x-text="loadingProviderModels ? 'Loading models...' : 'Select model...'"></option>
+                  <template x-for="m in providerModels" :key="m">
+                    <option :value="m" x-text="m"></option>
+                  </template>
+                </select>
+                <label class="label" x-show="providerModelsError"><span class="label-text-alt text-error" x-text="providerModelsError"></span></label>
+              </div>
               <div class="form-control"><label class="label">Mode</label><select class="select select-bordered" x-model="form.mode"><option>deep</option><option>fast</option></select></div>
               <div class="grid grid-cols-2 gap-2">
                 <div class="form-control"><label class="label">Input Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.input_price"></div>
