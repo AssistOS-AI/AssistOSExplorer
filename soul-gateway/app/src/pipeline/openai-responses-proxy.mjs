@@ -34,6 +34,7 @@ export async function openaiResponsesProxy(req, res) {
 
   try {
     // 1. Auth
+    log.info('Auth attempt', { authHeader: req.headers['authorization']?.substring(0, 20) + '...', hasApiKey: !!req.headers['x-api-key'] });
     authCtx = await authenticate(req);
     logEntry.family_id = authCtx.family_id;
     logEntry.family_name = authCtx.family_name;
