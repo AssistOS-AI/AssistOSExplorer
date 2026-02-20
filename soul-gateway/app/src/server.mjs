@@ -3,6 +3,7 @@ import { handleCors, parseUrl, sendJson, sendError } from './utils/http-helpers.
 import { createLogger } from './utils/logger.mjs';
 import { pipeline } from './pipeline/pipeline.mjs';
 import { anthropicProxy } from './pipeline/anthropic-proxy.mjs';
+import { openaiResponsesProxy } from './pipeline/openai-responses-proxy.mjs';
 import { apiRouter } from './api/router.mjs';
 import { handleUpgrade } from './ws/upgrade.mjs';
 import { serveDashboard } from './dashboard/serve.mjs';
@@ -35,6 +36,10 @@ export function createAppServer() {
       // Anthropic Messages API passthrough
       if (pathname === '/v1/messages' && req.method === 'POST') {
         return await anthropicProxy(req, res);
+      }
+      // OpenAI Responses API passthrough
+      if (pathname === '/v1/responses' && req.method === 'POST') {
+        return await openaiResponsesProxy(req, res);
       }
       if (pathname === '/v1/models' && req.method === 'GET') {
         // Handled by API router (lists models for the authenticated family)
