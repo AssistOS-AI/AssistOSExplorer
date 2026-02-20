@@ -22,7 +22,7 @@ function parseCookies(req) {
 }
 
 export function isAuthenticated(req) {
-  if (!config.dashboardPassword) return true;
+  if (!config.dashboardPassword?.trim()) return true;
   const cookies = parseCookies(req);
   const session = cookies[COOKIE_NAME];
   if (!session) return false;
@@ -100,8 +100,12 @@ function serveLoginPage(res, error = '') {
       ${errorHtml}
       <form method="POST" action="/login">
         <div class="form-control mb-4">
-          <input type="password" name="password" placeholder="Password"
-                 class="input input-bordered w-full" autofocus required>
+          <div class="relative">
+            <input id="pw" type="password" name="password" placeholder="Password"
+                   class="input input-bordered w-full pr-12" autofocus required>
+            <button type="button" onclick="const i=document.getElementById('pw');const s=i.type==='password';i.type=s?'text':'password';this.textContent=s?'Hide':'Show'"
+                    class="absolute right-3 top-1/2 -translate-y-1/2 text-sm opacity-60 hover:opacity-100">Show</button>
+          </div>
         </div>
         <button type="submit" class="btn btn-primary w-full">Login</button>
       </form>
