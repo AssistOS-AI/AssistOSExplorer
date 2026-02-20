@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { handleCors, parseUrl, sendJson, sendError } from './utils/http-helpers.mjs';
 import { createLogger } from './utils/logger.mjs';
 import { pipeline } from './pipeline/pipeline.mjs';
+import { anthropicProxy } from './pipeline/anthropic-proxy.mjs';
 import { apiRouter } from './api/router.mjs';
 import { handleUpgrade } from './ws/upgrade.mjs';
 import { serveDashboard } from './dashboard/serve.mjs';
@@ -30,6 +31,10 @@ export function createAppServer() {
       // OpenAI-compatible agent endpoints
       if (pathname === '/v1/chat/completions' && req.method === 'POST') {
         return await pipeline(req, res);
+      }
+      // Anthropic Messages API passthrough
+      if (pathname === '/v1/messages' && req.method === 'POST') {
+        return await anthropicProxy(req, res);
       }
       if (pathname === '/v1/models' && req.method === 'GET') {
         // Handled by API router (lists models for the authenticated family)
