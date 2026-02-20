@@ -1,14 +1,15 @@
 import { readJsonBody, sendJson, sendError } from '../utils/http-helpers.mjs';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as dao from '../db/models-dao.mjs';
 import { listProviders } from 'achillesAgentLib/utils/LLMProviders/providers/providerRegistry.mjs';
-import { createRequire } from 'node:module';
 
-const require = createRequire(import.meta.url);
 function loadLLMConfig() {
-  // Clear cache so we always get fresh config
-  const configPath = require.resolve('achillesAgentLib/LLMConfig.json');
-  delete require.cache[configPath];
-  return require(configPath);
+  // Resolve path relative to this file → ../../node_modules/achillesAgentLib/LLMConfig.json
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const configPath = join(dir, '..', '..', 'node_modules', 'achillesAgentLib', 'LLMConfig.json');
+  return JSON.parse(readFileSync(configPath, 'utf-8'));
 }
 
 export const handleModels = {
