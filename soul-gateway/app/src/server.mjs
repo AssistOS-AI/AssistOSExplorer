@@ -19,6 +19,9 @@ export function createAppServer() {
     const { pathname, query } = parseUrl(req);
 
     try {
+      // Debug: log all incoming requests
+      log.info('Incoming request', { method: req.method, path: pathname, headers: { 'content-type': req.headers['content-type'], 'accept': req.headers['accept'], 'user-agent': req.headers['user-agent']?.substring(0, 80) } });
+
       // Skip WebSocket upgrade requests — handled by the 'upgrade' event
       if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
         return;

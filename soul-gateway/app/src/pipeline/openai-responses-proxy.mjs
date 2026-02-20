@@ -50,6 +50,10 @@ export async function openaiResponsesProxy(req, res) {
     const rawBody = await readBody(req);
     if (!rawBody) return sendError(res, 400, 'Empty request body', 'invalid_request_error');
     body = JSON.parse(rawBody);
+
+    // Debug: log raw request details
+    log.info('Request body keys', { keys: Object.keys(body), stream: body.stream, model: body.model, hasInput: !!body.input });
+
     if (!body.model) {
       return sendError(res, 400, 'Missing required field: model', 'invalid_request_error');
     }
