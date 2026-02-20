@@ -33,7 +33,10 @@ export async function anthropicProxy(req, res) {
   let logEntry = { started_at: startedAt };
 
   try {
-    // 1. Auth
+    // 1. Auth — Anthropic SDK sends key via x-api-key, not Authorization: Bearer
+    if (!req.headers['authorization'] && req.headers['x-api-key']) {
+      req.headers['authorization'] = `Bearer ${req.headers['x-api-key']}`;
+    }
     authCtx = await authenticate(req);
     logEntry.family_id = authCtx.family_id;
     logEntry.family_name = authCtx.family_name;
