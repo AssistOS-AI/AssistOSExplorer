@@ -42,8 +42,8 @@ export async function listKeys(familyId) {
   return rows;
 }
 
-export async function createKey({ family_id, key_type, label, expires_at }) {
-  const rawKey = generateApiKey();
+export async function createKey({ family_id, key_type, label, expires_at, key }) {
+  const rawKey = key || generateApiKey();
   const keyHash = sha256(rawKey);
   const encKey = encrypt(rawKey);
   const keyHint = rawKey.slice(0, 12) + '...' + rawKey.slice(-4);

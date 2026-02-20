@@ -229,6 +229,7 @@
       <!-- Errors Page -->
       <div x-show="page === 'errors'" x-cloak>
         <div x-data="errorsPage()" x-init="init()">
+          <!-- Summary Stats -->
           <div class="stats shadow mb-4 w-full">
             <div class="stat"><div class="stat-title">Total Requests</div><div class="stat-value text-lg" x-text="summary.total_requests || 0"></div></div>
             <div class="stat"><div class="stat-title">Errors</div><div class="stat-value text-lg text-error" x-text="summary.error_count || 0"></div></div>
@@ -237,12 +238,131 @@
             <div class="stat"><div class="stat-title">Truncated</div><div class="stat-value text-lg" x-text="summary.truncated_count || 0"></div></div>
             <div class="stat"><div class="stat-title">Slow</div><div class="stat-value text-lg" x-text="summary.slow_count || 0"></div></div>
           </div>
+
+          <!-- Filters & Actions -->
+          <div class="flex flex-wrap items-center gap-2 mb-4">
+            <!-- Error type badges as quick filters -->
+            <template x-for="b in breakdown" :key="b.error_type">
+              <button class="badge badge-lg cursor-pointer gap-1"
+                      :class="filterType === b.error_type ? 'badge-error' : 'badge-outline badge-error'"
+                      @click="applyFilter(b.error_type)">
+                <span x-text="b.error_type"></span>
+                <span class="font-bold" x-text="b.count"></span>
+              </button>
+            </template>
+            <div class="flex-1"></div>
+            <!-- Model filter -->
+            <select class="select select-bordered select-sm" x-model="filterModel" @change="onFilterChange()">
+              <option value="">All Models</option>
+              <template x-for="m in errorModels" :key="m">
+                <option :value="m" x-text="m"></option>
+              </template>
+            </select>
+            <!-- Trend chart button -->
+            <button class="btn btn-outline btn-sm" @click="openChart()">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
+              Trend
+            </button>
+          </div>
+
+          <!-- Error Logs Table -->
           <div class="card bg-base-100 shadow">
-            <div class="card-body">
-              <h2 class="card-title text-sm">Error Rates Over Time</h2>
-              <canvas x-ref="errorChart" height="200"></canvas>
+            <div class="card-body p-0 flex flex-col">
+              <div class="overflow-auto" style="max-height: calc(100vh - 20rem);">
+                <table class="table table-xs table-zebra">
+                  <thead class="sticky top-0 bg-base-100 z-10">
+                    <tr><th></th><th>Time</th><th>Error Type</th><th>Status</th><th>Model</th><th>Agent</th><th>Latency</th><th class="max-w-xs">Error Message</th></tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="log in errorLogs" :key="log.id">
+                      <tr>
+                        <td colspan="8" class="p-0">
+                          <div class="flex items-center cursor-pointer hover:bg-base-200 px-3 py-1.5" @click="toggleDetail(log)">
+                            <div class="w-5"><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
+                            <div class="flex-1 flex items-center gap-0">
+                              <div class="w-40 text-xs" x-text="formatTime(log.started_at)"></div>
+                              <div class="w-32"><span class="badge badge-error badge-xs" x-text="log.error_type"></span></div>
+                              <div class="w-16 text-xs font-mono" x-text="log.status_code || '-'"></div>
+                              <div class="w-36 text-xs font-mono truncate" x-text="log.resolved_model || '-'"></div>
+                              <div class="w-28 text-xs truncate" x-text="log.agent_name || '-'"></div>
+                              <div class="w-20 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
+                              <div class="flex-1 text-xs truncate opacity-70 pl-3" x-text="log.error_message || '-'"></div>
+                            </div>
+                          </div>
+                          <!-- Expanded Detail -->
+                          <div x-show="expandedDetail === log.id" x-transition class="px-8 py-4 bg-base-200 border-t border-base-300">
+                            <template x-if="log._detail">
+                              <div class="space-y-3">
+                                <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                                  <div><span class="opacity-50">Family:</span> <span x-text="log._detail.family_name || '-'"></span></div>
+                                  <div><span class="opacity-50">Key:</span> <span class="font-mono" x-text="log._detail.api_key_id?.slice(0,8) || '-'"></span></div>
+                                  <div><span class="opacity-50">Session:</span> <span class="font-mono" x-text="log._detail.session_id?.slice(0,8) || '-'"></span></div>
+                                  <div><span class="opacity-50">Streaming:</span> <span x-text="log._detail.is_streaming ? 'Yes' : 'No'"></span></div>
+                                  <div><span class="opacity-50">Retries:</span> <span x-text="log._detail.retry_count || 0"></span></div>
+                                  <div><span class="opacity-50">Retry Reason:</span> <span x-text="log._detail.retry_reason || '-'"></span></div>
+                                  <div><span class="opacity-50">TTFB:</span> <span x-text="(log._detail.ttfb_ms || 0) + 'ms'"></span></div>
+                                  <div><span class="opacity-50">Requested Model:</span> <span class="font-mono" x-text="log._detail.requested_model || '-'"></span></div>
+                                </div>
+                                <div x-show="log._detail.error_message" class="alert alert-error text-xs">
+                                  <span x-text="log._detail.error_message"></span>
+                                </div>
+                                <div x-show="log._detail.retries_detail" class="text-xs">
+                                  <h4 class="font-bold mb-1">Retry Details</h4>
+                                  <div class="mockup-code text-xs max-h-32 overflow-auto">
+                                    <pre><code x-text="JSON.stringify(log._detail.retries_detail, null, 2)"></code></pre>
+                                  </div>
+                                </div>
+                                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                  <div>
+                                    <h4 class="font-bold mb-1 text-xs">Request Messages</h4>
+                                    <div class="mockup-code text-xs max-h-48 overflow-auto">
+                                      <pre><code x-text="JSON.stringify(log._detail.request_messages, null, 2)"></code></pre>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <h4 class="font-bold mb-1 text-xs">Response</h4>
+                                    <div class="mockup-code text-xs max-h-48 overflow-auto">
+                                      <pre><code x-text="log._detail.response_content || '(empty)'"></code></pre>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </template>
+                            <template x-if="!log._detail">
+                              <span class="loading loading-spinner loading-sm"></span>
+                            </template>
+                          </div>
+                        </td>
+                      </tr>
+                    </template>
+                    <template x-if="errorLogs.length === 0">
+                      <tr><td colspan="8" class="text-center py-8 opacity-50">No errors found</td></tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <!-- Pagination -->
+              <div class="flex justify-between items-center px-4 py-2 border-t border-base-300" x-show="logsTotal > logsLimit">
+                <div class="text-xs" x-text="'Showing ' + (logsOffset+1) + '-' + Math.min(logsOffset+logsLimit, logsTotal) + ' of ' + logsTotal"></div>
+                <div class="join">
+                  <button class="join-item btn btn-xs" :disabled="logsOffset === 0" @click="logsOffset -= logsLimit; loadErrorLogs()">Prev</button>
+                  <button class="join-item btn btn-xs" :disabled="logsOffset + logsLimit >= logsTotal" @click="logsOffset += logsLimit; loadErrorLogs()">Next</button>
+                </div>
+              </div>
             </div>
           </div>
+
+          <!-- Chart Modal -->
+          <dialog class="modal" :class="{'modal-open': showChart}">
+            <div class="modal-box max-w-3xl">
+              <h3 class="font-bold text-lg mb-4">Error Rates Over Time</h3>
+              <canvas x-ref="errorChart" height="200"></canvas>
+              <div class="modal-action">
+                <button class="btn" @click="closeChart()">Close</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="closeChart()"></div>
+          </dialog>
         </div>
       </div>
 
@@ -365,6 +485,13 @@
                 <select class="select select-bordered" x-model="form.family_id">
                   <template x-for="f in families" :key="f.id"><option :value="f.id" x-text="f.name"></option></template>
                 </select>
+              </div>
+              <div class="form-control"><label class="label">API Key</label>
+                <div class="flex gap-2">
+                  <input type="text" class="input input-bordered flex-1 font-mono text-sm" placeholder="Paste your API key or click Generate" x-model="form.key">
+                  <button class="btn btn-outline btn-sm self-center" type="button" @click="generate()">Generate</button>
+                </div>
+                <label class="label"><span class="label-text-alt opacity-60">Leave empty to auto-generate a key</span></label>
               </div>
               <div class="form-control"><label class="label">Label</label><input type="text" class="input input-bordered" x-model="form.label"></div>
               <div class="form-control"><label class="label">Type</label>

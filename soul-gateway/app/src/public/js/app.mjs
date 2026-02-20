@@ -371,18 +371,67 @@ function costsPage() {
 function errorsPage() {
   return {
     summary: {},
+    breakdown: [],
+    errorModels: [],
+    rates: [],
+    errorLogs: [],
+    logsTotal: 0,
+    logsOffset: 0,
+    logsLimit: 50,
+    filterType: '',
+    filterModel: '',
+    expandedDetail: null,
+    showChart: false,
     _chart: null,
 
     async init() {
       const data = await api.get('/api/v1/metrics/errors');
       this.summary = data.summary || {};
+      this.breakdown = data.breakdown || [];
+      this.errorModels = data.models || [];
+      this.rates = data.rates || [];
+      await this.loadErrorLogs();
+    },
 
+    async loadErrorLogs() {
+      const params = new URLSearchParams({ status: 'error', limit: this.logsLimit, offset: this.logsOffset });
+      if (this.filterType) params.set('error_type', this.filterType);
+      if (this.filterModel) params.set('model', this.filterModel);
+      const result = await api.get(`/api/v1/logs?${params}`);
+      this.errorLogs = result.rows || [];
+      this.logsTotal = result.total || 0;
+    },
+
+    async applyFilter(type) {
+      this.filterType = this.filterType === type ? '' : type;
+      this.logsOffset = 0;
+      await this.loadErrorLogs();
+    },
+
+    async onFilterChange() {
+      this.logsOffset = 0;
+      await this.loadErrorLogs();
+    },
+
+    async toggleDetail(log) {
+      if (this.expandedDetail === log.id) {
+        this.expandedDetail = null;
+        return;
+      }
+      if (!log._detail) {
+        log._detail = await api.get(`/api/v1/logs/${log.id}`);
+      }
+      this.expandedDetail = log.id;
+    },
+
+    openChart() {
+      this.showChart = true;
       this.$nextTick(() => {
         const ctx = this.$refs.errorChart;
         if (!ctx) return;
         if (this._chart) this._chart.destroy();
 
-        const rates = data.rates || [];
+        const rates = this.rates;
         const models = [...new Set(rates.map(r => r.resolved_model))];
         const periods = [...new Set(rates.map(r => r.period))].sort();
 
@@ -405,6 +454,15 @@ function errorsPage() {
         });
       });
     },
+
+    closeChart() {
+      if (this._chart) { this._chart.destroy(); this._chart = null; }
+      this.showChart = false;
+    },
+
+    formatTime, formatDate,
+    formatCost(v) { return v ? '$' + Number(v).toFixed(4) : '-'; },
+    formatTokens(v) { return v ? Number(v).toLocaleString() : '-'; },
   };
 }
 
@@ -507,7 +565,7 @@ function keysPage() {
     families: [],
     showCreate: false,
     newKey: '',
-    form: { family_id: '', label: '', key_type: 'permanent' },
+    form: { family_id: '', label: '', key_type: 'permanent', key: '' },
 
     async init() {
       [this.keys, this.families] = await Promise.all([
@@ -517,10 +575,19 @@ function keysPage() {
       if (this.families.length > 0) this.form.family_id = this.families[0].id;
     },
 
+    generate() {
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      this.form.key = 'sk-soul-' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    },
+
     async create() {
-      const result = await api.post('/api/v1/keys', this.form);
+      const payload = { ...this.form };
+      if (!payload.key) delete payload.key;
+      const result = await api.post('/api/v1/keys', payload);
       this.newKey = result.key || '';
       this.showCreate = false;
+      this.form.key = '';
       this.keys = await api.get('/api/v1/keys');
     },
 
