@@ -549,8 +549,8 @@ function modelsPage() {
     onProviderModelChange() {
       const selected = this.providerModels.find(m => m.id === this.form.provider_model);
       if (selected) {
-        if (selected.input_price) this.form.input_price = selected.input_price;
-        if (selected.output_price) this.form.output_price = selected.output_price;
+        this.form.input_price = selected.input_price;
+        this.form.output_price = selected.output_price;
       }
     },
 
