@@ -122,7 +122,11 @@ export const handleModels = {
       const configModels = config.models || [];
       for (const em of enriched) {
         if (em.input_price === 0 && em.output_price === 0) {
-          const match = configModels.find(cm => cm.provider === key && cm.name === em.id);
+          // Try exact provider+name match first, then name-only across all providers
+          const match = configModels.find(cm => cm.provider === key && cm.name === em.id)
+            || configModels.find(cm => cm.name === em.id)
+            || configModels.find(cm => cm.name === em.id.split('/').pop())
+            || configModels.find(cm => cm.name.split('/').pop() === em.id);
           if (match) {
             em.input_price = match.inputPrice || 0;
             em.output_price = match.outputPrice || 0;
