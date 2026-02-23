@@ -99,8 +99,38 @@ export const handleModels = {
       const data = await resp.json();
       // Handle both OpenAI format { data: [...] } and plain array
       const models = Array.isArray(data) ? data : (data.data || []);
-      const ids = models.map(m => m.id || m.name).filter(Boolean).sort();
-      sendJson(res, ids);
+
+      // Build enriched model list with pricing
+      const enriched = models
+        .map(m => {
+          const id = m.id || m.name;
+          if (!id) return null;
+          let input_price = 0;
+          let output_price = 0;
+          // OpenRouter includes pricing.prompt / pricing.completion in $/token
+          if (m.pricing?.prompt) input_price = parseFloat(m.pricing.prompt) * 1_000_000;
+          if (m.pricing?.completion) output_price = parseFloat(m.pricing.completion) * 1_000_000;
+          // Round to avoid floating-point noise
+          input_price = Math.round(input_price * 1000) / 1000;
+          output_price = Math.round(output_price * 1000) / 1000;
+          return { id, input_price, output_price };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.id.localeCompare(b.id));
+
+      // Merge LLMConfig.json pricing as fallback for models without upstream pricing
+      const configModels = config.models || [];
+      for (const em of enriched) {
+        if (em.input_price === 0 && em.output_price === 0) {
+          const match = configModels.find(cm => cm.provider === key && cm.name === em.id);
+          if (match) {
+            em.input_price = match.inputPrice || 0;
+            em.output_price = match.outputPrice || 0;
+          }
+        }
+      }
+
+      sendJson(res, enriched);
     } catch (err) {
       sendError(res, 502, `Failed to fetch models from ${key}: ${err.message}`);
     }

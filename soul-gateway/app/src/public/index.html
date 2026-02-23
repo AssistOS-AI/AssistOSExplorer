@@ -459,10 +459,10 @@
                 </select>
               </div>
               <div class="form-control"><label class="label">Provider Model</label>
-                <select class="select select-bordered" x-model="form.provider_model" :disabled="loadingProviderModels">
+                <select class="select select-bordered" x-model="form.provider_model" :disabled="loadingProviderModels" @change="onProviderModelChange()">
                   <option value="" disabled x-text="loadingProviderModels ? 'Loading models...' : 'Select model...'"></option>
-                  <template x-for="m in providerModels" :key="m">
-                    <option :value="m" x-text="m"></option>
+                  <template x-for="m in providerModels" :key="m.id">
+                    <option :value="m.id" x-text="m.id"></option>
                   </template>
                 </select>
                 <label class="label" x-show="providerModelsError"><span class="label-text-alt text-error" x-text="providerModelsError"></span></label>

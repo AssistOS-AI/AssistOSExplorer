@@ -541,8 +541,18 @@ function modelsPage() {
       }
       this.loadingProviderModels = false;
       // Keep current selection if it's in the list, otherwise clear
-      if (this.providerModels.length && !this.providerModels.includes(this.form.provider_model)) {
+      if (this.providerModels.length && !this.providerModels.find(m => m.id === this.form.provider_model)) {
         this.form.provider_model = '';
+      }
+    },
+
+    onProviderModelChange() {
+      // Only auto-fill prices when creating a new model (not editing)
+      if (this.editing) return;
+      const selected = this.providerModels.find(m => m.id === this.form.provider_model);
+      if (selected) {
+        if (selected.input_price) this.form.input_price = selected.input_price;
+        if (selected.output_price) this.form.output_price = selected.output_price;
       }
     },
 
