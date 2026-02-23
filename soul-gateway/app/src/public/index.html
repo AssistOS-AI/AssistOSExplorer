@@ -111,7 +111,19 @@
                   </div>
                   <div class="overflow-auto flex-1">
                     <table class="table table-xs table-zebra">
-                      <thead class="sticky top-0 bg-base-100"><tr><th></th><th>Time</th><th>Model</th><th>Latency</th><th>Tokens</th><th>Cost</th><th>Status</th></tr></thead>
+                      <thead class="sticky top-0 bg-base-100"><tr><th colspan="7" class="p-0">
+                        <div class="flex items-center px-3 py-2">
+                          <div class="w-5"></div>
+                          <div class="flex-1 flex items-center gap-0">
+                            <div class="w-40 text-xs">Time</div>
+                            <div class="w-36 text-xs">Model</div>
+                            <div class="w-20 text-right text-xs">Latency</div>
+                            <div class="w-20 text-right text-xs">Tokens</div>
+                            <div class="w-20 text-right text-xs">Cost</div>
+                            <div class="w-28 text-xs">Status</div>
+                          </div>
+                        </div>
+                      </th></tr></thead>
                       <tbody>
                         <template x-for="log in selectedLogs" :key="log.id">
                           <tr>
@@ -271,7 +283,20 @@
               <div class="overflow-auto" style="max-height: calc(100vh - 20rem);">
                 <table class="table table-xs table-zebra">
                   <thead class="sticky top-0 bg-base-100 z-10">
-                    <tr><th></th><th>Time</th><th>Error Type</th><th>Status</th><th>Model</th><th>Agent</th><th>Latency</th><th class="max-w-xs">Error Message</th></tr>
+                    <tr><th colspan="8" class="p-0">
+                      <div class="flex items-center px-3 py-2">
+                        <div class="w-5"></div>
+                        <div class="flex-1 flex items-center gap-0">
+                          <div class="w-40 text-xs">Time</div>
+                          <div class="w-32 text-xs">Error Type</div>
+                          <div class="w-16 text-xs">Status</div>
+                          <div class="w-36 text-xs">Model</div>
+                          <div class="w-28 text-xs">Agent</div>
+                          <div class="w-20 text-right text-xs">Latency</div>
+                          <div class="flex-1 text-xs pl-3">Error Message</div>
+                        </div>
+                      </div>
+                    </th></tr>
                   </thead>
                   <tbody>
                     <template x-for="log in errorLogs" :key="log.id">
