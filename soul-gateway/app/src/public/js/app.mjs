@@ -547,8 +547,6 @@ function modelsPage() {
     },
 
     onProviderModelChange() {
-      // Only auto-fill prices when creating a new model (not editing)
-      if (this.editing) return;
       const selected = this.providerModels.find(m => m.id === this.form.provider_model);
       if (selected) {
         if (selected.input_price) this.form.input_price = selected.input_price;
