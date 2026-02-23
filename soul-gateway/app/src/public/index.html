@@ -117,10 +117,10 @@
                           <div class="flex-1 flex items-center gap-0">
                             <div class="w-40 text-xs">Time</div>
                             <div class="w-36 text-xs">Model</div>
-                            <div class="w-20 text-right text-xs">Latency</div>
-                            <div class="w-20 text-right text-xs">Tokens</div>
-                            <div class="w-20 text-right text-xs">Cost</div>
-                            <div class="w-28 text-xs">Status</div>
+                            <div class="w-24 text-right text-xs">Latency</div>
+                            <div class="w-24 text-right text-xs">Tokens</div>
+                            <div class="w-24 text-right text-xs">Cost</div>
+                            <div class="w-20 text-xs pl-4">Status</div>
                           </div>
                         </div>
                       </th></tr></thead>
@@ -133,10 +133,10 @@
                                 <div class="flex-1 flex items-center gap-0">
                                   <div class="w-40 text-xs" x-text="formatTime(log.started_at)"></div>
                                   <div class="w-36 font-mono text-xs" x-text="log.resolved_model || '-'"></div>
-                                  <div class="w-20 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
-                                  <div class="w-20 text-right text-xs" x-text="formatTokens(log.total_tokens)"></div>
-                                  <div class="w-20 text-right text-xs" x-text="formatCost(log.total_cost)"></div>
-                                  <div class="w-28">
+                                  <div class="w-24 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
+                                  <div class="w-24 text-right text-xs" x-text="formatTokens(log.total_tokens)"></div>
+                                  <div class="w-24 text-right text-xs" x-text="formatCost(log.total_cost)"></div>
+                                  <div class="w-20 pl-4">
                                     <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
                                     <span x-show="!log.error_type && log.status_code === 200" class="badge badge-success badge-xs">OK</span>
                                   </div>
