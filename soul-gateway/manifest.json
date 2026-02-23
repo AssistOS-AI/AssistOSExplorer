@@ -56,6 +56,16 @@
                     "required": false,
                     "default": "",
                     "description": "Password for dashboard access (empty = no auth)"
+                },
+                "AXIOLOGIC_PROXY_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for axiologic proxy (CLIProxyAPI)"
+                },
+                "OPENROUTER_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for OpenRouter"
                 }
             },
             "ports": [
