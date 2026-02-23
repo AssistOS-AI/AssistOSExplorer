@@ -462,7 +462,7 @@
                 <select class="select select-bordered" x-model="form.provider_model" :disabled="loadingProviderModels" @change="onProviderModelChange()">
                   <option value="" disabled x-text="loadingProviderModels ? 'Loading models...' : 'Select model...'"></option>
                   <template x-for="m in providerModels" :key="m.id">
-                    <option :value="m.id" x-text="m.id"></option>
+                    <option :value="m.id" x-text="m.id + (m.owned_by ? ' (' + m.owned_by + ')' : '')"></option>
                   </template>
                 </select>
                 <label class="label" x-show="providerModelsError"><span class="label-text-alt text-error" x-text="providerModelsError"></span></label>

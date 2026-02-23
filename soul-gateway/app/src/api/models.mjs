@@ -113,7 +113,8 @@ export const handleModels = {
           // Round to avoid floating-point noise
           input_price = Math.round(input_price * 1000) / 1000;
           output_price = Math.round(output_price * 1000) / 1000;
-          return { id, input_price, output_price };
+          const owned_by = m.owned_by || '';
+          return { id, input_price, output_price, owned_by };
         })
         .filter(Boolean)
         .sort((a, b) => a.id.localeCompare(b.id));
