@@ -34,7 +34,6 @@ export async function openaiResponsesProxy(req, res) {
 
   try {
     // 1. Auth
-    log.info('Auth attempt', { authHeader: req.headers['authorization']?.substring(0, 20) + '...', hasApiKey: !!req.headers['x-api-key'] });
     authCtx = await authenticate(req);
     logEntry.family_id = authCtx.family_id;
     logEntry.family_name = authCtx.family_name;
@@ -51,9 +50,6 @@ export async function openaiResponsesProxy(req, res) {
     const rawBody = await readBody(req);
     if (!rawBody) return sendError(res, 400, 'Empty request body', 'invalid_request_error');
     body = JSON.parse(rawBody);
-
-    // Debug: log raw request details
-    log.info('Request body keys', { keys: Object.keys(body), stream: body.stream, model: body.model, hasInput: !!body.input });
 
     if (!body.model) {
       return sendError(res, 400, 'Missing required field: model', 'invalid_request_error');
