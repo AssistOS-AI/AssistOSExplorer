@@ -4,6 +4,7 @@
  */
 const AGENT_PATTERNS = [
   { pattern: /claude[- ]?code/i, name: 'claude-code' },
+  { pattern: /claude[- ]?cli/i, name: 'claude-code' },
   { pattern: /codex[- ]?cli/i, name: 'codex-cli' },
   { pattern: /opencode/i, name: 'opencode' },
   { pattern: /gemini[- ]?cli/i, name: 'gemini-cli' },
