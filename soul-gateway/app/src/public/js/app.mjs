@@ -33,14 +33,14 @@ const CHART_COLORS = ['#36a2eb', '#ff6384', '#ffce56', '#4bc0c0', '#9966ff', '#f
 // ---- Main App ----
 function app() {
   return {
-    page: 'logs',
+    page: 'models',
     pages: [
-      { id: 'logs', label: 'Logs' },
-      { id: 'costs', label: 'Usage' },
-      { id: 'errors', label: 'Errors' },
-      { id: 'families', label: 'Families' },
       { id: 'models', label: 'Models' },
       { id: 'keys', label: 'Keys' },
+      { id: 'logs', label: 'Logs' },
+      { id: 'errors', label: 'Errors' },
+      { id: 'families', label: 'Families' },
+      { id: 'costs', label: 'Usage' },
       { id: 'blacklist', label: 'Blacklist' },
     ],
     wsConnected: false,
