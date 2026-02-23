@@ -469,8 +469,8 @@
               </div>
               <div class="form-control"><label class="label">Mode</label><select class="select select-bordered" x-model="form.mode"><option>deep</option><option>fast</option></select></div>
               <div class="grid grid-cols-2 gap-2">
-                <div class="form-control"><label class="label">Input Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.input_price"></div>
-                <div class="form-control"><label class="label">Output Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.output_price"></div>
+                <div class="form-control"><label class="label">Input Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.input_price" readonly></div>
+                <div class="form-control"><label class="label">Output Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.output_price" readonly></div>
               </div>
               <div class="modal-action">
                 <button class="btn btn-ghost" @click="showCreate = false; editing = null">Cancel</button>
