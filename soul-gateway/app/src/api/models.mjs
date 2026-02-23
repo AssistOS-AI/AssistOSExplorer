@@ -123,12 +123,9 @@ export const handleModels = {
       const configModels = config.models || [];
       for (const em of enriched) {
         if (em.input_price === 0 && em.output_price === 0) {
-          // Try multiple matching strategies to find pricing
+          // Match by exact provider+name, then by owned_by as provider key
           const match = configModels.find(cm => cm.provider === key && cm.name === em.id)
-            || configModels.find(cm => cm.name === em.id)
-            || configModels.find(cm => cm.name === em.id.split('/').pop())
-            || configModels.find(cm => cm.name.split('/').pop() === em.id)
-            || (em.owned_by && configModels.find(cm => cm.name === em.owned_by + '/' + em.id));
+            || (em.owned_by && configModels.find(cm => cm.provider === em.owned_by && cm.name === em.id));
           if (match) {
             em.input_price = match.inputPrice || 0;
             em.output_price = match.outputPrice || 0;
