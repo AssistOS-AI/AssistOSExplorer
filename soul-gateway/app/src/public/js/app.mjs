@@ -472,25 +472,27 @@ function familiesPage() {
     families: [],
     showCreate: false,
     editing: null,
-    form: { name: '', description: '', rpm_limit: 60, tpm_limit: 100000 },
+    form: { name: '', description: '', rpm_limit: 60, tpm_limit: 100000, monthly_budget: '' },
 
     async init() { this.families = await api.get('/api/v1/soul-families'); },
 
     edit(f) {
       this.editing = f;
-      this.form = { name: f.name, description: f.description || '', rpm_limit: f.rpm_limit, tpm_limit: f.tpm_limit };
+      this.form = { name: f.name, description: f.description || '', rpm_limit: f.rpm_limit, tpm_limit: f.tpm_limit, monthly_budget: f.monthly_budget ?? '' };
       this.showCreate = true;
     },
 
     async save() {
+      const payload = { ...this.form };
+      payload.monthly_budget = payload.monthly_budget === '' ? null : Number(payload.monthly_budget);
       if (this.editing) {
-        await api.put(`/api/v1/soul-families/${this.editing.id}`, this.form);
+        await api.put(`/api/v1/soul-families/${this.editing.id}`, payload);
       } else {
-        await api.post('/api/v1/soul-families', this.form);
+        await api.post('/api/v1/soul-families', payload);
       }
       this.showCreate = false;
       this.editing = null;
-      this.form = { name: '', description: '', rpm_limit: 60, tpm_limit: 100000 };
+      this.form = { name: '', description: '', rpm_limit: 60, tpm_limit: 100000, monthly_budget: '' };
       this.families = await api.get('/api/v1/soul-families');
     },
 
@@ -601,7 +603,7 @@ function keysPage() {
     families: [],
     showCreate: false,
     newKey: '',
-    form: { family_id: '', label: '', key_type: 'permanent', key: '' },
+    form: { family_id: '', label: '', key_type: 'permanent', key: '', monthly_budget: '' },
 
     async init() {
       [this.keys, this.families] = await Promise.all([
@@ -620,10 +622,12 @@ function keysPage() {
     async create() {
       const payload = { ...this.form };
       if (!payload.key) delete payload.key;
+      payload.monthly_budget = payload.monthly_budget === '' ? null : Number(payload.monthly_budget);
       const result = await api.post('/api/v1/keys', payload);
       this.newKey = result.key || '';
       this.showCreate = false;
       this.form.key = '';
+      this.form.monthly_budget = '';
       this.keys = await api.get('/api/v1/keys');
     },
 

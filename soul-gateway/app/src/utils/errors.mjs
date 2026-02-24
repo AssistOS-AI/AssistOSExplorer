@@ -41,6 +41,25 @@ export class LoopDetectedError extends SoulGatewayError {
   }
 }
 
+export class BudgetExceededError extends SoulGatewayError {
+  constructor(scope, spent, budget) {
+    const nextMonth = new Date();
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1, 1);
+    nextMonth.setUTCHours(0, 0, 0, 0);
+    const retryAfter = Math.min(Math.ceil((nextMonth - Date.now()) / 1000), 86400);
+
+    super(
+      `Monthly budget exceeded for ${scope}: $${spent.toFixed(2)} / $${budget.toFixed(2)}`,
+      429,
+      'budget_exceeded',
+    );
+    this.retryAfter = retryAfter;
+    this.scope = scope;
+    this.spent = spent;
+    this.budget = budget;
+  }
+}
+
 export class UpstreamError extends SoulGatewayError {
   constructor(message, status = 502, type = 'upstream_error') {
     super(message, status, type);

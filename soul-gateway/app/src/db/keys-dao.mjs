@@ -4,6 +4,7 @@ import { sha256, encrypt, decrypt, generateApiKey } from '../utils/crypto.mjs';
 export async function findKeyByHash(hash) {
   const { rows } = await query(`
     SELECT k.*, f.name as family_name, f.rpm_limit, f.tpm_limit,
+           f.monthly_budget as family_monthly_budget,
            f.model_mapping, f.allowed_models, f.metadata as family_metadata
     FROM api_keys k
     JOIN soul_families f ON k.family_id = f.id
@@ -27,8 +28,8 @@ export async function resolveApiKey(rawKey) {
 
 export async function listKeys(familyId) {
   let sql = `
-    SELECT k.id, k.family_id, k.key_type, k.label, k.key_hint, k.expires_at,
-           k.is_revoked, k.last_used_at, k.created_at, f.name as family_name
+    SELECT k.id, k.family_id, k.key_type, k.label, k.key_hint, k.monthly_budget,
+           k.expires_at, k.is_revoked, k.last_used_at, k.created_at, f.name as family_name
     FROM api_keys k
     JOIN soul_families f ON k.family_id = f.id
   `;
@@ -42,17 +43,17 @@ export async function listKeys(familyId) {
   return rows;
 }
 
-export async function createKey({ family_id, key_type, label, expires_at, key }) {
+export async function createKey({ family_id, key_type, label, monthly_budget, expires_at, key }) {
   const rawKey = key || generateApiKey();
   const keyHash = sha256(rawKey);
   const encKey = encrypt(rawKey);
   const keyHint = rawKey.slice(0, 12) + '...' + rawKey.slice(-4);
 
   const { rows } = await query(`
-    INSERT INTO api_keys (family_id, key_hash, encrypted_key, key_type, label, key_hint, expires_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    RETURNING id, family_id, key_type, label, key_hint, expires_at, is_revoked, created_at
-  `, [family_id, keyHash, encKey, key_type || 'permanent', label, keyHint, expires_at || null]);
+    INSERT INTO api_keys (family_id, key_hash, encrypted_key, key_type, label, key_hint, monthly_budget, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    RETURNING id, family_id, key_type, label, key_hint, monthly_budget, expires_at, is_revoked, created_at
+  `, [family_id, keyHash, encKey, key_type || 'permanent', label, keyHint, monthly_budget ?? null, expires_at || null]);
 
   return { ...rows[0], key: rawKey };
 }

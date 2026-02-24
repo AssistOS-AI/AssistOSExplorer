@@ -26,6 +26,8 @@ export async function authenticate(req) {
     api_key_id: keyInfo.id,
     rpm_limit: keyInfo.rpm_limit,
     tpm_limit: keyInfo.tpm_limit,
+    family_monthly_budget: keyInfo.family_monthly_budget != null ? Number(keyInfo.family_monthly_budget) : null,
+    key_monthly_budget: keyInfo.monthly_budget != null ? Number(keyInfo.monthly_budget) : null,
     model_mapping: typeof keyInfo.model_mapping === 'string' ? JSON.parse(keyInfo.model_mapping) : (keyInfo.model_mapping || {}),
     allowed_models: typeof keyInfo.allowed_models === 'string' ? JSON.parse(keyInfo.allowed_models) : (keyInfo.allowed_models || []),
     soul_id: soulId,

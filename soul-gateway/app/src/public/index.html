@@ -406,6 +406,7 @@
               <div class="form-control"><label class="label">Description</label><textarea class="textarea textarea-bordered" x-model="form.description"></textarea></div>
               <div class="form-control"><label class="label">RPM Limit</label><input type="number" class="input input-bordered" x-model.number="form.rpm_limit"></div>
               <div class="form-control"><label class="label">TPM Limit</label><input type="number" class="input input-bordered" x-model.number="form.tpm_limit"></div>
+              <div class="form-control"><label class="label">Monthly Budget ($)</label><input type="number" step="0.01" class="input input-bordered" x-model="form.monthly_budget" placeholder="Leave empty for unlimited"></div>
               <div class="modal-action">
                 <button class="btn btn-ghost" @click="showCreate = false; editing = null">Cancel</button>
                 <button class="btn btn-primary" @click="save()">Save</button>
@@ -417,7 +418,7 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-sm">
-                <thead><tr><th>Name</th><th>Description</th><th>RPM</th><th>TPM</th><th>Created</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Name</th><th>Description</th><th>RPM</th><th>TPM</th><th>Budget</th><th>Created</th><th>Actions</th></tr></thead>
                 <tbody>
                   <template x-for="f in families" :key="f.id">
                     <tr>
@@ -425,6 +426,7 @@
                       <td x-text="f.description || '-'"></td>
                       <td x-text="f.rpm_limit"></td>
                       <td x-text="Number(f.tpm_limit).toLocaleString()"></td>
+                      <td x-text="f.monthly_budget != null ? '$' + Number(f.monthly_budget).toFixed(2) : 'Unlimited'"></td>
                       <td x-text="formatDate(f.created_at)"></td>
                       <td class="flex gap-1">
                         <button class="btn btn-ghost btn-xs" @click="edit(f)">Edit</button>
@@ -530,6 +532,7 @@
               <div class="form-control"><label class="label">Type</label>
                 <select class="select select-bordered" x-model="form.key_type"><option>permanent</option><option>session</option></select>
               </div>
+              <div class="form-control"><label class="label">Monthly Budget ($)</label><input type="number" step="0.01" class="input input-bordered" x-model="form.monthly_budget" placeholder="Leave empty for unlimited"></div>
               <div class="modal-action">
                 <button class="btn btn-ghost" @click="showCreate = false">Cancel</button>
                 <button class="btn btn-primary" @click="create()">Create</button>
@@ -551,7 +554,7 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-sm">
-                <thead><tr><th>Label</th><th>Key</th><th>Family</th><th>Type</th><th>Last Used</th><th>Created</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Label</th><th>Key</th><th>Family</th><th>Type</th><th>Budget</th><th>Last Used</th><th>Created</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   <template x-for="k in keys" :key="k.id">
                     <tr :class="{'opacity-40': k.is_revoked}">
@@ -559,6 +562,7 @@
                       <td class="font-mono text-xs opacity-60" x-text="k.key_hint || '-'"></td>
                       <td x-text="k.family_name"></td>
                       <td><span class="badge badge-sm" x-text="k.key_type"></span></td>
+                      <td x-text="k.monthly_budget != null ? '$' + Number(k.monthly_budget).toFixed(2) : '-'"></td>
                       <td x-text="k.last_used_at ? formatDate(k.last_used_at) : 'Never'"></td>
                       <td x-text="formatDate(k.created_at)"></td>
                       <td><span class="badge badge-sm" :class="k.is_revoked ? 'badge-error' : 'badge-success'" x-text="k.is_revoked ? 'Revoked' : 'Active'"></span></td>

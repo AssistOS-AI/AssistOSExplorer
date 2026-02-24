@@ -15,12 +15,12 @@ export async function getFamilyByName(name) {
   return rows[0] || null;
 }
 
-export async function createFamily({ name, description, model_mapping, allowed_models, rpm_limit, tpm_limit, metadata }) {
+export async function createFamily({ name, description, model_mapping, allowed_models, rpm_limit, tpm_limit, monthly_budget, metadata }) {
   const { rows } = await query(`
-    INSERT INTO soul_families (name, description, model_mapping, allowed_models, rpm_limit, tpm_limit, metadata)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO soul_families (name, description, model_mapping, allowed_models, rpm_limit, tpm_limit, monthly_budget, metadata)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING *
-  `, [name, description, model_mapping || '{}', allowed_models || '[]', rpm_limit || 60, tpm_limit || 100000, metadata || '{}']);
+  `, [name, description, model_mapping || '{}', allowed_models || '[]', rpm_limit || 60, tpm_limit || 100000, monthly_budget ?? null, metadata || '{}']);
   return rows[0];
 }
 
@@ -30,7 +30,7 @@ export async function updateFamily(id, fields) {
   let idx = 1;
 
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined && ['name', 'description', 'model_mapping', 'allowed_models', 'rpm_limit', 'tpm_limit', 'metadata'].includes(key)) {
+    if (value !== undefined && ['name', 'description', 'model_mapping', 'allowed_models', 'rpm_limit', 'tpm_limit', 'monthly_budget', 'metadata'].includes(key)) {
       sets.push(`${key} = $${idx}`);
       values.push(key === 'model_mapping' || key === 'allowed_models' || key === 'metadata'
         ? JSON.stringify(value) : value);

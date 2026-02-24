@@ -18,6 +18,7 @@ import { parseAgentName } from '../utils/agent-parser.mjs';
 import { resolveSession } from './session-resolver.mjs';
 import { checkLoopDetection } from './loop-detector.mjs';
 import { acquireModelSlot } from './model-queue.mjs';
+import { checkBudget, trackSpend } from './cost-throttler.mjs';
 import { BlacklistError, SoulGatewayError } from '../utils/errors.mjs';
 
 const log = createLogger('pipeline');
@@ -87,21 +88,24 @@ export async function pipeline(req, res) {
     // 5. Rate limit
     await checkRateLimit(authCtx.family_id, authCtx.rpm_limit, authCtx.tpm_limit);
 
-    // 6. Model routing
+    // 6. Budget check
+    await checkBudget(authCtx);
+
+    // 7. Model routing
     modelInfo = await resolveModel(body.model, authCtx);
     logEntry.resolved_model = modelInfo.resolvedModel;
     logEntry.mode = modelInfo.mode;
 
-    // 7. Prompt hash
+    // 8. Prompt hash
     const promptHash = sha256(JSON.stringify(body.messages) + '||' + modelInfo.resolvedModel);
     logEntry.prompt_hash = promptHash;
 
-    // 8. Prompt size check
+    // 9. Prompt size check
     const promptCheck = checkPromptSize(body.messages);
     logEntry.request_size_bytes = promptCheck.requestSizeBytes;
     logEntry.prompt_size_warning = promptCheck.promptSizeWarning;
 
-    // 9. Extract LLM params from the request body
+    // 10. Extract LLM params from the request body
     const llmParams = {};
     if (body.temperature !== undefined) llmParams.temperature = body.temperature;
     if (body.max_tokens !== undefined) llmParams.max_tokens = body.max_tokens;
@@ -110,7 +114,7 @@ export async function pipeline(req, res) {
     if (body.presence_penalty !== undefined) llmParams.presence_penalty = body.presence_penalty;
     if (body.stop !== undefined) llmParams.stop = body.stop;
 
-    // 10. Cache check (non-streaming only)
+    // 11. Cache check (non-streaming only)
     if (!body.stream) {
       const cached = await findCachedResponse(promptHash, modelInfo.resolvedModel);
       if (cached) {
@@ -148,11 +152,11 @@ export async function pipeline(req, res) {
       }
     }
 
-    // 11. Acquire model slot (serializes requests per model)
+    // 12. Acquire model slot (serializes requests per model)
     const releaseSlot = await acquireModelSlot(modelInfo.resolvedModel);
     let result;
     try {
-      // 12. Dispatch with retry
+      // 13. Dispatch with retry
       const { generator, retryCount, retryReason, retriesDetail } =
         await dispatchWithRetry(body.messages, modelInfo, llmParams);
 
@@ -160,7 +164,7 @@ export async function pipeline(req, res) {
       logEntry.retry_reason = retryReason;
       logEntry.retries_detail = retriesDetail;
 
-      // 13. Stream tap / non-streaming response
+      // 14. Stream tap / non-streaming response
       if (body.stream) {
         result = await tapStream(generator, res, startTime, requestId);
       } else {
@@ -170,13 +174,13 @@ export async function pipeline(req, res) {
       releaseSlot();
     }
 
-    // 14. Cost calculation
+    // 15. Cost calculation
     const costs = calculateCost(result.usage, modelInfo.inputPrice, modelInfo.outputPrice);
 
-    // 15. Response checks
+    // 16. Response checks
     const flags = checkResponse(result.stopReason, Date.now() - startTime);
 
-    // 16. Write full call log
+    // 17. Write full call log
     logEntry.response_content = result.content;
     logEntry.status_code = result.error ? 502 : 200;
     logEntry.stop_reason = result.stopReason;
@@ -200,14 +204,17 @@ export async function pipeline(req, res) {
 
     const inserted = await safeInsertLog(logEntry);
 
-    // 17. Broadcast to WebSocket subscribers
+    // 18. Broadcast to WebSocket subscribers
     const broadcastEntry = { ...logEntry, id: inserted?.id };
     broadcastLog(broadcastEntry);
     if (authCtx.soul_id) broadcastToSoul(authCtx.soul_id, broadcastEntry);
 
-    // Track TPM (post-response)
+    // Track TPM and budget spend (post-response)
     if (costs.total_tokens > 0) {
       trackTokenUsage(authCtx.family_id, costs.total_tokens, authCtx.tpm_limit).catch(() => {});
+    }
+    if (costs.total_cost > 0) {
+      trackSpend(authCtx, costs.total_cost);
     }
 
   } catch (err) {

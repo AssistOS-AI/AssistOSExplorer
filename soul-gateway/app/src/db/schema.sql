@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS soul_families (
     allowed_models JSONB DEFAULT '[]',
     rpm_limit INT DEFAULT 60,
     tpm_limit INT DEFAULT 100000,
+    monthly_budget NUMERIC DEFAULT NULL,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     key_type TEXT DEFAULT 'permanent',
     label TEXT,
     key_hint TEXT,
+    monthly_budget NUMERIC DEFAULT NULL,
     expires_at TIMESTAMPTZ,
     is_revoked BOOLEAN DEFAULT false,
     last_used_at TIMESTAMPTZ,
@@ -119,6 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_call_logs_started ON call_logs(started_at);
 CREATE INDEX IF NOT EXISTS idx_call_logs_error ON call_logs(error_type) WHERE error_type IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_call_logs_blocked ON call_logs(blocked_by_blacklist) WHERE blocked_by_blacklist = true;
 CREATE INDEX IF NOT EXISTS idx_call_logs_session ON call_logs(api_key_id, session_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_call_logs_key_started ON call_logs(api_key_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_call_logs_prompt_hash ON call_logs(prompt_hash, resolved_model) WHERE prompt_hash IS NOT NULL AND status_code = 200;
 
 -- Rate Limit State
