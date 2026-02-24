@@ -33,6 +33,14 @@ export class ModelNotFoundError extends SoulGatewayError {
   }
 }
 
+export class LoopDetectedError extends SoulGatewayError {
+  constructor(pattern, message = 'Loop detected — request blocked') {
+    super(message, 429, 'loop_detected');
+    this.retryAfter = 30;
+    this.pattern = pattern;
+  }
+}
+
 export class UpstreamError extends SoulGatewayError {
   constructor(message, status = 502, type = 'upstream_error') {
     super(message, status, type);

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readJsonBody, sendError } from '../utils/http-helpers.mjs';
+import { readJsonBody, sendError, sendJson } from '../utils/http-helpers.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { authenticate } from './auth.mjs';
 import { checkBlacklist } from './blacklist.mjs';
@@ -10,11 +10,14 @@ import { dispatchWithRetry } from './retry.mjs';
 import { tapStream, handleNonStreaming } from './stream-tap.mjs';
 import { calculateCost } from './cost-calculator.mjs';
 import { checkResponse } from './response-checker.mjs';
-import { insertLog } from '../db/logs-dao.mjs';
+import { insertLog, findCachedResponse } from '../db/logs-dao.mjs';
+import { sha256 } from '../utils/crypto.mjs';
 import { broadcastLog } from '../ws/log-stream.mjs';
 import { broadcastToSoul } from '../ws/soul-stream.mjs';
 import { parseAgentName } from '../utils/agent-parser.mjs';
 import { resolveSession } from './session-resolver.mjs';
+import { checkLoopDetection } from './loop-detector.mjs';
+import { acquireModelSlot } from './model-queue.mjs';
 import { BlacklistError, SoulGatewayError } from '../utils/errors.mjs';
 
 const log = createLogger('pipeline');
@@ -58,7 +61,11 @@ export async function pipeline(req, res) {
     logEntry.is_streaming = !!body.stream;
     logEntry.request_messages = body.messages;
 
-    // 3. Blacklist scan
+    // 3. Loop detection
+    const requestSizeBytes = Buffer.byteLength(JSON.stringify(body.messages), 'utf8');
+    checkLoopDetection(sessionId, body.messages, requestSizeBytes);
+
+    // 4. Blacklist scan
     try {
       await checkBlacklist(body.messages, authCtx.family_id);
     } catch (err) {
@@ -77,20 +84,24 @@ export async function pipeline(req, res) {
       throw err;
     }
 
-    // 4. Rate limit
+    // 5. Rate limit
     await checkRateLimit(authCtx.family_id, authCtx.rpm_limit, authCtx.tpm_limit);
 
-    // 5. Model routing
+    // 6. Model routing
     modelInfo = await resolveModel(body.model, authCtx);
     logEntry.resolved_model = modelInfo.resolvedModel;
     logEntry.mode = modelInfo.mode;
 
-    // 6. Prompt size check
+    // 7. Prompt hash
+    const promptHash = sha256(JSON.stringify(body.messages) + '||' + modelInfo.resolvedModel);
+    logEntry.prompt_hash = promptHash;
+
+    // 8. Prompt size check
     const promptCheck = checkPromptSize(body.messages);
     logEntry.request_size_bytes = promptCheck.requestSizeBytes;
     logEntry.prompt_size_warning = promptCheck.promptSizeWarning;
 
-    // 7. Extract LLM params from the request body
+    // 9. Extract LLM params from the request body
     const llmParams = {};
     if (body.temperature !== undefined) llmParams.temperature = body.temperature;
     if (body.max_tokens !== undefined) llmParams.max_tokens = body.max_tokens;
@@ -99,29 +110,73 @@ export async function pipeline(req, res) {
     if (body.presence_penalty !== undefined) llmParams.presence_penalty = body.presence_penalty;
     if (body.stop !== undefined) llmParams.stop = body.stop;
 
-    // 8. Dispatch with retry
-    const { generator, retryCount, retryReason, retriesDetail } =
-      await dispatchWithRetry(body.messages, modelInfo, llmParams);
+    // 10. Cache check (non-streaming only)
+    if (!body.stream) {
+      const cached = await findCachedResponse(promptHash, modelInfo.resolvedModel);
+      if (cached) {
+        logEntry.cache_hit = true;
+        logEntry.response_content = cached.response_content;
+        logEntry.status_code = 200;
+        logEntry.stop_reason = cached.stop_reason;
+        logEntry.response_size_bytes = Buffer.byteLength(cached.response_content || '', 'utf8');
+        logEntry.latency_ms = Date.now() - startTime;
+        logEntry.prompt_tokens = cached.prompt_tokens;
+        logEntry.completion_tokens = cached.completion_tokens;
+        logEntry.total_tokens = cached.total_tokens;
 
-    logEntry.retry_count = retryCount;
-    logEntry.retry_reason = retryReason;
-    logEntry.retries_detail = retriesDetail;
+        const costs = calculateCost(
+          { prompt_tokens: cached.prompt_tokens, completion_tokens: cached.completion_tokens, total_tokens: cached.total_tokens },
+          modelInfo.inputPrice, modelInfo.outputPrice,
+        );
+        logEntry.input_cost = costs.input_cost;
+        logEntry.output_cost = costs.output_cost;
+        logEntry.total_cost = costs.total_cost;
+        logEntry.completed_at = new Date();
 
-    // 9. Stream tap / non-streaming response
-    let result;
-    if (body.stream) {
-      result = await tapStream(generator, res, startTime, requestId);
-    } else {
-      result = await handleNonStreaming(generator, res, startTime, requestId);
+        sendJson(res, {
+          id: requestId,
+          object: 'chat.completion',
+          choices: [{ index: 0, message: { role: 'assistant', content: cached.response_content }, finish_reason: cached.stop_reason || 'stop' }],
+          usage: { prompt_tokens: cached.prompt_tokens || 0, completion_tokens: cached.completion_tokens || 0, total_tokens: cached.total_tokens || 0 },
+        });
+
+        const inserted = await safeInsertLog(logEntry);
+        const broadcastEntry = { ...logEntry, id: inserted?.id };
+        broadcastLog(broadcastEntry);
+        if (authCtx.soul_id) broadcastToSoul(authCtx.soul_id, broadcastEntry);
+        return;
+      }
     }
 
-    // 10. Cost calculation
+    // 11. Acquire model slot (serializes requests per model)
+    const releaseSlot = await acquireModelSlot(modelInfo.resolvedModel);
+    let result;
+    try {
+      // 12. Dispatch with retry
+      const { generator, retryCount, retryReason, retriesDetail } =
+        await dispatchWithRetry(body.messages, modelInfo, llmParams);
+
+      logEntry.retry_count = retryCount;
+      logEntry.retry_reason = retryReason;
+      logEntry.retries_detail = retriesDetail;
+
+      // 13. Stream tap / non-streaming response
+      if (body.stream) {
+        result = await tapStream(generator, res, startTime, requestId);
+      } else {
+        result = await handleNonStreaming(generator, res, startTime, requestId);
+      }
+    } finally {
+      releaseSlot();
+    }
+
+    // 14. Cost calculation
     const costs = calculateCost(result.usage, modelInfo.inputPrice, modelInfo.outputPrice);
 
-    // 11. Response checks
+    // 15. Response checks
     const flags = checkResponse(result.stopReason, Date.now() - startTime);
 
-    // 12. Write full call log
+    // 16. Write full call log
     logEntry.response_content = result.content;
     logEntry.status_code = result.error ? 502 : 200;
     logEntry.stop_reason = result.stopReason;
@@ -145,7 +200,7 @@ export async function pipeline(req, res) {
 
     const inserted = await safeInsertLog(logEntry);
 
-    // 13. Broadcast to WebSocket subscribers
+    // 17. Broadcast to WebSocket subscribers
     const broadcastEntry = { ...logEntry, id: inserted?.id };
     broadcastLog(broadcastEntry);
     if (authCtx.soul_id) broadcastToSoul(authCtx.soul_id, broadcastEntry);

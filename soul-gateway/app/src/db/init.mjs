@@ -71,6 +71,10 @@ async function migrate(p) {
   // Add agent_name and session_id to call_logs
   await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS agent_name TEXT`);
   await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS session_id UUID`);
+  // Add prompt_hash and cache_hit to call_logs
+  await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS prompt_hash TEXT`);
+  await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS cache_hit BOOLEAN DEFAULT false`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_call_logs_prompt_hash ON call_logs(prompt_hash, resolved_model) WHERE prompt_hash IS NOT NULL AND status_code = 200`);
 }
 
 async function ensurePartitions() {

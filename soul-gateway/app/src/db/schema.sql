@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS call_logs (
     is_truncated BOOLEAN DEFAULT false,
     is_slow BOOLEAN DEFAULT false,
     prompt_size_warning BOOLEAN DEFAULT false,
+    -- cache
+    prompt_hash TEXT,
+    cache_hit BOOLEAN DEFAULT false,
     -- timestamps
     started_at TIMESTAMPTZ NOT NULL,
     completed_at TIMESTAMPTZ,
@@ -116,6 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_call_logs_started ON call_logs(started_at);
 CREATE INDEX IF NOT EXISTS idx_call_logs_error ON call_logs(error_type) WHERE error_type IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_call_logs_blocked ON call_logs(blocked_by_blacklist) WHERE blocked_by_blacklist = true;
 CREATE INDEX IF NOT EXISTS idx_call_logs_session ON call_logs(api_key_id, session_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_call_logs_prompt_hash ON call_logs(prompt_hash, resolved_model) WHERE prompt_hash IS NOT NULL AND status_code = 200;
 
 -- Rate Limit State
 CREATE TABLE IF NOT EXISTS rate_limit_state (

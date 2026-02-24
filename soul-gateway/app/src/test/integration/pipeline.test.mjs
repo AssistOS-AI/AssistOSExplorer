@@ -164,4 +164,120 @@ describe('pipeline', () => {
       assert.equal(upstreamReq.body.model, 'claude-opus-4.6');
     });
   });
+
+  describe('response cache', () => {
+    it('returns cached response on duplicate non-streaming request', async () => {
+      const cacheReq = {
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'cache-test-unique-' + Date.now() }],
+        stream: false,
+      };
+
+      // First request — goes to upstream
+      const res1 = await chatCompletions(cacheReq, apiKey);
+      assert.equal(res1.status, 200);
+      const body1 = await res1.json();
+      const log1 = getRequestLog();
+      assert.ok(log1.some(r => r.url === '/v1/chat/completions'), 'First request should hit upstream');
+
+      // Second request — same prompt, should be served from cache
+      const res2 = await chatCompletions(cacheReq, apiKey);
+      assert.equal(res2.status, 200);
+      const body2 = await res2.json();
+      const log2 = getRequestLog();
+
+      // No new upstream request — cache served
+      assert.equal(log2.filter(r => r.url === '/v1/chat/completions').length, 0,
+        'Second request should NOT hit upstream (cache hit)');
+
+      // Response content should match
+      assert.equal(body2.choices[0].message.content, body1.choices[0].message.content);
+      assert.ok(body2.usage);
+    });
+
+    it('does not cache streaming requests', async () => {
+      const streamReq = {
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'stream-no-cache-' + Date.now() }],
+        stream: true,
+      };
+
+      // First streaming request
+      const res1 = await chatCompletions(streamReq, apiKey);
+      assert.equal(res1.status, 200);
+      await res1.text(); // consume the stream
+      getRequestLog(); // clear
+
+      // Second streaming request with same content — should still hit upstream
+      const res2 = await chatCompletions(streamReq, apiKey);
+      assert.equal(res2.status, 200);
+      await res2.text();
+      const log2 = getRequestLog();
+      assert.ok(log2.some(r => r.url === '/v1/chat/completions'),
+        'Streaming request should always hit upstream');
+    });
+
+    it('different models produce different cache entries', async () => {
+      // Create a second model
+      await post('/api/v1/models', {
+        name: 'test-model-2',
+        upstream_model: 'claude-sonnet-4.5',
+        mode: 'fast',
+        input_price: 1,
+        output_price: 5,
+      });
+
+      const msgs = [{ role: 'user', content: 'multi-model-cache-' + Date.now() }];
+
+      // Request to model 1
+      const res1 = await chatCompletions({ model: 'test-model', messages: msgs, stream: false }, apiKey);
+      assert.equal(res1.status, 200);
+      await res1.json();
+      getRequestLog(); // clear
+
+      // Request to model 2 with same messages — should NOT be a cache hit
+      const res2 = await chatCompletions({ model: 'test-model-2', messages: msgs, stream: false }, apiKey);
+      assert.equal(res2.status, 200);
+      const log2 = getRequestLog();
+      assert.ok(log2.some(r => r.url === '/v1/chat/completions'),
+        'Different model should miss cache and hit upstream');
+    });
+  });
+
+  describe('model queue serialization', () => {
+    it('serializes concurrent requests to the same model', async () => {
+      // Add latency so requests overlap
+      setNextResponse({ latencyMs: 100 });
+
+      const req = {
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'queue-test-1-' + Date.now() }],
+        stream: false,
+      };
+      const req2 = {
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'queue-test-2-' + Date.now() }],
+        stream: false,
+      };
+
+      const start = Date.now();
+      // Fire both requests concurrently
+      const [res1, res2] = await Promise.all([
+        chatCompletions(req, apiKey),
+        chatCompletions(req2, apiKey),
+      ]);
+
+      const elapsed = Date.now() - start;
+
+      assert.equal(res1.status, 200);
+      assert.equal(res2.status, 200);
+      await res1.json();
+      await res2.json();
+
+      // With serialization, total time should be >= 2 * latency (sequential)
+      // Without serialization, it would be ~latency (parallel)
+      assert.ok(elapsed >= 180,
+        `Expected >= 180ms for serialized requests, got ${elapsed}ms`);
+    });
+  });
 });

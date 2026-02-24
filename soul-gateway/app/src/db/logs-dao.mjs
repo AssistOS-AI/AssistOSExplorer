@@ -14,6 +14,7 @@ export async function insertLog(log) {
       retry_count, retry_reason, retries_detail,
       blocked_by_blacklist, blacklist_rule_id, blacklist_match,
       is_truncated, is_slow, prompt_size_warning,
+      prompt_hash, cache_hit,
       started_at, completed_at
     ) VALUES (
       $1, $2, $3, $4,
@@ -27,7 +28,8 @@ export async function insertLog(log) {
       $27, $28, $29,
       $30, $31, $32,
       $33, $34, $35,
-      $36, $37
+      $36, $37,
+      $38, $39
     ) RETURNING id, started_at
   `, [
     log.family_id, log.family_name, log.soul_id, log.api_key_id,
@@ -41,12 +43,23 @@ export async function insertLog(log) {
     log.retry_count || 0, log.retry_reason, log.retries_detail ? JSON.stringify(log.retries_detail) : null,
     log.blocked_by_blacklist || false, log.blacklist_rule_id, log.blacklist_match,
     log.is_truncated || false, log.is_slow || false, log.prompt_size_warning || false,
+    log.prompt_hash || null, log.cache_hit || false,
     log.started_at, log.completed_at,
   ]);
   return rows[0];
 }
 
-export async function queryLogs({ family_id, soul_id, model, from, to, status, keyword, session_id, agent_name, limit, offset }) {
+export async function findCachedResponse(promptHash, resolvedModel) {
+  const { rows } = await query(`
+    SELECT response_content, prompt_tokens, completion_tokens, total_tokens, stop_reason
+    FROM call_logs
+    WHERE prompt_hash = $1 AND resolved_model = $2 AND status_code = 200 AND response_content IS NOT NULL
+    ORDER BY started_at DESC LIMIT 1
+  `, [promptHash, resolvedModel]);
+  return rows[0] || null;
+}
+
+export async function queryLogs({ family_id, soul_id, model, from, to, status, error_type, keyword, session_id, agent_name, api_key_id, limit, offset }) {
   const conditions = [];
   const params = [];
   let idx = 1;
@@ -58,6 +71,8 @@ export async function queryLogs({ family_id, soul_id, model, from, to, status, k
   if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
   if (session_id) { conditions.push(`session_id = $${idx++}`); params.push(session_id); }
   if (agent_name) { conditions.push(`agent_name = $${idx++}`); params.push(agent_name); }
+  if (api_key_id) { conditions.push(`api_key_id = $${idx++}`); params.push(api_key_id); }
+  if (error_type) { conditions.push(`error_type = $${idx++}`); params.push(error_type); }
   if (status === 'error') { conditions.push(`error_type IS NOT NULL`); }
   if (status === 'blocked') { conditions.push(`blocked_by_blacklist = true`); }
   if (status === 'success') { conditions.push(`error_type IS NULL AND blocked_by_blacklist = false`); }
