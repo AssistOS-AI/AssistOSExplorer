@@ -140,6 +140,64 @@ export async function getErrorSummary({ from, to }) {
   return rows[0];
 }
 
+export async function getCostsByKey({ from, to }) {
+  const conditions = [];
+  const params = [];
+  let idx = 1;
+  if (from) { conditions.push(`cl.started_at >= $${idx++}`); params.push(from); }
+  if (to) { conditions.push(`cl.started_at <= $${idx++}`); params.push(to); }
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+  const { rows } = await query(`
+    SELECT cl.api_key_id,
+           k.label as key_label,
+           k.key_hint,
+           k.monthly_budget as key_budget,
+           f.name as family_name,
+           f.monthly_budget as family_budget,
+           SUM(cl.total_cost) as total_cost,
+           SUM(cl.input_cost) as input_cost,
+           SUM(cl.output_cost) as output_cost,
+           SUM(cl.total_tokens) as total_tokens,
+           SUM(cl.prompt_tokens) as prompt_tokens,
+           SUM(cl.completion_tokens) as completion_tokens,
+           COUNT(*) as request_count,
+           COUNT(*) FILTER (WHERE cl.error_type IS NOT NULL) as error_count
+    FROM call_logs cl
+    JOIN api_keys k ON cl.api_key_id = k.id
+    JOIN soul_families f ON k.family_id = f.id
+    ${where}
+    GROUP BY cl.api_key_id, k.label, k.key_hint, k.monthly_budget, f.name, f.monthly_budget
+    ORDER BY total_cost DESC
+  `, params);
+  return rows;
+}
+
+export async function getKeyTrend({ from, to }) {
+  const conditions = [];
+  const params = [];
+  let idx = 1;
+  if (from) { conditions.push(`cl.started_at >= $${idx++}`); params.push(from); }
+  if (to) { conditions.push(`cl.started_at <= $${idx++}`); params.push(to); }
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+  const { rows } = await query(`
+    SELECT date_trunc('day', cl.started_at) as period,
+           cl.api_key_id,
+           k.label as key_label,
+           k.key_hint,
+           SUM(cl.total_cost) as total_cost,
+           SUM(cl.total_tokens) as total_tokens,
+           COUNT(*) as request_count
+    FROM call_logs cl
+    JOIN api_keys k ON cl.api_key_id = k.id
+    ${where}
+    GROUP BY period, cl.api_key_id, k.label, k.key_hint
+    ORDER BY period ASC
+  `, params);
+  return rows;
+}
+
 export async function getTokenTrend({ from, to }) {
   const conditions = [];
   const params = [];

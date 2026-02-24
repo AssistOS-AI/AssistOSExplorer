@@ -21,6 +21,14 @@ export const handleMetrics = {
     sendJson(res, { rates, summary, breakdown, models });
   },
 
+  async activity(req, res, query) {
+    const [byKey, trend] = await Promise.all([
+      metricsDao.getCostsByKey(query),
+      metricsDao.getKeyTrend(query),
+    ]);
+    sendJson(res, { by_key: byKey, trend });
+  },
+
   async tokens(req, res, query) {
     const trend = await metricsDao.getTokenTrend(query);
     sendJson(res, { trend });

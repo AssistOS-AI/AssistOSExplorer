@@ -107,6 +107,9 @@ export async function apiRouter(req, res, pathname, query) {
   if (pathname === '/api/v1/metrics/costs') {
     if (method === 'GET') return handleMetrics.costs(req, res, query);
   }
+  if (pathname === '/api/v1/metrics/activity') {
+    if (method === 'GET') return handleMetrics.activity(req, res, query);
+  }
   if (pathname === '/api/v1/metrics/errors') {
     if (method === 'GET') return handleMetrics.errors(req, res, query);
   }

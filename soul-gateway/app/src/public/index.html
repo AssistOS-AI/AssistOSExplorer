@@ -194,6 +194,65 @@
         </div>
       </div>
 
+      <!-- Activity Page (Per-Key) -->
+      <div x-show="page === 'activity'" x-cloak>
+        <div x-data="activityPage()" x-init="init()">
+          <h2 class="text-lg font-bold mb-4">Key Activity</h2>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div class="card bg-base-100 shadow">
+              <div class="card-body">
+                <h2 class="card-title text-sm">Cost by Key</h2>
+                <canvas x-ref="keyCostChart" height="200"></canvas>
+              </div>
+            </div>
+            <div class="card bg-base-100 shadow">
+              <div class="card-body">
+                <h2 class="card-title text-sm">Daily Cost Trend</h2>
+                <canvas x-ref="keyTrendChart" height="200"></canvas>
+              </div>
+            </div>
+            <div class="card bg-base-100 shadow lg:col-span-2">
+              <div class="card-body p-0">
+                <table class="table table-sm">
+                  <thead><tr><th>Key</th><th>Family</th><th>Requests</th><th>Errors</th><th>Prompt Tokens</th><th>Completion</th><th>Total Tokens</th><th>Cost</th><th>Budget</th></tr></thead>
+                  <tbody>
+                    <template x-for="k in keyData" :key="k.api_key_id">
+                      <tr>
+                        <td>
+                          <div class="font-medium" x-text="k.key_label || '-'"></div>
+                          <div class="text-xs font-mono opacity-50" x-text="k.key_hint || ''"></div>
+                        </td>
+                        <td x-text="k.family_name"></td>
+                        <td x-text="k.request_count.toLocaleString()"></td>
+                        <td>
+                          <span x-show="k.error_count > 0" class="text-error font-medium" x-text="k.error_count"></span>
+                          <span x-show="k.error_count === 0" class="opacity-30">0</span>
+                        </td>
+                        <td x-text="formatTokens(k.prompt_tokens)"></td>
+                        <td x-text="formatTokens(k.completion_tokens)"></td>
+                        <td class="font-bold" x-text="formatTokens(k.total_tokens)"></td>
+                        <td class="font-mono" x-text="formatCost(k.total_cost)"></td>
+                        <td>
+                          <template x-if="budgetPct(k) != null">
+                            <div class="flex items-center gap-2">
+                              <progress class="progress w-16" :class="budgetPct(k) >= 90 ? 'progress-error' : budgetPct(k) >= 70 ? 'progress-warning' : 'progress-success'" :value="budgetPct(k)" max="100"></progress>
+                              <span class="text-xs" x-text="budgetPct(k).toFixed(0) + '%'"></span>
+                            </div>
+                          </template>
+                          <template x-if="budgetPct(k) == null">
+                            <span class="opacity-30">-</span>
+                          </template>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Costs Page -->
       <div x-show="page === 'costs'" x-cloak>
         <div x-data="costsPage()" x-init="init()">

@@ -40,6 +40,7 @@ function app() {
       { id: 'logs', label: 'Logs' },
       { id: 'errors', label: 'Errors' },
       { id: 'families', label: 'Families' },
+      { id: 'activity', label: 'Activity' },
       { id: 'costs', label: 'Usage' },
       { id: 'blacklist', label: 'Blacklist' },
     ],
@@ -364,6 +365,90 @@ function costsPage() {
         options: { responsive: true }
       });
     },
+  };
+}
+
+// ---- Activity Page (Per-Key) ----
+function activityPage() {
+  return {
+    keyData: [],
+    _charts: {},
+
+    async init() {
+      const data = await api.get('/api/v1/metrics/activity');
+      this.keyData = (data.by_key || []).map(k => ({
+        ...k,
+        total_cost: Number(k.total_cost || 0),
+        input_cost: Number(k.input_cost || 0),
+        output_cost: Number(k.output_cost || 0),
+        total_tokens: Number(k.total_tokens || 0),
+        prompt_tokens: Number(k.prompt_tokens || 0),
+        completion_tokens: Number(k.completion_tokens || 0),
+        request_count: Number(k.request_count || 0),
+        error_count: Number(k.error_count || 0),
+        key_budget: k.key_budget != null ? Number(k.key_budget) : null,
+        family_budget: k.family_budget != null ? Number(k.family_budget) : null,
+      }));
+
+      this.$nextTick(() => {
+        this.renderCostChart();
+        this.renderTrendChart(data.trend || []);
+      });
+    },
+
+    budgetPct(row) {
+      const budget = row.key_budget ?? row.family_budget;
+      if (budget == null || budget === 0) return null;
+      return Math.min(100, (row.total_cost / budget) * 100);
+    },
+
+    renderCostChart() {
+      const ctx = this.$refs.keyCostChart;
+      if (!ctx || this.keyData.length === 0) return;
+      if (this._charts.cost) this._charts.cost.destroy();
+      const sorted = [...this.keyData].sort((a, b) => b.total_cost - a.total_cost).slice(0, 15);
+      this._charts.cost = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: sorted.map(r => r.key_label || r.key_hint || r.api_key_id?.slice(0, 8)),
+          datasets: [
+            { label: 'Input Cost', data: sorted.map(r => r.input_cost), backgroundColor: '#36a2eb' },
+            { label: 'Output Cost', data: sorted.map(r => r.output_cost), backgroundColor: '#ff6384' },
+          ]
+        },
+        options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(2) } } } }
+      });
+    },
+
+    renderTrendChart(data) {
+      const ctx = this.$refs.keyTrendChart;
+      if (!ctx || data.length === 0) return;
+      if (this._charts.trend) this._charts.trend.destroy();
+
+      const keys = [...new Map(data.map(r => [r.api_key_id, r.key_label || r.key_hint || r.api_key_id?.slice(0, 8)])).entries()];
+      const periods = [...new Set(data.map(r => r.period))].sort();
+
+      this._charts.trend = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: periods.map(p => new Date(p).toLocaleDateString()),
+          datasets: keys.map(([kid, label], i) => ({
+            label,
+            data: periods.map(p => {
+              const row = data.find(r => r.period === p && r.api_key_id === kid);
+              return row ? Number(row.total_cost) : 0;
+            }),
+            borderColor: CHART_COLORS[i % CHART_COLORS.length],
+            fill: false,
+            tension: 0.3,
+          }))
+        },
+        options: { responsive: true, scales: { y: { ticks: { callback: v => '$' + v.toFixed(2) } } } }
+      });
+    },
+
+    formatCost(v) { return '$' + Number(v).toFixed(4); },
+    formatTokens(v) { return Number(v).toLocaleString(); },
   };
 }
 
