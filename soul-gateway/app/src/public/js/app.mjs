@@ -372,7 +372,12 @@ function costsPage() {
 function activityPage() {
   return {
     keyData: [],
-    _charts: {},
+    expandedKey: null,
+    keyLogs: [],
+    keyLogsTotal: 0,
+    keyLogsOffset: 0,
+    keyLogsLimit: 50,
+    expandedDetail: null,
 
     async init() {
       const data = await api.get('/api/v1/metrics/activity');
@@ -389,11 +394,6 @@ function activityPage() {
         key_budget: k.key_budget != null ? Number(k.key_budget) : null,
         family_budget: k.family_budget != null ? Number(k.family_budget) : null,
       }));
-
-      this.$nextTick(() => {
-        this.renderCostChart();
-        this.renderTrendChart(data.trend || []);
-      });
     },
 
     budgetPct(row) {
@@ -402,53 +402,34 @@ function activityPage() {
       return Math.min(100, (row.total_cost / budget) * 100);
     },
 
-    renderCostChart() {
-      const ctx = this.$refs.keyCostChart;
-      if (!ctx || this.keyData.length === 0) return;
-      if (this._charts.cost) this._charts.cost.destroy();
-      const sorted = [...this.keyData].sort((a, b) => b.total_cost - a.total_cost).slice(0, 15);
-      this._charts.cost = new Chart(ctx, {
-        type: 'bar',
-        data: {
-          labels: sorted.map(r => r.key_label || r.key_hint || r.api_key_id?.slice(0, 8)),
-          datasets: [
-            { label: 'Input Cost', data: sorted.map(r => r.input_cost), backgroundColor: '#36a2eb' },
-            { label: 'Output Cost', data: sorted.map(r => r.output_cost), backgroundColor: '#ff6384' },
-          ]
-        },
-        options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(2) } } } }
-      });
+    async toggleKey(k) {
+      if (this.expandedKey === k.api_key_id) {
+        this.expandedKey = null;
+        this.keyLogs = [];
+        return;
+      }
+      this.expandedKey = k.api_key_id;
+      this.keyLogsOffset = 0;
+      this.expandedDetail = null;
+      await this.loadKeyLogs();
     },
 
-    renderTrendChart(data) {
-      const ctx = this.$refs.keyTrendChart;
-      if (!ctx || data.length === 0) return;
-      if (this._charts.trend) this._charts.trend.destroy();
-
-      const keys = [...new Map(data.map(r => [r.api_key_id, r.key_label || r.key_hint || r.api_key_id?.slice(0, 8)])).entries()];
-      const periods = [...new Set(data.map(r => r.period))].sort();
-
-      this._charts.trend = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: periods.map(p => new Date(p).toLocaleDateString()),
-          datasets: keys.map(([kid, label], i) => ({
-            label,
-            data: periods.map(p => {
-              const row = data.find(r => r.period === p && r.api_key_id === kid);
-              return row ? Number(row.total_cost) : 0;
-            }),
-            borderColor: CHART_COLORS[i % CHART_COLORS.length],
-            fill: false,
-            tension: 0.3,
-          }))
-        },
-        options: { responsive: true, scales: { y: { ticks: { callback: v => '$' + v.toFixed(2) } } } }
-      });
+    async loadKeyLogs() {
+      const params = new URLSearchParams({ api_key_id: this.expandedKey, limit: this.keyLogsLimit, offset: this.keyLogsOffset });
+      const result = await api.get(`/api/v1/logs?${params}`);
+      this.keyLogs = result.rows || [];
+      this.keyLogsTotal = result.total || 0;
     },
 
-    formatCost(v) { return '$' + Number(v).toFixed(4); },
-    formatTokens(v) { return Number(v).toLocaleString(); },
+    async toggleDetail(log) {
+      if (this.expandedDetail === log.id) { this.expandedDetail = null; return; }
+      if (!log._detail) { log._detail = await api.get(`/api/v1/logs/${log.id}`); }
+      this.expandedDetail = log.id;
+    },
+
+    formatTime, formatDate,
+    formatCost(v) { return v ? '$' + Number(v).toFixed(4) : '-'; },
+    formatTokens(v) { return v ? Number(v).toLocaleString() : '-'; },
   };
 }
 
