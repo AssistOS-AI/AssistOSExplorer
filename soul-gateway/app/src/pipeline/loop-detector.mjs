@@ -46,10 +46,10 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
       `Loop detected: ${history.timestamps.length + 1} requests in ${WINDOW_MS / 1000}s window`);
   }
 
-  // 2. Repeated content detection
-  const lastUserMessage = findLastUserMessage(messages);
-  const contentHash = lastUserMessage
-    ? createHash('sha256').update(lastUserMessage).digest('hex').slice(0, 16)
+  // 2. Repeated content detection — hash the full messages array
+  //    so requests with different tool history/context are not flagged as duplicates
+  const contentHash = messages?.length
+    ? createHash('sha256').update(JSON.stringify(messages)).digest('hex').slice(0, 16)
     : null;
 
   if (contentHash) {
@@ -89,19 +89,6 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
   if (history.promptSizes.length > HISTORY_SIZE) {
     history.promptSizes = history.promptSizes.slice(-HISTORY_SIZE);
   }
-}
-
-/**
- * Extract the content string of the last user-role message.
- */
-function findLastUserMessage(messages) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
-      const content = messages[i].content;
-      return typeof content === 'string' ? content : JSON.stringify(content);
-    }
-  }
-  return null;
 }
 
 // --- Eviction: clean up stale sessions every 5 minutes ---
