@@ -244,6 +244,131 @@ describe('pipeline', () => {
     });
   });
 
+  describe('cost budget throttling', () => {
+    it('blocks request when family budget is exceeded', async () => {
+      // Create a family with a very low budget ($0.0001 — less than one request costs)
+      const famRes = await post('/api/v1/soul-families', {
+        name: 'budget-family-' + Date.now(),
+        description: 'Low budget family',
+        rpm_limit: 100,
+        tpm_limit: 200000,
+        monthly_budget: 0.0001,
+      });
+      const family = await famRes.json();
+
+      // Create a key for this family
+      const keyRes = await post('/api/v1/keys', {
+        family_id: family.id,
+        label: 'budget-test-key',
+      });
+      const budgetKey = (await keyRes.json()).key;
+
+      // First request — should succeed (no spend accumulated yet)
+      const res1 = await chatCompletions({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'budget-test-1-' + Date.now() }],
+        stream: false,
+      }, budgetKey);
+      assert.equal(res1.status, 200);
+      await res1.json();
+
+      // Wait briefly for the log to be written and cache to update
+      await new Promise(r => setTimeout(r, 100));
+
+      // Second request — family budget should be exceeded now
+      const res2 = await chatCompletions({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'budget-test-2-' + Date.now() }],
+        stream: false,
+      }, budgetKey);
+      assert.equal(res2.status, 429);
+      const body2 = await res2.json();
+      assert.equal(body2.error.type, 'budget_exceeded');
+      assert.ok(body2.error.message.includes('family'));
+    });
+
+    it('blocks request when key budget is exceeded', async () => {
+      // Create a family with no budget limit
+      const famRes = await post('/api/v1/soul-families', {
+        name: 'key-budget-family-' + Date.now(),
+        description: 'Unlimited family',
+        rpm_limit: 100,
+        tpm_limit: 200000,
+      });
+      const family = await famRes.json();
+
+      // Create a key with a very low budget
+      const keyRes = await post('/api/v1/keys', {
+        family_id: family.id,
+        label: 'low-budget-key',
+        monthly_budget: 0.0001,
+      });
+      const budgetKey = (await keyRes.json()).key;
+
+      // First request — should succeed
+      const res1 = await chatCompletions({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'key-budget-1-' + Date.now() }],
+        stream: false,
+      }, budgetKey);
+      assert.equal(res1.status, 200);
+      await res1.json();
+
+      await new Promise(r => setTimeout(r, 100));
+
+      // Second request — key budget should be exceeded
+      const res2 = await chatCompletions({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'key-budget-2-' + Date.now() }],
+        stream: false,
+      }, budgetKey);
+      assert.equal(res2.status, 429);
+      const body2 = await res2.json();
+      assert.equal(body2.error.type, 'budget_exceeded');
+      assert.ok(body2.error.message.includes('key'));
+    });
+
+    it('allows requests when budget is null (unlimited)', async () => {
+      // The main test family has no budget — requests should always work
+      const res = await chatCompletions({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'no-budget-' + Date.now() }],
+        stream: false,
+      }, apiKey);
+      assert.equal(res.status, 200);
+    });
+
+    it('returns Retry-After header on budget exceeded', async () => {
+      // Create a family with zero budget (immediately exceeded)
+      const famRes = await post('/api/v1/soul-families', {
+        name: 'zero-budget-family-' + Date.now(),
+        rpm_limit: 100,
+        tpm_limit: 200000,
+        monthly_budget: 0,
+      });
+      const family = await famRes.json();
+
+      const keyRes = await post('/api/v1/keys', {
+        family_id: family.id,
+        label: 'zero-budget-key',
+      });
+      const budgetKey = (await keyRes.json()).key;
+
+      // Any request should be blocked since budget is 0
+      // But we need at least one logged request first so SUM > 0
+      // Actually with budget=0, even SUM=0 means 0 >= 0 → blocked
+      const res = await chatCompletions({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'zero-budget-' + Date.now() }],
+        stream: false,
+      }, budgetKey);
+      assert.equal(res.status, 429);
+      const retryAfter = res.headers.get('retry-after');
+      assert.ok(retryAfter, 'Should include Retry-After header');
+      assert.ok(Number(retryAfter) > 0, 'Retry-After should be positive');
+    });
+  });
+
   describe('model queue serialization', () => {
     it('serializes concurrent requests to the same model', async () => {
       // Add latency so requests overlap
