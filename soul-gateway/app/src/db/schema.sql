@@ -122,7 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_call_logs_error ON call_logs(error_type) WHERE er
 CREATE INDEX IF NOT EXISTS idx_call_logs_blocked ON call_logs(blocked_by_blacklist) WHERE blocked_by_blacklist = true;
 CREATE INDEX IF NOT EXISTS idx_call_logs_session ON call_logs(api_key_id, session_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_call_logs_key_started ON call_logs(api_key_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_call_logs_prompt_hash ON call_logs(prompt_hash, resolved_model) WHERE prompt_hash IS NOT NULL AND status_code = 200;
+-- idx_call_logs_prompt_hash is created in migrate() after the column is added
 
 -- Rate Limit State
 CREATE TABLE IF NOT EXISTS rate_limit_state (
