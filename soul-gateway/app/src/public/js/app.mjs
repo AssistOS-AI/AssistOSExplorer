@@ -290,79 +290,110 @@ function logsPage() {
 // ---- Costs Page ----
 function costsPage() {
   return {
-    familyCosts: [],
-    _charts: {},
+    // Month navigation
+    year: new Date().getFullYear(),
+    month: new Date().getMonth(), // 0-indexed
+    // Filters
+    filterModel: '',
+    filterKey: '',
+    availableModels: [],
+    availableKeys: [],
+    // Data
+    totalCost: 0,
+    totalTokens: 0,
+    totalRequests: 0,
+    _chart: null,
+    _dailyData: [],
+
+    get monthLabel() {
+      return new Date(this.year, this.month).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    },
+
+    get from() {
+      return new Date(this.year, this.month, 1).toISOString();
+    },
+
+    get to() {
+      return new Date(this.year, this.month + 1, 1).toISOString();
+    },
 
     async init() {
-      const data = await api.get('/api/v1/metrics/costs');
-      this.familyCosts = data.by_family || [];
-
-      this.$nextTick(() => {
-        this.renderFamilyChart(data.by_family || []);
-        this.renderModelChart(data.by_model || []);
-        this.renderTrendChart(data.trend || []);
-      });
+      this.availableKeys = await api.get('/api/v1/keys');
+      await this.load();
     },
 
-    renderFamilyChart(data) {
-      const ctx = this.$refs.familyTokenChart;
+    async load() {
+      const params = new URLSearchParams({ from: this.from, to: this.to });
+      if (this.filterModel) params.set('model', this.filterModel);
+      if (this.filterKey) params.set('api_key_id', this.filterKey);
+      const data = await api.get(`/api/v1/metrics/usage?${params}`);
+
+      this.totalCost = Number(data.total?.total_cost || 0);
+      this.totalTokens = Number(data.total?.total_tokens || 0);
+      this.totalRequests = Number(data.total?.request_count || 0);
+      this.availableModels = data.models || [];
+      this._dailyData = data.daily_by_model || [];
+
+      this.$nextTick(() => this.renderChart());
+    },
+
+    prevMonth() {
+      if (this.month === 0) { this.year--; this.month = 11; }
+      else this.month--;
+      this.load();
+    },
+
+    nextMonth() {
+      if (this.month === 11) { this.year++; this.month = 0; }
+      else this.month++;
+      this.load();
+    },
+
+    onFilterChange() { this.load(); },
+
+    renderChart() {
+      const ctx = this.$refs.usageChart;
       if (!ctx) return;
-      if (this._charts.family) this._charts.family.destroy();
-      this._charts.family = new Chart(ctx, {
+      if (this._chart) this._chart.destroy();
+
+      const data = this._dailyData;
+      if (data.length === 0) { this._chart = null; return; }
+
+      const models = [...new Set(data.map(r => r.resolved_model))].filter(Boolean);
+      // Build all days in the month
+      const days = [];
+      const d = new Date(this.year, this.month, 1);
+      const endOfMonth = new Date(this.year, this.month + 1, 1);
+      while (d < endOfMonth) {
+        days.push(new Date(d));
+        d.setDate(d.getDate() + 1);
+      }
+
+      // Map data by day+model
+      const dataMap = new Map();
+      for (const r of data) {
+        const key = new Date(r.period).toDateString() + '||' + r.resolved_model;
+        dataMap.set(key, Number(r.total_cost || 0));
+      }
+
+      this._chart = new Chart(ctx, {
         type: 'bar',
         data: {
-          labels: data.map(r => r.family_name || 'unknown'),
-          datasets: [{
-            label: 'Total Tokens',
-            data: data.map(r => Number(r.total_tokens || 0)),
-            backgroundColor: CHART_COLORS,
-          }]
-        },
-        options: { responsive: true, plugins: { legend: { display: false } } }
-      });
-    },
-
-    renderModelChart(data) {
-      const ctx = this.$refs.modelTokenChart;
-      if (!ctx) return;
-      if (this._charts.model) this._charts.model.destroy();
-      this._charts.model = new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-          labels: data.map(r => r.resolved_model || 'unknown'),
-          datasets: [{
-            data: data.map(r => Number(r.total_tokens || 0)),
-            backgroundColor: CHART_COLORS,
-          }]
-        },
-        options: { responsive: true }
-      });
-    },
-
-    renderTrendChart(data) {
-      const ctx = this.$refs.tokenTrendChart;
-      if (!ctx) return;
-      if (this._charts.trend) this._charts.trend.destroy();
-
-      const families = [...new Set(data.map(r => r.family_name))];
-      const periods = [...new Set(data.map(r => r.period))].sort();
-
-      this._charts.trend = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: periods.map(p => new Date(p).toLocaleDateString()),
-          datasets: families.map((fam, i) => ({
-            label: fam || 'unknown',
-            data: periods.map(p => {
-              const row = data.find(r => r.period === p && r.family_name === fam);
-              return row ? Number(row.total_tokens) : 0;
-            }),
-            borderColor: CHART_COLORS[i % CHART_COLORS.length],
-            fill: false,
-            tension: 0.3,
+          labels: days.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
+          datasets: models.map((model, i) => ({
+            label: model,
+            data: days.map(day => dataMap.get(day.toDateString() + '||' + model) || 0),
+            backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
           }))
         },
-        options: { responsive: true }
+        options: {
+          responsive: true,
+          scales: {
+            x: { stacked: true },
+            y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(0) } },
+          },
+          plugins: { legend: { position: 'bottom' } },
+        }
       });
     },
   };

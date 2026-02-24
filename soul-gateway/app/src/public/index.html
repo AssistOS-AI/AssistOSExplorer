@@ -324,42 +324,43 @@
       <!-- Costs Page -->
       <div x-show="page === 'costs'" x-cloak>
         <div x-data="costsPage()" x-init="init()">
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div class="card bg-base-100 shadow">
-              <div class="card-body">
-                <h2 class="card-title text-sm">Tokens by Family</h2>
-                <canvas x-ref="familyTokenChart" height="200"></canvas>
-              </div>
+          <!-- Header -->
+          <div class="flex justify-between items-start mb-6">
+            <div>
+              <h2 class="text-xl font-bold">Cost</h2>
+              <p class="text-sm opacity-60">Usage costs broken down by model.</p>
             </div>
-            <div class="card bg-base-100 shadow">
-              <div class="card-body">
-                <h2 class="card-title text-sm">Tokens by Model</h2>
-                <canvas x-ref="modelTokenChart" height="200"></canvas>
-              </div>
+            <div class="text-right">
+              <div class="text-sm opacity-60">Current month</div>
+              <div class="text-2xl font-bold font-mono" x-text="'$' + totalCost.toFixed(2)"></div>
+              <div class="text-xs opacity-40" x-text="totalRequests.toLocaleString() + ' requests  ·  ' + totalTokens.toLocaleString() + ' tokens'"></div>
             </div>
-            <div class="card bg-base-100 shadow lg:col-span-2">
-              <div class="card-body">
-                <h2 class="card-title text-sm">Token Usage Trend</h2>
-                <canvas x-ref="tokenTrendChart" height="150"></canvas>
-              </div>
+          </div>
+          <!-- Controls -->
+          <div class="flex items-center gap-3 mb-4">
+            <div class="join border border-base-300 rounded-lg">
+              <button class="join-item btn btn-sm btn-ghost" @click="prevMonth()">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+              </button>
+              <span class="join-item btn btn-sm btn-ghost no-animation font-medium min-w-[10rem]" x-text="monthLabel"></span>
+              <button class="join-item btn btn-sm btn-ghost" @click="nextMonth()">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+              </button>
             </div>
-            <div class="card bg-base-100 shadow lg:col-span-2">
-              <div class="card-body p-0">
-                <table class="table table-sm">
-                  <thead><tr><th>Family</th><th>Requests</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Total Tokens</th></tr></thead>
-                  <tbody>
-                    <template x-for="r in familyCosts" :key="r.family_name">
-                      <tr>
-                        <td x-text="r.family_name"></td>
-                        <td x-text="r.request_count"></td>
-                        <td x-text="Number(r.prompt_tokens || 0).toLocaleString()"></td>
-                        <td x-text="Number(r.completion_tokens || 0).toLocaleString()"></td>
-                        <td class="font-bold" x-text="Number(r.total_tokens || 0).toLocaleString()"></td>
-                      </tr>
-                    </template>
-                  </tbody>
-                </table>
-              </div>
+            <select class="select select-bordered select-sm" x-model="filterModel" @change="onFilterChange()">
+              <option value="">All Models</option>
+              <template x-for="m in availableModels" :key="m"><option :value="m" x-text="m"></option></template>
+            </select>
+            <select class="select select-bordered select-sm" x-model="filterKey" @change="onFilterChange()">
+              <option value="">All Keys</option>
+              <template x-for="k in availableKeys" :key="k.id"><option :value="k.id" x-text="k.label || k.key_hint || k.id.slice(0,8)"></option></template>
+            </select>
+          </div>
+          <!-- Chart -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <canvas x-ref="usageChart" height="120"></canvas>
+              <div x-show="_dailyData.length === 0" class="text-center opacity-50 py-8">No usage data for this period</div>
             </div>
           </div>
         </div>

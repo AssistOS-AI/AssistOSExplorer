@@ -66,6 +66,60 @@ export async function getCostTrend({ from, to, granularity }) {
   return rows;
 }
 
+export async function getDailyCostByModel({ from, to, model, api_key_id }) {
+  const conditions = [];
+  const params = [];
+  let idx = 1;
+  if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
+  if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
+  if (model) { conditions.push(`resolved_model = $${idx++}`); params.push(model); }
+  if (api_key_id) { conditions.push(`api_key_id = $${idx++}`); params.push(api_key_id); }
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+  const { rows } = await query(`
+    SELECT date_trunc('day', started_at) as period,
+           resolved_model,
+           SUM(total_cost) as total_cost
+    FROM call_logs ${where}
+    GROUP BY period, resolved_model
+    ORDER BY period ASC
+  `, params);
+  return rows;
+}
+
+export async function getMonthTotal({ from, to, model, api_key_id }) {
+  const conditions = [];
+  const params = [];
+  let idx = 1;
+  if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
+  if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
+  if (model) { conditions.push(`resolved_model = $${idx++}`); params.push(model); }
+  if (api_key_id) { conditions.push(`api_key_id = $${idx++}`); params.push(api_key_id); }
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+  const { rows } = await query(`
+    SELECT COALESCE(SUM(total_cost), 0) as total_cost,
+           COALESCE(SUM(total_tokens), 0) as total_tokens,
+           COUNT(*) as request_count
+    FROM call_logs ${where}
+  `, params);
+  return rows[0];
+}
+
+export async function getDistinctModels({ from, to }) {
+  const conditions = ['resolved_model IS NOT NULL'];
+  const params = [];
+  let idx = 1;
+  if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
+  if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
+  const where = 'WHERE ' + conditions.join(' AND ');
+
+  const { rows } = await query(`
+    SELECT DISTINCT resolved_model FROM call_logs ${where} ORDER BY resolved_model
+  `, params);
+  return rows.map(r => r.resolved_model);
+}
+
 export async function getErrorBreakdown({ from, to }) {
   const conditions = ['error_type IS NOT NULL'];
   const params = [];
