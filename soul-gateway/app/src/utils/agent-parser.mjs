@@ -19,12 +19,20 @@ const AGENT_PATTERNS = [
 ];
 
 /**
- * Parse the User-Agent header to detect which AI agent is making the request.
+ * Parse request headers to detect which AI agent is making the request.
+ * Checks x-coding-assistant header first, then falls back to User-Agent patterns.
  *
  * @param {string} userAgent - User-Agent header value
+ * @param {string} [codingAssistant] - x-coding-assistant header value (e.g. "aider-0.72.1")
  * @returns {string} Agent name or "unknown"
  */
-export function parseAgentName(userAgent) {
+export function parseAgentName(userAgent, codingAssistant) {
+  // Check x-coding-assistant header first (e.g. "aider-0.72.1" → "aider")
+  if (codingAssistant) {
+    const name = codingAssistant.split('-')[0].toLowerCase();
+    if (name) return name;
+  }
+
   if (!userAgent) return 'unknown';
 
   // Try known patterns

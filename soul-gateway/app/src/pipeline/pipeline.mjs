@@ -47,7 +47,7 @@ export async function pipeline(req, res) {
     logEntry.api_key_id = authCtx.api_key_id;
 
     // 2. Agent & session identification
-    const agentName = req.headers['x-soul-agent'] || parseAgentName(req.headers['user-agent']);
+    const agentName = req.headers['x-soul-agent'] || parseAgentName(req.headers['user-agent'], req.headers['x-coding-assistant']);
     const sessionId = req.headers['x-soul-session'] || await resolveSession(authCtx.api_key_id, agentName);
     logEntry.agent_name = agentName;
     logEntry.session_id = sessionId;
