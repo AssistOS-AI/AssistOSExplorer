@@ -5,7 +5,7 @@ import { createLogger } from '../utils/logger.mjs';
 const log = createLogger('loop-detector');
 
 // --- Thresholds ---
-const MAX_REQUESTS_PER_WINDOW = 15;
+const MAX_REQUESTS_PER_WINDOW = 50;
 const WINDOW_MS = 60_000;
 const MAX_IDENTICAL_REQUESTS = 3;
 const TOKEN_EXPLOSION_STREAK = 5;
