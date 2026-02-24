@@ -613,7 +613,7 @@ function modelsPage() {
     providerModelsError: '',
     showCreate: false,
     editing: null,
-    form: { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0 },
+    form: { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3 },
 
     async init() {
       [this.models, this.providers] = await Promise.all([
@@ -662,6 +662,7 @@ function modelsPage() {
         mode: m.mode,
         input_price: m.input_price || 0,
         output_price: m.output_price || 0,
+        max_concurrency: m.max_concurrency || 3,
       };
       this.showCreate = true;
       this.fetchProviderModels();
@@ -675,7 +676,7 @@ function modelsPage() {
       }
       this.showCreate = false;
       this.editing = null;
-      this.form = { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0 };
+      this.form = { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3 };
       this.providerModels = [];
       this.models = await api.get('/api/v1/models');
     },

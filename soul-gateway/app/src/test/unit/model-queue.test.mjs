@@ -13,12 +13,12 @@ describe('model-queue', () => {
     release();
   });
 
-  it('serializes requests to the same model', async () => {
+  it('serializes requests when concurrency is 1', async () => {
     const order = [];
 
-    const release1 = await acquireModelSlot('model-serial');
+    const release1 = await acquireModelSlot('model-serial', 1);
     // Start second request — should be blocked until release1() is called
-    const slot2Promise = acquireModelSlot('model-serial');
+    const slot2Promise = acquireModelSlot('model-serial', 1);
 
     // Slot 1 is held — do some "work"
     order.push('slot1-acquired');
@@ -36,11 +36,40 @@ describe('model-queue', () => {
     assert.deepEqual(order, ['slot1-acquired', 'slot1-releasing', 'slot2-acquired']);
   });
 
+  it('allows concurrent requests up to max_concurrency', async () => {
+    const events = [];
+
+    // Allow 2 concurrent for this model
+    const release1 = await acquireModelSlot('model-conc2', 2);
+    const release2 = await acquireModelSlot('model-conc2', 2);
+
+    // Both acquired simultaneously — no blocking
+    events.push('both-acquired');
+
+    // Third should block
+    const slot3Promise = acquireModelSlot('model-conc2', 2);
+    let slot3Resolved = false;
+    slot3Promise.then(() => { slot3Resolved = true; });
+
+    await new Promise(r => setTimeout(r, 20));
+    assert.ok(!slot3Resolved, 'Slot 3 should be waiting');
+    events.push('slot3-waiting');
+
+    release1();
+    const release3 = await slot3Promise;
+    events.push('slot3-acquired');
+
+    release2();
+    release3();
+
+    assert.deepEqual(events, ['both-acquired', 'slot3-waiting', 'slot3-acquired']);
+  });
+
   it('allows different models to run concurrently', async () => {
     const events = [];
 
-    const releaseA = await acquireModelSlot('model-a');
-    const releaseB = await acquireModelSlot('model-b');
+    const releaseA = await acquireModelSlot('model-a', 1);
+    const releaseB = await acquireModelSlot('model-b', 1);
 
     // Both acquired simultaneously — no blocking
     events.push('both-acquired');
@@ -55,11 +84,11 @@ describe('model-queue', () => {
   it('queues multiple waiters in FIFO order', async () => {
     const order = [];
 
-    const release1 = await acquireModelSlot('model-fifo');
+    const release1 = await acquireModelSlot('model-fifo', 1);
 
     // Queue up slots 2 and 3
-    const slot2Promise = acquireModelSlot('model-fifo');
-    const slot3Promise = acquireModelSlot('model-fifo');
+    const slot2Promise = acquireModelSlot('model-fifo', 1);
+    const slot3Promise = acquireModelSlot('model-fifo', 1);
 
     // Release slot 1 → slot 2 should acquire
     release1();
@@ -86,8 +115,8 @@ describe('model-queue', () => {
   });
 
   it('slot is available to next waiter even if holder throws', async () => {
-    const release1 = await acquireModelSlot('model-error');
-    const slot2Promise = acquireModelSlot('model-error');
+    const release1 = await acquireModelSlot('model-error', 1);
+    const slot2Promise = acquireModelSlot('model-error', 1);
 
     // Simulate error in slot 1 holder — release in finally block
     let caught = false;
@@ -113,8 +142,8 @@ describe('model-queue', () => {
   });
 
   it('measures wait time under contention', async () => {
-    const release1 = await acquireModelSlot('model-wait');
-    const slot2Promise = acquireModelSlot('model-wait');
+    const release1 = await acquireModelSlot('model-wait', 1);
+    const slot2Promise = acquireModelSlot('model-wait', 1);
 
     const waitStart = Date.now();
     // Hold for ~50ms

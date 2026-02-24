@@ -598,6 +598,7 @@
                 <label class="label" x-show="providerModelsError"><span class="label-text-alt text-error" x-text="providerModelsError"></span></label>
               </div>
               <div class="form-control"><label class="label">Mode</label><select class="select select-bordered" x-model="form.mode"><option>deep</option><option>fast</option></select></div>
+              <div class="form-control"><label class="label">Max Concurrency</label><input type="number" min="1" max="20" class="input input-bordered" x-model.number="form.max_concurrency"></div>
               <div class="grid grid-cols-2 gap-2">
                 <div class="form-control"><label class="label">Input Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.input_price" readonly></div>
                 <div class="form-control"><label class="label">Output Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.output_price" readonly></div>
@@ -612,7 +613,7 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-sm">
-                <thead><tr><th>Name</th><th>Provider</th><th>Provider Model</th><th>Mode</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Name</th><th>Provider</th><th>Provider Model</th><th>Mode</th><th>Concurrency</th><th>Enabled</th><th>Actions</th></tr></thead>
                 <tbody>
                   <template x-for="m in models" :key="m.id">
                     <tr :class="{'opacity-40': !m.is_enabled}">
@@ -620,6 +621,7 @@
                       <td x-text="m.provider_key || '-'" class="font-mono text-xs"></td>
                       <td x-text="m.provider_model || '-'" class="font-mono text-xs"></td>
                       <td><span class="badge badge-sm" :class="m.mode === 'deep' ? 'badge-primary' : 'badge-secondary'" x-text="m.mode"></span></td>
+                      <td x-text="m.max_concurrency || 3"></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="m.is_enabled" @change="toggle(m)"></td>
                       <td class="flex gap-1">
                         <button class="btn btn-ghost btn-xs" @click="edit(m)">Edit</button>

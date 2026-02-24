@@ -48,5 +48,6 @@ export async function resolveModel(requestedModel, familyContext) {
     mode: modelConfig.mode,
     inputPrice: parseFloat(modelConfig.input_price) || 0,
     outputPrice: parseFloat(modelConfig.output_price) || 0,
+    maxConcurrency: parseInt(modelConfig.max_concurrency) || 3,
   };
 }

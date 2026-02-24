@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS model_configs (
     mode TEXT DEFAULT 'deep',
     input_price NUMERIC DEFAULT 0,
     output_price NUMERIC DEFAULT 0,
+    max_concurrency INT DEFAULT 3,
     is_enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT now()
 );

@@ -80,6 +80,8 @@ async function migrate(p) {
   await p.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC`);
   // Index for per-key budget aggregation
   await p.query(`CREATE INDEX IF NOT EXISTS idx_call_logs_key_started ON call_logs(api_key_id, started_at)`);
+  // Add max_concurrency to model_configs
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS max_concurrency INT DEFAULT 3`);
 }
 
 async function ensurePartitions() {

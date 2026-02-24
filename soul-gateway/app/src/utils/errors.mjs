@@ -60,6 +60,13 @@ export class BudgetExceededError extends SoulGatewayError {
   }
 }
 
+export class QueueTimeoutError extends SoulGatewayError {
+  constructor(model, waitMs) {
+    super(`Model queue timeout for ${model} after ${Math.round(waitMs / 1000)}s`, 503, 'queue_timeout');
+    this.retryAfter = 10;
+  }
+}
+
 export class UpstreamError extends SoulGatewayError {
   constructor(message, status = 502, type = 'upstream_error') {
     super(message, status, type);

@@ -152,8 +152,8 @@ export async function pipeline(req, res) {
       }
     }
 
-    // 12. Acquire model slot (serializes requests per model)
-    const releaseSlot = await acquireModelSlot(modelInfo.resolvedModel);
+    // 12. Acquire model slot (concurrency-limited per model)
+    const releaseSlot = await acquireModelSlot(modelInfo.resolvedModel, modelInfo.maxConcurrency);
     let result;
     try {
       // 13. Dispatch with retry
