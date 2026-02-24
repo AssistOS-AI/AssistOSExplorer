@@ -597,8 +597,12 @@
               <div class="form-control"><label class="label">Provider Model</label>
                 <select class="select select-bordered" x-model="form.provider_model" :disabled="loadingProviderModels" @change="onProviderModelChange()">
                   <option value="" disabled x-text="loadingProviderModels ? 'Loading models...' : 'Select model...'"></option>
-                  <template x-for="m in providerModels" :key="m.id">
-                    <option :value="m.id" x-text="m.id + (m.owned_by ? ' (' + m.owned_by + ')' : '')"></option>
+                  <template x-for="[source, models] in groupedProviderModels" :key="source">
+                    <optgroup :label="source">
+                      <template x-for="m in models" :key="m.id">
+                        <option :value="m.id" x-text="m.id"></option>
+                      </template>
+                    </optgroup>
                   </template>
                 </select>
                 <label class="label" x-show="providerModelsError"><span class="label-text-alt text-error" x-text="providerModelsError"></span></label>
@@ -619,13 +623,14 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-sm">
-                <thead><tr><th>Name</th><th>Provider</th><th>Provider Model</th><th>Mode</th><th>Concurrency</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Name</th><th>Provider</th><th>Provider Model</th><th>Source</th><th>Mode</th><th>Concurrency</th><th>Enabled</th><th>Actions</th></tr></thead>
                 <tbody>
                   <template x-for="m in models" :key="m.id">
                     <tr :class="{'opacity-40': !m.is_enabled}">
                       <td x-text="m.name" class="font-mono"></td>
                       <td x-text="m.provider_key || '-'" class="font-mono text-xs"></td>
                       <td x-text="m.provider_model || '-'" class="font-mono text-xs"></td>
+                      <td><span class="badge badge-ghost badge-sm" x-text="m.upstream_source || '-'"></span></td>
                       <td><span class="badge badge-sm" :class="m.mode === 'deep' ? 'badge-primary' : 'badge-secondary'" x-text="m.mode"></span></td>
                       <td x-text="m.max_concurrency || 3"></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="m.is_enabled" @change="toggle(m)"></td>

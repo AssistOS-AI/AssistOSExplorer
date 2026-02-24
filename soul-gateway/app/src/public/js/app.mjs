@@ -615,7 +615,7 @@ function modelsPage() {
     providerModelsError: '',
     showCreate: false,
     editing: null,
-    form: { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3 },
+    form: { name: '', provider_key: '', provider_model: '', upstream_source: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3 },
 
     async init() {
       [this.models, this.providers] = await Promise.all([
@@ -652,7 +652,17 @@ function modelsPage() {
       if (selected) {
         this.form.input_price = selected.input_price;
         this.form.output_price = selected.output_price;
+        this.form.upstream_source = selected.owned_by || '';
       }
+    },
+
+    get groupedProviderModels() {
+      const groups = {};
+      for (const m of this.providerModels) {
+        const key = m.owned_by || 'other';
+        (groups[key] ||= []).push(m);
+      }
+      return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
     },
 
     edit(m) {
@@ -661,6 +671,7 @@ function modelsPage() {
         name: m.name,
         provider_key: m.provider_key || '',
         provider_model: m.provider_model || '',
+        upstream_source: m.upstream_source || '',
         mode: m.mode,
         input_price: m.input_price || 0,
         output_price: m.output_price || 0,
@@ -678,7 +689,7 @@ function modelsPage() {
       }
       this.showCreate = false;
       this.editing = null;
-      this.form = { name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3 };
+      this.form = { name: '', provider_key: '', provider_model: '', upstream_source: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3 };
       this.providerModels = [];
       this.models = await api.get('/api/v1/models');
     },

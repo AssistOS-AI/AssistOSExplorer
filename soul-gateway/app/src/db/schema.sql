@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS model_configs (
     upstream_model TEXT,
     provider_key TEXT,
     provider_model TEXT,
+    upstream_source TEXT,
     mode TEXT DEFAULT 'deep',
     input_price NUMERIC DEFAULT 0,
     output_price NUMERIC DEFAULT 0,

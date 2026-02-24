@@ -82,9 +82,35 @@ async function migrate(p) {
   await p.query(`CREATE INDEX IF NOT EXISTS idx_call_logs_key_started ON call_logs(api_key_id, started_at)`);
   // Add max_concurrency to model_configs
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS max_concurrency INT DEFAULT 3`);
+  // Add upstream_source to model_configs (e.g. 'google', 'openrouter', 'openai')
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS upstream_source TEXT`);
   // Add per-family loop detection thresholds
   await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS loop_rpm_limit INT`);
   await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS loop_max_identical INT`);
+
+  // Migrate axiologic_proxy models to use CLIProxyAPI prefixed model names
+  const prefixMigrations = [
+    { old: 'gpt-5.3-codex', new: 'codex/gpt-5.3-codex', source: 'codex' },
+  ];
+  for (const m of prefixMigrations) {
+    await p.query(`
+      UPDATE model_configs SET provider_model = $1, upstream_source = COALESCE(upstream_source, $3)
+      WHERE provider_key = 'axiologic_proxy' AND provider_model = $2
+    `, [m.new, m.old, m.source]);
+  }
+
+  // Populate upstream_source for existing models that don't have it
+  const sourceByProvider = [
+    ['anthropic', 'anthropic'],
+    ['openai', 'openai'],
+    ['google', 'google'],
+  ];
+  for (const [providerKey, source] of sourceByProvider) {
+    await p.query(`
+      UPDATE model_configs SET upstream_source = $1
+      WHERE provider_key = $2 AND upstream_source IS NULL
+    `, [source, providerKey]);
+  }
 }
 
 async function ensurePartitions() {
@@ -150,20 +176,20 @@ async function seedDefaults() {
   if (models.length === 0) {
     log.info('Seeding model configs...');
     const defaultModels = [
-      { name: 'axiologic-deep', providerKey: 'axiologic_proxy', providerModel: 'claude-opus-4.6', mode: 'deep', inputPrice: 5, outputPrice: 25 },
-      { name: 'axiologic-fast', providerKey: 'axiologic_proxy', providerModel: 'claude-sonnet-4.5', mode: 'fast', inputPrice: 1, outputPrice: 5 },
-      { name: 'axiologic-ultra', providerKey: 'axiologic_proxy', providerModel: 'gpt-5.3-codex', mode: 'deep', inputPrice: 3, outputPrice: 15 },
-      { name: 'claude-opus-4.6', providerKey: 'anthropic', providerModel: 'claude-opus-4-6', mode: 'deep', inputPrice: 5, outputPrice: 25 },
-      { name: 'claude-sonnet-4.5', providerKey: 'anthropic', providerModel: 'claude-sonnet-4-5', mode: 'fast', inputPrice: 3, outputPrice: 15 },
-      { name: 'gpt-5.3-codex', providerKey: 'openai', providerModel: 'gpt-5.3-codex', mode: 'deep', inputPrice: 3, outputPrice: 15 },
-      { name: 'gemini-2.5-pro', providerKey: 'google', providerModel: 'gemini-2.5-pro', mode: 'deep', inputPrice: 1.25, outputPrice: 10 },
+      { name: 'axiologic-deep', providerKey: 'axiologic_proxy', providerModel: 'claude-opus-4.6', upstreamSource: 'anthropic', mode: 'deep', inputPrice: 5, outputPrice: 25 },
+      { name: 'axiologic-fast', providerKey: 'axiologic_proxy', providerModel: 'claude-sonnet-4.5', upstreamSource: 'anthropic', mode: 'fast', inputPrice: 1, outputPrice: 5 },
+      { name: 'axiologic-ultra', providerKey: 'axiologic_proxy', providerModel: 'codex/gpt-5.3-codex', upstreamSource: 'codex', mode: 'deep', inputPrice: 3, outputPrice: 15 },
+      { name: 'claude-opus-4.6', providerKey: 'anthropic', providerModel: 'claude-opus-4-6', upstreamSource: 'anthropic', mode: 'deep', inputPrice: 5, outputPrice: 25 },
+      { name: 'claude-sonnet-4.5', providerKey: 'anthropic', providerModel: 'claude-sonnet-4-5', upstreamSource: 'anthropic', mode: 'fast', inputPrice: 3, outputPrice: 15 },
+      { name: 'gpt-5.3-codex', providerKey: 'openai', providerModel: 'gpt-5.3-codex', upstreamSource: 'openai', mode: 'deep', inputPrice: 3, outputPrice: 15 },
+      { name: 'gemini-2.5-pro', providerKey: 'google', providerModel: 'gemini-2.5-pro', upstreamSource: 'google', mode: 'deep', inputPrice: 1.25, outputPrice: 10 },
     ];
     for (const m of defaultModels) {
       await query(`
-        INSERT INTO model_configs (name, provider_key, provider_model, mode, input_price, output_price)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO model_configs (name, provider_key, provider_model, upstream_source, mode, input_price, output_price)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (name) DO NOTHING
-      `, [m.name, m.providerKey, m.providerModel, m.mode, m.inputPrice, m.outputPrice]);
+      `, [m.name, m.providerKey, m.providerModel, m.upstreamSource, m.mode, m.inputPrice, m.outputPrice]);
     }
     log.info('Seeded model configs');
   }
