@@ -61,6 +61,7 @@ export async function apiRouter(req, res, pathname, query) {
   }
   params = matchPath('/api/v1/keys/:id', pathname);
   if (params) {
+    if (method === 'PUT') return handleKeys.update(req, res, params);
     if (method === 'DELETE') return handleKeys.revoke(req, res, params);
   }
 

@@ -540,6 +540,19 @@
             </div>
             <div class="modal-backdrop" @click="showCreate = false"></div>
           </dialog>
+          <!-- Edit key modal -->
+          <dialog class="modal" :class="{'modal-open': showEdit}">
+            <div class="modal-box">
+              <h3 class="font-bold text-lg">Edit API Key</h3>
+              <div class="form-control"><label class="label">Label</label><input type="text" class="input input-bordered" x-model="editForm.label"></div>
+              <div class="form-control"><label class="label">Monthly Budget ($)</label><input type="number" step="0.01" class="input input-bordered" x-model="editForm.monthly_budget" placeholder="Leave empty for unlimited"></div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showEdit = false; editing = null">Cancel</button>
+                <button class="btn btn-primary" @click="saveEdit()">Save</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showEdit = false; editing = null"></div>
+          </dialog>
           <!-- Show created key -->
           <div x-show="newKey" class="alert alert-info mb-4">
             <div class="flex-1">
@@ -566,7 +579,7 @@
                       <td x-text="k.last_used_at ? formatDate(k.last_used_at) : 'Never'"></td>
                       <td x-text="formatDate(k.created_at)"></td>
                       <td><span class="badge badge-sm" :class="k.is_revoked ? 'badge-error' : 'badge-success'" x-text="k.is_revoked ? 'Revoked' : 'Active'"></span></td>
-                      <td><button class="btn btn-error btn-xs" :disabled="k.is_revoked" @click="revoke(k)">Revoke</button></td>
+                      <td class="flex gap-1"><button class="btn btn-ghost btn-xs" :disabled="k.is_revoked" @click="edit(k)">Edit</button><button class="btn btn-error btn-xs" :disabled="k.is_revoked" @click="revoke(k)">Revoke</button></td>
                     </tr>
                   </template>
                 </tbody>

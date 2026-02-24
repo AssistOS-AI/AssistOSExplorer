@@ -14,6 +14,13 @@ export const handleKeys = {
     sendJson(res, key, 201);
   },
 
+  async update(req, res, params) {
+    const body = await readJsonBody(req);
+    const updated = await dao.updateKey(params.id, body);
+    if (!updated) return sendError(res, 404, 'API key not found');
+    sendJson(res, updated);
+  },
+
   async revoke(req, res, params) {
     const revoked = await dao.revokeKey(params.id);
     if (!revoked) return sendError(res, 404, 'API key not found');

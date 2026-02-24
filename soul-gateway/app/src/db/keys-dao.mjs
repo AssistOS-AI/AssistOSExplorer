@@ -58,6 +58,26 @@ export async function createKey({ family_id, key_type, label, monthly_budget, ex
   return { ...rows[0], key: rawKey };
 }
 
+export async function updateKey(id, fields) {
+  const allowed = ['label', 'monthly_budget'];
+  const sets = [];
+  const params = [];
+  let idx = 1;
+  for (const key of allowed) {
+    if (key in fields) {
+      sets.push(`${key} = $${idx++}`);
+      params.push(fields[key] ?? null);
+    }
+  }
+  if (sets.length === 0) return null;
+  params.push(id);
+  const { rows } = await query(
+    `UPDATE api_keys SET ${sets.join(', ')} WHERE id = $${idx} RETURNING id, family_id, key_type, label, key_hint, monthly_budget, expires_at, is_revoked, created_at`,
+    params
+  );
+  return rows[0] || null;
+}
+
 export async function revokeKey(id) {
   const { rowCount } = await query(
     'UPDATE api_keys SET is_revoked = true WHERE id = $1',

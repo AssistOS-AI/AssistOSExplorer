@@ -602,8 +602,11 @@ function keysPage() {
     keys: [],
     families: [],
     showCreate: false,
+    showEdit: false,
+    editing: null,
     newKey: '',
     form: { family_id: '', label: '', key_type: 'permanent', key: '', monthly_budget: '' },
+    editForm: { label: '', monthly_budget: '' },
 
     async init() {
       [this.keys, this.families] = await Promise.all([
@@ -628,6 +631,21 @@ function keysPage() {
       this.showCreate = false;
       this.form.key = '';
       this.form.monthly_budget = '';
+      this.keys = await api.get('/api/v1/keys');
+    },
+
+    edit(k) {
+      this.editing = k;
+      this.editForm = { label: k.label || '', monthly_budget: k.monthly_budget ?? '' };
+      this.showEdit = true;
+    },
+
+    async saveEdit() {
+      const payload = { ...this.editForm };
+      payload.monthly_budget = payload.monthly_budget === '' ? null : Number(payload.monthly_budget);
+      await api.put(`/api/v1/keys/${this.editing.id}`, payload);
+      this.showEdit = false;
+      this.editing = null;
       this.keys = await api.get('/api/v1/keys');
     },
 
