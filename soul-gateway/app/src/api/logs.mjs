@@ -16,6 +16,8 @@ export const handleLogs = {
       api_key_id: query.api_key_id,
       limit: query.limit,
       offset: query.offset,
+      sort: query.sort,
+      order: query.order,
     });
     sendJson(res, result);
   },

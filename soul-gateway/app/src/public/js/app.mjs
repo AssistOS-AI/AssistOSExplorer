@@ -126,6 +126,8 @@ function logsPage() {
     logsOffset: 0,
     logsLimit: 50,
     expandedDetail: null,
+    sortCol: 'started_at',
+    sortDir: 'desc',
 
     async init() {
       this.treeData = await api.get('/api/v1/tree');
@@ -243,10 +245,23 @@ function logsPage() {
       return result;
     },
 
+    setSort(col) {
+      if (this.sortCol === col) {
+        this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc';
+      } else {
+        this.sortCol = col;
+        this.sortDir = 'desc';
+      }
+      this.logsOffset = 0;
+      this.loadSelectedLogs();
+    },
+
     async selectSession(session) {
       this.selectedNode = session;
       this.logsOffset = 0;
       this.expandedDetail = null;
+      this.sortCol = 'started_at';
+      this.sortDir = 'desc';
       await this.loadSelectedLogs();
     },
 
@@ -254,6 +269,8 @@ function logsPage() {
       this.selectedNode = { type: 'agent', name: agent.name, keyId };
       this.logsOffset = 0;
       this.expandedDetail = null;
+      this.sortCol = 'started_at';
+      this.sortDir = 'desc';
       await this.loadSelectedLogs();
     },
 
@@ -261,9 +278,10 @@ function logsPage() {
       if (!this.selectedNode) return;
       let result;
       if (this.selectedNode.type === 'session') {
-        result = await api.get(`/api/v1/sessions/${this.selectedNode.id}/logs?limit=${this.logsLimit}&offset=${this.logsOffset}`);
+        const params = new URLSearchParams({ limit: this.logsLimit, offset: this.logsOffset, sort: this.sortCol, order: this.sortDir });
+        result = await api.get(`/api/v1/sessions/${this.selectedNode.id}/logs?${params}`);
       } else {
-        const params = new URLSearchParams({ agent_name: this.selectedNode.name, api_key_id: this.selectedNode.keyId, limit: this.logsLimit, offset: this.logsOffset });
+        const params = new URLSearchParams({ agent_name: this.selectedNode.name, api_key_id: this.selectedNode.keyId, limit: this.logsLimit, offset: this.logsOffset, sort: this.sortCol, order: this.sortDir });
         result = await api.get(`/api/v1/logs?${params}`);
       }
       this.selectedLogs = result.rows || [];
@@ -409,6 +427,8 @@ function activityPage() {
     keyLogsOffset: 0,
     keyLogsLimit: 50,
     expandedDetail: null,
+    sortCol: 'started_at',
+    sortDir: 'desc',
 
     async init() {
       const data = await api.get('/api/v1/metrics/activity');
@@ -433,6 +453,17 @@ function activityPage() {
       return Math.min(100, (row.total_cost / budget) * 100);
     },
 
+    setSort(col) {
+      if (this.sortCol === col) {
+        this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc';
+      } else {
+        this.sortCol = col;
+        this.sortDir = 'desc';
+      }
+      this.keyLogsOffset = 0;
+      this.loadKeyLogs();
+    },
+
     async toggleKey(k) {
       if (this.expandedKey === k.api_key_id) {
         this.expandedKey = null;
@@ -442,11 +473,13 @@ function activityPage() {
       this.expandedKey = k.api_key_id;
       this.keyLogsOffset = 0;
       this.expandedDetail = null;
+      this.sortCol = 'started_at';
+      this.sortDir = 'desc';
       await this.loadKeyLogs();
     },
 
     async loadKeyLogs() {
-      const params = new URLSearchParams({ api_key_id: this.expandedKey, limit: this.keyLogsLimit, offset: this.keyLogsOffset });
+      const params = new URLSearchParams({ api_key_id: this.expandedKey, limit: this.keyLogsLimit, offset: this.keyLogsOffset, sort: this.sortCol, order: this.sortDir });
       const result = await api.get(`/api/v1/logs?${params}`);
       this.keyLogs = result.rows || [];
       this.keyLogsTotal = result.total || 0;

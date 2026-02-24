@@ -1,5 +1,11 @@
 import { query } from './init.mjs';
 
+const SORTABLE_COLUMNS = new Set([
+  'started_at', 'resolved_model', 'latency_ms',
+  'total_tokens', 'total_cost', 'status_code',
+  'prompt_tokens', 'completion_tokens',
+]);
+
 export async function insertLog(log) {
   const { rows } = await query(`
     INSERT INTO call_logs (
@@ -59,7 +65,7 @@ export async function findCachedResponse(promptHash, resolvedModel) {
   return rows[0] || null;
 }
 
-export async function queryLogs({ family_id, soul_id, model, from, to, status, error_type, keyword, session_id, agent_name, api_key_id, limit, offset }) {
+export async function queryLogs({ family_id, soul_id, model, from, to, status, error_type, keyword, session_id, agent_name, api_key_id, limit, offset, sort, order }) {
   const conditions = [];
   const params = [];
   let idx = 1;
@@ -88,6 +94,8 @@ export async function queryLogs({ family_id, soul_id, model, from, to, status, e
   const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
   const lim = Math.min(parseInt(limit) || 50, 500);
   const off = parseInt(offset) || 0;
+  const sortCol = SORTABLE_COLUMNS.has(sort) ? sort : 'started_at';
+  const sortDir = order === 'asc' ? 'ASC' : 'DESC';
 
   const [countResult, dataResult] = await Promise.all([
     query(`SELECT COUNT(*) as total FROM call_logs ${where}`, params),
@@ -102,7 +110,7 @@ export async function queryLogs({ family_id, soul_id, model, from, to, status, e
              is_truncated, is_slow, prompt_size_warning,
              started_at, completed_at
       FROM call_logs ${where}
-      ORDER BY started_at DESC
+      ORDER BY ${sortCol} ${sortDir}
       LIMIT $${idx++} OFFSET $${idx++}
     `, [...params, lim, off]),
   ]);
@@ -199,9 +207,11 @@ export async function listSessions({ api_key_id, agent_name, family_id, limit, o
 /**
  * Get logs for a specific session.
  */
-export async function getSessionLogs(sessionId, { limit, offset } = {}) {
+export async function getSessionLogs(sessionId, { limit, offset, sort, order } = {}) {
   const lim = Math.min(parseInt(limit) || 100, 500);
   const off = parseInt(offset) || 0;
+  const sortCol = SORTABLE_COLUMNS.has(sort) ? sort : 'started_at';
+  const sortDir = order === 'asc' ? 'ASC' : 'DESC';
 
   const [countResult, dataResult] = await Promise.all([
     query(`SELECT COUNT(*) as total FROM call_logs WHERE session_id = $1`, [sessionId]),
@@ -216,7 +226,7 @@ export async function getSessionLogs(sessionId, { limit, offset } = {}) {
              started_at, completed_at
       FROM call_logs
       WHERE session_id = $1
-      ORDER BY started_at ASC
+      ORDER BY ${sortCol} ${sortDir}
       LIMIT $2 OFFSET $3
     `, [sessionId, lim, off]),
   ]);

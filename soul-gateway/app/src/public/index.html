@@ -115,11 +115,11 @@
                         <div class="flex items-center px-3 py-2">
                           <div class="w-5"></div>
                           <div class="flex-1 flex items-center gap-0">
-                            <div class="w-40 text-xs">Time</div>
-                            <div class="w-36 text-xs">Model</div>
-                            <div class="w-24 text-right text-xs">Latency</div>
-                            <div class="w-24 text-right text-xs">Tokens</div>
-                            <div class="w-24 text-right text-xs">Cost</div>
+                            <div class="w-40 text-xs cursor-pointer select-none flex items-center gap-1" @click="setSort('started_at')">Time <span x-show="sortCol === 'started_at'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
+                            <div class="w-36 text-xs cursor-pointer select-none flex items-center gap-1" @click="setSort('resolved_model')">Model <span x-show="sortCol === 'resolved_model'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
+                            <div class="w-24 text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" @click="setSort('latency_ms')">Latency <span x-show="sortCol === 'latency_ms'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
+                            <div class="w-24 text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" @click="setSort('total_tokens')">Tokens <span x-show="sortCol === 'total_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
+                            <div class="w-24 text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" @click="setSort('total_cost')">Cost <span x-show="sortCol === 'total_cost'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
                             <div class="w-20 text-xs pl-4">Status</div>
                           </div>
                         </div>
@@ -236,14 +236,14 @@
                       <table class="table table-xs">
                         <thead><tr>
                           <th class="w-5"></th>
-                          <th class="w-40">Time</th>
-                          <th class="w-36">Model</th>
+                          <th class="w-40 cursor-pointer select-none" @click="setSort('started_at')"><span class="flex items-center gap-1">Time <span x-show="sortCol === 'started_at'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-36 cursor-pointer select-none" @click="setSort('resolved_model')"><span class="flex items-center gap-1">Model <span x-show="sortCol === 'resolved_model'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
                           <th class="w-16">Stream</th>
-                          <th class="w-24 text-right">Latency</th>
-                          <th class="w-24 text-right">Prompt</th>
-                          <th class="w-24 text-right">Completion</th>
-                          <th class="w-24 text-right">Tokens</th>
-                          <th class="w-24 text-right">Cost</th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('latency_ms')"><span class="flex items-center justify-end gap-1">Latency <span x-show="sortCol === 'latency_ms'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('prompt_tokens')"><span class="flex items-center justify-end gap-1">Prompt <span x-show="sortCol === 'prompt_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('completion_tokens')"><span class="flex items-center justify-end gap-1">Completion <span x-show="sortCol === 'completion_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('total_tokens')"><span class="flex items-center justify-end gap-1">Tokens <span x-show="sortCol === 'total_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('total_cost')"><span class="flex items-center justify-end gap-1">Cost <span x-show="sortCol === 'total_cost'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
                           <th class="w-20">Status</th>
                         </tr></thead>
                         <tbody>

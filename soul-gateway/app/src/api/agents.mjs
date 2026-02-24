@@ -25,6 +25,8 @@ export const handleAgents = {
     const logs = await getSessionLogs(params.id, {
       limit: query?.limit,
       offset: query?.offset,
+      sort: query?.sort,
+      order: query?.order,
     });
     sendJson(res, logs);
   },
