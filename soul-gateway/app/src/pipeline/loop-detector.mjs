@@ -53,11 +53,17 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
     : null;
 
   if (contentHash) {
-    const duplicateCount = history.contentHashes.filter(h => h === contentHash).length;
-    if (duplicateCount >= MAX_IDENTICAL_REQUESTS) {
-      log.warn('Repeated content loop detected', { sessionId, hash: contentHash, count: duplicateCount + 1 });
+    // Count consecutive identical requests from the tail of the history.
+    // Interleaved different requests (A, B, A, B, A) are NOT a loop.
+    let consecutiveCount = 0;
+    for (let i = history.contentHashes.length - 1; i >= 0; i--) {
+      if (history.contentHashes[i] === contentHash) consecutiveCount++;
+      else break;
+    }
+    if (consecutiveCount >= MAX_IDENTICAL_REQUESTS) {
+      log.warn('Repeated content loop detected', { sessionId, hash: contentHash, count: consecutiveCount + 1 });
       throw new LoopDetectedError('repeated_content',
-        `Loop detected: identical message sent ${duplicateCount + 1} times`);
+        `Loop detected: identical message sent ${consecutiveCount + 1} times`);
     }
   }
 
