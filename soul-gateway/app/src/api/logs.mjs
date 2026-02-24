@@ -10,7 +10,10 @@ export const handleLogs = {
       from: query.from,
       to: query.to,
       status: query.status,
+      error_type: query.error_type,
       keyword: query.keyword,
+      agent_name: query.agent_name,
+      api_key_id: query.api_key_id,
       limit: query.limit,
       offset: query.offset,
     });

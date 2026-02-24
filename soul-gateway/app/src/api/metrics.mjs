@@ -12,11 +12,13 @@ export const handleMetrics = {
   },
 
   async errors(req, res, query) {
-    const [rates, summary] = await Promise.all([
+    const [rates, summary, breakdown, models] = await Promise.all([
       metricsDao.getErrorRates(query),
       metricsDao.getErrorSummary(query),
+      metricsDao.getErrorBreakdown(query),
+      metricsDao.getErrorModels(query),
     ]);
-    sendJson(res, { rates, summary });
+    sendJson(res, { rates, summary, breakdown, models });
   },
 
   async tokens(req, res, query) {

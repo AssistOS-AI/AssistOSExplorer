@@ -66,6 +66,39 @@ export async function getCostTrend({ from, to, granularity }) {
   return rows;
 }
 
+export async function getErrorBreakdown({ from, to }) {
+  const conditions = ['error_type IS NOT NULL'];
+  const params = [];
+  let idx = 1;
+  if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
+  if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
+  const where = 'WHERE ' + conditions.join(' AND ');
+
+  const { rows } = await query(`
+    SELECT error_type, COUNT(*) as count
+    FROM call_logs ${where}
+    GROUP BY error_type
+    ORDER BY count DESC
+  `, params);
+  return rows;
+}
+
+export async function getErrorModels({ from, to }) {
+  const conditions = ['error_type IS NOT NULL'];
+  const params = [];
+  let idx = 1;
+  if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
+  if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
+  const where = 'WHERE ' + conditions.join(' AND ');
+
+  const { rows } = await query(`
+    SELECT DISTINCT resolved_model
+    FROM call_logs ${where}
+    ORDER BY resolved_model
+  `, params);
+  return rows.map(r => r.resolved_model).filter(Boolean);
+}
+
 export async function getErrorRates({ from, to }) {
   const conditions = ['error_type IS NOT NULL'];
   const params = [];
