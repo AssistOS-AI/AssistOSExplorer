@@ -82,6 +82,9 @@ async function migrate(p) {
   await p.query(`CREATE INDEX IF NOT EXISTS idx_call_logs_key_started ON call_logs(api_key_id, started_at)`);
   // Add max_concurrency to model_configs
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS max_concurrency INT DEFAULT 3`);
+  // Add per-family loop detection thresholds
+  await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS loop_rpm_limit INT`);
+  await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS loop_max_identical INT`);
 }
 
 async function ensurePartitions() {

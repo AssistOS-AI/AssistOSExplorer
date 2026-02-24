@@ -4,10 +4,10 @@ import { createLogger } from '../utils/logger.mjs';
 
 const log = createLogger('loop-detector');
 
-// --- Thresholds ---
-const MAX_REQUESTS_PER_WINDOW = 50;
+// --- Default thresholds (overridable per-family) ---
+const DEFAULT_MAX_REQUESTS_PER_WINDOW = 50;
 const WINDOW_MS = 60_000;
-const MAX_IDENTICAL_REQUESTS = 3;
+const DEFAULT_MAX_IDENTICAL_REQUESTS = 3;
 const TOKEN_EXPLOSION_STREAK = 5;
 const HISTORY_SIZE = 20;
 const EVICTION_INTERVAL_MS = 5 * 60_000;
@@ -23,8 +23,11 @@ const sessions = new Map();
  * @param {string} sessionId
  * @param {Array} messages - request body messages array
  * @param {number} requestSizeBytes - byte size of the messages payload
+ * @param {{ maxRpm?: number, maxIdentical?: number }} [thresholds] - per-family overrides
  */
-export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
+export function checkLoopDetection(sessionId, messages, requestSizeBytes, thresholds = {}) {
+  const maxRpm = thresholds.maxRpm ?? DEFAULT_MAX_REQUESTS_PER_WINDOW;
+  const maxIdentical = thresholds.maxIdentical ?? DEFAULT_MAX_IDENTICAL_REQUESTS;
   const now = Date.now();
   let history = sessions.get(sessionId);
 
@@ -40,8 +43,8 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
   history.timestamps = history.timestamps.filter(t => t >= windowStart);
 
   // 1. Rapid-fire detection
-  if (history.timestamps.length >= MAX_REQUESTS_PER_WINDOW) {
-    log.warn('Rapid-fire loop detected', { sessionId, count: history.timestamps.length + 1 });
+  if (history.timestamps.length >= maxRpm) {
+    log.warn('Rapid-fire loop detected', { sessionId, count: history.timestamps.length + 1, limit: maxRpm });
     throw new LoopDetectedError('rapid_fire',
       `Loop detected: ${history.timestamps.length + 1} requests in ${WINDOW_MS / 1000}s window`);
   }
@@ -60,7 +63,7 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
       if (history.contentHashes[i] === contentHash) consecutiveCount++;
       else break;
     }
-    if (consecutiveCount >= MAX_IDENTICAL_REQUESTS) {
+    if (consecutiveCount >= maxIdentical) {
       log.warn('Repeated content loop detected', { sessionId, hash: contentHash, count: consecutiveCount + 1 });
       throw new LoopDetectedError('repeated_content',
         `Loop detected: identical message sent ${consecutiveCount + 1} times`);

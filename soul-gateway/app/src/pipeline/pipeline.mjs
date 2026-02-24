@@ -64,7 +64,10 @@ export async function pipeline(req, res) {
 
     // 3. Loop detection
     const requestSizeBytes = Buffer.byteLength(JSON.stringify(body.messages), 'utf8');
-    checkLoopDetection(sessionId, body.messages, requestSizeBytes);
+    checkLoopDetection(sessionId, body.messages, requestSizeBytes, {
+      maxRpm: authCtx.loop_rpm_limit,
+      maxIdentical: authCtx.loop_max_identical,
+    });
 
     // 4. Blacklist scan
     try {

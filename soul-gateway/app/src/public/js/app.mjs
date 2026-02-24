@@ -569,19 +569,21 @@ function familiesPage() {
     families: [],
     showCreate: false,
     editing: null,
-    form: { name: '', description: '', rpm_limit: 60, tpm_limit: 100000, monthly_budget: '' },
+    form: { name: '', description: '', rpm_limit: 60, tpm_limit: 100000, monthly_budget: '', loop_rpm_limit: '', loop_max_identical: '' },
 
     async init() { this.families = await api.get('/api/v1/soul-families'); },
 
     edit(f) {
       this.editing = f;
-      this.form = { name: f.name, description: f.description || '', rpm_limit: f.rpm_limit, tpm_limit: f.tpm_limit, monthly_budget: f.monthly_budget ?? '' };
+      this.form = { name: f.name, description: f.description || '', rpm_limit: f.rpm_limit, tpm_limit: f.tpm_limit, monthly_budget: f.monthly_budget ?? '', loop_rpm_limit: f.loop_rpm_limit ?? '', loop_max_identical: f.loop_max_identical ?? '' };
       this.showCreate = true;
     },
 
     async save() {
       const payload = { ...this.form };
       payload.monthly_budget = payload.monthly_budget === '' ? null : Number(payload.monthly_budget);
+      payload.loop_rpm_limit = payload.loop_rpm_limit === '' ? null : Number(payload.loop_rpm_limit);
+      payload.loop_max_identical = payload.loop_max_identical === '' ? null : Number(payload.loop_max_identical);
       if (this.editing) {
         await api.put(`/api/v1/soul-families/${this.editing.id}`, payload);
       } else {
@@ -589,7 +591,7 @@ function familiesPage() {
       }
       this.showCreate = false;
       this.editing = null;
-      this.form = { name: '', description: '', rpm_limit: 60, tpm_limit: 100000, monthly_budget: '' };
+      this.form = { name: '', description: '', rpm_limit: 60, tpm_limit: 100000, monthly_budget: '', loop_rpm_limit: '', loop_max_identical: '' };
       this.families = await api.get('/api/v1/soul-families');
     },
 

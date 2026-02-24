@@ -5,6 +5,7 @@ export async function findKeyByHash(hash) {
   const { rows } = await query(`
     SELECT k.*, f.name as family_name, f.rpm_limit, f.tpm_limit,
            f.monthly_budget as family_monthly_budget,
+           f.loop_rpm_limit, f.loop_max_identical,
            f.model_mapping, f.allowed_models, f.metadata as family_metadata
     FROM api_keys k
     JOIN soul_families f ON k.family_id = f.id

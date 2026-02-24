@@ -30,7 +30,7 @@ export async function updateFamily(id, fields) {
   let idx = 1;
 
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined && ['name', 'description', 'model_mapping', 'allowed_models', 'rpm_limit', 'tpm_limit', 'monthly_budget', 'metadata'].includes(key)) {
+    if (value !== undefined && ['name', 'description', 'model_mapping', 'allowed_models', 'rpm_limit', 'tpm_limit', 'monthly_budget', 'loop_rpm_limit', 'loop_max_identical', 'metadata'].includes(key)) {
       sets.push(`${key} = $${idx}`);
       values.push(key === 'model_mapping' || key === 'allowed_models' || key === 'metadata'
         ? JSON.stringify(value) : value);

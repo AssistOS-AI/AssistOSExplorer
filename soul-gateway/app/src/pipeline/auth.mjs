@@ -28,6 +28,8 @@ export async function authenticate(req) {
     tpm_limit: keyInfo.tpm_limit,
     family_monthly_budget: keyInfo.family_monthly_budget != null ? Number(keyInfo.family_monthly_budget) : null,
     key_monthly_budget: keyInfo.monthly_budget != null ? Number(keyInfo.monthly_budget) : null,
+    loop_rpm_limit: keyInfo.loop_rpm_limit != null ? Number(keyInfo.loop_rpm_limit) : null,
+    loop_max_identical: keyInfo.loop_max_identical != null ? Number(keyInfo.loop_max_identical) : null,
     model_mapping: typeof keyInfo.model_mapping === 'string' ? JSON.parse(keyInfo.model_mapping) : (keyInfo.model_mapping || {}),
     allowed_models: typeof keyInfo.allowed_models === 'string' ? JSON.parse(keyInfo.allowed_models) : (keyInfo.allowed_models || []),
     soul_id: soulId,

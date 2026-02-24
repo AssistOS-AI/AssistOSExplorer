@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS soul_families (
     rpm_limit INT DEFAULT 60,
     tpm_limit INT DEFAULT 100000,
     monthly_budget NUMERIC DEFAULT NULL,
+    loop_rpm_limit INT DEFAULT NULL,
+    loop_max_identical INT DEFAULT NULL,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
