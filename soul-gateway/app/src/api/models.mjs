@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as dao from '../db/models-dao.mjs';
 import { listProviders } from 'achillesAgentLib/utils/LLMProviders/providers/providerRegistry.mjs';
+import { enrichWithOpenRouterPricing } from '../pipeline/openrouter-pricing.mjs';
 
 function loadLLMConfig() {
   // Resolve path relative to this file → ../../node_modules/achillesAgentLib/LLMConfig.json
@@ -186,6 +187,9 @@ export const handleModels = {
         });
         await Promise.all(fetches);
       }
+
+      // Step 5: Final fallback — look up any remaining 0/0 models on OpenRouter
+      await enrichWithOpenRouterPricing(enriched);
 
       sendJson(res, enriched);
     } catch (err) {
