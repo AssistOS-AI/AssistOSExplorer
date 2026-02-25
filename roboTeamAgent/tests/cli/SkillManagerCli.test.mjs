@@ -7,7 +7,7 @@ import { RecursiveSkilledAgent } from 'achillesAgentLib/RecursiveSkilledAgents';
 import { LLMAgent } from 'achillesAgentLib/LLMAgents';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const builtInSkillsDir = path.join(__dirname, '..', 'src', '.AchillesSkills');
+const builtInSkillsDir = path.join(__dirname, '..', 'src', 'skills');
 
 /**
  * Unit tests for RecursiveSkilledAgent with additionalSkillRoots.
@@ -23,7 +23,7 @@ describe('RecursiveSkilledAgent - Initialization', () => {
     before(() => {
         tempDir = path.join(__dirname, 'temp_init_' + Date.now());
         fs.mkdirSync(tempDir, { recursive: true });
-        skillsDir = path.join(tempDir, '.AchillesSkills');
+        skillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(skillsDir);
         realLLMAgent = new LLMAgent({ name: 'test-agent' });
     });
@@ -223,7 +223,7 @@ describe('RecursiveSkilledAgent - reloadSkills method', () => {
     before(() => {
         tempDir = path.join(__dirname, 'temp_reload_' + Date.now());
         fs.mkdirSync(tempDir, { recursive: true });
-        skillsDir = path.join(tempDir, '.AchillesSkills');
+        skillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(skillsDir);
         realLLMAgent = new LLMAgent({ name: 'reload-test-agent' });
 
@@ -318,7 +318,7 @@ describe('RecursiveSkilledAgent - User Skills Discovery', () => {
     before(() => {
         tempDir = path.join(__dirname, 'temp_userskills_' + Date.now());
         fs.mkdirSync(tempDir, { recursive: true });
-        skillsDir = path.join(tempDir, '.AchillesSkills');
+        skillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(skillsDir);
         realLLMAgent = new LLMAgent({ name: 'userskills-test-agent' });
     });
@@ -378,7 +378,7 @@ describe('RecursiveSkilledAgent - Error Handling', () => {
     it('should handle empty skills directory', () => {
         const tempDir = path.join('/tmp', 'achilles_empty_' + Date.now());
         fs.mkdirSync(tempDir, { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.AchillesSkills'));
+        fs.mkdirSync(path.join(tempDir, 'skills'));
 
         const agent = new RecursiveSkilledAgent({
             startDir: tempDir,
@@ -396,7 +396,7 @@ describe('RecursiveSkilledAgent - Error Handling', () => {
     it('should handle malformed skill files gracefully', () => {
         const tempDir = path.join(__dirname, 'temp_malformed_' + Date.now());
         fs.mkdirSync(tempDir, { recursive: true });
-        const skillsDir = path.join(tempDir, '.AchillesSkills');
+        const skillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(skillsDir);
 
         const badSkillDir = path.join(skillsDir, 'BadSkill');

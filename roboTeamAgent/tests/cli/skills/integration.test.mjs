@@ -23,22 +23,22 @@ describe('Skills Integration - Complete Workflow', () => {
 
     before(async () => {
         tempDir = path.join(__dirname, 'temp_integration_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
-        const listModule = await import('../../src/.AchillesSkills/list-skills/list-skills.mjs');
+        const listModule = await import('../../src/skills/list-skills/list-skills.mjs');
         listAction = listModule.action;
 
-        const readModule = await import('../../src/.AchillesSkills/read-skill/read-skill.mjs');
+        const readModule = await import('../../src/skills/read-skill/read-skill.mjs');
         readAction = readModule.action;
 
-        const writeModule = await import('../../src/.AchillesSkills/write-skill/write-skill.mjs');
+        const writeModule = await import('../../src/skills/write-skill/write-skill.mjs');
         writeAction = writeModule.action;
 
-        const validateModule = await import('../../src/.AchillesSkills/validate-skill/validate-skill.mjs');
+        const validateModule = await import('../../src/skills/validate-skill/validate-skill.mjs');
         validateAction = validateModule.action;
 
-        const deleteModule = await import('../../src/.AchillesSkills/delete-skill/delete-skill.mjs');
+        const deleteModule = await import('../../src/skills/delete-skill/delete-skill.mjs');
         deleteAction = deleteModule.action;
     });
 

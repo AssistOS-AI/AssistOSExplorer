@@ -280,7 +280,7 @@ export default async function runTests() {
         const mockAgent = {
             skillCatalog: new Map([
                 ['run-tests-code', {
-                    skillDir: path.join(workingDir, 'src/.AchillesSkills/run-tests'),
+                    skillDir: path.join(workingDir, 'src/skills/run-tests'),
                     shortName: 'run-tests',
                     type: 'code',
                 }],
@@ -321,9 +321,9 @@ export default async function runTests() {
             findSkillFile: (name) => {
                 if (name === 'run-tests') {
                     return {
-                        filePath: path.join(workingDir, 'src/.AchillesSkills/run-tests/cskill.md'),
+                        filePath: path.join(workingDir, 'src/skills/run-tests/cskill.md'),
                         record: {
-                            skillDir: path.join(workingDir, 'src/.AchillesSkills/run-tests'),
+                            skillDir: path.join(workingDir, 'src/skills/run-tests'),
                             shortName: 'run-tests',
                             type: 'code',
                         },

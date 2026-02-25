@@ -20,7 +20,7 @@ describe('test-code Action Tests', () => {
     let testCodeAction;
 
     before(async () => {
-        const testModule = await import('../src/.AchillesSkills/test-code/test-code.mjs');
+        const testModule = await import('../src/skills/test-code/test-code.mjs');
         testCodeAction = testModule.action;
 
         // Setup temp directory with pre-generated code

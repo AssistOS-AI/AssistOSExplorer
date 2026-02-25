@@ -24,7 +24,7 @@ export function createMockAgent(options = {}) {
         llmAgent = null,
     } = options;
 
-    const skillsDir = path.join(startDir, '.AchillesSkills');
+    const skillsDir = path.join(startDir, 'skills');
 
     return {
         startDir,
@@ -90,7 +90,7 @@ export function createMockAgent(options = {}) {
  */
 export function createTempDir(prefix) {
     const tempDir = path.join(testsDir, `${prefix}_${Date.now()}`);
-    const skillsDir = path.join(tempDir, '.AchillesSkills');
+    const skillsDir = path.join(tempDir, 'skills');
     fs.mkdirSync(skillsDir, { recursive: true });
     return { tempDir, skillsDir };
 }

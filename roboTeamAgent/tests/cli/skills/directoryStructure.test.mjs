@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SKILLS_BASE = path.join(__dirname, '../../src/.AchillesSkills');
+const SKILLS_BASE = path.join(__dirname, '../../src/skills');
 
 // ============================================================================
 // Directory Structure Tests

@@ -22,11 +22,11 @@ describe('execute-skill module - Extended', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/.AchillesSkills/execute-skill/execute-skill.mjs');
+        const module = await import('../../src/skills/execute-skill/execute-skill.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_execute_ext_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
     });
 
@@ -72,7 +72,7 @@ describe('execute-skill module - Extended', () => {
     });
 
     it('should reject built-in skills', async () => {
-        const builtInDir = '/builtin/.AchillesSkills';
+        const builtInDir = '/builtin/skills';
         const mockAgent = {
             additionalSkillRoots: [builtInDir],
             skillCatalog: new Map(),
@@ -141,11 +141,11 @@ describe('generate-code module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/.AchillesSkills/generate-code/generate-code.mjs');
+        const module = await import('../../src/skills/generate-code/generate-code.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_gencode_ext_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
     });
 
@@ -206,11 +206,11 @@ describe('test-code module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/.AchillesSkills/test-code/test-code.mjs');
+        const module = await import('../../src/skills/test-code/test-code.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_testcode_ext_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
     });
 

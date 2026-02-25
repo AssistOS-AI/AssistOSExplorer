@@ -22,11 +22,11 @@ describe('update-section module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/.AchillesSkills/update-section/update-section.mjs');
+        const module = await import('../../src/skills/update-section/update-section.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_updatesec_ext_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
     });
 
@@ -175,11 +175,11 @@ describe('preview-changes module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/.AchillesSkills/preview-changes/preview-changes.mjs');
+        const module = await import('../../src/skills/preview-changes/preview-changes.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_preview_ext_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
     });
 

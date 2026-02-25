@@ -190,7 +190,7 @@ describe('QuickCommands', () => {
         it('should list all skills with "list all"', () => {
             const allSkills = [
                 { name: 'user-skill', shortName: 'user-skill', type: 'code', skillDir: '/user/skills' },
-                { name: 'builtin-skill', shortName: 'builtin-skill', type: 'code', skillDir: '/builtin/.AchillesSkills' },
+                { name: 'builtin-skill', shortName: 'builtin-skill', type: 'code', skillDir: '/builtin/skills' },
             ];
 
             let getAllSkillsCalled = false;
@@ -202,7 +202,7 @@ describe('QuickCommands', () => {
                 },
                 reloadSkills: () => 0,
                 historyManager: { getAll: () => [], search: () => [], clear: () => {} },
-                builtInSkillsDir: '/builtin/.AchillesSkills',
+                builtInSkillsDir: '/builtin/skills',
             });
 
             // Mock console.log
@@ -385,11 +385,11 @@ describe('QuickCommands', () => {
 
 describe('QuickCommands - Skill Filtering Logic', () => {
     it('should filter built-in skills by skillDir prefix', () => {
-        const builtInSkillsDir = '/app/.AchillesSkills';
+        const builtInSkillsDir = '/app/skills';
         const allSkills = [
-            { name: 'user-skill', skillDir: '/home/user/project/.AchillesSkills/user-skill' },
-            { name: 'list-skills', skillDir: '/app/.AchillesSkills/list-skills' },
-            { name: 'read-skill', skillDir: '/app/.AchillesSkills/read-skill' },
+            { name: 'user-skill', skillDir: '/home/user/project/skills/user-skill' },
+            { name: 'list-skills', skillDir: '/app/skills/list-skills' },
+            { name: 'read-skill', skillDir: '/app/skills/read-skill' },
         ];
 
         const builtIn = allSkills.filter(s => s.skillDir?.startsWith(builtInSkillsDir));
@@ -401,10 +401,10 @@ describe('QuickCommands - Skill Filtering Logic', () => {
     });
 
     it('should handle skills without skillDir', () => {
-        const builtInSkillsDir = '/app/.AchillesSkills';
+        const builtInSkillsDir = '/app/skills';
         const allSkills = [
             { name: 'skill-without-dir' },
-            { name: 'builtin', skillDir: '/app/.AchillesSkills/builtin' },
+            { name: 'builtin', skillDir: '/app/skills/builtin' },
         ];
 
         const builtIn = allSkills.filter(s => s.skillDir?.startsWith(builtInSkillsDir));

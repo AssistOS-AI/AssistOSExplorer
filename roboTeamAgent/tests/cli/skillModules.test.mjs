@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const skillsDir = path.join(__dirname, '..', '.AchillesSkills');
+const skillsDir = path.join(__dirname, '..', 'skills');
 
 /**
  * Unit tests for the individual skill modules (.mjs files).
@@ -24,7 +24,7 @@ function createMockAgent(options = {}) {
         additionalSkillRoots = [],
     } = options;
 
-    const skillsDir = path.join(startDir, '.AchillesSkills');
+    const skillsDir = path.join(startDir, 'skills');
 
     return {
         startDir,
@@ -86,12 +86,12 @@ describe('list-skills module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/list-skills/list-skills.mjs');
+        const module = await import('../src/skills/list-skills/list-skills.mjs');
         action = module.action;
 
         // Create temp directory with skills
         tempDir = path.join(__dirname, 'temp_list_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
         // Create a test skill
@@ -142,11 +142,11 @@ describe('read-skill module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/read-skill/read-skill.mjs');
+        const module = await import('../src/skills/read-skill/read-skill.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_read_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
         const testSkillDir = path.join(tempSkillsDir, 'ReadTestSkill');
@@ -207,11 +207,11 @@ describe('write-skill module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/write-skill/write-skill.mjs');
+        const module = await import('../src/skills/write-skill/write-skill.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_write_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
     });
 
@@ -260,11 +260,11 @@ describe('delete-skill module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/delete-skill/delete-skill.mjs');
+        const module = await import('../src/skills/delete-skill/delete-skill.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_delete_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
         // Create skill to delete
@@ -312,11 +312,11 @@ describe('validate-skill module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/validate-skill/validate-skill.mjs');
+        const module = await import('../src/skills/validate-skill/validate-skill.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_validate_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
         // Create valid skill
@@ -374,7 +374,7 @@ describe('get-template module', () => {
     let action;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/get-template/get-template.mjs');
+        const module = await import('../src/skills/get-template/get-template.mjs');
         action = module.action;
     });
 
@@ -419,11 +419,11 @@ describe('update-section module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/update-section/update-section.mjs');
+        const module = await import('../src/skills/update-section/update-section.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_update_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
         const updateSkillDir = path.join(tempSkillsDir, 'UpdateSkill');
@@ -483,11 +483,11 @@ describe('preview-changes module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/preview-changes/preview-changes.mjs');
+        const module = await import('../src/skills/preview-changes/preview-changes.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_preview_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
         const previewSkillDir = path.join(tempSkillsDir, 'PreviewSkill');
@@ -545,11 +545,11 @@ describe('test-code module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/test-code/test-code.mjs');
+        const module = await import('../src/skills/test-code/test-code.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_testcode_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
         // Create skill with generated code
@@ -622,7 +622,7 @@ describe('skill-refiner module', () => {
     let action;
 
     before(async () => {
-        const module = await import('../src/.AchillesSkills/skill-refiner/skill-refiner.mjs');
+        const module = await import('../src/skills/skill-refiner/skill-refiner.mjs');
         action = module.action;
     });
 

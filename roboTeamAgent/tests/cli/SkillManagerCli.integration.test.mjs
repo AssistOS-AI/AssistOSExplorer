@@ -7,7 +7,7 @@ import { RecursiveSkilledAgent } from 'achillesAgentLib/RecursiveSkilledAgents';
 import { LLMAgent } from 'achillesAgentLib/LLMAgents';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const builtInSkillsDir = path.join(__dirname, '..', 'src', '.AchillesSkills');
+const builtInSkillsDir = path.join(__dirname, '..', 'src', 'skills');
 
 /**
  * Integration tests that make actual LLM API calls.
@@ -31,7 +31,7 @@ describe('RecursiveSkilledAgent Integration Tests (Real LLM Calls)', () => {
         tempDir = path.join('/tmp', 'achilles_integration_' + Date.now());
         fs.mkdirSync(tempDir, { recursive: true });
 
-        skillsDir = path.join(tempDir, '.AchillesSkills');
+        skillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(skillsDir);
 
         // Create a code skill for testing
@@ -159,7 +159,7 @@ fast
         it('should execute list-skills action directly', async () => {
             // Import action directly like other tests do
             // Action signature: action(recursiveSkilledAgent, prompt)
-            const { action } = await import('../src/.AchillesSkills/list-skills/list-skills.mjs');
+            const { action } = await import('../src/skills/list-skills/list-skills.mjs');
 
             const result = await action(agent, '');
 
@@ -171,7 +171,7 @@ fast
         it('should execute get-template action directly', async () => {
             // Import action directly like other tests do
             // Action signature: action(recursiveSkilledAgent, prompt)
-            const { action } = await import('../src/.AchillesSkills/get-template/get-template.mjs');
+            const { action } = await import('../src/skills/get-template/get-template.mjs');
 
             const result = await action(agent, 'cskill');
 
@@ -206,7 +206,7 @@ describe('Interactive Skill Integration Tests', () => {
         tempDir = path.join('/tmp', 'achilles_interactive_' + Date.now());
         fs.mkdirSync(tempDir, { recursive: true });
 
-        skillsDir = path.join(tempDir, '.AchillesSkills');
+        skillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(skillsDir);
 
         // Create an interactive skill
@@ -342,7 +342,7 @@ describe('Error Recovery Integration Tests', () => {
     before(() => {
         tempDir = path.join('/tmp', 'achilles_error_' + Date.now());
         fs.mkdirSync(tempDir, { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.AchillesSkills'));
+        fs.mkdirSync(path.join(tempDir, 'skills'));
 
         llmAgent = new LLMAgent({ name: 'error-test-agent' });
     });
@@ -354,7 +354,7 @@ describe('Error Recovery Integration Tests', () => {
     });
 
     it('should handle malformed skill gracefully during execution', async () => {
-        const skillsDir = path.join(tempDir, '.AchillesSkills');
+        const skillsDir = path.join(tempDir, 'skills');
 
         // Create a skill with invalid prompt section
         const badSkillDir = path.join(skillsDir, 'BadPrompt');
@@ -377,7 +377,7 @@ This skill has no prompt section.
         });
 
         // Import and call list-skills action directly
-        const { action } = await import('../src/.AchillesSkills/list-skills/list-skills.mjs');
+        const { action } = await import('../src/skills/list-skills/list-skills.mjs');
         const result = await action('', {
             skilledAgent: agent,
             llmAgent: agent.llmAgent,

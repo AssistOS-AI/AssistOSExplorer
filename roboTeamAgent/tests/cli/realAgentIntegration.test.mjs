@@ -34,7 +34,7 @@ describe('Real RecursiveSkilledAgent Integration', () => {
         fs.mkdirSync(workingDir, { recursive: true });
 
         // Create local skill in working directory
-        const localSkillDir = path.join(workingDir, '.AchillesSkills', 'local-skill');
+        const localSkillDir = path.join(workingDir, 'skills', 'local-skill');
         fs.mkdirSync(localSkillDir, { recursive: true });
         fs.writeFileSync(path.join(localSkillDir, 'cskill.md'), `# local-skill
 
@@ -55,7 +55,7 @@ Output: "Hello from local skill!"
 `);
 
         // Create external repo with a skill
-        const externalSkillDir = path.join(externalRepoDir, '.AchillesSkills', 'external-skill');
+        const externalSkillDir = path.join(externalRepoDir, 'skills', 'external-skill');
         fs.mkdirSync(externalSkillDir, { recursive: true });
         fs.writeFileSync(path.join(externalSkillDir, 'cskill.md'), `# external-skill
 
@@ -95,7 +95,7 @@ Output: "Goodbye from external skill!"
     });
 
     it('should discover external skills when added to additionalSkillRoots at init', async () => {
-        const externalSkillsPath = path.join(externalRepoDir, '.AchillesSkills');
+        const externalSkillsPath = path.join(externalRepoDir, 'skills');
 
         const agent = new RecursiveSkilledAgent({
             startDir: workingDir,
@@ -138,7 +138,7 @@ describe('Orchestrator Wildcard Allowed-Skills Integration', () => {
         fs.mkdirSync(workingDir, { recursive: true });
 
         // Create a local cgskill (simple skill)
-        const localSkillDir = path.join(workingDir, '.AchillesSkills', 'greeter');
+        const localSkillDir = path.join(workingDir, 'skills', 'greeter');
         fs.mkdirSync(localSkillDir, { recursive: true });
         fs.writeFileSync(path.join(localSkillDir, 'cgskill.md'), `# Greeter
 
@@ -153,7 +153,7 @@ fast
 `);
 
         // Create an orchestrator WITH wildcard in Allowed-Skills
-        const orchestratorDir = path.join(workingDir, '.AchillesSkills', 'test-orchestrator');
+        const orchestratorDir = path.join(workingDir, 'skills', 'test-orchestrator');
         fs.mkdirSync(orchestratorDir, { recursive: true });
         fs.writeFileSync(path.join(orchestratorDir, 'oskill.md'), `# Test Orchestrator
 
@@ -172,7 +172,7 @@ Route user requests to appropriate skills.
 `);
 
         // Create external repo with a skill
-        const externalSkillDir = path.join(externalRepoDir, '.AchillesSkills', 'calculator');
+        const externalSkillDir = path.join(externalRepoDir, 'skills', 'calculator');
         fs.mkdirSync(externalSkillDir, { recursive: true });
         fs.writeFileSync(path.join(externalSkillDir, 'cgskill.md'), `# Calculator
 
@@ -209,7 +209,7 @@ fast
     });
 
     it('should resolve all skills when * wildcard is present', async () => {
-        const externalSkillsPath = path.join(externalRepoDir, '.AchillesSkills');
+        const externalSkillsPath = path.join(externalRepoDir, 'skills');
 
         const agent = new RecursiveSkilledAgent({
             startDir: workingDir,
@@ -255,7 +255,7 @@ fast
         assert.ok(!resolvedNames.some(n => n.includes('calculator')), 'Should NOT include calculator initially');
 
         // Now add external repo to agent's skill roots
-        const externalSkillsPath = path.join(externalRepoDir, '.AchillesSkills');
+        const externalSkillsPath = path.join(externalRepoDir, 'skills');
         const agentRoots = agent.getAdditionalSkillRoots();
         agentRoots.push(externalSkillsPath);
         agent.reloadSkills();
@@ -273,7 +273,7 @@ fast
 
     it('should still respect explicit allowed skills alongside wildcard', async () => {
         // Create an orchestrator with explicit skill + wildcard
-        const orchestratorDir = path.join(workingDir, '.AchillesSkills', 'mixed-orchestrator');
+        const orchestratorDir = path.join(workingDir, 'skills', 'mixed-orchestrator');
         fs.mkdirSync(orchestratorDir, { recursive: true });
         fs.writeFileSync(path.join(orchestratorDir, 'oskill.md'), `# Mixed Orchestrator
 
@@ -288,7 +288,7 @@ Route requests.
 - *
 `);
 
-        const externalSkillsPath = path.join(externalRepoDir, '.AchillesSkills');
+        const externalSkillsPath = path.join(externalRepoDir, 'skills');
 
         const agent = new RecursiveSkilledAgent({
             startDir: workingDir,
@@ -315,7 +315,7 @@ Route requests.
 
     it('should NOT use wildcard when not present in allowed skills', async () => {
         // Create an orchestrator WITHOUT wildcard
-        const restrictedDir = path.join(workingDir, '.AchillesSkills', 'restricted-orchestrator');
+        const restrictedDir = path.join(workingDir, 'skills', 'restricted-orchestrator');
         fs.mkdirSync(restrictedDir, { recursive: true });
         fs.writeFileSync(path.join(restrictedDir, 'oskill.md'), `# Restricted Orchestrator
 
@@ -329,7 +329,7 @@ Route requests.
 - greeter
 `);
 
-        const externalSkillsPath = path.join(externalRepoDir, '.AchillesSkills');
+        const externalSkillsPath = path.join(externalRepoDir, 'skills');
 
         const agent = new RecursiveSkilledAgent({
             startDir: workingDir,

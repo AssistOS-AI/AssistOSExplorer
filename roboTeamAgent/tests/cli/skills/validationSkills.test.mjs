@@ -22,11 +22,11 @@ describe('validate-skill module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/.AchillesSkills/validate-skill/validate-skill.mjs');
+        const module = await import('../../src/skills/validate-skill/validate-skill.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_validate_ext_' + Date.now());
-        tempSkillsDir = path.join(tempDir, '.AchillesSkills');
+        tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
     });
 
@@ -93,7 +93,7 @@ describe('get-template module - Extended Tests', () => {
     let action;
 
     before(async () => {
-        const module = await import('../../src/.AchillesSkills/get-template/get-template.mjs');
+        const module = await import('../../src/skills/get-template/get-template.mjs');
         action = module.action;
     });
 

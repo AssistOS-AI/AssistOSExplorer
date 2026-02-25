@@ -22,10 +22,10 @@ describe('Code Generation Integration Tests', () => {
     let testCodeAction;
 
     before(async () => {
-        const generateModule = await import('../src/.AchillesSkills/generate-code/generate-code.mjs');
+        const generateModule = await import('../src/skills/generate-code/generate-code.mjs');
         generateCodeAction = generateModule.action;
 
-        const testModule = await import('../src/.AchillesSkills/test-code/test-code.mjs');
+        const testModule = await import('../src/skills/test-code/test-code.mjs');
         testCodeAction = testModule.action;
 
         const dirs = createTempDir('temp_integration');

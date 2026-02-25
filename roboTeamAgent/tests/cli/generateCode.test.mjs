@@ -23,7 +23,7 @@ describe('generate-code Action Tests', () => {
 
     before(async () => {
         // Import action function
-        const generateModule = await import('../src/.AchillesSkills/generate-code/generate-code.mjs');
+        const generateModule = await import('../src/skills/generate-code/generate-code.mjs');
         generateCodeAction = generateModule.action;
 
         // Setup temp directory

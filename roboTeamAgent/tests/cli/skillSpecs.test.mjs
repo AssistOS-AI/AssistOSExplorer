@@ -96,7 +96,7 @@ describe('Skill Specifications (.specs.md) Support', () => {
 
     describe('Code Generation with Specs', () => {
         it('should include specs content in LLM prompt when .specs.md exists', async () => {
-            const generateModule = await import('../src/.AchillesSkills/generate-code/generate-code.mjs');
+            const generateModule = await import('../src/skills/generate-code/generate-code.mjs');
             const generateCodeAction = generateModule.action;
 
             const skillDir = path.join(skillsDir, 'SpecsCodeGenSkill');
@@ -136,7 +136,7 @@ export default { specs, action };`;
         });
 
         it('should work normally when no .specs.md exists', async () => {
-            const generateModule = await import('../src/.AchillesSkills/generate-code/generate-code.mjs');
+            const generateModule = await import('../src/skills/generate-code/generate-code.mjs');
             const generateCodeAction = generateModule.action;
 
             const skillDir = path.join(skillsDir, 'NoSpecsCodeGenSkill');
@@ -176,7 +176,7 @@ export default { specs, action };`;
 
     describe('read-skill with Specs', () => {
         it('should display .specs.md content when reading a skill', async () => {
-            const readModule = await import('../src/.AchillesSkills/read-skill/read-skill.mjs');
+            const readModule = await import('../src/skills/read-skill/read-skill.mjs');
             const readSkillAction = readModule.action;
 
             const skillDir = path.join(skillsDir, 'ReadableSpecsSkill');
@@ -204,7 +204,7 @@ export default { specs, action };`;
         });
 
         it('should work normally when no .specs.md exists for read-skill', async () => {
-            const readModule = await import('../src/.AchillesSkills/read-skill/read-skill.mjs');
+            const readModule = await import('../src/skills/read-skill/read-skill.mjs');
             const readSkillAction = readModule.action;
 
             const skillDir = path.join(skillsDir, 'NoSpecsReadableSkill');
