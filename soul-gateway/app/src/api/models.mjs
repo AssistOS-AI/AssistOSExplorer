@@ -61,6 +61,11 @@ export const handleModels = {
           object: 'model',
           created: Math.floor(new Date(m.created_at).getTime() / 1000),
           owned_by: 'soul-gateway',
+          mode: m.mode || 'deep',
+          input_price: parseFloat(m.input_price) || 0,
+          output_price: parseFloat(m.output_price) || 0,
+          context_window: m.context_window || null,
+          sort_order: m.sort_order ?? 100,
         })),
       });
       return;

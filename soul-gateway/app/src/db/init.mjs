@@ -88,6 +88,14 @@ async function migrate(p) {
   await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS loop_rpm_limit INT`);
   await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS loop_max_identical INT`);
 
+  // Add sort_order and context_window to model_configs (for /v1/models auto-discovery)
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS sort_order INT DEFAULT 100`);
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS context_window TEXT`);
+  // Set sort_order for axiologic alias models
+  await p.query(`UPDATE model_configs SET sort_order = 10 WHERE name = 'axiologic-fast' AND sort_order = 100`);
+  await p.query(`UPDATE model_configs SET sort_order = 20 WHERE name = 'axiologic-deep' AND sort_order = 100`);
+  await p.query(`UPDATE model_configs SET sort_order = 30 WHERE name = 'axiologic-ultra' AND sort_order = 100`);
+
   // Migrate axiologic_proxy models to use CLIProxyAPI prefixed model names
   const prefixMigrations = [
     { old: 'gpt-5.3-codex', new: 'codex/gpt-5.3-codex', source: 'codex' },
