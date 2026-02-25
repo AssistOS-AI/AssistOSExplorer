@@ -8,6 +8,7 @@ import { apiRouter } from './api/router.mjs';
 import { handleUpgrade } from './ws/upgrade.mjs';
 import { serveDashboard } from './dashboard/serve.mjs';
 import { isAuthenticated, handleLogin, handleLogout, redirectToLogin } from './dashboard/auth.mjs';
+import { handleSystemMetrics } from './api/system-metrics.mjs';
 import { config } from './config.mjs';
 
 const log = createLogger('server');
@@ -27,6 +28,11 @@ export function createAppServer() {
       // Health check
       if (pathname === '/health' && req.method === 'GET') {
         return sendJson(res, { status: 'ok', uptime: process.uptime() });
+      }
+
+      // System metrics (unauthenticated, like /health)
+      if (pathname === '/metrics' && req.method === 'GET') {
+        return handleSystemMetrics(req, res);
       }
 
       // OpenAI-compatible agent endpoints (support both /v1/... and /... paths)

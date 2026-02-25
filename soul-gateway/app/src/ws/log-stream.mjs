@@ -79,6 +79,10 @@ export function handleSseStream(req, res, query) {
   });
 }
 
+export function getStreamStats() {
+  return { ws: subscribers.size, sse: sseSubscribers.size };
+}
+
 /**
  * Broadcast a log entry to all matching subscribers (WS + SSE).
  */

@@ -63,6 +63,14 @@ export async function acquireModelSlot(resolvedModel, maxConcurrency = 3) {
   });
 }
 
+export function getQueueStats() {
+  const models = {};
+  for (const [model, sem] of semaphores) {
+    models[model] = { active: sem.active, max: sem.maxConcurrency, waiting: sem.waiters.length };
+  }
+  return models;
+}
+
 function release(sem) {
   if (sem.waiters.length > 0) {
     // Hand slot directly to next waiter

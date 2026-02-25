@@ -100,6 +100,10 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes, thresh
   }
 }
 
+export function getLoopDetectorStats() {
+  return { trackedSessions: sessions.size };
+}
+
 // --- Eviction: clean up stale sessions every 5 minutes ---
 const evictionTimer = setInterval(() => {
   const cutoff = Date.now() - EVICTION_MAX_AGE_MS;
