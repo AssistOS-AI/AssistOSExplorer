@@ -683,8 +683,9 @@ function modelsPage() {
     onProviderModelChange() {
       const selected = this.providerModels.find(m => m.id === this.form.provider_model);
       if (selected) {
-        this.form.input_price = selected.input_price;
-        this.form.output_price = selected.output_price;
+        // Only overwrite prices if the provider returns non-zero values
+        if (selected.input_price) this.form.input_price = selected.input_price;
+        if (selected.output_price) this.form.output_price = selected.output_price;
         this.form.upstream_source = selected.owned_by || '';
       }
     },

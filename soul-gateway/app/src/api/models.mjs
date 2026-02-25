@@ -12,6 +12,40 @@ function loadLLMConfig() {
   return JSON.parse(readFileSync(configPath, 'utf-8'));
 }
 
+/**
+ * Fetch /models from a provider and return a Map of id → { input_price, output_price }.
+ * Handles OpenRouter-style pricing ($/token) and standard formats.
+ */
+async function fetchProviderPricing(providerConfig) {
+  const baseURL = providerConfig.baseURL
+    .replace(/\/chat\/completions\/?$/, '')
+    .replace(/\/messages\/?$/, '')
+    .replace(/\/completions\/?$/, '')
+    .replace(/\/responses\/?$/, '');
+  const apiKey = providerConfig.apiKeyEnv ? process.env[providerConfig.apiKeyEnv] : '';
+  const resp = await fetch(baseURL + '/models', {
+    headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!resp.ok) return new Map();
+  const data = await resp.json();
+  const models = Array.isArray(data) ? data : (data.data || []);
+  const priceMap = new Map();
+  for (const m of models) {
+    const id = m.id || m.name;
+    if (!id) continue;
+    let input_price = 0, output_price = 0;
+    if (m.pricing?.prompt) input_price = parseFloat(m.pricing.prompt) * 1_000_000;
+    if (m.pricing?.completion) output_price = parseFloat(m.pricing.completion) * 1_000_000;
+    input_price = Math.round(input_price * 1000) / 1000;
+    output_price = Math.round(output_price * 1000) / 1000;
+    if (input_price || output_price) {
+      priceMap.set(id, { input_price, output_price });
+    }
+  }
+  return priceMap;
+}
+
 export const handleModels = {
   async list(req, res, query) {
     const enabledOnly = query?.enabled === 'true';
@@ -77,19 +111,15 @@ export const handleModels = {
     const provider = config.providers?.[key];
     if (!provider) return sendError(res, 404, `Provider "${key}" not found in LLMConfig`);
 
-    // Derive /models URL from baseURL (strip /chat/completions, /messages, /completions, /responses)
-    let baseURL = provider.baseURL
-      .replace(/\/chat\/completions\/?$/, '')
-      .replace(/\/messages\/?$/, '')
-      .replace(/\/completions\/?$/, '')
-      .replace(/\/responses\/?$/, '');
-    const modelsURL = baseURL + '/models';
-
-    // Get API key from env
-    const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : '';
-
     try {
-      const resp = await fetch(modelsURL, {
+      // Step 1: Fetch models from the requested provider
+      const baseURL = provider.baseURL
+        .replace(/\/chat\/completions\/?$/, '')
+        .replace(/\/messages\/?$/, '')
+        .replace(/\/completions\/?$/, '')
+        .replace(/\/responses\/?$/, '');
+      const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : '';
+      const resp = await fetch(baseURL + '/models', {
         headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
         signal: AbortSignal.timeout(10000),
       });
@@ -97,33 +127,27 @@ export const handleModels = {
         return sendError(res, 502, `Provider returned ${resp.status}: ${await resp.text()}`);
       }
       const data = await resp.json();
-      // Handle both OpenAI format { data: [...] } and plain array
       const models = Array.isArray(data) ? data : (data.data || []);
 
-      // Build enriched model list with pricing
+      // Step 2: Build enriched model list with any inline pricing
       const enriched = models
         .map(m => {
           const id = m.id || m.name;
           if (!id) return null;
-          let input_price = 0;
-          let output_price = 0;
-          // OpenRouter includes pricing.prompt / pricing.completion in $/token
+          let input_price = 0, output_price = 0;
           if (m.pricing?.prompt) input_price = parseFloat(m.pricing.prompt) * 1_000_000;
           if (m.pricing?.completion) output_price = parseFloat(m.pricing.completion) * 1_000_000;
-          // Round to avoid floating-point noise
           input_price = Math.round(input_price * 1000) / 1000;
           output_price = Math.round(output_price * 1000) / 1000;
-          const owned_by = m.owned_by || '';
-          return { id, input_price, output_price, owned_by };
+          return { id, input_price, output_price, owned_by: m.owned_by || '' };
         })
         .filter(Boolean)
         .sort((a, b) => a.id.localeCompare(b.id));
 
-      // Merge LLMConfig.json pricing as fallback for models without upstream pricing
+      // Step 3: LLMConfig.json pricing as first fallback
       const configModels = config.models || [];
       for (const em of enriched) {
         if (em.input_price === 0 && em.output_price === 0) {
-          // Match by exact provider+name, then by owned_by as provider key
           const match = configModels.find(cm => cm.provider === key && cm.name === em.id)
             || (em.owned_by && configModels.find(cm => cm.provider === em.owned_by && cm.name === em.id));
           if (match) {
@@ -131,6 +155,36 @@ export const handleModels = {
             em.output_price = match.outputPrice || 0;
           }
         }
+      }
+
+      // Step 4: For models still missing pricing, detect upstream providers from
+      // owned_by and fetch pricing directly from them (e.g. a proxy returns
+      // owned_by:"openrouter" — we fetch openrouter's /models for pricing)
+      const needsPricing = enriched.filter(em => em.input_price === 0 && em.output_price === 0);
+      if (needsPricing.length > 0) {
+        // Group models by their owned_by provider
+        const byProvider = new Map();
+        for (const em of needsPricing) {
+          const upstream = em.owned_by;
+          if (upstream && upstream !== key && config.providers?.[upstream]) {
+            if (!byProvider.has(upstream)) byProvider.set(upstream, []);
+            byProvider.get(upstream).push(em);
+          }
+        }
+        // Fetch pricing from each upstream provider in parallel
+        const fetches = [...byProvider.entries()].map(async ([providerKey, models]) => {
+          try {
+            const priceMap = await fetchProviderPricing(config.providers[providerKey]);
+            for (const em of models) {
+              const price = priceMap.get(em.id);
+              if (price) {
+                em.input_price = price.input_price;
+                em.output_price = price.output_price;
+              }
+            }
+          } catch { /* upstream pricing fetch is best-effort */ }
+        });
+        await Promise.all(fetches);
       }
 
       sendJson(res, enriched);
