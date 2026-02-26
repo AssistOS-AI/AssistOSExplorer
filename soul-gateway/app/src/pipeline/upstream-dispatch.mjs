@@ -34,7 +34,10 @@ export async function dispatchUpstream(messages, routeResult, params, signal) {
     throw new UpstreamError(`Provider "${providerKey}" not configured in LLMConfig`, 502, 'provider_not_configured');
   }
 
-  const baseURL = providerConfig.baseURL;
+  // Use UPSTREAM_URL env var for axiologic_proxy (direct localhost, avoids Cloudflare tunnel)
+  const baseURL = (providerKey === 'axiologic_proxy' && process.env.UPSTREAM_URL)
+    ? process.env.UPSTREAM_URL + '/v1/chat/completions'
+    : providerConfig.baseURL;
   if (!baseURL) {
     throw new UpstreamError(`Missing baseURL for provider "${providerKey}"`, 502, 'provider_not_configured');
   }

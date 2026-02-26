@@ -106,7 +106,10 @@ export async function anthropicProxy(req, res) {
         `Provider "${modelInfo.providerKey}" not configured`, 502, 'provider_not_configured'
       );
     }
-    const baseURL = providerConfig.baseURL;
+    // Use UPSTREAM_URL env var for axiologic_proxy (direct localhost, avoids Cloudflare tunnel)
+    const baseURL = (modelInfo.providerKey === 'axiologic_proxy' && process.env.UPSTREAM_URL)
+      ? process.env.UPSTREAM_URL + '/v1/chat/completions'
+      : providerConfig.baseURL;
     if (!baseURL) {
       throw new SoulGatewayError(
         `Missing baseURL for provider "${modelInfo.providerKey}"`, 502, 'provider_not_configured'
