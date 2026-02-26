@@ -48,7 +48,7 @@ export function createAppServer() {
         return await openaiResponsesProxy(req, res);
       }
       if ((pathname === '/v1/models' || pathname === '/models') && req.method === 'GET') {
-        // Handled by API router (lists models for the authenticated family)
+        // Handled by API router
         return await apiRouter(req, res, pathname, query);
       }
 

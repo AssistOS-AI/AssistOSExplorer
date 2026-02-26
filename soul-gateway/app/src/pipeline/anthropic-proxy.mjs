@@ -38,8 +38,6 @@ export async function anthropicProxy(req, res) {
       req.headers['authorization'] = `Bearer ${req.headers['x-api-key']}`;
     }
     authCtx = await authenticate(req);
-    logEntry.family_id = authCtx.family_id;
-    logEntry.family_name = authCtx.family_name;
     logEntry.soul_id = authCtx.soul_id;
     logEntry.api_key_id = authCtx.api_key_id;
 
@@ -73,7 +71,7 @@ export async function anthropicProxy(req, res) {
         }
       }
       try {
-        await checkBlacklist(messagesToScan, authCtx.family_id);
+        await checkBlacklist(messagesToScan);
       } catch (err) {
         if (err instanceof BlacklistError) {
           logEntry.blocked_by_blacklist = true;
@@ -92,10 +90,10 @@ export async function anthropicProxy(req, res) {
     }
 
     // 5. Rate limit
-    await checkRateLimit(authCtx.family_id, authCtx.rpm_limit, authCtx.tpm_limit);
+    await checkRateLimit(authCtx.api_key_id, authCtx.rpm_limit, authCtx.tpm_limit);
 
     // 6. Model routing
-    modelInfo = await resolveModel(body.model, authCtx);
+    modelInfo = await resolveModel(body.model);
     logEntry.resolved_model = modelInfo.resolvedModel;
     logEntry.mode = modelInfo.mode;
 
@@ -199,7 +197,7 @@ export async function anthropicProxy(req, res) {
 
     // Track TPM (post-response)
     if (costs.total_tokens > 0) {
-      trackTokenUsage(authCtx.family_id, costs.total_tokens, authCtx.tpm_limit).catch(() => {});
+      trackTokenUsage(authCtx.api_key_id, costs.total_tokens, authCtx.tpm_limit).catch(() => {});
     }
 
   } catch (err) {

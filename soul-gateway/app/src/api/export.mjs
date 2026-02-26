@@ -4,14 +4,13 @@ import { getLogsForExport } from '../db/logs-dao.mjs';
 export async function handleExport(req, res, query) {
   const format = query.format || 'json';
   const rows = await getLogsForExport({
-    family_id: query.family_id || query.family,
     from: query.from,
     to: query.to,
   });
 
   if (format === 'csv') {
     const csvHeaders = [
-      'id', 'family_name', 'soul_id', 'requested_model', 'resolved_model',
+      'id', 'soul_id', 'requested_model', 'resolved_model',
       'status_code', 'latency_ms', 'prompt_tokens', 'completion_tokens',
       'total_tokens', 'total_cost', 'error_type', 'is_truncated', 'is_slow',
       'started_at', 'completed_at',

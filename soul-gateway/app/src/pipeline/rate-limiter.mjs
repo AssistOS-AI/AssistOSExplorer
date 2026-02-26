@@ -4,13 +4,13 @@ import { RateLimitError } from '../utils/errors.mjs';
 const WINDOW_MS = 60_000; // 1 minute sliding window
 
 /**
- * Check rate limits for a soul family.
+ * Check rate limits for an API key.
  * Uses PostgreSQL for state (survives restarts).
  */
-export async function checkRateLimit(familyId, rpmLimit, tpmLimit) {
+export async function checkRateLimit(keyId, rpmLimit, tpmLimit) {
   const now = new Date();
   const windowStart = new Date(now.getTime() - WINDOW_MS);
-  const rpmKey = `rpm:${familyId}`;
+  const rpmKey = `rpm:key:${keyId}`;
 
   // Upsert RPM counter
   const { rows } = await query(`
@@ -35,7 +35,7 @@ export async function checkRateLimit(familyId, rpmLimit, tpmLimit) {
   if (counter > rpmLimit) {
     const retryAfter = Math.ceil(WINDOW_MS / 1000);
     throw new RateLimitError(
-      `Rate limit exceeded: ${counter}/${rpmLimit} RPM for this soul family`,
+      `Rate limit exceeded: ${counter}/${rpmLimit} RPM for this API key`,
       retryAfter
     );
   }
@@ -44,10 +44,10 @@ export async function checkRateLimit(familyId, rpmLimit, tpmLimit) {
 /**
  * Track token usage for TPM limiting (called after response).
  */
-export async function trackTokenUsage(familyId, tokens, tpmLimit) {
+export async function trackTokenUsage(keyId, tokens, tpmLimit) {
   const now = new Date();
   const windowStart = new Date(now.getTime() - WINDOW_MS);
-  const tpmKey = `tpm:${familyId}`;
+  const tpmKey = `tpm:key:${keyId}`;
 
   const { rows } = await query(`
     INSERT INTO rate_limit_state (key, window_start, counter, updated_at)

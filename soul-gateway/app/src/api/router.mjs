@@ -1,5 +1,4 @@
 import { matchPath, sendError } from '../utils/http-helpers.mjs';
-import { handleSoulFamilies } from './soul-families.mjs';
 import { handleModels } from './models.mjs';
 import { handleKeys } from './keys.mjs';
 import { handleBlacklist } from './blacklist.mjs';
@@ -20,20 +19,8 @@ export async function apiRouter(req, res, pathname, query) {
     return handleModels.list(req, res, query);
   }
 
-  // Soul Families
-  if (pathname === '/api/v1/soul-families') {
-    if (method === 'GET') return handleSoulFamilies.list(req, res, query);
-    if (method === 'POST') return handleSoulFamilies.create(req, res);
-  }
-  let params = matchPath('/api/v1/soul-families/:id', pathname);
-  if (params) {
-    if (method === 'GET') return handleSoulFamilies.get(req, res, params);
-    if (method === 'PUT') return handleSoulFamilies.update(req, res, params);
-    if (method === 'DELETE') return handleSoulFamilies.remove(req, res, params);
-  }
-
   // Models
-  params = matchPath('/api/v1/models/providers/:key/models', pathname);
+  let params = matchPath('/api/v1/models/providers/:key/models', pathname);
   if (params) {
     if (method === 'GET') return handleModels.providerModels(req, res, params);
   }

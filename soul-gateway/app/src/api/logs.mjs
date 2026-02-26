@@ -4,7 +4,6 @@ import * as dao from '../db/logs-dao.mjs';
 export const handleLogs = {
   async list(req, res, query) {
     const result = await dao.queryLogs({
-      family_id: query.family_id,
       soul_id: query.soul_id,
       model: query.model,
       from: query.from,

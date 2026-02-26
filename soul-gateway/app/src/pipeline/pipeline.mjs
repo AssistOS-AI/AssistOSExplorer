@@ -41,8 +41,6 @@ export async function pipeline(req, res) {
   try {
     // 1. Auth
     authCtx = await authenticate(req);
-    logEntry.family_id = authCtx.family_id;
-    logEntry.family_name = authCtx.family_name;
     logEntry.soul_id = authCtx.soul_id;
     logEntry.api_key_id = authCtx.api_key_id;
 
@@ -64,14 +62,11 @@ export async function pipeline(req, res) {
 
     // 3. Loop detection
     const requestSizeBytes = Buffer.byteLength(JSON.stringify(body.messages), 'utf8');
-    checkLoopDetection(sessionId, body.messages, requestSizeBytes, {
-      maxRpm: authCtx.loop_rpm_limit,
-      maxIdentical: authCtx.loop_max_identical,
-    });
+    checkLoopDetection(sessionId, body.messages, requestSizeBytes);
 
     // 4. Blacklist scan
     try {
-      await checkBlacklist(body.messages, authCtx.family_id);
+      await checkBlacklist(body.messages);
     } catch (err) {
       if (err instanceof BlacklistError) {
         logEntry.blocked_by_blacklist = true;
@@ -89,13 +84,13 @@ export async function pipeline(req, res) {
     }
 
     // 5. Rate limit
-    await checkRateLimit(authCtx.family_id, authCtx.rpm_limit, authCtx.tpm_limit);
+    await checkRateLimit(authCtx.api_key_id, authCtx.rpm_limit, authCtx.tpm_limit);
 
     // 6. Budget check
     await checkBudget(authCtx);
 
     // 7. Model routing
-    modelInfo = await resolveModel(body.model, authCtx);
+    modelInfo = await resolveModel(body.model);
     logEntry.resolved_model = modelInfo.resolvedModel;
     logEntry.mode = modelInfo.mode;
 
@@ -214,7 +209,7 @@ export async function pipeline(req, res) {
 
     // Track TPM and budget spend (post-response)
     if (costs.total_tokens > 0) {
-      trackTokenUsage(authCtx.family_id, costs.total_tokens, authCtx.tpm_limit).catch(() => {});
+      trackTokenUsage(authCtx.api_key_id, costs.total_tokens, authCtx.tpm_limit).catch(() => {});
     }
     if (costs.total_cost > 0) {
       trackSpend(authCtx, costs.total_cost);

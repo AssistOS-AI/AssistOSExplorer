@@ -1,32 +1,26 @@
 import { query } from './init.mjs';
 
-export async function listRules(familyId) {
-  let sql = 'SELECT * FROM blacklist_rules';
-  const params = [];
-  if (familyId) {
-    sql += ' WHERE family_id = $1 OR family_id IS NULL';
-    params.push(familyId);
-  }
-  sql += ' ORDER BY created_at';
-  const { rows } = await query(sql, params);
+export async function listRules() {
+  const sql = 'SELECT * FROM blacklist_rules ORDER BY created_at';
+  const { rows } = await query(sql);
   return rows;
 }
 
-export async function getEnabledRules(familyId) {
+export async function getEnabledRules() {
   const { rows } = await query(`
     SELECT * FROM blacklist_rules
-    WHERE is_enabled = true AND (family_id IS NULL OR family_id = $1)
+    WHERE is_enabled = true
     ORDER BY created_at
-  `, [familyId]);
+  `);
   return rows;
 }
 
-export async function createRule({ family_id, pattern, match_type, action, description }) {
+export async function createRule({ pattern, match_type, action, description }) {
   const { rows } = await query(`
-    INSERT INTO blacklist_rules (family_id, pattern, match_type, action, description)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO blacklist_rules (pattern, match_type, action, description)
+    VALUES ($1, $2, $3, $4)
     RETURNING *
-  `, [family_id || null, pattern, match_type, action || 'block', description]);
+  `, [pattern, match_type, action || 'block', description]);
   return rows[0];
 }
 
@@ -35,7 +29,7 @@ export async function updateRule(id, fields) {
   const values = [];
   let idx = 1;
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined && ['family_id', 'pattern', 'match_type', 'action', 'description', 'is_enabled'].includes(key)) {
+    if (value !== undefined && ['pattern', 'match_type', 'action', 'description', 'is_enabled'].includes(key)) {
       sets.push(`${key} = $${idx}`);
       values.push(value);
       idx++;

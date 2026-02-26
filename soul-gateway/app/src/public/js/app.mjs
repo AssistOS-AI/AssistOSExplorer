@@ -39,7 +39,6 @@ function app() {
       { id: 'keys', label: 'Keys' },
       { id: 'logs', label: 'Logs' },
       { id: 'errors', label: 'Errors' },
-      { id: 'families', label: 'Families' },
       { id: 'activity', label: 'Activity' },
       { id: 'costs', label: 'Usage' },
       { id: 'blacklist', label: 'Blacklist' },
@@ -151,24 +150,12 @@ function logsPage() {
     },
 
     buildTree() {
-      const familyMap = new Map();
+      const keyMap = new Map();
 
       for (const row of this.treeData) {
-        const fid = row.family_id || '_none';
-        if (!familyMap.has(fid)) {
-          familyMap.set(fid, {
-            type: 'family',
-            id: fid,
-            name: row.family_name || 'No Family',
-            keys: new Map(),
-            expanded: false,
-          });
-        }
-        const family = familyMap.get(fid);
-
         const kid = row.api_key_id || '_none';
-        if (!family.keys.has(kid)) {
-          family.keys.set(kid, {
+        if (!keyMap.has(kid)) {
+          keyMap.set(kid, {
             type: 'key',
             id: kid,
             label: row.key_label || row.key_hint || kid.slice(0, 8),
@@ -177,7 +164,7 @@ function logsPage() {
             expanded: false,
           });
         }
-        const key = family.keys.get(kid);
+        const key = keyMap.get(kid);
 
         const aname = row.agent_name || 'unknown';
         if (!key.agents.has(aname)) {
@@ -203,12 +190,9 @@ function logsPage() {
         }
       }
 
-      this.tree = Array.from(familyMap.values()).map(f => ({
-        ...f,
-        keys: Array.from(f.keys.values()).map(k => ({
-          ...k,
-          agents: Array.from(k.agents.values()),
-        })),
+      this.tree = Array.from(keyMap.values()).map(k => ({
+        ...k,
+        agents: Array.from(k.agents.values()),
       }));
     },
 
@@ -217,27 +201,14 @@ function logsPage() {
       const q = this.search.toLowerCase();
       const result = [];
 
-      for (const f of this.tree) {
-        const familyMatch = f.name.toLowerCase().includes(q);
-        const filteredKeys = [];
+      for (const k of this.tree) {
+        const keyMatch = k.label.toLowerCase().includes(q) || k.hint.toLowerCase().includes(q);
+        const filteredAgents = k.agents.filter(a => a.name.toLowerCase().includes(q));
 
-        for (const k of f.keys) {
-          const keyMatch = k.label.toLowerCase().includes(q) || k.hint.toLowerCase().includes(q);
-          const filteredAgents = k.agents.filter(a => a.name.toLowerCase().includes(q));
-
-          if (familyMatch || keyMatch || filteredAgents.length > 0) {
-            filteredKeys.push({
-              ...k,
-              agents: keyMatch || familyMatch ? k.agents : filteredAgents,
-              expanded: true,
-            });
-          }
-        }
-
-        if (familyMatch || filteredKeys.length > 0) {
+        if (keyMatch || filteredAgents.length > 0) {
           result.push({
-            ...f,
-            keys: familyMatch && filteredKeys.length === 0 ? f.keys : filteredKeys,
+            ...k,
+            agents: keyMatch ? k.agents : filteredAgents,
             expanded: true,
           });
         }
@@ -443,12 +414,11 @@ function activityPage() {
         request_count: Number(k.request_count || 0),
         error_count: Number(k.error_count || 0),
         key_budget: k.key_budget != null ? Number(k.key_budget) : null,
-        family_budget: k.family_budget != null ? Number(k.family_budget) : null,
       }));
     },
 
     budgetPct(row) {
-      const budget = row.key_budget ?? row.family_budget;
+      const budget = row.key_budget;
       if (budget == null || budget === 0) return null;
       return Math.min(100, (row.total_cost / budget) * 100);
     },
@@ -596,48 +566,6 @@ function errorsPage() {
   };
 }
 
-// ---- Families Page ----
-function familiesPage() {
-  return {
-    families: [],
-    showCreate: false,
-    editing: null,
-    form: { name: '', description: '', rpm_limit: 60, tpm_limit: 100000, monthly_budget: '', loop_rpm_limit: '', loop_max_identical: '' },
-
-    async init() { this.families = await api.get('/api/v1/soul-families'); },
-
-    edit(f) {
-      this.editing = f;
-      this.form = { name: f.name, description: f.description || '', rpm_limit: f.rpm_limit, tpm_limit: f.tpm_limit, monthly_budget: f.monthly_budget ?? '', loop_rpm_limit: f.loop_rpm_limit ?? '', loop_max_identical: f.loop_max_identical ?? '' };
-      this.showCreate = true;
-    },
-
-    async save() {
-      const payload = { ...this.form };
-      payload.monthly_budget = payload.monthly_budget === '' ? null : Number(payload.monthly_budget);
-      payload.loop_rpm_limit = payload.loop_rpm_limit === '' ? null : Number(payload.loop_rpm_limit);
-      payload.loop_max_identical = payload.loop_max_identical === '' ? null : Number(payload.loop_max_identical);
-      if (this.editing) {
-        await api.put(`/api/v1/soul-families/${this.editing.id}`, payload);
-      } else {
-        await api.post('/api/v1/soul-families', payload);
-      }
-      this.showCreate = false;
-      this.editing = null;
-      this.form = { name: '', description: '', rpm_limit: 60, tpm_limit: 100000, monthly_budget: '', loop_rpm_limit: '', loop_max_identical: '' };
-      this.families = await api.get('/api/v1/soul-families');
-    },
-
-    async remove(f) {
-      if (!confirm(`Delete family "${f.name}"? This will also delete all associated API keys.`)) return;
-      await api.del(`/api/v1/soul-families/${f.id}`);
-      this.families = await api.get('/api/v1/soul-families');
-    },
-
-    formatDate,
-  };
-}
-
 // ---- Models Page ----
 function modelsPage() {
   return {
@@ -745,20 +673,15 @@ function modelsPage() {
 function keysPage() {
   return {
     keys: [],
-    families: [],
     showCreate: false,
     showEdit: false,
     editing: null,
     newKey: '',
-    form: { family_id: '', label: '', key: '', monthly_budget: '' },
+    form: { label: '', key: '', monthly_budget: '' },
     editForm: { label: '', monthly_budget: '' },
 
     async init() {
-      [this.keys, this.families] = await Promise.all([
-        api.get('/api/v1/keys'),
-        api.get('/api/v1/soul-families'),
-      ]);
-      if (this.families.length > 0) this.form.family_id = this.families[0].id;
+      this.keys = await api.get('/api/v1/keys');
     },
 
     generate() {
@@ -808,27 +731,22 @@ function keysPage() {
 function blacklistPage() {
   return {
     rules: [],
-    families: [],
     showCreate: false,
     editing: null,
-    form: { pattern: '', match_type: 'substring', description: '', family_id: '' },
+    form: { pattern: '', match_type: 'substring', description: '' },
 
     async init() {
-      [this.rules, this.families] = await Promise.all([
-        api.get('/api/v1/blacklist'),
-        api.get('/api/v1/soul-families'),
-      ]);
+      this.rules = await api.get('/api/v1/blacklist');
     },
 
     edit(r) {
       this.editing = r;
-      this.form = { pattern: r.pattern, match_type: r.match_type, description: r.description || '', family_id: r.family_id || '' };
+      this.form = { pattern: r.pattern, match_type: r.match_type, description: r.description || '' };
       this.showCreate = true;
     },
 
     async save() {
       const body = { ...this.form };
-      if (!body.family_id) body.family_id = null;
       if (this.editing) {
         await api.put(`/api/v1/blacklist/${this.editing.id}`, body);
       } else {
@@ -836,7 +754,7 @@ function blacklistPage() {
       }
       this.showCreate = false;
       this.editing = null;
-      this.form = { pattern: '', match_type: 'substring', description: '', family_id: '' };
+      this.form = { pattern: '', match_type: 'substring', description: '' };
       this.rules = await api.get('/api/v1/blacklist');
     },
 

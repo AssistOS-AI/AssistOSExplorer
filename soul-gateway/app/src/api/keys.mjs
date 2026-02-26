@@ -3,13 +3,12 @@ import * as dao from '../db/keys-dao.mjs';
 
 export const handleKeys = {
   async list(req, res, query) {
-    const keys = await dao.listKeys(query?.family_id);
+    const keys = await dao.listKeys();
     sendJson(res, keys);
   },
 
   async create(req, res) {
     const body = await readJsonBody(req);
-    if (!body?.family_id) return sendError(res, 400, 'family_id is required');
     const key = await dao.createKey(body);
     sendJson(res, key, 201);
   },

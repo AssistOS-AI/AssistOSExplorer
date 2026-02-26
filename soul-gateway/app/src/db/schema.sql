@@ -2,38 +2,21 @@
 CREATE SCHEMA IF NOT EXISTS soul_gateway;
 SET search_path TO soul_gateway;
 
--- Soul Families
-CREATE TABLE IF NOT EXISTS soul_families (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT UNIQUE NOT NULL,
-    description TEXT,
-    model_mapping JSONB DEFAULT '{}',
-    allowed_models JSONB DEFAULT '[]',
-    rpm_limit INT DEFAULT 60,
-    tpm_limit INT DEFAULT 100000,
-    monthly_budget NUMERIC DEFAULT NULL,
-    loop_rpm_limit INT DEFAULT NULL,
-    loop_max_identical INT DEFAULT NULL,
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
-
 -- API Keys
 CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    family_id UUID NOT NULL REFERENCES soul_families(id) ON DELETE CASCADE,
     key_hash TEXT UNIQUE NOT NULL,
     encrypted_key BYTEA NOT NULL,
     label TEXT,
     key_hint TEXT,
     monthly_budget NUMERIC DEFAULT NULL,
+    rpm_limit INT DEFAULT 60,
+    tpm_limit INT DEFAULT 100000,
     expires_at TIMESTAMPTZ,
     is_revoked BOOLEAN DEFAULT false,
     last_used_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_api_keys_family_id ON api_keys(family_id);
 
 -- Model Configs
 CREATE TABLE IF NOT EXISTS model_configs (
@@ -57,7 +40,6 @@ CREATE TABLE IF NOT EXISTS model_configs (
 -- Blacklist Rules
 CREATE TABLE IF NOT EXISTS blacklist_rules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    family_id UUID REFERENCES soul_families(id) ON DELETE CASCADE,
     pattern TEXT NOT NULL,
     match_type TEXT NOT NULL CHECK (match_type IN ('exact', 'substring', 'regex')),
     action TEXT DEFAULT 'block',
@@ -69,8 +51,6 @@ CREATE TABLE IF NOT EXISTS blacklist_rules (
 -- Call Logs (partitioned by month)
 CREATE TABLE IF NOT EXISTS call_logs (
     id UUID DEFAULT gen_random_uuid(),
-    family_id UUID,
-    family_name TEXT,
     soul_id TEXT,
     api_key_id UUID,
     agent_name TEXT,
@@ -119,7 +99,6 @@ CREATE TABLE IF NOT EXISTS call_logs (
 ) PARTITION BY RANGE (started_at);
 
 -- Create indexes on the partitioned table
-CREATE INDEX IF NOT EXISTS idx_call_logs_family_started ON call_logs(family_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_call_logs_soul_started ON call_logs(soul_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_call_logs_model_started ON call_logs(resolved_model, started_at);
 CREATE INDEX IF NOT EXISTS idx_call_logs_started ON call_logs(started_at);

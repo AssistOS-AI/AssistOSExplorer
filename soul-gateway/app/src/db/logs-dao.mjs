@@ -9,7 +9,7 @@ const SORTABLE_COLUMNS = new Set([
 export async function insertLog(log) {
   const { rows } = await query(`
     INSERT INTO call_logs (
-      family_id, family_name, soul_id, api_key_id,
+      soul_id, api_key_id,
       agent_name, session_id,
       requested_model, resolved_model, mode, is_streaming,
       request_messages, request_size_bytes,
@@ -23,22 +23,22 @@ export async function insertLog(log) {
       prompt_hash, cache_hit,
       started_at, completed_at
     ) VALUES (
-      $1, $2, $3, $4,
-      $5, $6,
-      $7, $8, $9, $10,
-      $11, $12,
-      $13, $14, $15, $16, $17,
-      $18, $19, $20,
-      $21, $22, $23,
-      $24, $25, $26,
-      $27, $28, $29,
-      $30, $31, $32,
-      $33, $34, $35,
-      $36, $37,
-      $38, $39
+      $1, $2,
+      $3, $4,
+      $5, $6, $7, $8,
+      $9, $10,
+      $11, $12, $13, $14, $15,
+      $16, $17, $18,
+      $19, $20, $21,
+      $22, $23, $24,
+      $25, $26, $27,
+      $28, $29, $30,
+      $31, $32, $33,
+      $34, $35,
+      $36, $37
     ) RETURNING id, started_at
   `, [
-    log.family_id, log.family_name, log.soul_id, log.api_key_id,
+    log.soul_id, log.api_key_id,
     log.agent_name, log.session_id,
     log.requested_model, log.resolved_model, log.mode, log.is_streaming,
     JSON.stringify(log.request_messages), log.request_size_bytes,
@@ -65,12 +65,11 @@ export async function findCachedResponse(promptHash, resolvedModel) {
   return rows[0] || null;
 }
 
-export async function queryLogs({ family_id, soul_id, model, from, to, status, error_type, keyword, session_id, agent_name, api_key_id, limit, offset, sort, order }) {
+export async function queryLogs({ soul_id, model, from, to, status, error_type, keyword, session_id, agent_name, api_key_id, limit, offset, sort, order }) {
   const conditions = [];
   const params = [];
   let idx = 1;
 
-  if (family_id) { conditions.push(`family_id = $${idx++}`); params.push(family_id); }
   if (soul_id) { conditions.push(`soul_id = $${idx++}`); params.push(soul_id); }
   if (model) { conditions.push(`resolved_model = $${idx++}`); params.push(model); }
   if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
@@ -100,7 +99,7 @@ export async function queryLogs({ family_id, soul_id, model, from, to, status, e
   const [countResult, dataResult] = await Promise.all([
     query(`SELECT COUNT(*) as total FROM call_logs ${where}`, params),
     query(`
-      SELECT id, family_id, family_name, soul_id, api_key_id,
+      SELECT id, soul_id, api_key_id,
              agent_name, session_id,
              requested_model, resolved_model, mode, is_streaming,
              status_code, stop_reason, error_type, error_message,
@@ -128,12 +127,11 @@ export async function getLogById(id) {
   return rows[0] || null;
 }
 
-export async function getLogsForExport({ family_id, from, to, format }) {
+export async function getLogsForExport({ from, to, format }) {
   const conditions = [];
   const params = [];
   let idx = 1;
 
-  if (family_id) { conditions.push(`family_id = $${idx++}`); params.push(family_id); }
   if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
   if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
 
@@ -145,14 +143,13 @@ export async function getLogsForExport({ family_id, from, to, format }) {
 // --- Agent & Session queries ---
 
 /**
- * List distinct agents seen, optionally filtered by family and/or API key.
+ * List distinct agents seen, optionally filtered by API key.
  */
-export async function listAgents({ family_id, api_key_id } = {}) {
+export async function listAgents({ api_key_id } = {}) {
   const conditions = [];
   const params = [];
   let idx = 1;
 
-  if (family_id) { conditions.push(`family_id = $${idx++}`); params.push(family_id); }
   if (api_key_id) { conditions.push(`api_key_id = $${idx++}`); params.push(api_key_id); }
 
   const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
@@ -171,12 +168,11 @@ export async function listAgents({ family_id, api_key_id } = {}) {
 /**
  * List sessions for a given key+agent combination.
  */
-export async function listSessions({ api_key_id, agent_name, family_id, limit, offset } = {}) {
+export async function listSessions({ api_key_id, agent_name, limit, offset } = {}) {
   const conditions = [];
   const params = [];
   let idx = 1;
 
-  if (family_id) { conditions.push(`family_id = $${idx++}`); params.push(family_id); }
   if (api_key_id) { conditions.push(`api_key_id = $${idx++}`); params.push(api_key_id); }
   if (agent_name) { conditions.push(`agent_name = $${idx++}`); params.push(agent_name); }
   conditions.push(`session_id IS NOT NULL`);
@@ -216,7 +212,7 @@ export async function getSessionLogs(sessionId, { limit, offset, sort, order } =
   const [countResult, dataResult] = await Promise.all([
     query(`SELECT COUNT(*) as total FROM call_logs WHERE session_id = $1`, [sessionId]),
     query(`
-      SELECT id, family_id, family_name, soul_id, api_key_id,
+      SELECT id, soul_id, api_key_id,
              agent_name, session_id,
              requested_model, resolved_model, mode, is_streaming,
              status_code, stop_reason, error_type, error_message,
@@ -240,13 +236,11 @@ export async function getSessionLogs(sessionId, { limit, offset, sort, order } =
 }
 
 /**
- * Tree-view aggregation: families → keys → agents → sessions.
+ * Tree-view aggregation: keys -> agents -> sessions.
  */
 export async function getTreeData() {
   const { rows } = await query(`
     SELECT
-      f.id as family_id,
-      f.name as family_name,
       ak.id as api_key_id,
       ak.label as key_label,
       ak.key_hint,
@@ -259,9 +253,8 @@ export async function getTreeData() {
       MAX(cl.started_at) as last_request
     FROM call_logs cl
     LEFT JOIN soul_gateway.api_keys ak ON cl.api_key_id = ak.id
-    LEFT JOIN soul_gateway.soul_families f ON cl.family_id = f.id
     WHERE cl.started_at >= NOW() - INTERVAL '30 days'
-    GROUP BY f.id, f.name, ak.id, ak.label, ak.key_hint, cl.agent_name, cl.session_id
+    GROUP BY ak.id, ak.label, ak.key_hint, cl.agent_name, cl.session_id
     ORDER BY last_request DESC
   `);
   return rows;

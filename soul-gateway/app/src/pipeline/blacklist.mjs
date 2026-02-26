@@ -5,8 +5,8 @@ import { BlacklistError } from '../utils/errors.mjs';
  * Scan all message content against blacklist rules.
  * Throws BlacklistError if any rule matches.
  */
-export async function checkBlacklist(messages, familyId) {
-  const rules = await getEnabledRules(familyId);
+export async function checkBlacklist(messages) {
+  const rules = await getEnabledRules();
   if (rules.length === 0) return;
 
   // Concatenate all message content for scanning

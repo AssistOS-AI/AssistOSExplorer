@@ -13,7 +13,6 @@ const sseSubscribers = new Set();
  */
 export function handleLogStream(ws, query) {
   const filters = {
-    family_id: query.family_id || null,
     soul_id: query.soul_id || null,
     model: query.model || null,
   };
@@ -53,7 +52,6 @@ export function handleSseStream(req, res, query) {
   });
 
   const filters = {
-    family_id: query.family_id || null,
     soul_id: query.soul_id || null,
     model: query.model || null,
   };
@@ -112,7 +110,6 @@ export function broadcastLog(logEntry) {
 }
 
 function matchesFilters(entry, filters) {
-  if (filters.family_id && entry.family_id !== filters.family_id) return false;
   if (filters.soul_id && entry.soul_id !== filters.soul_id) return false;
   if (filters.model && entry.resolved_model !== filters.model) return false;
   return true;
@@ -122,8 +119,6 @@ function sanitizeForBroadcast(entry) {
   // Send a lighter version without full prompt/response content
   return {
     id: entry.id,
-    family_id: entry.family_id,
-    family_name: entry.family_name,
     soul_id: entry.soul_id,
     requested_model: entry.requested_model,
     resolved_model: entry.resolved_model,

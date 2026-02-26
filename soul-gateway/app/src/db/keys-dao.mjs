@@ -3,13 +3,8 @@ import { sha256, encrypt, decrypt, generateApiKey } from '../utils/crypto.mjs';
 
 export async function findKeyByHash(hash) {
   const { rows } = await query(`
-    SELECT k.*, f.name as family_name, f.rpm_limit, f.tpm_limit,
-           f.monthly_budget as family_monthly_budget,
-           f.loop_rpm_limit, f.loop_max_identical,
-           f.model_mapping, f.allowed_models, f.metadata as family_metadata
-    FROM api_keys k
-    JOIN soul_families f ON k.family_id = f.id
-    WHERE k.key_hash = $1 AND k.is_revoked = false
+    SELECT * FROM api_keys
+    WHERE key_hash = $1 AND is_revoked = false
   `, [hash]);
   const row = rows[0];
   if (!row) return null;
@@ -27,40 +22,34 @@ export async function resolveApiKey(rawKey) {
   return keyRow;
 }
 
-export async function listKeys(familyId) {
-  let sql = `
-    SELECT k.id, k.family_id, k.label, k.key_hint, k.monthly_budget,
-           k.expires_at, k.is_revoked, k.last_used_at, k.created_at, f.name as family_name
-    FROM api_keys k
-    JOIN soul_families f ON k.family_id = f.id
+export async function listKeys() {
+  const sql = `
+    SELECT id, label, key_hint, monthly_budget, rpm_limit, tpm_limit,
+           expires_at, is_revoked, last_used_at, created_at
+    FROM api_keys
+    ORDER BY created_at DESC
   `;
-  const params = [];
-  if (familyId) {
-    sql += ' WHERE k.family_id = $1';
-    params.push(familyId);
-  }
-  sql += ' ORDER BY k.created_at DESC';
-  const { rows } = await query(sql, params);
+  const { rows } = await query(sql);
   return rows;
 }
 
-export async function createKey({ family_id, label, monthly_budget, expires_at, key }) {
+export async function createKey({ label, monthly_budget, rpm_limit, tpm_limit, expires_at, key }) {
   const rawKey = key || generateApiKey();
   const keyHash = sha256(rawKey);
   const encKey = encrypt(rawKey);
   const keyHint = rawKey.slice(0, 12) + '...' + rawKey.slice(-4);
 
   const { rows } = await query(`
-    INSERT INTO api_keys (family_id, key_hash, encrypted_key, label, key_hint, monthly_budget, expires_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    RETURNING id, family_id, label, key_hint, monthly_budget, expires_at, is_revoked, created_at
-  `, [family_id, keyHash, encKey, label, keyHint, monthly_budget ?? null, expires_at || null]);
+    INSERT INTO api_keys (key_hash, encrypted_key, label, key_hint, monthly_budget, rpm_limit, tpm_limit, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    RETURNING id, label, key_hint, monthly_budget, rpm_limit, tpm_limit, expires_at, is_revoked, created_at
+  `, [keyHash, encKey, label, keyHint, monthly_budget ?? null, rpm_limit ?? 60, tpm_limit ?? 100000, expires_at || null]);
 
   return { ...rows[0], key: rawKey };
 }
 
 export async function updateKey(id, fields) {
-  const allowed = ['label', 'monthly_budget'];
+  const allowed = ['label', 'monthly_budget', 'rpm_limit', 'tpm_limit'];
   const sets = [];
   const params = [];
   let idx = 1;
@@ -73,7 +62,7 @@ export async function updateKey(id, fields) {
   if (sets.length === 0) return null;
   params.push(id);
   const { rows } = await query(
-    `UPDATE api_keys SET ${sets.join(', ')} WHERE id = $${idx} RETURNING id, family_id, label, key_hint, monthly_budget, expires_at, is_revoked, created_at`,
+    `UPDATE api_keys SET ${sets.join(', ')} WHERE id = $${idx} RETURNING id, label, key_hint, monthly_budget, rpm_limit, tpm_limit, expires_at, is_revoked, created_at`,
     params
   );
   return rows[0] || null;

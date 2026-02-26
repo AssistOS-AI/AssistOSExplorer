@@ -3,7 +3,7 @@ import * as dao from '../db/blacklist-dao.mjs';
 
 export const handleBlacklist = {
   async list(req, res, query) {
-    const rules = await dao.listRules(query?.family_id);
+    const rules = await dao.listRules();
     sendJson(res, rules);
   },
 

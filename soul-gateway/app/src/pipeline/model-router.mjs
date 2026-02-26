@@ -4,42 +4,24 @@ import { lookupOpenRouterPricing } from './openrouter-pricing.mjs';
 
 /**
  * Resolve the requested model to a provider/model pair.
- * 1. Check family model_mapping for remapping
- * 2. Look up model_configs for provider_key + provider_model
- * 3. Validate against family allowed_models (if set)
- * Returns: { resolvedModel, providerKey, providerModel, mode, inputPrice, outputPrice }
+ * Looks up model_configs for provider_key + provider_model.
+ * Returns: { resolvedModel, providerKey, providerModel, mode, inputPrice, outputPrice, maxConcurrency }
  */
-export async function resolveModel(requestedModel, familyContext) {
-  const { model_mapping, allowed_models } = familyContext;
-
-  // Step 1: Apply family-level model mapping
-  let modelName = requestedModel;
-  if (model_mapping && model_mapping[requestedModel]) {
-    modelName = model_mapping[requestedModel];
-  }
-
-  // Step 2: Look up in model_configs
-  const modelConfig = await getModelByName(modelName);
+export async function resolveModel(requestedModel) {
+  const modelConfig = await getModelByName(requestedModel);
   if (!modelConfig) {
-    throw new ModelNotFoundError(modelName);
+    throw new ModelNotFoundError(requestedModel);
   }
 
   if (!modelConfig.is_enabled) {
-    throw new ModelNotFoundError(`${modelName} (disabled)`);
-  }
-
-  // Step 3: Validate against family allowlist
-  if (allowed_models && allowed_models.length > 0) {
-    if (!allowed_models.includes(modelName) && !allowed_models.includes(requestedModel)) {
-      throw new ModelNotFoundError(modelName);
-    }
+    throw new ModelNotFoundError(`${requestedModel} (disabled)`);
   }
 
   const providerKey = modelConfig.provider_key;
   const providerModel = modelConfig.provider_model;
 
   if (!providerKey || !providerModel) {
-    throw new ModelNotFoundError(`${modelName} (missing provider configuration)`);
+    throw new ModelNotFoundError(`${requestedModel} (missing provider configuration)`);
   }
 
   let inputPrice = parseFloat(modelConfig.input_price) || 0;
@@ -55,7 +37,7 @@ export async function resolveModel(requestedModel, familyContext) {
   }
 
   return {
-    resolvedModel: modelName,
+    resolvedModel: requestedModel,
     providerKey,
     providerModel,
     mode: modelConfig.mode,

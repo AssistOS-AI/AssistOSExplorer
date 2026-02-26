@@ -61,6 +61,18 @@ export async function initDb() {
 async function migrate(p) {
   const sql = `SET search_path TO ${config.pgSchema}, public`;
   await p.query(sql);
+
+  // Remove soul_families concept - all settings moved to per-key
+  await p.query(`DROP TABLE IF EXISTS soul_families CASCADE`);
+  await p.query(`ALTER TABLE api_keys DROP COLUMN IF EXISTS family_id`);
+  await p.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS rpm_limit INT DEFAULT 60`);
+  await p.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS tpm_limit INT DEFAULT 100000`);
+  await p.query(`ALTER TABLE blacklist_rules DROP COLUMN IF EXISTS family_id`);
+  await p.query(`ALTER TABLE call_logs DROP COLUMN IF EXISTS family_id`);
+  await p.query(`ALTER TABLE call_logs DROP COLUMN IF EXISTS family_name`);
+  await p.query(`DROP INDEX IF EXISTS idx_call_logs_family_started`);
+  await p.query(`DROP INDEX IF EXISTS idx_api_keys_family_id`);
+
   // Add key_hint column to api_keys if missing
   await p.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_hint TEXT`);
   // Add provider_key and provider_model to model_configs
@@ -75,8 +87,7 @@ async function migrate(p) {
   await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS prompt_hash TEXT`);
   await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS cache_hit BOOLEAN DEFAULT false`);
   await p.query(`CREATE INDEX IF NOT EXISTS idx_call_logs_prompt_hash ON call_logs(prompt_hash, resolved_model) WHERE prompt_hash IS NOT NULL AND status_code = 200`);
-  // Add monthly_budget to soul_families and api_keys
-  await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC`);
+  // Add monthly_budget to api_keys
   await p.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS monthly_budget NUMERIC`);
   // Index for per-key budget aggregation
   await p.query(`CREATE INDEX IF NOT EXISTS idx_call_logs_key_started ON call_logs(api_key_id, started_at)`);
@@ -84,9 +95,6 @@ async function migrate(p) {
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS max_concurrency INT DEFAULT 3`);
   // Add upstream_source to model_configs (e.g. 'google', 'openrouter', 'openai')
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS upstream_source TEXT`);
-  // Add per-family loop detection thresholds
-  await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS loop_rpm_limit INT`);
-  await p.query(`ALTER TABLE soul_families ADD COLUMN IF NOT EXISTS loop_max_identical INT`);
 
   // Add sort_order and context_window to model_configs (for /v1/models auto-discovery)
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS sort_order INT DEFAULT 100`);
@@ -162,19 +170,6 @@ async function ensurePartitions() {
 }
 
 async function seedDefaults() {
-  // Seed default soul family if none exist
-  const { rows: families } = await query('SELECT id FROM soul_families LIMIT 1');
-  if (families.length === 0) {
-    log.info('Seeding default soul family...');
-    const { rows } = await query(`
-      INSERT INTO soul_families (name, description, rpm_limit, tpm_limit)
-      VALUES ('default', 'Default soul family', 60, 100000)
-      RETURNING id
-    `);
-    const familyId = rows[0].id;
-
-  }
-
   // Seed model configs if none exist
   const { rows: models } = await query('SELECT id FROM model_configs LIMIT 1');
   if (models.length === 0) {

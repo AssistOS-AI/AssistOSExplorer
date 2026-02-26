@@ -4,7 +4,6 @@ import { listAgents, listSessions, getSessionLogs, getTreeData } from '../db/log
 export const handleAgents = {
   async list(req, res, query) {
     const agents = await listAgents({
-      family_id: query?.family_id,
       api_key_id: query?.api_key_id,
     });
     sendJson(res, agents);
@@ -14,7 +13,6 @@ export const handleAgents = {
     const sessions = await listSessions({
       api_key_id: query?.api_key_id,
       agent_name: query?.agent_name,
-      family_id: query?.family_id,
       limit: query?.limit,
       offset: query?.offset,
     });

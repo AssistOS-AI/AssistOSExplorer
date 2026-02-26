@@ -4,7 +4,7 @@ import { createLogger } from '../utils/logger.mjs';
 
 const log = createLogger('loop-detector');
 
-// --- Default thresholds (overridable per-family) ---
+// --- Default thresholds ---
 const DEFAULT_MAX_REQUESTS_PER_WINDOW = 50;
 const WINDOW_MS = 60_000;
 const DEFAULT_MAX_IDENTICAL_REQUESTS = 3;
@@ -23,11 +23,10 @@ const sessions = new Map();
  * @param {string} sessionId
  * @param {Array} messages - request body messages array
  * @param {number} requestSizeBytes - byte size of the messages payload
- * @param {{ maxRpm?: number, maxIdentical?: number }} [thresholds] - per-family overrides
  */
-export function checkLoopDetection(sessionId, messages, requestSizeBytes, thresholds = {}) {
-  const maxRpm = thresholds.maxRpm ?? DEFAULT_MAX_REQUESTS_PER_WINDOW;
-  const maxIdentical = thresholds.maxIdentical ?? DEFAULT_MAX_IDENTICAL_REQUESTS;
+export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
+  const maxRpm = DEFAULT_MAX_REQUESTS_PER_WINDOW;
+  const maxIdentical = DEFAULT_MAX_IDENTICAL_REQUESTS;
   const now = Date.now();
   let history = sessions.get(sessionId);
 

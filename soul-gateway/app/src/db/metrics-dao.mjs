@@ -1,29 +1,5 @@
 import { query } from './init.mjs';
 
-export async function getCostsByFamily({ from, to }) {
-  const conditions = [];
-  const params = [];
-  let idx = 1;
-  if (from) { conditions.push(`started_at >= $${idx++}`); params.push(from); }
-  if (to) { conditions.push(`started_at <= $${idx++}`); params.push(to); }
-  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
-
-  const { rows } = await query(`
-    SELECT family_name,
-           SUM(total_cost) as total_cost,
-           SUM(input_cost) as input_cost,
-           SUM(output_cost) as output_cost,
-           SUM(total_tokens) as total_tokens,
-           SUM(prompt_tokens) as prompt_tokens,
-           SUM(completion_tokens) as completion_tokens,
-           COUNT(*) as request_count
-    FROM call_logs ${where}
-    GROUP BY family_name
-    ORDER BY total_cost DESC
-  `, params);
-  return rows;
-}
-
 export async function getCostsByModel({ from, to }) {
   const conditions = [];
   const params = [];
@@ -55,12 +31,11 @@ export async function getCostTrend({ from, to, granularity }) {
   const trunc = granularity === 'hour' ? 'hour' : granularity === 'week' ? 'week' : 'day';
   const { rows } = await query(`
     SELECT date_trunc('${trunc}', started_at) as period,
-           family_name,
            SUM(total_cost) as total_cost,
            SUM(total_tokens) as total_tokens,
            COUNT(*) as request_count
     FROM call_logs ${where}
-    GROUP BY period, family_name
+    GROUP BY period
     ORDER BY period ASC
   `, params);
   return rows;
@@ -207,8 +182,6 @@ export async function getCostsByKey({ from, to }) {
            k.label as key_label,
            k.key_hint,
            k.monthly_budget as key_budget,
-           f.name as family_name,
-           f.monthly_budget as family_budget,
            SUM(cl.total_cost) as total_cost,
            SUM(cl.input_cost) as input_cost,
            SUM(cl.output_cost) as output_cost,
@@ -219,9 +192,8 @@ export async function getCostsByKey({ from, to }) {
            COUNT(*) FILTER (WHERE cl.error_type IS NOT NULL) as error_count
     FROM call_logs cl
     JOIN api_keys k ON cl.api_key_id = k.id
-    JOIN soul_families f ON k.family_id = f.id
     ${where}
-    GROUP BY cl.api_key_id, k.label, k.key_hint, k.monthly_budget, f.name, f.monthly_budget
+    GROUP BY cl.api_key_id, k.label, k.key_hint, k.monthly_budget
     ORDER BY total_cost DESC
   `, params);
   return rows;
@@ -262,12 +234,11 @@ export async function getTokenTrend({ from, to }) {
 
   const { rows } = await query(`
     SELECT date_trunc('day', started_at) as period,
-           family_name,
            SUM(prompt_tokens) as prompt_tokens,
            SUM(completion_tokens) as completion_tokens,
            SUM(total_tokens) as total_tokens
     FROM call_logs ${where}
-    GROUP BY period, family_name
+    GROUP BY period
     ORDER BY period ASC
   `, params);
   return rows;
