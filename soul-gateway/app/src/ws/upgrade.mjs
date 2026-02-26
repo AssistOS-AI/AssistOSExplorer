@@ -152,7 +152,7 @@ function createWsHelper(socket) {
       ws.alive = false;
       clearInterval(pingInterval);
     }
-  }, 30_000);
+  }, 15_000);
 
   socket.on('close', () => clearInterval(pingInterval));
 
