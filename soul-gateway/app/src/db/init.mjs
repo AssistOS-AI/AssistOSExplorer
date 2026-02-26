@@ -96,6 +96,9 @@ async function migrate(p) {
   await p.query(`UPDATE model_configs SET sort_order = 20 WHERE name = 'axiologic-deep' AND sort_order = 100`);
   await p.query(`UPDATE model_configs SET sort_order = 30 WHERE name = 'axiologic-ultra' AND sort_order = 100`);
 
+  // Remove unused key_type column from api_keys (all keys are permanent)
+  await p.query(`ALTER TABLE api_keys DROP COLUMN IF EXISTS key_type`);
+
   // Migrate axiologic_proxy models to use CLIProxyAPI prefixed model names
   const prefixMigrations = [
     { old: 'gpt-5.3-codex', new: 'codex/gpt-5.3-codex', source: 'codex' },

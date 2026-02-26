@@ -750,7 +750,7 @@ function keysPage() {
     showEdit: false,
     editing: null,
     newKey: '',
-    form: { family_id: '', label: '', key_type: 'permanent', key: '', monthly_budget: '' },
+    form: { family_id: '', label: '', key: '', monthly_budget: '' },
     editForm: { label: '', monthly_budget: '' },
 
     async init() {

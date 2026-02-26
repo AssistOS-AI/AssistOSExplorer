@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
     family_id UUID NOT NULL REFERENCES soul_families(id) ON DELETE CASCADE,
     key_hash TEXT UNIQUE NOT NULL,
     encrypted_key BYTEA NOT NULL,
-    key_type TEXT DEFAULT 'permanent',
     label TEXT,
     key_hint TEXT,
     monthly_budget NUMERIC DEFAULT NULL,
