@@ -135,8 +135,43 @@ export const handleModels = {
       const data = await resp.json();
       const models = Array.isArray(data) ? data : (data.data || []);
 
-      // Step 2: Build enriched model list with any inline pricing
-      const enriched = models
+      // Step 2: Expand wildcard (*) entries by fetching from their upstream provider
+      const wildcards = models.filter(m => (m.id || m.name) === '*' && m.owned_by);
+      const nonWildcards = models.filter(m => (m.id || m.name) !== '*');
+      const existingIds = new Set(nonWildcards.map(m => m.id || m.name));
+
+      for (const wc of wildcards) {
+        const upstream = wc.owned_by;
+        const upstreamProvider = config.providers?.[upstream];
+        if (upstreamProvider) {
+          try {
+            const upstreamBaseURL = upstreamProvider.baseURL
+              .replace(/\/chat\/completions\/?$/, '')
+              .replace(/\/messages\/?$/, '')
+              .replace(/\/completions\/?$/, '')
+              .replace(/\/responses\/?$/, '');
+            const upstreamKey = upstreamProvider.apiKeyEnv ? process.env[upstreamProvider.apiKeyEnv] : '';
+            const upResp = await fetch(upstreamBaseURL + '/models', {
+              headers: upstreamKey ? { 'Authorization': `Bearer ${upstreamKey}` } : {},
+              signal: AbortSignal.timeout(15000),
+            });
+            if (upResp.ok) {
+              const upData = await upResp.json();
+              const upModels = Array.isArray(upData) ? upData : (upData.data || []);
+              for (const um of upModels) {
+                const modelId = um.id || um.name;
+                if (modelId && !existingIds.has(modelId)) {
+                  nonWildcards.push({ ...um, id: modelId, owned_by: um.owned_by || upstream });
+                  existingIds.add(modelId);
+                }
+              }
+            }
+          } catch { /* best-effort wildcard expansion */ }
+        }
+      }
+
+      // Step 3: Build enriched model list with inline pricing
+      const enriched = nonWildcards
         .map(m => {
           const id = m.id || m.name;
           if (!id) return null;
@@ -150,7 +185,7 @@ export const handleModels = {
         .filter(Boolean)
         .sort((a, b) => a.id.localeCompare(b.id));
 
-      // Step 3: LLMConfig.json pricing as first fallback
+      // Step 4: LLMConfig.json pricing as fallback
       const configModels = config.models || [];
       for (const em of enriched) {
         if (em.input_price === 0 && em.output_price === 0) {
@@ -163,7 +198,7 @@ export const handleModels = {
         }
       }
 
-      // Step 4: For models still missing pricing, detect upstream providers from
+      // Step 5: For models still missing pricing, detect upstream providers from
       // owned_by and fetch pricing directly from them (e.g. a proxy returns
       // owned_by:"openrouter" — we fetch openrouter's /models for pricing)
       const needsPricing = enriched.filter(em => em.input_price === 0 && em.output_price === 0);
@@ -193,7 +228,7 @@ export const handleModels = {
         await Promise.all(fetches);
       }
 
-      // Step 5: Final fallback — look up any remaining 0/0 models on OpenRouter
+      // Step 6: Final fallback — look up any remaining 0/0 models on OpenRouter
       await enrichWithOpenRouterPricing(enriched);
 
       sendJson(res, enriched);
