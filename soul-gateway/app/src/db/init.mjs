@@ -99,16 +99,9 @@ async function migrate(p) {
   // Remove unused key_type column from api_keys (all keys are permanent)
   await p.query(`ALTER TABLE api_keys DROP COLUMN IF EXISTS key_type`);
 
-  // Migrate axiologic_proxy models to use CLIProxyAPI prefixed model names
-  const prefixMigrations = [
-    { old: 'gpt-5.3-codex', new: 'codex/gpt-5.3-codex', source: 'codex' },
-  ];
-  for (const m of prefixMigrations) {
-    await p.query(`
-      UPDATE model_configs SET provider_model = $1, upstream_source = COALESCE(upstream_source, $3)
-      WHERE provider_key = 'axiologic_proxy' AND provider_model = $2
-    `, [m.new, m.old, m.source]);
-  }
+  // Fix: remove codex/ prefix from provider_model (CLIProxyAPI doesn't support namespaced models)
+  await p.query(`UPDATE model_configs SET provider_model = 'gpt-5.3-codex' WHERE provider_model = 'codex/gpt-5.3-codex'`);
+  await p.query(`UPDATE model_configs SET upstream_source = 'openai' WHERE upstream_source = 'codex'`);
 
   // Populate upstream_source for existing models that don't have it
   const sourceByProvider = [
