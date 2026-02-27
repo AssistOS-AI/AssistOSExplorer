@@ -54,6 +54,7 @@ export async function initDb() {
 
   // Seed default data if tables are empty
   await seedDefaults();
+  await seedDefaultTiers();
 
   log.info('Database initialization complete');
 }
@@ -99,10 +100,9 @@ async function migrate(p) {
   // Add sort_order and context_window to model_configs (for /v1/models auto-discovery)
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS sort_order INT DEFAULT 100`);
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS context_window TEXT`);
-  // Set sort_order for axiologic alias models
-  await p.query(`UPDATE model_configs SET sort_order = 10 WHERE name = 'axiologic-fast' AND sort_order = 100`);
-  await p.query(`UPDATE model_configs SET sort_order = 20 WHERE name = 'axiologic-deep' AND sort_order = 100`);
-  await p.query(`UPDATE model_configs SET sort_order = 30 WHERE name = 'axiologic-ultra' AND sort_order = 100`);
+  // Clean up legacy axiologic alias models (replaced by tiers)
+  await p.query(`DELETE FROM model_configs WHERE name IN ('axiologic-fast', 'axiologic-deep', 'axiologic-ultra')`);
+
 
   // Remove unused key_type column from api_keys (all keys are permanent)
   await p.query(`ALTER TABLE api_keys DROP COLUMN IF EXISTS key_type`);
@@ -110,6 +110,18 @@ async function migrate(p) {
   // Fix: remove codex/ prefix from provider_model (CLIProxyAPI doesn't support namespaced models)
   await p.query(`UPDATE model_configs SET provider_model = 'gpt-5.3-codex' WHERE provider_model = 'codex/gpt-5.3-codex'`);
   await p.query(`UPDATE model_configs SET upstream_source = 'openai' WHERE upstream_source = 'codex'`);
+
+  // Create model_tiers table (migration for existing deployments)
+  await p.query(`CREATE TABLE IF NOT EXISTS ${config.pgSchema}.model_tiers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT UNIQUE NOT NULL,
+    display_name TEXT,
+    models TEXT[] NOT NULL DEFAULT '{}',
+    fallback_tier TEXT,
+    sort_order INT DEFAULT 100,
+    is_enabled BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now()
+  )`);
 
   // Populate upstream_source for existing models that don't have it
   const sourceByProvider = [
@@ -175,9 +187,6 @@ async function seedDefaults() {
   if (models.length === 0) {
     log.info('Seeding model configs...');
     const defaultModels = [
-      { name: 'axiologic-deep', providerKey: 'axiologic_proxy', providerModel: 'claude-opus-4.6', upstreamSource: 'anthropic', mode: 'deep', inputPrice: 5, outputPrice: 25 },
-      { name: 'axiologic-fast', providerKey: 'axiologic_proxy', providerModel: 'claude-sonnet-4.5', upstreamSource: 'anthropic', mode: 'fast', inputPrice: 1, outputPrice: 5 },
-      { name: 'axiologic-ultra', providerKey: 'axiologic_proxy', providerModel: 'codex/gpt-5.3-codex', upstreamSource: 'codex', mode: 'deep', inputPrice: 3, outputPrice: 15 },
       { name: 'claude-opus-4.6', providerKey: 'anthropic', providerModel: 'claude-opus-4-6', upstreamSource: 'anthropic', mode: 'deep', inputPrice: 5, outputPrice: 25 },
       { name: 'claude-sonnet-4.5', providerKey: 'anthropic', providerModel: 'claude-sonnet-4-5', upstreamSource: 'anthropic', mode: 'fast', inputPrice: 3, outputPrice: 15 },
       { name: 'gpt-5.3-codex', providerKey: 'openai', providerModel: 'gpt-5.3-codex', upstreamSource: 'openai', mode: 'deep', inputPrice: 3, outputPrice: 15 },
@@ -191,5 +200,29 @@ async function seedDefaults() {
       `, [m.name, m.providerKey, m.providerModel, m.upstreamSource, m.mode, m.inputPrice, m.outputPrice]);
     }
     log.info('Seeded model configs');
+  }
+}
+
+async function seedDefaultTiers() {
+  const { rows: tiers } = await query('SELECT id FROM model_tiers LIMIT 1');
+  if (tiers.length === 0) {
+    log.info('Seeding default model tiers...');
+    const defaults = [
+      { name: 'fast', display_name: 'Fast', models: ['copilot-gpt-4o', 'copilot-gpt-4.1', 'copilot-gpt-5-mini', 'kiro-claude-haiku-4.5'], fallback: null, sort_order: 10 },
+      { name: 'plan', display_name: 'Plan', models: ['copilot-gpt-4o', 'copilot-gpt-4.1', 'copilot-gemini-3-flash'], fallback: 'fast', sort_order: 20 },
+      { name: 'write', display_name: 'Write', models: ['copilot-gemini-3-flash'], fallback: 'fast', sort_order: 30 },
+      { name: 'code', display_name: 'Code', models: ['kiro-claude-sonnet-4.5', 'kiro-claude-sonnet-4'], fallback: 'code-paid', sort_order: 40 },
+      { name: 'code-paid', display_name: 'Code (Paid)', models: [], fallback: 'deep', sort_order: 50 },
+      { name: 'deep', display_name: 'Deep', models: ['copilot-opus-4.6', 'gpt-5.3-codex'], fallback: null, sort_order: 60 },
+      { name: 'ultra', display_name: 'Ultra', models: ['copilot-opus-4.6', 'gpt-5.3-codex'], fallback: null, sort_order: 70 },
+    ];
+    for (const t of defaults) {
+      await query(`
+        INSERT INTO model_tiers (name, display_name, models, fallback_tier, sort_order)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (name) DO NOTHING
+      `, [t.name, t.display_name, t.models, t.fallback, t.sort_order]);
+    }
+    log.info('Seeded default model tiers');
   }
 }

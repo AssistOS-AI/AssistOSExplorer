@@ -37,6 +37,18 @@ CREATE TABLE IF NOT EXISTS model_configs (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Model Tiers (ordered model lists with fallback chains)
+CREATE TABLE IF NOT EXISTS model_tiers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT UNIQUE NOT NULL,
+    display_name TEXT,
+    models TEXT[] NOT NULL DEFAULT '{}',
+    fallback_tier TEXT,
+    sort_order INT DEFAULT 100,
+    is_enabled BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Blacklist Rules
 CREATE TABLE IF NOT EXISTS blacklist_rules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

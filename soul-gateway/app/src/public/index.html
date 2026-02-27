@@ -579,6 +579,85 @@
               </table>
             </div>
           </div>
+
+          <!-- Tiers Section -->
+          <div class="flex justify-between items-center mb-4 mt-8">
+            <h2 class="text-lg font-bold">Model Tiers</h2>
+            <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier: '' }">Add Tier</button>
+          </div>
+          <dialog class="modal" :class="{'modal-open': showTierCreate}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg" x-text="editingTier ? 'Edit Tier' : 'Add Tier'"></h3>
+              <div class="form-control"><label class="label">Name</label><input type="text" class="input input-bordered" x-model="tierForm.name" :disabled="!!editingTier"></div>
+              <div class="form-control"><label class="label">Display Name</label><input type="text" class="input input-bordered" x-model="tierForm.display_name"></div>
+              <div class="form-control"><label class="label">Fallback Tier</label>
+                <select class="select select-bordered" x-model="tierForm.fallback_tier">
+                  <option value="">None</option>
+                  <template x-for="t in tiers.filter(t => !editingTier || t.id !== editingTier.id)" :key="t.id">
+                    <option :value="t.name" x-text="t.name"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="form-control mt-2">
+                <label class="label">Models (in priority order)</label>
+                <div class="flex gap-2 mb-2">
+                  <select class="select select-bordered select-sm flex-1" x-ref="tierModelSelect">
+                    <option value="" disabled selected>Add model...</option>
+                    <template x-for="m in models.filter(m => m.is_enabled && !tierForm.models.includes(m.name))" :key="m.id">
+                      <option :value="m.name" x-text="m.name"></option>
+                    </template>
+                  </select>
+                  <button class="btn btn-sm btn-outline" @click="if($refs.tierModelSelect.value) { tierForm.models.push($refs.tierModelSelect.value); $refs.tierModelSelect.value = ''; }">Add</button>
+                </div>
+                <div class="space-y-1">
+                  <template x-for="(model, idx) in tierForm.models" :key="idx">
+                    <div class="flex items-center gap-1 bg-base-200 rounded px-2 py-1">
+                      <span class="badge badge-sm" x-text="idx + 1"></span>
+                      <span class="font-mono text-sm flex-1" x-text="model"></span>
+                      <button class="btn btn-ghost btn-xs" :disabled="idx === 0" @click="if(idx > 0) { [tierForm.models[idx-1], tierForm.models[idx]] = [tierForm.models[idx], tierForm.models[idx-1]]; }">&#9650;</button>
+                      <button class="btn btn-ghost btn-xs" :disabled="idx === tierForm.models.length - 1" @click="if(idx < tierForm.models.length - 1) { [tierForm.models[idx], tierForm.models[idx+1]] = [tierForm.models[idx+1], tierForm.models[idx]]; }">&#9660;</button>
+                      <button class="btn btn-ghost btn-xs text-error" @click="tierForm.models.splice(idx, 1)">&#10005;</button>
+                    </div>
+                  </template>
+                  <div x-show="tierForm.models.length === 0" class="text-sm opacity-50 py-2">No models added yet</div>
+                </div>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showTierCreate = false; editingTier = null">Cancel</button>
+                <button class="btn btn-primary" @click="saveTier()" x-text="editingTier ? 'Save' : 'Create'"></button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showTierCreate = false; editingTier = null"></div>
+          </dialog>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Display Name</th><th>Models</th><th>Fallback</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="t in tiers" :key="t.id">
+                    <tr :class="{'opacity-40': !t.is_enabled}">
+                      <td x-text="t.name" class="font-mono font-bold"></td>
+                      <td x-text="t.display_name || '-'"></td>
+                      <td class="max-w-xs">
+                        <div class="flex flex-wrap gap-1">
+                          <template x-for="(m, i) in (t.models || [])" :key="i">
+                            <span class="badge badge-ghost badge-sm font-mono" x-text="m"></span>
+                          </template>
+                          <span x-show="!t.models || t.models.length === 0" class="text-xs opacity-50">empty</span>
+                        </div>
+                      </td>
+                      <td><span x-text="t.fallback_tier || '-'" class="font-mono text-xs"></span></td>
+                      <td><input type="checkbox" class="toggle toggle-sm" :checked="t.is_enabled" @change="toggleTier(t)"></td>
+                      <td class="flex gap-1">
+                        <button class="btn btn-ghost btn-xs" @click="editTier(t)">Edit</button>
+                        <button class="btn btn-error btn-xs" @click="removeTier(t)">Delete</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
 

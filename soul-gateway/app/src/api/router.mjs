@@ -1,5 +1,6 @@
 import { matchPath, sendError } from '../utils/http-helpers.mjs';
 import { handleModels } from './models.mjs';
+import { handleTiers } from './tiers.mjs';
 import { handleKeys } from './keys.mjs';
 import { handleBlacklist } from './blacklist.mjs';
 import { handleLogs } from './logs.mjs';
@@ -17,6 +18,11 @@ export async function apiRouter(req, res, pathname, query) {
   // /v1/models — agent-facing model list
   if (pathname === '/v1/models' && method === 'GET') {
     return handleModels.list(req, res, query);
+  }
+
+  // /v1/tiers — agent-facing tier list
+  if (pathname === '/v1/tiers' && method === 'GET') {
+    return handleTiers.list(req, res);
   }
 
   // Models
@@ -39,6 +45,21 @@ export async function apiRouter(req, res, pathname, query) {
   params = matchPath('/api/v1/models/:id/toggle', pathname);
   if (params) {
     if (method === 'PUT') return handleModels.toggle(req, res, params);
+  }
+
+  // Tiers
+  if (pathname === '/api/v1/tiers') {
+    if (method === 'GET') return handleTiers.list(req, res);
+    if (method === 'POST') return handleTiers.create(req, res);
+  }
+  params = matchPath('/api/v1/tiers/:id', pathname);
+  if (params) {
+    if (method === 'PUT') return handleTiers.update(req, res, params);
+    if (method === 'DELETE') return handleTiers.remove(req, res, params);
+  }
+  params = matchPath('/api/v1/tiers/:id/toggle', pathname);
+  if (params) {
+    if (method === 'PUT') return handleTiers.toggle(req, res, params);
   }
 
   // API Keys

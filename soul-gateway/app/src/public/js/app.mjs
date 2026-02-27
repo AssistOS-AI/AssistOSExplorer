@@ -577,11 +577,17 @@ function modelsPage() {
     showCreate: false,
     editing: null,
     form: { name: '', provider_key: '', provider_model: '', upstream_source: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3 },
+    // Tiers state
+    tiers: [],
+    showTierCreate: false,
+    editingTier: null,
+    tierForm: { name: '', display_name: '', models: [], fallback_tier: '' },
 
     async init() {
-      [this.models, this.providers] = await Promise.all([
+      [this.models, this.providers, this.tiers] = await Promise.all([
         api.get('/api/v1/models'),
         api.get('/api/v1/models/providers'),
+        api.get('/api/v1/tiers'),
       ]);
     },
 
@@ -665,6 +671,42 @@ function modelsPage() {
     async toggle(m) {
       await api.put(`/api/v1/models/${m.id}/toggle`, {});
       this.models = await api.get('/api/v1/models');
+    },
+
+    // Tier methods
+    editTier(t) {
+      this.editingTier = t;
+      this.tierForm = {
+        name: t.name,
+        display_name: t.display_name || '',
+        models: [...(t.models || [])],
+        fallback_tier: t.fallback_tier || '',
+      };
+      this.showTierCreate = true;
+    },
+
+    async saveTier() {
+      const payload = { ...this.tierForm };
+      if (!payload.fallback_tier) payload.fallback_tier = null;
+      if (this.editingTier) {
+        await api.put(`/api/v1/tiers/${this.editingTier.id}`, payload);
+      } else {
+        await api.post('/api/v1/tiers', payload);
+      }
+      this.showTierCreate = false;
+      this.editingTier = null;
+      this.tiers = await api.get('/api/v1/tiers');
+    },
+
+    async removeTier(t) {
+      if (!confirm(`Delete tier "${t.name}"?`)) return;
+      await api.del(`/api/v1/tiers/${t.id}`);
+      this.tiers = await api.get('/api/v1/tiers');
+    },
+
+    async toggleTier(t) {
+      await api.put(`/api/v1/tiers/${t.id}/toggle`, {});
+      this.tiers = await api.get('/api/v1/tiers');
     },
   };
 }

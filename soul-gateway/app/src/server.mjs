@@ -51,6 +51,9 @@ export function createAppServer() {
         // Handled by API router
         return await apiRouter(req, res, pathname, query);
       }
+      if (pathname === '/v1/tiers' && req.method === 'GET') {
+        return await apiRouter(req, res, pathname, query);
+      }
 
       // Dashboard auth
       if (pathname === '/login') return handleLogin(req, res);
