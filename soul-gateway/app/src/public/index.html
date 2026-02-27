@@ -154,6 +154,7 @@
                                         <div class="stat py-2"><div class="stat-title text-xs">TTFB</div><div class="stat-value text-sm" x-text="(log._detail.ttfb_ms || 0) + 'ms'"></div></div>
                                         <div class="stat py-2"><div class="stat-title text-xs">Retries</div><div class="stat-value text-sm" x-text="log._detail.retry_count || 0"></div></div>
                                         <div class="stat py-2"><div class="stat-title text-xs">Stop</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Cache</div><div class="stat-value text-sm" x-text="log._detail.cache_hit ? 'Hit' : 'Miss'"></div></div>
                                       </div>
                                     </div>
                                   </div>

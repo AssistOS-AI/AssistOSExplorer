@@ -135,6 +135,7 @@ export async function pipeline(req, res) {
         logEntry.total_cost = costs.total_cost;
         logEntry.completed_at = new Date();
 
+        res.setHeader('X-Cache', 'HIT');
         sendJson(res, {
           id: requestId,
           object: 'chat.completion',

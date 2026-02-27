@@ -49,6 +49,7 @@ export function corsHeaders() {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Soul-Id, X-Soul-Agent, X-Soul-Session, x-api-key, anthropic-version, anthropic-beta',
+    'Access-Control-Expose-Headers': 'X-Cache',
   };
 }
 

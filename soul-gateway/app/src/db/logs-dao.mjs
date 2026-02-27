@@ -106,7 +106,7 @@ export async function queryLogs({ soul_id, model, from, to, status, error_type, 
              latency_ms, ttfb_ms, prompt_tokens, completion_tokens, total_tokens,
              input_cost, output_cost, total_cost,
              retry_count, blocked_by_blacklist, blacklist_match,
-             is_truncated, is_slow, prompt_size_warning,
+             is_truncated, is_slow, prompt_size_warning, cache_hit,
              started_at, completed_at
       FROM call_logs ${where}
       ORDER BY ${sortCol} ${sortDir}
@@ -218,7 +218,7 @@ export async function getSessionLogs(sessionId, { limit, offset, sort, order } =
              status_code, stop_reason, error_type, error_message,
              latency_ms, ttfb_ms, prompt_tokens, completion_tokens, total_tokens,
              input_cost, output_cost, total_cost,
-             retry_count, blocked_by_blacklist,
+             retry_count, blocked_by_blacklist, cache_hit,
              started_at, completed_at
       FROM call_logs
       WHERE session_id = $1

@@ -139,6 +139,7 @@ function sanitizeForBroadcast(entry) {
     is_truncated: entry.is_truncated,
     is_slow: entry.is_slow,
     prompt_size_warning: entry.prompt_size_warning,
+    cache_hit: entry.cache_hit,
     started_at: entry.started_at,
     completed_at: entry.completed_at,
   };
