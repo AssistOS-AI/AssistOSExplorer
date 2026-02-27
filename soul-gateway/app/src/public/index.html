@@ -134,7 +134,7 @@
                               <!-- Expanded Detail -->
                               <div x-show="expandedDetail === log.id" x-transition class="px-8 py-4 bg-base-200 border-t border-base-300">
                                 <template x-if="log._detail">
-                                  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                  <div class="flex flex-col gap-4">
                                     <div>
                                       <h4 class="font-bold mb-2 text-xs">Request Messages</h4>
                                       <div class="mockup-code text-xs max-h-72 overflow-auto">
@@ -147,13 +147,13 @@
                                         <pre><code x-text="log._detail.response_content || '(empty)'"></code></pre>
                                       </div>
                                     </div>
-                                    <div class="lg:col-span-2">
+                                    <div>
                                       <div class="stats stats-horizontal shadow w-full text-xs">
-                                        <div class="stat py-2"><div class="stat-title text-xs">Prompt</div><div class="stat-value text-sm" x-text="log._detail.prompt_tokens || 0"></div></div>
-                                        <div class="stat py-2"><div class="stat-title text-xs">Completion</div><div class="stat-value text-sm" x-text="log._detail.completion_tokens || 0"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Input Tokens</div><div class="stat-value text-sm" x-text="log._detail.prompt_tokens || 0"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Output Tokens</div><div class="stat-value text-sm" x-text="log._detail.completion_tokens || 0"></div></div>
                                         <div class="stat py-2"><div class="stat-title text-xs">TTFB</div><div class="stat-value text-sm" x-text="(log._detail.ttfb_ms || 0) + 'ms'"></div></div>
                                         <div class="stat py-2"><div class="stat-title text-xs">Retries</div><div class="stat-value text-sm" x-text="log._detail.retry_count || 0"></div></div>
-                                        <div class="stat py-2"><div class="stat-title text-xs">Stop</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Finish Reason</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
                                         <div class="stat py-2"><div class="stat-title text-xs">Cache</div><div class="stat-value text-sm" x-text="log._detail.cache_hit ? 'Hit' : 'Miss'"></div></div>
                                       </div>
                                     </div>
@@ -260,7 +260,7 @@
                                 <td colspan="10" class="p-0">
                                   <div class="px-8 py-4 bg-base-200 border-t border-base-300">
                                     <template x-if="log._detail">
-                                      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                      <div class="flex flex-col gap-4">
                                         <div>
                                           <h4 class="font-bold mb-2 text-xs">Request Messages</h4>
                                           <div class="mockup-code text-xs max-h-72 overflow-auto"><pre><code x-text="JSON.stringify(log._detail.request_messages, null, 2)"></code></pre></div>
@@ -269,12 +269,14 @@
                                           <h4 class="font-bold mb-2 text-xs">Response</h4>
                                           <div class="mockup-code text-xs max-h-72 overflow-auto"><pre><code x-text="log._detail.response_content || '(empty)'"></code></pre></div>
                                         </div>
-                                        <div class="lg:col-span-2">
+                                        <div>
                                           <div class="stats stats-horizontal shadow w-full text-xs">
                                             <div class="stat py-2"><div class="stat-title text-xs">Agent</div><div class="stat-value text-sm" x-text="log._detail.agent_name || '-'"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">Input Tokens</div><div class="stat-value text-sm" x-text="log._detail.prompt_tokens || 0"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">Output Tokens</div><div class="stat-value text-sm" x-text="log._detail.completion_tokens || 0"></div></div>
                                             <div class="stat py-2"><div class="stat-title text-xs">TTFB</div><div class="stat-value text-sm" x-text="(log._detail.ttfb_ms || 0) + 'ms'"></div></div>
                                             <div class="stat py-2"><div class="stat-title text-xs">Retries</div><div class="stat-value text-sm" x-text="log._detail.retry_count || 0"></div></div>
-                                            <div class="stat py-2"><div class="stat-title text-xs">Stop</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">Finish Reason</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
                                             <div class="stat py-2"><div class="stat-title text-xs">Cache</div><div class="stat-value text-sm" x-text="log._detail.cache_hit ? 'Hit' : 'Miss'"></div></div>
                                           </div>
                                         </div>
@@ -454,7 +456,7 @@
                                     <pre><code x-text="JSON.stringify(log._detail.retries_detail, null, 2)"></code></pre>
                                   </div>
                                 </div>
-                                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                <div class="flex flex-col gap-4">
                                   <div>
                                     <h4 class="font-bold mb-1 text-xs">Request Messages</h4>
                                     <div class="mockup-code text-xs max-h-48 overflow-auto">
