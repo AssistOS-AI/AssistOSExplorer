@@ -121,7 +121,7 @@
                                 <div class="w-5"><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
                                 <div class="flex-1 flex items-center gap-0">
                                   <div class="w-40 text-xs" x-text="formatTime(log.started_at)"></div>
-                                  <div class="w-36 font-mono text-xs" x-text="log.resolved_model || '-'"></div>
+                                  <div class="w-36 font-mono text-xs" x-text="log.resolved_model || log.requested_model || '-'"></div>
                                   <div class="w-24 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
                                   <div class="w-24 text-right text-xs" x-text="formatTokens(log.total_tokens)"></div>
                                   <div class="w-24 text-right text-xs" x-text="formatCost(log.total_cost)"></div>
@@ -241,7 +241,7 @@
                             <tr class="cursor-pointer hover:bg-base-200" @click="toggleDetail(log)">
                               <td><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></td>
                               <td class="text-xs" x-text="formatTime(log.started_at)"></td>
-                              <td class="font-mono text-xs" x-text="log.resolved_model || '-'"></td>
+                              <td class="font-mono text-xs" x-text="log.resolved_model || log.requested_model || '-'"></td>
                               <td><span class="badge badge-xs" :class="log.is_streaming ? 'badge-info' : 'badge-ghost'" x-text="log.is_streaming ? 'SSE' : 'sync'"></span></td>
                               <td class="text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></td>
                               <td class="text-right text-xs" x-text="formatTokens(log.prompt_tokens)"></td>
@@ -428,7 +428,7 @@
                               <div class="w-40 text-xs" x-text="formatTime(log.started_at)"></div>
                               <div class="w-32"><span class="badge badge-error badge-xs" x-text="log.error_type"></span></div>
                               <div class="w-16 text-xs font-mono" x-text="log.status_code || '-'"></div>
-                              <div class="w-36 text-xs font-mono truncate" x-text="log.resolved_model || '-'"></div>
+                              <div class="w-36 text-xs font-mono truncate" x-text="log.resolved_model || log.requested_model || '-'"></div>
                               <div class="w-28 text-xs truncate" x-text="log.agent_name || '-'"></div>
                               <div class="w-20 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
                               <div class="flex-1 text-xs truncate opacity-70 pl-3" x-text="log.error_message || '-'"></div>
@@ -513,77 +513,10 @@
       <!-- Models Management Page -->
       <div x-show="page === 'models'" x-cloak>
         <div x-data="modelsPage()" x-init="init()">
-          <div class="flex justify-between items-center mb-4">
-            <h2 class="text-lg font-bold">Model Configs</h2>
-            <button class="btn btn-primary btn-sm" @click="showCreate = true">Add Model</button>
-          </div>
-          <dialog class="modal" :class="{'modal-open': showCreate}">
-            <div class="modal-box">
-              <h3 class="font-bold text-lg" x-text="editing ? 'Edit Model' : 'Add Model'"></h3>
-              <div class="form-control"><label class="label">Name</label><input type="text" class="input input-bordered" x-model="form.name" :disabled="!!editing"></div>
-              <div class="form-control"><label class="label">Provider</label>
-                <select class="select select-bordered" x-model="form.provider_key" @change="fetchProviderModels()">
-                  <option value="" disabled>Select provider...</option>
-                  <template x-for="p in providers" :key="p">
-                    <option :value="p" x-text="p"></option>
-                  </template>
-                </select>
-              </div>
-              <div class="form-control"><label class="label">Provider Model</label>
-                <select class="select select-bordered" x-model="form.provider_model" :disabled="loadingProviderModels" @change="onProviderModelChange()">
-                  <option value="" disabled x-text="loadingProviderModels ? 'Loading models...' : 'Select model...'"></option>
-                  <template x-for="[source, models] in groupedProviderModels" :key="source">
-                    <optgroup :label="source">
-                      <template x-for="m in models" :key="m.id">
-                        <option :value="m.id" x-text="m.id"></option>
-                      </template>
-                    </optgroup>
-                  </template>
-                </select>
-                <label class="label" x-show="providerModelsError"><span class="label-text-alt text-error" x-text="providerModelsError"></span></label>
-              </div>
-              <div class="form-control"><label class="label">Mode</label><select class="select select-bordered" x-model="form.mode"><option>deep</option><option>fast</option></select></div>
-              <div class="form-control"><label class="label">Max Concurrency</label><input type="number" min="1" max="20" class="input input-bordered" x-model.number="form.max_concurrency"></div>
-              <div class="grid grid-cols-2 gap-2">
-                <div class="form-control"><label class="label">Input Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.input_price"></div>
-                <div class="form-control"><label class="label">Output Price ($/M tok)</label><input type="number" step="0.01" class="input input-bordered" x-model.number="form.output_price"></div>
-              </div>
-              <div class="modal-action">
-                <button class="btn btn-ghost" @click="showCreate = false; editing = null">Cancel</button>
-                <button class="btn btn-primary" @click="save()" x-text="editing ? 'Save' : 'Create'"></button>
-              </div>
-            </div>
-            <div class="modal-backdrop" @click="showCreate = false; editing = null"></div>
-          </dialog>
-          <div class="card bg-base-100 shadow">
-            <div class="card-body p-0">
-              <table class="table table-sm">
-                <thead><tr><th>Name</th><th>Provider</th><th>Provider Model</th><th>Source</th><th>Mode</th><th>Concurrency</th><th>Enabled</th><th>Actions</th></tr></thead>
-                <tbody>
-                  <template x-for="m in models" :key="m.id">
-                    <tr :class="{'opacity-40': !m.is_enabled}">
-                      <td x-text="m.name" class="font-mono"></td>
-                      <td x-text="m.provider_key || '-'" class="font-mono text-xs"></td>
-                      <td x-text="m.provider_model || '-'" class="font-mono text-xs"></td>
-                      <td><span class="badge badge-ghost badge-sm" x-text="m.upstream_source || '-'"></span></td>
-                      <td><span class="badge badge-sm" :class="m.mode === 'deep' ? 'badge-primary' : 'badge-secondary'" x-text="m.mode"></span></td>
-                      <td x-text="m.max_concurrency || 3"></td>
-                      <td><input type="checkbox" class="toggle toggle-sm" :checked="m.is_enabled" @change="toggle(m)"></td>
-                      <td class="flex gap-1">
-                        <button class="btn btn-ghost btn-xs" @click="edit(m)">Edit</button>
-                        <button class="btn btn-error btn-xs" @click="remove(m)">Delete</button>
-                      </td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
           <!-- Tiers Section -->
-          <div class="flex justify-between items-center mb-4 mt-8">
+          <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">Model Tiers</h2>
-            <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier: '' }">Add Tier</button>
+            <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier: '' }; tierAddProvider = ''; tierAddModel = ''; tierAddName = ''; providerModels = [];">Add Tier</button>
           </div>
           <dialog class="modal" :class="{'modal-open': showTierCreate}">
             <div class="modal-box max-w-lg">
@@ -599,16 +532,49 @@
                 </select>
               </div>
               <div class="form-control mt-2">
-                <label class="label">Models (in priority order)</label>
+                <label class="label font-semibold">Add Model from Provider</label>
+                <div class="bg-base-200 rounded-lg p-3 space-y-2">
+                  <div class="flex gap-2">
+                    <select class="select select-bordered select-sm flex-1" x-model="tierAddProvider" @change="onTierProviderChange()">
+                      <option value="" disabled>Provider...</option>
+                      <template x-for="p in providers" :key="p">
+                        <option :value="p" x-text="p"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div x-show="tierAddProvider">
+                    <select class="select select-bordered select-sm w-full" x-model="tierAddModel" :disabled="loadingProviderModels" @change="onTierModelChange()">
+                      <option value="" disabled x-text="loadingProviderModels ? 'Loading models...' : 'Upstream model...'"></option>
+                      <template x-for="[source, mods] in groupedProviderModels" :key="source">
+                        <optgroup :label="source">
+                          <template x-for="m in mods" :key="m.id">
+                            <option :value="m.id" x-text="m.id"></option>
+                          </template>
+                        </optgroup>
+                      </template>
+                    </select>
+                    <label class="label py-0" x-show="providerModelsError"><span class="label-text-alt text-error" x-text="providerModelsError"></span></label>
+                  </div>
+                  <div class="flex gap-2" x-show="tierAddModel">
+                    <input type="text" class="input input-bordered input-sm flex-1 font-mono" x-model="tierAddName" placeholder="Model name (auto-filled)">
+                    <button class="btn btn-sm btn-primary" @click="addModelToTier()" :disabled="!tierAddModel">Add</button>
+                  </div>
+                </div>
+              </div>
+              <div class="form-control mt-2">
+                <label class="label font-semibold">Add Existing Model</label>
                 <div class="flex gap-2 mb-2">
                   <select class="select select-bordered select-sm flex-1" x-ref="tierModelSelect">
-                    <option value="" disabled selected>Add model...</option>
-                    <template x-for="m in models.filter(m => m.is_enabled && !tierForm.models.includes(m.name))" :key="m.id">
+                    <option value="" disabled selected>Pick existing model...</option>
+                    <template x-for="m in models.filter(m => !tierForm.models.includes(m.name))" :key="m.id">
                       <option :value="m.name" x-text="m.name"></option>
                     </template>
                   </select>
                   <button class="btn btn-sm btn-outline" @click="if($refs.tierModelSelect.value) { tierForm.models.push($refs.tierModelSelect.value); $refs.tierModelSelect.value = ''; }">Add</button>
                 </div>
+              </div>
+              <div class="form-control mt-2">
+                <label class="label font-semibold">Models (in priority order)</label>
                 <div class="space-y-1">
                   <template x-for="(model, idx) in tierForm.models" :key="idx">
                     <div class="flex items-center gap-1 bg-base-200 rounded px-2 py-1">

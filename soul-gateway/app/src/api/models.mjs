@@ -83,7 +83,11 @@ export const handleModels = {
       const model = await dao.createModel(body);
       sendJson(res, model, 201);
     } catch (err) {
-      if (err.code === '23505') return sendError(res, 409, 'Model name already exists');
+      if (err.code === '23505') {
+        // Idempotent: return existing model instead of error
+        const existing = await dao.getModelByName(body.name);
+        return sendJson(res, existing, 200);
+      }
       throw err;
     }
   },

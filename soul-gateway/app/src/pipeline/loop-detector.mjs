@@ -23,8 +23,9 @@ const sessions = new Map();
  * @param {string} sessionId
  * @param {Array} messages - request body messages array
  * @param {number} requestSizeBytes - byte size of the messages payload
+ * @param {string} [model] - requested model name (included in content hash so same message to different models isn't flagged)
  */
-export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
+export function checkLoopDetection(sessionId, messages, requestSizeBytes, model) {
   const maxRpm = DEFAULT_MAX_REQUESTS_PER_WINDOW;
   const maxIdentical = DEFAULT_MAX_IDENTICAL_REQUESTS;
   const now = Date.now();
@@ -48,10 +49,10 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes) {
       `Loop detected: ${history.timestamps.length + 1} requests in ${WINDOW_MS / 1000}s window`);
   }
 
-  // 2. Repeated content detection — hash the full messages array
-  //    so requests with different tool history/context are not flagged as duplicates
+  // 2. Repeated content detection — hash messages + model
+  //    so requests with different tool history/context or different models are not flagged as duplicates
   const contentHash = messages?.length
-    ? createHash('sha256').update(JSON.stringify(messages)).digest('hex').slice(0, 16)
+    ? createHash('sha256').update(JSON.stringify(messages) + '||' + (model || '')).digest('hex').slice(0, 16)
     : null;
 
   if (contentHash) {

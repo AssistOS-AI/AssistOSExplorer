@@ -62,7 +62,7 @@ export async function pipeline(req, res) {
 
     // 3. Loop detection
     const requestSizeBytes = Buffer.byteLength(JSON.stringify(body.messages), 'utf8');
-    checkLoopDetection(sessionId, body.messages, requestSizeBytes);
+    checkLoopDetection(sessionId, body.messages, requestSizeBytes, body.model);
 
     // 4. Blacklist scan
     try {
@@ -225,6 +225,10 @@ export async function pipeline(req, res) {
       logEntry.error_message = err.message;
       logEntry.latency_ms = latencyMs;
       logEntry.completed_at = new Date();
+      // Use requested model when resolved model isn't available (error before routing)
+      if (!logEntry.resolved_model && logEntry.requested_model) {
+        logEntry.resolved_model = logEntry.requested_model;
+      }
       logEntry.retry_count = err.retryCount ?? logEntry.retry_count;
       logEntry.retry_reason = err.retryReason ?? logEntry.retry_reason;
       logEntry.retries_detail = err.retriesDetail ?? logEntry.retries_detail;

@@ -1,5 +1,6 @@
 import { readJsonBody, sendJson, sendError } from '../utils/http-helpers.mjs';
 import * as dao from '../db/tiers-dao.mjs';
+import { query } from '../db/init.mjs';
 
 export const handleTiers = {
   async list(req, res) {
@@ -42,6 +43,10 @@ export const handleTiers = {
     const body = await readJsonBody(req);
     const tier = await dao.updateTier(params.id, body);
     if (!tier) return sendError(res, 404, 'Tier not found');
+    // Auto-enable all models referenced in this tier
+    if (tier.models?.length) {
+      await query('UPDATE model_configs SET is_enabled = true WHERE name = ANY($1)', [tier.models]);
+    }
     sendJson(res, tier);
   },
 
