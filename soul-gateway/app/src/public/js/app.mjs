@@ -327,7 +327,7 @@ function costsPage() {
       this._modelRequests = data.model_requests || [];
       this.expandedModel = null;
 
-      this.$nextTick(() => this.renderChart());
+      this.$nextTick(() => requestAnimationFrame(() => this.renderChart()));
     },
 
     prevMonth() {
@@ -364,7 +364,14 @@ function costsPage() {
     renderChart() {
       const canvas = this.$refs.usageChart;
       if (!canvas) return;
+
+      // Destroy previous chart instance (check both our ref and Chart.js registry)
       if (this._chart) { this._chart.destroy(); this._chart = null; }
+      const existing = Chart.getChart(canvas);
+      if (existing) existing.destroy();
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { console.warn('[Usage] Canvas 2D context unavailable'); return; }
 
       const data = this._dailyData;
       if (data.length === 0) return;
@@ -379,40 +386,41 @@ function costsPage() {
         d.setDate(d.getDate() + 1);
       }
 
-      // Map data by day+model — normalize period to local date string for matching
+      // Map data by day+model using YYYY-MM-DD keys for reliable matching
       const dataMap = new Map();
       for (const r of data) {
         const pd = new Date(r.period);
-        // Use UTC date components to avoid timezone shifts
-        const dateKey = `${pd.getUTCFullYear()}-${pd.getUTCMonth()}-${pd.getUTCDate()}`;
-        dataMap.set(dateKey + '||' + r.resolved_model, Number(r.total_cost || 0));
+        const key = `${pd.getUTCFullYear()}-${String(pd.getUTCMonth()+1).padStart(2,'0')}-${String(pd.getUTCDate()).padStart(2,'0')}||${r.resolved_model}`;
+        dataMap.set(key, Number(r.total_cost || 0));
       }
 
-      const dayKey = d => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const fmtDay = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
-      try {
-        this._chart = new Chart(canvas, {
-          type: 'bar',
-          data: {
-            labels: days.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
-            datasets: models.map((model, i) => ({
-              label: model,
-              data: days.map(day => dataMap.get(dayKey(day) + '||' + model) || 0),
-              backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
-            }))
+      // Debug: log first few entries so we can verify matching
+      if (dataMap.size > 0) {
+        const sample = [...dataMap.entries()].slice(0, 3);
+        console.log('[Usage] dataMap sample:', sample, 'dayKey sample:', fmtDay(days[0]));
+      }
+
+      this._chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: days.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
+          datasets: models.map((model, i) => ({
+            label: model,
+            data: days.map(day => dataMap.get(fmtDay(day) + '||' + model) || 0),
+            backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+          }))
+        },
+        options: {
+          responsive: true,
+          scales: {
+            x: { stacked: true },
+            y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(2) } },
           },
-          options: {
-            responsive: true,
-            scales: {
-              x: { stacked: true },
-              y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(2) } },
-            },
-            plugins: { legend: { position: 'bottom' } },
-          }
-        });
-      } catch (err) {
-        console.warn('[Usage] Chart render failed:', err.message);
-      }
+          plugins: { legend: { position: 'bottom' } },
+        }
+      });
     },
   };
 }
