@@ -25,7 +25,7 @@ export const handleMetrics = {
       metricsDao.getDailyCostByModel(query),
       metricsDao.getMonthTotal(query),
       metricsDao.getDistinctModels(query),
-      metricsDao.getModelRequestStats(query),
+      metricsDao.getModelRequestStats(query).catch(() => []),
     ]);
     sendJson(res, { daily_by_model: dailyByModel, total, models, model_requests: modelRequests });
   },
