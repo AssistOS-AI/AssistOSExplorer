@@ -583,6 +583,9 @@ function modelsPage() {
     tierAddProvider: '',
     tierAddModel: '',
     tierAddName: '',
+    // Models table state
+    modelFilter: '',
+    modelEnabledOnly: false,
 
     async init() {
       [this.models, this.providers, this.tiers] = await Promise.all([
@@ -702,6 +705,21 @@ function modelsPage() {
     async toggleTier(t) {
       await api.put(`/api/v1/tiers/${t.id}/toggle`, {});
       this.tiers = await api.get('/api/v1/tiers');
+    },
+
+    // Models table
+    get filteredModels() {
+      let list = this.models;
+      if (!Array.isArray(list)) return [];
+      if (this.modelEnabledOnly) list = list.filter(m => m.is_enabled);
+      const q = this.modelFilter.trim().toLowerCase();
+      if (q) list = list.filter(m => m.name.toLowerCase().includes(q) || (m.provider_key || '').toLowerCase().includes(q));
+      return list;
+    },
+
+    async toggleModel(m) {
+      await api.put(`/api/v1/models/${m.id}/toggle`, {});
+      this.models = await api.get('/api/v1/models');
     },
   };
 }

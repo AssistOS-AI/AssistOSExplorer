@@ -624,6 +624,36 @@
               </table>
             </div>
           </div>
+
+          <!-- Models Section -->
+          <div class="flex justify-between items-center mb-4 mt-8">
+            <h2 class="text-lg font-bold">Models</h2>
+            <div class="flex gap-2 items-center">
+              <input type="text" class="input input-bordered input-sm w-48" placeholder="Filter models..." x-model="modelFilter">
+              <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Enabled only</span><input type="checkbox" class="toggle toggle-xs" x-model="modelEnabledOnly"></label>
+            </div>
+          </div>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-xs">
+                <thead><tr><th>Name</th><th>Provider</th><th>Upstream</th><th>Mode</th><th>Context</th><th>Enabled</th></tr></thead>
+                <tbody>
+                  <template x-for="m in filteredModels" :key="m.id">
+                    <tr :class="{'opacity-40': !m.is_enabled}">
+                      <td class="font-mono text-sm" x-text="m.name"></td>
+                      <td class="text-xs" x-text="m.provider_key || '-'"></td>
+                      <td class="text-xs font-mono max-w-[200px] truncate" x-text="m.provider_model || '-'" :title="m.provider_model"></td>
+                      <td><span class="badge badge-xs" :class="m.mode === 'fast' ? 'badge-info' : 'badge-accent'" x-text="m.mode"></span></td>
+                      <td class="text-xs" x-text="m.context_window || '-'"></td>
+                      <td><input type="checkbox" class="toggle toggle-xs" :checked="m.is_enabled" @change="toggleModel(m)"></td>
+                    </tr>
+                  </template>
+                  <tr x-show="filteredModels.length === 0"><td colspan="6" class="text-center opacity-50 py-4">No models match</td></tr>
+                </tbody>
+              </table>
+              <div class="text-xs opacity-50 px-4 py-2" x-text="`${filteredModels.length} of ${models.length} models`"></div>
+            </div>
+          </div>
         </div>
       </div>
 
