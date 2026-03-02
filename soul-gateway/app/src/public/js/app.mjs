@@ -366,8 +366,7 @@ function costsPage() {
       if (!canvas || canvas.clientWidth === 0) return;
 
       // Destroy previous chart instance
-      try { if (this._chart) { this._chart.destroy(); this._chart = null; } } catch (_) {}
-      try { const existing = Chart.getChart(canvas); if (existing) existing.destroy(); } catch (_) {}
+      if (this._chart) { this._chart.destroy(); this._chart = null; }
 
       const data = this._dailyData;
       if (data.length === 0) return;
@@ -390,14 +389,7 @@ function costsPage() {
 
       const fmtDay = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
-      // Create chart in a fresh canvas to avoid stale context issues
-      const parent = canvas.parentNode;
-      const newCanvas = document.createElement('canvas');
-      newCanvas.height = 120;
-      newCanvas.setAttribute('x-ref', 'usageChart');
-      parent.replaceChild(newCanvas, canvas);
-
-      this._chart = new Chart(newCanvas, {
+      this._chart = new Chart(canvas, {
         type: 'bar',
         data: {
           labels: days.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
@@ -409,6 +401,7 @@ function costsPage() {
         },
         options: {
           responsive: true,
+          maintainAspectRatio: false,
           animation: false,
           scales: {
             x: { stacked: true },

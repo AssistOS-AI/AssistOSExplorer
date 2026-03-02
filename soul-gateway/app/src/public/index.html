@@ -350,8 +350,8 @@
           </div>
           <!-- Chart -->
           <div class="card bg-base-100 shadow">
-            <div class="card-body">
-              <canvas x-ref="usageChart" height="120"></canvas>
+            <div class="card-body" style="position:relative; height:280px;">
+              <canvas x-ref="usageChart"></canvas>
               <div x-show="_dailyData.length === 0" class="text-center opacity-50 py-8">No usage data for this period</div>
             </div>
           </div>
