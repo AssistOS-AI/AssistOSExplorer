@@ -362,12 +362,12 @@ function costsPage() {
     },
 
     renderChart() {
-      const ctx = this.$refs.usageChart;
-      if (!ctx) return;
-      if (this._chart) this._chart.destroy();
+      const canvas = this.$refs.usageChart;
+      if (!canvas) return;
+      if (this._chart) { this._chart.destroy(); this._chart = null; }
 
       const data = this._dailyData;
-      if (data.length === 0) { this._chart = null; return; }
+      if (data.length === 0) return;
 
       const models = [...new Set(data.map(r => r.resolved_model))].filter(Boolean);
       // Build all days in the month
@@ -379,32 +379,40 @@ function costsPage() {
         d.setDate(d.getDate() + 1);
       }
 
-      // Map data by day+model
+      // Map data by day+model — normalize period to local date string for matching
       const dataMap = new Map();
       for (const r of data) {
-        const key = new Date(r.period).toDateString() + '||' + r.resolved_model;
-        dataMap.set(key, Number(r.total_cost || 0));
+        const pd = new Date(r.period);
+        // Use UTC date components to avoid timezone shifts
+        const dateKey = `${pd.getUTCFullYear()}-${pd.getUTCMonth()}-${pd.getUTCDate()}`;
+        dataMap.set(dateKey + '||' + r.resolved_model, Number(r.total_cost || 0));
       }
 
-      this._chart = new Chart(ctx, {
-        type: 'bar',
-        data: {
-          labels: days.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
-          datasets: models.map((model, i) => ({
-            label: model,
-            data: days.map(day => dataMap.get(day.toDateString() + '||' + model) || 0),
-            backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
-          }))
-        },
-        options: {
-          responsive: true,
-          scales: {
-            x: { stacked: true },
-            y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(0) } },
+      const dayKey = d => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+
+      try {
+        this._chart = new Chart(canvas, {
+          type: 'bar',
+          data: {
+            labels: days.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
+            datasets: models.map((model, i) => ({
+              label: model,
+              data: days.map(day => dataMap.get(dayKey(day) + '||' + model) || 0),
+              backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+            }))
           },
-          plugins: { legend: { position: 'bottom' } },
-        }
-      });
+          options: {
+            responsive: true,
+            scales: {
+              x: { stacked: true },
+              y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(2) } },
+            },
+            plugins: { legend: { position: 'bottom' } },
+          }
+        });
+      } catch (err) {
+        console.warn('[Usage] Chart render failed:', err.message);
+      }
     },
   };
 }
