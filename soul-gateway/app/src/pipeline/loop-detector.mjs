@@ -14,7 +14,10 @@ const EVICTION_INTERVAL_MS = 5 * 60_000;
 const EVICTION_MAX_AGE_MS = 30 * 60_000;
 
 // --- In-memory state ---
-const sessions = new Map();
+// Rapid-fire: tracked per session+model so different models don't interfere
+const rapidFire = new Map();     // key: "sessionId:model" -> { timestamps, lastAccess }
+// Content/token patterns: tracked per session (content hash already includes model)
+const contentState = new Map();  // key: sessionId -> { contentHashes, promptSizes, lastAccess }
 
 /**
  * Check for loop patterns and throw LoopDetectedError if detected.
@@ -24,33 +27,40 @@ const sessions = new Map();
  * @param {Array} messages - request body messages array
  * @param {number} requestSizeBytes - byte size of the messages payload
  * @param {string} [model] - requested model name (included in content hash so same message to different models isn't flagged)
+ * @param {object} [opts]
+ * @param {number} [opts.maxRpm] - per-key RPM limit (overrides default 50)
  */
-export function checkLoopDetection(sessionId, messages, requestSizeBytes, model) {
-  const maxRpm = DEFAULT_MAX_REQUESTS_PER_WINDOW;
+export function checkLoopDetection(sessionId, messages, requestSizeBytes, model, { maxRpm } = {}) {
+  const effectiveMaxRpm = maxRpm || DEFAULT_MAX_REQUESTS_PER_WINDOW;
   const maxIdentical = DEFAULT_MAX_IDENTICAL_REQUESTS;
   const now = Date.now();
-  let history = sessions.get(sessionId);
-
-  if (!history) {
-    history = { timestamps: [], contentHashes: [], promptSizes: [], lastAccess: now };
-    sessions.set(sessionId, history);
-  }
-
-  history.lastAccess = now;
-
-  // Prune timestamps outside the window
   const windowStart = now - WINDOW_MS;
-  history.timestamps = history.timestamps.filter(t => t >= windowStart);
 
-  // 1. Rapid-fire detection
-  if (history.timestamps.length >= maxRpm) {
-    log.warn('Rapid-fire loop detected', { sessionId, count: history.timestamps.length + 1, limit: maxRpm });
+  // --- 1. Rapid-fire detection (per session+model) ---
+  const rapidKey = model ? `${sessionId}:${model}` : sessionId;
+  let rf = rapidFire.get(rapidKey);
+  if (!rf) {
+    rf = { timestamps: [], lastAccess: now };
+    rapidFire.set(rapidKey, rf);
+  }
+  rf.lastAccess = now;
+  rf.timestamps = rf.timestamps.filter(t => t >= windowStart);
+
+  if (rf.timestamps.length >= effectiveMaxRpm) {
+    log.warn('Rapid-fire loop detected', { sessionId, model, count: rf.timestamps.length + 1, limit: effectiveMaxRpm });
     throw new LoopDetectedError('rapid_fire',
-      `Loop detected: ${history.timestamps.length + 1} requests in ${WINDOW_MS / 1000}s window`);
+      `Loop detected: ${rf.timestamps.length + 1} requests for ${model || 'unknown'} in ${WINDOW_MS / 1000}s window`);
   }
 
-  // 2. Repeated content detection — hash messages + model
-  //    so requests with different tool history/context or different models are not flagged as duplicates
+  // --- 2. Repeated content detection (per session) ---
+  //    Hash includes model so same message to different models isn't flagged
+  let cs = contentState.get(sessionId);
+  if (!cs) {
+    cs = { contentHashes: [], promptSizes: [], lastAccess: now };
+    contentState.set(sessionId, cs);
+  }
+  cs.lastAccess = now;
+
   const contentHash = messages?.length
     ? createHash('sha256').update(JSON.stringify(messages) + '||' + (model || '')).digest('hex').slice(0, 16)
     : null;
@@ -59,8 +69,8 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes, model)
     // Count consecutive identical requests from the tail of the history.
     // Interleaved different requests (A, B, A, B, A) are NOT a loop.
     let consecutiveCount = 0;
-    for (let i = history.contentHashes.length - 1; i >= 0; i--) {
-      if (history.contentHashes[i] === contentHash) consecutiveCount++;
+    for (let i = cs.contentHashes.length - 1; i >= 0; i--) {
+      if (cs.contentHashes[i] === contentHash) consecutiveCount++;
       else break;
     }
     if (consecutiveCount >= maxIdentical) {
@@ -70,9 +80,9 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes, model)
     }
   }
 
-  // 3. Token explosion detection
-  if (history.promptSizes.length >= TOKEN_EXPLOSION_STREAK - 1) {
-    const recentSizes = history.promptSizes.slice(-(TOKEN_EXPLOSION_STREAK - 1));
+  // --- 3. Token explosion detection (per session) ---
+  if (cs.promptSizes.length >= TOKEN_EXPLOSION_STREAK - 1) {
+    const recentSizes = cs.promptSizes.slice(-(TOKEN_EXPLOSION_STREAK - 1));
     const allIncreasing = recentSizes.every((size, i) =>
       i === 0 || size > recentSizes[i - 1]
     );
@@ -87,35 +97,35 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes, model)
   }
 
   // Record current request
-  history.timestamps.push(now);
+  rf.timestamps.push(now);
 
-  history.contentHashes.push(contentHash);
-  if (history.contentHashes.length > HISTORY_SIZE) {
-    history.contentHashes = history.contentHashes.slice(-HISTORY_SIZE);
+  cs.contentHashes.push(contentHash);
+  if (cs.contentHashes.length > HISTORY_SIZE) {
+    cs.contentHashes = cs.contentHashes.slice(-HISTORY_SIZE);
   }
 
-  history.promptSizes.push(requestSizeBytes);
-  if (history.promptSizes.length > HISTORY_SIZE) {
-    history.promptSizes = history.promptSizes.slice(-HISTORY_SIZE);
+  cs.promptSizes.push(requestSizeBytes);
+  if (cs.promptSizes.length > HISTORY_SIZE) {
+    cs.promptSizes = cs.promptSizes.slice(-HISTORY_SIZE);
   }
 }
 
 export function getLoopDetectorStats() {
-  return { trackedSessions: sessions.size };
+  return { trackedRapidFire: rapidFire.size, trackedContent: contentState.size };
 }
 
-// --- Eviction: clean up stale sessions every 5 minutes ---
+// --- Eviction: clean up stale entries every 5 minutes ---
 const evictionTimer = setInterval(() => {
   const cutoff = Date.now() - EVICTION_MAX_AGE_MS;
   let evicted = 0;
-  for (const [id, history] of sessions) {
-    if (history.lastAccess < cutoff) {
-      sessions.delete(id);
-      evicted++;
-    }
+  for (const [id, entry] of rapidFire) {
+    if (entry.lastAccess < cutoff) { rapidFire.delete(id); evicted++; }
+  }
+  for (const [id, entry] of contentState) {
+    if (entry.lastAccess < cutoff) { contentState.delete(id); evicted++; }
   }
   if (evicted > 0) {
-    log.debug('Evicted stale loop-detector sessions', { evicted, remaining: sessions.size });
+    log.debug('Evicted stale loop-detector entries', { evicted, rapidFire: rapidFire.size, content: contentState.size });
   }
 }, EVICTION_INTERVAL_MS);
 
