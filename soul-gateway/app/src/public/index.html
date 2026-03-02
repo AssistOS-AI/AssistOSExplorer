@@ -146,12 +146,13 @@
                                                 x-text="msg.role"></span>
                                             </div>
                                             <template x-if="!msg.isLong">
-                                              <pre class="whitespace-pre-wrap text-xs break-words" x-text="msg.content"></pre>
+                                              <div class="sg-md text-xs" x-html="msg.html"></div>
                                             </template>
                                             <template x-if="msg.isLong">
                                               <div>
-                                                <pre class="whitespace-pre-wrap text-xs break-words" x-text="msg._expanded ? msg.content : msg.content.slice(0, 200) + '...'"></pre>
-                                                <button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.content.length + ' chars)'"></button>
+                                                <div x-show="!msg._expanded" class="text-xs opacity-70" x-text="msg.raw.slice(0, 200) + '...'"></div>
+                                                <div x-show="msg._expanded" class="sg-md text-xs" x-html="msg.html"></div>
+                                                <button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"></button>
                                               </div>
                                             </template>
                                           </div>
@@ -160,9 +161,7 @@
                                     </div>
                                     <div>
                                       <h4 class="font-bold mb-2 text-xs">Response</h4>
-                                      <div class="mockup-code text-xs max-h-72 overflow-auto">
-                                        <pre class="whitespace-pre-wrap break-words"><code x-text="tryFormatJson(log._detail.response_content) || '(empty)'"></code></pre>
-                                      </div>
+                                      <div class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3" x-html="renderContent(log._detail.response_content) || '(empty)'"></div>
                                     </div>
                                     <div>
                                       <div class="stats stats-horizontal shadow w-full text-xs">
@@ -286,12 +285,13 @@
                                                     x-text="msg.role"></span>
                                                 </div>
                                                 <template x-if="!msg.isLong">
-                                                  <pre class="whitespace-pre-wrap text-xs break-words" x-text="msg.content"></pre>
+                                                  <div class="sg-md text-xs" x-html="msg.html"></div>
                                                 </template>
                                                 <template x-if="msg.isLong">
                                                   <div>
-                                                    <pre class="whitespace-pre-wrap text-xs break-words" x-text="msg._expanded ? msg.content : msg.content.slice(0, 200) + '...'"></pre>
-                                                    <button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.content.length + ' chars)'"></button>
+                                                    <div x-show="!msg._expanded" class="text-xs opacity-70" x-text="msg.raw.slice(0, 200) + '...'"></div>
+                                                    <div x-show="msg._expanded" class="sg-md text-xs" x-html="msg.html"></div>
+                                                    <button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"></button>
                                                   </div>
                                                 </template>
                                               </div>
@@ -300,9 +300,7 @@
                                         </div>
                                         <div>
                                           <h4 class="font-bold mb-2 text-xs">Response</h4>
-                                          <div class="mockup-code text-xs max-h-72 overflow-auto">
-                                            <pre class="whitespace-pre-wrap break-words"><code x-text="tryFormatJson(log._detail.response_content) || '(empty)'"></code></pre>
-                                          </div>
+                                          <div class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3" x-html="renderContent(log._detail.response_content) || '(empty)'"></div>
                                         </div>
                                         <div>
                                           <div class="stats stats-horizontal shadow w-full text-xs">
@@ -349,8 +347,8 @@
       </div>
 
       <!-- Costs Page -->
-      <div x-show="page === 'costs'" x-cloak>
-        <div x-data="costsPage()" x-init="init()">
+      <div x-show="page === 'costs'" x-cloak x-effect="if (page === 'costs') $dispatch('costs-visible')">
+        <div x-data="costsPage()" x-init="init()" @costs-visible.window="$nextTick(() => renderChart())">
           <!-- Header -->
           <div class="flex justify-between items-start mb-6">
             <div>
@@ -849,6 +847,7 @@
     </div>
   </div>
 
+  <script src="/js/markdown.js"></script>
   <script src="/js/app.mjs"></script>
 </body>
 </html>
