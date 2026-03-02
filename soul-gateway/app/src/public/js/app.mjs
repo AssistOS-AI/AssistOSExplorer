@@ -327,7 +327,7 @@ function costsPage() {
       this._modelRequests = data.model_requests || [];
       this.expandedModel = null;
 
-      this.$nextTick(() => requestAnimationFrame(() => this.renderChart()));
+      this.$nextTick(() => this.renderChart());
     },
 
     prevMonth() {
@@ -363,21 +363,16 @@ function costsPage() {
 
     renderChart() {
       const canvas = this.$refs.usageChart;
-      if (!canvas) return;
+      if (!canvas || canvas.clientWidth === 0) return;
 
-      // Destroy previous chart instance (check both our ref and Chart.js registry)
-      if (this._chart) { this._chart.destroy(); this._chart = null; }
-      const existing = Chart.getChart(canvas);
-      if (existing) existing.destroy();
-
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { console.warn('[Usage] Canvas 2D context unavailable'); return; }
+      // Destroy previous chart instance
+      try { if (this._chart) { this._chart.destroy(); this._chart = null; } } catch (_) {}
+      try { const existing = Chart.getChart(canvas); if (existing) existing.destroy(); } catch (_) {}
 
       const data = this._dailyData;
       if (data.length === 0) return;
 
       const models = [...new Set(data.map(r => r.resolved_model))].filter(Boolean);
-      // Build all days in the month
       const days = [];
       const d = new Date(this.year, this.month, 1);
       const endOfMonth = new Date(this.year, this.month + 1, 1);
@@ -386,7 +381,6 @@ function costsPage() {
         d.setDate(d.getDate() + 1);
       }
 
-      // Map data by day+model using YYYY-MM-DD keys for reliable matching
       const dataMap = new Map();
       for (const r of data) {
         const pd = new Date(r.period);
@@ -396,13 +390,14 @@ function costsPage() {
 
       const fmtDay = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 
-      // Debug: log first few entries so we can verify matching
-      if (dataMap.size > 0) {
-        const sample = [...dataMap.entries()].slice(0, 3);
-        console.log('[Usage] dataMap sample:', sample, 'dayKey sample:', fmtDay(days[0]));
-      }
+      // Create chart in a fresh canvas to avoid stale context issues
+      const parent = canvas.parentNode;
+      const newCanvas = document.createElement('canvas');
+      newCanvas.height = 120;
+      newCanvas.setAttribute('x-ref', 'usageChart');
+      parent.replaceChild(newCanvas, canvas);
 
-      this._chart = new Chart(ctx, {
+      this._chart = new Chart(newCanvas, {
         type: 'bar',
         data: {
           labels: days.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
@@ -414,9 +409,10 @@ function costsPage() {
         },
         options: {
           responsive: true,
+          animation: false,
           scales: {
             x: { stacked: true },
-            y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(2) } },
+            y: { stacked: true, ticks: { callback: v => '$' + v.toFixed(4) } },
           },
           plugins: { legend: { position: 'bottom' } },
         }
