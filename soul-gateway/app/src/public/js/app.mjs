@@ -28,6 +28,19 @@ function formatDate(ts) {
   return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function formatMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages.map(m => {
+    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content, null, 2);
+    return { role: m.role || 'unknown', content, isLong: content.length > 300, _expanded: false };
+  });
+}
+
+function tryFormatJson(text) {
+  if (!text) return text;
+  try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
+}
+
 const CHART_COLORS = ['#36a2eb', '#ff6384', '#ffce56', '#4bc0c0', '#9966ff', '#ff9f40', '#c9cbcf', '#7bc8a4'];
 
 // ---- Main App ----
@@ -270,7 +283,7 @@ function logsPage() {
       this.expandedDetail = log.id;
     },
 
-    formatTime, formatDate,
+    formatTime, formatDate, formatMessages, tryFormatJson,
     formatCost(v) { return v ? '$' + Number(v).toFixed(4) : '-'; },
     formatTokens(v) { return v ? Number(v).toLocaleString() : '-'; },
   };
@@ -487,7 +500,7 @@ function activityPage() {
       this.expandedDetail = log.id;
     },
 
-    formatTime, formatDate,
+    formatTime, formatDate, formatMessages, tryFormatJson,
     formatCost(v) { return v ? '$' + Number(v).toFixed(4) : '-'; },
     formatTokens(v) { return v ? Number(v).toLocaleString() : '-'; },
   };

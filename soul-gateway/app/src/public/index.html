@@ -137,14 +137,31 @@
                                   <div class="flex flex-col gap-4">
                                     <div>
                                       <h4 class="font-bold mb-2 text-xs">Request Messages</h4>
-                                      <div class="mockup-code text-xs max-h-72 overflow-auto">
-                                        <pre><code x-text="JSON.stringify(log._detail.request_messages, null, 2)"></code></pre>
+                                      <div class="flex flex-col gap-2 max-h-96 overflow-auto">
+                                        <template x-for="(msg, mi) in formatMessages(log._detail.request_messages)" :key="mi">
+                                          <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+                                            <div class="mb-1">
+                                              <span class="badge badge-sm"
+                                                :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'"
+                                                x-text="msg.role"></span>
+                                            </div>
+                                            <template x-if="!msg.isLong">
+                                              <pre class="whitespace-pre-wrap text-xs break-words" x-text="msg.content"></pre>
+                                            </template>
+                                            <template x-if="msg.isLong">
+                                              <div>
+                                                <pre class="whitespace-pre-wrap text-xs break-words" x-text="msg._expanded ? msg.content : msg.content.slice(0, 200) + '...'"></pre>
+                                                <button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.content.length + ' chars)'"></button>
+                                              </div>
+                                            </template>
+                                          </div>
+                                        </template>
                                       </div>
                                     </div>
                                     <div>
                                       <h4 class="font-bold mb-2 text-xs">Response</h4>
                                       <div class="mockup-code text-xs max-h-72 overflow-auto">
-                                        <pre><code x-text="log._detail.response_content || '(empty)'"></code></pre>
+                                        <pre class="whitespace-pre-wrap break-words"><code x-text="tryFormatJson(log._detail.response_content) || '(empty)'"></code></pre>
                                       </div>
                                     </div>
                                     <div>
@@ -204,7 +221,6 @@
                     </div>
                     <div class="flex items-center gap-6 text-sm flex-shrink-0">
                       <div class="text-right"><div class="text-xs opacity-50">Requests</div><div class="font-medium" x-text="k.request_count.toLocaleString()"></div></div>
-                      <div class="text-right"><div class="text-xs opacity-50">Tokens</div><div class="font-medium" x-text="formatTokens(k.total_tokens)"></div></div>
                       <div class="text-right"><div class="text-xs opacity-50">Cost</div><div class="font-mono font-medium" x-text="formatCost(k.total_cost)"></div></div>
                       <div class="text-right w-20" x-show="k.error_count > 0"><div class="text-xs opacity-50">Errors</div><div class="text-error font-medium" x-text="k.error_count"></div></div>
                       <div class="w-28">
@@ -230,9 +246,8 @@
                           <th class="w-36 cursor-pointer select-none" @click="setSort('resolved_model')"><span class="flex items-center gap-1">Model <span x-show="sortCol === 'resolved_model'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
                           <th class="w-16">Stream</th>
                           <th class="w-24 text-right cursor-pointer select-none" @click="setSort('latency_ms')"><span class="flex items-center justify-end gap-1">Latency <span x-show="sortCol === 'latency_ms'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
-                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('prompt_tokens')"><span class="flex items-center justify-end gap-1">Prompt <span x-show="sortCol === 'prompt_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
-                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('completion_tokens')"><span class="flex items-center justify-end gap-1">Completion <span x-show="sortCol === 'completion_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
-                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('total_tokens')"><span class="flex items-center justify-end gap-1">Tokens <span x-show="sortCol === 'total_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('prompt_tokens')"><span class="flex items-center justify-end gap-1">Input <span x-show="sortCol === 'prompt_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('completion_tokens')"><span class="flex items-center justify-end gap-1">Output <span x-show="sortCol === 'completion_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
                           <th class="w-24 text-right cursor-pointer select-none" @click="setSort('total_cost')"><span class="flex items-center justify-end gap-1">Cost <span x-show="sortCol === 'total_cost'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
                           <th class="w-20">Status</th>
                         </tr></thead>
@@ -246,7 +261,6 @@
                               <td class="text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></td>
                               <td class="text-right text-xs" x-text="formatTokens(log.prompt_tokens)"></td>
                               <td class="text-right text-xs" x-text="formatTokens(log.completion_tokens)"></td>
-                              <td class="text-right text-xs font-medium" x-text="formatTokens(log.total_tokens)"></td>
                               <td class="text-right text-xs font-mono" x-text="formatCost(log.total_cost)"></td>
                               <td>
                                 <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
@@ -257,17 +271,38 @@
                             <!-- Expanded log detail -->
                             <template x-if="expandedDetail === log.id">
                               <tr>
-                                <td colspan="10" class="p-0">
+                                <td colspan="9" class="p-0">
                                   <div class="px-8 py-4 bg-base-200 border-t border-base-300">
                                     <template x-if="log._detail">
                                       <div class="flex flex-col gap-4">
                                         <div>
                                           <h4 class="font-bold mb-2 text-xs">Request Messages</h4>
-                                          <div class="mockup-code text-xs max-h-72 overflow-auto"><pre><code x-text="JSON.stringify(log._detail.request_messages, null, 2)"></code></pre></div>
+                                          <div class="flex flex-col gap-2 max-h-96 overflow-auto">
+                                            <template x-for="(msg, mi) in formatMessages(log._detail.request_messages)" :key="mi">
+                                              <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+                                                <div class="mb-1">
+                                                  <span class="badge badge-sm"
+                                                    :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'"
+                                                    x-text="msg.role"></span>
+                                                </div>
+                                                <template x-if="!msg.isLong">
+                                                  <pre class="whitespace-pre-wrap text-xs break-words" x-text="msg.content"></pre>
+                                                </template>
+                                                <template x-if="msg.isLong">
+                                                  <div>
+                                                    <pre class="whitespace-pre-wrap text-xs break-words" x-text="msg._expanded ? msg.content : msg.content.slice(0, 200) + '...'"></pre>
+                                                    <button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.content.length + ' chars)'"></button>
+                                                  </div>
+                                                </template>
+                                              </div>
+                                            </template>
+                                          </div>
                                         </div>
                                         <div>
                                           <h4 class="font-bold mb-2 text-xs">Response</h4>
-                                          <div class="mockup-code text-xs max-h-72 overflow-auto"><pre><code x-text="log._detail.response_content || '(empty)'"></code></pre></div>
+                                          <div class="mockup-code text-xs max-h-72 overflow-auto">
+                                            <pre class="whitespace-pre-wrap break-words"><code x-text="tryFormatJson(log._detail.response_content) || '(empty)'"></code></pre>
+                                          </div>
                                         </div>
                                         <div>
                                           <div class="stats stats-horizontal shadow w-full text-xs">
@@ -291,7 +326,7 @@
                             </template>
                           </template>
                           <template x-if="keyLogs.length === 0">
-                            <tr><td colspan="10" class="text-center opacity-50 py-4">No requests found</td></tr>
+                            <tr><td colspan="9" class="text-center opacity-50 py-4">No requests found</td></tr>
                           </template>
                         </tbody>
                       </table>
