@@ -243,3 +243,30 @@ export async function getTokenTrend({ from, to }) {
   `, params);
   return rows;
 }
+
+export async function getModelRequestStats({ from, to, model, api_key_id }) {
+  const conditions = ['cl.resolved_model IS NOT NULL'];
+  const params = [];
+  let idx = 1;
+  if (from) { conditions.push(`cl.started_at >= $${idx++}`); params.push(from); }
+  if (to) { conditions.push(`cl.started_at <= $${idx++}`); params.push(to); }
+  if (model) { conditions.push(`cl.resolved_model = $${idx++}`); params.push(model); }
+  if (api_key_id) { conditions.push(`cl.api_key_id = $${idx++}`); params.push(api_key_id); }
+  const where = 'WHERE ' + conditions.join(' AND ');
+
+  const { rows } = await query(`
+    SELECT cl.resolved_model,
+           cl.api_key_id,
+           k.label as key_label,
+           k.key_hint,
+           COUNT(*)::int as total,
+           COUNT(*) FILTER (WHERE cl.cache_hit = true)::int as cached,
+           COUNT(*) FILTER (WHERE cl.cache_hit = false OR cl.cache_hit IS NULL)::int as non_cached
+    FROM call_logs cl
+    LEFT JOIN api_keys k ON cl.api_key_id = k.id
+    ${where}
+    GROUP BY cl.resolved_model, cl.api_key_id, k.label, k.key_hint
+    ORDER BY non_cached DESC
+  `, params);
+  return rows;
+}

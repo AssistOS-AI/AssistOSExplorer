@@ -21,12 +21,13 @@ export const handleMetrics = {
   },
 
   async usage(req, res, query) {
-    const [dailyByModel, total, models] = await Promise.all([
+    const [dailyByModel, total, models, modelRequests] = await Promise.all([
       metricsDao.getDailyCostByModel(query),
       metricsDao.getMonthTotal(query),
       metricsDao.getDistinctModels(query),
+      metricsDao.getModelRequestStats(query),
     ]);
-    sendJson(res, { daily_by_model: dailyByModel, total, models });
+    sendJson(res, { daily_by_model: dailyByModel, total, models, model_requests: modelRequests });
   },
 
   async activity(req, res, query) {

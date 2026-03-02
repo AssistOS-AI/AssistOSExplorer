@@ -293,6 +293,8 @@ function costsPage() {
     totalRequests: 0,
     _chart: null,
     _dailyData: [],
+    _modelRequests: [],
+    expandedModel: null,
 
     get monthLabel() {
       return new Date(this.year, this.month).toLocaleString('en-US', { month: 'long', year: 'numeric' });
@@ -322,6 +324,8 @@ function costsPage() {
       this.totalRequests = Number(data.total?.request_count || 0);
       this.availableModels = data.models || [];
       this._dailyData = data.daily_by_model || [];
+      this._modelRequests = data.model_requests || [];
+      this.expandedModel = null;
 
       this.$nextTick(() => this.renderChart());
     },
@@ -339,6 +343,23 @@ function costsPage() {
     },
 
     onFilterChange() { this.load(); },
+
+    get modelRequestRows() {
+      const byModel = new Map();
+      for (const r of this._modelRequests) {
+        const m = r.resolved_model;
+        if (!byModel.has(m)) byModel.set(m, { model: m, total: 0, cached: 0, nonCached: 0, keys: [] });
+        const entry = byModel.get(m);
+        const t = Number(r.total || 0);
+        const c = Number(r.cached || 0);
+        const nc = Number(r.non_cached || 0);
+        entry.total += t;
+        entry.cached += c;
+        entry.nonCached += nc;
+        entry.keys.push({ api_key_id: r.api_key_id, key_label: r.key_label, key_hint: r.key_hint, total: t, cached: c, nonCached: nc });
+      }
+      return [...byModel.values()].sort((a, b) => b.nonCached - a.nonCached);
+    },
 
     renderChart() {
       const ctx = this.$refs.usageChart;
