@@ -8,8 +8,6 @@ const log = createLogger('loop-detector');
 const DEFAULT_MAX_REQUESTS_PER_WINDOW = 50;
 const WINDOW_MS = 60_000;
 const DEFAULT_MAX_IDENTICAL_REQUESTS = 10;
-const TOKEN_EXPLOSION_STREAK = 5;
-const TOKEN_EXPLOSION_MIN_GROWTH = 2.0; // prompt must at least double across the streak
 const HISTORY_SIZE = 20;
 const EVICTION_INTERVAL_MS = 5 * 60_000;
 const EVICTION_MAX_AGE_MS = 30 * 60_000;
@@ -17,8 +15,8 @@ const EVICTION_MAX_AGE_MS = 30 * 60_000;
 // --- In-memory state ---
 // Rapid-fire: tracked per session+model so different models don't interfere
 const rapidFire = new Map();     // key: "sessionId:model" -> { timestamps, lastAccess }
-// Content/token patterns: tracked per session (content hash already includes model)
-const contentState = new Map();  // key: sessionId -> { contentHashes, promptSizes, lastAccess }
+// Content patterns: tracked per session (content hash already includes model)
+const contentState = new Map();  // key: sessionId -> { contentHashes, lastAccess }
 
 /**
  * Check for loop patterns and throw LoopDetectedError if detected.
@@ -26,12 +24,11 @@ const contentState = new Map();  // key: sessionId -> { contentHashes, promptSiz
  *
  * @param {string} sessionId
  * @param {Array} messages - request body messages array
- * @param {number} requestSizeBytes - byte size of the messages payload
  * @param {string} [model] - requested model name (included in content hash so same message to different models isn't flagged)
  * @param {object} [opts]
  * @param {number} [opts.maxRpm] - per-key RPM limit (overrides default 50)
  */
-export function checkLoopDetection(sessionId, messages, requestSizeBytes, model, { maxRpm } = {}) {
+export function checkLoopDetection(sessionId, messages, model, { maxRpm } = {}) {
   const effectiveMaxRpm = maxRpm || DEFAULT_MAX_REQUESTS_PER_WINDOW;
   const maxIdentical = DEFAULT_MAX_IDENTICAL_REQUESTS;
   const now = Date.now();
@@ -57,7 +54,7 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes, model,
   //    Hash includes model so same message to different models isn't flagged
   let cs = contentState.get(sessionId);
   if (!cs) {
-    cs = { contentHashes: [], promptSizes: [], lastAccess: now };
+    cs = { contentHashes: [], lastAccess: now };
     contentState.set(sessionId, cs);
   }
   cs.lastAccess = now;
@@ -81,28 +78,6 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes, model,
     }
   }
 
-  // --- 3. Token explosion detection (per session) ---
-  //    Requires both: monotonically increasing sizes AND total growth >= 2x
-  //    This avoids false positives from slightly varying prompt sizes
-  if (cs.promptSizes.length >= TOKEN_EXPLOSION_STREAK - 1) {
-    const recentSizes = cs.promptSizes.slice(-(TOKEN_EXPLOSION_STREAK - 1));
-    const allIncreasing = recentSizes.every((size, i) =>
-      i === 0 || size > recentSizes[i - 1]
-    );
-    if (allIncreasing && requestSizeBytes > recentSizes[recentSizes.length - 1]) {
-      const growthRatio = requestSizeBytes / recentSizes[0];
-      if (growthRatio >= TOKEN_EXPLOSION_MIN_GROWTH) {
-        log.warn('Token explosion loop detected', {
-          sessionId,
-          sizes: [...recentSizes, requestSizeBytes],
-          growthRatio: growthRatio.toFixed(2),
-        });
-        throw new LoopDetectedError('token_explosion',
-          'Loop detected: prompt size growing monotonically across consecutive requests');
-      }
-    }
-  }
-
   // Record current request
   rf.timestamps.push(now);
 
@@ -111,10 +86,6 @@ export function checkLoopDetection(sessionId, messages, requestSizeBytes, model,
     cs.contentHashes = cs.contentHashes.slice(-HISTORY_SIZE);
   }
 
-  cs.promptSizes.push(requestSizeBytes);
-  if (cs.promptSizes.length > HISTORY_SIZE) {
-    cs.promptSizes = cs.promptSizes.slice(-HISTORY_SIZE);
-  }
 }
 
 export function getLoopDetectorStats() {

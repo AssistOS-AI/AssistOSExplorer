@@ -61,8 +61,7 @@ export async function pipeline(req, res) {
     logEntry.request_messages = body.messages;
 
     // 3. Loop detection (use key's rpm_limit for rapid-fire threshold)
-    const requestSizeBytes = Buffer.byteLength(JSON.stringify(body.messages), 'utf8');
-    checkLoopDetection(sessionId, body.messages, requestSizeBytes, body.model, { maxRpm: authCtx.rpm_limit });
+    checkLoopDetection(sessionId, body.messages, body.model, { maxRpm: authCtx.rpm_limit });
 
     // 4. Blacklist scan
     try {
