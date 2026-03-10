@@ -631,6 +631,10 @@ function modelsPage() {
     // Models table state
     modelFilter: '',
     modelEnabledOnly: false,
+    // Model edit state
+    showModelEdit: false,
+    editingModel: null,
+    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3, sort_order: 100, context_window: '' },
 
     async init() {
       [this.models, this.providers, this.tiers] = await Promise.all([
@@ -764,6 +768,39 @@ function modelsPage() {
 
     async toggleModel(m) {
       await api.put(`/api/v1/models/${m.id}/toggle`, {});
+      this.models = await api.get('/api/v1/models');
+    },
+
+    editModel(m) {
+      this.editingModel = m;
+      this.modelForm = {
+        name: m.name || '',
+        display_name: m.display_name || '',
+        provider_key: m.provider_key || '',
+        provider_model: m.provider_model || '',
+        mode: m.mode || 'deep',
+        input_price: parseFloat(m.input_price) || 0,
+        output_price: parseFloat(m.output_price) || 0,
+        max_concurrency: m.max_concurrency ?? 3,
+        sort_order: m.sort_order ?? 100,
+        context_window: m.context_window || '',
+      };
+      this.showModelEdit = true;
+    },
+
+    async saveModel() {
+      if (!this.editingModel) return;
+      await api.put(`/api/v1/models/${this.editingModel.id}`, this.modelForm);
+      this.showModelEdit = false;
+      this.editingModel = null;
+      this.models = await api.get('/api/v1/models');
+    },
+
+    async deleteModel(m) {
+      if (!confirm(`Delete model "${m.name}"?`)) return;
+      await api.del(`/api/v1/models/${m.id}`);
+      this.showModelEdit = false;
+      this.editingModel = null;
       this.models = await api.get('/api/v1/models');
     },
   };
