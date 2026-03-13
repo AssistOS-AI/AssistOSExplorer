@@ -26,7 +26,7 @@ describe('CommandSelector - Full Suite', () => {
     ];
 
     beforeEach(async () => {
-        const module = await import('../src/ui/CommandSelector.mjs');
+        const module = await import('../skill-manager/src/ui/CommandSelector.mjs');
         CommandSelector = module.CommandSelector;
     });
 
@@ -235,9 +235,9 @@ describe('buildCommandList - Full Suite', () => {
     let SlashCommandHandler;
 
     beforeEach(async () => {
-        const cmdModule = await import('../src/ui/CommandSelector.mjs');
+        const cmdModule = await import('../skill-manager/src/ui/CommandSelector.mjs');
         buildCommandList = cmdModule.buildCommandList;
-        const handlerModule = await import('../src/repl/SlashCommandHandler.mjs');
+        const handlerModule = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
         SlashCommandHandler = handlerModule.SlashCommandHandler;
     });
 
@@ -293,7 +293,7 @@ describe('showSkillSelector - Full Suite', () => {
     ];
 
     beforeEach(async () => {
-        const module = await import('../src/ui/CommandSelector.mjs');
+        const module = await import('../skill-manager/src/ui/CommandSelector.mjs');
         showSkillSelector = module.showSkillSelector;
         CommandSelector = module.CommandSelector;
     });
@@ -416,5 +416,161 @@ describe('showSkillSelector - Full Suite', () => {
 
         assert.strictEqual(selector.filteredCommands.length, 1);
         assert.strictEqual(selector.getSelected().name, 'booking');
+    });
+});
+
+// ============================================================================
+// showTierSelector and showModelSelector Tests
+// ============================================================================
+
+describe('showTierSelector and showModelSelector - Exports', () => {
+    let showTierSelector, showModelSelector;
+
+    beforeEach(async () => {
+        const module = await import('../skill-manager/src/ui/CommandSelector.mjs');
+        showTierSelector = module.showTierSelector;
+        showModelSelector = module.showModelSelector;
+    });
+
+    it('showTierSelector should be an exported function', () => {
+        assert.strictEqual(typeof showTierSelector, 'function');
+    });
+
+    it('showModelSelector should be an exported function', () => {
+        assert.strictEqual(typeof showModelSelector, 'function');
+    });
+
+    it('showTierSelector should return null for empty tiers', async () => {
+        const result = await showTierSelector({}, 'fast');
+        assert.strictEqual(result, null);
+    });
+
+    it('showTierSelector should return null for null tiers', async () => {
+        const result = await showTierSelector(null, 'fast');
+        assert.strictEqual(result, null);
+    });
+
+    it('showModelSelector should return null for empty tiers', async () => {
+        const result = await showModelSelector({});
+        assert.strictEqual(result, null);
+    });
+
+    it('showModelSelector should return null for null tiers', async () => {
+        const result = await showModelSelector(null);
+        assert.strictEqual(result, null);
+    });
+
+    it('showModelSelector should return null for tiers with no models', async () => {
+        const result = await showModelSelector({ fast: [], deep: [] });
+        assert.strictEqual(result, null);
+    });
+});
+
+describe('Tier and Model item transformations', () => {
+    let CommandSelector;
+
+    beforeEach(async () => {
+        const module = await import('../skill-manager/src/ui/CommandSelector.mjs');
+        CommandSelector = module.CommandSelector;
+    });
+
+    it('tier items should be transformed correctly for CommandSelector', () => {
+        const tiers = {
+            fast: ['model-a', 'model-b'],
+            deep: ['model-c'],
+            code: [],
+        };
+        const currentTier = 'fast';
+
+        const tierItems = Object.entries(tiers).map(([name, models]) => {
+            const modelList = models.length > 0 ? models.join(', ') : '(no models)';
+            const current = name === currentTier ? ' [current]' : '';
+            return { name, description: `${modelList}${current}` };
+        });
+
+        assert.strictEqual(tierItems.length, 3);
+        assert.strictEqual(tierItems[0].name, 'fast');
+        assert.ok(tierItems[0].description.includes('[current]'));
+        assert.ok(tierItems[0].description.includes('model-a'));
+        assert.ok(!tierItems[1].description.includes('[current]'));
+        assert.ok(tierItems[2].description.includes('(no models)'));
+    });
+
+    it('CommandSelector should work with tier items', () => {
+        const tierItems = [
+            { name: 'fast', description: 'model-a, model-b [current]' },
+            { name: 'deep', description: 'model-c' },
+            { name: 'code', description: 'model-d' },
+        ];
+
+        const selector = new CommandSelector(tierItems, { maxVisible: 10 });
+        assert.strictEqual(selector.filteredCommands.length, 3);
+        assert.strictEqual(selector.getSelected().name, 'fast');
+    });
+
+    it('filtering tiers by name should work', () => {
+        const tierItems = [
+            { name: 'fast', description: 'model-a' },
+            { name: 'deep', description: 'model-b' },
+            { name: 'code', description: 'model-c' },
+        ];
+
+        const selector = new CommandSelector(tierItems, { maxVisible: 10 });
+        selector.updateFilter('dee');
+        assert.strictEqual(selector.filteredCommands.length, 1);
+        assert.strictEqual(selector.getSelected().name, 'deep');
+    });
+
+    it('model items should deduplicate across tiers', () => {
+        const tiers = {
+            fast: ['model-a', 'model-b'],
+            deep: ['model-b', 'model-c'],
+            code: ['model-a', 'model-d'],
+        };
+
+        const seen = new Set();
+        const modelItems = [];
+        for (const [tierName, models] of Object.entries(tiers)) {
+            for (const model of models) {
+                if (!seen.has(model)) {
+                    seen.add(model);
+                    modelItems.push({ name: model, description: `[${tierName}]` });
+                }
+            }
+        }
+
+        assert.strictEqual(modelItems.length, 4, 'Should deduplicate models');
+        assert.strictEqual(modelItems[0].name, 'model-a');
+        assert.strictEqual(modelItems[0].description, '[fast]', 'Should show first tier');
+        assert.strictEqual(modelItems[2].name, 'model-c');
+        assert.strictEqual(modelItems[2].description, '[deep]');
+    });
+
+    it('CommandSelector should work with model items', () => {
+        const modelItems = [
+            { name: 'soul_gateway/fast', description: '[fast]' },
+            { name: 'copilot-gpt-4.1', description: '[fast]' },
+            { name: 'soul_gateway/deep', description: '[deep]' },
+        ];
+
+        const selector = new CommandSelector(modelItems, { maxVisible: 12 });
+        assert.strictEqual(selector.filteredCommands.length, 3);
+
+        selector.updateFilter('copilot');
+        assert.strictEqual(selector.filteredCommands.length, 1);
+        assert.strictEqual(selector.getSelected().name, 'copilot-gpt-4.1');
+    });
+
+    it('filtering models by tier description should work', () => {
+        const modelItems = [
+            { name: 'model-a', description: '[fast]' },
+            { name: 'model-b', description: '[deep]' },
+            { name: 'model-c', description: '[code]' },
+        ];
+
+        const selector = new CommandSelector(modelItems, { maxVisible: 12 });
+        selector.updateFilter('deep');
+        assert.strictEqual(selector.filteredCommands.length, 1);
+        assert.strictEqual(selector.getSelected().name, 'model-b');
     });
 });

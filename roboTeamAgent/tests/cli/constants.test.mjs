@@ -80,6 +80,47 @@ describe('constants', () => {
         });
     });
 
+    describe('TIERS', () => {
+        it('should contain all six tier names', async () => {
+            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const { TIERS } = module;
+
+            const expectedTiers = ['FAST', 'PLAN', 'WRITE', 'CODE', 'DEEP', 'ULTRA'];
+            for (const tier of expectedTiers) {
+                assert.ok(tier in TIERS, `Should have ${tier}`);
+                assert.strictEqual(typeof TIERS[tier], 'string', `${tier} should be a string`);
+            }
+        });
+
+        it('should have correct tier string values', async () => {
+            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const { TIERS } = module;
+
+            assert.strictEqual(TIERS.FAST, 'fast');
+            assert.strictEqual(TIERS.PLAN, 'plan');
+            assert.strictEqual(TIERS.WRITE, 'write');
+            assert.strictEqual(TIERS.CODE, 'code');
+            assert.strictEqual(TIERS.DEEP, 'deep');
+            assert.strictEqual(TIERS.ULTRA, 'ultra');
+        });
+
+        it('should have unique tier values', async () => {
+            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const { TIERS } = module;
+
+            const values = Object.values(TIERS);
+            const uniqueValues = new Set(values);
+            assert.strictEqual(values.length, uniqueValues.size, 'All tier values should be unique');
+        });
+
+        it('should have exactly 6 tiers', async () => {
+            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const { TIERS } = module;
+
+            assert.strictEqual(Object.keys(TIERS).length, 6, 'Should have exactly 6 tiers');
+        });
+    });
+
     describe('TIMEOUTS', () => {
         it('should have reasonable timeout values', async () => {
             const module = await import('../skill-manager/src/lib/constants.mjs');
