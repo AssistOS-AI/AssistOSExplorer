@@ -120,6 +120,20 @@ CREATE INDEX IF NOT EXISTS idx_call_logs_session ON call_logs(api_key_id, sessio
 CREATE INDEX IF NOT EXISTS idx_call_logs_key_started ON call_logs(api_key_id, started_at);
 -- idx_call_logs_prompt_hash is created in migrate() after the column is added
 
+-- Provider Configs (direct LLM provider API keys)
+CREATE TABLE IF NOT EXISTS provider_configs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT UNIQUE NOT NULL,
+    display_name TEXT,
+    protocol TEXT NOT NULL DEFAULT 'openai',
+    base_url TEXT NOT NULL,
+    encrypted_api_key BYTEA NOT NULL,
+    key_hint TEXT,
+    is_enabled BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Rate Limit State
 CREATE TABLE IF NOT EXISTS rate_limit_state (
     key TEXT PRIMARY KEY,

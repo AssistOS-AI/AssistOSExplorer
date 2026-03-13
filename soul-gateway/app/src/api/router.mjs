@@ -2,6 +2,7 @@ import { matchPath, sendError } from '../utils/http-helpers.mjs';
 import { handleModels } from './models.mjs';
 import { handleTiers } from './tiers.mjs';
 import { handleKeys } from './keys.mjs';
+import { handleProviders } from './providers.mjs';
 import { handleBlacklist } from './blacklist.mjs';
 import { handleLogs } from './logs.mjs';
 import { handleMetrics } from './metrics.mjs';
@@ -25,8 +26,30 @@ export async function apiRouter(req, res, pathname, query) {
     return handleTiers.list(req, res);
   }
 
+  // Providers (templates route MUST come before :id to avoid matching 'templates' as an id)
+  if (pathname === '/api/v1/providers/templates') {
+    if (method === 'GET') return handleProviders.templates(req, res);
+  }
+  let params = matchPath('/api/v1/providers/:id/test', pathname);
+  if (params) {
+    if (method === 'POST') return handleProviders.test(req, res, params);
+  }
+  params = matchPath('/api/v1/providers/:id/models', pathname);
+  if (params) {
+    if (method === 'GET') return handleProviders.discover(req, res, params);
+  }
+  if (pathname === '/api/v1/providers') {
+    if (method === 'GET') return handleProviders.list(req, res);
+    if (method === 'POST') return handleProviders.create(req, res);
+  }
+  params = matchPath('/api/v1/providers/:id', pathname);
+  if (params) {
+    if (method === 'PUT') return handleProviders.update(req, res, params);
+    if (method === 'DELETE') return handleProviders.remove(req, res, params);
+  }
+
   // Models
-  let params = matchPath('/api/v1/models/providers/:key/models', pathname);
+  params = matchPath('/api/v1/models/providers/:key/models', pathname);
   if (params) {
     if (method === 'GET') return handleModels.providerModels(req, res, params);
   }

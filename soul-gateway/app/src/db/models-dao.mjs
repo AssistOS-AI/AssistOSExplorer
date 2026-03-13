@@ -18,16 +18,16 @@ export async function getModelById(id) {
   return rows[0] || null;
 }
 
-export async function createModel({ name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, max_concurrency, sort_order, context_window }) {
+export async function createModel({ name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, max_concurrency, sort_order, context_window, provider_config_id }) {
   const { rows } = await query(`
-    INSERT INTO model_configs (name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, max_concurrency, sort_order, context_window)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    INSERT INTO model_configs (name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, max_concurrency, sort_order, context_window, provider_config_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     RETURNING *
-  `, [name, display_name || name, provider_key, provider_model, upstream_source || null, mode || 'deep', input_price || 0, output_price || 0, max_concurrency ?? 3, sort_order ?? 100, context_window || null]);
+  `, [name, display_name || name, provider_key, provider_model, upstream_source || null, mode || 'deep', input_price || 0, output_price || 0, max_concurrency ?? 3, sort_order ?? 100, context_window || null, provider_config_id || null]);
   return rows[0];
 }
 
-const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'upstream_source', 'mode', 'input_price', 'output_price', 'is_enabled', 'max_concurrency', 'sort_order', 'context_window'];
+const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'upstream_source', 'mode', 'input_price', 'output_price', 'is_enabled', 'max_concurrency', 'sort_order', 'context_window', 'provider_config_id'];
 
 export async function updateModel(id, fields) {
   const sets = [];

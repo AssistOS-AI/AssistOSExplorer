@@ -3,8 +3,10 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as dao from '../db/models-dao.mjs';
+import * as providersDao from '../db/providers-dao.mjs';
 import { listProviders } from 'achillesAgentLib/utils/LLMProviders/providers/providerRegistry.mjs';
 import { enrichWithOpenRouterPricing } from '../pipeline/openrouter-pricing.mjs';
+import { handleProviders } from './providers.mjs';
 
 function loadLLMConfig() {
   // Resolve path relative to this file → ../../node_modules/achillesAgentLib/LLMConfig.json
@@ -112,14 +114,27 @@ export const handleModels = {
   },
 
   async providers(req, res) {
-    sendJson(res, listProviders());
+    const llmConfigProviders = listProviders();
+    const dbProviders = await providersDao.listProviders();
+    const merged = [
+      ...dbProviders.map(p => ({ key: p.name, source: 'database', id: p.id, protocol: p.protocol })),
+      ...llmConfigProviders.map(key => ({ key, source: 'config' })),
+    ];
+    sendJson(res, merged);
   },
 
   async providerModels(req, res, params) {
     const key = params.key;
     const config = loadLLMConfig();
     const provider = config.providers?.[key];
-    if (!provider) return sendError(res, 404, `Provider "${key}" not found in LLMConfig`);
+    if (!provider) {
+      // Try DB provider
+      const dbProvider = await providersDao.getProviderByName(key);
+      if (dbProvider) {
+        return handleProviders.discover(req, res, { id: dbProvider.id });
+      }
+      return sendError(res, 404, `Provider "${key}" not found`);
+    }
 
     try {
       // Step 1: Fetch models from the requested provider

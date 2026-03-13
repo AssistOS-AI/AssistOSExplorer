@@ -30,6 +30,7 @@ async function buildModelInfo(requestedModel, modelConfig) {
     resolvedModel: requestedModel,
     providerKey,
     providerModel,
+    providerConfigId: modelConfig.provider_config_id || null,
     mode: modelConfig.mode,
     inputPrice,
     outputPrice,

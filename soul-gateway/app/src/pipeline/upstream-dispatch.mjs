@@ -1,5 +1,6 @@
 import { loadModelsConfiguration } from 'achillesAgentLib/utils/LLMClient.mjs';
 import { ensureProvider } from 'achillesAgentLib/utils/LLMProviders/providers/providerRegistry.mjs';
+import { getProviderById, getProviderApiKey } from '../db/providers-dao.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { UpstreamError } from '../utils/errors.mjs';
 
@@ -18,35 +19,66 @@ const modelsConfig = loadModelsConfiguration();
  * @param {AbortSignal} signal
  * @returns {AsyncGenerator} achillesAgentLib streaming chunks
  */
+// Map DB provider protocol to achillesAgentLib provider module key
+const PROTOCOL_PROVIDER_MAP = {
+  'openai': 'openai',
+  'anthropic': 'anthropic',
+  'google': 'google',
+};
+
 export async function dispatchUpstream(messages, routeResult, params, signal) {
-  const { providerKey, providerModel } = routeResult;
+  const { providerKey, providerModel, providerConfigId } = routeResult;
 
-  let provider;
-  try {
-    provider = ensureProvider(providerKey);
-  } catch (err) {
-    throw new UpstreamError(`Provider "${providerKey}" not available: ${err.message}`, 502, 'provider_not_found');
-  }
+  let provider, baseURL, apiKey;
 
-  // Resolve baseURL and apiKey from achillesAgentLib's config
-  const providerConfig = modelsConfig.providers.get(providerKey);
-  if (!providerConfig) {
-    throw new UpstreamError(`Provider "${providerKey}" not configured in LLMConfig`, 502, 'provider_not_configured');
-  }
+  if (providerConfigId) {
+    // ---- DB provider path ----
+    const dbConfig = await getProviderById(providerConfigId);
+    if (!dbConfig) {
+      throw new UpstreamError(`Provider config "${providerConfigId}" not found in database`, 502, 'provider_not_found');
+    }
+    if (!dbConfig.is_enabled) {
+      throw new UpstreamError(`Provider "${dbConfig.name}" is disabled`, 502, 'provider_disabled');
+    }
 
-  // Use UPSTREAM_URL env var for axiologic_proxy (direct localhost, avoids Cloudflare tunnel)
-  const baseURL = (providerKey === 'axiologic_proxy' && process.env.UPSTREAM_URL)
-    ? process.env.UPSTREAM_URL + '/v1/chat/completions'
-    : providerConfig.baseURL;
-  if (!baseURL) {
-    throw new UpstreamError(`Missing baseURL for provider "${providerKey}"`, 502, 'provider_not_configured');
-  }
+    const protocolKey = PROTOCOL_PROVIDER_MAP[dbConfig.protocol] || 'openai';
+    try {
+      provider = ensureProvider(protocolKey);
+    } catch (err) {
+      throw new UpstreamError(`Protocol module "${dbConfig.protocol}" not available: ${err.message}`, 502, 'provider_not_found');
+    }
 
-  const apiKeyEnv = providerConfig.apiKeyEnv;
-  const apiKey = apiKeyEnv ? process.env[apiKeyEnv] : process.env.LLM_API_KEY;
+    baseURL = dbConfig.base_url;
+    apiKey = await getProviderApiKey(providerConfigId);
+    if (!apiKey) {
+      throw new UpstreamError(`No API key configured for provider "${dbConfig.name}"`, 401, 'authentication_error');
+    }
+  } else {
+    // ---- Legacy LLMConfig path ----
+    try {
+      provider = ensureProvider(providerKey);
+    } catch (err) {
+      throw new UpstreamError(`Provider "${providerKey}" not available: ${err.message}`, 502, 'provider_not_found');
+    }
 
-  if (!apiKey && providerKey !== 'huggingface') {
-    throw new UpstreamError(`Missing API key for provider "${providerKey}" (env: ${apiKeyEnv})`, 401, 'authentication_error');
+    const providerConfig = modelsConfig.providers.get(providerKey);
+    if (!providerConfig) {
+      throw new UpstreamError(`Provider "${providerKey}" not configured in LLMConfig`, 502, 'provider_not_configured');
+    }
+
+    baseURL = (providerKey === 'axiologic_proxy' && process.env.UPSTREAM_URL)
+      ? process.env.UPSTREAM_URL + '/v1/chat/completions'
+      : providerConfig.baseURL;
+    if (!baseURL) {
+      throw new UpstreamError(`Missing baseURL for provider "${providerKey}"`, 502, 'provider_not_configured');
+    }
+
+    const apiKeyEnv = providerConfig.apiKeyEnv;
+    apiKey = apiKeyEnv ? process.env[apiKeyEnv] : process.env.LLM_API_KEY;
+
+    if (!apiKey && providerKey !== 'huggingface') {
+      throw new UpstreamError(`Missing API key for provider "${providerKey}" (env: ${apiKeyEnv})`, 401, 'authentication_error');
+    }
   }
 
   const options = {
@@ -63,7 +95,6 @@ export async function dispatchUpstream(messages, routeResult, params, signal) {
     if (typeof provider.callLLMStreaming !== 'function') {
       throw new UpstreamError(`Provider "${providerKey}" does not support streaming`, 502, 'provider_error');
     }
-    // Return the async generator — stream-tap will consume it
     return provider.callLLMStreaming(messages, options);
   } catch (err) {
     if (err instanceof UpstreamError) throw err;

@@ -52,9 +52,11 @@ const CHART_COLORS = ['#36a2eb', '#ff6384', '#ffce56', '#4bc0c0', '#9966ff', '#f
 // ---- Main App ----
 function app() {
   return {
-    page: 'models',
+    page: 'providers',
     pages: [
+      { id: 'providers', label: 'Providers' },
       { id: 'models', label: 'Models' },
+      { id: 'tiers', label: 'Tiers' },
       { id: 'keys', label: 'Keys' },
       { id: 'logs', label: 'Logs' },
       { id: 'errors', label: 'Errors' },
@@ -129,6 +131,131 @@ function app() {
       sse.onmessage = (e) => this._handleLogMessage(e.data);
       this.sse = sse;
     },
+  };
+}
+
+// ---- Providers Page ----
+function providersPage() {
+  return {
+    providers: [],
+    templates: {},
+    showCreate: false,
+    showEdit: false,
+    editing: null,
+    testing: null,
+    testResult: null,
+    discoverProvider: null,
+    discoveredModels: [],
+    showDiscover: false,
+
+    form: { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '' },
+    editForm: { display_name: '', protocol: '', base_url: '', api_key: '', is_enabled: true },
+
+    async init() {
+      [this.providers, this.templates] = await Promise.all([
+        api.get('/api/v1/providers'),
+        api.get('/api/v1/providers/templates'),
+      ]);
+    },
+
+    onTemplateChange() {
+      const t = this.templates[this.form.template];
+      if (t) {
+        this.form.display_name = t.display_name || '';
+        this.form.protocol = t.protocol || 'openai';
+        this.form.base_url = t.base_url || '';
+        if (this.form.template !== 'custom') {
+          this.form.name = this.form.template;
+        }
+      }
+    },
+
+    openCreate() {
+      this.form = { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '' };
+      this.showCreate = true;
+    },
+
+    async create() {
+      const payload = { ...this.form };
+      delete payload.template;
+      if (!payload.name || !payload.base_url || !payload.api_key) {
+        alert('Name, Base URL, and API Key are required');
+        return;
+      }
+      const result = await api.post('/api/v1/providers', payload);
+      if (result.error) {
+        alert(result.error.message || result.error);
+        return;
+      }
+      this.showCreate = false;
+      this.providers = await api.get('/api/v1/providers');
+    },
+
+    edit(p) {
+      this.editing = p;
+      this.editForm = {
+        display_name: p.display_name || '',
+        protocol: p.protocol || 'openai',
+        base_url: p.base_url || '',
+        api_key: '',
+        is_enabled: p.is_enabled,
+      };
+      this.showEdit = true;
+    },
+
+    async saveEdit() {
+      const payload = { ...this.editForm };
+      if (!payload.api_key) delete payload.api_key;
+      await api.put(`/api/v1/providers/${this.editing.id}`, payload);
+      this.showEdit = false;
+      this.editing = null;
+      this.providers = await api.get('/api/v1/providers');
+    },
+
+    async remove(p) {
+      if (!confirm(`Delete provider "${p.name}"? Models using this provider will lose their provider configuration.`)) return;
+      await api.del(`/api/v1/providers/${p.id}`);
+      this.providers = await api.get('/api/v1/providers');
+    },
+
+    async testConnection(p) {
+      this.testing = p.id;
+      this.testResult = null;
+      try {
+        this.testResult = await api.post(`/api/v1/providers/${p.id}/test`, {});
+      } catch (e) {
+        this.testResult = { ok: false, error: e.message };
+      }
+      this.testing = null;
+    },
+
+    async discoverModels(p) {
+      this.discoverProvider = p;
+      this.discoveredModels = [];
+      this.showDiscover = true;
+      try {
+        const models = await api.get(`/api/v1/providers/${p.id}/models`);
+        this.discoveredModels = Array.isArray(models) ? models : [];
+      } catch {
+        this.discoveredModels = [];
+      }
+    },
+
+    async addDiscoveredModel(model) {
+      if (!this.discoverProvider) return;
+      await api.post('/api/v1/models', {
+        name: model.id,
+        provider_key: this.discoverProvider.name,
+        provider_model: model.id,
+        provider_config_id: this.discoverProvider.id,
+        input_price: model.input_price || 0,
+        output_price: model.output_price || 0,
+        mode: 'deep',
+      });
+      model._added = true;
+    },
+
+    formatDate,
   };
 }
 
@@ -616,31 +743,103 @@ function modelsPage() {
   return {
     models: [],
     providers: [],
-    providerModels: [],
-    loadingProviderModels: false,
-    providerModelsError: '',
-    // Tiers state
-    tiers: [],
-    showTierCreate: false,
-    editingTier: null,
-    tierForm: { name: '', display_name: '', models: [], fallback_tier: '' },
-    // Tier "add model" state
-    tierAddProvider: '',
-    tierAddModel: '',
-    tierAddName: '',
     // Models table state
     modelFilter: '',
     modelEnabledOnly: false,
     // Model edit state
     showModelEdit: false,
     editingModel: null,
-    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3, sort_order: 100, context_window: '' },
+    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', provider_config_id: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3, sort_order: 100, context_window: '' },
 
     async init() {
-      [this.models, this.providers, this.tiers] = await Promise.all([
+      [this.models, this.providers] = await Promise.all([
         api.get('/api/v1/models'),
         api.get('/api/v1/models/providers'),
+      ]);
+    },
+
+    get filteredModels() {
+      let list = this.models;
+      if (!Array.isArray(list)) return [];
+      if (this.modelEnabledOnly) list = list.filter(m => m.is_enabled);
+      const q = this.modelFilter.trim().toLowerCase();
+      if (q) list = list.filter(m => m.name.toLowerCase().includes(q) || (m.provider_key || '').toLowerCase().includes(q));
+      return list;
+    },
+
+    async toggleModel(m) {
+      await api.put(`/api/v1/models/${m.id}/toggle`, {});
+      this.models = await api.get('/api/v1/models');
+    },
+
+    editModel(m) {
+      this.editingModel = m;
+      this.modelForm = {
+        name: m.name || '',
+        display_name: m.display_name || '',
+        provider_key: m.provider_key || '',
+        provider_model: m.provider_model || '',
+        provider_config_id: m.provider_config_id || '',
+        mode: m.mode || 'deep',
+        input_price: parseFloat(m.input_price) || 0,
+        output_price: parseFloat(m.output_price) || 0,
+        max_concurrency: m.max_concurrency ?? 3,
+        sort_order: m.sort_order ?? 100,
+        context_window: m.context_window || '',
+      };
+      this.showModelEdit = true;
+    },
+
+    onProviderChange() {
+      const p = this.providers.find(pr => pr.key === this.modelForm.provider_key);
+      if (p?.source === 'database') {
+        this.modelForm.provider_config_id = p.id;
+      } else {
+        this.modelForm.provider_config_id = '';
+      }
+    },
+
+    async saveModel() {
+      if (!this.editingModel) return;
+      const payload = { ...this.modelForm };
+      if (!payload.provider_config_id) payload.provider_config_id = null;
+      await api.put(`/api/v1/models/${this.editingModel.id}`, payload);
+      this.showModelEdit = false;
+      this.editingModel = null;
+      this.models = await api.get('/api/v1/models');
+    },
+
+    async deleteModel(m) {
+      if (!confirm(`Delete model "${m.name}"?`)) return;
+      await api.del(`/api/v1/models/${m.id}`);
+      this.showModelEdit = false;
+      this.editingModel = null;
+      this.models = await api.get('/api/v1/models');
+    },
+  };
+}
+
+// ---- Tiers Page ----
+function tiersPage() {
+  return {
+    tiers: [],
+    models: [],
+    providers: [],
+    providerModels: [],
+    loadingProviderModels: false,
+    providerModelsError: '',
+    showTierCreate: false,
+    editingTier: null,
+    tierForm: { name: '', display_name: '', models: [], fallback_tier: '' },
+    tierAddProvider: '',
+    tierAddModel: '',
+    tierAddName: '',
+
+    async init() {
+      [this.tiers, this.models, this.providers] = await Promise.all([
         api.get('/api/v1/tiers'),
+        api.get('/api/v1/models'),
+        api.get('/api/v1/models/providers'),
       ]);
     },
 
@@ -661,7 +860,6 @@ function modelsPage() {
         this.providerModelsError = 'Failed to fetch models';
       }
       this.loadingProviderModels = false;
-      // Clear current selection since provider changed
       this.tierAddModel = '';
       this.tierAddName = '';
     },
@@ -673,7 +871,6 @@ function modelsPage() {
     onTierModelChange() {
       const selected = this.providerModels.find(m => m.id === this.tierAddModel);
       if (selected) {
-        // Default name to provider_model id
         this.tierAddName = this.tierAddModel;
       }
     },
@@ -690,12 +887,11 @@ function modelsPage() {
     async addModelToTier() {
       if (!this.tierAddModel || !this.tierAddProvider) return;
       const name = this.tierAddName || this.tierAddModel;
-      // Don't add duplicates to tier
       if (this.tierForm.models.includes(name)) return;
 
       const selected = this.providerModels.find(m => m.id === this.tierAddModel);
-      // Create model_config (idempotent — backend returns existing on conflict)
-      await api.post('/api/v1/models', {
+      const providerInfo = this.providers.find(p => p.key === this.tierAddProvider);
+      const payload = {
         name,
         provider_key: this.tierAddProvider,
         provider_model: this.tierAddModel,
@@ -703,16 +899,18 @@ function modelsPage() {
         mode: 'deep',
         input_price: selected?.input_price || 0,
         output_price: selected?.output_price || 0,
-      });
+      };
+      if (providerInfo?.source === 'database') {
+        payload.provider_config_id = providerInfo.id;
+      }
+      await api.post('/api/v1/models', payload);
 
       this.tierForm.models.push(name);
       this.models = await api.get('/api/v1/models');
-      // Reset add fields
       this.tierAddModel = '';
       this.tierAddName = '';
     },
 
-    // Tier methods
     editTier(t) {
       this.editingTier = t;
       this.tierForm = {
@@ -754,54 +952,6 @@ function modelsPage() {
     async toggleTier(t) {
       await api.put(`/api/v1/tiers/${t.id}/toggle`, {});
       this.tiers = await api.get('/api/v1/tiers');
-    },
-
-    // Models table
-    get filteredModels() {
-      let list = this.models;
-      if (!Array.isArray(list)) return [];
-      if (this.modelEnabledOnly) list = list.filter(m => m.is_enabled);
-      const q = this.modelFilter.trim().toLowerCase();
-      if (q) list = list.filter(m => m.name.toLowerCase().includes(q) || (m.provider_key || '').toLowerCase().includes(q));
-      return list;
-    },
-
-    async toggleModel(m) {
-      await api.put(`/api/v1/models/${m.id}/toggle`, {});
-      this.models = await api.get('/api/v1/models');
-    },
-
-    editModel(m) {
-      this.editingModel = m;
-      this.modelForm = {
-        name: m.name || '',
-        display_name: m.display_name || '',
-        provider_key: m.provider_key || '',
-        provider_model: m.provider_model || '',
-        mode: m.mode || 'deep',
-        input_price: parseFloat(m.input_price) || 0,
-        output_price: parseFloat(m.output_price) || 0,
-        max_concurrency: m.max_concurrency ?? 3,
-        sort_order: m.sort_order ?? 100,
-        context_window: m.context_window || '',
-      };
-      this.showModelEdit = true;
-    },
-
-    async saveModel() {
-      if (!this.editingModel) return;
-      await api.put(`/api/v1/models/${this.editingModel.id}`, this.modelForm);
-      this.showModelEdit = false;
-      this.editingModel = null;
-      this.models = await api.get('/api/v1/models');
-    },
-
-    async deleteModel(m) {
-      if (!confirm(`Delete model "${m.name}"?`)) return;
-      await api.del(`/api/v1/models/${m.id}`);
-      this.showModelEdit = false;
-      this.editingModel = null;
-      this.models = await api.get('/api/v1/models');
     },
   };
 }

@@ -123,6 +123,22 @@ async function migrate(p) {
     created_at TIMESTAMPTZ DEFAULT now()
   )`);
 
+  // Create provider_configs table (migration for existing deployments)
+  await p.query(`CREATE TABLE IF NOT EXISTS ${config.pgSchema}.provider_configs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT UNIQUE NOT NULL,
+    display_name TEXT,
+    protocol TEXT NOT NULL DEFAULT 'openai',
+    base_url TEXT NOT NULL,
+    encrypted_api_key BYTEA NOT NULL,
+    key_hint TEXT,
+    is_enabled BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+  )`);
+  // Add provider_config_id FK to model_configs
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS provider_config_id UUID REFERENCES ${config.pgSchema}.provider_configs(id) ON DELETE SET NULL`);
+
   // Populate upstream_source for existing models that don't have it
   const sourceByProvider = [
     ['anthropic', 'anthropic'],
