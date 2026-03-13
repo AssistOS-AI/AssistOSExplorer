@@ -750,6 +750,14 @@ function modelsPage() {
     showModelEdit: false,
     editingModel: null,
     modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', provider_config_id: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3, sort_order: 100, context_window: '' },
+    // Model create state
+    showModelCreate: false,
+    createProvider: '',
+    createProviderModels: [],
+    loadingCreateModels: false,
+    createModelsError: '',
+    createModel: '',
+    createName: '',
 
     async init() {
       [this.models, this.providers] = await Promise.all([
@@ -772,6 +780,77 @@ function modelsPage() {
       this.models = await api.get('/api/v1/models');
     },
 
+    // ---- Create model flow ----
+    openCreate() {
+      this.createProvider = '';
+      this.createProviderModels = [];
+      this.createModelsError = '';
+      this.createModel = '';
+      this.createName = '';
+      this.showModelCreate = true;
+    },
+
+    async onCreateProviderChange() {
+      const key = this.createProvider;
+      if (!key) { this.createProviderModels = []; return; }
+      this.loadingCreateModels = true;
+      this.createModelsError = '';
+      this.createProviderModels = [];
+      this.createModel = '';
+      this.createName = '';
+      try {
+        const models = await api.get(`/api/v1/models/providers/${encodeURIComponent(key)}/models`);
+        if (Array.isArray(models)) {
+          this.createProviderModels = models;
+        } else if (models?.error) {
+          this.createModelsError = models.error.message || 'Failed to load models';
+        }
+      } catch {
+        this.createModelsError = 'Failed to fetch models';
+      }
+      this.loadingCreateModels = false;
+    },
+
+    onCreateModelChange() {
+      if (this.createModel) this.createName = this.createModel;
+    },
+
+    get groupedCreateModels() {
+      const groups = {};
+      for (const m of this.createProviderModels) {
+        const key = m.owned_by || 'other';
+        (groups[key] ||= []).push(m);
+      }
+      return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+    },
+
+    async createNewModel() {
+      if (!this.createProvider || !this.createModel) return;
+      const name = this.createName || this.createModel;
+      const selected = this.createProviderModels.find(m => m.id === this.createModel);
+      const providerInfo = this.providers.find(p => p.key === this.createProvider);
+      const payload = {
+        name,
+        provider_key: this.createProvider,
+        provider_model: this.createModel,
+        upstream_source: selected?.owned_by || '',
+        mode: 'deep',
+        input_price: selected?.input_price || 0,
+        output_price: selected?.output_price || 0,
+      };
+      if (providerInfo?.source === 'database') {
+        payload.provider_config_id = providerInfo.id;
+      }
+      const result = await api.post('/api/v1/models', payload);
+      if (result?.error) {
+        alert(result.error.message || result.error);
+        return;
+      }
+      this.showModelCreate = false;
+      this.models = await api.get('/api/v1/models');
+    },
+
+    // ---- Edit model flow ----
     editModel(m) {
       this.editingModel = m;
       this.modelForm = {
@@ -824,91 +903,15 @@ function tiersPage() {
   return {
     tiers: [],
     models: [],
-    providers: [],
-    providerModels: [],
-    loadingProviderModels: false,
-    providerModelsError: '',
     showTierCreate: false,
     editingTier: null,
     tierForm: { name: '', display_name: '', models: [], fallback_tier: '' },
-    tierAddProvider: '',
-    tierAddModel: '',
-    tierAddName: '',
 
     async init() {
-      [this.tiers, this.models, this.providers] = await Promise.all([
+      [this.tiers, this.models] = await Promise.all([
         api.get('/api/v1/tiers'),
         api.get('/api/v1/models'),
-        api.get('/api/v1/models/providers'),
       ]);
-    },
-
-    async fetchProviderModels() {
-      const key = this.tierAddProvider;
-      if (!key) { this.providerModels = []; return; }
-      this.loadingProviderModels = true;
-      this.providerModelsError = '';
-      this.providerModels = [];
-      try {
-        const models = await api.get(`/api/v1/models/providers/${encodeURIComponent(key)}/models`);
-        if (Array.isArray(models)) {
-          this.providerModels = models;
-        } else if (models?.error) {
-          this.providerModelsError = models.error.message || 'Failed to load models';
-        }
-      } catch (e) {
-        this.providerModelsError = 'Failed to fetch models';
-      }
-      this.loadingProviderModels = false;
-      this.tierAddModel = '';
-      this.tierAddName = '';
-    },
-
-    onTierProviderChange() {
-      this.fetchProviderModels();
-    },
-
-    onTierModelChange() {
-      const selected = this.providerModels.find(m => m.id === this.tierAddModel);
-      if (selected) {
-        this.tierAddName = this.tierAddModel;
-      }
-    },
-
-    get groupedProviderModels() {
-      const groups = {};
-      for (const m of this.providerModels) {
-        const key = m.owned_by || 'other';
-        (groups[key] ||= []).push(m);
-      }
-      return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
-    },
-
-    async addModelToTier() {
-      if (!this.tierAddModel || !this.tierAddProvider) return;
-      const name = this.tierAddName || this.tierAddModel;
-      if (this.tierForm.models.includes(name)) return;
-
-      const selected = this.providerModels.find(m => m.id === this.tierAddModel);
-      const providerInfo = this.providers.find(p => p.key === this.tierAddProvider);
-      const payload = {
-        name,
-        provider_key: this.tierAddProvider,
-        provider_model: this.tierAddModel,
-        upstream_source: selected?.owned_by || '',
-        mode: 'deep',
-        input_price: selected?.input_price || 0,
-        output_price: selected?.output_price || 0,
-      };
-      if (providerInfo?.source === 'database') {
-        payload.provider_config_id = providerInfo.id;
-      }
-      await api.post('/api/v1/models', payload);
-
-      this.tierForm.models.push(name);
-      this.models = await api.get('/api/v1/models');
-      this.tierAddModel = '';
-      this.tierAddName = '';
     },
 
     editTier(t) {
@@ -919,10 +922,6 @@ function tiersPage() {
         models: [...(t.models || [])],
         fallback_tier: t.fallback_tier || '',
       };
-      this.tierAddProvider = '';
-      this.tierAddModel = '';
-      this.tierAddName = '';
-      this.providerModels = [];
       this.showTierCreate = true;
     },
 
@@ -936,10 +935,6 @@ function tiersPage() {
       }
       this.showTierCreate = false;
       this.editingTier = null;
-      this.tierAddProvider = '';
-      this.tierAddModel = '';
-      this.tierAddName = '';
-      this.providerModels = [];
       this.tiers = await api.get('/api/v1/tiers');
     },
 

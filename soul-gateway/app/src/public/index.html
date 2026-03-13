@@ -753,6 +753,7 @@
             <div class="flex gap-2 items-center">
               <input type="text" class="input input-bordered input-sm w-48" placeholder="Filter models..." x-model="modelFilter">
               <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Enabled only</span><input type="checkbox" class="toggle toggle-xs" x-model="modelEnabledOnly"></label>
+              <button class="btn btn-primary btn-sm" @click="openCreate()">Add Model</button>
             </div>
           </div>
           <div class="card bg-base-100 shadow">
@@ -775,6 +776,45 @@
               <div class="text-xs opacity-50 px-4 py-2" x-text="`${filteredModels.length} of ${models.length} models`"></div>
             </div>
           </div>
+
+          <!-- Model Create Modal -->
+          <dialog class="modal" :class="{'modal-open': showModelCreate}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg mb-4">Add Model</h3>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Provider</span></label>
+                <select class="select select-bordered" x-model="createProvider" @change="onCreateProviderChange()">
+                  <option value="" disabled>Select provider...</option>
+                  <template x-for="p in providers" :key="p.key">
+                    <option :value="p.key" x-text="p.key"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="form-control" x-show="createProvider">
+                <label class="label"><span class="label-text">Upstream Model</span></label>
+                <select class="select select-bordered" x-model="createModel" :disabled="loadingCreateModels" @change="onCreateModelChange()">
+                  <option value="" disabled x-text="loadingCreateModels ? 'Loading models...' : 'Select model...'"></option>
+                  <template x-for="[source, mods] in groupedCreateModels" :key="source">
+                    <optgroup :label="source">
+                      <template x-for="m in mods" :key="m.id">
+                        <option :value="m.id" x-text="m.id + (m.input_price ? ' ($' + m.input_price + '/' + m.output_price + ')' : '')"></option>
+                      </template>
+                    </optgroup>
+                  </template>
+                </select>
+                <label class="label py-0" x-show="createModelsError"><span class="label-text-alt text-error" x-text="createModelsError"></span></label>
+              </div>
+              <div class="form-control" x-show="createModel">
+                <label class="label"><span class="label-text">Model Name</span></label>
+                <input type="text" class="input input-bordered font-mono" x-model="createName" placeholder="Name for this model in Soul Gateway">
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showModelCreate = false">Cancel</button>
+                <button class="btn btn-primary" @click="createNewModel()" :disabled="!createProvider || !createModel">Create</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showModelCreate = false"></div>
+          </dialog>
 
           <!-- Model Edit Modal -->
           <dialog class="modal" :class="{'modal-open': showModelEdit}">
@@ -847,7 +887,7 @@
         <div x-data="tiersPage()" x-init="init()">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">Model Tiers</h2>
-            <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier: '' }; tierAddProvider = ''; tierAddModel = ''; tierAddName = ''; providerModels = [];">Add Tier</button>
+            <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier: '' };">Add Tier</button>
           </div>
 
           <!-- Tier Create/Edit Modal -->
@@ -865,40 +905,10 @@
                 </select>
               </div>
               <div class="form-control mt-2">
-                <label class="label font-semibold">Add Model from Provider</label>
-                <div class="bg-base-200 rounded-lg p-3 space-y-2">
-                  <div class="flex gap-2">
-                    <select class="select select-bordered select-sm flex-1" x-model="tierAddProvider" @change="onTierProviderChange()">
-                      <option value="" disabled>Provider...</option>
-                      <template x-for="p in providers" :key="p.key">
-                        <option :value="p.key" x-text="p.key"></option>
-                      </template>
-                    </select>
-                  </div>
-                  <div x-show="tierAddProvider">
-                    <select class="select select-bordered select-sm w-full" x-model="tierAddModel" :disabled="loadingProviderModels" @change="onTierModelChange()">
-                      <option value="" disabled x-text="loadingProviderModels ? 'Loading models...' : 'Upstream model...'"></option>
-                      <template x-for="[source, mods] in groupedProviderModels" :key="source">
-                        <optgroup :label="source">
-                          <template x-for="m in mods" :key="m.id">
-                            <option :value="m.id" x-text="m.id"></option>
-                          </template>
-                        </optgroup>
-                      </template>
-                    </select>
-                    <label class="label py-0" x-show="providerModelsError"><span class="label-text-alt text-error" x-text="providerModelsError"></span></label>
-                  </div>
-                  <div class="flex gap-2" x-show="tierAddModel">
-                    <input type="text" class="input input-bordered input-sm flex-1 font-mono" x-model="tierAddName" placeholder="Model name (auto-filled)">
-                    <button class="btn btn-sm btn-primary" @click="addModelToTier()" :disabled="!tierAddModel">Add</button>
-                  </div>
-                </div>
-              </div>
-              <div class="form-control mt-2">
-                <label class="label font-semibold">Add Existing Model</label>
+                <label class="label font-semibold">Add Model</label>
                 <div class="flex gap-2 mb-2">
                   <select class="select select-bordered select-sm flex-1" x-ref="tierModelSelect">
-                    <option value="" disabled selected>Pick existing model...</option>
+                    <option value="" disabled selected>Pick a model...</option>
                     <template x-for="m in models.filter(m => !tierForm.models.includes(m.name))" :key="m.id">
                       <option :value="m.name" x-text="m.name"></option>
                     </template>
