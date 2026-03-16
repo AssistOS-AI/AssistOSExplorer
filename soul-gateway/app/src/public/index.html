@@ -366,22 +366,26 @@
               <p class="text-sm opacity-60">Usage costs broken down by model.</p>
             </div>
             <div class="text-right">
-              <div class="text-sm opacity-60">Current month</div>
+              <div class="text-sm opacity-60" x-text="timeLabel"></div>
               <div class="text-2xl font-bold font-mono" x-text="'$' + totalCost.toFixed(2)"></div>
               <div class="text-xs opacity-40" x-text="totalRequests.toLocaleString() + ' requests  ·  ' + totalTokens.toLocaleString() + ' tokens'"></div>
             </div>
           </div>
           <!-- Controls -->
           <div class="flex items-center gap-3 mb-4">
-            <div class="join border border-base-300 rounded-lg">
-              <button class="join-item btn btn-sm btn-ghost" @click="prevMonth()">
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-              </button>
-              <span class="join-item btn btn-sm btn-ghost no-animation font-medium min-w-[10rem]" x-text="monthLabel"></span>
-              <button class="join-item btn btn-sm btn-ghost" @click="nextMonth()">
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-              </button>
+            <div class="join">
+              <button class="join-item btn btn-xs" :class="timeRange === 'day' ? 'btn-primary' : ''" @click="timeRange = 'day'; onTimeChange()">Day</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'week' ? 'btn-primary' : ''" @click="timeRange = 'week'; onTimeChange()">Week</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'month' ? 'btn-primary' : ''" @click="timeRange = 'month'; onTimeChange()">Month</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'custom' ? 'btn-primary' : ''" @click="timeRange = 'custom'">Custom</button>
             </div>
+            <template x-if="timeRange === 'custom'">
+              <div class="flex gap-1 items-center">
+                <input type="date" class="input input-bordered input-xs" x-model="customFrom" @change="onTimeChange()">
+                <span class="text-xs">to</span>
+                <input type="date" class="input input-bordered input-xs" x-model="customTo" @change="onTimeChange()">
+              </div>
+            </template>
             <select class="select select-bordered select-sm" x-model="filterModel" @change="onFilterChange()">
               <option value="">All Models</option>
               <template x-for="m in availableModels" :key="m"><option :value="m" x-text="m"></option></template>

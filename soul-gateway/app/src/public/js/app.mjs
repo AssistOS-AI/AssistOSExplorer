@@ -421,9 +421,10 @@ function logsPage() {
 // ---- Costs Page ----
 function costsPage() {
   return {
-    // Month navigation
-    year: new Date().getFullYear(),
-    month: new Date().getMonth(), // 0-indexed
+    // Time filtering
+    timeRange: 'month',
+    customFrom: '',
+    customTo: '',
     // Filters
     filterModel: '',
     filterKey: '',
@@ -438,16 +439,16 @@ function costsPage() {
     _modelRequests: [],
     expandedModel: null,
 
-    get monthLabel() {
-      return new Date(this.year, this.month).toLocaleString('en-US', { month: 'long', year: 'numeric' });
-    },
-
-    get from() {
-      return new Date(this.year, this.month, 1).toISOString();
-    },
-
-    get to() {
-      return new Date(this.year, this.month + 1, 1).toISOString();
+    get timeLabel() {
+      if (this.timeRange === 'day') return 'Last 24 Hours';
+      if (this.timeRange === 'week') return 'Last 7 Days';
+      if (this.timeRange === 'month') return 'Last 30 Days';
+      if (this.timeRange === 'custom') {
+        const f = this.customFrom || '?';
+        const t = this.customTo || 'now';
+        return `${f} - ${t}`;
+      }
+      return '';
     },
 
     async init() {
@@ -456,7 +457,8 @@ function costsPage() {
     },
 
     async load() {
-      const params = new URLSearchParams({ from: this.from, to: this.to });
+      const tp = timeRangeToParams(this.timeRange, this.customFrom, this.customTo);
+      const params = new URLSearchParams(tp);
       if (this.filterModel) params.set('model', this.filterModel);
       if (this.filterKey) params.set('api_key_id', this.filterKey);
       const data = await api.get(`/api/v1/metrics/usage?${params}`);
@@ -472,18 +474,7 @@ function costsPage() {
       this.$nextTick(() => this.renderChart());
     },
 
-    prevMonth() {
-      if (this.month === 0) { this.year--; this.month = 11; }
-      else this.month--;
-      this.load();
-    },
-
-    nextMonth() {
-      if (this.month === 11) { this.year++; this.month = 0; }
-      else this.month++;
-      this.load();
-    },
-
+    onTimeChange() { this.load(); },
     onFilterChange() { this.load(); },
 
     get modelRequestRows() {
@@ -507,37 +498,31 @@ function costsPage() {
       const canvas = this.$refs.usageChart;
       if (!canvas || canvas.clientWidth === 0) return;
 
-      // Destroy previous chart instance
       if (this._chart) { this._chart.destroy(); this._chart = null; }
 
       const data = this._dailyData;
       if (data.length === 0) return;
 
       const models = [...new Set(data.map(r => r.resolved_model))].filter(Boolean);
-      const days = [];
-      const d = new Date(this.year, this.month, 1);
-      const endOfMonth = new Date(this.year, this.month + 1, 1);
-      while (d < endOfMonth) {
-        days.push(new Date(d));
-        d.setDate(d.getDate() + 1);
-      }
 
+      // Build unique sorted day labels from the data
+      const daySet = new Set();
       const dataMap = new Map();
       for (const r of data) {
         const pd = new Date(r.period);
-        const key = `${pd.getUTCFullYear()}-${String(pd.getUTCMonth()+1).padStart(2,'0')}-${String(pd.getUTCDate()).padStart(2,'0')}||${r.resolved_model}`;
-        dataMap.set(key, Number(r.total_cost || 0));
+        const dayKey = `${pd.getUTCFullYear()}-${String(pd.getUTCMonth()+1).padStart(2,'0')}-${String(pd.getUTCDate()).padStart(2,'0')}`;
+        daySet.add(dayKey);
+        dataMap.set(dayKey + '||' + r.resolved_model, Number(r.total_cost || 0));
       }
-
-      const fmtDay = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const days = [...daySet].sort();
 
       this._chart = new Chart(canvas, {
         type: 'bar',
         data: {
-          labels: days.map(d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })),
+          labels: days.map(d => { const p = d.split('-'); return new Date(p[0], p[1]-1, p[2]).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }),
           datasets: models.map((model, i) => ({
             label: model,
-            data: days.map(day => dataMap.get(fmtDay(day) + '||' + model) || 0),
+            data: days.map(day => dataMap.get(day + '||' + model) || 0),
             backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
           }))
         },
