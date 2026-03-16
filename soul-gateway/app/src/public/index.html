@@ -75,9 +75,9 @@
             <div class="flex-1 flex flex-col">
               <div class="card bg-base-100 shadow flex-1 overflow-hidden">
                 <div class="card-body p-0 flex flex-col h-full">
-                  <!-- Header with time filter and group-by -->
+                  <!-- Header: search + time filter -->
                   <div class="px-4 py-2 border-b border-base-300 flex items-center gap-2 flex-wrap">
-                    <h3 class="font-bold text-sm" x-text="selectedKey ? (selectedKey.key_label || selectedKey.key_hint || 'Key') : 'Select a key'"></h3>
+                    <input type="text" class="input input-bordered input-xs w-48" placeholder="Search content..." x-model="keyword" @keydown.enter="onSearch()" @change="onSearch()">
                     <span class="text-xs opacity-50" x-text="logsTotal + ' requests'"></span>
                     <div class="flex-1"></div>
                     <!-- Time range -->
@@ -94,13 +94,15 @@
                         <input type="date" class="input input-bordered input-xs" x-model="customTo" @change="onTimeChange()">
                       </div>
                     </template>
-                    <!-- Group by -->
-                    <select class="select select-bordered select-xs" x-model="groupBy">
-                      <option value="">No grouping</option>
-                      <option value="agent">Group by Agent</option>
-                      <option value="session">Group by Session</option>
-                      <option value="cache">Group by Cache</option>
-                    </select>
+                  </div>
+                  <!-- Active filter chips -->
+                  <div class="px-4 py-1 flex gap-1 flex-wrap" x-show="activeFilters.length > 0">
+                    <template x-for="f in activeFilters" :key="f.key">
+                      <span class="badge badge-info badge-sm gap-1">
+                        <span x-text="f.label"></span>
+                        <button class="text-xs font-bold" @click="removeFilter(f.key)">&times;</button>
+                      </span>
+                    </template>
                   </div>
                   <div class="overflow-auto flex-1">
                     <table class="table table-xs table-zebra">
@@ -121,118 +123,57 @@
                         </div>
                       </th></tr></thead>
                       <tbody>
-                        <!-- Grouped view -->
-                        <template x-if="groupBy && groupedLogs">
-                          <template x-for="group in groupedLogs" :key="group.label">
-                            <tr>
-                              <td colspan="10" class="p-0">
-                                <div class="bg-base-200 px-3 py-1.5 font-semibold text-xs cursor-pointer flex items-center gap-2" @click="toggleGroup(group.label)">
-                                  <svg :class="{'rotate-90': expandedGroups[group.label]}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                                  <span x-text="group.label"></span>
-                                  <span class="badge badge-ghost badge-xs" x-text="group.logs.length"></span>
+                        <template x-for="log in selectedLogs" :key="log.id">
+                          <tr>
+                            <td colspan="10" class="p-0">
+                              <div class="flex items-center cursor-pointer hover:bg-base-200 px-3 py-1.5" @click="toggleDetail(log)">
+                                <div class="w-5"><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
+                                <div class="flex-1 flex items-center gap-0">
+                                  <div class="w-36 text-xs" x-text="formatTime(log.started_at)"></div>
+                                  <div class="w-32 font-mono text-xs truncate" x-text="log.resolved_model || log.requested_model || '-'"></div>
+                                  <div class="w-24 text-xs truncate cursor-pointer hover:underline" x-text="log.agent_name || '-'" @click.stop="log.agent_name && addFilter('agent_name', log.agent_name)"></div>
+                                  <div class="w-20 text-xs font-mono opacity-50 cursor-pointer hover:underline" x-text="log.session_id ? log.session_id.slice(0,8) : '-'" @click.stop="log.session_id && addFilter('session_id', log.session_id)"></div>
+                                  <div class="w-20 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
+                                  <div class="w-20 text-right text-xs" x-text="formatTokens(log.total_tokens)"></div>
+                                  <div class="w-20 text-right text-xs" x-text="formatCost(log.total_cost)"></div>
+                                  <div class="w-14 text-center cursor-pointer" @click.stop="addFilter('cache_hit', !!log.cache_hit)"><span class="badge badge-xs" :class="log.cache_hit ? 'badge-success' : 'badge-ghost'" x-text="log.cache_hit ? 'HIT' : 'MISS'"></span></div>
+                                  <div class="w-16 pl-2">
+                                    <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
+                                    <span x-show="!log.error_type && log.status_code === 200" class="badge badge-success badge-xs">OK</span>
+                                  </div>
                                 </div>
-                                <template x-if="expandedGroups[group.label]">
-                                  <div>
-                                    <template x-for="log in group.logs" :key="log.id">
-                                      <div>
-                                        <div class="flex items-center cursor-pointer hover:bg-base-200 px-3 py-1.5" @click="toggleDetail(log)">
-                                          <div class="w-5"><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
-                                          <div class="flex-1 flex items-center gap-0">
-                                            <div class="w-36 text-xs" x-text="formatTime(log.started_at)"></div>
-                                            <div class="w-32 font-mono text-xs truncate" x-text="log.resolved_model || log.requested_model || '-'"></div>
-                                            <div class="w-24 text-xs truncate" x-text="log.agent_name || '-'"></div>
-                                            <div class="w-20 text-xs font-mono opacity-50" x-text="log.session_id ? log.session_id.slice(0,8) : '-'"></div>
-                                            <div class="w-20 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
-                                            <div class="w-20 text-right text-xs" x-text="formatTokens(log.total_tokens)"></div>
-                                            <div class="w-20 text-right text-xs" x-text="formatCost(log.total_cost)"></div>
-                                            <div class="w-14 text-center"><span class="badge badge-xs" :class="log.cache_hit ? 'badge-success' : 'badge-ghost'" x-text="log.cache_hit ? 'HIT' : 'MISS'"></span></div>
-                                            <div class="w-16 pl-2">
-                                              <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
-                                              <span x-show="!log.error_type && log.status_code === 200" class="badge badge-success badge-xs">OK</span>
-                                            </div>
+                              </div>
+                              <!-- Expanded Detail -->
+                              <div x-show="expandedDetail === log.id" x-transition class="px-8 py-4 bg-base-200 border-t border-base-300">
+                                <template x-if="log._detail">
+                                  <div class="flex flex-col gap-4">
+                                    <div><h4 class="font-bold mb-2 text-xs">Request Messages</h4>
+                                      <div class="flex flex-col gap-2 max-h-96 overflow-auto">
+                                        <template x-for="(msg, mi) in formatMessages(log._detail.request_messages)" :key="mi">
+                                          <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+                                            <div class="mb-1"><span class="badge badge-sm" :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'" x-text="msg.role"></span></div>
+                                            <template x-if="!msg.isLong"><div class="sg-md text-xs" x-html="msg.html"></div></template>
+                                            <template x-if="msg.isLong"><div><div x-show="!msg._expanded" class="text-xs opacity-70" x-text="msg.raw.slice(0, 200) + '...'"></div><div x-show="msg._expanded" class="sg-md text-xs" x-html="msg.html"></div><button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"></button></div></template>
                                           </div>
-                                        </div>
-                                        <div x-show="expandedDetail === log.id" x-transition class="px-8 py-4 bg-base-200 border-t border-base-300">
-                                          <template x-if="log._detail">
-                                            <div class="flex flex-col gap-4">
-                                              <div><h4 class="font-bold mb-2 text-xs">Request Messages</h4>
-                                                <div class="flex flex-col gap-2 max-h-96 overflow-auto">
-                                                  <template x-for="(msg, mi) in formatMessages(log._detail.request_messages)" :key="mi">
-                                                    <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-                                                      <div class="mb-1"><span class="badge badge-sm" :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'" x-text="msg.role"></span></div>
-                                                      <template x-if="!msg.isLong"><div class="sg-md text-xs" x-html="msg.html"></div></template>
-                                                      <template x-if="msg.isLong"><div><div x-show="!msg._expanded" class="text-xs opacity-70" x-text="msg.raw.slice(0, 200) + '...'"></div><div x-show="msg._expanded" class="sg-md text-xs" x-html="msg.html"></div><button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"></button></div></template>
-                                                    </div>
-                                                  </template>
-                                                </div>
-                                              </div>
-                                              <div><h4 class="font-bold mb-2 text-xs">Response</h4><div class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3" x-html="renderContent(log._detail.response_content) || '(empty)'"></div></div>
-                                            </div>
-                                          </template>
-                                          <template x-if="!log._detail"><span class="loading loading-spinner loading-sm"></span></template>
-                                        </div>
+                                        </template>
                                       </div>
-                                    </template>
+                                    </div>
+                                    <div><h4 class="font-bold mb-2 text-xs">Response</h4><div class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3" x-html="renderContent(log._detail.response_content) || '(empty)'"></div></div>
+                                    <div>
+                                      <div class="stats stats-horizontal shadow w-full text-xs">
+                                        <div class="stat py-2"><div class="stat-title text-xs">Input Tokens</div><div class="stat-value text-sm" x-text="log._detail.prompt_tokens || 0"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Output Tokens</div><div class="stat-value text-sm" x-text="log._detail.completion_tokens || 0"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">TTFB</div><div class="stat-value text-sm" x-text="(log._detail.ttfb_ms || 0) + 'ms'"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Retries</div><div class="stat-value text-sm" x-text="log._detail.retry_count || 0"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Finish Reason</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
+                                      </div>
+                                    </div>
                                   </div>
                                 </template>
-                              </td>
-                            </tr>
-                          </template>
-                        </template>
-                        <!-- Flat view (no grouping) -->
-                        <template x-if="!groupBy || !groupedLogs">
-                          <template x-for="log in selectedLogs" :key="log.id">
-                            <tr>
-                              <td colspan="10" class="p-0">
-                                <div class="flex items-center cursor-pointer hover:bg-base-200 px-3 py-1.5" @click="toggleDetail(log)">
-                                  <div class="w-5"><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
-                                  <div class="flex-1 flex items-center gap-0">
-                                    <div class="w-36 text-xs" x-text="formatTime(log.started_at)"></div>
-                                    <div class="w-32 font-mono text-xs truncate" x-text="log.resolved_model || log.requested_model || '-'"></div>
-                                    <div class="w-24 text-xs truncate" x-text="log.agent_name || '-'"></div>
-                                    <div class="w-20 text-xs font-mono opacity-50" x-text="log.session_id ? log.session_id.slice(0,8) : '-'"></div>
-                                    <div class="w-20 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
-                                    <div class="w-20 text-right text-xs" x-text="formatTokens(log.total_tokens)"></div>
-                                    <div class="w-20 text-right text-xs" x-text="formatCost(log.total_cost)"></div>
-                                    <div class="w-14 text-center"><span class="badge badge-xs" :class="log.cache_hit ? 'badge-success' : 'badge-ghost'" x-text="log.cache_hit ? 'HIT' : 'MISS'"></span></div>
-                                    <div class="w-16 pl-2">
-                                      <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
-                                      <span x-show="!log.error_type && log.status_code === 200" class="badge badge-success badge-xs">OK</span>
-                                    </div>
-                                  </div>
-                                </div>
-                                <!-- Expanded Detail -->
-                                <div x-show="expandedDetail === log.id" x-transition class="px-8 py-4 bg-base-200 border-t border-base-300">
-                                  <template x-if="log._detail">
-                                    <div class="flex flex-col gap-4">
-                                      <div><h4 class="font-bold mb-2 text-xs">Request Messages</h4>
-                                        <div class="flex flex-col gap-2 max-h-96 overflow-auto">
-                                          <template x-for="(msg, mi) in formatMessages(log._detail.request_messages)" :key="mi">
-                                            <div class="rounded-lg border border-base-300 bg-base-100 p-3">
-                                              <div class="mb-1"><span class="badge badge-sm" :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'" x-text="msg.role"></span></div>
-                                              <template x-if="!msg.isLong"><div class="sg-md text-xs" x-html="msg.html"></div></template>
-                                              <template x-if="msg.isLong"><div><div x-show="!msg._expanded" class="text-xs opacity-70" x-text="msg.raw.slice(0, 200) + '...'"></div><div x-show="msg._expanded" class="sg-md text-xs" x-html="msg.html"></div><button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"></button></div></template>
-                                            </div>
-                                          </template>
-                                        </div>
-                                      </div>
-                                      <div><h4 class="font-bold mb-2 text-xs">Response</h4><div class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3" x-html="renderContent(log._detail.response_content) || '(empty)'"></div></div>
-                                      <div>
-                                        <div class="stats stats-horizontal shadow w-full text-xs">
-                                          <div class="stat py-2"><div class="stat-title text-xs">Input Tokens</div><div class="stat-value text-sm" x-text="log._detail.prompt_tokens || 0"></div></div>
-                                          <div class="stat py-2"><div class="stat-title text-xs">Output Tokens</div><div class="stat-value text-sm" x-text="log._detail.completion_tokens || 0"></div></div>
-                                          <div class="stat py-2"><div class="stat-title text-xs">TTFB</div><div class="stat-value text-sm" x-text="(log._detail.ttfb_ms || 0) + 'ms'"></div></div>
-                                          <div class="stat py-2"><div class="stat-title text-xs">Retries</div><div class="stat-value text-sm" x-text="log._detail.retry_count || 0"></div></div>
-                                          <div class="stat py-2"><div class="stat-title text-xs">Finish Reason</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </template>
-                                  <template x-if="!log._detail"><span class="loading loading-spinner loading-sm"></span></template>
-                                </div>
-                              </td>
-                            </tr>
-                          </template>
+                                <template x-if="!log._detail"><span class="loading loading-spinner loading-sm"></span></template>
+                              </div>
+                            </td>
+                          </tr>
                         </template>
                       </tbody>
                     </table>

@@ -286,8 +286,9 @@ function logsPage() {
     expandedDetail: null,
     sortCol: 'started_at',
     sortDir: 'desc',
-    groupBy: '',
-    expandedGroups: {},
+    // Filters (clickable cell values)
+    filters: {},  // { agent_name: 'claude-code', cache_hit: true, session_id: 'abc...' }
+    keyword: '',
     // Time filtering
     timeRange: 'day',
     customFrom: '',
@@ -299,7 +300,7 @@ function logsPage() {
       window.addEventListener('soul-log', (e) => {
         if (this.selectedKey && this.selectedLogs.length > 0) {
           const log = e.detail;
-          if (log.api_key_id === this.selectedKey.id) {
+          if (log.api_key_id === this.selectedKey.api_key_id) {
             this.selectedLogs.unshift(log);
             if (this.selectedLogs.length > this.logsLimit) this.selectedLogs.pop();
             this.logsTotal++;
@@ -325,10 +326,13 @@ function logsPage() {
 
     async onTimeChange() {
       await this.loadTree();
-      if (this.selectedKey) {
-        this.logsOffset = 0;
-        await this.loadLogs();
-      }
+      this.logsOffset = 0;
+      await this.loadLogs();
+    },
+
+    async onSearch() {
+      this.logsOffset = 0;
+      await this.loadLogs();
     },
 
     setSort(col) {
@@ -342,48 +346,64 @@ function logsPage() {
       this.loadLogs();
     },
 
+    addFilter(key, value) {
+      this.filters[key] = value;
+      this.logsOffset = 0;
+      this.loadLogs();
+    },
+
+    removeFilter(key) {
+      delete this.filters[key];
+      this.logsOffset = 0;
+      this.loadLogs();
+    },
+
+    get activeFilters() {
+      return Object.entries(this.filters).map(([key, value]) => {
+        let label;
+        if (key === 'agent_name') label = `Agent: ${value}`;
+        else if (key === 'session_id') label = `Session: ${String(value).slice(0, 8)}`;
+        else if (key === 'cache_hit') label = `Cache: ${value ? 'HIT' : 'MISS'}`;
+        else label = `${key}: ${value}`;
+        return { key, label };
+      });
+    },
+
     async selectKey(key) {
       this.selectedKey = key;
       this.logsOffset = 0;
       this.expandedDetail = null;
+      this.filters = {};
+      this.keyword = '';
       this.sortCol = 'started_at';
       this.sortDir = 'desc';
       await this.loadLogs();
     },
 
     async loadLogs() {
-      if (!this.selectedKey) return;
       const tp = timeRangeToParams(this.timeRange, this.customFrom, this.customTo);
-      const params = new URLSearchParams({
-        api_key_id: this.selectedKey.api_key_id,
+      const p = {
         limit: this.logsLimit,
         offset: this.logsOffset,
         sort: this.sortCol,
         order: this.sortDir,
         ...tp,
-      });
+      };
+      if (this.selectedKey) p.api_key_id = this.selectedKey.api_key_id;
+      if (this.keyword) p.keyword = this.keyword;
+      // Apply cell filters
+      if (this.filters.agent_name) p.agent_name = this.filters.agent_name;
+      if (this.filters.session_id) p.session_id = this.filters.session_id;
+      // cache_hit filter needs backend support — filter client-side for now
+      const params = new URLSearchParams(p);
       const result = await api.get(`/api/v1/logs?${params}`);
-      this.selectedLogs = result.rows || [];
-      this.logsTotal = result.total || 0;
-    },
-
-    get groupedLogs() {
-      if (!this.groupBy || !this.selectedLogs.length) return null;
-      const groups = new Map();
-      for (const log of this.selectedLogs) {
-        let key;
-        if (this.groupBy === 'agent') key = log.agent_name || 'unknown';
-        else if (this.groupBy === 'session') key = log.session_id ? log.session_id.slice(0, 8) : '(no session)';
-        else if (this.groupBy === 'cache') key = log.cache_hit ? 'HIT' : 'MISS';
-        else key = 'all';
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(log);
+      let rows = result.rows || [];
+      // Client-side cache filter
+      if (this.filters.cache_hit !== undefined) {
+        rows = rows.filter(r => !!r.cache_hit === this.filters.cache_hit);
       }
-      return [...groups.entries()].map(([label, logs]) => ({ label, logs }));
-    },
-
-    toggleGroup(label) {
-      this.expandedGroups[label] = !this.expandedGroups[label];
+      this.selectedLogs = rows;
+      this.logsTotal = result.total || 0;
     },
 
     async toggleDetail(log) {
