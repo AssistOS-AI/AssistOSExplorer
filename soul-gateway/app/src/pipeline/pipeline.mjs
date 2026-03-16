@@ -15,7 +15,6 @@ import { sha256 } from '../utils/crypto.mjs';
 import { broadcastLog } from '../ws/log-stream.mjs';
 import { broadcastToSoul } from '../ws/soul-stream.mjs';
 import { parseAgentName } from '../utils/agent-parser.mjs';
-import { resolveSession } from './session-resolver.mjs';
 import { checkLoopDetection } from './loop-detector.mjs';
 import { acquireModelSlot } from './model-queue.mjs';
 import { checkBudget, trackSpend } from './cost-throttler.mjs';
@@ -46,7 +45,7 @@ export async function pipeline(req, res) {
 
     // 2. Agent & session identification
     const agentName = req.headers['x-soul-agent'] || parseAgentName(req.headers['user-agent'], req.headers['x-coding-assistant']);
-    const sessionId = req.headers['x-soul-session'] || await resolveSession(authCtx.api_key_id, agentName);
+    const sessionId = req.headers['x-soul-session'] || null;
     logEntry.agent_name = agentName;
     logEntry.session_id = sessionId;
 

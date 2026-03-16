@@ -119,7 +119,7 @@ export async function apiRouter(req, res, pathname, query) {
     if (method === 'GET') return handleAgents.sessionLogs(req, res, params, query);
   }
   if (pathname === '/api/v1/tree') {
-    if (method === 'GET') return handleAgents.tree(req, res);
+    if (method === 'GET') return handleAgents.tree(req, res, {}, query);
   }
 
   // Logs

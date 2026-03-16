@@ -10,7 +10,6 @@ import { insertLog } from '../db/logs-dao.mjs';
 import { broadcastLog } from '../ws/log-stream.mjs';
 import { broadcastToSoul } from '../ws/soul-stream.mjs';
 import { parseAgentName } from '../utils/agent-parser.mjs';
-import { resolveSession } from './session-resolver.mjs';
 import { BlacklistError, SoulGatewayError } from '../utils/errors.mjs';
 import { getProviderById, getProviderApiKey, resolveProviderByName } from '../db/providers-dao.mjs';
 
@@ -39,7 +38,7 @@ export async function openaiResponsesProxy(req, res) {
 
     // 2. Agent & session identification
     const agentName = req.headers['x-soul-agent'] || parseAgentName(req.headers['user-agent']);
-    const sessionId = req.headers['x-soul-session'] || await resolveSession(authCtx.api_key_id, agentName);
+    const sessionId = req.headers['x-soul-session'] || null;
     logEntry.agent_name = agentName;
     logEntry.session_id = sessionId;
 

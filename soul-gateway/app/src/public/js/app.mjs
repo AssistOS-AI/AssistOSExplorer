@@ -259,13 +259,26 @@ function providersPage() {
   };
 }
 
-// ---- Logs Page (Tree View) ----
+// ---- Time range helper ----
+function timeRangeToParams(range, customFrom, customTo) {
+  const now = new Date();
+  if (range === 'day') return { from: new Date(now - 86400000).toISOString() };
+  if (range === 'week') return { from: new Date(now - 7 * 86400000).toISOString() };
+  if (range === 'month') return { from: new Date(now - 30 * 86400000).toISOString() };
+  if (range === 'custom' && customFrom) {
+    const p = { from: new Date(customFrom).toISOString() };
+    if (customTo) p.to = new Date(customTo).toISOString();
+    return p;
+  }
+  return { from: new Date(now - 86400000).toISOString() };
+}
+
+// ---- Logs Page ----
 function logsPage() {
   return {
-    treeData: [],
-    tree: [],
+    keys: [],
     search: '',
-    selectedNode: null,
+    selectedKey: null,
     selectedLogs: [],
     logsTotal: 0,
     logsOffset: 0,
@@ -273,20 +286,20 @@ function logsPage() {
     expandedDetail: null,
     sortCol: 'started_at',
     sortDir: 'desc',
+    groupBy: '',
+    expandedGroups: {},
+    // Time filtering
+    timeRange: 'day',
+    customFrom: '',
+    customTo: '',
 
     async init() {
-      this.treeData = await api.get('/api/v1/tree');
-      this.buildTree();
+      await this.loadTree();
 
-      // Listen for live logs and refresh tree
       window.addEventListener('soul-log', (e) => {
-        // Add to selected logs if relevant
-        if (this.selectedNode && this.selectedLogs.length > 0) {
+        if (this.selectedKey && this.selectedLogs.length > 0) {
           const log = e.detail;
-          const matches = this.selectedNode.type === 'agent'
-            ? log.agent_name === this.selectedNode.name
-            : log.session_id === this.selectedNode.id;
-          if (matches) {
+          if (log.api_key_id === this.selectedKey.id) {
             this.selectedLogs.unshift(log);
             if (this.selectedLogs.length > this.logsLimit) this.selectedLogs.pop();
             this.logsTotal++;
@@ -295,71 +308,27 @@ function logsPage() {
       });
     },
 
-    buildTree() {
-      const keyMap = new Map();
-
-      for (const row of this.treeData) {
-        const kid = row.api_key_id || '_none';
-        if (!keyMap.has(kid)) {
-          keyMap.set(kid, {
-            type: 'key',
-            id: kid,
-            label: row.key_label || row.key_hint || kid.slice(0, 8),
-            hint: row.key_hint || '',
-            agents: new Map(),
-            expanded: false,
-          });
-        }
-        const key = keyMap.get(kid);
-
-        const aname = row.agent_name || 'unknown';
-        if (!key.agents.has(aname)) {
-          key.agents.set(aname, {
-            type: 'agent',
-            name: aname,
-            sessions: [],
-            expanded: false,
-          });
-        }
-        const agent = key.agents.get(aname);
-
-        if (row.session_id) {
-          agent.sessions.push({
-            type: 'session',
-            id: row.session_id,
-            request_count: Number(row.request_count || 0),
-            total_tokens: Number(row.total_tokens || 0),
-            total_cost: Number(row.total_cost || 0),
-            first_request: row.first_request,
-            last_request: row.last_request,
-          });
-        }
-      }
-
-      this.tree = Array.from(keyMap.values()).map(k => ({
-        ...k,
-        agents: Array.from(k.agents.values()),
-      }));
+    async loadTree() {
+      const tp = timeRangeToParams(this.timeRange, this.customFrom, this.customTo);
+      const params = new URLSearchParams(tp);
+      this.keys = await api.get(`/api/v1/tree?${params}`);
     },
 
-    filteredTree() {
-      if (!this.search) return this.tree;
+    filteredKeys() {
+      if (!this.search) return this.keys;
       const q = this.search.toLowerCase();
-      const result = [];
+      return this.keys.filter(k =>
+        (k.key_label || '').toLowerCase().includes(q) ||
+        (k.key_hint || '').toLowerCase().includes(q)
+      );
+    },
 
-      for (const k of this.tree) {
-        const keyMatch = k.label.toLowerCase().includes(q) || k.hint.toLowerCase().includes(q);
-        const filteredAgents = k.agents.filter(a => a.name.toLowerCase().includes(q));
-
-        if (keyMatch || filteredAgents.length > 0) {
-          result.push({
-            ...k,
-            agents: keyMatch ? k.agents : filteredAgents,
-            expanded: true,
-          });
-        }
+    async onTimeChange() {
+      await this.loadTree();
+      if (this.selectedKey) {
+        this.logsOffset = 0;
+        await this.loadLogs();
       }
-      return result;
     },
 
     setSort(col) {
@@ -370,49 +339,56 @@ function logsPage() {
         this.sortDir = 'desc';
       }
       this.logsOffset = 0;
-      this.loadSelectedLogs();
+      this.loadLogs();
     },
 
-    async selectSession(session) {
-      this.selectedNode = session;
+    async selectKey(key) {
+      this.selectedKey = key;
       this.logsOffset = 0;
       this.expandedDetail = null;
       this.sortCol = 'started_at';
       this.sortDir = 'desc';
-      await this.loadSelectedLogs();
+      await this.loadLogs();
     },
 
-    async selectAgent(agent, keyId) {
-      this.selectedNode = { type: 'agent', name: agent.name, keyId };
-      this.logsOffset = 0;
-      this.expandedDetail = null;
-      this.sortCol = 'started_at';
-      this.sortDir = 'desc';
-      await this.loadSelectedLogs();
-    },
-
-    async loadSelectedLogs() {
-      if (!this.selectedNode) return;
-      let result;
-      if (this.selectedNode.type === 'session') {
-        const params = new URLSearchParams({ limit: this.logsLimit, offset: this.logsOffset, sort: this.sortCol, order: this.sortDir });
-        result = await api.get(`/api/v1/sessions/${this.selectedNode.id}/logs?${params}`);
-      } else {
-        const params = new URLSearchParams({ agent_name: this.selectedNode.name, api_key_id: this.selectedNode.keyId, limit: this.logsLimit, offset: this.logsOffset, sort: this.sortCol, order: this.sortDir });
-        result = await api.get(`/api/v1/logs?${params}`);
-      }
+    async loadLogs() {
+      if (!this.selectedKey) return;
+      const tp = timeRangeToParams(this.timeRange, this.customFrom, this.customTo);
+      const params = new URLSearchParams({
+        api_key_id: this.selectedKey.api_key_id,
+        limit: this.logsLimit,
+        offset: this.logsOffset,
+        sort: this.sortCol,
+        order: this.sortDir,
+        ...tp,
+      });
+      const result = await api.get(`/api/v1/logs?${params}`);
       this.selectedLogs = result.rows || [];
       this.logsTotal = result.total || 0;
     },
 
+    get groupedLogs() {
+      if (!this.groupBy || !this.selectedLogs.length) return null;
+      const groups = new Map();
+      for (const log of this.selectedLogs) {
+        let key;
+        if (this.groupBy === 'agent') key = log.agent_name || 'unknown';
+        else if (this.groupBy === 'session') key = log.session_id ? log.session_id.slice(0, 8) : '(no session)';
+        else if (this.groupBy === 'cache') key = log.cache_hit ? 'HIT' : 'MISS';
+        else key = 'all';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(log);
+      }
+      return [...groups.entries()].map(([label, logs]) => ({ label, logs }));
+    },
+
+    toggleGroup(label) {
+      this.expandedGroups[label] = !this.expandedGroups[label];
+    },
+
     async toggleDetail(log) {
-      if (this.expandedDetail === log.id) {
-        this.expandedDetail = null;
-        return;
-      }
-      if (!log._detail) {
-        log._detail = await api.get(`/api/v1/logs/${log.id}`);
-      }
+      if (this.expandedDetail === log.id) { this.expandedDetail = null; return; }
+      if (!log._detail) { log._detail = await api.get(`/api/v1/logs/${log.id}`); }
       this.expandedDetail = log.id;
     },
 
@@ -572,9 +548,18 @@ function activityPage() {
     expandedDetail: null,
     sortCol: 'started_at',
     sortDir: 'desc',
+    timeRange: 'month',
+    customFrom: '',
+    customTo: '',
 
     async init() {
-      const data = await api.get('/api/v1/metrics/activity');
+      await this.loadActivity();
+    },
+
+    async loadActivity() {
+      const tp = timeRangeToParams(this.timeRange, this.customFrom, this.customTo);
+      const params = new URLSearchParams(tp);
+      const data = await api.get(`/api/v1/metrics/activity?${params}`);
       this.keyData = (data.by_key || []).map(k => ({
         ...k,
         total_cost: Number(k.total_cost || 0),
@@ -587,6 +572,10 @@ function activityPage() {
         error_count: Number(k.error_count || 0),
         key_budget: k.key_budget != null ? Number(k.key_budget) : null,
       }));
+    },
+
+    async onTimeChange() {
+      await this.loadActivity();
     },
 
     budgetPct(row) {
@@ -655,9 +644,18 @@ function errorsPage() {
     expandedDetail: null,
     showChart: false,
     _chart: null,
+    timeRange: 'day',
+    customFrom: '',
+    customTo: '',
 
     async init() {
-      const data = await api.get('/api/v1/metrics/errors');
+      await this.loadErrors();
+    },
+
+    async loadErrors() {
+      const tp = timeRangeToParams(this.timeRange, this.customFrom, this.customTo);
+      const params = new URLSearchParams(tp);
+      const data = await api.get(`/api/v1/metrics/errors?${params}`);
       this.summary = data.summary || {};
       this.breakdown = data.breakdown || [];
       this.errorModels = data.models || [];
@@ -666,12 +664,18 @@ function errorsPage() {
     },
 
     async loadErrorLogs() {
-      const params = new URLSearchParams({ status: 'error', limit: this.logsLimit, offset: this.logsOffset });
+      const tp = timeRangeToParams(this.timeRange, this.customFrom, this.customTo);
+      const params = new URLSearchParams({ status: 'error', limit: this.logsLimit, offset: this.logsOffset, ...tp });
       if (this.filterType) params.set('error_type', this.filterType);
       if (this.filterModel) params.set('model', this.filterModel);
       const result = await api.get(`/api/v1/logs?${params}`);
       this.errorLogs = result.rows || [];
       this.logsTotal = result.total || 0;
+    },
+
+    async onTimeChange() {
+      this.logsOffset = 0;
+      await this.loadErrors();
     },
 
     async applyFilter(type) {

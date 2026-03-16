@@ -29,8 +29,8 @@ export const handleAgents = {
     sendJson(res, logs);
   },
 
-  async tree(req, res) {
-    const data = await getTreeData();
+  async tree(req, res, params, query) {
+    const data = await getTreeData({ from: query?.from, to: query?.to });
     sendJson(res, data);
   },
 };

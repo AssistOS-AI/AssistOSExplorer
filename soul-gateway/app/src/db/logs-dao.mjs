@@ -236,26 +236,34 @@ export async function getSessionLogs(sessionId, { limit, offset, sort, order } =
 }
 
 /**
- * Tree-view aggregation: keys -> agents -> sessions.
+ * Tree-view aggregation: keys only (flat list).
  */
-export async function getTreeData() {
+export async function getTreeData({ from, to } = {}) {
+  const conditions = [];
+  const params = [];
+  let idx = 1;
+
+  if (from) { conditions.push(`cl.started_at >= $${idx++}`); params.push(from); }
+  else { conditions.push(`cl.started_at >= NOW() - INTERVAL '30 days'`); }
+  if (to) { conditions.push(`cl.started_at <= $${idx++}`); params.push(to); }
+
+  const where = 'WHERE ' + conditions.join(' AND ');
+
   const { rows } = await query(`
     SELECT
       ak.id as api_key_id,
       ak.label as key_label,
       ak.key_hint,
-      cl.agent_name,
-      cl.session_id,
       COUNT(*) as request_count,
-      SUM(cl.total_tokens) as total_tokens,
+      SUM(cl.total_tokens)::bigint as total_tokens,
       SUM(cl.total_cost) as total_cost,
       MIN(cl.started_at) as first_request,
       MAX(cl.started_at) as last_request
     FROM call_logs cl
     LEFT JOIN soul_gateway.api_keys ak ON cl.api_key_id = ak.id
-    WHERE cl.started_at >= NOW() - INTERVAL '30 days'
-    GROUP BY ak.id, ak.label, ak.key_hint, cl.agent_name, cl.session_id
+    ${where}
+    GROUP BY ak.id, ak.label, ak.key_hint
     ORDER BY last_request DESC
-  `);
+  `, params);
   return rows;
 }
