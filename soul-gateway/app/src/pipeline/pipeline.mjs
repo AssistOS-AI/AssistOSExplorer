@@ -91,6 +91,7 @@ export async function pipeline(req, res) {
     modelInfo = await resolveModel(body.model);
     logEntry.resolved_model = modelInfo.resolvedModel;
     logEntry.mode = modelInfo.mode;
+    logEntry.is_free = modelInfo.isFree || false;
 
     // 8. Prompt hash
     const promptHash = sha256(JSON.stringify(body.messages) + '||' + modelInfo.resolvedModel);
@@ -211,7 +212,7 @@ export async function pipeline(req, res) {
       trackTokenUsage(authCtx.api_key_id, costs.total_tokens, authCtx.tpm_limit).catch(() => {});
     }
     if (costs.total_cost > 0) {
-      trackSpend(authCtx, costs.total_cost);
+      trackSpend(authCtx, costs.total_cost, modelInfo?.isFree);
     }
 
   } catch (err) {

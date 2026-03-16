@@ -758,7 +758,7 @@ function modelsPage() {
     // Model edit state
     showModelEdit: false,
     editingModel: null,
-    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', provider_config_id: '', mode: 'deep', input_price: 0, output_price: 0, max_concurrency: 3, sort_order: 100, context_window: '' },
+    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', provider_config_id: '', mode: 'deep', input_price: 0, output_price: 0, is_free: false, max_concurrency: 3, sort_order: 100, context_window: '' },
     // Model create state
     showModelCreate: false,
     createProvider: '',
@@ -786,6 +786,11 @@ function modelsPage() {
 
     async toggleModel(m) {
       await api.put(`/api/v1/models/${m.id}/toggle`, {});
+      this.models = await api.get('/api/v1/models');
+    },
+
+    async toggleFree(m) {
+      await api.put(`/api/v1/models/${m.id}`, { is_free: !m.is_free });
       this.models = await api.get('/api/v1/models');
     },
 
@@ -871,6 +876,7 @@ function modelsPage() {
         mode: m.mode || 'deep',
         input_price: parseFloat(m.input_price) || 0,
         output_price: parseFloat(m.output_price) || 0,
+        is_free: !!m.is_free,
         max_concurrency: m.max_concurrency ?? 3,
         sort_order: m.sort_order ?? 100,
         context_window: m.context_window || '',
@@ -968,7 +974,7 @@ function keysPage() {
     showEdit: false,
     editing: null,
     newKey: '',
-    form: { label: '', key: '', monthly_budget: '' },
+    form: { label: '', key: '', monthly_budget: '10' },
     editForm: { label: '', monthly_budget: '' },
 
     async init() {
@@ -1011,6 +1017,12 @@ function keysPage() {
     async revoke(k) {
       if (!confirm('Revoke this API key?')) return;
       await api.del(`/api/v1/keys/${k.id}`);
+      this.keys = await api.get('/api/v1/keys');
+    },
+
+    async resetBudget(k) {
+      if (!confirm('Reset budget for this key? This starts a new billing period from now.')) return;
+      await api.post(`/api/v1/keys/${k.id}/reset-budget`, {});
       this.keys = await api.get('/api/v1/keys');
     },
 

@@ -34,6 +34,7 @@ async function buildModelInfo(requestedModel, modelConfig) {
     mode: modelConfig.mode,
     inputPrice,
     outputPrice,
+    isFree: !!modelConfig.is_free,
     maxConcurrency: parseInt(modelConfig.max_concurrency) || 3,
   };
 }

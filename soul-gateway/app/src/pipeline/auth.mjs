@@ -25,6 +25,7 @@ export async function authenticate(req) {
     rpm_limit: keyInfo.rpm_limit,
     tpm_limit: keyInfo.tpm_limit,
     key_monthly_budget: keyInfo.monthly_budget != null ? Number(keyInfo.monthly_budget) : null,
+    budget_reset_at: keyInfo.budget_reset_at || null,
     soul_id: soulId,
   };
 }

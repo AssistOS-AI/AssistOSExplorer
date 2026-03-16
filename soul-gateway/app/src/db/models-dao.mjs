@@ -27,7 +27,7 @@ export async function createModel({ name, display_name, provider_key, provider_m
   return rows[0];
 }
 
-const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'upstream_source', 'mode', 'input_price', 'output_price', 'is_enabled', 'max_concurrency', 'sort_order', 'context_window', 'provider_config_id'];
+const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'upstream_source', 'mode', 'input_price', 'output_price', 'is_enabled', 'is_free', 'max_concurrency', 'sort_order', 'context_window', 'provider_config_id'];
 
 export async function updateModel(id, fields) {
   const sets = [];

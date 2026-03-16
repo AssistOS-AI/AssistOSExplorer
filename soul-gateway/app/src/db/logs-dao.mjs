@@ -20,7 +20,7 @@ export async function insertLog(log) {
       retry_count, retry_reason, retries_detail,
       blocked_by_blacklist, blacklist_rule_id, blacklist_match,
       is_truncated, is_slow, prompt_size_warning,
-      prompt_hash, cache_hit,
+      prompt_hash, cache_hit, is_free,
       started_at, completed_at
     ) VALUES (
       $1, $2,
@@ -34,8 +34,8 @@ export async function insertLog(log) {
       $25, $26, $27,
       $28, $29, $30,
       $31, $32, $33,
-      $34, $35,
-      $36, $37
+      $34, $35, $36,
+      $37, $38
     ) RETURNING id, started_at
   `, [
     log.soul_id, log.api_key_id,
@@ -49,7 +49,7 @@ export async function insertLog(log) {
     log.retry_count || 0, log.retry_reason, log.retries_detail ? JSON.stringify(log.retries_detail) : null,
     log.blocked_by_blacklist || false, log.blacklist_rule_id, log.blacklist_match,
     log.is_truncated || false, log.is_slow || false, log.prompt_size_warning || false,
-    log.prompt_hash || null, log.cache_hit || false,
+    log.prompt_hash || null, log.cache_hit || false, log.is_free || false,
     log.started_at, log.completed_at,
   ]);
   return rows[0];

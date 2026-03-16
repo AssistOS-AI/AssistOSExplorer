@@ -25,4 +25,10 @@ export const handleKeys = {
     if (!revoked) return sendError(res, 404, 'API key not found');
     sendJson(res, { revoked: true });
   },
+
+  async resetBudget(req, res, params) {
+    const result = await dao.resetBudget(params.id);
+    if (!result) return sendError(res, 404, 'API key not found');
+    sendJson(res, result);
+  },
 };

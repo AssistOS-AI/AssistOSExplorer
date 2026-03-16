@@ -90,6 +90,10 @@ export async function apiRouter(req, res, pathname, query) {
     if (method === 'GET') return handleKeys.list(req, res, query);
     if (method === 'POST') return handleKeys.create(req, res);
   }
+  params = matchPath('/api/v1/keys/:id/reset-budget', pathname);
+  if (params) {
+    if (method === 'POST') return handleKeys.resetBudget(req, res, params);
+  }
   params = matchPath('/api/v1/keys/:id', pathname);
   if (params) {
     if (method === 'PUT') return handleKeys.update(req, res, params);

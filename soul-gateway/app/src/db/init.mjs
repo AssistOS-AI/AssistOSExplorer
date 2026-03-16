@@ -156,6 +156,18 @@ async function migrate(p) {
     `, [source, providerKey]);
   }
 
+  // Add is_free flag to model_configs (free models don't count against API key budget)
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS is_free BOOLEAN DEFAULT false`);
+
+  // Add is_free to call_logs (denormalized for budget spend queries)
+  await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS is_free BOOLEAN DEFAULT false`);
+
+  // Add budget_reset_at to api_keys (allows mid-month budget reset)
+  await p.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS budget_reset_at TIMESTAMPTZ`);
+
+  // Set default budget of $10 for keys that have no budget set
+  await p.query(`UPDATE api_keys SET monthly_budget = 10 WHERE monthly_budget IS NULL`);
+
 }
 
 async function ensurePartitions() {
