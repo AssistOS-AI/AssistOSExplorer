@@ -1,5 +1,5 @@
 /**
- * Tests for orchestrator skill definitions: skill-manager, skill-refiner
+ * Tests for orchestrator skill definitions: achilles-cli, skill-refiner
  *
  * These tests verify the skill definition files are valid and contain expected content.
  */
@@ -14,7 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_BASE = path.join(__dirname, '../../src/skills');
 
 // ============================================================================
-// skill-manager Orchestrator Tests
+// achilles-cli Orchestrator Tests
 // ============================================================================
 
 describe('skills-orchestrator', () => {

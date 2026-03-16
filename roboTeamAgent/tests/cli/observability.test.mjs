@@ -11,7 +11,7 @@ describe('Logger', () => {
     let Logger, logger, LOG_LEVELS;
 
     beforeEach(async () => {
-        const module = await import('../skill-manager/src/lib/Logger.mjs');
+        const module = await import('../achilles-cli/src/lib/Logger.mjs');
         Logger = module.Logger;
         logger = module.logger;
         LOG_LEVELS = module.LOG_LEVELS;
@@ -210,7 +210,7 @@ describe('Metrics', () => {
     let Metrics, metrics, METRIC_NAMES;
 
     beforeEach(async () => {
-        const module = await import('../skill-manager/src/lib/Metrics.mjs');
+        const module = await import('../achilles-cli/src/lib/Metrics.mjs');
         Metrics = module.Metrics;
         metrics = module.metrics;
         METRIC_NAMES = module.METRIC_NAMES;

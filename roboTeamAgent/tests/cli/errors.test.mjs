@@ -11,7 +11,7 @@ describe('Error Classes', () => {
     let errors;
 
     it('should load all error exports', async () => {
-        errors = await import('../skill-manager/src/lib/errors/index.mjs');
+        errors = await import('../achilles-cli/src/lib/errors/index.mjs');
 
         // Verify all expected exports exist
         const expectedExports = [
@@ -47,7 +47,7 @@ describe('Error Classes', () => {
 
     describe('BaseError', () => {
         it('should create error with message', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const error = new BaseError('Test error');
 
             assert.strictEqual(error.message, 'Test error');
@@ -56,14 +56,14 @@ describe('Error Classes', () => {
         });
 
         it('should accept error code', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const error = new BaseError('Test error', { code: 'TEST_CODE' });
 
             assert.strictEqual(error.code, 'TEST_CODE');
         });
 
         it('should accept cause', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const cause = new Error('Original error');
             const error = new BaseError('Wrapped error', { cause });
 
@@ -71,21 +71,21 @@ describe('Error Classes', () => {
         });
 
         it('should accept details', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const error = new BaseError('Test error', { details: { foo: 'bar' } });
 
             assert.deepStrictEqual(error.details, { foo: 'bar' });
         });
 
         it('should accept recoveryHint', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const error = new BaseError('Test error', { recoveryHint: 'Try again' });
 
             assert.strictEqual(error.recoveryHint, 'Try again');
         });
 
         it('should have timestamp', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const error = new BaseError('Test error');
 
             assert.ok(error.timestamp);
@@ -93,7 +93,7 @@ describe('Error Classes', () => {
         });
 
         it('should serialize to JSON', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const error = new BaseError('Test error', {
                 code: 'TEST_CODE',
                 details: { key: 'value' },
@@ -111,7 +111,7 @@ describe('Error Classes', () => {
         });
 
         it('should format user-friendly string', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const error = new BaseError('Test error', {
                 recoveryHint: 'Try again',
             });
@@ -123,7 +123,7 @@ describe('Error Classes', () => {
         });
 
         it('should wrap existing errors', async () => {
-            const { BaseError } = await import('../skill-manager/src/lib/errors/BaseError.mjs');
+            const { BaseError } = await import('../achilles-cli/src/lib/errors/BaseError.mjs');
             const original = new Error('Original error');
             const wrapped = BaseError.wrap(original, { code: 'WRAPPED' });
 
@@ -136,7 +136,7 @@ describe('Error Classes', () => {
 
     describe('ConfigurationError', () => {
         it('should create configuration error', async () => {
-            const { ConfigurationError } = await import('../skill-manager/src/lib/errors/ConfigurationError.mjs');
+            const { ConfigurationError } = await import('../achilles-cli/src/lib/errors/ConfigurationError.mjs');
             const error = new ConfigurationError('Config error');
 
             assert.ok(error instanceof Error);
@@ -145,7 +145,7 @@ describe('Error Classes', () => {
         });
 
         it('should create repository configuration error', async () => {
-            const { RepositoryConfigurationError } = await import('../skill-manager/src/lib/errors/ConfigurationError.mjs');
+            const { RepositoryConfigurationError } = await import('../achilles-cli/src/lib/errors/ConfigurationError.mjs');
             const error = new RepositoryConfigurationError('my-repo', 'Invalid config');
 
             assert.ok(error.message.includes('my-repo'));
@@ -154,7 +154,7 @@ describe('Error Classes', () => {
         });
 
         it('should create environment configuration error', async () => {
-            const { EnvironmentConfigurationError } = await import('../skill-manager/src/lib/errors/ConfigurationError.mjs');
+            const { EnvironmentConfigurationError } = await import('../achilles-cli/src/lib/errors/ConfigurationError.mjs');
             const error = new EnvironmentConfigurationError('API_KEY', 'is required');
 
             assert.ok(error.message.includes('API_KEY'));
@@ -163,7 +163,7 @@ describe('Error Classes', () => {
         });
 
         it('should create config file error', async () => {
-            const { ConfigFileError } = await import('../skill-manager/src/lib/errors/ConfigurationError.mjs');
+            const { ConfigFileError } = await import('../achilles-cli/src/lib/errors/ConfigurationError.mjs');
             const error = new ConfigFileError('/path/to/config.json', 'Invalid JSON');
 
             assert.ok(error.message.includes('/path/to/config.json'));
@@ -173,7 +173,7 @@ describe('Error Classes', () => {
 
     describe('OperationError', () => {
         it('should create git operation error', async () => {
-            const { GitOperationError } = await import('../skill-manager/src/lib/errors/OperationError.mjs');
+            const { GitOperationError } = await import('../achilles-cli/src/lib/errors/OperationError.mjs');
             const error = new GitOperationError('clone', 'Repository not found');
 
             assert.ok(error.message.includes('clone'));
@@ -182,7 +182,7 @@ describe('Error Classes', () => {
         });
 
         it('should create skill execution error', async () => {
-            const { SkillExecutionError } = await import('../skill-manager/src/lib/errors/OperationError.mjs');
+            const { SkillExecutionError } = await import('../achilles-cli/src/lib/errors/OperationError.mjs');
             const error = new SkillExecutionError('my-skill', 'Timeout');
 
             assert.ok(error.message.includes('my-skill'));
@@ -190,7 +190,7 @@ describe('Error Classes', () => {
         });
 
         it('should create skill execution cancelled error', async () => {
-            const { SkillExecutionCancelledError } = await import('../skill-manager/src/lib/errors/OperationError.mjs');
+            const { SkillExecutionCancelledError } = await import('../achilles-cli/src/lib/errors/OperationError.mjs');
             const error = new SkillExecutionCancelledError('my-skill');
 
             assert.ok(error.message.includes('cancelled'));
@@ -198,7 +198,7 @@ describe('Error Classes', () => {
         });
 
         it('should create file system error', async () => {
-            const { FileSystemError } = await import('../skill-manager/src/lib/errors/OperationError.mjs');
+            const { FileSystemError } = await import('../achilles-cli/src/lib/errors/OperationError.mjs');
             const error = new FileSystemError('write', '/path/to/file', 'Permission denied');
 
             assert.ok(error.message.includes('write'));
@@ -210,7 +210,7 @@ describe('Error Classes', () => {
 
     describe('ValidationError', () => {
         it('should create schema validation error', async () => {
-            const { SchemaValidationError } = await import('../skill-manager/src/lib/errors/ValidationError.mjs');
+            const { SchemaValidationError } = await import('../achilles-cli/src/lib/errors/ValidationError.mjs');
             const error = new SchemaValidationError('my-skill', ['Missing field: name', 'Invalid type']);
 
             assert.ok(error.message.includes('my-skill'));
@@ -220,7 +220,7 @@ describe('Error Classes', () => {
         });
 
         it('should create field validation error', async () => {
-            const { FieldValidationError } = await import('../skill-manager/src/lib/errors/ValidationError.mjs');
+            const { FieldValidationError } = await import('../achilles-cli/src/lib/errors/ValidationError.mjs');
             const error = new FieldValidationError('age', -5, 'positive number');
 
             assert.ok(error.message.includes('age'));
@@ -230,7 +230,7 @@ describe('Error Classes', () => {
         });
 
         it('should create required field error', async () => {
-            const { RequiredFieldError } = await import('../skill-manager/src/lib/errors/ValidationError.mjs');
+            const { RequiredFieldError } = await import('../achilles-cli/src/lib/errors/ValidationError.mjs');
             const error = new RequiredFieldError('username');
 
             assert.ok(error.message.includes('username'));
@@ -241,7 +241,7 @@ describe('Error Classes', () => {
 
     describe('ResourceError', () => {
         it('should create skill not found error with suggestions', async () => {
-            const { SkillNotFoundError } = await import('../skill-manager/src/lib/errors/ResourceError.mjs');
+            const { SkillNotFoundError } = await import('../achilles-cli/src/lib/errors/ResourceError.mjs');
             const error = new SkillNotFoundError('equipmnt', ['equipment', 'material', 'area']);
 
             assert.ok(error.message.includes('equipmnt'));
@@ -250,7 +250,7 @@ describe('Error Classes', () => {
         });
 
         it('should create repository not found error', async () => {
-            const { RepositoryNotFoundError } = await import('../skill-manager/src/lib/errors/ResourceError.mjs');
+            const { RepositoryNotFoundError } = await import('../achilles-cli/src/lib/errors/ResourceError.mjs');
             const error = new RepositoryNotFoundError('my-repo', ['repo-1', 'repo-2']);
 
             assert.strictEqual(error.repoName, 'my-repo');
@@ -258,7 +258,7 @@ describe('Error Classes', () => {
         });
 
         it('should create directory not found error', async () => {
-            const { DirectoryNotFoundError } = await import('../skill-manager/src/lib/errors/ResourceError.mjs');
+            const { DirectoryNotFoundError } = await import('../achilles-cli/src/lib/errors/ResourceError.mjs');
             const error = new DirectoryNotFoundError('/path/to/dir');
 
             assert.ok(error.message.includes('/path/to/dir'));

@@ -11,7 +11,7 @@ describe('constants', () => {
     let BUILT_IN_SKILLS, TIMEOUTS, CONFIG_VERSION, ERROR_CODES;
 
     it('should load constants module', async () => {
-        const module = await import('../skill-manager/src/lib/constants.mjs');
+        const module = await import('../achilles-cli/src/lib/constants.mjs');
         BUILT_IN_SKILLS = module.BUILT_IN_SKILLS;
         TIMEOUTS = module.TIMEOUTS;
         CONFIG_VERSION = module.CONFIG_VERSION;
@@ -25,7 +25,7 @@ describe('constants', () => {
 
     describe('BUILT_IN_SKILLS', () => {
         it('should contain all expected skill names', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { BUILT_IN_SKILLS } = module;
 
             const expectedSkills = [
@@ -59,7 +59,7 @@ describe('constants', () => {
         });
 
         it('should have valid skill name values', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { BUILT_IN_SKILLS } = module;
 
             // Check specific values
@@ -70,7 +70,7 @@ describe('constants', () => {
         });
 
         it('should have unique skill names', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { BUILT_IN_SKILLS } = module;
 
             const values = Object.values(BUILT_IN_SKILLS);
@@ -82,7 +82,7 @@ describe('constants', () => {
 
     describe('TIERS', () => {
         it('should contain all six tier names', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { TIERS } = module;
 
             const expectedTiers = ['FAST', 'PLAN', 'WRITE', 'CODE', 'DEEP', 'ULTRA'];
@@ -93,7 +93,7 @@ describe('constants', () => {
         });
 
         it('should have correct tier string values', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { TIERS } = module;
 
             assert.strictEqual(TIERS.FAST, 'fast');
@@ -105,7 +105,7 @@ describe('constants', () => {
         });
 
         it('should have unique tier values', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { TIERS } = module;
 
             const values = Object.values(TIERS);
@@ -114,7 +114,7 @@ describe('constants', () => {
         });
 
         it('should have exactly 6 tiers', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { TIERS } = module;
 
             assert.strictEqual(Object.keys(TIERS).length, 6, 'Should have exactly 6 tiers');
@@ -123,7 +123,7 @@ describe('constants', () => {
 
     describe('TIMEOUTS', () => {
         it('should have reasonable timeout values', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { TIMEOUTS } = module;
 
             assert.ok(TIMEOUTS.DEFAULT > 0, 'DEFAULT timeout should be positive');
@@ -135,7 +135,7 @@ describe('constants', () => {
         });
 
         it('should have orchestrator timeout >= default', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { TIMEOUTS } = module;
 
             assert.ok(
@@ -147,7 +147,7 @@ describe('constants', () => {
 
     describe('CONFIG_VERSION', () => {
         it('should be a positive integer', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { CONFIG_VERSION } = module;
 
             assert.strictEqual(typeof CONFIG_VERSION, 'number');
@@ -158,7 +158,7 @@ describe('constants', () => {
 
     describe('ERROR_CODES', () => {
         it('should have all expected error codes', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { ERROR_CODES } = module;
 
             const expectedCodes = [
@@ -183,7 +183,7 @@ describe('constants', () => {
         });
 
         it('should have unique error code values', async () => {
-            const module = await import('../skill-manager/src/lib/constants.mjs');
+            const module = await import('../achilles-cli/src/lib/constants.mjs');
             const { ERROR_CODES } = module;
 
             const values = Object.values(ERROR_CODES);

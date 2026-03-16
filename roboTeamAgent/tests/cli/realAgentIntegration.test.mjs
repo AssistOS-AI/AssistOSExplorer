@@ -23,7 +23,7 @@ describe('Real RecursiveSkilledAgent Integration', () => {
 
     beforeEach(async () => {
         // Import real modules
-        const agentModule = await import('../skill-manager/node_modules/achillesAgentLib/RecursiveSkilledAgents/index.mjs');
+        const agentModule = await import('../achilles-cli/node_modules/achillesAgentLib/RecursiveSkilledAgents/index.mjs');
         RecursiveSkilledAgent = agentModule.RecursiveSkilledAgent;
 
         // Create temp directories
@@ -124,10 +124,10 @@ describe('Orchestrator Wildcard Allowed-Skills Integration', () => {
 
     beforeEach(async () => {
         // Import real modules
-        const agentModule = await import('../skill-manager/node_modules/achillesAgentLib/RecursiveSkilledAgents/index.mjs');
+        const agentModule = await import('../achilles-cli/node_modules/achillesAgentLib/RecursiveSkilledAgents/index.mjs');
         RecursiveSkilledAgent = agentModule.RecursiveSkilledAgent;
 
-        const orchestratorModule = await import('../skill-manager/node_modules/achillesAgentLib/OrchestratorSkillsSubsystem/OrchestratorSkillsSubsystem.mjs');
+        const orchestratorModule = await import('../achilles-cli/node_modules/achillesAgentLib/OrchestratorSkillsSubsystem/OrchestratorSkillsSubsystem.mjs');
         OrchestratorSkillsSubsystem = orchestratorModule.OrchestratorSkillsSubsystem;
 
         // Create temp directories

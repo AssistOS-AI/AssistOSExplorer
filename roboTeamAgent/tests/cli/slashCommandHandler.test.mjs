@@ -7,7 +7,7 @@ import assert from 'node:assert';
 
 describe('SlashCommandHandler', () => {
     it('should have static COMMANDS property', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         assert.ok(SlashCommandHandler.COMMANDS, 'Should have COMMANDS property');
         assert.ok(SlashCommandHandler.COMMANDS.ls, 'Should have ls command');
@@ -16,7 +16,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should parse slash commands correctly', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
@@ -30,7 +30,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should identify slash commands', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
@@ -44,7 +44,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should handle /tier with args returning tierChange', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
@@ -59,7 +59,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should handle /tier with no args returning showTierPicker', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
@@ -74,7 +74,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should handle /model command', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
@@ -96,7 +96,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should include /model in completions', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
@@ -110,7 +110,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should provide input hint for /model', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
@@ -128,7 +128,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should have getAvailableModels method', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
@@ -142,7 +142,7 @@ describe('SlashCommandHandler', () => {
     });
 
     it('should complete /model with model names and clear', async () => {
-        const { SlashCommandHandler } = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},

@@ -17,7 +17,7 @@ const builtInSkillsDir = path.join(__dirname, '..', 'src', 'skills');
  * - Valid LLM API credentials configured
  * - Network access
  *
- * Run with: node --test tests/skill-manager/SkillManagerAgent.integration.test.mjs
+ * Run with: node --test tests/AchillesCli.integration.test.mjs
  */
 
 describe('RecursiveSkilledAgent Integration Tests (Real LLM Calls)', () => {

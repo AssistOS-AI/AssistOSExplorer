@@ -274,7 +274,7 @@ export default async function runTests() {
     });
 
     await test('discoverSkillTests finds tests in tests folder', () => {
-        // Create a mock agent with skill catalog and context pointing to the skill-manager-cli directory
+        // Create a mock agent with skill catalog and context pointing to the achilles-cli directory
         // The tests folder contains run-tests.tests.mjs
         const workingDir = path.join(__dirname, '..');
         const mockAgent = {

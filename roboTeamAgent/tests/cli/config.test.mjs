@@ -23,7 +23,7 @@ describe('Config', () => {
 
     describe('Config class', () => {
         it('should load Config module', async () => {
-            const module = await import('../skill-manager/src/lib/Config.mjs');
+            const module = await import('../achilles-cli/src/lib/Config.mjs');
 
             assert.ok(module.config, 'Should export config singleton');
             assert.ok(module.Config, 'Should export Config class');
@@ -32,11 +32,11 @@ describe('Config', () => {
 
         it('should get default values', async () => {
             // Clear any env vars that might affect the test
-            delete process.env.SKILL_MANAGER_UI;
+            delete process.env.ACHILLES_CLI_UI;
             delete process.env.ACHILLES_DEBUG;
             delete process.env.LOG_LEVEL;
 
-            const { Config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
             const config = new Config();
 
             assert.strictEqual(config.get('UI_STYLE'), 'claude-code');
@@ -45,11 +45,11 @@ describe('Config', () => {
         });
 
         it('should read from environment variables', async () => {
-            process.env.SKILL_MANAGER_UI = 'minimal';
+            process.env.ACHILLES_CLI_UI = 'minimal';
             process.env.ACHILLES_DEBUG = 'true';
             process.env.LOG_LEVEL = 'debug';
 
-            const { Config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
             const config = new Config();
 
             assert.strictEqual(config.get('UI_STYLE'), 'minimal');
@@ -61,14 +61,14 @@ describe('Config', () => {
             // Test that any of the DEBUG var names work
             process.env.ACHILES_DEBUG = 'true'; // Note: intentional typo support
 
-            const { Config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
             const config = new Config();
 
             assert.strictEqual(config.get('DEBUG'), true);
         });
 
         it('should parse boolean values correctly', async () => {
-            const { Config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
             const config = new Config();
 
             // Test various truthy strings
@@ -88,14 +88,14 @@ describe('Config', () => {
         it('should parse number values', async () => {
             process.env.SKILL_MAX_REFINEMENT_ITERATIONS = '10';
 
-            const { Config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
             const config = new Config();
 
             assert.strictEqual(config.get('MAX_REFINEMENT_ITERATIONS'), 10);
         });
 
         it('should throw for unknown config key', async () => {
-            const { Config, config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config, config } = await import('../achilles-cli/src/lib/Config.mjs');
 
             assert.throws(
                 () => config.get('UNKNOWN_KEY'),
@@ -104,14 +104,14 @@ describe('Config', () => {
         });
 
         it('should check if key exists', async () => {
-            const { config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { config } = await import('../achilles-cli/src/lib/Config.mjs');
 
             assert.strictEqual(config.has('UI_STYLE'), true);
             assert.strictEqual(config.has('UNKNOWN_KEY'), false);
         });
 
         it('should list all keys', async () => {
-            const { config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { config } = await import('../achilles-cli/src/lib/Config.mjs');
             const keys = config.keys();
 
             assert.ok(Array.isArray(keys));
@@ -121,7 +121,7 @@ describe('Config', () => {
         });
 
         it('should get all config values', async () => {
-            const { Config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
             const config = new Config();
             const all = config.getAll();
 
@@ -131,23 +131,23 @@ describe('Config', () => {
         });
 
         it('should get config definition', async () => {
-            const { config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { config } = await import('../achilles-cli/src/lib/Config.mjs');
             const def = config.getDefinition('UI_STYLE');
 
             assert.ok(def);
-            assert.strictEqual(def.name, 'SKILL_MANAGER_UI');
+            assert.strictEqual(def.name, 'ACHILLES_CLI_UI');
             assert.ok(def.description);
         });
 
         it('should cache values', async () => {
-            const { Config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
             const config = new Config();
 
             // First call
             const value1 = config.get('UI_STYLE');
 
             // Change env var
-            process.env.SKILL_MANAGER_UI = 'changed';
+            process.env.ACHILLES_CLI_UI = 'changed';
 
             // Second call should return cached value
             const value2 = config.get('UI_STYLE');
@@ -162,7 +162,7 @@ describe('Config', () => {
         });
 
         it('should validate configuration', async () => {
-            const { Config } = await import('../skill-manager/src/lib/Config.mjs');
+            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
             const config = new Config();
 
             // Should not throw
@@ -174,17 +174,17 @@ describe('Config', () => {
 });
 
 describe('configSchema', () => {
-    describe('validateSkillManagerConfig', () => {
+    describe('validateAchillesCliConfig', () => {
         it('should load configSchema module', async () => {
-            const module = await import('../skill-manager/src/lib/configSchema.mjs');
+            const module = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             assert.ok(module.skillManagerConfigSchema, 'Should export schema');
-            assert.ok(module.validateSkillManagerConfig, 'Should export validate function');
+            assert.ok(module.validateAchillesCliConfig, 'Should export validate function');
             assert.ok(module.assertValidConfig, 'Should export assertValidConfig');
         });
 
         it('should validate valid config', async () => {
-            const { validateSkillManagerConfig } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const validConfig = {
                 version: 1,
@@ -193,40 +193,40 @@ describe('configSchema', () => {
                 ],
             };
 
-            const result = validateSkillManagerConfig(validConfig);
+            const result = validateAchillesCliConfig(validConfig);
 
             assert.strictEqual(result.valid, true);
             assert.deepStrictEqual(result.errors, []);
         });
 
         it('should reject invalid version type', async () => {
-            const { validateSkillManagerConfig } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const invalidConfig = {
                 version: 'not-a-number',
             };
 
-            const result = validateSkillManagerConfig(invalidConfig);
+            const result = validateAchillesCliConfig(invalidConfig);
 
             assert.strictEqual(result.valid, false);
             assert.ok(result.errors.some(e => e.includes('version')));
         });
 
         it('should reject invalid repositories type', async () => {
-            const { validateSkillManagerConfig } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const invalidConfig = {
                 repositories: 'not-an-array',
             };
 
-            const result = validateSkillManagerConfig(invalidConfig);
+            const result = validateAchillesCliConfig(invalidConfig);
 
             assert.strictEqual(result.valid, false);
             assert.ok(result.errors.some(e => e.includes('repositories')));
         });
 
         it('should validate repository entries', async () => {
-            const { validateSkillManagerConfig } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const invalidConfig = {
                 repositories: [
@@ -234,14 +234,14 @@ describe('configSchema', () => {
                 ],
             };
 
-            const result = validateSkillManagerConfig(invalidConfig);
+            const result = validateAchillesCliConfig(invalidConfig);
 
             assert.strictEqual(result.valid, false);
             assert.ok(result.errors.length > 0);
         });
 
         it('should validate repository type enum', async () => {
-            const { validateSkillManagerConfig } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const invalidConfig = {
                 repositories: [
@@ -249,7 +249,7 @@ describe('configSchema', () => {
                 ],
             };
 
-            const result = validateSkillManagerConfig(invalidConfig);
+            const result = validateAchillesCliConfig(invalidConfig);
 
             assert.strictEqual(result.valid, false);
             assert.ok(result.errors.some(e => e.includes('type')));
@@ -258,7 +258,7 @@ describe('configSchema', () => {
 
     describe('assertValidConfig', () => {
         it('should not throw for valid config', async () => {
-            const { assertValidConfig } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { assertValidConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const validConfig = { version: 1, repositories: [] };
 
@@ -267,7 +267,7 @@ describe('configSchema', () => {
         });
 
         it('should throw SchemaValidationError for invalid config', async () => {
-            const { assertValidConfig } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { assertValidConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const invalidConfig = { version: 'bad' };
 
@@ -280,7 +280,7 @@ describe('configSchema', () => {
 
     describe('validateRepositoryEntry', () => {
         it('should validate valid repository entry', async () => {
-            const { validateRepositoryEntry } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { validateRepositoryEntry } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const validEntry = { name: 'test', source: '/path/to/repo' };
 
@@ -290,7 +290,7 @@ describe('configSchema', () => {
         });
 
         it('should reject missing name', async () => {
-            const { validateRepositoryEntry } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { validateRepositoryEntry } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const invalidEntry = { source: '/path' };
 
@@ -301,7 +301,7 @@ describe('configSchema', () => {
         });
 
         it('should reject missing source', async () => {
-            const { validateRepositoryEntry } = await import('../skill-manager/src/lib/configSchema.mjs');
+            const { validateRepositoryEntry } = await import('../achilles-cli/src/lib/configSchema.mjs');
 
             const invalidEntry = { name: 'test' };
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Run all skill-manager tests
- * Usage: node tests/skill-manager/run-all.mjs
+ * Run all achilles-cli tests
+ * Usage: node tests/run-all.mjs
  */
 
 import { spawn } from 'node:child_process';

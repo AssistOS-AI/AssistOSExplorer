@@ -26,7 +26,7 @@ describe('CommandSelector - Full Suite', () => {
     ];
 
     beforeEach(async () => {
-        const module = await import('../skill-manager/src/ui/CommandSelector.mjs');
+        const module = await import('../achilles-cli/src/ui/CommandSelector.mjs');
         CommandSelector = module.CommandSelector;
     });
 
@@ -235,9 +235,9 @@ describe('buildCommandList - Full Suite', () => {
     let SlashCommandHandler;
 
     beforeEach(async () => {
-        const cmdModule = await import('../skill-manager/src/ui/CommandSelector.mjs');
+        const cmdModule = await import('../achilles-cli/src/ui/CommandSelector.mjs');
         buildCommandList = cmdModule.buildCommandList;
-        const handlerModule = await import('../skill-manager/src/repl/SlashCommandHandler.mjs');
+        const handlerModule = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
         SlashCommandHandler = handlerModule.SlashCommandHandler;
     });
 
@@ -293,7 +293,7 @@ describe('showSkillSelector - Full Suite', () => {
     ];
 
     beforeEach(async () => {
-        const module = await import('../skill-manager/src/ui/CommandSelector.mjs');
+        const module = await import('../achilles-cli/src/ui/CommandSelector.mjs');
         showSkillSelector = module.showSkillSelector;
         CommandSelector = module.CommandSelector;
     });
@@ -427,7 +427,7 @@ describe('showTierSelector and showModelSelector - Exports', () => {
     let showTierSelector, showModelSelector;
 
     beforeEach(async () => {
-        const module = await import('../skill-manager/src/ui/CommandSelector.mjs');
+        const module = await import('../achilles-cli/src/ui/CommandSelector.mjs');
         showTierSelector = module.showTierSelector;
         showModelSelector = module.showModelSelector;
     });
@@ -470,7 +470,7 @@ describe('Tier and Model item transformations', () => {
     let CommandSelector;
 
     beforeEach(async () => {
-        const module = await import('../skill-manager/src/ui/CommandSelector.mjs');
+        const module = await import('../achilles-cli/src/ui/CommandSelector.mjs');
         CommandSelector = module.CommandSelector;
     });
 

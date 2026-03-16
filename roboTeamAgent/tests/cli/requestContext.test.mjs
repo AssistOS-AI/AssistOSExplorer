@@ -11,7 +11,7 @@ describe('RequestContext', () => {
     let RequestContext, abortableTimeout, raceWithAbort, withRequestContext;
 
     beforeEach(async () => {
-        const module = await import('../skill-manager/src/lib/RequestContext.mjs');
+        const module = await import('../achilles-cli/src/lib/RequestContext.mjs');
         RequestContext = module.RequestContext;
         abortableTimeout = module.abortableTimeout;
         raceWithAbort = module.raceWithAbort;
@@ -244,7 +244,7 @@ describe('Utility functions', () => {
     let abortableTimeout, raceWithAbort, withRequestContext;
 
     beforeEach(async () => {
-        const module = await import('../skill-manager/src/lib/RequestContext.mjs');
+        const module = await import('../achilles-cli/src/lib/RequestContext.mjs');
         abortableTimeout = module.abortableTimeout;
         raceWithAbort = module.raceWithAbort;
         withRequestContext = module.withRequestContext;

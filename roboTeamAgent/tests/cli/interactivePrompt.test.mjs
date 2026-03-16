@@ -39,7 +39,7 @@ describe('InteractivePrompt', () => {
                 getUserSkills: () => [],
             });
 
-            assert.strictEqual(prompt.promptString, 'SkillManager> ');
+            assert.strictEqual(prompt.promptString, 'AchillesCli> ');
         });
 
         it('should accept custom prompt string', () => {
