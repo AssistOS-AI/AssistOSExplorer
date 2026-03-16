@@ -12,10 +12,9 @@ import { broadcastToSoul } from '../ws/soul-stream.mjs';
 import { parseAgentName } from '../utils/agent-parser.mjs';
 import { resolveSession } from './session-resolver.mjs';
 import { BlacklistError, SoulGatewayError } from '../utils/errors.mjs';
-import { loadModelsConfiguration } from 'achillesAgentLib/utils/LLMClient.mjs';
+import { getProviderById, getProviderApiKey, resolveProviderByName } from '../db/providers-dao.mjs';
 
 const log = createLogger('openai-responses-proxy');
-const modelsConfig = loadModelsConfiguration();
 
 /**
  * OpenAI Responses API passthrough proxy (/v1/responses).
@@ -88,28 +87,35 @@ export async function openaiResponsesProxy(req, res) {
     logEntry.resolved_model = modelInfo.resolvedModel;
     logEntry.mode = modelInfo.mode;
 
-    // 7. Resolve upstream provider config
-    const providerConfig = modelsConfig.providers.get(modelInfo.providerKey);
-    if (!providerConfig) {
+    // 7. Resolve upstream provider config from DB
+    let dbConfig;
+    if (modelInfo.providerConfigId) {
+      dbConfig = await getProviderById(modelInfo.providerConfigId);
+    } else {
+      dbConfig = await resolveProviderByName(modelInfo.providerKey);
+    }
+    if (!dbConfig) {
       throw new SoulGatewayError(
         `Provider "${modelInfo.providerKey}" not configured`, 502, 'provider_not_configured'
       );
     }
-    // Use UPSTREAM_URL env var for axiologic_proxy (direct localhost, avoids Cloudflare tunnel)
-    const baseURL = (modelInfo.providerKey === 'axiologic_proxy' && process.env.UPSTREAM_URL)
-      ? process.env.UPSTREAM_URL + '/v1/chat/completions'
-      : providerConfig.baseURL;
-    if (!baseURL) {
+    if (!dbConfig.is_enabled) {
       throw new SoulGatewayError(
-        `Missing baseURL for provider "${modelInfo.providerKey}"`, 502, 'provider_not_configured'
+        `Provider "${dbConfig.name}" is disabled`, 502, 'provider_disabled'
       );
     }
 
-    const apiKeyEnv = providerConfig.apiKeyEnv;
-    const upstreamApiKey = apiKeyEnv ? process.env[apiKeyEnv] : process.env.LLM_API_KEY;
+    const baseURL = dbConfig.base_url;
+    if (!baseURL) {
+      throw new SoulGatewayError(
+        `Missing baseURL for provider "${dbConfig.name}"`, 502, 'provider_not_configured'
+      );
+    }
+
+    const upstreamApiKey = dbConfig.api_key || await getProviderApiKey(dbConfig.id);
     if (!upstreamApiKey) {
       throw new SoulGatewayError(
-        `Missing API key for provider "${modelInfo.providerKey}" (env: ${apiKeyEnv})`, 502, 'provider_not_configured'
+        `Missing API key for provider "${dbConfig.name}"`, 502, 'provider_not_configured'
       );
     }
 

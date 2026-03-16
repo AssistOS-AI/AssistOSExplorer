@@ -1,23 +1,16 @@
-import { loadModelsConfiguration } from 'achillesAgentLib/utils/LLMClient.mjs';
 import { ensureProvider } from 'achillesAgentLib/utils/LLMProviders/providers/providerRegistry.mjs';
-import { getProviderById, getProviderApiKey } from '../db/providers-dao.mjs';
+import { getProviderById, getProviderApiKey, resolveProviderByName } from '../db/providers-dao.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { UpstreamError } from '../utils/errors.mjs';
 
 const log = createLogger('upstream');
 
-// Cache the achillesAgentLib configuration (providers map)
-const modelsConfig = loadModelsConfiguration();
-
 /**
  * Dispatch a request to an LLM provider via achillesAgentLib.
  * Returns an async generator of typed chunks.
  *
- * @param {Array} messages - OpenAI-format messages array from client
- * @param {object} routeResult - From model-router: { providerKey, providerModel, ... }
- * @param {object} params - LLM parameters (temperature, max_tokens, etc.)
- * @param {AbortSignal} signal
- * @returns {AsyncGenerator} achillesAgentLib streaming chunks
+ * All provider config (baseURL, API key) is resolved from the DB.
+ * achillesAgentLib's ensureProvider() is only used to load protocol modules.
  */
 // Map DB provider protocol to achillesAgentLib provider module key
 const PROTOCOL_PROVIDER_MAP = {
@@ -29,56 +22,45 @@ const PROTOCOL_PROVIDER_MAP = {
 export async function dispatchUpstream(messages, routeResult, params, signal) {
   const { providerKey, providerModel, providerConfigId } = routeResult;
 
-  let provider, baseURL, apiKey;
+  let dbConfig;
 
   if (providerConfigId) {
-    // ---- DB provider path ----
-    const dbConfig = await getProviderById(providerConfigId);
+    // Look up by ID (model has explicit provider_config_id)
+    dbConfig = await getProviderById(providerConfigId);
     if (!dbConfig) {
       throw new UpstreamError(`Provider config "${providerConfigId}" not found in database`, 502, 'provider_not_found');
     }
-    if (!dbConfig.is_enabled) {
-      throw new UpstreamError(`Provider "${dbConfig.name}" is disabled`, 502, 'provider_disabled');
-    }
-
-    const protocolKey = PROTOCOL_PROVIDER_MAP[dbConfig.protocol] || 'openai';
-    try {
-      provider = ensureProvider(protocolKey);
-    } catch (err) {
-      throw new UpstreamError(`Protocol module "${dbConfig.protocol}" not available: ${err.message}`, 502, 'provider_not_found');
-    }
-
-    baseURL = dbConfig.base_url;
-    apiKey = await getProviderApiKey(providerConfigId);
-    if (!apiKey) {
-      throw new UpstreamError(`No API key configured for provider "${dbConfig.name}"`, 401, 'authentication_error');
-    }
   } else {
-    // ---- Legacy LLMConfig path ----
-    try {
-      provider = ensureProvider(providerKey);
-    } catch (err) {
-      throw new UpstreamError(`Provider "${providerKey}" not available: ${err.message}`, 502, 'provider_not_found');
+    // Look up by name (fallback for models without provider_config_id)
+    const resolved = await resolveProviderByName(providerKey);
+    if (!resolved) {
+      throw new UpstreamError(`Provider "${providerKey}" not configured`, 502, 'provider_not_configured');
     }
+    // resolveProviderByName returns api_key inline, but we need the same shape
+    dbConfig = resolved;
+  }
 
-    const providerConfig = modelsConfig.providers.get(providerKey);
-    if (!providerConfig) {
-      throw new UpstreamError(`Provider "${providerKey}" not configured in LLMConfig`, 502, 'provider_not_configured');
-    }
+  if (!dbConfig.is_enabled) {
+    throw new UpstreamError(`Provider "${dbConfig.name}" is disabled`, 502, 'provider_disabled');
+  }
 
-    baseURL = (providerKey === 'axiologic_proxy' && process.env.UPSTREAM_URL)
-      ? process.env.UPSTREAM_URL + '/v1/chat/completions'
-      : providerConfig.baseURL;
-    if (!baseURL) {
-      throw new UpstreamError(`Missing baseURL for provider "${providerKey}"`, 502, 'provider_not_configured');
-    }
+  const protocolKey = PROTOCOL_PROVIDER_MAP[dbConfig.protocol] || 'openai';
+  let provider;
+  try {
+    provider = ensureProvider(protocolKey);
+  } catch (err) {
+    throw new UpstreamError(`Protocol module "${dbConfig.protocol}" not available: ${err.message}`, 502, 'provider_not_found');
+  }
 
-    const apiKeyEnv = providerConfig.apiKeyEnv;
-    apiKey = apiKeyEnv ? process.env[apiKeyEnv] : process.env.LLM_API_KEY;
+  const baseURL = dbConfig.base_url;
+  if (!baseURL) {
+    throw new UpstreamError(`Missing baseURL for provider "${dbConfig.name}"`, 502, 'provider_not_configured');
+  }
 
-    if (!apiKey && providerKey !== 'huggingface') {
-      throw new UpstreamError(`Missing API key for provider "${providerKey}" (env: ${apiKeyEnv})`, 401, 'authentication_error');
-    }
+  // Get API key: resolveProviderByName returns it inline, getProviderById doesn't
+  const apiKey = dbConfig.api_key || await getProviderApiKey(dbConfig.id);
+  if (!apiKey) {
+    throw new UpstreamError(`No API key configured for provider "${dbConfig.name}"`, 401, 'authentication_error');
   }
 
   const options = {

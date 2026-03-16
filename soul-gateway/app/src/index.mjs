@@ -1,3 +1,6 @@
+// Register achillesAgentLib protocol handlers (openai, anthropic, google modules)
+import 'achillesAgentLib/utils/LLMClient.mjs';
+
 import { createAppServer, startServer } from './server.mjs';
 import { initDb } from './db/init.mjs';
 import { createLogger } from './utils/logger.mjs';

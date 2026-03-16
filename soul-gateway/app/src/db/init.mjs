@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { config } from '../config.mjs';
 import { createLogger } from '../utils/logger.mjs';
+import { seedProviders } from './seed-providers.mjs';
 
 const log = createLogger('db');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +56,9 @@ export async function initDb() {
   // Seed default data if tables are empty
   await seedDefaults();
   await seedDefaultTiers();
+
+  // Seed providers from environment variables
+  await seedProviders();
 
   log.info('Database initialization complete');
 }

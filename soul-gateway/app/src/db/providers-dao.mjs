@@ -24,6 +24,27 @@ export async function getProviderApiKey(id) {
   return decrypt(rows[0].encrypted_api_key);
 }
 
+/**
+ * Resolve a provider by name, returning config WITH decrypted API key.
+ * Used by dispatch when provider_config_id is NULL but a DB provider exists.
+ */
+export async function resolveProviderByName(name) {
+  const { rows } = await query(
+    'SELECT id, name, protocol, base_url, encrypted_api_key, is_enabled FROM provider_configs WHERE name = $1',
+    [name]
+  );
+  if (!rows[0]) return null;
+  const row = rows[0];
+  return {
+    id: row.id,
+    name: row.name,
+    protocol: row.protocol,
+    base_url: row.base_url,
+    is_enabled: row.is_enabled,
+    api_key: row.encrypted_api_key ? decrypt(row.encrypted_api_key) : null,
+  };
+}
+
 export async function createProvider({ name, display_name, protocol, base_url, api_key }) {
   const encKey = encrypt(api_key);
   const keyHint = api_key.length > 12

@@ -1,6 +1,5 @@
 import { readJsonBody, sendJson, sendError } from '../utils/http-helpers.mjs';
 import * as dao from '../db/providers-dao.mjs';
-import { listProviders as listLLMConfigProviders } from 'achillesAgentLib/utils/LLMProviders/providers/providerRegistry.mjs';
 
 const PROVIDER_TEMPLATES = {
   nvidia:     { display_name: 'NVIDIA',              protocol: 'openai',    base_url: 'https://integrate.api.nvidia.com/v1/chat/completions' },
@@ -37,11 +36,6 @@ export const handleProviders = {
     const body = await readJsonBody(req);
     if (!body?.name || !body?.base_url || !body?.api_key) {
       return sendError(res, 400, 'name, base_url, and api_key are required');
-    }
-    // Reject names that collide with built-in LLMConfig providers
-    const builtIn = listLLMConfigProviders();
-    if (builtIn.includes(body.name)) {
-      return sendError(res, 409, `Provider name "${body.name}" conflicts with built-in provider`);
     }
     try {
       const provider = await dao.createProvider(body);
