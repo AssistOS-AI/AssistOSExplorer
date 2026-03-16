@@ -156,15 +156,6 @@ async function migrate(p) {
     `, [source, providerKey]);
   }
 
-  // One-time cleanup: clear all tracking data for fresh start
-  // (TRUNCATE on empty tables is a no-op, safe to re-run)
-  try {
-    await p.query(`TRUNCATE ${config.pgSchema}.call_logs`);
-    await p.query(`TRUNCATE ${config.pgSchema}.rate_limit_state`);
-    log.info('Cleared tracking data');
-  } catch (err) {
-    log.warn('Could not truncate tracking tables:', err.message);
-  }
 }
 
 async function ensurePartitions() {
