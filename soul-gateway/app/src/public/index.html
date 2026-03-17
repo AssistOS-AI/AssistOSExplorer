@@ -50,9 +50,6 @@
           <div class="flex gap-4 h-[calc(100vh-10rem)]">
             <!-- Keys Panel -->
             <div class="w-64 flex-shrink-0 flex flex-col">
-              <div class="mb-2">
-                <input type="text" class="input input-bordered input-sm w-full" x-model="search" placeholder="Search keys...">
-              </div>
               <div class="card bg-base-100 shadow flex-1 overflow-y-auto">
                 <div class="p-2 text-sm">
                   <template x-for="key in filteredKeys()" :key="key.api_key_id">

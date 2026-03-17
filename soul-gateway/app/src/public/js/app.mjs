@@ -277,7 +277,6 @@ function timeRangeToParams(range, customFrom, customTo) {
 function logsPage() {
   return {
     keys: [],
-    search: '',
     selectedKey: null,
     selectedLogs: [],
     logsTotal: 0,
@@ -316,12 +315,7 @@ function logsPage() {
     },
 
     filteredKeys() {
-      if (!this.search) return this.keys;
-      const q = this.search.toLowerCase();
-      return this.keys.filter(k =>
-        (k.key_label || '').toLowerCase().includes(q) ||
-        (k.key_hint || '').toLowerCase().includes(q)
-      );
+      return this.keys;
     },
 
     async onTimeChange() {
