@@ -938,8 +938,8 @@
               </div>
               <div class="form-control mt-2">
                 <label class="label font-semibold">Add Model</label>
-                <div class="flex gap-2 mb-2">
-                  <select class="select select-bordered select-sm flex-1" x-ref="tierModelSelect">
+                <div class="flex gap-2 mb-2 min-w-0">
+                  <select class="select select-bordered select-sm flex-1 min-w-0" x-ref="tierModelSelect">
                     <option value="" disabled selected>Pick a model...</option>
                     <template x-for="m in models.filter(m => !tierForm.models.includes(m.name))" :key="m.id">
                       <option :value="m.name" x-text="m.name"></option>
