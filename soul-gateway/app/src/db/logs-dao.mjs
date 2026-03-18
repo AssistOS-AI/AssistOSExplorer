@@ -83,6 +83,12 @@ export async function queryLogs({ soul_id, model, from, to, status, error_type, 
   if (status === 'success') { conditions.push(`error_type IS NULL AND blocked_by_blacklist = false`); }
   if (keyword) {
     conditions.push(`(
+      resolved_model ILIKE $${idx} OR
+      requested_model ILIKE $${idx} OR
+      agent_name ILIKE $${idx} OR
+      session_id::text ILIKE $${idx} OR
+      error_type ILIKE $${idx} OR
+      error_message ILIKE $${idx} OR
       request_messages::text ILIKE $${idx} OR
       response_content ILIKE $${idx}
     )`);

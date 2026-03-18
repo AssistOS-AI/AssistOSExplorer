@@ -52,3 +52,26 @@
 }
 .sg-md .sg-md-table th { background: oklch(0.22 0.01 260); font-weight: 600; }
 .sg-md a { color: oklch(0.7 0.15 250); text-decoration: underline; }
+
+/* Resizable columns */
+.col-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  opacity: 0;
+  background: oklch(0.6 0.15 250);
+  transition: opacity 0.15s;
+  z-index: 5;
+}
+.col-resize-handle:hover,
+.col-resize-handle.dragging {
+  opacity: 1;
+}
+.resizable-col {
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}

@@ -74,7 +74,7 @@
                 <div class="card-body p-0 flex flex-col h-full">
                   <!-- Header: search + time filter -->
                   <div class="px-4 py-2 border-b border-base-300 flex items-center gap-2 flex-wrap">
-                    <input type="text" class="input input-bordered input-xs w-48" placeholder="Search content..." x-model="keyword" @keydown.enter="onSearch()" @change="onSearch()">
+                    <input type="text" class="input input-bordered input-xs w-48" placeholder="Search model, agent, content..." x-model="keyword" @keydown.enter="onSearch()" @change="onSearch()">
                     <span class="text-xs opacity-50" x-text="logsTotal + ' requests'"></span>
                     <div class="flex-1"></div>
                     <!-- Time range -->
@@ -107,15 +107,15 @@
                         <div class="flex items-center px-3 py-2">
                           <div class="w-5"></div>
                           <div class="flex-1 flex items-center gap-0">
-                            <div class="w-36 text-xs cursor-pointer select-none flex items-center gap-1" @click="setSort('started_at')">Time <span x-show="sortCol === 'started_at'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
-                            <div class="w-32 text-xs cursor-pointer select-none flex items-center gap-1" @click="setSort('resolved_model')">Model <span x-show="sortCol === 'resolved_model'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
-                            <div class="w-24 text-xs">Agent</div>
-                            <div class="w-20 text-xs">Session</div>
-                            <div class="w-20 text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" @click="setSort('latency_ms')">Latency <span x-show="sortCol === 'latency_ms'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
-                            <div class="w-20 text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" @click="setSort('total_tokens')">Tokens <span x-show="sortCol === 'total_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
-                            <div class="w-20 text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" @click="setSort('total_cost')">Cost <span x-show="sortCol === 'total_cost'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></div>
-                            <div class="w-14 text-xs text-center">Cache</div>
-                            <div class="w-16 text-xs pl-2">Status</div>
+                            <div class="resizable-col text-xs cursor-pointer select-none flex items-center gap-1" :style="{width: cw('time')}" @click="setSort('started_at')">Time <span x-show="sortCol === 'started_at'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('time', $event)"></div></div>
+                            <div class="resizable-col text-xs cursor-pointer select-none flex items-center gap-1" :style="{width: cw('model')}" @click="setSort('resolved_model')">Model <span x-show="sortCol === 'resolved_model'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('model', $event)"></div></div>
+                            <div class="resizable-col text-xs flex items-center" :style="{width: cw('agent')}">Agent<div class="col-resize-handle" @mousedown="startResize('agent', $event)"></div></div>
+                            <div class="resizable-col text-xs flex items-center" :style="{width: cw('session')}">Session<div class="col-resize-handle" @mousedown="startResize('session', $event)"></div></div>
+                            <div class="resizable-col text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" :style="{width: cw('latency')}" @click="setSort('latency_ms')">Latency <span x-show="sortCol === 'latency_ms'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('latency', $event)"></div></div>
+                            <div class="resizable-col text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" :style="{width: cw('tokens')}" @click="setSort('total_tokens')">Tokens <span x-show="sortCol === 'total_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('tokens', $event)"></div></div>
+                            <div class="resizable-col text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" :style="{width: cw('cost')}" @click="setSort('total_cost')">Cost <span x-show="sortCol === 'total_cost'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('cost', $event)"></div></div>
+                            <div class="resizable-col text-xs text-center flex items-center justify-center" :style="{width: cw('cache')}">Cache<div class="col-resize-handle" @mousedown="startResize('cache', $event)"></div></div>
+                            <div class="text-xs pl-2" :style="{width: cw('status')}">Status</div>
                           </div>
                         </div>
                       </th></tr></thead>
@@ -126,15 +126,15 @@
                               <div class="flex items-center cursor-pointer hover:bg-base-200 px-3 py-1.5" @click="toggleDetail(log)">
                                 <div class="w-5"><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
                                 <div class="flex-1 flex items-center gap-0">
-                                  <div class="w-36 text-xs" x-text="formatTime(log.started_at)"></div>
-                                  <div class="w-32 font-mono text-xs truncate" x-text="log.resolved_model || log.requested_model || '-'"></div>
-                                  <div class="w-24 text-xs truncate cursor-pointer hover:underline" x-text="log.agent_name || '-'" @click.stop="log.agent_name && addFilter('agent_name', log.agent_name)"></div>
-                                  <div class="w-20 text-xs font-mono opacity-50 cursor-pointer hover:underline" x-text="log.session_id ? log.session_id.slice(0,8) : '-'" @click.stop="log.session_id && addFilter('session_id', log.session_id)"></div>
-                                  <div class="w-20 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
-                                  <div class="w-20 text-right text-xs" x-text="formatTokens(log.total_tokens)"></div>
-                                  <div class="w-20 text-right text-xs" x-text="formatCost(log.total_cost)"></div>
-                                  <div class="w-14 text-center cursor-pointer" @click.stop="addFilter('cache_hit', !!log.cache_hit)"><span class="badge badge-xs" :class="log.cache_hit ? 'badge-success' : 'badge-ghost'" x-text="log.cache_hit ? 'HIT' : 'MISS'"></span></div>
-                                  <div class="w-16 pl-2">
+                                  <div class="text-xs truncate flex-shrink-0" :style="{width: cw('time')}" x-text="formatTime(log.started_at)"></div>
+                                  <div class="font-mono text-xs truncate flex-shrink-0" :style="{width: cw('model')}" x-text="log.resolved_model || log.requested_model || '-'"></div>
+                                  <div class="text-xs truncate flex-shrink-0 cursor-pointer hover:underline" :style="{width: cw('agent')}" x-text="log.agent_name || '-'" @click.stop="log.agent_name && addFilter('agent_name', log.agent_name)"></div>
+                                  <div class="text-xs font-mono opacity-50 truncate flex-shrink-0 cursor-pointer hover:underline" :style="{width: cw('session')}" x-text="log.session_id ? log.session_id.slice(0,8) : '-'" @click.stop="log.session_id && addFilter('session_id', log.session_id)"></div>
+                                  <div class="text-right text-xs flex-shrink-0" :style="{width: cw('latency')}" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
+                                  <div class="text-right text-xs flex-shrink-0" :style="{width: cw('tokens')}" x-text="formatTokens(log.total_tokens)"></div>
+                                  <div class="text-right text-xs flex-shrink-0" :style="{width: cw('cost')}" x-text="formatCost(log.total_cost)"></div>
+                                  <div class="text-center flex-shrink-0 cursor-pointer" :style="{width: cw('cache')}" @click.stop="addFilter('cache_hit', !!log.cache_hit)"><span class="badge badge-xs" :class="log.cache_hit ? 'badge-success' : 'badge-ghost'" x-text="log.cache_hit ? 'HIT' : 'MISS'"></span></div>
+                                  <div class="pl-2 flex-shrink-0" :style="{width: cw('status')}">
                                     <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
                                     <span x-show="!log.error_type && log.status_code === 200" class="badge badge-success badge-xs">OK</span>
                                   </div>

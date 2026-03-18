@@ -292,6 +292,9 @@ function logsPage() {
     timeRange: 'day',
     customFrom: '',
     customTo: '',
+    // Column widths (resizable)
+    colWidths: { time: 144, model: 128, agent: 96, session: 80, latency: 80, tokens: 80, cost: 80, cache: 56, status: 64 },
+    _resizing: null,
 
     async init() {
       await this.loadTree();
@@ -405,6 +408,28 @@ function logsPage() {
       if (!log._detail) { log._detail = await api.get(`/api/v1/logs/${log.id}`); }
       this.expandedDetail = log.id;
     },
+
+    // Column resize
+    startResize(col, e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = this.colWidths[col];
+      this._resizing = col;
+      const onMove = (ev) => {
+        const diff = ev.clientX - startX;
+        this.colWidths[col] = Math.max(40, startW + diff);
+      };
+      const onUp = () => {
+        this._resizing = null;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    },
+
+    cw(col) { return this.colWidths[col] + 'px'; },
 
     formatTime, formatDate, formatMessages, renderContent,
     formatCost(v) { return v ? '$' + Number(v).toFixed(4) : '-'; },
