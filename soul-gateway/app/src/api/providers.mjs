@@ -109,10 +109,12 @@ export const handleProviders = {
       const data = await resp.json();
       const models = Array.isArray(data) ? data : (data.data || []);
 
+      const seen = new Set();
       const enriched = models
         .map(m => {
           const id = m.id || m.name;
-          if (!id) return null;
+          if (!id || seen.has(id)) return null;
+          seen.add(id);
           let input_price = 0, output_price = 0;
           if (m.pricing?.prompt) input_price = parseFloat(m.pricing.prompt) * 1_000_000;
           if (m.pricing?.completion) output_price = parseFloat(m.pricing.completion) * 1_000_000;
