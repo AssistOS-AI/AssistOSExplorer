@@ -22,6 +22,7 @@ export const handleModels = {
           output_price: parseFloat(m.output_price) || 0,
           context_window: m.context_window || null,
           sort_order: m.sort_order ?? 100,
+          is_free: Boolean(m.is_free),
         })),
       });
       return;
