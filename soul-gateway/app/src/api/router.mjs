@@ -34,6 +34,10 @@ export async function apiRouter(req, res, pathname, query) {
   if (params) {
     if (method === 'POST') return handleProviders.test(req, res, params);
   }
+  params = matchPath('/api/v1/providers/:id/sync', pathname);
+  if (params) {
+    if (method === 'POST') return handleProviders.sync(req, res, params);
+  }
   params = matchPath('/api/v1/providers/:id/models', pathname);
   if (params) {
     if (method === 'GET') return handleProviders.discover(req, res, params);

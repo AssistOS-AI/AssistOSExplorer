@@ -61,3 +61,38 @@ export async function deleteModel(id) {
   const { rows } = await query('DELETE FROM model_configs WHERE id = $1 RETURNING *', [id]);
   return rows[0] || null;
 }
+
+/**
+ * Upsert a model — insert or update on name conflict.
+ * Used by provider sync to auto-create/update discovered models.
+ */
+export async function upsertModel({ name, display_name, provider_key, provider_model, mode, input_price, output_price, is_free, sort_order, provider_config_id }) {
+  const { rows } = await query(`
+    INSERT INTO model_configs (name, display_name, provider_key, provider_model, mode, input_price, output_price, is_free, sort_order, provider_config_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ON CONFLICT (name) DO UPDATE SET
+      display_name = COALESCE(EXCLUDED.display_name, model_configs.display_name),
+      provider_key = EXCLUDED.provider_key,
+      provider_model = EXCLUDED.provider_model,
+      mode = EXCLUDED.mode,
+      input_price = EXCLUDED.input_price,
+      output_price = EXCLUDED.output_price,
+      is_free = EXCLUDED.is_free,
+      sort_order = EXCLUDED.sort_order,
+      provider_config_id = EXCLUDED.provider_config_id,
+      is_enabled = true
+    RETURNING *
+  `, [name, display_name || name, provider_key, provider_model || name, mode || 'fast', input_price || 0, output_price || 0, is_free ?? false, sort_order ?? 100, provider_config_id || null]);
+  return rows[0];
+}
+
+/**
+ * Get all models linked to a specific provider config.
+ */
+export async function getModelsByProviderConfigId(providerConfigId) {
+  const { rows } = await query(
+    'SELECT * FROM model_configs WHERE provider_config_id = $1',
+    [providerConfigId]
+  );
+  return rows;
+}

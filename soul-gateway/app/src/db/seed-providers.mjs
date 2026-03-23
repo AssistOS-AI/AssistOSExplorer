@@ -1,5 +1,7 @@
 import { query } from './init.mjs';
-import { createProvider, getProviderByName } from './providers-dao.mjs';
+import { createProvider, getProviderByName, getProviderApiKey } from './providers-dao.mjs';
+import { upsertModel, getModelsByProviderConfigId } from './models-dao.mjs';
+import { getTierByName, createTier, updateTier } from './tiers-dao.mjs';
 import { createLogger } from '../utils/logger.mjs';
 
 const log = createLogger('seed-providers');
@@ -17,6 +19,7 @@ const SEED_PROVIDERS = [
   { name: 'google',             display_name: 'Google AI',            protocol: 'google',    base_url: 'https://generativelanguage.googleapis.com/v1beta/models/',      envVar: 'GEMINI_API_KEY' },
   { name: 'xai',                display_name: 'xAI',                  protocol: 'openai',    base_url: 'https://api.x.ai/v1/chat/completions',                         envVar: 'XAI_API_KEY' },
   { name: 'mistral',            display_name: 'Mistral',              protocol: 'openai',    base_url: 'https://api.mistral.ai/v1/chat/completions',                   envVar: 'MISTRAL_API_KEY' },
+  { name: 'search_gateway',    display_name: 'Search Gateway',       protocol: 'openai',    base_url: 'http://10.0.2.2:8043/v1/chat/completions',                     envVar: 'SEARCH_GATEWAY_API_KEY' },
 ];
 
 /**
@@ -57,6 +60,9 @@ export async function seedProviders() {
 
   // Link existing models to DB providers
   await linkModelsToProviders();
+
+  // Auto-sync search-gateway models if provider is configured
+  await syncSearchGateway();
 }
 
 /**
@@ -91,5 +97,76 @@ async function linkModelsToProviders() {
 
   if (linkedCount > 0) {
     log.info(`Linked ${linkedCount} models to DB providers`);
+  }
+}
+
+/**
+ * Auto-sync models from search-gateway if it's configured as a provider.
+ * Discovers models from search-gateway's /v1/models and upserts them into model_configs.
+ * Creates/updates the "search" tier with all discovered search models.
+ */
+async function syncSearchGateway() {
+  const provider = await getProviderByName('search_gateway');
+  if (!provider) return;
+
+  const apiKey = await getProviderApiKey(provider.id);
+  if (!apiKey) return;
+
+  const base = provider.base_url
+    .replace(/\/chat\/completions\/?$/, '/models')
+    .replace(/\/messages\/?$/, '/models');
+
+  try {
+    const resp = await fetch(base, {
+      headers: { 'Authorization': `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) {
+      log.warn(`Search gateway sync: ${base} returned ${resp.status}`);
+      return;
+    }
+
+    const data = await resp.json();
+    const rawModels = Array.isArray(data) ? data : (data.data || []);
+    const synced = [];
+
+    for (const m of rawModels) {
+      const id = m.id || m.name;
+      if (!id) continue;
+
+      await upsertModel({
+        name: id,
+        display_name: id,
+        provider_key: provider.name,
+        provider_model: id,
+        mode: m.mode || 'fast',
+        input_price: parseFloat(m.input_price) || 0,
+        output_price: parseFloat(m.output_price) || 0,
+        is_free: Boolean(m.is_free),
+        sort_order: m.sort_order ?? 100,
+        provider_config_id: provider.id,
+      });
+      synced.push(id);
+    }
+
+    if (synced.length > 0) {
+      // Update or create search tier
+      const searchTier = await getTierByName('search');
+      if (searchTier) {
+        const tierModels = new Set(searchTier.models || []);
+        for (const name of synced) tierModels.add(name);
+        await updateTier(searchTier.id, { models: [...tierModels] });
+      } else {
+        await createTier({
+          name: 'search',
+          display_name: 'Web Search',
+          models: synced,
+          sort_order: 50,
+        });
+      }
+      log.info(`Synced ${synced.length} search-gateway models: ${synced.join(', ')}`);
+    }
+  } catch (err) {
+    log.warn(`Search gateway sync failed: ${err.message}`);
   }
 }
