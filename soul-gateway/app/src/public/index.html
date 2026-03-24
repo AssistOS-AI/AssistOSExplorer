@@ -74,7 +74,7 @@
                 <div class="card-body p-0 flex flex-col h-full">
                   <!-- Header: search + time filter -->
                   <div class="px-4 py-2 border-b border-base-300 flex items-center gap-2 flex-wrap">
-                    <input type="text" class="input input-bordered input-xs w-48" placeholder="Search model, agent, content..." x-model="keyword" @keydown.enter="onSearch()" @change="onSearch()">
+                    <input type="text" class="input input-bordered input-xs w-48" placeholder="Search model, agent, content..." x-model="keyword" @keydown.enter="onSearch()" @input="if (!keyword.trim()) onSearch()" @change="onSearch()">
                     <span class="text-xs opacity-50" x-text="logsTotal + ' requests'"></span>
                     <div class="flex-1"></div>
                     <!-- Time range -->

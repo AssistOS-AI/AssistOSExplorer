@@ -378,6 +378,7 @@ function logsPage() {
     },
 
     async loadLogs() {
+      this.expandedDetail = null;
       const tp = timeRangeToParams(this.timeRange, this.customFrom, this.customTo);
       const p = {
         limit: this.logsLimit,
