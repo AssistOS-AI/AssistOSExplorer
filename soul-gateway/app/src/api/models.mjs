@@ -2,11 +2,25 @@ import { readJsonBody, sendJson, sendError } from '../utils/http-helpers.mjs';
 import * as dao from '../db/models-dao.mjs';
 import * as providersDao from '../db/providers-dao.mjs';
 import { handleProviders } from './providers.mjs';
+import { lookupOpenRouterPricing } from '../pipeline/openrouter-pricing.mjs';
 
 export const handleModels = {
   async list(req, res, query) {
     const enabledOnly = query?.enabled === 'true';
     const models = await dao.listModels(enabledOnly);
+
+    // Enrich token-priced models with 0/0 pricing from OpenRouter
+    for (const m of models) {
+      if ((m.pricing_type || 'token') === 'token' &&
+          parseFloat(m.input_price) === 0 && parseFloat(m.output_price) === 0 &&
+          m.provider_model) {
+        const orPricing = await lookupOpenRouterPricing(m.provider_model);
+        if (orPricing) {
+          m.input_price = orPricing.input_price;
+          m.output_price = orPricing.output_price;
+        }
+      }
+    }
 
     // For /v1/models (OpenAI-compatible format)
     if (req.url.startsWith('/v1/models')) {

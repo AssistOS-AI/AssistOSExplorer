@@ -17,8 +17,8 @@ async function buildModelInfo(requestedModel, modelConfig) {
   let inputPrice = parseFloat(modelConfig.input_price) || 0;
   let outputPrice = parseFloat(modelConfig.output_price) || 0;
 
-  // Fallback: if DB has no pricing, look up the provider_model on OpenRouter
-  if (inputPrice === 0 && outputPrice === 0) {
+  // Fallback: if DB has no pricing and model is token-priced, look up on OpenRouter
+  if (inputPrice === 0 && outputPrice === 0 && (modelConfig.pricing_type || 'token') !== 'request') {
     const orPricing = await lookupOpenRouterPricing(providerModel);
     if (orPricing) {
       inputPrice = orPricing.input_price;
