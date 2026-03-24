@@ -778,7 +778,7 @@ function modelsPage() {
     // Model edit state
     showModelEdit: false,
     editingModel: null,
-    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', provider_config_id: '', mode: 'deep', input_price: 0, output_price: 0, is_free: false, max_concurrency: 3, sort_order: 100, context_window: '' },
+    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', provider_config_id: '', mode: 'deep', input_price: 0, output_price: 0, pricing_type: 'token', request_cost: 0, is_free: false, max_concurrency: 3, sort_order: 100, context_window: '' },
     // Model create state
     showModelCreate: false,
     createProvider: '',
@@ -896,6 +896,8 @@ function modelsPage() {
         mode: m.mode || 'deep',
         input_price: parseFloat(m.input_price) || 0,
         output_price: parseFloat(m.output_price) || 0,
+        pricing_type: m.pricing_type || 'token',
+        request_cost: parseFloat(m.request_cost) || 0,
         is_free: !!m.is_free,
         max_concurrency: m.max_concurrency ?? 3,
         sort_order: m.sort_order ?? 100,
@@ -994,8 +996,8 @@ function keysPage() {
     showEdit: false,
     editing: null,
     newKey: '',
-    form: { label: '', key: '', monthly_budget: '10' },
-    editForm: { label: '', monthly_budget: '' },
+    form: { label: '', key: '', daily_budget: '2' },
+    editForm: { label: '', daily_budget: '' },
 
     async init() {
       this.keys = await api.get('/api/v1/keys');
@@ -1010,24 +1012,24 @@ function keysPage() {
     async create() {
       const payload = { ...this.form };
       if (!payload.key) delete payload.key;
-      payload.monthly_budget = payload.monthly_budget === '' ? null : Number(payload.monthly_budget);
+      payload.daily_budget = payload.daily_budget === '' ? null : Number(payload.daily_budget);
       const result = await api.post('/api/v1/keys', payload);
       this.newKey = result.key || '';
       this.showCreate = false;
       this.form.key = '';
-      this.form.monthly_budget = '';
+      this.form.daily_budget = '';
       this.keys = await api.get('/api/v1/keys');
     },
 
     edit(k) {
       this.editing = k;
-      this.editForm = { label: k.label || '', monthly_budget: k.monthly_budget ?? '' };
+      this.editForm = { label: k.label || '', daily_budget: k.daily_budget ?? '' };
       this.showEdit = true;
     },
 
     async saveEdit() {
       const payload = { ...this.editForm };
-      payload.monthly_budget = payload.monthly_budget === '' ? null : Number(payload.monthly_budget);
+      payload.daily_budget = payload.daily_budget === '' ? null : Number(payload.daily_budget);
       await api.put(`/api/v1/keys/${this.editing.id}`, payload);
       this.showEdit = false;
       this.editing = null;

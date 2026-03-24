@@ -127,7 +127,7 @@ export async function pipeline(req, res) {
 
         const costs = calculateCost(
           { prompt_tokens: cached.prompt_tokens, completion_tokens: cached.completion_tokens, total_tokens: cached.total_tokens },
-          modelInfo.inputPrice, modelInfo.outputPrice,
+          modelInfo.inputPrice, modelInfo.outputPrice, modelInfo.pricingType, modelInfo.requestCost,
         );
         logEntry.input_cost = costs.input_cost;
         logEntry.output_cost = costs.output_cost;
@@ -173,7 +173,7 @@ export async function pipeline(req, res) {
     }
 
     // 15. Cost calculation
-    const costs = calculateCost(result.usage, modelInfo.inputPrice, modelInfo.outputPrice);
+    const costs = calculateCost(result.usage, modelInfo.inputPrice, modelInfo.outputPrice, modelInfo.pricingType, modelInfo.requestCost);
 
     // 16. Response checks
     const flags = checkResponse(result.stopReason, Date.now() - startTime);

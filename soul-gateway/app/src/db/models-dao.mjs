@@ -18,16 +18,16 @@ export async function getModelById(id) {
   return rows[0] || null;
 }
 
-export async function createModel({ name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, max_concurrency, sort_order, context_window, provider_config_id }) {
+export async function createModel({ name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, pricing_type, request_cost, max_concurrency, sort_order, context_window, provider_config_id }) {
   const { rows } = await query(`
-    INSERT INTO model_configs (name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, max_concurrency, sort_order, context_window, provider_config_id)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    INSERT INTO model_configs (name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, pricing_type, request_cost, max_concurrency, sort_order, context_window, provider_config_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
     RETURNING *
-  `, [name, display_name || name, provider_key, provider_model, upstream_source || null, mode || 'deep', input_price || 0, output_price || 0, max_concurrency ?? 3, sort_order ?? 100, context_window || null, provider_config_id || null]);
+  `, [name, display_name || name, provider_key, provider_model, upstream_source || null, mode || 'deep', input_price || 0, output_price || 0, pricing_type || 'token', request_cost || 0, max_concurrency ?? 3, sort_order ?? 100, context_window || null, provider_config_id || null]);
   return rows[0];
 }
 
-const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'upstream_source', 'mode', 'input_price', 'output_price', 'is_enabled', 'is_free', 'max_concurrency', 'sort_order', 'context_window', 'provider_config_id'];
+const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'upstream_source', 'mode', 'input_price', 'output_price', 'pricing_type', 'request_cost', 'is_enabled', 'is_free', 'max_concurrency', 'sort_order', 'context_window', 'provider_config_id'];
 
 export async function updateModel(id, fields) {
   const sets = [];
@@ -66,10 +66,10 @@ export async function deleteModel(id) {
  * Upsert a model — insert or update on name conflict.
  * Used by provider sync to auto-create/update discovered models.
  */
-export async function upsertModel({ name, display_name, provider_key, provider_model, mode, input_price, output_price, is_free, sort_order, provider_config_id }) {
+export async function upsertModel({ name, display_name, provider_key, provider_model, mode, input_price, output_price, pricing_type, request_cost, is_free, sort_order, provider_config_id }) {
   const { rows } = await query(`
-    INSERT INTO model_configs (name, display_name, provider_key, provider_model, mode, input_price, output_price, is_free, sort_order, provider_config_id)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    INSERT INTO model_configs (name, display_name, provider_key, provider_model, mode, input_price, output_price, pricing_type, request_cost, is_free, sort_order, provider_config_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     ON CONFLICT (name) DO UPDATE SET
       display_name = COALESCE(EXCLUDED.display_name, model_configs.display_name),
       provider_key = EXCLUDED.provider_key,
@@ -77,12 +77,14 @@ export async function upsertModel({ name, display_name, provider_key, provider_m
       mode = EXCLUDED.mode,
       input_price = EXCLUDED.input_price,
       output_price = EXCLUDED.output_price,
+      pricing_type = EXCLUDED.pricing_type,
+      request_cost = EXCLUDED.request_cost,
       is_free = EXCLUDED.is_free,
       sort_order = EXCLUDED.sort_order,
       provider_config_id = EXCLUDED.provider_config_id,
       is_enabled = true
     RETURNING *
-  `, [name, display_name || name, provider_key, provider_model || name, mode || 'fast', input_price || 0, output_price || 0, is_free ?? false, sort_order ?? 100, provider_config_id || null]);
+  `, [name, display_name || name, provider_key, provider_model || name, mode || 'fast', input_price || 0, output_price || 0, pricing_type || 'token', request_cost || 0, is_free ?? false, sort_order ?? 100, provider_config_id || null]);
   return rows[0];
 }
 

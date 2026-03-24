@@ -24,8 +24,8 @@ export async function resolveApiKey(rawKey) {
 
 export async function listKeys() {
   const sql = `
-    SELECT id, label, key_hint, monthly_budget, rpm_limit, tpm_limit,
-           expires_at, is_revoked, last_used_at, budget_reset_at, created_at
+    SELECT id, label, key_hint, daily_budget, rpm_limit, tpm_limit,
+           expires_at, is_revoked, last_used_at, created_at
     FROM api_keys
     ORDER BY created_at DESC
   `;
@@ -33,23 +33,23 @@ export async function listKeys() {
   return rows;
 }
 
-export async function createKey({ label, monthly_budget, rpm_limit, tpm_limit, expires_at, key }) {
+export async function createKey({ label, daily_budget, rpm_limit, tpm_limit, expires_at, key }) {
   const rawKey = key || generateApiKey();
   const keyHash = sha256(rawKey);
   const encKey = encrypt(rawKey);
   const keyHint = rawKey.slice(0, 12) + '...' + rawKey.slice(-4);
 
   const { rows } = await query(`
-    INSERT INTO api_keys (key_hash, encrypted_key, label, key_hint, monthly_budget, rpm_limit, tpm_limit, expires_at)
+    INSERT INTO api_keys (key_hash, encrypted_key, label, key_hint, daily_budget, rpm_limit, tpm_limit, expires_at)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-    RETURNING id, label, key_hint, monthly_budget, rpm_limit, tpm_limit, expires_at, is_revoked, created_at
-  `, [keyHash, encKey, label, keyHint, monthly_budget ?? 10, rpm_limit ?? 60, tpm_limit ?? 100000, expires_at || null]);
+    RETURNING id, label, key_hint, daily_budget, rpm_limit, tpm_limit, expires_at, is_revoked, created_at
+  `, [keyHash, encKey, label, keyHint, daily_budget ?? 2, rpm_limit ?? 60, tpm_limit ?? 100000, expires_at || null]);
 
   return { ...rows[0], key: rawKey };
 }
 
 export async function updateKey(id, fields) {
-  const allowed = ['label', 'monthly_budget', 'rpm_limit', 'tpm_limit'];
+  const allowed = ['label', 'daily_budget', 'rpm_limit', 'tpm_limit'];
   const sets = [];
   const params = [];
   let idx = 1;
@@ -62,7 +62,7 @@ export async function updateKey(id, fields) {
   if (sets.length === 0) return null;
   params.push(id);
   const { rows } = await query(
-    `UPDATE api_keys SET ${sets.join(', ')} WHERE id = $${idx} RETURNING id, label, key_hint, monthly_budget, rpm_limit, tpm_limit, expires_at, is_revoked, created_at`,
+    `UPDATE api_keys SET ${sets.join(', ')} WHERE id = $${idx} RETURNING id, label, key_hint, daily_budget, rpm_limit, tpm_limit, expires_at, is_revoked, created_at`,
     params
   );
   return rows[0] || null;
@@ -79,7 +79,7 @@ export async function revokeKey(id) {
 export async function resetBudget(id) {
   const { rows } = await query(
     `UPDATE api_keys SET budget_reset_at = now() WHERE id = $1
-     RETURNING id, label, key_hint, monthly_budget, budget_reset_at`,
+     RETURNING id, label, key_hint, daily_budget, budget_reset_at`,
     [id]
   );
   return rows[0] || null;

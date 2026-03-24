@@ -34,6 +34,8 @@ async function buildModelInfo(requestedModel, modelConfig) {
     mode: modelConfig.mode,
     inputPrice,
     outputPrice,
+    pricingType: modelConfig.pricing_type || 'token',
+    requestCost: parseFloat(modelConfig.request_cost) || 0,
     isFree: !!modelConfig.is_free,
     maxConcurrency: parseInt(modelConfig.max_concurrency) || 3,
   };

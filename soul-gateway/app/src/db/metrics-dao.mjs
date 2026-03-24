@@ -181,7 +181,7 @@ export async function getCostsByKey({ from, to }) {
     SELECT cl.api_key_id,
            k.label as key_label,
            k.key_hint,
-           k.monthly_budget as key_budget,
+           k.daily_budget as key_budget,
            SUM(cl.total_cost) as total_cost,
            SUM(cl.input_cost) as input_cost,
            SUM(cl.output_cost) as output_cost,
@@ -193,7 +193,7 @@ export async function getCostsByKey({ from, to }) {
     FROM call_logs cl
     JOIN api_keys k ON cl.api_key_id = k.id
     ${where}
-    GROUP BY cl.api_key_id, k.label, k.key_hint, k.monthly_budget
+    GROUP BY cl.api_key_id, k.label, k.key_hint, k.daily_budget
     ORDER BY total_cost DESC
   `, params);
   return rows;

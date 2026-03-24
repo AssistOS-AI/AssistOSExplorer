@@ -168,6 +168,40 @@ async function migrate(p) {
   // Set default budget of $10 for keys that have no budget set
   await p.query(`UPDATE api_keys SET monthly_budget = 10 WHERE monthly_budget IS NULL`);
 
+  // Add daily_budget to api_keys (replaces monthly_budget for enforcement)
+  await p.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS daily_budget NUMERIC DEFAULT 2`);
+  await p.query(`UPDATE api_keys SET daily_budget = 2 WHERE daily_budget IS NULL`);
+
+  // Add pricing_type and request_cost to model_configs (per-request pricing for copilot/kiro)
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS pricing_type TEXT DEFAULT 'token'`);
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS request_cost NUMERIC DEFAULT 0`);
+
+  // Set per-request pricing for copilot models (base: $0.04/premium request)
+  await p.query(`
+    UPDATE model_configs SET pricing_type = 'request', request_cost = CASE
+      WHEN name IN ('copilot-gpt-4o', 'copilot-gpt-4.1', 'copilot-gpt-5-mini', 'copilot-raptor-mini') THEN 0
+      WHEN name LIKE 'copilot-grok%' THEN 0.01
+      WHEN name LIKE 'copilot-%-haiku%' OR name LIKE 'copilot-gemini-%-flash%' OR name LIKE 'copilot-gpt-5.4-mini%' THEN 0.0132
+      WHEN name LIKE 'copilot-opus-4%' THEN 0.12
+      ELSE 0.04
+    END
+    WHERE name LIKE 'copilot-%' AND pricing_type = 'token'
+  `);
+
+  // Set per-request pricing for kiro models (base: $0.04/credit)
+  await p.query(`
+    UPDATE model_configs SET pricing_type = 'request', request_cost = CASE
+      WHEN name = 'kiro-qwen3-coder-next' THEN 0.002
+      WHEN name = 'kiro-minimax-m2.1' THEN 0.006
+      WHEN name IN ('kiro-deepseek-3.2', 'kiro-minimax-m2.5') THEN 0.01
+      WHEN name = 'kiro-claude-haiku-4.5' THEN 0.016
+      WHEN name LIKE 'kiro-claude-sonnet%' THEN 0.052
+      WHEN name LIKE 'kiro-claude-opus%' THEN 0.088
+      ELSE 0.04
+    END
+    WHERE (name LIKE 'kiro-%' OR name = 'auto-kiro') AND pricing_type = 'token'
+  `);
+
 }
 
 async function ensurePartitions() {
