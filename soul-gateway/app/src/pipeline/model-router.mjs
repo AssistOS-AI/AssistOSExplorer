@@ -2,6 +2,7 @@ import { getModelByName } from '../db/models-dao.mjs';
 import { getTierByName } from '../db/tiers-dao.mjs';
 import { ModelNotFoundError } from '../utils/errors.mjs';
 import { lookupOpenRouterPricing } from './openrouter-pricing.mjs';
+import { isModelInCooldown } from './model-cooldown.mjs';
 
 /**
  * Build the return object from a resolved model_config row.
@@ -28,6 +29,7 @@ async function buildModelInfo(requestedModel, modelConfig) {
 
   return {
     resolvedModel: requestedModel,
+    modelConfigName: modelConfig.name,
     providerKey,
     providerModel,
     providerConfigId: modelConfig.provider_config_id || null,
@@ -54,6 +56,7 @@ async function resolveFromTier(tierName, visited = new Set()) {
 
   // Try each model in priority order
   for (const modelName of (tier.models || [])) {
+    if (isModelInCooldown(modelName)) continue;
     const mc = await getModelByName(modelName);
     if (mc && mc.is_enabled && mc.provider_key && mc.provider_model) {
       return mc;

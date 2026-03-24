@@ -4,6 +4,7 @@ import { handleTiers } from './tiers.mjs';
 import { handleKeys } from './keys.mjs';
 import { handleProviders } from './providers.mjs';
 import { handleBlacklist } from './blacklist.mjs';
+import { handleCooldowns } from './cooldowns.mjs';
 import { handleLogs } from './logs.mjs';
 import { handleMetrics } from './metrics.mjs';
 import { handleExport } from './export.mjs';
@@ -113,6 +114,16 @@ export async function apiRouter(req, res, pathname, query) {
   if (params) {
     if (method === 'PUT') return handleBlacklist.update(req, res, params);
     if (method === 'DELETE') return handleBlacklist.remove(req, res, params);
+  }
+
+  // Cooldowns
+  if (pathname === '/api/v1/cooldowns') {
+    if (method === 'GET') return handleCooldowns.list(req, res);
+    if (method === 'DELETE') return handleCooldowns.clearAll(req, res);
+  }
+  params = matchPath('/api/v1/cooldowns/:model', pathname);
+  if (params) {
+    if (method === 'DELETE') return handleCooldowns.clear(req, res, params);
   }
 
   // Agents & Sessions

@@ -18,6 +18,8 @@ import { parseAgentName } from '../utils/agent-parser.mjs';
 import { checkLoopDetection } from './loop-detector.mjs';
 import { acquireModelSlot } from './model-queue.mjs';
 import { checkBudget, trackSpend } from './cost-throttler.mjs';
+import { putModelInCooldown, shouldTriggerCooldown } from './model-cooldown.mjs';
+import { config } from '../config.mjs';
 import { BlacklistError, SoulGatewayError } from '../utils/errors.mjs';
 
 const log = createLogger('pipeline');
@@ -150,26 +152,77 @@ export async function pipeline(req, res) {
       }
     }
 
-    // 12. Acquire model slot (concurrency-limited per model)
-    const releaseSlot = await acquireModelSlot(modelInfo.resolvedModel, modelInfo.maxConcurrency);
+    // 12. Dispatch with model cooldown fallback
+    const attemptedModels = new Set();
+    const cooldownSkipped = [];
     let result;
-    try {
-      // 13. Dispatch with retry
-      const { generator, retryCount, retryReason, retriesDetail } =
-        await dispatchWithRetry(body.messages, modelInfo, llmParams);
+    let lastDispatchError = null;
 
-      logEntry.retry_count = retryCount;
-      logEntry.retry_reason = retryReason;
-      logEntry.retries_detail = retriesDetail;
+    for (let modelAttempt = 0; modelAttempt <= config.maxModelRetries; modelAttempt++) {
+      if (modelAttempt > 0) {
+        // Re-resolve model after putting the previous one in cooldown
+        try {
+          modelInfo = await resolveModel(body.model);
+        } catch {
+          // No more models available in tier — throw the original dispatch error
+          throw lastDispatchError;
+        }
 
-      // 14. Stream tap / non-streaming response
-      if (body.stream) {
-        result = await tapStream(generator, res, startTime, requestId);
-      } else {
-        result = await handleNonStreaming(generator, res, startTime, requestId);
+        // Guard against resolving a model we already tried
+        if (attemptedModels.has(modelInfo.modelConfigName)) {
+          throw lastDispatchError;
+        }
+
+        logEntry.resolved_model = modelInfo.resolvedModel;
+        logEntry.mode = modelInfo.mode;
+        logEntry.is_free = modelInfo.isFree || false;
+
+        log.info('Cooldown fallback: trying next model', {
+          model: modelInfo.modelConfigName,
+          attempt: modelAttempt,
+        });
       }
-    } finally {
-      releaseSlot();
+
+      attemptedModels.add(modelInfo.modelConfigName);
+
+      const releaseSlot = await acquireModelSlot(modelInfo.resolvedModel, modelInfo.maxConcurrency);
+      try {
+        // 13. Dispatch with retry
+        const { generator, retryCount, retryReason, retriesDetail } =
+          await dispatchWithRetry(body.messages, modelInfo, llmParams);
+
+        logEntry.retry_count = retryCount;
+        logEntry.retry_reason = retryReason;
+        logEntry.retries_detail = retriesDetail;
+
+        // 14. Stream tap / non-streaming response
+        if (body.stream) {
+          result = await tapStream(generator, res, startTime, requestId);
+        } else {
+          result = await handleNonStreaming(generator, res, startTime, requestId);
+        }
+
+        break; // Success — exit model-retry loop
+      } catch (err) {
+        // Check if this error should trigger model cooldown
+        if (shouldTriggerCooldown(err.errorClassification) && modelAttempt < config.maxModelRetries) {
+          putModelInCooldown(modelInfo.modelConfigName, err.errorClassification.type, err.message);
+          cooldownSkipped.push({
+            model: modelInfo.modelConfigName,
+            error_type: err.errorClassification.type,
+            retry_count: err.retryCount,
+          });
+          lastDispatchError = err;
+          continue; // Try next model in tier
+        }
+        throw err;
+      } finally {
+        releaseSlot();
+      }
+    }
+
+    if (cooldownSkipped.length > 0) {
+      logEntry.cooldown_skipped = cooldownSkipped;
     }
 
     // 15. Cost calculation

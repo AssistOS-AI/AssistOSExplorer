@@ -28,6 +28,11 @@ export const config = {
   slowRequestMs: 30000,
   largePromptTokens: 50000,
 
+  // Model cooldown (skip model on quota/payment errors)
+  cooldownDurationMs: parseInt(process.env.COOLDOWN_DURATION_MS || '3600000', 10), // 1 hour
+  maxModelRetries: parseInt(process.env.MAX_MODEL_RETRIES || '5', 10),
+  cooldownTriggers: ['payment_required', 'rate_limit_error'],
+
   // Log retention
   retentionDays: 90,
 
