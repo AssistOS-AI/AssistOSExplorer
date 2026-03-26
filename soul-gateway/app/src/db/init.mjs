@@ -291,27 +291,32 @@ async function seedModelTags(p) {
     const tagRules = [
       // Search models
       { pattern: 'axl/search/%', tags: ['search'], like: true },
-      // Codex / code-specialized models
+      // Code-specialized models (specific first)
       { pattern: '%codex%', tags: ['coding', 'reasoning', 'agentic'], like: true },
       { pattern: '%codestral%', tags: ['coding', 'fast'], like: true },
-      { pattern: '%coder%', tags: ['coding', 'agentic'], like: true },
+      { pattern: '%codegemma%', tags: ['coding'], like: true },
+      { pattern: '%codelion%', tags: ['coding'], like: true },
       { pattern: '%starcoder%', tags: ['coding'], like: true },
-      { pattern: '%deepseek%coder%', tags: ['coding', 'reasoning'], like: true },
+      { pattern: '%code-%', tags: ['coding'], like: true },
+      { pattern: '%/code%', tags: ['coding'], like: true },
+      { pattern: '%-coder%', tags: ['coding', 'agentic'], like: true },
       // Opus-class (large reasoning models)
       { pattern: '%opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
       // Sonnet-class
       { pattern: '%sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
       // Haiku-class (fast/cheap)
       { pattern: '%haiku%', tags: ['fast', 'chat'], like: true },
-      // GPT large models
+      // GPT models
       { pattern: '%gpt-5.3%', tags: ['reasoning', 'coding', 'agentic'], like: true },
+      { pattern: '%gpt-5.4%', tags: ['reasoning', 'coding'], like: true },
       { pattern: '%gpt-5.2%', tags: ['reasoning', 'coding'], like: true },
       { pattern: '%gpt-5%mini%', tags: ['fast', 'chat', 'function-calling'], like: true },
       { pattern: '%gpt-4o%', tags: ['fast', 'chat', 'function-calling'], like: true },
       { pattern: '%gpt-4.1%', tags: ['fast', 'chat', 'function-calling'], like: true },
       // Gemini
-      { pattern: '%gemini-2.5-pro%', tags: ['reasoning', 'long-context', 'multimodal'], like: true },
+      { pattern: '%gemini%pro%', tags: ['reasoning', 'long-context', 'multimodal'], like: true },
       { pattern: '%gemini%flash%', tags: ['fast', 'chat'], like: true },
+      { pattern: '%gemma%', tags: ['chat', 'fast'], like: true },
       // Grok
       { pattern: '%grok%', tags: ['chat', 'reasoning'], like: true },
       // DeepSeek
@@ -332,9 +337,11 @@ async function seedModelTags(p) {
       { pattern: '%paligemma%', tags: ['vision', 'multimodal'], like: true },
       { pattern: '%neva%', tags: ['vision', 'multimodal'], like: true },
       { pattern: '%vila%', tags: ['vision', 'multimodal'], like: true },
+      { pattern: '%cogvlm%', tags: ['vision', 'multimodal'], like: true },
       // Embedding / retrieval models
       { pattern: '%embed%', tags: ['embeddings'], like: true },
       { pattern: '%e5-%', tags: ['embeddings'], like: true },
+      { pattern: '%bge-%', tags: ['embeddings'], like: true },
       { pattern: '%rerank%', tags: ['retrieval'], like: true },
       // MiniMax
       { pattern: '%minimax%', tags: ['chat', 'multilingual'], like: true },
@@ -346,8 +353,28 @@ async function seedModelTags(p) {
       { pattern: '%nemotron%', tags: ['reasoning', 'chat'], like: true },
       // Raptor
       { pattern: '%raptor%', tags: ['fast', 'chat'], like: true },
+      // Known model families
+      { pattern: '%jamba%', tags: ['chat', 'long-context'], like: true },
+      { pattern: '%dbrx%', tags: ['chat', 'reasoning'], like: true },
+      { pattern: '%arctic%', tags: ['chat'], like: true },
+      { pattern: '%falcon%', tags: ['chat'], like: true },
+      { pattern: '%mpt-%', tags: ['chat'], like: true },
+      { pattern: '%baichuan%', tags: ['chat', 'multilingual'], like: true },
+      { pattern: '%internlm%', tags: ['chat', 'multilingual'], like: true },
+      { pattern: '%chatglm%', tags: ['chat', 'multilingual'], like: true },
+      { pattern: '%sea-lion%', tags: ['chat', 'multilingual'], like: true },
+      { pattern: '%solar%', tags: ['chat'], like: true },
+      { pattern: '%zephyr%', tags: ['chat'], like: true },
+      { pattern: '%command-%', tags: ['chat', 'function-calling'], like: true },
+      { pattern: '%seed-%', tags: ['chat'], like: true },
+      { pattern: '%kimi%', tags: ['coding', 'agentic'], like: true },
+      { pattern: '%glm-%', tags: ['chat', 'reasoning'], like: true },
       // Kiro auto-router
       { pattern: 'axl/kiro/auto', tags: ['agentic'] },
+      // Catch-all: any remaining instruct/chat-tuned model
+      { pattern: '%instruct%', tags: ['chat', 'instruction-following'], like: true },
+      { pattern: '%-chat%', tags: ['chat'], like: true },
+      { pattern: '%/chat%', tags: ['chat'], like: true },
     ];
 
     for (const rule of tagRules) {
