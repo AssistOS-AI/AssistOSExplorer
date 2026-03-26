@@ -227,6 +227,7 @@ async function migrate(p) {
  * Also updates model_tiers.models arrays.
  */
 async function migrateModelNames(p) {
+  await p.query(`SET search_path TO ${config.pgSchema}, public`);
   const { rows: models } = await p.query(
     `SELECT id, name, provider_key FROM model_configs WHERE name NOT LIKE 'axl/%' AND provider_key IS NOT NULL`
   );
@@ -275,6 +276,7 @@ async function migrateModelNames(p) {
  * Only sets tags on models that have an empty tags array.
  */
 async function seedModelTags(p) {
+  await p.query(`SET search_path TO ${config.pgSchema}, public`);
   const tagRules = [
     // Copilot fast models
     { pattern: 'axl/copilot/gpt-4o', tags: ['fast', 'chat', 'function-calling'] },
