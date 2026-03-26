@@ -306,13 +306,17 @@ async function seedModelTags(p) {
       { pattern: '%sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
       // Haiku-class (fast/cheap)
       { pattern: '%haiku%', tags: ['fast', 'chat'], like: true },
-      // GPT models
+      // GPT models (specific first, then broad catch-all)
+      { pattern: '%gpt-5%codex%', tags: ['coding', 'reasoning', 'agentic'], like: true },
+      { pattern: '%gpt-5%mini%', tags: ['fast', 'chat', 'function-calling'], like: true },
       { pattern: '%gpt-5.3%', tags: ['reasoning', 'coding', 'agentic'], like: true },
       { pattern: '%gpt-5.4%', tags: ['reasoning', 'coding'], like: true },
       { pattern: '%gpt-5.2%', tags: ['reasoning', 'coding'], like: true },
-      { pattern: '%gpt-5%mini%', tags: ['fast', 'chat', 'function-calling'], like: true },
+      { pattern: '%gpt-5.1%', tags: ['reasoning', 'coding'], like: true },
+      { pattern: '%gpt-5%', tags: ['reasoning', 'chat'], like: true },
       { pattern: '%gpt-4o%', tags: ['fast', 'chat', 'function-calling'], like: true },
       { pattern: '%gpt-4.1%', tags: ['fast', 'chat', 'function-calling'], like: true },
+      { pattern: '%gpt-%', tags: ['chat'], like: true },
       // Gemini
       { pattern: '%gemini%pro%', tags: ['reasoning', 'long-context', 'multimodal'], like: true },
       { pattern: '%gemini%flash%', tags: ['fast', 'chat'], like: true },
@@ -383,6 +387,13 @@ async function seedModelTags(p) {
       { pattern: '%zamba%', tags: ['chat', 'fast'], like: true },
       // GLM (zhipu)
       { pattern: '%glm%', tags: ['chat', 'reasoning'], like: true },
+      // Thinker / thinking models
+      { pattern: '%Thinker%', tags: ['reasoning', 'thinking'], like: true },
+      { pattern: '%thinker%', tags: ['reasoning', 'thinking'], like: true },
+      // Kimi
+      { pattern: '%klmi%', tags: ['coding', 'agentic'], like: true },
+      // Apriel / ServiceNow
+      { pattern: '%apriel%', tags: ['chat', 'reasoning'], like: true },
       // Kiro auto-router
       { pattern: 'axl/kiro/auto', tags: ['agentic'] },
       // Catch-all: any remaining instruct/chat-tuned model
