@@ -1083,7 +1083,7 @@
                               <span class="font-mono" x-text="'$' + k.daily_spent.toFixed(2)"></span>
                               <span class="opacity-50 font-mono" x-text="'$' + remaining(k).toFixed(2) + ' left'"></span>
                             </div>
-                            <progress class="progress progress-xs w-full" :class="budgetPct(k) >= 90 ? 'progress-error' : budgetPct(k) >= 70 ? 'progress-warning' : 'progress-success'" :value="budgetPct(k)" max="100"></progress>
+                            <div class="w-full bg-base-300 rounded-full h-1.5"><div class="h-1.5 rounded-full transition-all" :class="budgetPct(k) >= 90 ? 'bg-error' : budgetPct(k) >= 70 ? 'bg-warning' : 'bg-success'" :style="'width:' + budgetPct(k) + '%'"></div></div>
                           </div>
                         </template>
                         <template x-if="k.daily_budget == null || Number(k.daily_budget) === 0">
