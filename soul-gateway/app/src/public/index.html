@@ -1218,15 +1218,13 @@
               </div>
             </div>
             <div class="form-control">
-              <span class="text-xs opacity-50 block mb-1">API Key</span>
-              <div class="flex gap-1">
-                <select class="select select-bordered select-sm w-48" @change="if($event.target.value) apiKey = $event.target.value; $event.target.value = ''">
-                  <option value="">Select from existing...</option>
-                  <template x-for="k in keys" :key="k.id">
-                    <option :value="k.key_hint" x-text="(k.label || 'Key') + ' (' + (k.key_hint || '???') + ')'"></option>
-                  </template>
-                </select>
-                <input type="text" class="input input-bordered input-sm w-64 font-mono" x-model="apiKey" placeholder="sk-soul-...">
+              <span class="text-xs opacity-50 block mb-1">API Key <span class="text-warning">(paste full key — hints shown for reference only)</span></span>
+              <div class="flex gap-1 items-center">
+                <input type="text" class="input input-bordered input-sm w-80 font-mono" x-model="apiKey" placeholder="sk-soul-...">
+                <span class="text-xs opacity-40" x-show="keys.length > 0">Keys:</span>
+                <template x-for="k in keys" :key="k.id">
+                  <span class="badge badge-xs badge-ghost font-mono" x-text="(k.label || '') + ' ' + (k.key_hint || '')" :title="'Hint: ' + k.key_hint"></span>
+                </template>
               </div>
             </div>
             <div class="form-control">
