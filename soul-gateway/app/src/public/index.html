@@ -1200,6 +1200,116 @@
         </div>
       </div>
 
+      <!-- Export Page -->
+      <div x-show="page === 'export'" x-cloak>
+        <div x-data="exportPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Export Configuration</h2>
+          </div>
+
+          <!-- Format tabs + API key -->
+          <div class="flex flex-wrap gap-4 items-end mb-4">
+            <div>
+              <span class="text-xs opacity-50 block mb-1">Format</span>
+              <div class="flex gap-0.5">
+                <button class="btn btn-sm" :class="format === 'opencode' ? 'btn-primary' : 'btn-ghost'" @click="format = 'opencode'">OpenCode</button>
+                <button class="btn btn-sm" :class="format === 'claude-code' ? 'btn-primary' : 'btn-ghost'" @click="format = 'claude-code'">Claude Code</button>
+                <button class="btn btn-sm" :class="format === 'codex' ? 'btn-primary' : 'btn-ghost'" @click="format = 'codex'">Codex</button>
+              </div>
+            </div>
+            <div class="form-control">
+              <span class="text-xs opacity-50 block mb-1">API Key</span>
+              <div class="flex gap-1">
+                <select class="select select-bordered select-sm w-48" @change="if($event.target.value) apiKey = $event.target.value; $event.target.value = ''">
+                  <option value="">Select from existing...</option>
+                  <template x-for="k in keys" :key="k.id">
+                    <option :value="k.key_hint" x-text="(k.label || 'Key') + ' (' + (k.key_hint || '???') + ')'"></option>
+                  </template>
+                </select>
+                <input type="text" class="input input-bordered input-sm w-64 font-mono" x-model="apiKey" placeholder="sk-soul-...">
+              </div>
+            </div>
+            <div class="form-control">
+              <span class="text-xs opacity-50 block mb-1">Gateway URL</span>
+              <input type="text" class="input input-bordered input-sm w-64 font-mono" x-model="gatewayUrl">
+            </div>
+          </div>
+
+          <!-- Two-column layout -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <!-- Left: Model selector -->
+            <div class="card bg-base-100 shadow">
+              <div class="card-body p-3">
+                <div class="flex flex-wrap gap-2 items-center mb-2">
+                  <input type="text" class="input input-bordered input-sm flex-1 min-w-[150px]" placeholder="Search models, providers, tags..." x-model="search">
+                  <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Enabled</span><input type="checkbox" class="toggle toggle-xs" x-model="enabledOnly"></label>
+                  <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Free</span><input type="checkbox" class="toggle toggle-xs toggle-success" x-model="freeOnly"></label>
+                  <div class="flex gap-0.5">
+                    <button class="badge badge-xs cursor-pointer" :class="billingFilter === '' ? 'badge-primary' : 'badge-ghost'" @click="billingFilter = ''">All</button>
+                    <button class="badge badge-xs cursor-pointer" :class="billingFilter === 'subscription' ? 'badge-secondary' : 'badge-ghost'" @click="billingFilter = billingFilter === 'subscription' ? '' : 'subscription'">Sub</button>
+                    <button class="badge badge-xs cursor-pointer" :class="billingFilter === 'api_key' ? 'badge-info badge-outline' : 'badge-ghost'" @click="billingFilter = billingFilter === 'api_key' ? '' : 'api_key'">API</button>
+                  </div>
+                </div>
+                <!-- Tag chips -->
+                <div class="flex flex-wrap gap-0.5 mb-2" x-show="allTags.length > 0">
+                  <template x-for="tag in allTags" :key="tag">
+                    <button class="badge badge-xs cursor-pointer" :class="tagFilter === tag ? 'badge-primary' : 'badge-ghost'" @click="tagFilter = tagFilter === tag ? '' : tag" x-text="tag"></button>
+                  </template>
+                </div>
+                <!-- Actions -->
+                <div class="flex gap-2 items-center mb-2">
+                  <button class="btn btn-xs btn-ghost" @click="selectAllVisible()">Select all visible</button>
+                  <button class="btn btn-xs btn-ghost" @click="clearAll()">Clear</button>
+                  <span class="text-xs opacity-50" x-text="`${selectedCount} selected`"></span>
+                  <div class="flex-1"></div>
+                  <span class="text-xs opacity-50" x-text="`${filteredModels.length} models`"></span>
+                </div>
+                <!-- Default model -->
+                <div class="flex gap-2 items-center mb-2" x-show="selectedCount > 0">
+                  <span class="text-xs opacity-50">Default model:</span>
+                  <select class="select select-bordered select-xs font-mono" x-model="defaultModel">
+                    <template x-for="name in selectedModels" :key="name">
+                      <option :value="name" x-text="name"></option>
+                    </template>
+                  </select>
+                </div>
+                <!-- Model list -->
+                <div class="overflow-auto" style="max-height: 50vh;">
+                  <table class="table table-xs">
+                    <thead class="sticky top-0 bg-base-100"><tr><th class="w-8"></th><th>Model</th><th>Tags</th><th>Billing</th></tr></thead>
+                    <tbody>
+                      <template x-for="m in filteredModels" :key="m.id">
+                        <tr class="hover cursor-pointer" :class="{'bg-primary/10': isSelected(m.name)}" @click="toggleModel(m.name)">
+                          <td @click.stop><input type="checkbox" class="checkbox checkbox-xs checkbox-primary" :checked="isSelected(m.name)" @change="toggleModel(m.name)"></td>
+                          <td class="font-mono text-xs" x-text="m.name"></td>
+                          <td class="text-xs"><div class="flex flex-wrap gap-0.5 max-w-[150px]"><template x-for="tag in (m.tags || []).slice(0, 3)" :key="tag"><span class="badge badge-xs badge-outline" x-text="tag"></span></template></div></td>
+                          <td><span class="badge badge-xs" :class="m.billing_type === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="(m.billing_type || 'api_key').replace('_', ' ')"></span></td>
+                        </tr>
+                      </template>
+                      <tr x-show="filteredModels.length === 0"><td colspan="4" class="text-center opacity-50 py-4">No models match</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Config preview -->
+            <div class="card bg-base-100 shadow">
+              <div class="card-body p-3">
+                <div class="flex justify-between items-center mb-2">
+                  <span class="text-sm font-bold" x-text="configFileName"></span>
+                  <div class="flex gap-1">
+                    <button class="btn btn-sm btn-ghost" @click="copyConfig()" x-text="copied ? 'Copied!' : 'Copy'" :class="{'text-success': copied}"></button>
+                    <button class="btn btn-sm btn-primary" @click="downloadConfig()">Download</button>
+                  </div>
+                </div>
+                <pre class="bg-base-200 rounded-lg p-3 overflow-auto text-xs font-mono whitespace-pre" style="max-height: 60vh;" x-text="configOutput || 'Select models to generate config...'"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 

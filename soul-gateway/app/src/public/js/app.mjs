@@ -68,6 +68,7 @@ function app() {
       { id: 'activity', label: 'Activity' },
       { id: 'costs', label: 'Usage' },
       { id: 'blacklist', label: 'Blacklist' },
+      { id: 'export', label: 'Export' },
     ],
     wsConnected: false,
     streamMode: '', // 'ws', 'sse', or ''
@@ -1150,5 +1151,207 @@ function blacklistPage() {
     },
 
     formatDate,
+  };
+}
+
+// ---- Export Page ----
+function exportPage() {
+  return {
+    format: 'opencode',
+    formats: ['opencode', 'claude-code', 'codex'],
+    models: [],
+    keys: [],
+    selectedModels: [],
+    defaultModel: '',
+    apiKey: '',
+    search: '',
+    tagFilter: '',
+    billingFilter: '',
+    freeOnly: false,
+    enabledOnly: true,
+    copied: false,
+    gatewayUrl: '',
+
+    async init() {
+      [this.models, this.keys] = await Promise.all([
+        api.get('/api/v1/models'),
+        api.get('/api/v1/keys'),
+      ]);
+      this.gatewayUrl = `${location.protocol}//${location.host}/v1`;
+    },
+
+    get allTags() {
+      const tags = new Set();
+      for (const m of this.models) {
+        for (const t of (m.tags || [])) tags.add(t);
+      }
+      return [...tags].sort();
+    },
+
+    get filteredModels() {
+      let list = this.models;
+      if (!Array.isArray(list)) return [];
+      if (this.enabledOnly) list = list.filter(m => m.is_enabled);
+      if (this.freeOnly) list = list.filter(m => m.is_free);
+      if (this.billingFilter) list = list.filter(m => (m.billing_type || 'api_key') === this.billingFilter);
+      if (this.tagFilter) list = list.filter(m => (m.tags || []).includes(this.tagFilter));
+      const q = this.search.trim().toLowerCase();
+      if (q) list = list.filter(m =>
+        m.name.toLowerCase().includes(q) ||
+        (m.provider_key || '').toLowerCase().includes(q) ||
+        (m.tags || []).some(t => t.toLowerCase().includes(q))
+      );
+      return list;
+    },
+
+    get selectedCount() { return this.selectedModels.length; },
+
+    isSelected(name) { return this.selectedModels.includes(name); },
+
+    toggleModel(name) {
+      const idx = this.selectedModels.indexOf(name);
+      if (idx >= 0) {
+        this.selectedModels.splice(idx, 1);
+        if (this.defaultModel === name) this.defaultModel = this.selectedModels[0] || '';
+      } else {
+        this.selectedModels.push(name);
+        if (!this.defaultModel) this.defaultModel = name;
+      }
+    },
+
+    selectAllVisible() {
+      for (const m of this.filteredModels) {
+        if (!this.selectedModels.includes(m.name)) this.selectedModels.push(m.name);
+      }
+      if (!this.defaultModel && this.selectedModels.length) this.defaultModel = this.selectedModels[0];
+    },
+
+    clearAll() {
+      this.selectedModels = [];
+      this.defaultModel = '';
+    },
+
+    _parseContext(cw) {
+      if (!cw) return 200000;
+      const s = String(cw).toLowerCase().replace(/,/g, '');
+      if (s.endsWith('m') || s.endsWith('mil')) return parseFloat(s) * 1000000;
+      if (s.endsWith('k')) return parseFloat(s) * 1000;
+      const n = parseInt(s);
+      return isNaN(n) ? 200000 : n;
+    },
+
+    _getSelectedModelObjects() {
+      return this.selectedModels.map(name => this.models.find(m => m.name === name)).filter(Boolean);
+    },
+
+    get configOutput() {
+      if (this.format === 'opencode') return this._genOpenCode();
+      if (this.format === 'claude-code') return this._genClaudeCode();
+      if (this.format === 'codex') return this._genCodex();
+      return '';
+    },
+
+    get configFileName() {
+      if (this.format === 'opencode') return 'opencode.json';
+      if (this.format === 'claude-code') return 'settings.json';
+      if (this.format === 'codex') return 'config.toml';
+      return 'config.txt';
+    },
+
+    _genOpenCode() {
+      const models = {};
+      for (const m of this._getSelectedModelObjects()) {
+        models[m.name] = {
+          name: m.display_name || m.name,
+          limit: { context: this._parseContext(m.context_window), output: 32768 },
+        };
+      }
+      const config = {
+        '$schema': 'https://opencode.ai/config.json',
+        model: this.defaultModel ? `soul-gateway/${this.defaultModel}` : '',
+        provider: {
+          'soul-gateway': {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'Soul Gateway',
+            options: {
+              baseURL: this.gatewayUrl,
+              apiKey: this.apiKey || '<your-api-key>',
+              headers: { 'X-Soul-Agent': 'opencode' },
+            },
+            models,
+          },
+        },
+      };
+      return JSON.stringify(config, null, 2);
+    },
+
+    _genClaudeCode() {
+      const selected = this._getSelectedModelObjects();
+      const overrides = {};
+      const sonnet = selected.find(m => m.name.toLowerCase().includes('sonnet'));
+      const opus = selected.find(m => m.name.toLowerCase().includes('opus'));
+      const haiku = selected.find(m => m.name.toLowerCase().includes('haiku'));
+      if (sonnet) overrides.sonnet = sonnet.name;
+      if (opus) overrides.opus = opus.name;
+      if (haiku) overrides.haiku = haiku.name;
+      for (const m of selected) {
+        if (m !== sonnet && m !== opus && m !== haiku) {
+          const shortName = m.name.split('/').pop();
+          overrides[shortName] = m.name;
+        }
+      }
+      const config = {
+        env: {
+          ANTHROPIC_BASE_URL: this.gatewayUrl,
+          ANTHROPIC_AUTH_TOKEN: this.apiKey || '<your-api-key>',
+        },
+        modelOverrides: overrides,
+      };
+      return JSON.stringify(config, null, 2);
+    },
+
+    _genCodex() {
+      const lines = [];
+      lines.push(`model = "${this.defaultModel || '<model>'}"`);
+      lines.push('model_provider = "soul-gateway"');
+      lines.push('');
+      lines.push('[model_providers.soul-gateway]');
+      lines.push('name = "Soul Gateway"');
+      lines.push(`base_url = "${this.gatewayUrl}"`);
+      lines.push('env_key = "SOUL_GATEWAY_API_KEY"');
+      if (this.apiKey) {
+        lines.push('');
+        lines.push('# Set this environment variable:');
+        lines.push(`# export SOUL_GATEWAY_API_KEY="${this.apiKey}"`);
+      }
+      return lines.join('\n');
+    },
+
+    async copyConfig() {
+      try {
+        await navigator.clipboard.writeText(this.configOutput);
+        this.copied = true;
+        setTimeout(() => this.copied = false, 2000);
+      } catch {
+        const ta = document.createElement('textarea');
+        ta.value = this.configOutput;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        this.copied = true;
+        setTimeout(() => this.copied = false, 2000);
+      }
+    },
+
+    downloadConfig() {
+      const blob = new Blob([this.configOutput], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = this.configFileName;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
   };
 }
