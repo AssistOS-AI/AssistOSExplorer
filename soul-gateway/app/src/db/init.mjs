@@ -286,37 +286,68 @@ async function seedModelTags(p) {
   const client = await p.connect();
   try {
     await client.query(`SET search_path TO ${config.pgSchema}, public`);
+    // Keyword-based rules: match model names across ALL providers.
+    // More specific patterns first; broader catch-alls at the end.
     const tagRules = [
-      // Copilot fast models
-      { pattern: 'axl/copilot/gpt-4o', tags: ['fast', 'chat', 'function-calling'] },
-      { pattern: 'axl/copilot/gpt-4.1', tags: ['fast', 'chat', 'function-calling'] },
-      { pattern: 'axl/copilot/gpt-5-mini', tags: ['fast', 'chat', 'function-calling'] },
-      { pattern: 'axl/copilot/raptor-mini', tags: ['fast', 'chat'] },
-      { pattern: 'axl/copilot/gpt-5.4-mini%', tags: ['fast', 'chat', 'function-calling'], like: true },
-      // Copilot Gemini
-      { pattern: 'axl/copilot/gemini-%flash%', tags: ['fast', 'chat'], like: true },
-      // Copilot Grok
-      { pattern: 'axl/copilot/grok%', tags: ['chat', 'reasoning'], like: true },
-      // Copilot Opus
-      { pattern: 'axl/copilot/opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
-      // Copilot Haiku
-      { pattern: 'axl/copilot/%haiku%', tags: ['fast', 'chat'], like: true },
-      // Kiro models
-      { pattern: 'axl/kiro/claude-sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
-      { pattern: 'axl/kiro/claude-opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
-      { pattern: 'axl/kiro/claude-haiku%', tags: ['fast', 'chat'], like: true },
-      { pattern: 'axl/kiro/deepseek%', tags: ['coding', 'reasoning'], like: true },
-      { pattern: 'axl/kiro/qwen%', tags: ['coding', 'agentic'], like: true },
-      { pattern: 'axl/kiro/minimax%', tags: ['chat', 'multilingual'], like: true },
-      { pattern: 'axl/kiro/auto', tags: ['agentic'] },
-      // Direct providers
-      { pattern: 'axl/anthropic/claude-opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
-      { pattern: 'axl/anthropic/claude-sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
-      { pattern: 'axl/openai/gpt-5%codex%', tags: ['coding', 'reasoning', 'agentic'], like: true },
-      { pattern: 'axl/google/gemini-2.5-pro', tags: ['reasoning', 'long-context', 'multimodal'] },
-      { pattern: 'axl/google/gemini%flash%', tags: ['fast', 'chat'], like: true },
       // Search models
       { pattern: 'axl/search/%', tags: ['search'], like: true },
+      // Codex / code-specialized models
+      { pattern: '%codex%', tags: ['coding', 'reasoning', 'agentic'], like: true },
+      { pattern: '%codestral%', tags: ['coding', 'fast'], like: true },
+      { pattern: '%coder%', tags: ['coding', 'agentic'], like: true },
+      { pattern: '%starcoder%', tags: ['coding'], like: true },
+      { pattern: '%deepseek%coder%', tags: ['coding', 'reasoning'], like: true },
+      // Opus-class (large reasoning models)
+      { pattern: '%opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
+      // Sonnet-class
+      { pattern: '%sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
+      // Haiku-class (fast/cheap)
+      { pattern: '%haiku%', tags: ['fast', 'chat'], like: true },
+      // GPT large models
+      { pattern: '%gpt-5.3%', tags: ['reasoning', 'coding', 'agentic'], like: true },
+      { pattern: '%gpt-5.2%', tags: ['reasoning', 'coding'], like: true },
+      { pattern: '%gpt-5%mini%', tags: ['fast', 'chat', 'function-calling'], like: true },
+      { pattern: '%gpt-4o%', tags: ['fast', 'chat', 'function-calling'], like: true },
+      { pattern: '%gpt-4.1%', tags: ['fast', 'chat', 'function-calling'], like: true },
+      // Gemini
+      { pattern: '%gemini-2.5-pro%', tags: ['reasoning', 'long-context', 'multimodal'], like: true },
+      { pattern: '%gemini%flash%', tags: ['fast', 'chat'], like: true },
+      // Grok
+      { pattern: '%grok%', tags: ['chat', 'reasoning'], like: true },
+      // DeepSeek
+      { pattern: '%deepseek%', tags: ['coding', 'reasoning'], like: true },
+      // Qwen
+      { pattern: '%qwen%', tags: ['coding', 'multilingual'], like: true },
+      // Llama
+      { pattern: '%llama%', tags: ['chat', 'reasoning'], like: true },
+      // Mixtral / Mistral
+      { pattern: '%mixtral%', tags: ['fast', 'multilingual'], like: true },
+      { pattern: '%mistral%', tags: ['chat', 'multilingual'], like: true },
+      // Vision / multimodal models
+      { pattern: '%vlm%', tags: ['vision', 'multimodal'], like: true },
+      { pattern: '%vision%', tags: ['vision', 'multimodal'], like: true },
+      { pattern: '%fuyu%', tags: ['vision', 'multimodal'], like: true },
+      { pattern: '%kosmos%', tags: ['vision', 'multimodal'], like: true },
+      { pattern: '%llava%', tags: ['vision', 'multimodal'], like: true },
+      { pattern: '%paligemma%', tags: ['vision', 'multimodal'], like: true },
+      { pattern: '%neva%', tags: ['vision', 'multimodal'], like: true },
+      { pattern: '%vila%', tags: ['vision', 'multimodal'], like: true },
+      // Embedding / retrieval models
+      { pattern: '%embed%', tags: ['embeddings'], like: true },
+      { pattern: '%e5-%', tags: ['embeddings'], like: true },
+      { pattern: '%rerank%', tags: ['retrieval'], like: true },
+      // MiniMax
+      { pattern: '%minimax%', tags: ['chat', 'multilingual'], like: true },
+      // Phi (small efficient models)
+      { pattern: '%phi-%', tags: ['fast', 'reasoning'], like: true },
+      // Yi
+      { pattern: '%yi-%', tags: ['chat', 'multilingual'], like: true },
+      // Nemotron
+      { pattern: '%nemotron%', tags: ['reasoning', 'chat'], like: true },
+      // Raptor
+      { pattern: '%raptor%', tags: ['fast', 'chat'], like: true },
+      // Kiro auto-router
+      { pattern: 'axl/kiro/auto', tags: ['agentic'] },
     ];
 
     for (const rule of tagRules) {
