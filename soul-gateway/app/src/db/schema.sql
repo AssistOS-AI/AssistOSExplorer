@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS model_configs (
     sort_order INT DEFAULT 100,
     context_window TEXT,
     is_enabled BOOLEAN DEFAULT true,
+    tags TEXT[] DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -132,6 +133,7 @@ CREATE TABLE IF NOT EXISTS provider_configs (
     base_url TEXT NOT NULL,
     encrypted_api_key BYTEA NOT NULL,
     key_hint TEXT,
+    billing_type TEXT DEFAULT 'api_key',
     is_enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()

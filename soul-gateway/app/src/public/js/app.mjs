@@ -1,3 +1,8 @@
+// ---- Model naming convention ----
+const _SLUG_MAP = { axiologic_kiro: 'kiro', search_gateway: 'search' };
+function _providerSlug(providerKey) { return _SLUG_MAP[providerKey] || providerKey; }
+function _buildModelName(providerKey, providerModel) { return `axl/${_providerSlug(providerKey)}/${providerModel}`; }
+
 // ---- Helpers ----
 const api = {
   async get(path) {
@@ -148,8 +153,8 @@ function providersPage() {
     discoveredModels: [],
     showDiscover: false,
 
-    form: { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '' },
-    editForm: { display_name: '', protocol: '', base_url: '', api_key: '', is_enabled: true },
+    form: { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '', billing_type: 'api_key' },
+    editForm: { display_name: '', protocol: '', base_url: '', api_key: '', billing_type: 'api_key', is_enabled: true },
 
     async init() {
       [this.providers, this.templates] = await Promise.all([
@@ -171,7 +176,7 @@ function providersPage() {
     },
 
     openCreate() {
-      this.form = { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '' };
+      this.form = { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '', billing_type: 'api_key' };
       this.showCreate = true;
     },
 
@@ -198,6 +203,7 @@ function providersPage() {
         protocol: p.protocol || 'openai',
         base_url: p.base_url || '',
         api_key: '',
+        billing_type: p.billing_type || 'api_key',
         is_enabled: p.is_enabled,
       };
       this.showEdit = true;
@@ -243,8 +249,9 @@ function providersPage() {
 
     async addDiscoveredModel(model) {
       if (!this.discoverProvider) return;
+      const slug = _providerSlug(this.discoverProvider.name);
       await api.post('/api/v1/models', {
-        name: model.id,
+        name: `axl/${slug}/${model.id}`,
         provider_key: this.discoverProvider.name,
         provider_model: model.id,
         provider_config_id: this.discoverProvider.id,
@@ -772,13 +779,16 @@ function modelsPage() {
   return {
     models: [],
     providers: [],
+    predefinedTags: [],
     // Models table state
     modelFilter: '',
     modelEnabledOnly: false,
+    tagFilter: '',
     // Model edit state
     showModelEdit: false,
     editingModel: null,
-    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', provider_config_id: '', mode: 'deep', input_price: 0, output_price: 0, pricing_type: 'token', request_cost: 0, is_free: false, max_concurrency: 3, sort_order: 100, context_window: '' },
+    modelForm: { name: '', display_name: '', provider_key: '', provider_model: '', provider_config_id: '', mode: 'deep', input_price: 0, output_price: 0, pricing_type: 'token', request_cost: 0, is_free: false, max_concurrency: 3, sort_order: 100, context_window: '', tags: [] },
+    customTagInput: '',
     // Model create state
     showModelCreate: false,
     createProvider: '',
@@ -789,16 +799,26 @@ function modelsPage() {
     createName: '',
 
     async init() {
-      [this.models, this.providers] = await Promise.all([
+      [this.models, this.providers, this.predefinedTags] = await Promise.all([
         api.get('/api/v1/models'),
         api.get('/api/v1/models/providers'),
+        api.get('/api/v1/models/tags'),
       ]);
+    },
+
+    get allTags() {
+      const tags = new Set(this.predefinedTags || []);
+      for (const m of this.models) {
+        for (const t of (m.tags || [])) tags.add(t);
+      }
+      return [...tags].sort();
     },
 
     get filteredModels() {
       let list = this.models;
       if (!Array.isArray(list)) return [];
       if (this.modelEnabledOnly) list = list.filter(m => m.is_enabled);
+      if (this.tagFilter) list = list.filter(m => (m.tags || []).includes(this.tagFilter));
       const q = this.modelFilter.trim().toLowerCase();
       if (q) list = list.filter(m => m.name.toLowerCase().includes(q) || (m.provider_key || '').toLowerCase().includes(q));
       return list;
@@ -846,7 +866,9 @@ function modelsPage() {
     },
 
     onCreateModelChange() {
-      if (this.createModel) this.createName = this.createModel;
+      if (this.createModel && this.createProvider) {
+        this.createName = _buildModelName(this.createProvider, this.createModel);
+      }
     },
 
     get groupedCreateModels() {
@@ -902,8 +924,24 @@ function modelsPage() {
         max_concurrency: m.max_concurrency ?? 3,
         sort_order: m.sort_order ?? 100,
         context_window: m.context_window || '',
+        tags: [...(m.tags || [])],
       };
+      this.customTagInput = '';
       this.showModelEdit = true;
+    },
+
+    toggleTag(tag) {
+      const idx = this.modelForm.tags.indexOf(tag);
+      if (idx >= 0) this.modelForm.tags.splice(idx, 1);
+      else this.modelForm.tags.push(tag);
+    },
+
+    addCustomTag() {
+      const tag = this.customTagInput.trim().toLowerCase().replace(/\s+/g, '-');
+      if (tag && !this.modelForm.tags.includes(tag)) {
+        this.modelForm.tags.push(tag);
+      }
+      this.customTagInput = '';
     },
 
     onProviderChange() {

@@ -3,14 +3,15 @@ import { createProvider, getProviderByName, getProviderApiKey } from './provider
 import { upsertModel, getModelsByProviderConfigId } from './models-dao.mjs';
 import { getTierByName, createTier, updateTier } from './tiers-dao.mjs';
 import { createLogger } from '../utils/logger.mjs';
+import { buildModelName } from '../utils/model-naming.mjs';
 
 const log = createLogger('seed-providers');
 
 const SEED_PROVIDERS = [
   { name: 'openrouter',         display_name: 'OpenRouter',            protocol: 'openai',    base_url: 'https://openrouter.ai/api/v1/chat/completions',                envVar: 'OPENROUTER_API_KEY' },
   { name: 'axiologic_proxy',    display_name: 'CLIProxyAPI',           protocol: 'openai',    base_url: 'http://10.0.2.2:8317/v1/chat/completions',                     envVar: 'AXIOLOGIC_PROXY_API_KEY' },
-  { name: 'axiologic_kiro',     display_name: 'Kiro Gateway',         protocol: 'openai',    base_url: 'http://10.0.2.2:8000/v1/chat/completions',                     envVar: 'KIRO_PROXY_API_KEY' },
-  { name: 'copilot',            display_name: 'Copilot Gateway',      protocol: 'openai',    base_url: 'http://10.0.2.2:4141/v1/chat/completions',                     envVar: 'COPILOT_API_KEY' },
+  { name: 'axiologic_kiro',     display_name: 'Kiro Gateway',         protocol: 'openai',    base_url: 'http://10.0.2.2:8000/v1/chat/completions',                     envVar: 'KIRO_PROXY_API_KEY',      billing_type: 'subscription' },
+  { name: 'copilot',            display_name: 'Copilot Gateway',      protocol: 'openai',    base_url: 'http://10.0.2.2:4141/v1/chat/completions',                     envVar: 'COPILOT_API_KEY',         billing_type: 'subscription' },
   { name: 'opencode',           display_name: 'OpenCode',             protocol: 'openai',    base_url: 'https://opencode.ai/zen/v1/chat/completions',                  envVar: 'OPENCODE_API_KEY' },
   { name: 'opencode_anthropic', display_name: 'OpenCode (Anthropic)', protocol: 'anthropic', base_url: 'https://opencode.ai/zen/v1/messages',                          envVar: 'OPENCODE_API_KEY' },
   { name: 'opencode_responses', display_name: 'OpenCode (Responses)', protocol: 'openai',    base_url: 'https://opencode.ai/zen/v1/responses',                        envVar: 'OPENCODE_API_KEY' },
@@ -45,6 +46,7 @@ export async function seedProviders() {
         protocol: seed.protocol,
         base_url: seed.base_url,
         api_key: apiKey,
+        billing_type: seed.billing_type,
       });
       seededCount++;
       seededNames.push(seed.name);
@@ -134,8 +136,9 @@ async function syncSearchGateway() {
       const id = m.id || m.name;
       if (!id) continue;
 
+      const modelName = buildModelName(provider.name, id);
       await upsertModel({
-        name: id,
+        name: modelName,
         display_name: id,
         provider_key: provider.name,
         provider_model: id,
@@ -145,8 +148,9 @@ async function syncSearchGateway() {
         is_free: Boolean(m.is_free),
         sort_order: m.sort_order ?? 100,
         provider_config_id: provider.id,
+        tags: ['search'],
       });
-      synced.push(id);
+      synced.push(modelName);
     }
 
     if (synced.length > 0) {

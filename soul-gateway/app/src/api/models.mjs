@@ -3,6 +3,7 @@ import * as dao from '../db/models-dao.mjs';
 import * as providersDao from '../db/providers-dao.mjs';
 import { handleProviders } from './providers.mjs';
 import { lookupOpenRouterPricing } from '../pipeline/openrouter-pricing.mjs';
+import { PREDEFINED_TAGS } from '../utils/model-naming.mjs';
 
 export const handleModels = {
   async list(req, res, query) {
@@ -37,6 +38,8 @@ export const handleModels = {
           context_window: m.context_window || null,
           sort_order: m.sort_order ?? 100,
           is_free: Boolean(m.is_free),
+          billing_type: m.billing_type || 'api_key',
+          tags: m.tags || [],
         })),
       });
       return;
@@ -85,6 +88,10 @@ export const handleModels = {
   async providers(req, res) {
     const dbProviders = await providersDao.listProviders();
     sendJson(res, dbProviders.map(p => ({ key: p.name, source: 'database', id: p.id, protocol: p.protocol })));
+  },
+
+  async tags(req, res) {
+    sendJson(res, PREDEFINED_TAGS);
   },
 
   async providerModels(req, res, params) {

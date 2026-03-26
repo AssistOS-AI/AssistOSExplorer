@@ -54,6 +54,9 @@ export async function apiRouter(req, res, pathname, query) {
   }
 
   // Models
+  if (pathname === '/api/v1/models/tags') {
+    if (method === 'GET') return handleModels.tags(req, res);
+  }
   params = matchPath('/api/v1/models/providers/:key/models', pathname);
   if (params) {
     if (method === 'GET') return handleModels.providerModels(req, res, params);

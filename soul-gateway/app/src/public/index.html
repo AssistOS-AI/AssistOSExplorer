@@ -621,13 +621,14 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-sm">
-                <thead><tr><th>Name</th><th>Display Name</th><th>Protocol</th><th>Base URL</th><th>Key</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Name</th><th>Display Name</th><th>Protocol</th><th>Billing</th><th>Base URL</th><th>Key</th><th>Enabled</th><th>Actions</th></tr></thead>
                 <tbody>
                   <template x-for="p in providers" :key="p.id">
                     <tr :class="{'opacity-40': !p.is_enabled}">
                       <td class="font-mono font-bold" x-text="p.name"></td>
                       <td x-text="p.display_name || '-'"></td>
                       <td><span class="badge badge-ghost badge-sm" x-text="p.protocol"></span></td>
+                      <td><span class="badge badge-sm" :class="p.billing_type === 'subscription' ? 'badge-secondary' : 'badge-ghost'" x-text="p.billing_type || 'api_key'"></span></td>
                       <td class="text-xs font-mono max-w-[300px] truncate" x-text="p.base_url" :title="p.base_url"></td>
                       <td class="text-xs font-mono opacity-60" x-text="p.key_hint || '-'"></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="p.is_enabled" disabled></td>
@@ -644,7 +645,7 @@
                       </td>
                     </tr>
                   </template>
-                  <tr x-show="providers.length === 0"><td colspan="7" class="text-center opacity-50 py-6">No providers configured. Click "Add Provider" to get started.</td></tr>
+                  <tr x-show="providers.length === 0"><td colspan="8" class="text-center opacity-50 py-6">No providers configured. Click "Add Provider" to get started.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -678,6 +679,13 @@
                     <option value="openai">OpenAI</option>
                     <option value="anthropic">Anthropic</option>
                     <option value="google">Google</option>
+                  </select>
+                </div>
+                <div class="form-control">
+                  <label class="label"><span class="label-text">Billing Type</span></label>
+                  <select class="select select-bordered" x-model="form.billing_type">
+                    <option value="api_key">API Key</option>
+                    <option value="subscription">Subscription</option>
                   </select>
                 </div>
               </div>
@@ -720,6 +728,13 @@
               <div class="form-control">
                 <label class="label"><span class="label-text">API Key (leave empty to keep current)</span></label>
                 <input type="password" class="input input-bordered font-mono text-sm" x-model="editForm.api_key" placeholder="Leave empty to keep current key">
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Billing Type</span></label>
+                <select class="select select-bordered" x-model="editForm.billing_type">
+                  <option value="api_key">API Key</option>
+                  <option value="subscription">Subscription</option>
+                </select>
               </div>
               <div class="form-control mt-2">
                 <label class="label cursor-pointer">
@@ -781,16 +796,23 @@
               <button class="btn btn-primary btn-sm" @click="openCreate()">Add Model</button>
             </div>
           </div>
+          <!-- Tag filter -->
+          <div class="flex flex-wrap gap-1 mb-3" x-show="allTags.length > 0">
+            <span class="text-xs opacity-50 mr-1 self-center">Filter by tag:</span>
+            <template x-for="tag in allTags" :key="tag">
+              <button class="badge badge-sm cursor-pointer" :class="tagFilter === tag ? 'badge-primary' : 'badge-ghost'" @click="tagFilter = tagFilter === tag ? '' : tag" x-text="tag"></button>
+            </template>
+          </div>
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-xs">
-                <thead><tr><th>Name</th><th>Provider</th><th>Upstream</th><th>Pricing</th><th>Context</th><th>Free</th><th>Enabled</th></tr></thead>
+                <thead><tr><th>Name</th><th>Billing</th><th>Tags</th><th>Pricing</th><th>Context</th><th>Free</th><th>Enabled</th></tr></thead>
                 <tbody>
                   <template x-for="m in filteredModels" :key="m.id">
                     <tr :class="{'opacity-40': !m.is_enabled, 'hover cursor-pointer': true}" @click="editModel(m)">
                       <td class="font-mono text-sm" x-text="m.name"></td>
-                      <td class="text-xs" x-text="m.provider_key || '-'"></td>
-                      <td class="text-xs font-mono max-w-[200px] truncate" x-text="m.provider_model || '-'" :title="m.provider_model"></td>
+                      <td class="text-xs"><span class="badge badge-xs" :class="m.billing_type === 'subscription' ? 'badge-secondary' : 'badge-ghost'" x-text="m.billing_type || 'api_key'"></span></td>
+                      <td class="text-xs"><div class="flex flex-wrap gap-0.5 max-w-[200px]"><template x-for="tag in (m.tags || [])" :key="tag"><span class="badge badge-xs badge-outline" x-text="tag"></span></template><span x-show="!m.tags || m.tags.length === 0" class="opacity-30">-</span></div></td>
                       <td class="text-xs"><span x-show="m.pricing_type === 'request'" class="badge badge-info badge-xs" x-text="'$' + (Number(m.request_cost) || 0).toFixed(3) + '/req'"></span><span x-show="m.pricing_type !== 'request'" class="text-xs opacity-50" x-text="'$' + (Number(m.input_price) || 0) + '/' + (Number(m.output_price) || 0)"></span></td>
                       <td class="text-xs" x-text="m.context_window || '-'"></td>
                       <td @click.stop><input type="checkbox" class="toggle toggle-xs toggle-success" :checked="m.is_free" @change="toggleFree(m)" title="Free models don't count against API key budget"></td>
@@ -912,6 +934,28 @@
                   <span class="label-text text-xs">Free (does not count against API key budget)</span>
                   <input type="checkbox" class="toggle toggle-sm toggle-success" x-model="modelForm.is_free">
                 </label>
+              </div>
+              <!-- Tags editor -->
+              <div class="form-control mt-2">
+                <label class="label py-1"><span class="label-text text-xs">Tags</span></label>
+                <div class="flex flex-wrap gap-1 mb-2">
+                  <template x-for="tag in modelForm.tags" :key="tag">
+                    <span class="badge badge-sm badge-primary gap-1">
+                      <span x-text="tag"></span>
+                      <button class="text-xs font-bold opacity-70 hover:opacity-100" @click="toggleTag(tag)" type="button">&times;</button>
+                    </span>
+                  </template>
+                  <span x-show="modelForm.tags.length === 0" class="text-xs opacity-40">No tags</span>
+                </div>
+                <div class="flex flex-wrap gap-1 mb-2">
+                  <template x-for="tag in predefinedTags" :key="tag">
+                    <button class="badge badge-sm cursor-pointer" :class="modelForm.tags.includes(tag) ? 'badge-primary' : 'badge-outline'" @click="toggleTag(tag)" x-text="tag" type="button"></button>
+                  </template>
+                </div>
+                <div class="flex gap-1">
+                  <input type="text" class="input input-bordered input-xs flex-1" x-model="customTagInput" placeholder="Custom tag..." @keydown.enter.prevent="addCustomTag()">
+                  <button class="btn btn-xs btn-ghost" @click="addCustomTag()" type="button">Add</button>
+                </div>
               </div>
               <div class="modal-action flex justify-between">
                 <button class="btn btn-error btn-sm" @click="deleteModel(editingModel)">Delete</button>

@@ -1,7 +1,7 @@
 import { query } from './init.mjs';
 import { encrypt, decrypt } from '../utils/crypto.mjs';
 
-const SAFE_COLUMNS = 'id, name, display_name, protocol, base_url, key_hint, is_enabled, created_at, updated_at';
+const SAFE_COLUMNS = 'id, name, display_name, protocol, base_url, key_hint, billing_type, is_enabled, created_at, updated_at';
 
 export async function listProviders() {
   const { rows } = await query(`SELECT ${SAFE_COLUMNS} FROM provider_configs ORDER BY name ASC`);
@@ -45,21 +45,21 @@ export async function resolveProviderByName(name) {
   };
 }
 
-export async function createProvider({ name, display_name, protocol, base_url, api_key }) {
+export async function createProvider({ name, display_name, protocol, base_url, api_key, billing_type }) {
   const encKey = encrypt(api_key);
   const keyHint = api_key.length > 12
     ? api_key.slice(0, 8) + '...' + api_key.slice(-4)
     : api_key.slice(0, 4) + '...';
 
   const { rows } = await query(`
-    INSERT INTO provider_configs (name, display_name, protocol, base_url, encrypted_api_key, key_hint)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO provider_configs (name, display_name, protocol, base_url, encrypted_api_key, key_hint, billing_type)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING ${SAFE_COLUMNS}
-  `, [name, display_name || name, protocol || 'openai', base_url, encKey, keyHint]);
+  `, [name, display_name || name, protocol || 'openai', base_url, encKey, keyHint, billing_type || 'api_key']);
   return rows[0];
 }
 
-const UPDATABLE_FIELDS = ['name', 'display_name', 'protocol', 'base_url', 'is_enabled'];
+const UPDATABLE_FIELDS = ['name', 'display_name', 'protocol', 'base_url', 'billing_type', 'is_enabled'];
 
 export async function updateProvider(id, fields) {
   const sets = [];

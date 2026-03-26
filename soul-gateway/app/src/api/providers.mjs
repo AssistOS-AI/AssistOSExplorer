@@ -3,6 +3,7 @@ import * as dao from '../db/providers-dao.mjs';
 import { upsertModel, getModelsByProviderConfigId } from '../db/models-dao.mjs';
 import { getTierByName, createTier, updateTier } from '../db/tiers-dao.mjs';
 import { createLogger } from '../utils/logger.mjs';
+import { buildModelName } from '../utils/model-naming.mjs';
 
 const syncLog = createLogger('provider-sync');
 
@@ -168,8 +169,9 @@ export const handleProviders = {
         if (!id) continue;
         discoveredNames.add(id);
 
+        const modelName = buildModelName(provider.name, id);
         const model = await upsertModel({
-          name: id,
+          name: modelName,
           display_name: id,
           provider_key: provider.name,
           provider_model: id,
@@ -184,10 +186,12 @@ export const handleProviders = {
       }
 
       // Disable models from this provider that are no longer discovered
+      // Build set of expected names (with axl/ prefix) from discovered raw IDs
+      const expectedNames = new Set([...discoveredNames].map(id => buildModelName(provider.name, id)));
       const existingModels = await getModelsByProviderConfigId(provider.id);
       let disabledCount = 0;
       for (const existing of existingModels) {
-        if (!discoveredNames.has(existing.name) && existing.is_enabled) {
+        if (!expectedNames.has(existing.name) && existing.is_enabled) {
           const { query: dbQuery } = await import('../db/init.mjs');
           await dbQuery('UPDATE model_configs SET is_enabled = false WHERE id = $1', [existing.id]);
           disabledCount++;
@@ -203,7 +207,7 @@ export const handleProviders = {
           for (const name of synced) tierModels.add(name);
           // Remove disabled models
           for (const existing of existingModels) {
-            if (!discoveredNames.has(existing.name)) tierModels.delete(existing.name);
+            if (!expectedNames.has(existing.name)) tierModels.delete(existing.name);
           }
           await updateTier(searchTier.id, { models: [...tierModels] });
           syncLog.info(`Updated search tier with ${tierModels.size} models`);

@@ -1,9 +1,11 @@
 import { query } from './init.mjs';
 
 export async function listModels(enabledOnly = false) {
-  let sql = 'SELECT * FROM model_configs';
-  if (enabledOnly) sql += ' WHERE is_enabled = true';
-  sql += ' ORDER BY sort_order ASC, name ASC';
+  let sql = `SELECT mc.*, COALESCE(pc.billing_type, 'api_key') AS billing_type
+    FROM model_configs mc
+    LEFT JOIN provider_configs pc ON mc.provider_config_id = pc.id`;
+  if (enabledOnly) sql += ' WHERE mc.is_enabled = true';
+  sql += ' ORDER BY mc.sort_order ASC, mc.name ASC';
   const { rows } = await query(sql);
   return rows;
 }
@@ -18,16 +20,16 @@ export async function getModelById(id) {
   return rows[0] || null;
 }
 
-export async function createModel({ name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, pricing_type, request_cost, max_concurrency, sort_order, context_window, provider_config_id }) {
+export async function createModel({ name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, pricing_type, request_cost, max_concurrency, sort_order, context_window, provider_config_id, tags }) {
   const { rows } = await query(`
-    INSERT INTO model_configs (name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, pricing_type, request_cost, max_concurrency, sort_order, context_window, provider_config_id)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    INSERT INTO model_configs (name, display_name, provider_key, provider_model, upstream_source, mode, input_price, output_price, pricing_type, request_cost, max_concurrency, sort_order, context_window, provider_config_id, tags)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
     RETURNING *
-  `, [name, display_name || name, provider_key, provider_model, upstream_source || null, mode || 'deep', input_price || 0, output_price || 0, pricing_type || 'token', request_cost || 0, max_concurrency ?? 3, sort_order ?? 100, context_window || null, provider_config_id || null]);
+  `, [name, display_name || name, provider_key, provider_model, upstream_source || null, mode || 'deep', input_price || 0, output_price || 0, pricing_type || 'token', request_cost || 0, max_concurrency ?? 3, sort_order ?? 100, context_window || null, provider_config_id || null, tags || []]);
   return rows[0];
 }
 
-const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'upstream_source', 'mode', 'input_price', 'output_price', 'pricing_type', 'request_cost', 'is_enabled', 'is_free', 'max_concurrency', 'sort_order', 'context_window', 'provider_config_id'];
+const UPDATABLE_FIELDS = ['name', 'display_name', 'provider_key', 'provider_model', 'upstream_source', 'mode', 'input_price', 'output_price', 'pricing_type', 'request_cost', 'is_enabled', 'is_free', 'max_concurrency', 'sort_order', 'context_window', 'provider_config_id', 'tags'];
 
 export async function updateModel(id, fields) {
   const sets = [];
@@ -66,10 +68,10 @@ export async function deleteModel(id) {
  * Upsert a model — insert or update on name conflict.
  * Used by provider sync to auto-create/update discovered models.
  */
-export async function upsertModel({ name, display_name, provider_key, provider_model, mode, input_price, output_price, pricing_type, request_cost, is_free, sort_order, provider_config_id }) {
+export async function upsertModel({ name, display_name, provider_key, provider_model, mode, input_price, output_price, pricing_type, request_cost, is_free, sort_order, provider_config_id, tags }) {
   const { rows } = await query(`
-    INSERT INTO model_configs (name, display_name, provider_key, provider_model, mode, input_price, output_price, pricing_type, request_cost, is_free, sort_order, provider_config_id)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    INSERT INTO model_configs (name, display_name, provider_key, provider_model, mode, input_price, output_price, pricing_type, request_cost, is_free, sort_order, provider_config_id, tags)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     ON CONFLICT (name) DO UPDATE SET
       display_name = COALESCE(EXCLUDED.display_name, model_configs.display_name),
       provider_key = EXCLUDED.provider_key,
@@ -84,7 +86,7 @@ export async function upsertModel({ name, display_name, provider_key, provider_m
       provider_config_id = EXCLUDED.provider_config_id,
       is_enabled = true
     RETURNING *
-  `, [name, display_name || name, provider_key, provider_model || name, mode || 'fast', input_price || 0, output_price || 0, pricing_type || 'token', request_cost || 0, is_free ?? false, sort_order ?? 100, provider_config_id || null]);
+  `, [name, display_name || name, provider_key, provider_model || name, mode || 'fast', input_price || 0, output_price || 0, pricing_type || 'token', request_cost || 0, is_free ?? false, sort_order ?? 100, provider_config_id || null, tags || []]);
   return rows[0];
 }
 

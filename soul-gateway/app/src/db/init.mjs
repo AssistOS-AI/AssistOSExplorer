@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { config } from '../config.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { seedProviders } from './seed-providers.mjs';
+import { buildModelName, stripLegacyPrefix } from '../utils/model-naming.mjs';
 
 const log = createLogger('db');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -177,31 +178,149 @@ async function migrate(p) {
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS request_cost NUMERIC DEFAULT 0`);
 
   // Set per-request pricing for copilot models (base: $0.04/premium request)
+  // Handles both legacy names (copilot-*) and new names (axl/copilot/*)
   await p.query(`
     UPDATE model_configs SET pricing_type = 'request', request_cost = CASE
-      WHEN name IN ('copilot-gpt-4o', 'copilot-gpt-4.1', 'copilot-gpt-5-mini', 'copilot-raptor-mini') THEN 0
-      WHEN name LIKE 'copilot-grok%' THEN 0.01
-      WHEN name LIKE 'copilot-%-haiku%' OR name LIKE 'copilot-gemini-%-flash%' OR name LIKE 'copilot-gpt-5.4-mini%' THEN 0.0132
-      WHEN name LIKE 'copilot-opus-4%' THEN 0.12
+      WHEN name IN ('copilot-gpt-4o', 'copilot-gpt-4.1', 'copilot-gpt-5-mini', 'copilot-raptor-mini',
+                    'axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gpt-5-mini', 'axl/copilot/raptor-mini') THEN 0
+      WHEN name LIKE 'copilot-grok%' OR name LIKE 'axl/copilot/grok%' THEN 0.01
+      WHEN name LIKE 'copilot-%-haiku%' OR name LIKE 'copilot-gemini-%-flash%' OR name LIKE 'copilot-gpt-5.4-mini%'
+        OR name LIKE 'axl/copilot/%-haiku%' OR name LIKE 'axl/copilot/gemini-%-flash%' OR name LIKE 'axl/copilot/gpt-5.4-mini%' THEN 0.0132
+      WHEN name LIKE 'copilot-opus-4%' OR name LIKE 'axl/copilot/opus-4%' THEN 0.12
       ELSE 0.04
     END
-    WHERE name LIKE 'copilot-%' AND pricing_type = 'token'
+    WHERE (name LIKE 'copilot-%' OR name LIKE 'axl/copilot/%') AND pricing_type = 'token'
   `);
 
   // Set per-request pricing for kiro models (base: $0.04/credit)
+  // Handles both legacy names (kiro-*) and new names (axl/kiro/*)
   await p.query(`
     UPDATE model_configs SET pricing_type = 'request', request_cost = CASE
-      WHEN name = 'kiro-qwen3-coder-next' THEN 0.002
-      WHEN name = 'kiro-minimax-m2.1' THEN 0.006
-      WHEN name IN ('kiro-deepseek-3.2', 'kiro-minimax-m2.5') THEN 0.01
-      WHEN name = 'kiro-claude-haiku-4.5' THEN 0.016
-      WHEN name LIKE 'kiro-claude-sonnet%' THEN 0.052
-      WHEN name LIKE 'kiro-claude-opus%' THEN 0.088
+      WHEN name IN ('kiro-qwen3-coder-next', 'axl/kiro/qwen3-coder-next') THEN 0.002
+      WHEN name IN ('kiro-minimax-m2.1', 'axl/kiro/minimax-m2.1') THEN 0.006
+      WHEN name IN ('kiro-deepseek-3.2', 'kiro-minimax-m2.5', 'axl/kiro/deepseek-3.2', 'axl/kiro/minimax-m2.5') THEN 0.01
+      WHEN name IN ('kiro-claude-haiku-4.5', 'axl/kiro/claude-haiku-4.5') THEN 0.016
+      WHEN name LIKE 'kiro-claude-sonnet%' OR name LIKE 'axl/kiro/claude-sonnet%' THEN 0.052
+      WHEN name LIKE 'kiro-claude-opus%' OR name LIKE 'axl/kiro/claude-opus%' THEN 0.088
       ELSE 0.04
     END
-    WHERE (name LIKE 'kiro-%' OR name = 'auto-kiro') AND pricing_type = 'token'
+    WHERE (name LIKE 'kiro-%' OR name = 'auto-kiro' OR name LIKE 'axl/kiro/%') AND pricing_type = 'token'
   `);
 
+  // Add billing_type to provider_configs (subscription vs api_key)
+  await p.query(`ALTER TABLE provider_configs ADD COLUMN IF NOT EXISTS billing_type TEXT DEFAULT 'api_key'`);
+  await p.query(`UPDATE provider_configs SET billing_type = 'subscription' WHERE name IN ('copilot', 'axiologic_kiro') AND billing_type = 'api_key'`);
+
+  // Add tags array to model_configs
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'`);
+
+  // Rename models to axl/<provider>/<model> convention
+  await migrateModelNames(p);
+
+  // Seed initial tags for known models
+  await seedModelTags(p);
+}
+
+/**
+ * Rename existing models to the axl/<provider-slug>/<model> convention.
+ * Idempotent: skips models already prefixed with 'axl/'.
+ * Also updates model_tiers.models arrays.
+ */
+async function migrateModelNames(p) {
+  const { rows: models } = await p.query(
+    `SELECT id, name, provider_key FROM model_configs WHERE name NOT LIKE 'axl/%' AND provider_key IS NOT NULL`
+  );
+  if (models.length === 0) return;
+
+  const renames = []; // { oldName, newName }
+  for (const m of models) {
+    const modelPart = stripLegacyPrefix(m.name, m.provider_key);
+    const newName = buildModelName(m.provider_key, modelPart);
+    if (newName === m.name) continue;
+
+    try {
+      await p.query(
+        `UPDATE model_configs SET name = $1, display_name = CASE WHEN display_name = $2 THEN $1 ELSE display_name END WHERE id = $3`,
+        [newName, m.name, m.id]
+      );
+      renames.push({ oldName: m.name, newName });
+    } catch (err) {
+      // Name conflict — skip (model might already exist with new name)
+      if (err.code !== '23505') throw err;
+      log.warn(`Skipping rename ${m.name} → ${newName}: name already exists`);
+    }
+  }
+
+  if (renames.length === 0) return;
+
+  // Update model_tiers.models arrays
+  const { rows: tiers } = await p.query('SELECT id, models FROM model_tiers');
+  for (const tier of tiers) {
+    let changed = false;
+    const updatedModels = (tier.models || []).map(name => {
+      const rename = renames.find(r => r.oldName === name);
+      if (rename) { changed = true; return rename.newName; }
+      return name;
+    });
+    if (changed) {
+      await p.query('UPDATE model_tiers SET models = $1 WHERE id = $2', [updatedModels, tier.id]);
+    }
+  }
+
+  log.info(`Renamed ${renames.length} models to axl/ convention`);
+}
+
+/**
+ * Seed initial tags for known model patterns.
+ * Only sets tags on models that have an empty tags array.
+ */
+async function seedModelTags(p) {
+  const tagRules = [
+    // Copilot fast models
+    { pattern: 'axl/copilot/gpt-4o', tags: ['fast', 'chat', 'function-calling'] },
+    { pattern: 'axl/copilot/gpt-4.1', tags: ['fast', 'chat', 'function-calling'] },
+    { pattern: 'axl/copilot/gpt-5-mini', tags: ['fast', 'chat', 'function-calling'] },
+    { pattern: 'axl/copilot/raptor-mini', tags: ['fast', 'chat'] },
+    { pattern: 'axl/copilot/gpt-5.4-mini%', tags: ['fast', 'chat', 'function-calling'], like: true },
+    // Copilot Gemini
+    { pattern: 'axl/copilot/gemini-%flash%', tags: ['fast', 'chat'], like: true },
+    // Copilot Grok
+    { pattern: 'axl/copilot/grok%', tags: ['chat', 'reasoning'], like: true },
+    // Copilot Opus
+    { pattern: 'axl/copilot/opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
+    // Copilot Haiku
+    { pattern: 'axl/copilot/%haiku%', tags: ['fast', 'chat'], like: true },
+    // Kiro models
+    { pattern: 'axl/kiro/claude-sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
+    { pattern: 'axl/kiro/claude-opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
+    { pattern: 'axl/kiro/claude-haiku%', tags: ['fast', 'chat'], like: true },
+    { pattern: 'axl/kiro/deepseek%', tags: ['coding', 'reasoning'], like: true },
+    { pattern: 'axl/kiro/qwen%', tags: ['coding', 'agentic'], like: true },
+    { pattern: 'axl/kiro/minimax%', tags: ['chat', 'multilingual'], like: true },
+    { pattern: 'axl/kiro/auto', tags: ['agentic'] },
+    // Direct providers
+    { pattern: 'axl/anthropic/claude-opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
+    { pattern: 'axl/anthropic/claude-sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
+    { pattern: 'axl/openai/gpt-5%codex%', tags: ['coding', 'reasoning', 'agentic'], like: true },
+    { pattern: 'axl/google/gemini-2.5-pro', tags: ['reasoning', 'long-context', 'multimodal'] },
+    { pattern: 'axl/google/gemini%flash%', tags: ['fast', 'chat'], like: true },
+    // Search models
+    { pattern: 'axl/search/%', tags: ['search'], like: true },
+  ];
+
+  for (const rule of tagRules) {
+    if (rule.like) {
+      await p.query(
+        `UPDATE model_configs SET tags = $1 WHERE name LIKE $2 AND (tags IS NULL OR tags = '{}')`,
+        [rule.tags, rule.pattern]
+      );
+    } else {
+      await p.query(
+        `UPDATE model_configs SET tags = $1 WHERE name = $2 AND (tags IS NULL OR tags = '{}')`,
+        [rule.tags, rule.pattern]
+      );
+    }
+  }
 }
 
 async function ensurePartitions() {
@@ -254,10 +373,10 @@ async function seedDefaults() {
   if (models.length === 0) {
     log.info('Seeding model configs...');
     const defaultModels = [
-      { name: 'claude-opus-4.6', providerKey: 'anthropic', providerModel: 'claude-opus-4-6', upstreamSource: 'anthropic', mode: 'deep', inputPrice: 5, outputPrice: 25 },
-      { name: 'claude-sonnet-4.5', providerKey: 'anthropic', providerModel: 'claude-sonnet-4-5', upstreamSource: 'anthropic', mode: 'fast', inputPrice: 3, outputPrice: 15 },
-      { name: 'gpt-5.3-codex', providerKey: 'openai', providerModel: 'gpt-5.3-codex', upstreamSource: 'openai', mode: 'deep', inputPrice: 3, outputPrice: 15 },
-      { name: 'gemini-2.5-pro', providerKey: 'google', providerModel: 'gemini-2.5-pro', upstreamSource: 'google', mode: 'deep', inputPrice: 1.25, outputPrice: 10 },
+      { name: 'axl/anthropic/claude-opus-4.6', providerKey: 'anthropic', providerModel: 'claude-opus-4-6', upstreamSource: 'anthropic', mode: 'deep', inputPrice: 5, outputPrice: 25 },
+      { name: 'axl/anthropic/claude-sonnet-4.5', providerKey: 'anthropic', providerModel: 'claude-sonnet-4-5', upstreamSource: 'anthropic', mode: 'fast', inputPrice: 3, outputPrice: 15 },
+      { name: 'axl/openai/gpt-5.3-codex', providerKey: 'openai', providerModel: 'gpt-5.3-codex', upstreamSource: 'openai', mode: 'deep', inputPrice: 3, outputPrice: 15 },
+      { name: 'axl/google/gemini-2.5-pro', providerKey: 'google', providerModel: 'gemini-2.5-pro', upstreamSource: 'google', mode: 'deep', inputPrice: 1.25, outputPrice: 10 },
     ];
     for (const m of defaultModels) {
       await query(`
@@ -275,13 +394,13 @@ async function seedDefaultTiers() {
   if (tiers.length === 0) {
     log.info('Seeding default model tiers...');
     const defaults = [
-      { name: 'fast', display_name: 'Fast', models: ['copilot-gpt-4o', 'copilot-gpt-4.1', 'copilot-gpt-5-mini', 'kiro-claude-haiku-4.5'], fallback: null, sort_order: 10 },
-      { name: 'plan', display_name: 'Plan', models: ['copilot-gpt-4o', 'copilot-gpt-4.1', 'copilot-gemini-3-flash'], fallback: 'fast', sort_order: 20 },
-      { name: 'write', display_name: 'Write', models: ['copilot-gemini-3-flash'], fallback: 'fast', sort_order: 30 },
-      { name: 'code', display_name: 'Code', models: ['kiro-claude-sonnet-4.5', 'kiro-claude-sonnet-4'], fallback: 'code-paid', sort_order: 40 },
+      { name: 'fast', display_name: 'Fast', models: ['axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gpt-5-mini', 'axl/kiro/claude-haiku-4.5'], fallback: null, sort_order: 10 },
+      { name: 'plan', display_name: 'Plan', models: ['axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gemini-3-flash'], fallback: 'fast', sort_order: 20 },
+      { name: 'write', display_name: 'Write', models: ['axl/copilot/gemini-3-flash'], fallback: 'fast', sort_order: 30 },
+      { name: 'code', display_name: 'Code', models: ['axl/kiro/claude-sonnet-4.5', 'axl/kiro/claude-sonnet-4'], fallback: 'code-paid', sort_order: 40 },
       { name: 'code-paid', display_name: 'Code (Paid)', models: [], fallback: 'deep', sort_order: 50 },
-      { name: 'deep', display_name: 'Deep', models: ['copilot-opus-4.6', 'gpt-5.3-codex'], fallback: null, sort_order: 60 },
-      { name: 'ultra', display_name: 'Ultra', models: ['copilot-opus-4.6', 'gpt-5.3-codex'], fallback: null, sort_order: 70 },
+      { name: 'deep', display_name: 'Deep', models: ['axl/copilot/opus-4.6', 'axl/openai/gpt-5.3-codex'], fallback: null, sort_order: 60 },
+      { name: 'ultra', display_name: 'Ultra', models: ['axl/copilot/opus-4.6', 'axl/openai/gpt-5.3-codex'], fallback: null, sort_order: 70 },
     ];
     for (const t of defaults) {
       await query(`
