@@ -793,6 +793,12 @@
             <div class="flex gap-2 items-center">
               <input type="text" class="input input-bordered input-sm w-48" placeholder="Filter models..." x-model="modelFilter">
               <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Enabled only</span><input type="checkbox" class="toggle toggle-xs" x-model="modelEnabledOnly"></label>
+              <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Free only</span><input type="checkbox" class="toggle toggle-xs toggle-success" x-model="freeOnly"></label>
+              <div class="flex gap-0.5 items-center">
+                <button class="badge badge-sm cursor-pointer" :class="billingFilter === '' ? 'badge-primary' : 'badge-ghost'" @click="billingFilter = ''">All</button>
+                <button class="badge badge-sm cursor-pointer" :class="billingFilter === 'subscription' ? 'badge-secondary' : 'badge-ghost'" @click="billingFilter = billingFilter === 'subscription' ? '' : 'subscription'">Subscription</button>
+                <button class="badge badge-sm cursor-pointer" :class="billingFilter === 'api_key' ? 'badge-info badge-outline' : 'badge-ghost'" @click="billingFilter = billingFilter === 'api_key' ? '' : 'api_key'">API Key</button>
+              </div>
               <button class="btn btn-primary btn-sm" @click="openCreate()">Add Model</button>
             </div>
           </div>

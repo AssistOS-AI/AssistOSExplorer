@@ -783,6 +783,8 @@ function modelsPage() {
     // Models table state
     modelFilter: '',
     modelEnabledOnly: false,
+    freeOnly: false,
+    billingFilter: '',
     tagFilter: '',
     // Model edit state
     showModelEdit: false,
@@ -818,6 +820,8 @@ function modelsPage() {
       let list = this.models;
       if (!Array.isArray(list)) return [];
       if (this.modelEnabledOnly) list = list.filter(m => m.is_enabled);
+      if (this.freeOnly) list = list.filter(m => m.is_free);
+      if (this.billingFilter) list = list.filter(m => (m.billing_type || 'api_key') === this.billingFilter);
       if (this.tagFilter) list = list.filter(m => (m.tags || []).includes(this.tagFilter));
       const q = this.modelFilter.trim().toLowerCase();
       if (q) list = list.filter(m => m.name.toLowerCase().includes(q) || (m.provider_key || '').toLowerCase().includes(q));
