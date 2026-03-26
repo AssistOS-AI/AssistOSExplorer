@@ -424,6 +424,28 @@ async function seedModelTags(p) {
         );
       }
     }
+
+    // Append 'tool-calling' tag to models from providers that support it.
+    // Uses array_append to add to existing tags without overwriting.
+    // Only adds if tag not already present.
+    const toolCallingProviders = [
+      'copilot', 'axiologic_kiro', 'anthropic', 'openai', 'google',
+      'openrouter', 'axiologic_proxy', 'mistral', 'xai',
+      'opencode', 'opencode_anthropic', 'opencode_responses',
+    ];
+    // Exclude specific models known NOT to support tool calling
+    const noToolCalling = [
+      'axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1',
+    ];
+
+    await client.query(`
+      UPDATE model_configs
+      SET tags = array_append(tags, 'tool-calling')
+      WHERE provider_key = ANY($1)
+        AND NOT (name = ANY($2))
+        AND NOT ('tool-calling' = ANY(tags))
+    `, [toolCallingProviders, noToolCalling]);
+
   } finally {
     client.release();
   }

@@ -58,6 +58,6 @@ export const PREDEFINED_TAGS = [
   'fast', 'thinking', 'coding', 'agentic', 'search', 'vision',
   'creative', 'writing', 'research', 'chat', 'long-context',
   'instruction-following', 'multilingual', 'reasoning', 'multimodal',
-  'function-calling', 'roleplay', 'finance', 'medical',
+  'function-calling', 'tool-calling', 'roleplay', 'finance', 'medical',
   'embeddings', 'retrieval',
 ];
