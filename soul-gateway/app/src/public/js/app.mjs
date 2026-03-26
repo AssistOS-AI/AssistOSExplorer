@@ -1000,7 +1000,20 @@ function keysPage() {
     editForm: { label: '', daily_budget: '' },
 
     async init() {
-      this.keys = await api.get('/api/v1/keys');
+      const raw = await api.get('/api/v1/keys');
+      this.keys = raw.map(k => ({ ...k, daily_spent: Number(k.daily_spent || 0) }));
+    },
+
+    budgetPct(k) {
+      const budget = k.daily_budget != null ? Number(k.daily_budget) : null;
+      if (budget == null || budget === 0) return null;
+      return Math.min(100, (k.daily_spent / budget) * 100);
+    },
+
+    remaining(k) {
+      const budget = k.daily_budget != null ? Number(k.daily_budget) : null;
+      if (budget == null) return null;
+      return Math.max(0, budget - k.daily_spent);
     },
 
     generate() {

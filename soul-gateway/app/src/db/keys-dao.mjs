@@ -23,13 +23,19 @@ export async function resolveApiKey(rawKey) {
 }
 
 export async function listKeys() {
+  const startOfDay = new Date();
+  startOfDay.setUTCHours(0, 0, 0, 0);
+
   const sql = `
-    SELECT id, label, key_hint, daily_budget, rpm_limit, tpm_limit,
-           expires_at, is_revoked, last_used_at, created_at
-    FROM api_keys
-    ORDER BY created_at DESC
+    SELECT k.id, k.label, k.key_hint, k.daily_budget, k.rpm_limit, k.tpm_limit,
+           k.expires_at, k.is_revoked, k.last_used_at, k.created_at,
+           COALESCE(SUM(cl.total_cost) FILTER (WHERE cl.status_code = 200 AND cl.is_free IS NOT TRUE), 0) as daily_spent
+    FROM api_keys k
+    LEFT JOIN call_logs cl ON cl.api_key_id = k.id AND cl.started_at >= $1
+    GROUP BY k.id
+    ORDER BY k.created_at DESC
   `;
-  const { rows } = await query(sql);
+  const { rows } = await query(sql, [startOfDay]);
   return rows;
 }
 

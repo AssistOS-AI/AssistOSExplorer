@@ -1069,13 +1069,27 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-sm">
-                <thead><tr><th>Label</th><th>Key</th><th>Daily Budget</th><th>RPM</th><th>Last Used</th><th>Created</th><th>Status</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Label</th><th>Key</th><th>Daily Budget</th><th>Spent Today</th><th>RPM</th><th>Last Used</th><th>Created</th><th>Status</th><th>Actions</th></tr></thead>
                 <tbody>
                   <template x-for="k in keys" :key="k.id">
                     <tr :class="{'opacity-40': k.is_revoked}">
                       <td x-text="k.label || '-'"></td>
                       <td class="font-mono text-xs opacity-60" x-text="k.key_hint || '-'"></td>
                       <td x-text="k.daily_budget != null ? '$' + Number(k.daily_budget).toFixed(2) : '-'"></td>
+                      <td>
+                        <template x-if="k.daily_budget != null && Number(k.daily_budget) > 0">
+                          <div class="flex flex-col gap-0.5 min-w-[7rem]">
+                            <div class="flex justify-between text-xs">
+                              <span class="font-mono" x-text="'$' + k.daily_spent.toFixed(2)"></span>
+                              <span class="opacity-50 font-mono" x-text="'$' + remaining(k).toFixed(2) + ' left'"></span>
+                            </div>
+                            <progress class="progress progress-xs w-full" :class="budgetPct(k) >= 90 ? 'progress-error' : budgetPct(k) >= 70 ? 'progress-warning' : 'progress-success'" :value="budgetPct(k)" max="100"></progress>
+                          </div>
+                        </template>
+                        <template x-if="k.daily_budget == null || Number(k.daily_budget) === 0">
+                          <span x-text="k.daily_spent > 0 ? '$' + k.daily_spent.toFixed(2) : '-'"></span>
+                        </template>
+                      </td>
                       <td x-text="k.rpm_limit || 60"></td>
                       <td x-text="k.last_used_at ? formatDate(k.last_used_at) : 'Never'"></td>
                       <td x-text="formatDate(k.created_at)"></td>
