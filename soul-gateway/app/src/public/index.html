@@ -628,7 +628,7 @@
                       <td class="font-mono font-bold" x-text="p.name"></td>
                       <td x-text="p.display_name || '-'"></td>
                       <td><span class="badge badge-ghost badge-sm" x-text="p.protocol"></span></td>
-                      <td><span class="badge badge-sm" :class="p.billing_type === 'subscription' ? 'badge-secondary' : 'badge-ghost'" x-text="p.billing_type || 'api_key'"></span></td>
+                      <td><span class="badge badge-sm" :class="p.billing_type === 'subscription' ? 'badge-secondary' : 'badge-warning badge-outline'" x-text="p.billing_type || 'api_key'"></span></td>
                       <td class="text-xs font-mono max-w-[300px] truncate" x-text="p.base_url" :title="p.base_url"></td>
                       <td class="text-xs font-mono opacity-60" x-text="p.key_hint || '-'"></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="p.is_enabled" disabled></td>
@@ -811,7 +811,7 @@
                   <template x-for="m in filteredModels" :key="m.id">
                     <tr :class="{'opacity-40': !m.is_enabled, 'hover cursor-pointer': true}" @click="editModel(m)">
                       <td class="font-mono text-sm" x-text="m.name"></td>
-                      <td class="text-xs"><span class="badge badge-xs" :class="m.billing_type === 'subscription' ? 'badge-secondary' : 'badge-ghost'" x-text="m.billing_type || 'api_key'"></span></td>
+                      <td class="text-xs"><span class="badge badge-xs" :class="m.billing_type === 'subscription' ? 'badge-secondary' : 'badge-warning badge-outline'" x-text="m.billing_type || 'api_key'"></span></td>
                       <td class="text-xs"><div class="flex flex-wrap gap-0.5 max-w-[200px]"><template x-for="tag in (m.tags || [])" :key="tag"><span class="badge badge-xs badge-outline" x-text="tag"></span></template><span x-show="!m.tags || m.tags.length === 0" class="opacity-30">-</span></div></td>
                       <td class="text-xs"><span x-show="m.pricing_type === 'request'" class="badge badge-info badge-xs" x-text="'$' + (Number(m.request_cost) || 0).toFixed(3) + '/req'"></span><span x-show="m.pricing_type !== 'request'" class="text-xs opacity-50" x-text="'$' + (Number(m.input_price) || 0) + '/' + (Number(m.output_price) || 0)"></span></td>
                       <td class="text-xs" x-text="m.context_window || '-'"></td>
