@@ -227,48 +227,55 @@ async function migrate(p) {
  * Also updates model_tiers.models arrays.
  */
 async function migrateModelNames(p) {
-  await p.query(`SET search_path TO ${config.pgSchema}, public`);
-  const { rows: models } = await p.query(
-    `SELECT id, name, provider_key FROM model_configs WHERE name NOT LIKE 'axl/%' AND provider_key IS NOT NULL`
-  );
-  if (models.length === 0) return;
+  // Use a single client to keep the search_path set across queries
+  const client = await p.connect();
+  try {
+    await client.query(`SET search_path TO ${config.pgSchema}, public`);
 
-  const renames = []; // { oldName, newName }
-  for (const m of models) {
-    const modelPart = stripLegacyPrefix(m.name, m.provider_key);
-    const newName = buildModelName(m.provider_key, modelPart);
-    if (newName === m.name) continue;
+    const { rows: models } = await client.query(
+      `SELECT id, name, provider_key FROM model_configs WHERE name NOT LIKE 'axl/%' AND provider_key IS NOT NULL`
+    );
+    if (models.length === 0) return;
 
-    try {
-      await p.query(
-        `UPDATE model_configs SET name = $1, display_name = CASE WHEN display_name = $2 THEN $1 ELSE display_name END WHERE id = $3`,
-        [newName, m.name, m.id]
-      );
-      renames.push({ oldName: m.name, newName });
-    } catch (err) {
-      // Name conflict — skip (model might already exist with new name)
-      if (err.code !== '23505') throw err;
-      log.warn(`Skipping rename ${m.name} → ${newName}: name already exists`);
+    const renames = []; // { oldName, newName }
+    for (const m of models) {
+      const modelPart = stripLegacyPrefix(m.name, m.provider_key);
+      const newName = buildModelName(m.provider_key, modelPart);
+      if (newName === m.name) continue;
+
+      try {
+        await client.query(
+          `UPDATE model_configs SET name = $1, display_name = CASE WHEN display_name = $2 THEN $1 ELSE display_name END WHERE id = $3`,
+          [newName, m.name, m.id]
+        );
+        renames.push({ oldName: m.name, newName });
+      } catch (err) {
+        // Name conflict — skip (model might already exist with new name)
+        if (err.code !== '23505') throw err;
+        log.warn(`Skipping rename ${m.name} → ${newName}: name already exists`);
+      }
     }
-  }
 
-  if (renames.length === 0) return;
+    if (renames.length === 0) return;
 
-  // Update model_tiers.models arrays
-  const { rows: tiers } = await p.query('SELECT id, models FROM model_tiers');
-  for (const tier of tiers) {
-    let changed = false;
-    const updatedModels = (tier.models || []).map(name => {
-      const rename = renames.find(r => r.oldName === name);
-      if (rename) { changed = true; return rename.newName; }
-      return name;
-    });
-    if (changed) {
-      await p.query('UPDATE model_tiers SET models = $1 WHERE id = $2', [updatedModels, tier.id]);
+    // Update model_tiers.models arrays
+    const { rows: tiers } = await client.query('SELECT id, models FROM model_tiers');
+    for (const tier of tiers) {
+      let changed = false;
+      const updatedModels = (tier.models || []).map(name => {
+        const rename = renames.find(r => r.oldName === name);
+        if (rename) { changed = true; return rename.newName; }
+        return name;
+      });
+      if (changed) {
+        await client.query('UPDATE model_tiers SET models = $1 WHERE id = $2', [updatedModels, tier.id]);
+      }
     }
-  }
 
-  log.info(`Renamed ${renames.length} models to axl/ convention`);
+    log.info(`Renamed ${renames.length} models to axl/ convention`);
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -276,52 +283,57 @@ async function migrateModelNames(p) {
  * Only sets tags on models that have an empty tags array.
  */
 async function seedModelTags(p) {
-  await p.query(`SET search_path TO ${config.pgSchema}, public`);
-  const tagRules = [
-    // Copilot fast models
-    { pattern: 'axl/copilot/gpt-4o', tags: ['fast', 'chat', 'function-calling'] },
-    { pattern: 'axl/copilot/gpt-4.1', tags: ['fast', 'chat', 'function-calling'] },
-    { pattern: 'axl/copilot/gpt-5-mini', tags: ['fast', 'chat', 'function-calling'] },
-    { pattern: 'axl/copilot/raptor-mini', tags: ['fast', 'chat'] },
-    { pattern: 'axl/copilot/gpt-5.4-mini%', tags: ['fast', 'chat', 'function-calling'], like: true },
-    // Copilot Gemini
-    { pattern: 'axl/copilot/gemini-%flash%', tags: ['fast', 'chat'], like: true },
-    // Copilot Grok
-    { pattern: 'axl/copilot/grok%', tags: ['chat', 'reasoning'], like: true },
-    // Copilot Opus
-    { pattern: 'axl/copilot/opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
-    // Copilot Haiku
-    { pattern: 'axl/copilot/%haiku%', tags: ['fast', 'chat'], like: true },
-    // Kiro models
-    { pattern: 'axl/kiro/claude-sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
-    { pattern: 'axl/kiro/claude-opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
-    { pattern: 'axl/kiro/claude-haiku%', tags: ['fast', 'chat'], like: true },
-    { pattern: 'axl/kiro/deepseek%', tags: ['coding', 'reasoning'], like: true },
-    { pattern: 'axl/kiro/qwen%', tags: ['coding', 'agentic'], like: true },
-    { pattern: 'axl/kiro/minimax%', tags: ['chat', 'multilingual'], like: true },
-    { pattern: 'axl/kiro/auto', tags: ['agentic'] },
-    // Direct providers
-    { pattern: 'axl/anthropic/claude-opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
-    { pattern: 'axl/anthropic/claude-sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
-    { pattern: 'axl/openai/gpt-5%codex%', tags: ['coding', 'reasoning', 'agentic'], like: true },
-    { pattern: 'axl/google/gemini-2.5-pro', tags: ['reasoning', 'long-context', 'multimodal'] },
-    { pattern: 'axl/google/gemini%flash%', tags: ['fast', 'chat'], like: true },
-    // Search models
-    { pattern: 'axl/search/%', tags: ['search'], like: true },
-  ];
+  const client = await p.connect();
+  try {
+    await client.query(`SET search_path TO ${config.pgSchema}, public`);
+    const tagRules = [
+      // Copilot fast models
+      { pattern: 'axl/copilot/gpt-4o', tags: ['fast', 'chat', 'function-calling'] },
+      { pattern: 'axl/copilot/gpt-4.1', tags: ['fast', 'chat', 'function-calling'] },
+      { pattern: 'axl/copilot/gpt-5-mini', tags: ['fast', 'chat', 'function-calling'] },
+      { pattern: 'axl/copilot/raptor-mini', tags: ['fast', 'chat'] },
+      { pattern: 'axl/copilot/gpt-5.4-mini%', tags: ['fast', 'chat', 'function-calling'], like: true },
+      // Copilot Gemini
+      { pattern: 'axl/copilot/gemini-%flash%', tags: ['fast', 'chat'], like: true },
+      // Copilot Grok
+      { pattern: 'axl/copilot/grok%', tags: ['chat', 'reasoning'], like: true },
+      // Copilot Opus
+      { pattern: 'axl/copilot/opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
+      // Copilot Haiku
+      { pattern: 'axl/copilot/%haiku%', tags: ['fast', 'chat'], like: true },
+      // Kiro models
+      { pattern: 'axl/kiro/claude-sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
+      { pattern: 'axl/kiro/claude-opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
+      { pattern: 'axl/kiro/claude-haiku%', tags: ['fast', 'chat'], like: true },
+      { pattern: 'axl/kiro/deepseek%', tags: ['coding', 'reasoning'], like: true },
+      { pattern: 'axl/kiro/qwen%', tags: ['coding', 'agentic'], like: true },
+      { pattern: 'axl/kiro/minimax%', tags: ['chat', 'multilingual'], like: true },
+      { pattern: 'axl/kiro/auto', tags: ['agentic'] },
+      // Direct providers
+      { pattern: 'axl/anthropic/claude-opus%', tags: ['reasoning', 'coding', 'agentic', 'long-context'], like: true },
+      { pattern: 'axl/anthropic/claude-sonnet%', tags: ['coding', 'agentic', 'fast'], like: true },
+      { pattern: 'axl/openai/gpt-5%codex%', tags: ['coding', 'reasoning', 'agentic'], like: true },
+      { pattern: 'axl/google/gemini-2.5-pro', tags: ['reasoning', 'long-context', 'multimodal'] },
+      { pattern: 'axl/google/gemini%flash%', tags: ['fast', 'chat'], like: true },
+      // Search models
+      { pattern: 'axl/search/%', tags: ['search'], like: true },
+    ];
 
-  for (const rule of tagRules) {
-    if (rule.like) {
-      await p.query(
-        `UPDATE model_configs SET tags = $1 WHERE name LIKE $2 AND (tags IS NULL OR tags = '{}')`,
-        [rule.tags, rule.pattern]
-      );
-    } else {
-      await p.query(
-        `UPDATE model_configs SET tags = $1 WHERE name = $2 AND (tags IS NULL OR tags = '{}')`,
-        [rule.tags, rule.pattern]
-      );
+    for (const rule of tagRules) {
+      if (rule.like) {
+        await client.query(
+          `UPDATE model_configs SET tags = $1 WHERE name LIKE $2 AND (tags IS NULL OR tags = '{}')`,
+          [rule.tags, rule.pattern]
+        );
+      } else {
+        await client.query(
+          `UPDATE model_configs SET tags = $1 WHERE name = $2 AND (tags IS NULL OR tags = '{}')`,
+          [rule.tags, rule.pattern]
+        );
+      }
     }
+  } finally {
+    client.release();
   }
 }
 
