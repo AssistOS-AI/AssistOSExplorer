@@ -369,12 +369,35 @@ async function seedModelTags(p) {
       { pattern: '%seed-%', tags: ['chat'], like: true },
       { pattern: '%kimi%', tags: ['coding', 'agentic'], like: true },
       { pattern: '%glm-%', tags: ['chat', 'reasoning'], like: true },
+      // Writer / Palmyra models
+      { pattern: '%palmyra-creative%', tags: ['creative', 'writing'], like: true },
+      { pattern: '%palmyra-fin%', tags: ['finance', 'reasoning'], like: true },
+      { pattern: '%palmyra-med%', tags: ['medical', 'research'], like: true },
+      { pattern: '%palmyra%', tags: ['writing', 'chat'], like: true },
+      { pattern: '%writer%', tags: ['writing'], like: true },
+      // Euro / regional LLMs
+      { pattern: '%eurollm%', tags: ['multilingual', 'chat'], like: true },
+      { pattern: '%swallow%', tags: ['multilingual', 'chat'], like: true },
+      { pattern: '%taiwan%', tags: ['multilingual', 'chat'], like: true },
+      // Zamba
+      { pattern: '%zamba%', tags: ['chat', 'fast'], like: true },
+      // GLM (zhipu)
+      { pattern: '%glm%', tags: ['chat', 'reasoning'], like: true },
       // Kiro auto-router
       { pattern: 'axl/kiro/auto', tags: ['agentic'] },
       // Catch-all: any remaining instruct/chat-tuned model
       { pattern: '%instruct%', tags: ['chat', 'instruction-following'], like: true },
       { pattern: '%-chat%', tags: ['chat'], like: true },
       { pattern: '%/chat%', tags: ['chat'], like: true },
+      // Final catch-all: anything with a size indicator (e.g. 7b, 13b, 70b) is likely a general LLM
+      { pattern: '%-7b%', tags: ['chat'], like: true },
+      { pattern: '%-8b%', tags: ['chat'], like: true },
+      { pattern: '%-13b%', tags: ['chat'], like: true },
+      { pattern: '%-14b%', tags: ['chat'], like: true },
+      { pattern: '%-32b%', tags: ['chat'], like: true },
+      { pattern: '%-32k%', tags: ['long-context'], like: true },
+      { pattern: '%-70b%', tags: ['chat', 'reasoning'], like: true },
+      { pattern: '%-122b%', tags: ['chat', 'reasoning'], like: true },
     ];
 
     for (const rule of tagRules) {

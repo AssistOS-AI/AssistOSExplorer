@@ -56,6 +56,8 @@ export function stripLegacyPrefix(name, providerKey) {
  */
 export const PREDEFINED_TAGS = [
   'fast', 'thinking', 'coding', 'agentic', 'search', 'vision',
-  'creative', 'chat', 'long-context', 'instruction-following',
-  'multilingual', 'reasoning', 'multimodal', 'function-calling', 'roleplay',
+  'creative', 'writing', 'research', 'chat', 'long-context',
+  'instruction-following', 'multilingual', 'reasoning', 'multimodal',
+  'function-calling', 'roleplay', 'finance', 'medical',
+  'embeddings', 'retrieval',
 ];
