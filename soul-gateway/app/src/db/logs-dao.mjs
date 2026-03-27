@@ -21,6 +21,7 @@ export async function insertLog(log) {
       blocked_by_blacklist, blacklist_rule_id, blacklist_match,
       is_truncated, is_slow, prompt_size_warning,
       prompt_hash, cache_hit, is_free,
+      middlewares_applied,
       started_at, completed_at
     ) VALUES (
       $1, $2,
@@ -35,7 +36,8 @@ export async function insertLog(log) {
       $28, $29, $30,
       $31, $32, $33,
       $34, $35, $36,
-      $37, $38
+      $37,
+      $38, $39
     ) RETURNING id, started_at
   `, [
     log.soul_id, log.api_key_id,
@@ -50,6 +52,7 @@ export async function insertLog(log) {
     log.blocked_by_blacklist || false, log.blacklist_rule_id, log.blacklist_match,
     log.is_truncated || false, log.is_slow || false, log.prompt_size_warning || false,
     log.prompt_hash || null, log.cache_hit || false, log.is_free || false,
+    log.middlewares_applied || null,
     log.started_at, log.completed_at,
   ]);
   return rows[0];
@@ -57,7 +60,7 @@ export async function insertLog(log) {
 
 export async function findCachedResponse(promptHash, resolvedModel) {
   const { rows } = await query(`
-    SELECT response_content, prompt_tokens, completion_tokens, total_tokens, stop_reason
+    SELECT response_content, prompt_tokens, completion_tokens, total_tokens, stop_reason, middlewares_applied
     FROM call_logs
     WHERE prompt_hash = $1 AND resolved_model = $2 AND status_code = 200 AND response_content IS NOT NULL
     ORDER BY started_at DESC LIMIT 1
@@ -113,6 +116,7 @@ export async function queryLogs({ soul_id, model, from, to, status, error_type, 
              input_cost, output_cost, total_cost,
              retry_count, blocked_by_blacklist, blacklist_match,
              is_truncated, is_slow, prompt_size_warning, cache_hit,
+             middlewares_applied,
              started_at, completed_at
       FROM call_logs ${where}
       ORDER BY ${sortCol} ${sortDir}
@@ -225,6 +229,7 @@ export async function getSessionLogs(sessionId, { limit, offset, sort, order } =
              latency_ms, ttfb_ms, prompt_tokens, completion_tokens, total_tokens,
              input_cost, output_cost, total_cost,
              retry_count, blocked_by_blacklist, cache_hit,
+             middlewares_applied,
              started_at, completed_at
       FROM call_logs
       WHERE session_id = $1

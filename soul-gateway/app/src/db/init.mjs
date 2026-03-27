@@ -214,6 +214,89 @@ async function migrate(p) {
   // Add tags array to model_configs
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'`);
 
+  // Middleware tables
+  await p.query(`CREATE TABLE IF NOT EXISTS ${config.pgSchema}.middlewares (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    file_name TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'both' CHECK (type IN ('pre', 'post', 'both')),
+    supports_streaming BOOLEAN DEFAULT false,
+    default_settings JSONB DEFAULT '{}',
+    version TEXT DEFAULT '1.0.0',
+    is_discovered BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+  )`);
+  await p.query(`CREATE TABLE IF NOT EXISTS ${config.pgSchema}.tier_middlewares (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tier_id UUID NOT NULL REFERENCES ${config.pgSchema}.model_tiers(id) ON DELETE CASCADE,
+    middleware_id UUID NOT NULL REFERENCES ${config.pgSchema}.middlewares(id) ON DELETE CASCADE,
+    is_enabled BOOLEAN DEFAULT true,
+    sort_order INT DEFAULT 100,
+    settings JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(tier_id, middleware_id)
+  )`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_tier_middlewares_tier ON ${config.pgSchema}.tier_middlewares(tier_id)`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_tier_middlewares_order ON ${config.pgSchema}.tier_middlewares(tier_id, sort_order)`);
+
+  // ---- Unify tiers into model_configs ----
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'model'`);
+  await p.query(`DO $$ BEGIN
+    ALTER TABLE ${config.pgSchema}.model_configs ADD CONSTRAINT model_configs_type_check CHECK (type IN ('model', 'tier'));
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS model_refs TEXT[] DEFAULT '{}'`);
+  await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS fallback_model TEXT`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_model_configs_type ON ${config.pgSchema}.model_configs(type)`);
+
+  // Migrate tier data (idempotent — safe to re-run after tables dropped)
+  {
+    const { rows: existingTiers } = await p.query(`SELECT * FROM ${config.pgSchema}.model_tiers`).catch(() => ({ rows: [] }));
+    for (const tier of existingTiers) {
+      await p.query(`
+        INSERT INTO model_configs (id, name, display_name, type, model_refs, fallback_model, sort_order, is_enabled, created_at)
+        VALUES ($1, $2, $3, 'tier', $4, $5, $6, $7, $8)
+        ON CONFLICT (name) DO UPDATE SET type = 'tier', model_refs = EXCLUDED.model_refs,
+          fallback_model = EXCLUDED.fallback_model, sort_order = EXCLUDED.sort_order, is_enabled = EXCLUDED.is_enabled
+      `, [tier.id, tier.name, tier.display_name, tier.models || [], tier.fallback_tier, tier.sort_order ?? 100, tier.is_enabled, tier.created_at]);
+    }
+
+    // Migrate tier_middlewares into model_middlewares (UUIDs preserved)
+    const { rows: tierMws } = await p.query(`SELECT * FROM ${config.pgSchema}.tier_middlewares`).catch(() => ({ rows: [] }));
+    for (const tm of tierMws) {
+      await p.query(`
+        INSERT INTO model_middlewares (model_config_id, middleware_id, is_enabled, sort_order, settings, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (model_config_id, middleware_id) DO UPDATE SET
+          is_enabled = EXCLUDED.is_enabled, sort_order = EXCLUDED.sort_order, settings = EXCLUDED.settings
+      `, [tm.tier_id, tm.middleware_id, tm.is_enabled, tm.sort_order, tm.settings, tm.created_at, tm.updated_at]);
+    }
+
+    // Drop old tables
+    await p.query(`DROP TABLE IF EXISTS ${config.pgSchema}.tier_middlewares CASCADE`);
+    await p.query(`DROP TABLE IF EXISTS ${config.pgSchema}.model_tiers CASCADE`);
+  }
+
+  // Model-middleware assignments (per-model middleware configuration)
+  await p.query(`CREATE TABLE IF NOT EXISTS ${config.pgSchema}.model_middlewares (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    model_config_id UUID NOT NULL REFERENCES ${config.pgSchema}.model_configs(id) ON DELETE CASCADE,
+    middleware_id UUID NOT NULL REFERENCES ${config.pgSchema}.middlewares(id) ON DELETE CASCADE,
+    is_enabled BOOLEAN DEFAULT true,
+    sort_order INT DEFAULT 100,
+    settings JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(model_config_id, middleware_id)
+  )`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_model_middlewares_model ON ${config.pgSchema}.model_middlewares(model_config_id)`);
+  await p.query(`CREATE INDEX IF NOT EXISTS idx_model_middlewares_order ON ${config.pgSchema}.model_middlewares(model_config_id, sort_order)`);
+
+  // Add middlewares_applied column to call_logs
+  await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS middlewares_applied TEXT[] DEFAULT '{}'`);
+
   // Rename models to axl/<provider>/<model> convention
   await migrateModelNames(p);
 
@@ -224,7 +307,7 @@ async function migrate(p) {
 /**
  * Rename existing models to the axl/<provider-slug>/<model> convention.
  * Idempotent: skips models already prefixed with 'axl/'.
- * Also updates model_tiers.models arrays.
+ * Also updates model_refs arrays in tier-type model_configs.
  */
 async function migrateModelNames(p) {
   // Use a single client to keep the search_path set across queries
@@ -258,17 +341,17 @@ async function migrateModelNames(p) {
 
     if (renames.length === 0) return;
 
-    // Update model_tiers.models arrays
-    const { rows: tiers } = await client.query('SELECT id, models FROM model_tiers');
+    // Update model_refs arrays in tier-type model_configs
+    const { rows: tiers } = await client.query(`SELECT id, model_refs FROM model_configs WHERE type = 'tier'`);
     for (const tier of tiers) {
       let changed = false;
-      const updatedModels = (tier.models || []).map(name => {
+      const updatedModels = (tier.model_refs || []).map(name => {
         const rename = renames.find(r => r.oldName === name);
         if (rename) { changed = true; return rename.newName; }
         return name;
       });
       if (changed) {
-        await client.query('UPDATE model_tiers SET models = $1 WHERE id = $2', [updatedModels, tier.id]);
+        await client.query('UPDATE model_configs SET model_refs = $1 WHERE id = $2', [updatedModels, tier.id]);
       }
     }
 
@@ -518,24 +601,24 @@ async function seedDefaults() {
 }
 
 async function seedDefaultTiers() {
-  const { rows: tiers } = await query('SELECT id FROM model_tiers LIMIT 1');
+  const { rows: tiers } = await query(`SELECT id FROM model_configs WHERE type = 'tier' LIMIT 1`);
   if (tiers.length === 0) {
     log.info('Seeding default model tiers...');
     const defaults = [
-      { name: 'fast', display_name: 'Fast', models: ['axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gpt-5-mini', 'axl/kiro/claude-haiku-4.5'], fallback: null, sort_order: 10 },
-      { name: 'plan', display_name: 'Plan', models: ['axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gemini-3-flash'], fallback: 'fast', sort_order: 20 },
-      { name: 'write', display_name: 'Write', models: ['axl/copilot/gemini-3-flash'], fallback: 'fast', sort_order: 30 },
-      { name: 'code', display_name: 'Code', models: ['axl/kiro/claude-sonnet-4.5', 'axl/kiro/claude-sonnet-4'], fallback: 'code-paid', sort_order: 40 },
-      { name: 'code-paid', display_name: 'Code (Paid)', models: [], fallback: 'deep', sort_order: 50 },
-      { name: 'deep', display_name: 'Deep', models: ['axl/copilot/opus-4.6', 'axl/openai/gpt-5.3-codex'], fallback: null, sort_order: 60 },
-      { name: 'ultra', display_name: 'Ultra', models: ['axl/copilot/opus-4.6', 'axl/openai/gpt-5.3-codex'], fallback: null, sort_order: 70 },
+      { name: 'fast', display_name: 'Fast', model_refs: ['axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gpt-5-mini', 'axl/kiro/claude-haiku-4.5'], fallback_model: null, sort_order: 10 },
+      { name: 'plan', display_name: 'Plan', model_refs: ['axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gemini-3-flash'], fallback_model: 'fast', sort_order: 20 },
+      { name: 'write', display_name: 'Write', model_refs: ['axl/copilot/gemini-3-flash'], fallback_model: 'fast', sort_order: 30 },
+      { name: 'code', display_name: 'Code', model_refs: ['axl/kiro/claude-sonnet-4.5', 'axl/kiro/claude-sonnet-4'], fallback_model: 'code-paid', sort_order: 40 },
+      { name: 'code-paid', display_name: 'Code (Paid)', model_refs: [], fallback_model: 'deep', sort_order: 50 },
+      { name: 'deep', display_name: 'Deep', model_refs: ['axl/copilot/opus-4.6', 'axl/openai/gpt-5.3-codex'], fallback_model: null, sort_order: 60 },
+      { name: 'ultra', display_name: 'Ultra', model_refs: ['axl/copilot/opus-4.6', 'axl/openai/gpt-5.3-codex'], fallback_model: null, sort_order: 70 },
     ];
     for (const t of defaults) {
       await query(`
-        INSERT INTO model_tiers (name, display_name, models, fallback_tier, sort_order)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO model_configs (name, display_name, type, model_refs, fallback_model, sort_order)
+        VALUES ($1, $2, 'tier', $3, $4, $5)
         ON CONFLICT (name) DO NOTHING
-      `, [t.name, t.display_name, t.models, t.fallback, t.sort_order]);
+      `, [t.name, t.display_name, t.model_refs, t.fallback_model, t.sort_order]);
     }
     log.info('Seeded default model tiers');
   }

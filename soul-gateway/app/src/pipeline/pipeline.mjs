@@ -2,25 +2,22 @@ import { randomUUID } from 'node:crypto';
 import { readJsonBody, sendError, sendJson } from '../utils/http-helpers.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { authenticate } from './auth.mjs';
-import { checkBlacklist } from './blacklist.mjs';
-import { checkRateLimit, trackTokenUsage } from './rate-limiter.mjs';
 import { resolveModel } from './model-router.mjs';
 import { checkPromptSize } from './prompt-checker.mjs';
 import { dispatchWithRetry } from './retry.mjs';
 import { tapStream, handleNonStreaming } from './stream-tap.mjs';
 import { calculateCost } from './cost-calculator.mjs';
 import { checkResponse } from './response-checker.mjs';
-import { insertLog, findCachedResponse } from '../db/logs-dao.mjs';
+import { insertLog } from '../db/logs-dao.mjs';
 import { sha256 } from '../utils/crypto.mjs';
 import { broadcastLog } from '../ws/log-stream.mjs';
 import { broadcastToSoul } from '../ws/soul-stream.mjs';
 import { parseAgentName } from '../utils/agent-parser.mjs';
-import { checkLoopDetection } from './loop-detector.mjs';
 import { acquireModelSlot } from './model-queue.mjs';
-import { checkBudget, trackSpend } from './cost-throttler.mjs';
 import { putModelInCooldown, shouldTriggerCooldown, shouldCascade } from './model-cooldown.mjs';
+import { runPreMiddlewares, runPostMiddlewares } from './middleware-runner.mjs';
 import { config } from '../config.mjs';
-import { BlacklistError, SoulGatewayError } from '../utils/errors.mjs';
+import { SoulGatewayError } from '../utils/errors.mjs';
 
 const log = createLogger('pipeline');
 
@@ -61,98 +58,117 @@ export async function pipeline(req, res) {
     logEntry.is_streaming = !!body.stream;
     logEntry.request_messages = body.messages;
 
-    // 3. Loop detection (use key's rpm_limit for rapid-fire threshold)
-    checkLoopDetection(sessionId, body.messages, body.model, { maxRpm: authCtx.rpm_limit });
-
-    // 4. Blacklist scan
-    try {
-      await checkBlacklist(body.messages);
-    } catch (err) {
-      if (err instanceof BlacklistError) {
-        logEntry.blocked_by_blacklist = true;
-        logEntry.blacklist_rule_id = err.ruleId;
-        logEntry.blacklist_match = err.match;
-        logEntry.status_code = 400;
-        logEntry.error_type = 'content_blocked';
-        logEntry.error_message = err.message;
-        logEntry.completed_at = new Date();
-        logEntry.latency_ms = Date.now() - startTime;
-        await safeInsertLog(logEntry);
-        return sendError(res, 400, err.message, 'content_blocked');
-      }
-      throw err;
-    }
-
-    // 5. Rate limit
-    await checkRateLimit(authCtx.api_key_id, authCtx.rpm_limit, authCtx.tpm_limit);
-
-    // 6. Budget check
-    await checkBudget(authCtx);
-
-    // 7. Model routing
+    // 3. Model routing
     modelInfo = await resolveModel(body.model);
     logEntry.resolved_model = modelInfo.resolvedModel;
     logEntry.mode = modelInfo.mode;
     logEntry.is_free = modelInfo.isFree || false;
 
-    // 8. Prompt hash
+    // 8. Extract LLM params — pass through all params (tools, tool_choice, etc.)
+    const { model: _m, messages: _msgs, stream: _s, ...llmParams } = body;
+
+    // ---- PRE-DISPATCH MIDDLEWARES ----
+    let mwCtx = null;
+    const mwApplied = [];
+    if (modelInfo.tierId || modelInfo.modelConfigId) {
+      const preResult = await runPreMiddlewares(modelInfo.tierId, modelInfo.modelConfigId, {
+        messages: body.messages,
+        params: llmParams,
+        model: modelInfo.resolvedModel,
+        tier: modelInfo.tierName,
+        apiKeyId: authCtx.api_key_id,
+        agentName,
+        sessionId,
+        isStreaming: !!body.stream,
+        authCtx,
+      });
+      mwCtx = preResult.ctx;
+      mwApplied.push(...preResult.applied);
+
+      if (preResult.aborted) {
+        logEntry.middlewares_applied = mwApplied;
+        logEntry.latency_ms = Date.now() - startTime;
+        logEntry.completed_at = new Date();
+
+        // Success abort: middleware short-circuits with a valid response (e.g., cache hit)
+        if (mwCtx.abortStatus === 200 && mwCtx.abortResponse) {
+          const ar = mwCtx.abortResponse;
+          logEntry.status_code = 200;
+          logEntry.response_content = ar.content;
+          logEntry.stop_reason = ar.stopReason || 'stop';
+          logEntry.prompt_tokens = ar.usage?.prompt_tokens;
+          logEntry.completion_tokens = ar.usage?.completion_tokens;
+          logEntry.total_tokens = ar.usage?.total_tokens;
+          logEntry.response_size_bytes = Buffer.byteLength(ar.content || '', 'utf8');
+          logEntry.cache_hit = ar.cacheHit ?? false;
+          logEntry.prompt_hash = ar.promptHash || logEntry.prompt_hash;
+
+          const costs = calculateCost(
+            ar.usage || {},
+            modelInfo.inputPrice, modelInfo.outputPrice,
+            modelInfo.pricingType, modelInfo.requestCost,
+          );
+          logEntry.input_cost = costs.input_cost;
+          logEntry.output_cost = costs.output_cost;
+          logEntry.total_cost = costs.total_cost;
+
+          if (ar.headers) {
+            for (const [k, v] of Object.entries(ar.headers)) {
+              res.setHeader(k, v);
+            }
+          }
+
+          sendJson(res, {
+            id: requestId,
+            object: 'chat.completion',
+            choices: [{ index: 0, message: { role: 'assistant', content: ar.content }, finish_reason: ar.stopReason || 'stop' }],
+            usage: ar.usage || {},
+          });
+
+          const inserted = await safeInsertLog(logEntry);
+          const broadcastEntry = { ...logEntry, id: inserted?.id };
+          broadcastLog(broadcastEntry);
+          if (authCtx.soul_id) broadcastToSoul(authCtx.soul_id, broadcastEntry);
+          return;
+        }
+
+        // Error abort — merge middleware-provided log fields
+        if (mwCtx.metadata?.logFields) {
+          Object.assign(logEntry, mwCtx.metadata.logFields);
+        }
+        logEntry.status_code = mwCtx.abortStatus;
+        logEntry.error_type = mwCtx.metadata?.errorType || 'middleware_abort';
+        logEntry.error_message = mwCtx.abortMessage;
+        await safeInsertLog(logEntry);
+
+        if (!res.headersSent) {
+          const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
+          if (mwCtx.metadata?.retryAfter) {
+            headers['Retry-After'] = String(mwCtx.metadata.retryAfter);
+          }
+          res.writeHead(mwCtx.abortStatus, headers);
+          res.end(JSON.stringify({ error: { type: logEntry.error_type, message: mwCtx.abortMessage } }));
+        }
+        return;
+      }
+
+      // Apply mutations from pre-middlewares
+      if (mwCtx) {
+        body.messages = mwCtx.messages;
+      }
+    }
+    // ---- END PRE-DISPATCH MIDDLEWARES ----
+
+    // 9. Prompt hash (uses potentially modified messages from middlewares)
     const promptHash = sha256(JSON.stringify(body.messages) + '||' + modelInfo.resolvedModel);
     logEntry.prompt_hash = promptHash;
 
-    // 9. Prompt size check
+    // 10. Prompt size check
     const promptCheck = checkPromptSize(body.messages);
     logEntry.request_size_bytes = promptCheck.requestSizeBytes;
     logEntry.prompt_size_warning = promptCheck.promptSizeWarning;
 
-    // 10. Extract LLM params from the request body
-    const llmParams = {};
-    if (body.temperature !== undefined) llmParams.temperature = body.temperature;
-    if (body.max_tokens !== undefined) llmParams.max_tokens = body.max_tokens;
-    if (body.top_p !== undefined) llmParams.top_p = body.top_p;
-    if (body.frequency_penalty !== undefined) llmParams.frequency_penalty = body.frequency_penalty;
-    if (body.presence_penalty !== undefined) llmParams.presence_penalty = body.presence_penalty;
-    if (body.stop !== undefined) llmParams.stop = body.stop;
-
-    // 11. Cache check (non-streaming only)
-    if (!body.stream) {
-      const cached = await findCachedResponse(promptHash, modelInfo.resolvedModel);
-      if (cached) {
-        logEntry.cache_hit = true;
-        logEntry.response_content = cached.response_content;
-        logEntry.status_code = 200;
-        logEntry.stop_reason = cached.stop_reason;
-        logEntry.response_size_bytes = Buffer.byteLength(cached.response_content || '', 'utf8');
-        logEntry.latency_ms = Date.now() - startTime;
-        logEntry.prompt_tokens = cached.prompt_tokens;
-        logEntry.completion_tokens = cached.completion_tokens;
-        logEntry.total_tokens = cached.total_tokens;
-
-        const costs = calculateCost(
-          { prompt_tokens: cached.prompt_tokens, completion_tokens: cached.completion_tokens, total_tokens: cached.total_tokens },
-          modelInfo.inputPrice, modelInfo.outputPrice, modelInfo.pricingType, modelInfo.requestCost,
-        );
-        logEntry.input_cost = costs.input_cost;
-        logEntry.output_cost = costs.output_cost;
-        logEntry.total_cost = costs.total_cost;
-        logEntry.completed_at = new Date();
-
-        res.setHeader('X-Cache', 'HIT');
-        sendJson(res, {
-          id: requestId,
-          object: 'chat.completion',
-          choices: [{ index: 0, message: { role: 'assistant', content: cached.response_content }, finish_reason: cached.stop_reason || 'stop' }],
-          usage: { prompt_tokens: cached.prompt_tokens || 0, completion_tokens: cached.completion_tokens || 0, total_tokens: cached.total_tokens || 0 },
-        });
-
-        const inserted = await safeInsertLog(logEntry);
-        const broadcastEntry = { ...logEntry, id: inserted?.id };
-        broadcastLog(broadcastEntry);
-        if (authCtx.soul_id) broadcastToSoul(authCtx.soul_id, broadcastEntry);
-        return;
-      }
-    }
-
-    // 12. Dispatch with model cooldown fallback
+    // 11. Dispatch with model cooldown fallback
     const attemptedModels = new Set();
     const cooldownSkipped = [];
     let result;
@@ -244,8 +260,21 @@ export async function pipeline(req, res) {
       logEntry.cooldown_skipped = cooldownSkipped;
     }
 
-    // 15. Cost calculation
+    // 15. Cost calculation (before post-middlewares so they have cost data)
     const costs = calculateCost(result.usage, modelInfo.inputPrice, modelInfo.outputPrice, modelInfo.pricingType, modelInfo.requestCost);
+
+    // Set cost metadata for post-middlewares (budget tracking needs this)
+    if (mwCtx) {
+      mwCtx.metadata.totalCost = costs.total_cost;
+      mwCtx.metadata.isFree = modelInfo?.isFree;
+    }
+
+    // ---- POST-DISPATCH MIDDLEWARES ----
+    if ((modelInfo.tierId || modelInfo.modelConfigId) && mwCtx) {
+      const postResult = await runPostMiddlewares(modelInfo.tierId, modelInfo.modelConfigId, mwCtx, result);
+      mwApplied.push(...postResult.applied);
+    }
+    // ---- END POST-DISPATCH MIDDLEWARES ----
 
     // 16. Response checks
     const flags = checkResponse(result.stopReason, Date.now() - startTime);
@@ -265,6 +294,7 @@ export async function pipeline(req, res) {
     logEntry.total_cost = costs.total_cost;
     logEntry.is_truncated = flags.is_truncated;
     logEntry.is_slow = flags.is_slow;
+    logEntry.middlewares_applied = mwApplied.length > 0 ? mwApplied : null;
     logEntry.completed_at = new Date();
 
     if (result.error) {
@@ -278,14 +308,6 @@ export async function pipeline(req, res) {
     const broadcastEntry = { ...logEntry, id: inserted?.id };
     broadcastLog(broadcastEntry);
     if (authCtx.soul_id) broadcastToSoul(authCtx.soul_id, broadcastEntry);
-
-    // Track TPM and budget spend (post-response)
-    if (costs.total_tokens > 0) {
-      trackTokenUsage(authCtx.api_key_id, costs.total_tokens, authCtx.tpm_limit).catch(() => {});
-    }
-    if (costs.total_cost > 0) {
-      trackSpend(authCtx, costs.total_cost, modelInfo?.isFree);
-    }
 
   } catch (err) {
     const latencyMs = Date.now() - startTime;

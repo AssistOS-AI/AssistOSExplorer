@@ -68,6 +68,7 @@ function app() {
       { id: 'activity', label: 'Activity' },
       { id: 'costs', label: 'Usage' },
       { id: 'blacklist', label: 'Blacklist' },
+      { id: 'middlewares', label: 'Middlewares' },
       { id: 'export', label: 'Export' },
     ],
     wsConnected: false,
@@ -985,7 +986,7 @@ function tiersPage() {
     models: [],
     showTierCreate: false,
     editingTier: null,
-    tierForm: { name: '', display_name: '', models: [], fallback_tier: '' },
+    tierForm: { name: '', display_name: '', model_refs: [], fallback_model: '' },
 
     async init() {
       [this.tiers, this.models] = await Promise.all([
@@ -999,15 +1000,15 @@ function tiersPage() {
       this.tierForm = {
         name: t.name,
         display_name: t.display_name || '',
-        models: [...(t.models || [])],
-        fallback_tier: t.fallback_tier || '',
+        model_refs: [...(t.model_refs || t.models || [])],
+        fallback_model: t.fallback_model || t.fallback_tier || '',
       };
       this.showTierCreate = true;
     },
 
     async saveTier() {
       const payload = { ...this.tierForm };
-      if (!payload.fallback_tier) payload.fallback_tier = null;
+      if (!payload.fallback_model) payload.fallback_model = null;
       if (this.editingTier) {
         await api.put(`/api/v1/tiers/${this.editingTier.id}`, payload);
       } else {
@@ -1155,6 +1156,116 @@ function blacklistPage() {
 }
 
 // ---- Export Page ----
+function middlewaresPage() {
+  return {
+    middlewares: [],
+    models: [],
+    selectedMw: null,
+    modelAssignments: [],
+    showSettings: false,
+    editingAssignment: null,
+    settingsJson: '{}',
+    settingsError: '',
+
+    async init() {
+      [this.middlewares, this.models] = await Promise.all([
+        api.get('/api/v1/middlewares'),
+        api.get('/api/v1/models'),
+      ]);
+    },
+
+    async selectMw(mw) {
+      this.selectedMw = mw;
+      this.showSettings = false;
+      await this.loadAssignments();
+    },
+
+    async loadAssignments() {
+      if (!this.selectedMw) return;
+      const modelAssignments = [];
+      for (const model of this.models) {
+        const modelMws = await api.get(`/api/v1/models/${model.id}/middlewares`);
+        const match = modelMws.find(mm => mm.middleware_id === this.selectedMw.id);
+        modelAssignments.push({
+          model,
+          assigned: !!match,
+          is_enabled: match?.is_enabled ?? false,
+          sort_order: match?.sort_order ?? 100,
+          settings: match?.settings || {},
+          model_middleware_id: match?.id,
+        });
+      }
+      this.modelAssignments = modelAssignments;
+    },
+
+    async toggleModelAssignment(a) {
+      if (a.assigned) {
+        await api.del(`/api/v1/models/${a.model.id}/middlewares/${a.model_middleware_id}`);
+      } else {
+        await api.post(`/api/v1/models/${a.model.id}/middlewares`, {
+          middleware_id: this.selectedMw.id,
+          is_enabled: true,
+          sort_order: 100,
+          settings: {},
+        });
+      }
+      await this.loadAssignments();
+    },
+
+    async toggleModelEnabled(a) {
+      if (!a.model_middleware_id) return;
+      await api.put(`/api/v1/models/${a.model.id}/middlewares/${a.model_middleware_id}`, {
+        is_enabled: !a.is_enabled,
+      });
+      await this.loadAssignments();
+    },
+
+    async updateModelSortOrder(a) {
+      if (!a.model_middleware_id) return;
+      await api.put(`/api/v1/models/${a.model.id}/middlewares/${a.model_middleware_id}`, {
+        sort_order: parseInt(a.sort_order) || 100,
+      });
+    },
+
+    openSettings(a) {
+      this.editingAssignment = a;
+      const merged = { ...(this.selectedMw.default_settings || {}), ...(a.settings || {}) };
+      this.settingsJson = JSON.stringify(merged, null, 2);
+      this.settingsError = '';
+      this.showSettings = true;
+    },
+
+    async saveSettings() {
+      try {
+        const parsed = JSON.parse(this.settingsJson);
+        this.settingsError = '';
+        await api.put(
+          `/api/v1/models/${this.editingAssignment.model.id}/middlewares/${this.editingAssignment.model_middleware_id}`,
+          { settings: parsed }
+        );
+        this.showSettings = false;
+        await this.loadAssignments();
+      } catch (e) {
+        this.settingsError = 'Invalid JSON: ' + e.message;
+      }
+    },
+
+    async rescan() {
+      const result = await api.post('/api/v1/middlewares/rescan');
+      this.middlewares = await api.get('/api/v1/middlewares');
+      if (this.selectedMw) {
+        this.selectedMw = this.middlewares.find(m => m.id === this.selectedMw.id) || null;
+      }
+    },
+
+    typeBadge(type) {
+      if (type === 'pre') return 'badge-info';
+      if (type === 'post') return 'badge-warning';
+      return 'badge-success';
+    },
+  };
+}
+
 function exportPage() {
   return {
     format: 'opencode',

@@ -1,7 +1,6 @@
 import { readJsonBody, sendJson, sendError } from '../utils/http-helpers.mjs';
 import * as dao from '../db/providers-dao.mjs';
-import { upsertModel, getModelsByProviderConfigId } from '../db/models-dao.mjs';
-import { getTierByName, createTier, updateTier } from '../db/tiers-dao.mjs';
+import { upsertModel, getModelsByProviderConfigId, getTierByName, createTier, updateModel } from '../db/models-dao.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { buildModelName } from '../utils/model-naming.mjs';
 
@@ -203,19 +202,19 @@ export const handleProviders = {
         const searchTier = await getTierByName('search');
         if (searchTier) {
           // Merge: keep existing models, add new ones
-          const tierModels = new Set(searchTier.models || []);
+          const tierModels = new Set(searchTier.model_refs || []);
           for (const name of synced) tierModels.add(name);
           // Remove disabled models
           for (const existing of existingModels) {
             if (!expectedNames.has(existing.name)) tierModels.delete(existing.name);
           }
-          await updateTier(searchTier.id, { models: [...tierModels] });
+          await updateModel(searchTier.id, { model_refs: [...tierModels] });
           syncLog.info(`Updated search tier with ${tierModels.size} models`);
         } else {
           await createTier({
             name: 'search',
             display_name: 'Web Search',
-            models: synced,
+            model_refs: synced,
             sort_order: 50,
           });
           syncLog.info(`Created search tier with ${synced.length} models`);

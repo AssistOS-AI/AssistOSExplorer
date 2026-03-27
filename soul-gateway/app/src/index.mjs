@@ -1,8 +1,6 @@
-// Register achillesAgentLib protocol handlers (openai, anthropic, google modules)
-import 'achillesAgentLib/utils/LLMClient.mjs';
-
 import { createAppServer, startServer } from './server.mjs';
 import { initDb } from './db/init.mjs';
+import { scanMiddlewares } from './pipeline/middleware-loader.mjs';
 import { createLogger } from './utils/logger.mjs';
 
 const log = createLogger('main');
@@ -13,6 +11,9 @@ async function main() {
   // Initialize database (create schema, run migrations, seed data)
   await initDb();
   log.info('Database initialized');
+
+  // Discover and register middleware plugins
+  await scanMiddlewares();
 
   // Create and start HTTP server
   const server = createAppServer();

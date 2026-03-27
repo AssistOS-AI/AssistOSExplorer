@@ -25,24 +25,74 @@ export const handleModels = {
 
     // For /v1/models (OpenAI-compatible format)
     if (req.url.startsWith('/v1/models')) {
+      const modelData = models.filter(m => m.is_enabled).map(m => ({
+        id: m.name,
+        object: 'model',
+        type: 'model',
+        created: Math.floor(new Date(m.created_at).getTime() / 1000),
+        owned_by: 'soul-gateway',
+        mode: m.mode || 'deep',
+        input_price: parseFloat(m.input_price) || 0,
+        output_price: parseFloat(m.output_price) || 0,
+        context_window: m.context_window || null,
+        sort_order: m.sort_order ?? 100,
+        is_free: Boolean(m.is_free),
+        billing_type: m.billing_type || 'api_key',
+        tags: m.tags || [],
+      }));
+
+      // Include tiers in the /v1/models response
+      // Build lookup map for computing tier billing types from member models
+      const modelByName = new Map();
+      for (const m of models) modelByName.set(m.name, m);
+
+      const tiers = await dao.listTiers(true);
+      const tierData = tiers.map(t => {
+        // Compute billing types from member models
+        const billingTypes = new Set();
+        for (const ref of (t.model_refs || [])) {
+          const member = modelByName.get(ref);
+          if (!member) continue;
+          if (member.is_free) billingTypes.add('free');
+          else billingTypes.add(member.billing_type || 'api_key');
+        }
+
+        return {
+          id: t.name,
+          object: 'model',
+          type: 'tier',
+          created: Math.floor(new Date(t.created_at).getTime() / 1000),
+          owned_by: 'soul-gateway',
+          models: t.model_refs || [],
+          fallback: t.fallback_model || null,
+          sort_order: t.sort_order ?? 100,
+          billing_types: [...billingTypes],
+          is_free: billingTypes.size === 1 && billingTypes.has('free'),
+        };
+      });
+
       sendJson(res, {
         object: 'list',
-        data: models.filter(m => m.is_enabled).map(m => ({
-          id: m.name,
-          object: 'model',
-          created: Math.floor(new Date(m.created_at).getTime() / 1000),
-          owned_by: 'soul-gateway',
-          mode: m.mode || 'deep',
-          input_price: parseFloat(m.input_price) || 0,
-          output_price: parseFloat(m.output_price) || 0,
-          context_window: m.context_window || null,
-          sort_order: m.sort_order ?? 100,
-          is_free: Boolean(m.is_free),
-          billing_type: m.billing_type || 'api_key',
-          tags: m.tags || [],
-        })),
+        data: [...modelData, ...tierData].sort((a, b) => (a.sort_order ?? 100) - (b.sort_order ?? 100)),
       });
       return;
+    }
+
+    // Enrich tier rows with computed billing_types from member models
+    const nameMap = new Map();
+    for (const m of models) nameMap.set(m.name, m);
+    for (const m of models) {
+      if (m.type === 'tier' && m.model_refs?.length) {
+        const billingTypes = new Set();
+        for (const ref of m.model_refs) {
+          const member = nameMap.get(ref);
+          if (!member) continue;
+          if (member.is_free) billingTypes.add('free');
+          else billingTypes.add(member.billing_type || 'api_key');
+        }
+        m.billing_types = [...billingTypes];
+        m.is_free = billingTypes.size === 1 && billingTypes.has('free');
+      }
     }
 
     sendJson(res, models);

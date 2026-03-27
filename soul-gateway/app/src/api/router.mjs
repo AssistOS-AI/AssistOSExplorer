@@ -5,6 +5,7 @@ import { handleKeys } from './keys.mjs';
 import { handleProviders } from './providers.mjs';
 import { handleBlacklist } from './blacklist.mjs';
 import { handleCooldowns } from './cooldowns.mjs';
+import { handleMiddlewares } from './middlewares.mjs';
 import { handleLogs } from './logs.mjs';
 import { handleMetrics } from './metrics.mjs';
 import { handleExport } from './export.mjs';
@@ -68,6 +69,21 @@ export async function apiRouter(req, res, pathname, query) {
     if (method === 'GET') return handleModels.list(req, res, query);
     if (method === 'POST') return handleModels.create(req, res);
   }
+  // Model-middleware routes (must come before /api/v1/models/:id catch-all)
+  params = matchPath('/api/v1/models/:id/middlewares/reorder', pathname);
+  if (params) {
+    if (method === 'PUT') return handleMiddlewares.reorderModelMiddlewares(req, res, params);
+  }
+  params = matchPath('/api/v1/models/:id/middlewares/:mwId', pathname);
+  if (params) {
+    if (method === 'PUT') return handleMiddlewares.updateModelMiddleware(req, res, params);
+    if (method === 'DELETE') return handleMiddlewares.removeModelMiddleware(req, res, params);
+  }
+  params = matchPath('/api/v1/models/:id/middlewares', pathname);
+  if (params) {
+    if (method === 'GET') return handleMiddlewares.modelMiddlewares(req, res, params);
+    if (method === 'POST') return handleMiddlewares.assignToModel(req, res, params);
+  }
   params = matchPath('/api/v1/models/:id', pathname);
   if (params) {
     if (method === 'PUT') return handleModels.update(req, res, params);
@@ -76,6 +92,35 @@ export async function apiRouter(req, res, pathname, query) {
   params = matchPath('/api/v1/models/:id/toggle', pathname);
   if (params) {
     if (method === 'PUT') return handleModels.toggle(req, res, params);
+  }
+
+  // Middlewares
+  if (pathname === '/api/v1/middlewares/rescan') {
+    if (method === 'POST') return handleMiddlewares.rescan(req, res);
+  }
+  if (pathname === '/api/v1/middlewares') {
+    if (method === 'GET') return handleMiddlewares.list(req, res);
+  }
+  params = matchPath('/api/v1/middlewares/:id', pathname);
+  if (params) {
+    if (method === 'GET') return handleMiddlewares.get(req, res, params);
+    if (method === 'PUT') return handleMiddlewares.update(req, res, params);
+  }
+
+  // Tier-middleware routes (must come before /api/v1/tiers/:id to avoid ID catch-all)
+  params = matchPath('/api/v1/tiers/:id/middlewares/reorder', pathname);
+  if (params) {
+    if (method === 'PUT') return handleMiddlewares.reorder(req, res, params);
+  }
+  params = matchPath('/api/v1/tiers/:id/middlewares/:mwId', pathname);
+  if (params) {
+    if (method === 'PUT') return handleMiddlewares.updateTierMiddleware(req, res, params);
+    if (method === 'DELETE') return handleMiddlewares.removeTierMiddleware(req, res, params);
+  }
+  params = matchPath('/api/v1/tiers/:id/middlewares', pathname);
+  if (params) {
+    if (method === 'GET') return handleMiddlewares.tierMiddlewares(req, res, params);
+    if (method === 'POST') return handleMiddlewares.assignToTier(req, res, params);
   }
 
   // Tiers

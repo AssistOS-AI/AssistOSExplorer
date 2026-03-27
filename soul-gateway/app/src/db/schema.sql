@@ -38,18 +38,9 @@ CREATE TABLE IF NOT EXISTS model_configs (
     context_window TEXT,
     is_enabled BOOLEAN DEFAULT true,
     tags TEXT[] DEFAULT '{}',
-    created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Model Tiers (ordered model lists with fallback chains)
-CREATE TABLE IF NOT EXISTS model_tiers (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT UNIQUE NOT NULL,
-    display_name TEXT,
-    models TEXT[] NOT NULL DEFAULT '{}',
-    fallback_tier TEXT,
-    sort_order INT DEFAULT 100,
-    is_enabled BOOLEAN DEFAULT true,
+    type TEXT NOT NULL DEFAULT 'model' CHECK (type IN ('model', 'tier')),
+    model_refs TEXT[] DEFAULT '{}',
+    fallback_model TEXT,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -138,6 +129,37 @@ CREATE TABLE IF NOT EXISTS provider_configs (
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- Middleware Registry (auto-populated from file discovery)
+CREATE TABLE IF NOT EXISTS middlewares (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    file_name TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'both' CHECK (type IN ('pre', 'post', 'both')),
+    supports_streaming BOOLEAN DEFAULT false,
+    default_settings JSONB DEFAULT '{}',
+    version TEXT DEFAULT '1.0.0',
+    is_discovered BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Model-Middleware Assignments (per-model middleware configuration)
+CREATE TABLE IF NOT EXISTS model_middlewares (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    model_config_id UUID NOT NULL REFERENCES model_configs(id) ON DELETE CASCADE,
+    middleware_id UUID NOT NULL REFERENCES middlewares(id) ON DELETE CASCADE,
+    is_enabled BOOLEAN DEFAULT true,
+    sort_order INT DEFAULT 100,
+    settings JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(model_config_id, middleware_id)
+);
+CREATE INDEX IF NOT EXISTS idx_model_middlewares_model ON model_middlewares(model_config_id);
+CREATE INDEX IF NOT EXISTS idx_model_middlewares_order ON model_middlewares(model_config_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_model_configs_type ON model_configs(type);
 
 -- Rate Limit State
 CREATE TABLE IF NOT EXISTS rate_limit_state (

@@ -812,20 +812,34 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-xs">
-                <thead><tr><th>Name</th><th>Billing</th><th>Tags</th><th>Pricing</th><th>Context</th><th>Free</th><th>Enabled</th></tr></thead>
+                <thead><tr><th>Name</th><th>Billing</th><th>Tags</th><th>Pricing</th><th>Context</th><th>Enabled</th></tr></thead>
                 <tbody>
                   <template x-for="m in filteredModels" :key="m.id">
                     <tr :class="{'opacity-40': !m.is_enabled, 'hover cursor-pointer': true}" @click="editModel(m)">
                       <td class="font-mono text-sm" x-text="m.name"></td>
-                      <td class="text-xs"><span class="badge badge-xs" :class="m.billing_type === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="(m.billing_type || 'api_key').replace('_', ' ')"></span></td>
+                      <td class="text-xs">
+                        <template x-if="m.billing_types">
+                          <div class="flex flex-wrap gap-0.5">
+                            <template x-for="bt in m.billing_types" :key="bt">
+                              <span class="badge badge-xs" :class="bt === 'free' ? 'badge-success' : bt === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="bt === 'api_key' ? 'api key' : bt"></span>
+                            </template>
+                          </div>
+                        </template>
+                        <template x-if="!m.billing_types">
+                          <div>
+                            <span x-show="m.is_free" class="badge badge-xs badge-success">free</span>
+                            <span x-show="!m.is_free && m.billing_type === 'subscription'" class="badge badge-xs badge-secondary">subscription</span>
+                            <span x-show="!m.is_free && m.billing_type !== 'subscription'" class="badge badge-xs badge-info badge-outline">api key</span>
+                          </div>
+                        </template>
+                      </td>
                       <td class="text-xs"><div class="flex flex-wrap gap-0.5 max-w-[200px]"><template x-for="tag in (m.tags || [])" :key="tag"><span class="badge badge-xs badge-outline" x-text="tag"></span></template><span x-show="!m.tags || m.tags.length === 0" class="opacity-30">-</span></div></td>
                       <td class="text-xs"><span x-show="m.pricing_type === 'request'" class="badge badge-info badge-xs" x-text="'$' + (Number(m.request_cost) || 0).toFixed(3) + '/req'"></span><span x-show="m.pricing_type !== 'request'" class="text-xs opacity-50" x-text="'$' + (Number(m.input_price) || 0) + '/' + (Number(m.output_price) || 0)"></span></td>
                       <td class="text-xs" x-text="m.context_window || '-'"></td>
-                      <td @click.stop><input type="checkbox" class="toggle toggle-xs toggle-success" :checked="m.is_free" @change="toggleFree(m)" title="Free models don't count against API key budget"></td>
                       <td @click.stop><input type="checkbox" class="toggle toggle-xs" :checked="m.is_enabled" @change="toggleModel(m)"></td>
                     </tr>
                   </template>
-                  <tr x-show="filteredModels.length === 0"><td colspan="7" class="text-center opacity-50 py-4">No models match</td></tr>
+                  <tr x-show="filteredModels.length === 0"><td colspan="6" class="text-center opacity-50 py-4">No models match</td></tr>
                 </tbody>
               </table>
               <div class="text-xs opacity-50 px-4 py-2" x-text="`${filteredModels.length} of ${models.length} models`"></div>
@@ -981,7 +995,7 @@
         <div x-data="tiersPage()" x-init="init()">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">Model Tiers</h2>
-            <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier: '' };">Add Tier</button>
+            <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', model_refs: [], fallback_model: '' };">Add Tier</button>
           </div>
 
           <!-- Tier Create/Edit Modal -->
@@ -991,7 +1005,7 @@
               <div class="form-control"><label class="label">Name</label><input type="text" class="input input-bordered" x-model="tierForm.name" :disabled="!!editingTier"></div>
               <div class="form-control"><label class="label">Display Name</label><input type="text" class="input input-bordered" x-model="tierForm.display_name"></div>
               <div class="form-control"><label class="label">Fallback Tier</label>
-                <select class="select select-bordered" x-model="tierForm.fallback_tier">
+                <select class="select select-bordered" x-model="tierForm.fallback_model">
                   <option value="">None</option>
                   <template x-for="t in tiers.filter(t => !editingTier || t.id !== editingTier.id)" :key="t.id">
                     <option :value="t.name" x-text="t.name"></option>
@@ -1003,26 +1017,26 @@
                 <div class="flex gap-2 mb-2 min-w-0">
                   <select class="select select-bordered select-sm flex-1 min-w-0" x-ref="tierModelSelect">
                     <option value="" disabled selected>Pick a model...</option>
-                    <template x-for="m in models.filter(m => !tierForm.models.includes(m.name))" :key="m.id">
+                    <template x-for="m in models.filter(m => !tierForm.model_refs.includes(m.name))" :key="m.id">
                       <option :value="m.name" x-text="m.name"></option>
                     </template>
                   </select>
-                  <button class="btn btn-sm btn-outline" @click="if($refs.tierModelSelect.value) { tierForm.models.push($refs.tierModelSelect.value); $refs.tierModelSelect.value = ''; }">Add</button>
+                  <button class="btn btn-sm btn-outline" @click="if($refs.tierModelSelect.value) { tierForm.model_refs.push($refs.tierModelSelect.value); $refs.tierModelSelect.value = ''; }">Add</button>
                 </div>
               </div>
               <div class="form-control mt-2">
                 <label class="label font-semibold">Models (in priority order)</label>
                 <div class="space-y-1">
-                  <template x-for="(model, idx) in tierForm.models" :key="idx">
+                  <template x-for="(model, idx) in tierForm.model_refs" :key="idx">
                     <div class="flex items-center gap-1 bg-base-200 rounded px-2 py-1">
                       <span class="badge badge-sm" x-text="idx + 1"></span>
                       <span class="font-mono text-sm flex-1" x-text="model"></span>
-                      <button class="btn btn-ghost btn-xs" :disabled="idx === 0" @click="if(idx > 0) { [tierForm.models[idx-1], tierForm.models[idx]] = [tierForm.models[idx], tierForm.models[idx-1]]; }">&#9650;</button>
-                      <button class="btn btn-ghost btn-xs" :disabled="idx === tierForm.models.length - 1" @click="if(idx < tierForm.models.length - 1) { [tierForm.models[idx], tierForm.models[idx+1]] = [tierForm.models[idx+1], tierForm.models[idx]]; }">&#9660;</button>
-                      <button class="btn btn-ghost btn-xs text-error" @click="tierForm.models.splice(idx, 1)">&#10005;</button>
+                      <button class="btn btn-ghost btn-xs" :disabled="idx === 0" @click="if(idx > 0) { [tierForm.model_refs[idx-1], tierForm.model_refs[idx]] = [tierForm.model_refs[idx], tierForm.model_refs[idx-1]]; }">&#9650;</button>
+                      <button class="btn btn-ghost btn-xs" :disabled="idx === tierForm.model_refs.length - 1" @click="if(idx < tierForm.model_refs.length - 1) { [tierForm.model_refs[idx], tierForm.model_refs[idx+1]] = [tierForm.model_refs[idx+1], tierForm.model_refs[idx]]; }">&#9660;</button>
+                      <button class="btn btn-ghost btn-xs text-error" @click="tierForm.model_refs.splice(idx, 1)">&#10005;</button>
                     </div>
                   </template>
-                  <div x-show="tierForm.models.length === 0" class="text-sm opacity-50 py-2">No models added yet</div>
+                  <div x-show="tierForm.model_refs.length === 0" class="text-sm opacity-50 py-2">No models added yet</div>
                 </div>
               </div>
               <div class="modal-action">
@@ -1045,13 +1059,13 @@
                       <td x-text="t.display_name || '-'"></td>
                       <td class="max-w-xs">
                         <div class="flex flex-wrap gap-1">
-                          <template x-for="(m, i) in (t.models || [])" :key="i">
+                          <template x-for="(m, i) in (t.model_refs || [])" :key="i">
                             <span class="badge badge-ghost badge-sm font-mono" x-text="m"></span>
                           </template>
-                          <span x-show="!t.models || t.models.length === 0" class="text-xs opacity-50">empty</span>
+                          <span x-show="!t.model_refs || t.model_refs.length === 0" class="text-xs opacity-50">empty</span>
                         </div>
                       </td>
-                      <td><span x-text="t.fallback_tier || '-'" class="font-mono text-xs"></span></td>
+                      <td><span x-text="t.fallback_model || '-'" class="font-mono text-xs"></span></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="t.is_enabled" @change="toggleTier(t)"></td>
                       <td class="flex gap-1">
                         <button class="btn btn-ghost btn-xs" @click="editTier(t)">Edit</button>
@@ -1197,6 +1211,121 @@
               </table>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Middlewares Page -->
+      <div x-show="page === 'middlewares'" x-cloak>
+        <div x-data="middlewaresPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Middlewares</h2>
+            <button class="btn btn-sm btn-outline" @click="rescan()">Rescan Files</button>
+          </div>
+
+          <div class="flex gap-4">
+            <!-- Left panel: middleware list -->
+            <div class="w-64 shrink-0">
+              <div class="card bg-base-100 shadow">
+                <div class="card-body p-2">
+                  <template x-for="mw in middlewares" :key="mw.id">
+                    <div class="p-2 rounded cursor-pointer hover:bg-base-200 flex flex-col gap-1"
+                         :class="{'bg-base-200': selectedMw?.id === mw.id}"
+                         @click="selectMw(mw)">
+                      <div class="flex items-center gap-2">
+                        <span class="font-mono text-sm font-bold" x-text="mw.name"></span>
+                        <span class="badge badge-xs" :class="typeBadge(mw.type)" x-text="mw.type.toUpperCase()"></span>
+                      </div>
+                      <div class="flex items-center gap-2 text-xs opacity-60">
+                        <span x-text="'v' + (mw.version || '1.0.0')"></span>
+                        <span x-show="mw.supports_streaming" class="badge badge-xs badge-outline">stream</span>
+                        <span x-show="!mw.is_discovered" class="badge badge-xs badge-error">missing</span>
+                      </div>
+                    </div>
+                  </template>
+                  <div x-show="middlewares.length === 0" class="text-center text-sm opacity-50 py-4">
+                    No middlewares found.<br>Add .mjs files to middlewares/
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right panel: middleware details + tier assignments -->
+            <div class="flex-1">
+              <template x-if="selectedMw">
+                <div>
+                  <!-- Middleware info -->
+                  <div class="card bg-base-100 shadow mb-4">
+                    <div class="card-body p-4">
+                      <h3 class="font-bold text-lg" x-text="selectedMw.name"></h3>
+                      <p class="text-sm opacity-70" x-text="selectedMw.description || 'No description'"></p>
+                      <div class="flex gap-3 mt-2 text-xs">
+                        <span>Type: <span class="badge badge-sm" :class="typeBadge(selectedMw.type)" x-text="selectedMw.type"></span></span>
+                        <span>File: <code class="text-xs" x-text="selectedMw.file_name"></code></span>
+                        <span>Version: <span x-text="selectedMw.version || '1.0.0'"></span></span>
+                        <span x-show="selectedMw.supports_streaming">Streaming: Yes</span>
+                      </div>
+                      <div class="mt-2" x-show="selectedMw.default_settings && Object.keys(selectedMw.default_settings).length > 0">
+                        <span class="text-xs font-bold">Default Settings:</span>
+                        <pre class="text-xs bg-base-200 p-2 rounded mt-1 overflow-x-auto" x-text="JSON.stringify(selectedMw.default_settings, null, 2)"></pre>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Model & tier assignments (unified) -->
+                  <div class="card bg-base-100 shadow">
+                    <div class="card-body p-0">
+                      <div class="p-4 pb-2"><h3 class="font-bold">Assignments</h3></div>
+                      <table class="table table-sm">
+                        <thead><tr><th>Name</th><th>Type</th><th>Attached</th><th>Enabled</th><th>Order</th><th>Settings</th></tr></thead>
+                        <tbody>
+                          <template x-for="a in modelAssignments" :key="a.model.id">
+                            <tr>
+                              <td>
+                                <span class="font-mono text-xs" x-text="a.model.display_name || a.model.name"></span>
+                                <span class="badge badge-xs ml-1" :class="a.model.is_enabled ? 'badge-success' : 'badge-ghost'"
+                                      x-text="a.model.is_enabled ? 'on' : 'off'"></span>
+                              </td>
+                              <td><span class="badge badge-xs" :class="a.model.type === 'tier' ? 'badge-primary' : 'badge-ghost'" x-text="a.model.type || 'model'"></span></td>
+                              <td><input type="checkbox" class="toggle toggle-sm toggle-primary" :checked="a.assigned" @change="toggleModelAssignment(a)"></td>
+                              <td>
+                                <input type="checkbox" class="toggle toggle-sm" :checked="a.is_enabled" :disabled="!a.assigned"
+                                       @change="toggleModelEnabled(a)">
+                              </td>
+                              <td>
+                                <input type="number" class="input input-bordered input-xs w-16" :value="a.sort_order"
+                                       :disabled="!a.assigned" @change="a.sort_order = $event.target.value; updateModelSortOrder(a)">
+                              </td>
+                              <td>
+                                <button class="btn btn-ghost btn-xs" :disabled="!a.assigned" @click="openSettings(a)">Configure</button>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div x-show="!selectedMw" class="text-center opacity-50 py-12">Select a middleware to view details</div>
+            </div>
+          </div>
+
+          <!-- Settings modal -->
+          <dialog class="modal" :class="{'modal-open': showSettings}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg">Configure Middleware</h3>
+              <p class="text-sm opacity-70 mb-2" x-text="'Settings for: ' + (editingAssignment?.model?.name || '')"></p>
+              <div class="form-control">
+                <textarea class="textarea textarea-bordered font-mono text-xs h-48" x-model="settingsJson"></textarea>
+                <span class="text-error text-xs mt-1" x-show="settingsError" x-text="settingsError"></span>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showSettings = false">Cancel</button>
+                <button class="btn btn-primary" @click="saveSettings()">Save</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showSettings = false"></div>
+          </dialog>
         </div>
       </div>
 

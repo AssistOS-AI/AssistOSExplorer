@@ -1,7 +1,6 @@
 import { query } from './init.mjs';
 import { createProvider, getProviderByName, getProviderApiKey } from './providers-dao.mjs';
-import { upsertModel, getModelsByProviderConfigId } from './models-dao.mjs';
-import { getTierByName, createTier, updateTier } from './tiers-dao.mjs';
+import { upsertModel, getModelsByProviderConfigId, getTierByName, createTier, updateModel } from './models-dao.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { buildModelName } from '../utils/model-naming.mjs';
 
@@ -157,14 +156,14 @@ async function syncSearchGateway() {
       // Update or create search tier
       const searchTier = await getTierByName('search');
       if (searchTier) {
-        const tierModels = new Set(searchTier.models || []);
+        const tierModels = new Set(searchTier.model_refs || []);
         for (const name of synced) tierModels.add(name);
-        await updateTier(searchTier.id, { models: [...tierModels] });
+        await updateModel(searchTier.id, { model_refs: [...tierModels] });
       } else {
         await createTier({
           name: 'search',
           display_name: 'Web Search',
-          models: synced,
+          model_refs: synced,
           sort_order: 50,
         });
       }

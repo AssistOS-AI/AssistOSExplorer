@@ -1,5 +1,4 @@
-import { getModelByName } from '../db/models-dao.mjs';
-import { getTierByName } from '../db/tiers-dao.mjs';
+import { getModelByName, getTierByName } from '../db/models-dao.mjs';
 import { ModelNotFoundError } from '../utils/errors.mjs';
 import { lookupOpenRouterPricing } from './openrouter-pricing.mjs';
 import { isModelInCooldown } from './model-cooldown.mjs';
@@ -7,7 +6,7 @@ import { isModelInCooldown } from './model-cooldown.mjs';
 /**
  * Build the return object from a resolved model_config row.
  */
-async function buildModelInfo(requestedModel, modelConfig) {
+async function buildModelInfo(requestedModel, modelConfig, tier = null) {
   const providerKey = modelConfig.provider_key;
   const providerModel = modelConfig.provider_model;
 
@@ -30,6 +29,7 @@ async function buildModelInfo(requestedModel, modelConfig) {
   return {
     resolvedModel: requestedModel,
     modelConfigName: modelConfig.name,
+    modelConfigId: modelConfig.id,
     providerKey,
     providerModel,
     providerConfigId: modelConfig.provider_config_id || null,
@@ -40,6 +40,8 @@ async function buildModelInfo(requestedModel, modelConfig) {
     requestCost: parseFloat(modelConfig.request_cost) || 0,
     isFree: !!modelConfig.is_free,
     maxConcurrency: parseInt(modelConfig.max_concurrency) || 3,
+    tierName: tier?.name || null,
+    tierId: tier?.id || null,
   };
 }
 
@@ -55,17 +57,17 @@ async function resolveFromTier(tierName, visited = new Set()) {
   if (!tier || !tier.is_enabled) return null;
 
   // Try each model in priority order
-  for (const modelName of (tier.models || [])) {
+  for (const modelName of (tier.model_refs || [])) {
     if (isModelInCooldown(modelName)) continue;
     const mc = await getModelByName(modelName);
     if (mc && mc.is_enabled && mc.provider_key && mc.provider_model) {
-      return mc;
+      return { modelConfig: mc, tier };
     }
   }
 
   // Follow fallback tier chain
-  if (tier.fallback_tier) {
-    return resolveFromTier(tier.fallback_tier, visited);
+  if (tier.fallback_model) {
+    return resolveFromTier(tier.fallback_model, visited);
   }
 
   return null;
@@ -80,17 +82,22 @@ async function resolveFromTier(tierName, visited = new Set()) {
 export async function resolveModel(requestedModel) {
   // 1. Direct model_config lookup
   const modelConfig = await getModelByName(requestedModel);
-  if (modelConfig) {
+  if (modelConfig && modelConfig.type !== 'tier') {
     if (!modelConfig.is_enabled) {
       throw new ModelNotFoundError(`${requestedModel} (disabled)`);
     }
-    return buildModelInfo(requestedModel, modelConfig);
+    return buildModelInfo(requestedModel, modelConfig, null);
   }
 
   // 2. Tier-based lookup: treat the requested name as a tier
   const resolved = await resolveFromTier(requestedModel);
   if (resolved) {
-    return buildModelInfo(requestedModel, resolved);
+    return buildModelInfo(requestedModel, resolved.modelConfig, resolved.tier);
+  }
+
+  // 3. Handle disabled tier
+  if (modelConfig && modelConfig.type === 'tier' && !modelConfig.is_enabled) {
+    throw new ModelNotFoundError(`${requestedModel} (disabled)`);
   }
 
   throw new ModelNotFoundError(requestedModel);

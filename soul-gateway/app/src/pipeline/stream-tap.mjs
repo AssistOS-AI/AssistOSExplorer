@@ -38,6 +38,15 @@ export async function tapStream(generator, clientRes, startTime, requestId) {
           choices: [{ index: 0, delta: { content: chunk.text }, finish_reason: null }],
         })}\n\n`);
 
+      } else if (chunk.type === 'tool_calls_delta') {
+        if (ttfbMs === null) ttfbMs = Date.now() - startTime;
+
+        clientRes.write(`data: ${JSON.stringify({
+          id: requestId,
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: { tool_calls: chunk.toolCalls }, finish_reason: null }],
+        })}\n\n`);
+
       } else if (chunk.type === 'done') {
         content = chunk.fullText || content;
         if (chunk.usage) {
@@ -47,13 +56,13 @@ export async function tapStream(generator, clientRes, startTime, requestId) {
             total_tokens: chunk.usage.total_tokens || (chunk.usage.prompt_tokens || 0) + (chunk.usage.completion_tokens || 0),
           };
         }
-        stopReason = 'stop';
+        stopReason = chunk.stopReason || 'stop';
 
         // Send finish chunk with usage
         const finishChunk = {
           id: requestId,
           object: 'chat.completion.chunk',
-          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          choices: [{ index: 0, delta: {}, finish_reason: stopReason }],
         };
         if (chunk.usage) finishChunk.usage = chunk.usage;
         clientRes.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
@@ -120,6 +129,7 @@ export async function handleNonStreaming(generator, clientRes, startTime, reques
   let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   let stopReason = 'stop';
   let ttfbMs = null;
+  let toolCalls = null;
 
   try {
     for await (const chunk of generator) {
@@ -128,6 +138,8 @@ export async function handleNonStreaming(generator, clientRes, startTime, reques
         content += chunk.text;
       } else if (chunk.type === 'done') {
         content = chunk.fullText || content;
+        toolCalls = chunk.toolCalls || null;
+        stopReason = chunk.stopReason || 'stop';
         if (chunk.usage) {
           usage = {
             prompt_tokens: chunk.usage.prompt_tokens || 0,
@@ -154,7 +166,7 @@ export async function handleNonStreaming(generator, clientRes, startTime, reques
     object: 'chat.completion',
     choices: [{
       index: 0,
-      message: { role: 'assistant', content },
+      message: { role: 'assistant', content, ...(toolCalls ? { tool_calls: toolCalls } : {}) },
       finish_reason: stopReason,
     }],
     usage,
