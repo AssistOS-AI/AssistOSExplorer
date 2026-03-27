@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS model_middlewares (
 );
 CREATE INDEX IF NOT EXISTS idx_model_middlewares_model ON model_middlewares(model_config_id);
 CREATE INDEX IF NOT EXISTS idx_model_middlewares_order ON model_middlewares(model_config_id, sort_order);
-CREATE INDEX IF NOT EXISTS idx_model_configs_type ON model_configs(type);
+-- idx_model_configs_type created in migrate() after type column is added
 
 -- Rate Limit State
 CREATE TABLE IF NOT EXISTS rate_limit_state (
