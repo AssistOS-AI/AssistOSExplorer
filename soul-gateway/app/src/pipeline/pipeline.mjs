@@ -18,7 +18,7 @@ import { parseAgentName } from '../utils/agent-parser.mjs';
 import { checkLoopDetection } from './loop-detector.mjs';
 import { acquireModelSlot } from './model-queue.mjs';
 import { checkBudget, trackSpend } from './cost-throttler.mjs';
-import { putModelInCooldown, shouldTriggerCooldown } from './model-cooldown.mjs';
+import { putModelInCooldown, shouldTriggerCooldown, shouldCascade } from './model-cooldown.mjs';
 import { config } from '../config.mjs';
 import { BlacklistError, SoulGatewayError } from '../utils/errors.mjs';
 
@@ -204,16 +204,35 @@ export async function pipeline(req, res) {
 
         break; // Success — exit model-retry loop
       } catch (err) {
-        // Check if this error should trigger model cooldown
-        if (shouldTriggerCooldown(err.errorClassification) && modelAttempt < config.maxModelRetries) {
-          putModelInCooldown(modelInfo.modelConfigName, err.errorClassification.type, err.message);
-          cooldownSkipped.push({
-            model: modelInfo.modelConfigName,
-            error_type: err.errorClassification.type,
-            retry_count: err.retryCount,
-          });
-          lastDispatchError = err;
-          continue; // Try next model in tier
+        if (modelAttempt < config.maxModelRetries) {
+          // Cooldown cascade: transient quota/rate errors — cooldown + try next model
+          if (shouldTriggerCooldown(err.errorClassification)) {
+            putModelInCooldown(modelInfo.modelConfigName, err.errorClassification.type, err.message);
+            cooldownSkipped.push({
+              model: modelInfo.modelConfigName,
+              error_type: err.errorClassification.type,
+              retry_count: err.retryCount,
+              cascade: 'cooldown',
+            });
+            lastDispatchError = err;
+            continue;
+          }
+          // Immediate cascade: model/provider-level errors — try next model without cooldown
+          if (shouldCascade(err.errorClassification)) {
+            log.warn('Immediate cascade: skipping failed model', {
+              model: modelInfo.modelConfigName,
+              error_type: err.errorClassification.type,
+              status: err.status,
+            });
+            cooldownSkipped.push({
+              model: modelInfo.modelConfigName,
+              error_type: err.errorClassification.type,
+              retry_count: err.retryCount,
+              cascade: 'immediate',
+            });
+            lastDispatchError = err;
+            continue;
+          }
         }
         throw err;
       } finally {

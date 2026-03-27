@@ -53,6 +53,15 @@ export function shouldTriggerCooldown(errorClassification) {
 }
 
 /**
+ * Check if an upstream error should cascade to the next model in a tier.
+ * Any error with an errorClassification (i.e. from upstream dispatch) should
+ * cascade — the model/provider failed, but a different one might succeed.
+ */
+export function shouldCascade(errorClassification) {
+  return !!errorClassification?.type;
+}
+
+/**
  * Get all active cooldowns for dashboard/API.
  */
 export function getCooldownStatus() {
