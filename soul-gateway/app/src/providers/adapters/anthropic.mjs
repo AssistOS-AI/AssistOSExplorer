@@ -23,6 +23,11 @@ export default {
     extraAuthParams: {
       code: 'true',
     },
+    extraTokenHeaders: {
+      'User-Agent': 'claude-code/1.0.0',
+      'Origin': 'https://claude.ai',
+      'Referer': 'https://claude.ai/',
+    },
   },
 
   async startAuth() {
