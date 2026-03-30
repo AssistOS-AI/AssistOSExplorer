@@ -15,11 +15,14 @@ export default {
   config: {
     authUrl: 'https://claude.ai/oauth/authorize',
     tokenUrl: 'https://claude.ai/oauth/token',
-    clientId: process.env.ANTHROPIC_OAUTH_CLIENT_ID || '',
-    scopes: '',
+    clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+    scopes: 'org:create_api_key user:profile user:inference',
     callbackPort: 54545,
     redirectUri: 'http://localhost:54545/oauth/callback',
     tokenContentType: 'application/x-www-form-urlencoded',
+    extraAuthParams: {
+      code: 'true',
+    },
   },
 
   async startAuth() {
