@@ -166,7 +166,7 @@ function convertToResponsesPayload(chatPayload) {
     typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
   ).join('\n\n');
 
-  const payload = { ...rest, input, instructions: instructions || '', stream: true };
+  const payload = { ...rest, input, instructions: instructions || '', stream: true, store: false };
   if (max_tokens !== undefined) {
     payload.max_output_tokens = max_tokens;
   }
