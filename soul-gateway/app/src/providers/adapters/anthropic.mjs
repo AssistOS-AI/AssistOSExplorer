@@ -1,4 +1,5 @@
 import { generatePKCE, buildAuthUrl, startCallbackServer, exchangeCodeForTokens } from '../pkce-flow.mjs';
+import anthropicMessagesConverter from '../format-converters/anthropic-messages.mjs';
 import { createLogger } from '../../utils/logger.mjs';
 import { randomUUID } from 'node:crypto';
 
@@ -11,6 +12,19 @@ export default {
   authType: 'pkce',
   callbackPort: 54545,
   refreshMarginMs: 24 * 60 * 60 * 1000, // 1 day — tokens last ~1 year
+
+  // Provider template for auto-provisioning in DB.
+  // NOTE: Direct Anthropic API calls with OAuth tokens require Chrome TLS
+  // fingerprinting (utls) due to Cloudflare. CLIProxyAPIPlus handles this
+  // with utls_transport.go. Node.js fetch() lacks this, so we route through
+  // CLIProxyAPIPlus which has proper TLS fingerprinting.
+  providerTemplate: {
+    display_name: 'Anthropic Claude (OAuth)',
+    protocol: 'anthropic',
+    base_url: 'https://api.anthropic.com/v1/messages',
+    billing_type: 'subscription',
+    auth_type: 'managed',
+  },
 
   config: {
     authUrl: 'https://claude.ai/oauth/authorize',
@@ -106,15 +120,29 @@ export default {
   },
 
   async getHeaders(creds) {
-    // Anthropic OAuth requires Authorization: Bearer with Chrome-like TLS fingerprint
-    // Direct API calls currently blocked by Anthropic — use CLIProxyAPI as fallback
+    // OAuth tokens (sk-ant-oat01-...) MUST use Authorization: Bearer,
+    // NOT x-api-key. The x-api-key header is only for true API keys.
+    // Critical: anthropic-beta must include "oauth-2025-04-20" to enable
+    // OAuth token auth — without it Anthropic returns "OAuth authentication
+    // is currently not supported". Headers match CLIProxyAPIPlus
+    // claude_executor.go applyClaudeHeaders().
     return {
       'Authorization': `Bearer ${creds.accessToken}`,
       'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'oauth-2025-04-20',
+      'anthropic-dangerous-direct-browser-access': 'true',
       'Content-Type': 'application/json',
     };
   },
 
-  formatConverter: null, // Anthropic format handled by existing anthropic-proxy.mjs
+  knownModels: [
+    'claude-sonnet-4-6', 'claude-opus-4-6',
+    'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-5-20250929', 'claude-opus-4-1-20250805',
+    'claude-opus-4-20250514', 'claude-sonnet-4-20250514',
+    'claude-3-haiku-20240307',
+  ],
+
+  formatConverter: anthropicMessagesConverter, // Convert OpenAI chat → Anthropic Messages API
   credentialsDir: '/shared/soul-gateway/providers/anthropic/',
 };

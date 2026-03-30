@@ -483,3 +483,21 @@ export default {
     }
   },
 };
+
+/**
+ * Create a Responses-only converter for providers that exclusively use the
+ * Responses API (e.g. OpenAI Codex at chatgpt.com/backend-api/codex).
+ * Unlike Copilot which supports both /chat/completions and /responses,
+ * Codex only serves /responses for all models.
+ */
+export function createResponsesOnlyConverter(name = 'responses-only') {
+  return {
+    name,
+    async* dispatch(messages, payload, baseUrl, headers, signal) {
+      log.debug('Using Responses API (responses-only mode)', { model: payload.model, baseUrl });
+      // Strip max_tokens — the Codex backend doesn't support max_output_tokens
+      const { max_tokens, ...cleanPayload } = payload;
+      yield* streamResponses(baseUrl, messages, cleanPayload, headers, signal);
+    },
+  };
+}

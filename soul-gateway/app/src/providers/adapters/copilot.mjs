@@ -88,6 +88,15 @@ export default {
   callbackPort: null,
   refreshMarginMs: 60 * 1000, // Copilot tokens ~30min, refresh 1min before
 
+  // Provider template for auto-provisioning in DB
+  providerTemplate: {
+    display_name: 'GitHub Copilot',
+    protocol: 'openai',
+    base_url: 'https://api.githubcopilot.com',
+    billing_type: 'subscription',
+    auth_type: 'managed',
+  },
+
   formatConverter: copilotResponsesConverter,
 
   /**

@@ -1,5 +1,5 @@
 import { generatePKCE, buildAuthUrl, startCallbackServer, exchangeCodeForTokens } from '../pkce-flow.mjs';
-import copilotResponsesConverter from '../format-converters/copilot-responses.mjs';
+import { createResponsesOnlyConverter } from '../format-converters/copilot-responses.mjs';
 import { createLogger } from '../../utils/logger.mjs';
 
 const log = createLogger('codex-auth');
@@ -12,6 +12,15 @@ export default {
   authType: 'pkce',
   callbackPort: 1455,
   refreshMarginMs: 5 * 60 * 1000, // 5 minutes
+
+  // Provider template for auto-provisioning in DB
+  providerTemplate: {
+    display_name: 'OpenAI Codex (OAuth)',
+    protocol: 'openai',
+    base_url: 'https://chatgpt.com/backend-api/codex',
+    billing_type: 'subscription',
+    auth_type: 'managed',
+  },
 
   config: {
     authUrl: 'https://auth.openai.com/oauth/authorize',
@@ -118,8 +127,8 @@ export default {
     'o3', 'o3-mini', 'o4-mini',
   ],
 
-  // Codex backend uses Responses API format (same as Copilot)
-  // CLIProxyAPI sends to chatgpt.com/backend-api/codex/responses
-  formatConverter: copilotResponsesConverter,
+  // Codex backend only serves the Responses API (no /chat/completions)
+  // All models go to chatgpt.com/backend-api/codex/responses
+  formatConverter: createResponsesOnlyConverter('codex-responses'),
   credentialsDir: '/shared/soul-gateway/providers/codex/',
 };

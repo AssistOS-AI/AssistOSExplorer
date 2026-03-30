@@ -49,6 +49,15 @@ export default {
   callbackPort: OAUTH_CALLBACK_PORT,
   refreshMarginMs: TOKEN_REFRESH_MARGIN_MS,
 
+  // Provider template for auto-provisioning in DB
+  providerTemplate: {
+    display_name: 'Kiro (AWS Claude)',
+    protocol: 'openai',
+    base_url: `https://${KIRO_API_HOST}/generateAssistantResponse`,
+    billing_type: 'subscription',
+    auth_type: 'managed',
+  },
+
   formatConverter: kiroEventStreamConverter,
 
   /**

@@ -2,7 +2,7 @@ import { createAppServer, startServer } from './server.mjs';
 import { initDb } from './db/init.mjs';
 import { scanMiddlewares } from './pipeline/middleware-loader.mjs';
 import { createLogger } from './utils/logger.mjs';
-import { registerAdapter, startRefreshLoop, stopRefreshLoop } from './providers/auth-manager.mjs';
+import { registerAdapter, startRefreshLoop, stopRefreshLoop, reconcileProviders } from './providers/auth-manager.mjs';
 import copilotAdapter from './providers/adapters/copilot.mjs';
 import kiroAdapter from './providers/adapters/kiro.mjs';
 import codexAdapter from './providers/adapters/codex.mjs';
@@ -27,6 +27,10 @@ async function main() {
   registerAdapter(geminiAdapter);
   registerAdapter(anthropicAdapter);
   startRefreshLoop();
+
+  // Auto-provision providers/models for adapters that have stored credentials
+  // but no matching provider_configs row in the DB
+  await reconcileProviders();
   log.info('Provider auth system initialized');
 
   // Create and start HTTP server

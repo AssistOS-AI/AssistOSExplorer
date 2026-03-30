@@ -1,5 +1,8 @@
 import { createLogger } from '../utils/logger.mjs';
 import * as store from './credential-store.mjs';
+import { getProviderByName, createProvider } from '../db/providers-dao.mjs';
+import { upsertModel } from '../db/models-dao.mjs';
+import { buildModelName } from '../utils/model-naming.mjs';
 
 const log = createLogger('auth-manager');
 
@@ -137,6 +140,24 @@ async function refreshAccountToken(providerName, accountIndex, adapter, account)
 
 // ---- Background Refresh Loop ----
 
+/**
+ * On startup, check all registered adapters for existing credentials
+ * that don't yet have a matching provider_configs row. Auto-provision if needed.
+ * Call this after DB init and adapter registration.
+ */
+export async function reconcileProviders() {
+  for (const [name, adapter] of adapters) {
+    try {
+      const accounts = await store.readAccounts(name);
+      if (accounts.length === 0) continue;
+
+      await autoProvision(name, adapter);
+    } catch (err) {
+      log.warn(`Reconcile failed for ${name}`, { error: err.message });
+    }
+  }
+}
+
 export function startRefreshLoop(intervalMs = 60_000) {
   if (refreshInterval) return;
 
@@ -220,6 +241,12 @@ export async function pollAuth(providerName) {
     await store.writeAccount(providerName, index, creds);
     activeFlows.delete(providerName);
     log.info(`New account added for ${providerName}: ${creds.email || 'account-' + index}`);
+
+    // Auto-provision provider and models (idempotent — safe to call on every login)
+    await autoProvision(providerName, adapter).catch(err =>
+      log.warn(`Auto-provision failed for ${providerName}`, { error: err.message })
+    );
+
     return { status: 'complete', email: creds.email || null, index };
   } catch (err) {
     if (err.message.includes('authorization_pending') || err.message.includes('slow_down')) {
@@ -241,7 +268,57 @@ export async function handlePKCECallback(providerName, code, state) {
   const index = await store.nextAccountIndex(providerName);
   await store.writeAccount(providerName, index, creds);
   log.info(`PKCE auth complete for ${providerName}: ${creds.email || 'account-' + index}`);
+
+  // Auto-provision provider and models (idempotent — safe to call on every login)
+  await autoProvision(providerName, adapter).catch(err =>
+    log.warn(`Auto-provision failed for ${providerName}`, { error: err.message })
+  );
+
   return { email: creds.email || null, index };
+}
+
+// ---- Auto-Provisioning ----
+
+/**
+ * After first OAuth login for a provider, ensure:
+ * 1. A provider_configs row exists in the DB (created from adapter.providerTemplate)
+ * 2. Models from adapter.knownModels are created in model_configs
+ *
+ * This bridges the gap between credential storage and DB-driven routing.
+ */
+async function autoProvision(providerName, adapter) {
+  if (!adapter.providerTemplate) return;
+
+  // 1. Ensure provider exists in DB
+  let provider = await getProviderByName(providerName);
+  if (!provider) {
+    const tpl = adapter.providerTemplate;
+    provider = await createProvider({
+      name: providerName,
+      display_name: tpl.display_name,
+      protocol: tpl.protocol,
+      base_url: tpl.base_url,
+      billing_type: tpl.billing_type,
+      auth_type: tpl.auth_type,
+    });
+    log.info(`Auto-provisioned provider: ${providerName}`, { id: provider.id });
+  }
+
+  // 2. Create known models if the adapter provides a list
+  if (adapter.knownModels?.length && provider.id) {
+    for (const modelId of adapter.knownModels) {
+      const modelName = buildModelName(providerName, modelId);
+      await upsertModel({
+        name: modelName,
+        display_name: modelId,
+        provider_key: providerName,
+        provider_model: modelId,
+        mode: 'deep',
+        provider_config_id: provider.id,
+      });
+    }
+    log.info(`Auto-provisioned ${adapter.knownModels.length} models for ${providerName}`);
+  }
 }
 
 // ---- Status ----

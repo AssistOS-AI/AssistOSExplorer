@@ -12,6 +12,15 @@ export default {
   callbackPort: 51121,
   refreshMarginMs: 5 * 60 * 1000,
 
+  // Provider template for auto-provisioning in DB
+  providerTemplate: {
+    display_name: 'Google Gemini (OAuth)',
+    protocol: 'openai',
+    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    billing_type: 'subscription',
+    auth_type: 'managed',
+  },
+
   config: {
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',

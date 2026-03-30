@@ -13,7 +13,7 @@ const PROVIDER_TEMPLATES = {
   axiologic_kiro:  { display_name: 'Kiro (AWS Claude)',        protocol: 'openai',    base_url: 'https://q.us-east-1.amazonaws.com/generateAssistantResponse', billing_type: 'subscription', auth_type: 'managed' },
   codex:           { display_name: 'OpenAI Codex (OAuth)',     protocol: 'openai',    base_url: 'https://chatgpt.com/backend-api/codex', auth_type: 'managed' },
   gemini:          { display_name: 'Google Gemini (OAuth)',    protocol: 'openai',    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', auth_type: 'managed' },
-  anthropic:       { display_name: 'Anthropic Claude (OAuth)', protocol: 'openai',   base_url: 'https://api.anthropic.com/v1/messages', auth_type: 'managed' },
+  anthropic:       { display_name: 'Anthropic Claude (OAuth)', protocol: 'anthropic', base_url: 'https://api.anthropic.com/v1/messages', auth_type: 'managed' },
   // API key providers
   nvidia:     { display_name: 'NVIDIA',              protocol: 'openai',    base_url: 'https://integrate.api.nvidia.com/v1/chat/completions' },
   fireworks:  { display_name: 'Fireworks AI',        protocol: 'openai',    base_url: 'https://api.fireworks.ai/inference/v1/chat/completions' },
