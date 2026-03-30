@@ -110,6 +110,8 @@ export async function exchangeCodeForTokens(config, code, verifier) {
 
   const body = isJson
     ? JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: config.clientId,
         code,
         code_verifier: verifier,
         redirect_uri: config.redirectUri,
