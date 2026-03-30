@@ -14,12 +14,12 @@ export default {
 
   config: {
     authUrl: 'https://claude.ai/oauth/authorize',
-    tokenUrl: 'https://console.anthropic.com/v1/oauth/token',
+    tokenUrl: 'https://api.anthropic.com/v1/oauth/token',
     clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
     scopes: 'org:create_api_key user:profile user:inference',
     callbackPort: 54545,
     redirectUri: 'http://localhost:54545/callback',
-    tokenContentType: 'application/x-www-form-urlencoded',
+    tokenContentType: 'application/json',
     extraAuthParams: {
       code: 'true',
     },

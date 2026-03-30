@@ -1,41 +1,63 @@
-import { requestDeviceCode, pollForToken } from '../device-flow.mjs';
+import { generatePKCE, buildAuthUrl, startCallbackServer, exchangeCodeForTokens } from '../pkce-flow.mjs';
 import { createLogger } from '../../utils/logger.mjs';
+import { randomUUID } from 'node:crypto';
 
 const log = createLogger('gemini-auth');
 
+const verifiers = new Map();
+
 export default {
   name: 'gemini',
-  authType: 'device-flow',
-  callbackPort: null,
+  authType: 'pkce',
+  callbackPort: 51121,
   refreshMarginMs: 5 * 60 * 1000,
 
   config: {
-    deviceCodeUrl: 'https://oauth2.googleapis.com/device/code',
+    authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
-    clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || '',
-    scopes: 'openid email https://www.googleapis.com/auth/generative-language',
+    clientId: '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com',
+    scopes: 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+    callbackPort: 51121,
+    redirectUri: 'http://localhost:51121/callback',
+    tokenContentType: 'application/x-www-form-urlencoded',
+    extraAuthParams: {
+      access_type: 'offline',
+      prompt: 'consent',
+    },
   },
 
   async startAuth() {
-    if (!this.config.clientId) {
-      throw new Error('GOOGLE_OAUTH_CLIENT_ID environment variable not set');
-    }
-    const result = await requestDeviceCode(this.config);
-    return {
-      userCode: result.userCode,
-      verificationUri: result.verificationUri,
-      deviceCode: result.deviceCode,
-      interval: result.interval,
-    };
+    const { verifier, challenge } = generatePKCE();
+    const state = randomUUID();
+    verifiers.set(state, verifier);
+    setTimeout(() => verifiers.delete(state), 10 * 60 * 1000);
+
+    const authUrl = buildAuthUrl(this.config, challenge, state);
+
+    const { waitForCallback } = startCallbackServer(this.config.callbackPort);
+
+    waitForCallback().then(async ({ code, state: cbState, error }) => {
+      if (error || !code) {
+        log.error('Gemini OAuth callback error', { error });
+        return;
+      }
+    }).catch(err => log.error('Gemini callback error', { error: err.message }));
+
+    return { authUrl };
   },
 
-  async pollForToken(deviceCode, interval) {
-    const data = await pollForToken(this.config, deviceCode, interval);
+  async exchangeCode(code, state) {
+    const verifier = verifiers.get(state);
+    if (!verifier) throw new Error('No PKCE verifier found for this state');
+    verifiers.delete(state);
+
+    const tokenRes = await exchangeCodeForTokens(this.config, code, verifier);
+
     return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token || null,
-      expiresAt: data.expires_in ? Date.now() + data.expires_in * 1000 : null,
-      email: null,
+      accessToken: tokenRes.access_token,
+      refreshToken: tokenRes.refresh_token || null,
+      expiresAt: tokenRes.expires_in ? Date.now() + tokenRes.expires_in * 1000 : null,
+      email: tokenRes.email || null,
     };
   },
 
