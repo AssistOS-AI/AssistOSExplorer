@@ -772,11 +772,14 @@
           <dialog class="modal" :class="{'modal-open': showDiscover}">
             <div class="modal-box max-w-3xl">
               <h3 class="font-bold text-lg mb-4">Models from <span x-text="discoverProvider?.display_name || discoverProvider?.name || ''"></span></h3>
-              <div x-show="discoveredModels.length === 0" class="text-center py-8">
+              <div x-show="discoveredModels === null" class="text-center py-8">
                 <span class="loading loading-spinner loading-md"></span>
                 <p class="mt-2 opacity-50">Fetching models...</p>
               </div>
-              <div x-show="discoveredModels.length > 0" class="overflow-auto" style="max-height: 60vh;">
+              <div x-show="discoveredModels !== null && discoveredModels.length === 0" class="text-center py-8">
+                <p class="opacity-50">No models found for this provider. You can add models manually on the Models page.</p>
+              </div>
+              <div x-show="discoveredModels !== null && discoveredModels.length > 0" class="overflow-auto" style="max-height: 60vh;">
                 <table class="table table-xs">
                   <thead class="sticky top-0 bg-base-100"><tr><th>Model ID</th><th class="text-right">Input $/1M</th><th class="text-right">Output $/1M</th><th>Owned By</th><th></th></tr></thead>
                   <tbody>

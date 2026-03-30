@@ -254,7 +254,7 @@ function providersPage() {
 
     async discoverModels(p) {
       this.discoverProvider = p;
-      this.discoveredModels = [];
+      this.discoveredModels = null; // null = loading, [] = loaded empty
       this.showDiscover = true;
       try {
         const models = await api.get(`/api/v1/providers/${p.id}/models`);

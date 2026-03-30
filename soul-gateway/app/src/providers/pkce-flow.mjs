@@ -48,7 +48,7 @@ export function startCallbackServer(port, timeoutMs = 600_000) {
   const server = createServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${port}`);
 
-    if (url.pathname === '/oauth/callback') {
+    if (url.pathname === '/oauth/callback' || url.pathname === '/auth/callback' || url.pathname === '/callback') {
       const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
       const error = url.searchParams.get('error');

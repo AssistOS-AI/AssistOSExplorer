@@ -16,12 +16,15 @@ export default {
     authUrl: 'https://auth.openai.com/oauth/authorize',
     tokenUrl: 'https://auth.openai.com/oauth/token',
     clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
-    scopes: '',
+    scopes: 'openid email profile offline_access',
     callbackPort: 1455,
-    redirectUri: 'http://localhost:1455/oauth/callback',
+    redirectUri: 'http://localhost:1455/auth/callback',
     tokenContentType: 'application/x-www-form-urlencoded',
     extraAuthParams: {
       audience: 'https://api.openai.com/v1',
+      codex_cli_simplified_flow: 'true',
+      id_token_add_organizations: 'true',
+      prompt: 'login',
     },
   },
 
