@@ -152,11 +152,21 @@ const ROLE_MAP = { system: 'developer', user: 'user', assistant: 'assistant' };
 
 function convertToResponsesPayload(chatPayload) {
   const { messages, max_tokens, stream, ...rest } = chatPayload;
-  const input = messages.map(msg => ({
+
+  // Extract system messages as instructions (required by Codex Responses API)
+  const systemMessages = messages.filter(m => m.role === 'system');
+  const nonSystemMessages = messages.filter(m => m.role !== 'system');
+
+  const input = nonSystemMessages.map(msg => ({
     role: ROLE_MAP[msg.role] || 'user',
     content: msg.content,
   }));
-  const payload = { ...rest, input, stream: true };
+
+  const instructions = systemMessages.map(m =>
+    typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+  ).join('\n\n');
+
+  const payload = { ...rest, input, instructions: instructions || '', stream: true };
   if (max_tokens !== undefined) {
     payload.max_output_tokens = max_tokens;
   }
