@@ -208,7 +208,9 @@ async function* streamCompletions(baseUrl, payload, headers, signal) {
   if (response.status === 400) {
     const data = await response.json().catch(() => null);
     const errorMsg = data?.error?.message || data?.message || '';
-    if (errorMsg.includes('unsupported_api_for_model')) {
+    const errorCode = data?.error?.code || '';
+    if (errorMsg.includes('unsupported_api_for_model') || errorCode === 'unsupported_api_for_model' ||
+        errorMsg.includes('not accessible via the /chat/completions')) {
       const err = new Error('unsupported_api_for_model');
       err.code = 'UNSUPPORTED_API_FOR_MODEL';
       throw err;
@@ -310,7 +312,9 @@ async function* streamResponses(baseUrl, messages, payload, headers, signal) {
   if (response.status === 400) {
     const data = await response.json().catch(() => null);
     const errorMsg = data?.error?.message || data?.message || '';
-    if (errorMsg.includes('unsupported_api_for_model')) {
+    const errorCode = data?.error?.code || '';
+    if (errorMsg.includes('unsupported_api_for_model') || errorCode === 'unsupported_api_for_model' ||
+        errorMsg.includes('not accessible via the /chat/completions')) {
       const err = new Error('unsupported_api_for_model');
       err.code = 'UNSUPPORTED_API_FOR_MODEL';
       throw err;
@@ -458,6 +462,7 @@ export default {
       cacheEndpoint(model, 'completions');
       return;
     } catch (err) {
+      log.info('Dispatch caught error', { code: err.code, message: err.message?.slice(0, 100) });
       if (err.code !== 'UNSUPPORTED_API_FOR_MODEL') {
         throw err;
       }
