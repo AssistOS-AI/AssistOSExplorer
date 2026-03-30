@@ -110,7 +110,13 @@ async function syncSearchGateway() {
   const provider = await getProviderByName('search_gateway');
   if (!provider) return;
 
-  const apiKey = await getProviderApiKey(provider.id);
+  let apiKey;
+  try {
+    apiKey = await getProviderApiKey(provider.id);
+  } catch (err) {
+    log.warn('Could not decrypt search_gateway API key (encryption key may have changed)', { error: err.message });
+    return;
+  }
   if (!apiKey) return;
 
   const base = provider.base_url
