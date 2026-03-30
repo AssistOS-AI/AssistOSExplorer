@@ -849,8 +849,12 @@
                 <template x-if="authFlow?.type === 'device-flow'">
                   <div class="card bg-base-200">
                     <div class="card-body p-4">
-                      <p class="text-sm font-bold mb-2">Device Code:</p>
-                      <p class="font-mono text-3xl tracking-widest text-center py-2" x-text="authFlow?.userCode"></p>
+                      <p class="text-sm font-bold mb-2">Device Code: <span class="text-success text-xs font-normal" x-show="authFlow?._copied">Copied!</span></p>
+                      <p class="font-mono text-3xl tracking-widest text-center py-2 cursor-pointer select-all"
+                         x-text="authFlow?.userCode"
+                         x-init="if (authFlow?.userCode) { navigator.clipboard.writeText(authFlow.userCode).then(() => { authFlow._copied = true; setTimeout(() => authFlow._copied = false, 3000); }).catch(() => {}) }"
+                         @click="navigator.clipboard.writeText(authFlow?.userCode); authFlow._copied = true; setTimeout(() => authFlow._copied = false, 2000)"
+                         title="Click to copy"></p>
                       <p class="text-sm mt-2">Enter this code at:</p>
                       <div class="bg-base-100 p-2 rounded font-mono text-xs break-all" x-text="authFlow?.verificationUri"></div>
                       <div class="flex gap-2 mt-2">
