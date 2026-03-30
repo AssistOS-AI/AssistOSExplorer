@@ -54,7 +54,39 @@ export default {
     if (!verifier) throw new Error('No PKCE verifier found for this state');
     verifiers.delete(state);
 
-    const tokenRes = await exchangeCodeForTokens(this.config, code, verifier);
+    // Anthropic uses a specific JSON body format (matching CLIProxyAPI Go source)
+    // Code may contain state after # separator
+    const codeParts = code.split('#');
+    const parsedCode = codeParts[0];
+    const parsedState = codeParts[1] || state;
+
+    const body = {
+      code: parsedCode,
+      state: parsedState,
+      grant_type: 'authorization_code',
+      client_id: this.config.clientId,
+      redirect_uri: this.config.redirectUri,
+      code_verifier: verifier,
+    };
+
+    log.info('Anthropic token exchange', { tokenUrl: this.config.tokenUrl, hasCode: !!parsedCode, hasVerifier: !!verifier });
+
+    const res = await fetch(this.config.tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        ...(this.config.extraTokenHeaders || {}),
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Token exchange failed (${res.status}): ${text}`);
+    }
+
+    const tokenRes = await res.json();
 
     return {
       accessToken: tokenRes.access_token || tokenRes.key,
