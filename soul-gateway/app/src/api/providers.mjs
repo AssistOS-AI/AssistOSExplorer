@@ -126,20 +126,58 @@ export const handleProviders = {
     const provider = await dao.getProviderById(params.id);
     if (!provider) return sendError(res, 404, 'Provider not found');
 
-    // Managed auth providers: return already-configured models from DB
+    // Managed auth providers: try to discover models using OAuth credentials
     if (provider.auth_type === 'managed') {
       try {
-        const models = await getModelsByProviderConfigId(provider.id);
-        const result = models.map(m => ({
-          id: m.provider_model || m.name,
-          input_price: parseFloat(m.input_price) || 0,
-          output_price: parseFloat(m.output_price) || 0,
-          owned_by: provider.name,
-          already_configured: true,
-        }));
-        return sendJson(res, result);
+        const creds = await authManager.getCredentials(provider.name);
+        if (!creds) {
+          return sendError(res, 400, 'Provider not authenticated. Add an account first.');
+        }
+        // Strip the chat/completions path to get the base API URL for /models
+        const base = stripBaseUrl(provider.base_url);
+        const resp = await fetch(base + '/models', {
+          headers: creds.headers || { 'Authorization': `Bearer ${creds.token}` },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!resp.ok) {
+          // Fallback: return already-configured models from DB
+          const dbModels = await getModelsByProviderConfigId(provider.id);
+          if (dbModels.length > 0) {
+            return sendJson(res, dbModels.map(m => ({
+              id: m.provider_model || m.name,
+              input_price: parseFloat(m.input_price) || 0,
+              output_price: parseFloat(m.output_price) || 0,
+              owned_by: provider.name,
+            })));
+          }
+          const text = await resp.text().catch(() => '');
+          return sendError(res, 502, `Provider returned ${resp.status}: ${text.slice(0, 200)}`);
+        }
+        const data = await resp.json();
+        const models = Array.isArray(data) ? data : (data.data || []);
+        const seen = new Set();
+        const enriched = models
+          .map(m => {
+            const id = m.id || m.name;
+            if (!id || seen.has(id)) return null;
+            seen.add(id);
+            return { id, input_price: 0, output_price: 0, owned_by: m.owned_by || provider.name };
+          })
+          .filter(Boolean)
+          .sort((a, b) => a.id.localeCompare(b.id));
+        return sendJson(res, enriched);
       } catch (err) {
-        return sendError(res, 500, err.message);
+        // Fallback to DB models on error
+        const dbModels = await getModelsByProviderConfigId(provider.id);
+        if (dbModels.length > 0) {
+          return sendJson(res, dbModels.map(m => ({
+            id: m.provider_model || m.name,
+            input_price: parseFloat(m.input_price) || 0,
+            output_price: parseFloat(m.output_price) || 0,
+            owned_by: provider.name,
+          })));
+        }
+        return sendError(res, 502, `Failed to discover models: ${err.message}`);
       }
     }
 
