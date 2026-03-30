@@ -8,6 +8,13 @@ import * as authManager from '../providers/auth-manager.mjs';
 const syncLog = createLogger('provider-sync');
 
 const PROVIDER_TEMPLATES = {
+  // OAuth providers (managed auth)
+  copilot:    { display_name: 'GitHub Copilot',      protocol: 'openai',    base_url: 'https://api.githubcopilot.com/chat/completions', billing_type: 'subscription', auth_type: 'managed' },
+  kiro:       { display_name: 'Kiro (AWS Claude)',   protocol: 'openai',    base_url: 'https://q.us-east-1.amazonaws.com/generateAssistantResponse', billing_type: 'subscription', auth_type: 'managed' },
+  codex:      { display_name: 'OpenAI Codex (OAuth)',protocol: 'openai',    base_url: 'https://api.openai.com/v1/chat/completions', auth_type: 'managed' },
+  gemini_oauth: { display_name: 'Google Gemini (OAuth)', protocol: 'openai', base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', auth_type: 'managed' },
+  anthropic_oauth: { display_name: 'Anthropic Claude (OAuth)', protocol: 'openai', base_url: 'https://api.anthropic.com/v1/messages', auth_type: 'managed' },
+  // API key providers
   nvidia:     { display_name: 'NVIDIA',              protocol: 'openai',    base_url: 'https://integrate.api.nvidia.com/v1/chat/completions' },
   fireworks:  { display_name: 'Fireworks AI',        protocol: 'openai',    base_url: 'https://api.fireworks.ai/inference/v1/chat/completions' },
   groq:       { display_name: 'Groq',                protocol: 'openai',    base_url: 'https://api.groq.com/openai/v1/chat/completions' },
@@ -40,8 +47,11 @@ export const handleProviders = {
 
   async create(req, res) {
     const body = await readJsonBody(req);
-    if (!body?.name || !body?.base_url || !body?.api_key) {
-      return sendError(res, 400, 'name, base_url, and api_key are required');
+    if (!body?.name || !body?.base_url) {
+      return sendError(res, 400, 'name and base_url are required');
+    }
+    if (body.auth_type !== 'managed' && !body.api_key) {
+      return sendError(res, 400, 'api_key is required for non-OAuth providers');
     }
     try {
       const provider = await dao.createProvider(body);

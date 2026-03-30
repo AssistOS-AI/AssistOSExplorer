@@ -180,6 +180,8 @@ function providersPage() {
         this.form.display_name = t.display_name || '';
         this.form.protocol = t.protocol || 'openai';
         this.form.base_url = t.base_url || '';
+        this.form.billing_type = t.billing_type || 'api_key';
+        this.form.auth_type = t.auth_type || 'api_key';
         if (this.form.template !== 'custom') {
           this.form.name = this.form.template;
         }
@@ -187,7 +189,7 @@ function providersPage() {
     },
 
     openCreate() {
-      this.form = { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '', billing_type: 'api_key' };
+      this.form = { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '', billing_type: 'api_key', auth_type: 'api_key' };
       this.showCreate = true;
     },
 
