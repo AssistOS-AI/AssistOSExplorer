@@ -16,6 +16,7 @@ export default {
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
     clientId: '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com',
+    clientSecret: 'REDACTED-GEMINI-OAUTH-CLIENT-SECRET',
     scopes: 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
     callbackPort: 51121,
     redirectUri: 'http://localhost:51121/callback',
@@ -23,6 +24,9 @@ export default {
     extraAuthParams: {
       access_type: 'offline',
       prompt: 'consent',
+    },
+    extraTokenParams: {
+      client_secret: 'REDACTED-GEMINI-OAUTH-CLIENT-SECRET',
     },
   },
 
@@ -67,6 +71,7 @@ export default {
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: this.config.clientId,
+      client_secret: this.config.clientSecret,
       refresh_token: creds.refreshToken,
     });
 
