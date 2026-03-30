@@ -140,7 +140,14 @@ export const handleProviders = {
           signal: AbortSignal.timeout(15000),
         });
         if (!resp.ok) {
-          // Fallback: return already-configured models from DB
+          // Fallback 1: adapter has knownModels list (e.g., Codex token can't list models)
+          const adapter = authManager.getAdapter(provider.name);
+          if (adapter?.knownModels?.length) {
+            return sendJson(res, adapter.knownModels.map(id => ({
+              id, input_price: 0, output_price: 0, owned_by: provider.name,
+            })));
+          }
+          // Fallback 2: return already-configured models from DB
           const dbModels = await getModelsByProviderConfigId(provider.id);
           if (dbModels.length > 0) {
             return sendJson(res, dbModels.map(m => ({
