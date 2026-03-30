@@ -151,7 +151,7 @@ async function* parseResponsesSSE(body) {
 const ROLE_MAP = { system: 'developer', user: 'user', assistant: 'assistant' };
 
 function convertToResponsesPayload(chatPayload) {
-  const { messages, max_tokens, stream, ...rest } = chatPayload;
+  const { messages, max_tokens, stream, tools, tool_choice, ...rest } = chatPayload;
 
   // Extract system messages as instructions (required by Codex Responses API)
   const systemMessages = messages.filter(m => m.role === 'system');
@@ -169,6 +169,23 @@ function convertToResponsesPayload(chatPayload) {
   const payload = { ...rest, input, instructions: instructions || '', stream: true, store: false };
   if (max_tokens !== undefined) {
     payload.max_output_tokens = max_tokens;
+  }
+
+  // Convert tools from chat completions format to Responses API format
+  // Chat: [{ type: "function", function: { name, description, parameters } }]
+  // Responses: [{ type: "function", name, description, parameters }]
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    payload.tools = tools.map(t => {
+      if (t.type === 'function' && t.function) {
+        return {
+          type: 'function',
+          name: t.function.name,
+          description: t.function.description || '',
+          parameters: t.function.parameters || {},
+        };
+      }
+      return t;
+    });
   }
   return payload;
 }
