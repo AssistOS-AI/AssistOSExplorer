@@ -1,4 +1,5 @@
 import { generatePKCE, buildAuthUrl, startCallbackServer, exchangeCodeForTokens } from '../pkce-flow.mjs';
+import copilotResponsesConverter from '../format-converters/copilot-responses.mjs';
 import { createLogger } from '../../utils/logger.mjs';
 
 const log = createLogger('codex-auth');
@@ -102,6 +103,8 @@ export default {
     return {
       'Authorization': `Bearer ${creds.accessToken}`,
       'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'User-Agent': 'codex-cli/1.0.0',
     };
   },
 
@@ -113,6 +116,8 @@ export default {
     'o3', 'o3-mini', 'o4-mini',
   ],
 
-  formatConverter: null,
+  // Codex backend uses Responses API format (same as Copilot)
+  // CLIProxyAPI sends to chatgpt.com/backend-api/codex/responses
+  formatConverter: copilotResponsesConverter,
   credentialsDir: '/shared/soul-gateway/providers/codex/',
 };

@@ -11,7 +11,7 @@ const PROVIDER_TEMPLATES = {
   // OAuth providers (managed auth)
   copilot:         { display_name: 'GitHub Copilot',           protocol: 'openai',    base_url: 'https://api.githubcopilot.com', billing_type: 'subscription', auth_type: 'managed' },
   axiologic_kiro:  { display_name: 'Kiro (AWS Claude)',        protocol: 'openai',    base_url: 'https://q.us-east-1.amazonaws.com/generateAssistantResponse', billing_type: 'subscription', auth_type: 'managed' },
-  codex:           { display_name: 'OpenAI Codex (OAuth)',     protocol: 'openai',    base_url: 'https://api.openai.com/v1/chat/completions', auth_type: 'managed' },
+  codex:           { display_name: 'OpenAI Codex (OAuth)',     protocol: 'openai',    base_url: 'https://chatgpt.com/backend-api/codex', auth_type: 'managed' },
   gemini:          { display_name: 'Google Gemini (OAuth)',    protocol: 'openai',    base_url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', auth_type: 'managed' },
   anthropic:       { display_name: 'Anthropic Claude (OAuth)', protocol: 'openai',   base_url: 'https://api.anthropic.com/v1/messages', auth_type: 'managed' },
   // API key providers

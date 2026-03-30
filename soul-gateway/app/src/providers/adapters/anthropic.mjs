@@ -106,8 +106,12 @@ export default {
   },
 
   async getHeaders(creds) {
+    // Anthropic API uses x-api-key header (not Authorization: Bearer)
+    // CLIProxyAPI source: claude_executor.go line 64
     return {
-      'Authorization': `Bearer ${creds.accessToken}`,
+      'x-api-key': creds.accessToken,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
     };
   },
 
