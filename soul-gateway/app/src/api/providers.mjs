@@ -3,6 +3,7 @@ import * as dao from '../db/providers-dao.mjs';
 import { upsertModel, getModelsByProviderConfigId, getTierByName, createTier, updateModel } from '../db/models-dao.mjs';
 import { createLogger } from '../utils/logger.mjs';
 import { buildModelName } from '../utils/model-naming.mjs';
+import * as authManager from '../providers/auth-manager.mjs';
 
 const syncLog = createLogger('provider-sync');
 
@@ -74,6 +75,22 @@ export const handleProviders = {
     const provider = await dao.getProviderById(params.id);
     if (!provider) return sendError(res, 404, 'Provider not found');
 
+    // Managed auth providers: check credential status instead of hitting base_url
+    if (provider.auth_type === 'managed') {
+      try {
+        const status = await authManager.getAuthStatus(provider.name);
+        if (status.status === 'active') {
+          return sendJson(res, { ok: true, message: `Authenticated (${status.accounts.length} account${status.accounts.length !== 1 ? 's' : ''})` });
+        }
+        if (status.status === 'no_accounts') {
+          return sendJson(res, { ok: false, error: 'No accounts configured. Click Manage to add one.' });
+        }
+        return sendJson(res, { ok: false, error: `Auth status: ${status.status}` });
+      } catch (err) {
+        return sendJson(res, { ok: false, error: err.message });
+      }
+    }
+
     const apiKey = await dao.getProviderApiKey(params.id);
     if (!apiKey) return sendJson(res, { ok: false, error: 'No API key configured' });
 
@@ -98,6 +115,23 @@ export const handleProviders = {
   async discover(req, res, params) {
     const provider = await dao.getProviderById(params.id);
     if (!provider) return sendError(res, 404, 'Provider not found');
+
+    // Managed auth providers: return already-configured models from DB
+    if (provider.auth_type === 'managed') {
+      try {
+        const models = await getModelsByProviderConfigId(provider.id);
+        const result = models.map(m => ({
+          id: m.provider_model || m.name,
+          input_price: parseFloat(m.input_price) || 0,
+          output_price: parseFloat(m.output_price) || 0,
+          owned_by: provider.name,
+          already_configured: true,
+        }));
+        return sendJson(res, result);
+      } catch (err) {
+        return sendError(res, 500, err.message);
+      }
+    }
 
     const apiKey = await dao.getProviderApiKey(params.id);
     if (!apiKey) return sendError(res, 400, 'No API key configured');
@@ -225,6 +259,74 @@ export const handleProviders = {
       sendJson(res, { ok: true, synced, disabled: disabledCount });
     } catch (err) {
       sendError(res, 502, `Sync failed: ${err.message}`);
+    }
+  },
+
+  // GET /api/v1/providers/:id/auth/status
+  async authStatus(req, res, params) {
+    const provider = await dao.getProviderById(params.id);
+    if (!provider) return sendError(res, 404, 'Provider not found');
+    if (provider.auth_type !== 'managed') return sendJson(res, { auth_type: 'api_key' });
+    const status = await authManager.getAuthStatus(provider.name);
+    sendJson(res, { auth_type: 'managed', ...status });
+  },
+
+  // POST /api/v1/providers/:id/auth/start
+  async authStart(req, res, params) {
+    const provider = await dao.getProviderById(params.id);
+    if (!provider) return sendError(res, 404, 'Provider not found');
+    if (provider.auth_type !== 'managed') return sendError(res, 400, 'Not a managed auth provider');
+    try {
+      const result = await authManager.startAuth(provider.name);
+      sendJson(res, result);
+    } catch (err) {
+      sendError(res, 500, err.message);
+    }
+  },
+
+  // GET /api/v1/providers/:id/auth/poll
+  async authPoll(req, res, params) {
+    const provider = await dao.getProviderById(params.id);
+    if (!provider) return sendError(res, 404, 'Provider not found');
+    try {
+      const result = await authManager.pollAuth(provider.name);
+      sendJson(res, result);
+    } catch (err) {
+      sendJson(res, { status: 'error', error: err.message });
+    }
+  },
+
+  // DELETE /api/v1/providers/:id/auth/accounts/:idx
+  async authRemoveAccount(req, res, params) {
+    const provider = await dao.getProviderById(params.id);
+    if (!provider) return sendError(res, 404, 'Provider not found');
+    await authManager.removeAccount(provider.name, parseInt(params.idx));
+    sendJson(res, { ok: true });
+  },
+
+  // POST /api/v1/providers/:id/auth/reset-quota
+  async authResetQuota(req, res, params) {
+    const provider = await dao.getProviderById(params.id);
+    if (!provider) return sendError(res, 404, 'Provider not found');
+    await authManager.resetQuota(provider.name);
+    sendJson(res, { ok: true });
+  },
+
+  // POST /api/v1/providers/:id/auth/callback — manual callback for PKCE flows
+  // User pastes the callback URL from the browser when localhost:PORT isn't reachable
+  async authCallback(req, res, params) {
+    const provider = await dao.getProviderById(params.id);
+    if (!provider) return sendError(res, 404, 'Provider not found');
+    if (provider.auth_type !== 'managed') return sendError(res, 400, 'Not a managed auth provider');
+    const body = await readJsonBody(req);
+    if (!body?.code || !body?.state) {
+      return sendError(res, 400, 'code and state are required. Paste the full callback URL or provide {code, state} JSON.');
+    }
+    try {
+      const result = await authManager.handlePKCECallback(provider.name, body.code, body.state);
+      sendJson(res, { status: 'complete', ...result });
+    } catch (err) {
+      sendError(res, 500, err.message);
     }
   },
 };

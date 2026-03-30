@@ -122,9 +122,10 @@ CREATE TABLE IF NOT EXISTS provider_configs (
     display_name TEXT,
     protocol TEXT NOT NULL DEFAULT 'openai',
     base_url TEXT NOT NULL,
-    encrypted_api_key BYTEA NOT NULL,
+    encrypted_api_key BYTEA,
     key_hint TEXT,
     billing_type TEXT DEFAULT 'api_key',
+    auth_type TEXT DEFAULT 'api_key',
     is_enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()

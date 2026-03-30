@@ -613,7 +613,7 @@
 
           <!-- Test result alert -->
           <div x-show="testResult" x-transition class="alert mb-4" :class="testResult?.ok ? 'alert-success' : 'alert-error'">
-            <span x-text="testResult?.ok ? 'Connected — ' + testResult.model_count + ' models available' : 'Connection failed: ' + (testResult?.error || 'Unknown error')"></span>
+            <span x-text="testResult?.ok ? (testResult.message || 'Connected — ' + testResult.model_count + ' models available') : 'Connection failed: ' + (testResult?.error || 'Unknown error')"></span>
             <button class="btn btn-ghost btn-xs" @click="testResult = null">Dismiss</button>
           </div>
 
@@ -621,7 +621,7 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body p-0">
               <table class="table table-sm">
-                <thead><tr><th>Name</th><th>Display Name</th><th>Protocol</th><th>Billing</th><th>Base URL</th><th>Key</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Name</th><th>Display Name</th><th>Protocol</th><th>Billing</th><th>Base URL</th><th>Key</th><th>Enabled</th><th>Auth</th><th>Actions</th></tr></thead>
                 <tbody>
                   <template x-for="p in providers" :key="p.id">
                     <tr :class="{'opacity-40': !p.is_enabled}">
@@ -632,6 +632,14 @@
                       <td class="text-xs font-mono max-w-[300px] truncate" x-text="p.base_url" :title="p.base_url"></td>
                       <td class="text-xs font-mono opacity-60" x-text="p.key_hint || '-'"></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="p.is_enabled" disabled></td>
+                      <td>
+                        <template x-if="p.auth_type === 'managed'">
+                          <button class="btn btn-xs btn-outline" @click="viewAuth(p)">Manage</button>
+                        </template>
+                        <template x-if="p.auth_type !== 'managed'">
+                          <span class="badge badge-xs badge-ghost">API Key</span>
+                        </template>
+                      </td>
                       <td>
                         <div class="flex gap-1">
                           <button class="btn btn-ghost btn-xs" @click="testConnection(p)" :disabled="testing === p.id">
@@ -645,7 +653,7 @@
                       </td>
                     </tr>
                   </template>
-                  <tr x-show="providers.length === 0"><td colspan="8" class="text-center opacity-50 py-6">No providers configured. Click "Add Provider" to get started.</td></tr>
+                  <tr x-show="providers.length === 0"><td colspan="9" class="text-center opacity-50 py-6">No providers configured. Click "Add Provider" to get started.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -690,10 +698,20 @@
                 </div>
               </div>
               <div class="form-control">
+                <label class="label"><span class="label-text">Auth Type</span></label>
+                <select class="select select-bordered" x-model="form.auth_type">
+                  <option value="api_key">API Key (static key)</option>
+                  <option value="managed">OAuth (managed credentials)</option>
+                </select>
+                <label class="label py-0" x-show="form.auth_type === 'managed'">
+                  <span class="label-text-alt text-info">After creating, use "Manage" button to add OAuth accounts</span>
+                </label>
+              </div>
+              <div class="form-control">
                 <label class="label"><span class="label-text">Base URL</span></label>
                 <input type="text" class="input input-bordered font-mono text-sm" x-model="form.base_url" placeholder="https://api.example.com/v1/chat/completions">
               </div>
-              <div class="form-control">
+              <div class="form-control" x-show="form.auth_type !== 'managed'">
                 <label class="label"><span class="label-text">API Key</span></label>
                 <input type="password" class="input input-bordered font-mono text-sm" x-model="form.api_key" placeholder="sk-...">
               </div>
@@ -762,7 +780,7 @@
                 <table class="table table-xs">
                   <thead class="sticky top-0 bg-base-100"><tr><th>Model ID</th><th class="text-right">Input $/1M</th><th class="text-right">Output $/1M</th><th>Owned By</th><th></th></tr></thead>
                   <tbody>
-                    <template x-for="m in discoveredModels" :key="m.id">
+                    <template x-for="(m, idx) in discoveredModels" :key="idx">
                       <tr>
                         <td class="font-mono text-xs" x-text="m.id"></td>
                         <td class="text-right text-xs" x-text="m.input_price || 0"></td>
@@ -781,6 +799,105 @@
               </div>
             </div>
             <div class="modal-backdrop" @click="showDiscover = false; discoverProvider = null"></div>
+          </dialog>
+
+          <!-- Auth Management Modal -->
+          <dialog class="modal" :class="{'modal-open': showAuthModal}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg" x-text="'Auth: ' + (authProvider?.display_name || authProvider?.name || '')"></h3>
+
+              <!-- Status -->
+              <div class="my-3">
+                <span class="badge" :class="{
+                  'badge-success': authStatus?.status === 'active',
+                  'badge-warning': authStatus?.status === 'expiring' || authStatus?.status === 'all_exhausted',
+                  'badge-error': authStatus?.status === 'needs_reauth' || authStatus?.status === 'no_accounts',
+                  'badge-ghost': !authStatus
+                }" x-text="authStatus?.status || 'loading...'"></span>
+              </div>
+
+              <!-- Account List -->
+              <div class="overflow-x-auto" x-show="authStatus?.accounts?.length > 0">
+                <table class="table table-xs">
+                  <thead><tr><th>#</th><th>Email</th><th>Expires</th><th>Quota</th><th></th></tr></thead>
+                  <tbody>
+                    <template x-for="a in (authStatus?.accounts || [])" :key="a.index">
+                      <tr>
+                        <td x-text="a.index" :class="{'font-bold': a.index === authStatus?.activeIndex}"></td>
+                        <td x-text="a.email || '(unknown)'"></td>
+                        <td class="text-xs" x-text="a.expiresAt ? new Date(a.expiresAt).toLocaleString() : 'n/a'"></td>
+                        <td>
+                          <span x-show="a.quotaExhausted" class="badge badge-xs badge-error">exhausted</span>
+                          <span x-show="a.needsReauth" class="badge badge-xs badge-warning">needs reauth</span>
+                          <span x-show="!a.quotaExhausted && !a.needsReauth" class="badge badge-xs badge-success">ok</span>
+                        </td>
+                        <td><button class="btn btn-ghost btn-xs text-error" @click="removeAuthAccount(a.index)">Remove</button></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <div x-show="!authStatus?.accounts?.length" class="text-sm opacity-50 py-4 text-center">No accounts configured</div>
+
+              <!-- Auth Flow in progress -->
+              <div x-show="authFlow" class="my-3 space-y-3">
+
+                <!-- Device Flow: show code + verification URL -->
+                <template x-if="authFlow?.type === 'device-flow'">
+                  <div class="card bg-base-200">
+                    <div class="card-body p-4">
+                      <p class="text-sm font-bold mb-2">Device Code:</p>
+                      <p class="font-mono text-3xl tracking-widest text-center py-2" x-text="authFlow?.userCode"></p>
+                      <p class="text-sm mt-2">Enter this code at:</p>
+                      <div class="bg-base-100 p-2 rounded font-mono text-xs break-all" x-text="authFlow?.verificationUri"></div>
+                      <div class="flex gap-2 mt-2">
+                        <button class="btn btn-sm btn-outline" @click="navigator.clipboard.writeText(authFlow?.verificationUri)">Copy Link</button>
+                        <button class="btn btn-sm btn-primary" @click="window.open(authFlow?.verificationUri, '_blank')">Open Link</button>
+                      </div>
+                      <p x-show="authPolling" class="text-xs opacity-70 mt-2">Waiting for authorization...</p>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- PKCE Flow: show auth URL + callback paste -->
+                <template x-if="authFlow?.type === 'pkce'">
+                  <div class="card bg-base-200">
+                    <div class="card-body p-4">
+                      <p class="text-sm font-bold mb-2">Authorization URL:</p>
+                      <div class="bg-base-100 p-2 rounded font-mono text-xs break-all max-h-20 overflow-y-auto" x-text="authFlow?.authUrl"></div>
+                      <div class="flex gap-2 mt-2">
+                        <button class="btn btn-sm btn-outline" @click="navigator.clipboard.writeText(authFlow?.authUrl)">Copy Link</button>
+                        <button class="btn btn-sm btn-primary" @click="window.open(authFlow?.authUrl, '_blank', 'width=600,height=700')">Open Link</button>
+                      </div>
+
+                      <div class="divider text-xs my-2">After signing in</div>
+
+                      <p class="text-xs opacity-70">After the provider redirects to <code>localhost:...</code>, copy the full URL from the browser and paste it here:</p>
+                      <div class="form-control mt-1">
+                        <label class="label py-1"><span class="label-text text-xs">Callback URL</span></label>
+                        <input type="text" class="input input-bordered input-sm font-mono text-xs"
+                               placeholder="http://localhost:3128/oauth/callback?code=...&state=..." x-model="callbackUrl">
+                      </div>
+                      <button class="btn btn-sm btn-primary mt-2" @click="submitCallbackUrl()" :disabled="!callbackUrl">Submit Callback URL</button>
+                      <p x-show="authPolling" class="text-xs opacity-70 mt-1">Waiting for authentication...</p>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Error -->
+                <div x-show="authFlow?.error" class="alert alert-error">
+                  <span x-text="typeof authFlow?.error === 'string' ? authFlow.error : JSON.stringify(authFlow?.error)"></span>
+                </div>
+              </div>
+
+              <!-- Actions -->
+              <div class="modal-action">
+                <button class="btn btn-sm btn-outline" @click="resetAuthQuota()" x-show="authStatus?.accounts?.some(a => a.quotaExhausted)">Reset Quota</button>
+                <button class="btn btn-sm btn-primary" @click="addAccount()" :disabled="authPolling">Add Account</button>
+                <button class="btn btn-sm btn-ghost" @click="closeAuthModal()">Close</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="closeAuthModal()"></div>
           </dialog>
         </div>
       </div>

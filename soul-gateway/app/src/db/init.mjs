@@ -211,6 +211,11 @@ async function migrate(p) {
   await p.query(`ALTER TABLE provider_configs ADD COLUMN IF NOT EXISTS billing_type TEXT DEFAULT 'api_key'`);
   await p.query(`UPDATE provider_configs SET billing_type = 'subscription' WHERE name IN ('copilot', 'axiologic_kiro') AND billing_type = 'api_key'`);
 
+  // Add auth_type to provider_configs (managed = OAuth credentials on disk)
+  await p.query(`ALTER TABLE provider_configs ADD COLUMN IF NOT EXISTS auth_type TEXT DEFAULT 'api_key'`);
+  await p.query(`ALTER TABLE provider_configs ALTER COLUMN encrypted_api_key DROP NOT NULL`);
+  await p.query(`UPDATE provider_configs SET auth_type = 'managed' WHERE name IN ('copilot', 'axiologic_kiro') AND auth_type = 'api_key'`);
+
   // Add tags array to model_configs
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}'`);
 

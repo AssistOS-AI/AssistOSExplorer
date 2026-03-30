@@ -155,7 +155,16 @@ function providersPage() {
     discoveredModels: [],
     showDiscover: false,
 
-    form: { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '', billing_type: 'api_key' },
+    // Auth management
+    authProvider: null,
+    authStatus: null,
+    showAuthModal: false,
+    authFlow: null,
+    authPolling: false,
+    authPollTimer: null,
+    callbackUrl: '',
+
+    form: { template: 'custom', name: '', display_name: '', protocol: 'openai', base_url: '', api_key: '', billing_type: 'api_key', auth_type: 'api_key' },
     editForm: { display_name: '', protocol: '', base_url: '', api_key: '', billing_type: 'api_key', is_enabled: true },
 
     async init() {
@@ -185,8 +194,12 @@ function providersPage() {
     async create() {
       const payload = { ...this.form };
       delete payload.template;
-      if (!payload.name || !payload.base_url || !payload.api_key) {
-        alert('Name, Base URL, and API Key are required');
+      if (!payload.name || !payload.base_url) {
+        alert('Name and Base URL are required');
+        return;
+      }
+      if (payload.auth_type !== 'managed' && !payload.api_key) {
+        alert('API Key is required for non-OAuth providers');
         return;
       }
       const result = await api.post('/api/v1/providers', payload);
@@ -262,6 +275,107 @@ function providersPage() {
         mode: 'deep',
       });
       model._added = true;
+    },
+
+    async viewAuth(p) {
+      this.authProvider = p;
+      this.showAuthModal = true;
+      await this.refreshAuthStatus(p);
+    },
+
+    async refreshAuthStatus(p) {
+      this.authStatus = await api.get(`/api/v1/providers/${p.id}/auth/status`);
+    },
+
+    async addAccount() {
+      this.authFlow = await api.post(`/api/v1/providers/${this.authProvider.id}/auth/start`, {});
+      if (this.authFlow.type === 'device-flow') {
+        this.authPolling = true;
+        this.pollDeviceFlow();
+      } else if (this.authFlow.type === 'pkce') {
+        window.open(this.authFlow.authUrl, '_blank', 'width=600,height=700');
+        this.authPolling = true;
+        this.pollPKCEFlow();
+      }
+    },
+
+    async pollDeviceFlow() {
+      while (this.authPolling) {
+        await new Promise(r => setTimeout(r, 5000));
+        try {
+          const result = await api.get(`/api/v1/providers/${this.authProvider.id}/auth/poll`);
+          if (result.status === 'complete') {
+            this.authPolling = false;
+            this.authFlow = null;
+            await this.refreshAuthStatus(this.authProvider);
+            break;
+          }
+          if (result.status === 'error') {
+            this.authPolling = false;
+            this.authFlow = { ...this.authFlow, error: result.error };
+            break;
+          }
+        } catch { break; }
+      }
+    },
+
+    async pollPKCEFlow() {
+      // For PKCE, poll status every 3s until account appears
+      let attempts = 0;
+      while (this.authPolling && attempts < 60) {
+        await new Promise(r => setTimeout(r, 3000));
+        attempts++;
+        const status = await api.get(`/api/v1/providers/${this.authProvider.id}/auth/status`);
+        if (status.accounts?.length > (this.authStatus?.accounts?.length || 0)) {
+          this.authPolling = false;
+          this.authFlow = null;
+          this.authStatus = status;
+          break;
+        }
+      }
+      this.authPolling = false;
+    },
+
+    async removeAuthAccount(idx) {
+      if (!confirm('Remove this account?')) return;
+      await api.del(`/api/v1/providers/${this.authProvider.id}/auth/accounts/${idx}`);
+      await this.refreshAuthStatus(this.authProvider);
+    },
+
+    async resetAuthQuota() {
+      await api.post(`/api/v1/providers/${this.authProvider.id}/auth/reset-quota`, {});
+      await this.refreshAuthStatus(this.authProvider);
+    },
+
+    closeAuthModal() {
+      this.showAuthModal = false;
+      this.authPolling = false;
+      this.authFlow = null;
+      this.callbackUrl = '';
+    },
+
+    async submitCallbackUrl() {
+      if (!this.callbackUrl || !this.authProvider) return;
+      try {
+        const url = new URL(this.callbackUrl);
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+        if (!code || !state) {
+          this.authFlow = { ...this.authFlow, error: 'URL must contain code and state parameters' };
+          return;
+        }
+        const result = await api.post(`/api/v1/providers/${this.authProvider.id}/auth/callback`, { code, state });
+        if (result.status === 'complete') {
+          this.authPolling = false;
+          this.authFlow = null;
+          this.callbackUrl = '';
+          await this.refreshAuthStatus(this.authProvider);
+        } else {
+          this.authFlow = { ...this.authFlow, error: result.error || 'Callback failed' };
+        }
+      } catch (e) {
+        this.authFlow = { ...this.authFlow, error: e.message || 'Failed to process callback URL' };
+      }
     },
 
     formatDate,

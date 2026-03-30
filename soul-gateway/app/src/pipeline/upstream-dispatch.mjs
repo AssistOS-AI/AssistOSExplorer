@@ -2,6 +2,7 @@ import { getProviderById, getProviderApiKey, resolveProviderByName } from '../db
 import { createLogger } from '../utils/logger.mjs';
 import { UpstreamError } from '../utils/errors.mjs';
 import { fetchLLMStreaming } from './llm-client.mjs';
+import * as authManager from '../providers/auth-manager.mjs';
 
 const log = createLogger('upstream');
 
@@ -33,6 +34,35 @@ export async function dispatchUpstream(messages, routeResult, params, signal) {
     throw new UpstreamError(`Provider "${dbConfig.name}" is disabled`, 502, 'provider_disabled');
   }
 
+  if (dbConfig.auth_type === 'managed') {
+    log.info('Managed auth provider', { name: dbConfig.name, provider: providerKey });
+    const creds = await authManager.getCredentials(dbConfig.name);
+    if (!creds) {
+      throw new UpstreamError(`Provider "${dbConfig.name}" not authenticated`, 503, 'provider_not_authenticated');
+    }
+    log.info('Credentials resolved', { hasToken: !!creds.token, hasConverter: !!creds.formatConverter, headerKeys: Object.keys(creds.headers || {}) });
+    const baseURL = dbConfig.base_url;
+    const payload = { model: providerModel, messages, ...(params || {}) };
+    if (creds.formatConverter) {
+      try {
+        return creds.formatConverter.dispatch(messages, payload, baseURL, creds.headers, signal);
+      } catch (err) {
+        if (err instanceof UpstreamError) throw err;
+        const classified = classifyProviderError(err, providerKey);
+        classified.dbConfig = dbConfig;
+        throw classified;
+      }
+    }
+    try {
+      return fetchLLMStreaming(baseURL, creds.token, payload, signal, creds.headers);
+    } catch (err) {
+      if (err instanceof UpstreamError) throw err;
+      const classified = classifyProviderError(err, providerKey);
+      classified.dbConfig = dbConfig;
+      throw classified;
+    }
+  }
+
   const baseURL = dbConfig.base_url;
   if (!baseURL) {
     throw new UpstreamError(`Missing baseURL for provider "${dbConfig.name}"`, 502, 'provider_not_configured');
@@ -53,7 +83,9 @@ export async function dispatchUpstream(messages, routeResult, params, signal) {
     return fetchLLMStreaming(baseURL, apiKey, payload, signal);
   } catch (err) {
     if (err instanceof UpstreamError) throw err;
-    throw classifyProviderError(err, providerKey);
+    const classified = classifyProviderError(err, providerKey);
+    classified.dbConfig = dbConfig;
+    throw classified;
   }
 }
 

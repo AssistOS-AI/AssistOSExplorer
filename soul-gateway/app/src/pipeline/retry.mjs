@@ -1,6 +1,7 @@
 import { dispatchUpstream, classifyProviderError, classifyError } from './upstream-dispatch.mjs';
 import { config } from '../config.mjs';
 import { createLogger } from '../utils/logger.mjs';
+import * as authManager from '../providers/auth-manager.mjs';
 
 const log = createLogger('retry');
 
@@ -63,6 +64,18 @@ export async function dispatchWithRetry(messages, routeResult, params) {
           provider: routeResult.providerKey,
           status: upstreamErr.status,
         });
+      }
+
+      if (err.dbConfig?.auth_type === 'managed' &&
+          (err.errorClassification?.type === 'payment_required' || err.status === 402)) {
+        const rotated = await authManager.rotateAccount(err.dbConfig.name);
+        if (rotated) {
+          log.info('Rotated to next account after quota error', { provider: err.dbConfig.name });
+          retriesDetail.push({ attempt: attempt + 1, status: err.status || 402, error_type: 'account_rotation', delay_ms: 0 });
+          continue;
+        }
+        throw Object.assign(new Error(`All ${err.dbConfig.name} accounts quota exhausted`),
+          { status: 429, type: 'quota_exhausted', errorClassification: { type: 'quota_exhausted', retryable: false } });
       }
 
       const effectiveMaxRetries = classification.maxRetries ?? maxRetries;

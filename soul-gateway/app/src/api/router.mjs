@@ -44,6 +44,31 @@ export async function apiRouter(req, res, pathname, query) {
   if (params) {
     if (method === 'GET') return handleProviders.discover(req, res, params);
   }
+  // Provider auth routes (must come before /api/v1/providers/:id)
+  params = matchPath('/api/v1/providers/:id/auth/accounts/:idx', pathname);
+  if (params) {
+    if (method === 'DELETE') return handleProviders.authRemoveAccount(req, res, params);
+  }
+  params = matchPath('/api/v1/providers/:id/auth/reset-quota', pathname);
+  if (params) {
+    if (method === 'POST') return handleProviders.authResetQuota(req, res, params);
+  }
+  params = matchPath('/api/v1/providers/:id/auth/status', pathname);
+  if (params) {
+    if (method === 'GET') return handleProviders.authStatus(req, res, params);
+  }
+  params = matchPath('/api/v1/providers/:id/auth/start', pathname);
+  if (params) {
+    if (method === 'POST') return handleProviders.authStart(req, res, params);
+  }
+  params = matchPath('/api/v1/providers/:id/auth/poll', pathname);
+  if (params) {
+    if (method === 'GET') return handleProviders.authPoll(req, res, params);
+  }
+  params = matchPath('/api/v1/providers/:id/auth/callback', pathname);
+  if (params) {
+    if (method === 'POST') return handleProviders.authCallback(req, res, params);
+  }
   if (pathname === '/api/v1/providers') {
     if (method === 'GET') return handleProviders.list(req, res);
     if (method === 'POST') return handleProviders.create(req, res);

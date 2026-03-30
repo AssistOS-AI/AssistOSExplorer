@@ -1,7 +1,7 @@
 import { query } from './init.mjs';
 import { encrypt, decrypt } from '../utils/crypto.mjs';
 
-const SAFE_COLUMNS = 'id, name, display_name, protocol, base_url, key_hint, billing_type, is_enabled, created_at, updated_at';
+const SAFE_COLUMNS = 'id, name, display_name, protocol, base_url, key_hint, billing_type, auth_type, is_enabled, created_at, updated_at';
 
 export async function listProviders() {
   const { rows } = await query(`SELECT ${SAFE_COLUMNS} FROM provider_configs ORDER BY name ASC`);
@@ -30,7 +30,7 @@ export async function getProviderApiKey(id) {
  */
 export async function resolveProviderByName(name) {
   const { rows } = await query(
-    'SELECT id, name, protocol, base_url, encrypted_api_key, is_enabled FROM provider_configs WHERE name = $1',
+    'SELECT id, name, protocol, base_url, encrypted_api_key, auth_type, is_enabled FROM provider_configs WHERE name = $1',
     [name]
   );
   if (!rows[0]) return null;
@@ -40,26 +40,33 @@ export async function resolveProviderByName(name) {
     name: row.name,
     protocol: row.protocol,
     base_url: row.base_url,
+    auth_type: row.auth_type,
     is_enabled: row.is_enabled,
     api_key: row.encrypted_api_key ? decrypt(row.encrypted_api_key) : null,
   };
 }
 
-export async function createProvider({ name, display_name, protocol, base_url, api_key, billing_type }) {
-  const encKey = encrypt(api_key);
-  const keyHint = api_key.length > 12
-    ? api_key.slice(0, 8) + '...' + api_key.slice(-4)
-    : api_key.slice(0, 4) + '...';
+export async function createProvider({ name, display_name, protocol, base_url, api_key, billing_type, auth_type }) {
+  let encKey, keyHint;
+  if (auth_type === 'managed' && !api_key) {
+    encKey = null;
+    keyHint = 'managed';
+  } else {
+    encKey = encrypt(api_key);
+    keyHint = api_key.length > 12
+      ? api_key.slice(0, 8) + '...' + api_key.slice(-4)
+      : api_key.slice(0, 4) + '...';
+  }
 
   const { rows } = await query(`
-    INSERT INTO provider_configs (name, display_name, protocol, base_url, encrypted_api_key, key_hint, billing_type)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO provider_configs (name, display_name, protocol, base_url, encrypted_api_key, key_hint, billing_type, auth_type)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING ${SAFE_COLUMNS}
-  `, [name, display_name || name, protocol || 'openai', base_url, encKey, keyHint, billing_type || 'api_key']);
+  `, [name, display_name || name, protocol || 'openai', base_url, encKey, keyHint, billing_type || 'api_key', auth_type || 'api_key']);
   return rows[0];
 }
 
-const UPDATABLE_FIELDS = ['name', 'display_name', 'protocol', 'base_url', 'billing_type', 'is_enabled'];
+const UPDATABLE_FIELDS = ['name', 'display_name', 'protocol', 'base_url', 'billing_type', 'auth_type', 'is_enabled'];
 
 export async function updateProvider(id, fields) {
   const sets = [];
