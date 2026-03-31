@@ -48,9 +48,12 @@ export async function resolveProviderByName(name) {
 
 export async function createProvider({ name, display_name, protocol, base_url, api_key, billing_type, auth_type }) {
   let encKey, keyHint;
-  if (auth_type === 'managed' && !api_key) {
+  if ((auth_type === 'managed' || auth_type === 'internal') && !api_key) {
     encKey = null;
-    keyHint = 'managed';
+    keyHint = auth_type;
+  } else if (!api_key) {
+    encKey = null;
+    keyHint = null;
   } else {
     encKey = encrypt(api_key);
     keyHint = api_key.length > 12

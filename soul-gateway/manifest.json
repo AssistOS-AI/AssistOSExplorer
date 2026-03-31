@@ -76,6 +76,31 @@
                     "required": false,
                     "default": "no-auth-needed",
                     "description": "Dummy key for kiro provider (kiro-gateway handles its own auth)"
+                },
+                "TAVILY_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for Tavily web search"
+                },
+                "BRAVE_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for Brave web search"
+                },
+                "EXA_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for Exa web search"
+                },
+                "SERPER_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for Serper (Google) web search"
+                },
+                "JINA_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "API key for Jina web search (optional)"
                 }
             },
             "ports": [

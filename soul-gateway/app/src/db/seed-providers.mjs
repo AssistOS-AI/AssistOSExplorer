@@ -20,6 +20,7 @@ const SEED_PROVIDERS = [
   { name: 'xai',                display_name: 'xAI',                  protocol: 'openai',    base_url: 'https://api.x.ai/v1/chat/completions',                         envVar: 'XAI_API_KEY' },
   { name: 'mistral',            display_name: 'Mistral',              protocol: 'openai',    base_url: 'https://api.mistral.ai/v1/chat/completions',                   envVar: 'MISTRAL_API_KEY' },
   { name: 'search_gateway',    display_name: 'Search Gateway',       protocol: 'openai',    base_url: 'http://10.0.2.2:8043/v1/chat/completions',                     envVar: 'SEARCH_GATEWAY_API_KEY' },
+  { name: 'search',            display_name: 'Web Search (Built-in)', protocol: 'openai',   base_url: '',                                                              envVar: null,                      auth_type: 'internal', alwaysSeed: true },
 ];
 
 /**
@@ -32,8 +33,9 @@ export async function seedProviders() {
   const seededNames = [];
 
   for (const seed of SEED_PROVIDERS) {
-    const apiKey = process.env[seed.envVar];
-    if (!apiKey) continue;
+    // Internal providers (no API key needed) vs API key providers
+    const apiKey = seed.envVar ? process.env[seed.envVar] : null;
+    if (!apiKey && !seed.alwaysSeed) continue;
 
     const existing = await getProviderByName(seed.name);
     if (existing) continue;
@@ -44,8 +46,9 @@ export async function seedProviders() {
         display_name: seed.display_name,
         protocol: seed.protocol,
         base_url: seed.base_url,
-        api_key: apiKey,
+        api_key: apiKey || null,
         billing_type: seed.billing_type,
+        auth_type: seed.auth_type,
       });
       seededCount++;
       seededNames.push(seed.name);
@@ -64,6 +67,9 @@ export async function seedProviders() {
 
   // Auto-sync search-gateway models if provider is configured
   await syncSearchGateway();
+
+  // Auto-seed built-in search models
+  await seedSearchModels();
 }
 
 /**
@@ -177,5 +183,60 @@ async function syncSearchGateway() {
     }
   } catch (err) {
     log.warn(`Search gateway sync failed: ${err.message}`);
+  }
+}
+
+/**
+ * Auto-seed built-in search models for the internal search provider.
+ * Creates models for each search provider that has an API key configured,
+ * plus DuckDuckGo (free, no key needed) and deep-research.
+ */
+async function seedSearchModels() {
+  const provider = await getProviderByName('search');
+  if (!provider) return;
+
+  const SEARCH_MODELS = [
+    { model: 'duckduckgo-search', display: 'DuckDuckGo Search', free: true, envKey: null },
+    { model: 'Tavily-search',     display: 'Tavily Search',     free: true, envKey: 'TAVILY_API_KEY' },
+    { model: 'brave-search',      display: 'Brave Search',      free: true, envKey: 'BRAVE_API_KEY' },
+    { model: 'exa-search',        display: 'Exa Search',        free: true, envKey: 'EXA_API_KEY' },
+    { model: 'serper-search',     display: 'Serper Search',     free: true, envKey: 'SERPER_API_KEY' },
+    { model: 'gemini-search',     display: 'Gemini Search',     free: true, envKey: 'GEMINI_API_KEY' },
+    { model: 'jina-search',       display: 'Jina Search',       free: true, envKey: null },
+    { model: 'deep-research',     display: 'Deep Research',     free: false, envKey: null },
+  ];
+
+  const synced = [];
+
+  for (const sm of SEARCH_MODELS) {
+    // Skip models that require an API key that isn't set
+    if (sm.envKey && !process.env[sm.envKey]) continue;
+
+    const modelName = buildModelName(provider.name, sm.model);
+    await upsertModel({
+      name: modelName,
+      display_name: sm.display,
+      provider_key: provider.name,
+      provider_model: sm.model,
+      mode: 'fast',
+      input_price: 0,
+      output_price: 0,
+      is_free: sm.free,
+      sort_order: 100,
+      provider_config_id: provider.id,
+      tags: ['search'],
+    });
+    synced.push(modelName);
+  }
+
+  if (synced.length > 0) {
+    // Update or create search tier
+    const searchTier = await getTierByName('search');
+    if (searchTier) {
+      const tierModels = new Set(searchTier.model_refs || []);
+      for (const name of synced) tierModels.add(name);
+      await updateModel(searchTier.id, { model_refs: [...tierModels] });
+    }
+    log.info(`Seeded ${synced.length} built-in search models: ${synced.join(', ')}`);
   }
 }

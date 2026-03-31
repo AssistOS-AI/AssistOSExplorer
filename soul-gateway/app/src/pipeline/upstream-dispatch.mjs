@@ -34,6 +34,24 @@ export async function dispatchUpstream(messages, routeResult, params, signal) {
     throw new UpstreamError(`Provider "${dbConfig.name}" is disabled`, 502, 'provider_disabled');
   }
 
+  // Internal providers (e.g., search) — no external auth needed, use format converter directly
+  if (dbConfig.auth_type === 'internal') {
+    const adapter = authManager.getAdapter(dbConfig.name);
+    if (adapter?.formatConverter) {
+      log.info('Internal provider dispatch', { name: dbConfig.name, model: providerModel });
+      const payload = { model: providerModel, messages, ...(params || {}) };
+      try {
+        return adapter.formatConverter.dispatch(messages, payload, dbConfig.base_url || '', {}, signal);
+      } catch (err) {
+        if (err instanceof UpstreamError) throw err;
+        const classified = classifyProviderError(err, providerKey);
+        classified.dbConfig = dbConfig;
+        throw classified;
+      }
+    }
+    throw new UpstreamError(`Internal provider "${dbConfig.name}" has no format converter`, 502, 'provider_not_configured');
+  }
+
   if (dbConfig.auth_type === 'managed') {
     log.info('Managed auth provider', { name: dbConfig.name, provider: providerKey });
     const creds = await authManager.getCredentials(dbConfig.name);

@@ -8,6 +8,7 @@ import kiroAdapter from './providers/adapters/kiro.mjs';
 import codexAdapter from './providers/adapters/codex.mjs';
 import geminiAdapter from './providers/adapters/gemini.mjs';
 import anthropicAdapter from './providers/adapters/anthropic.mjs';
+import searchAdapter from './providers/adapters/search.mjs';
 
 const log = createLogger('main');
 
@@ -26,6 +27,7 @@ async function main() {
   registerAdapter(codexAdapter);
   registerAdapter(geminiAdapter);
   registerAdapter(anthropicAdapter);
+  registerAdapter(searchAdapter);
   startRefreshLoop();
 
   // Auto-provision providers/models for adapters that have stored credentials

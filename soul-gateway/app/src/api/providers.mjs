@@ -29,6 +29,8 @@ const PROVIDER_TEMPLATES = {
   xai:        { display_name: 'xAI (Grok)',          protocol: 'openai',    base_url: 'https://api.x.ai/v1/chat/completions' },
   cohere:     { display_name: 'Cohere',              protocol: 'openai',    base_url: 'https://api.cohere.com/v2/chat' },
   custom:     { display_name: 'Custom',              protocol: 'openai',    base_url: '' },
+  // Internal providers
+  search:     { display_name: 'Web Search (Built-in)', protocol: 'openai',  base_url: '', auth_type: 'internal' },
 };
 
 function stripBaseUrl(url) {
