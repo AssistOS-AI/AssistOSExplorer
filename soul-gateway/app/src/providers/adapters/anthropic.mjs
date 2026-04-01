@@ -102,11 +102,31 @@ export default {
 
     const tokenRes = await res.json();
 
+    let email = tokenRes.email || null;
+
+    // If no email in token response, try userinfo endpoint
+    if (!email && tokenRes.access_token) {
+      try {
+        const infoRes = await fetch('https://api.anthropic.com/v1/oauth/userinfo', {
+          headers: {
+            'Authorization': `Bearer ${tokenRes.access_token}`,
+            ...(this.config.extraTokenHeaders || {}),
+          },
+        });
+        if (infoRes.ok) {
+          const info = await infoRes.json();
+          email = info.email || null;
+        }
+      } catch (err) {
+        log.warn('Failed to fetch Anthropic userinfo', { error: err.message });
+      }
+    }
+
     return {
       accessToken: tokenRes.access_token || tokenRes.key,
       refreshToken: null, // Anthropic tokens are long-lived (~1 year)
       expiresAt: tokenRes.expires_in ? Date.now() + tokenRes.expires_in * 1000 : Date.now() + 365 * 24 * 60 * 60 * 1000,
-      email: tokenRes.email || null,
+      email,
     };
   },
 

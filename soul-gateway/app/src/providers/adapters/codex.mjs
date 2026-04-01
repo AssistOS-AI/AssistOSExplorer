@@ -1,4 +1,5 @@
 import { generatePKCE, buildAuthUrl, startCallbackServer, exchangeCodeForTokens } from '../pkce-flow.mjs';
+import { decodeJwtPayload } from '../token-utils.mjs';
 import { createResponsesOnlyConverter } from '../format-converters/copilot-responses.mjs';
 import { createLogger } from '../../utils/logger.mjs';
 
@@ -74,11 +75,18 @@ export default {
 
     const tokenRes = await exchangeCodeForTokens(this.config, code, verifier);
 
+    // Extract email from id_token JWT (scopes include openid+email)
+    let email = null;
+    if (tokenRes.id_token) {
+      const payload = decodeJwtPayload(tokenRes.id_token);
+      email = payload?.email || null;
+    }
+
     return {
       accessToken: tokenRes.access_token,
       refreshToken: tokenRes.refresh_token || null,
       expiresAt: tokenRes.expires_in ? Date.now() + tokenRes.expires_in * 1000 : null,
-      email: null, // OpenAI doesn't return email in token response
+      email,
     };
   },
 

@@ -138,6 +138,24 @@ export default {
 
     const githubToken = tokenData.access_token;
 
+    // Fetch GitHub user profile for email
+    let email = null;
+    try {
+      const userRes = await fetch('https://api.github.com/user', {
+        headers: {
+          'Authorization': `token ${githubToken}`,
+          'Accept': 'application/json',
+          'User-Agent': `GitHubCopilotChat/${COPILOT_CHAT_VERSION}`,
+        },
+      });
+      if (userRes.ok) {
+        const user = await userRes.json();
+        email = user.email || `${user.login}@github`;
+      }
+    } catch (err) {
+      log.warn('Failed to fetch GitHub user info', { error: err.message });
+    }
+
     // Exchange GitHub token for Copilot token
     const copilotData = await exchangeForCopilotToken(githubToken);
 
@@ -147,7 +165,7 @@ export default {
       expiresAt: copilotData.expires_at
         ? copilotData.expires_at * 1000  // convert unix seconds to ms
         : Date.now() + (copilotData.refresh_in || 1800) * 1000,
-      email: tokenData.scope ? `github:${tokenData.scope}` : null,
+      email,
     };
   },
 

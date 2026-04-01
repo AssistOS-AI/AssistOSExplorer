@@ -2,6 +2,7 @@
 const _SLUG_MAP = { axiologic_kiro: 'kiro', search_gateway: 'search' };
 function _providerSlug(providerKey) { return _SLUG_MAP[providerKey] || providerKey; }
 function _buildModelName(providerKey, providerModel) { return `axl/${_providerSlug(providerKey)}/${providerModel}`; }
+function _displayName(name) { return name?.startsWith('axl/') ? name.slice(4) : name; }
 
 // ---- Helpers ----
 const api = {
@@ -1103,6 +1104,77 @@ function tiersPage() {
     showTierCreate: false,
     editingTier: null,
     tierForm: { name: '', display_name: '', model_refs: [], fallback_model: '' },
+
+    // Drag reorder state
+    dragIdx: null,
+    dropIdx: null,
+
+    onDragStart(idx) {
+      this.dragIdx = idx;
+    },
+    onDragOver(evt, idx) {
+      evt.preventDefault();
+      this.dropIdx = idx;
+    },
+    onDrop(idx) {
+      if (this.dragIdx === null || this.dragIdx === idx) return;
+      const item = this.tierForm.model_refs.splice(this.dragIdx, 1)[0];
+      this.tierForm.model_refs.splice(idx, 0, item);
+      this.dragIdx = null;
+      this.dropIdx = null;
+    },
+    onDragEnd() {
+      this.dragIdx = null;
+      this.dropIdx = null;
+    },
+
+    // Model picker state
+    showModelPicker: false,
+    pickerSearch: '',
+    pickerBilling: '',
+    pickerSelected: [],
+
+    get filteredPickerModels() {
+      let list = this.models.filter(m => !this.tierForm.model_refs.includes(m.name));
+      const q = this.pickerSearch.trim().toLowerCase();
+      if (q) {
+        list = list.filter(m =>
+          m.name.toLowerCase().includes(q) ||
+          (m.provider_key || '').toLowerCase().includes(q) ||
+          (m.tags || []).some(t => t.toLowerCase().includes(q))
+        );
+      }
+      if (this.pickerBilling === 'free') {
+        list = list.filter(m => m.is_free);
+      } else if (this.pickerBilling === 'subscription') {
+        list = list.filter(m => m.billing_type === 'subscription');
+      } else if (this.pickerBilling === 'api_key') {
+        list = list.filter(m => !m.is_free && m.billing_type !== 'subscription');
+      }
+      return list;
+    },
+
+    openModelPicker() {
+      this.pickerSearch = '';
+      this.pickerBilling = '';
+      this.pickerSelected = [];
+      this.showModelPicker = true;
+    },
+
+    togglePickerModel(name) {
+      const idx = this.pickerSelected.indexOf(name);
+      if (idx >= 0) this.pickerSelected.splice(idx, 1);
+      else this.pickerSelected.push(name);
+    },
+
+    addPickerModels() {
+      for (const name of this.pickerSelected) {
+        if (!this.tierForm.model_refs.includes(name)) {
+          this.tierForm.model_refs.push(name);
+        }
+      }
+      this.showModelPicker = false;
+    },
 
     async init() {
       [this.tiers, this.models] = await Promise.all([

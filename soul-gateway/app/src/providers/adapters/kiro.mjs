@@ -1,5 +1,6 @@
 import { randomBytes, createHash, randomUUID } from 'node:crypto';
 import { generatePKCE, buildAuthUrl, startCallbackServer, exchangeCodeForTokens } from '../pkce-flow.mjs';
+import { decodeJwtPayload } from '../token-utils.mjs';
 import kiroEventStreamConverter from '../format-converters/kiro-eventstream.mjs';
 import { createLogger } from '../../utils/logger.mjs';
 
@@ -26,19 +27,6 @@ const pkceVerifiers = new Map();
 function storePKCEVerifier(state, verifier) {
   pkceVerifiers.set(state, verifier);
   setTimeout(() => pkceVerifiers.delete(state), 10 * 60 * 1000);
-}
-
-// ---- JWT decode (no verification) ----
-
-function decodeJwtPayload(token) {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const payload = Buffer.from(parts[1], 'base64url').toString('utf-8');
-    return JSON.parse(payload);
-  } catch {
-    return null;
-  }
 }
 
 // ---- Adapter interface ----

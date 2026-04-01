@@ -150,8 +150,30 @@ async function* parseResponsesSSE(body) {
 
 const ROLE_MAP = { system: 'developer', user: 'user', assistant: 'assistant' };
 
+// Map OpenAI Chat content block types to Responses API types
+const CONTENT_TYPE_MAP = {
+  text: 'input_text',
+  image_url: 'input_image',
+};
+
+/**
+ * Convert message content from Chat Completions format to Responses API format.
+ * Strings pass through. Arrays of content blocks get their types mapped.
+ */
+function convertContent(content, role) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return content;
+  return content.map(block => {
+    if (!block || !block.type) return block;
+    const mappedType = role === 'assistant'
+      ? (block.type === 'text' ? 'output_text' : block.type)
+      : (CONTENT_TYPE_MAP[block.type] || block.type);
+    return { ...block, type: mappedType };
+  });
+}
+
 function convertToResponsesPayload(chatPayload) {
-  const { messages, max_tokens, stream, tools, tool_choice, ...rest } = chatPayload;
+  const { messages, model, max_tokens, temperature, top_p, stop, tools, tool_choice } = chatPayload;
 
   // Extract system messages as instructions (required by Codex Responses API)
   const systemMessages = messages.filter(m => m.role === 'system');
@@ -159,17 +181,18 @@ function convertToResponsesPayload(chatPayload) {
 
   const input = nonSystemMessages.map(msg => ({
     role: ROLE_MAP[msg.role] || 'user',
-    content: msg.content,
+    content: convertContent(msg.content, msg.role),
   }));
 
   const instructions = systemMessages.map(m =>
     typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
   ).join('\n\n');
 
-  const payload = { ...rest, input, instructions: instructions || '', stream: true, store: false };
-  if (max_tokens !== undefined) {
-    payload.max_output_tokens = max_tokens;
-  }
+  const payload = { model, input, instructions: instructions || '', stream: true, store: false };
+  if (max_tokens !== undefined) payload.max_output_tokens = max_tokens;
+  if (temperature !== undefined) payload.temperature = temperature;
+  if (top_p !== undefined) payload.top_p = top_p;
+  if (stop) payload.stop = Array.isArray(stop) ? stop : [stop];
 
   // Convert tools from chat completions format to Responses API format
   // Chat: [{ type: "function", function: { name, description, parameters } }]

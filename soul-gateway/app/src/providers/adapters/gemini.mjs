@@ -66,11 +66,28 @@ export default {
 
     const tokenRes = await exchangeCodeForTokens(this.config, code, verifier);
 
+    let email = tokenRes.email || null;
+
+    // If no email in token response, call Google userinfo endpoint
+    if (!email && tokenRes.access_token) {
+      try {
+        const infoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { 'Authorization': `Bearer ${tokenRes.access_token}` },
+        });
+        if (infoRes.ok) {
+          const info = await infoRes.json();
+          email = info.email || null;
+        }
+      } catch (err) {
+        log.warn('Failed to fetch Google userinfo', { error: err.message });
+      }
+    }
+
     return {
       accessToken: tokenRes.access_token,
       refreshToken: tokenRes.refresh_token || null,
       expiresAt: tokenRes.expires_in ? Date.now() + tokenRes.expires_in * 1000 : null,
-      email: tokenRes.email || null,
+      email,
     };
   },
 

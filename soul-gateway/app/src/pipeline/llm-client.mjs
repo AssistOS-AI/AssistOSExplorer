@@ -59,7 +59,21 @@ async function* parseSSE(body) {
  * Error semantics: connection/auth errors throw (for retry logic).
  * Mid-stream errors yield { type: 'error' } (for graceful degradation).
  */
+// Params safe to forward to OpenAI-compatible upstreams
+const ALLOWED_PARAMS = new Set([
+  'model', 'messages', 'temperature', 'top_p', 'max_tokens', 'stop',
+  'tools', 'tool_choice', 'response_format', 'seed', 'n',
+  'frequency_penalty', 'presence_penalty', 'logprobs', 'top_logprobs',
+  'logit_bias', 'user', 'metadata',
+]);
+
 export async function* fetchLLMStreaming(baseURL, apiKey, payload, signal, extraHeaders) {
+  // Whitelist known params — drop anything the upstream might reject
+  const cleanPayload = {};
+  for (const key of Object.keys(payload)) {
+    if (ALLOWED_PARAMS.has(key)) cleanPayload[key] = payload[key];
+  }
+
   const response = await fetch(baseURL, {
     method: 'POST',
     headers: {
@@ -67,7 +81,7 @@ export async function* fetchLLMStreaming(baseURL, apiKey, payload, signal, extra
       'Content-Type': 'application/json',
       ...(extraHeaders || {}),
     },
-    body: JSON.stringify({ ...payload, stream: true }),
+    body: JSON.stringify({ ...cleanPayload, stream: true }),
     signal,
   });
 

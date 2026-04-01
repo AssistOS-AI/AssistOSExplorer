@@ -940,7 +940,7 @@
                 <tbody>
                   <template x-for="m in filteredModels" :key="m.id">
                     <tr :class="{'opacity-40': !m.is_enabled, 'hover cursor-pointer': true}" @click="editModel(m)">
-                      <td class="font-mono text-sm" x-text="m.name"></td>
+                      <td class="font-mono text-sm" x-text="_displayName(m.name)" :title="m.name"></td>
                       <td class="text-xs">
                         <template x-if="m.billing_types">
                           <div class="flex flex-wrap gap-0.5">
@@ -1137,26 +1137,23 @@
                 </select>
               </div>
               <div class="form-control mt-2">
-                <label class="label font-semibold">Add Model</label>
-                <div class="flex gap-2 mb-2 min-w-0">
-                  <select class="select select-bordered select-sm flex-1 min-w-0" x-ref="tierModelSelect">
-                    <option value="" disabled selected>Pick a model...</option>
-                    <template x-for="m in models.filter(m => !tierForm.model_refs.includes(m.name))" :key="m.id">
-                      <option :value="m.name" x-text="m.name"></option>
-                    </template>
-                  </select>
-                  <button class="btn btn-sm btn-outline" @click="if($refs.tierModelSelect.value) { tierForm.model_refs.push($refs.tierModelSelect.value); $refs.tierModelSelect.value = ''; }">Add</button>
-                </div>
+                <label class="label font-semibold">Models</label>
+                <button class="btn btn-sm btn-outline w-fit" @click="openModelPicker()">Add Models...</button>
               </div>
               <div class="form-control mt-2">
                 <label class="label font-semibold">Models (in priority order)</label>
                 <div class="space-y-1">
-                  <template x-for="(model, idx) in tierForm.model_refs" :key="idx">
-                    <div class="flex items-center gap-1 bg-base-200 rounded px-2 py-1">
+                  <template x-for="(model, idx) in tierForm.model_refs" :key="model">
+                    <div class="flex items-center gap-2 bg-base-200 rounded px-2 py-1 transition-opacity"
+                         draggable="true"
+                         @dragstart="onDragStart(idx)"
+                         @dragover.prevent="onDragOver($event, idx)"
+                         @drop="onDrop(idx)"
+                         @dragend="onDragEnd()"
+                         :class="{ 'opacity-30': dragIdx === idx, 'border-t-2 border-primary': dropIdx === idx && dragIdx !== idx }">
+                      <span class="cursor-grab active:cursor-grabbing select-none text-base-content/40 text-lg" title="Drag to reorder">&#8801;</span>
                       <span class="badge badge-sm" x-text="idx + 1"></span>
-                      <span class="font-mono text-sm flex-1" x-text="model"></span>
-                      <button class="btn btn-ghost btn-xs" :disabled="idx === 0" @click="if(idx > 0) { [tierForm.model_refs[idx-1], tierForm.model_refs[idx]] = [tierForm.model_refs[idx], tierForm.model_refs[idx-1]]; }">&#9650;</button>
-                      <button class="btn btn-ghost btn-xs" :disabled="idx === tierForm.model_refs.length - 1" @click="if(idx < tierForm.model_refs.length - 1) { [tierForm.model_refs[idx], tierForm.model_refs[idx+1]] = [tierForm.model_refs[idx+1], tierForm.model_refs[idx]]; }">&#9660;</button>
+                      <span class="font-mono text-sm flex-1" x-text="_displayName(model)" :title="model"></span>
                       <button class="btn btn-ghost btn-xs text-error" @click="tierForm.model_refs.splice(idx, 1)">&#10005;</button>
                     </div>
                   </template>
@@ -1169,6 +1166,44 @@
               </div>
             </div>
             <div class="modal-backdrop" @click="showTierCreate = false; editingTier = null"></div>
+          </dialog>
+
+          <!-- Model Picker Modal -->
+          <dialog class="modal" :class="{'modal-open': showModelPicker}">
+            <div class="modal-box max-w-2xl">
+              <h3 class="font-bold text-lg mb-3">Add Models to Tier</h3>
+              <!-- Search -->
+              <input type="text" class="input input-bordered input-sm w-full mb-2" placeholder="Search models, tags, providers..." x-model="pickerSearch">
+              <!-- Billing filter chips -->
+              <div class="flex gap-1 mb-3">
+                <button class="badge badge-sm cursor-pointer" :class="pickerBilling === '' ? 'badge-primary' : 'badge-ghost'" @click="pickerBilling = ''">All</button>
+                <button class="badge badge-sm cursor-pointer" :class="pickerBilling === 'subscription' ? 'badge-secondary' : 'badge-ghost'" @click="pickerBilling = pickerBilling === 'subscription' ? '' : 'subscription'">Subscription</button>
+                <button class="badge badge-sm cursor-pointer" :class="pickerBilling === 'api_key' ? 'badge-info badge-outline' : 'badge-ghost'" @click="pickerBilling = pickerBilling === 'api_key' ? '' : 'api_key'">API Key</button>
+                <button class="badge badge-sm cursor-pointer" :class="pickerBilling === 'free' ? 'badge-success' : 'badge-ghost'" @click="pickerBilling = pickerBilling === 'free' ? '' : 'free'">Free</button>
+              </div>
+              <!-- Model list -->
+              <div class="max-h-80 overflow-y-auto border rounded-lg">
+                <template x-for="m in filteredPickerModels" :key="m.id">
+                  <label class="flex items-center gap-2 px-3 py-2 hover:bg-base-200 cursor-pointer border-b border-base-200 last:border-0">
+                    <input type="checkbox" class="checkbox checkbox-sm" :checked="pickerSelected.includes(m.name)" @change="togglePickerModel(m.name)">
+                    <span class="font-mono text-sm flex-1 truncate" x-text="_displayName(m.name)" :title="m.name"></span>
+                    <span class="badge badge-ghost badge-xs" x-text="m.provider_key"></span>
+                    <span x-show="m.is_free" class="badge badge-success badge-xs">free</span>
+                    <span x-show="!m.is_free && m.billing_type === 'subscription'" class="badge badge-secondary badge-xs">sub</span>
+                    <span x-show="!m.is_free && m.billing_type !== 'subscription'" class="badge badge-info badge-outline badge-xs">api</span>
+                    <div class="flex gap-0.5"><template x-for="tag in (m.tags || []).slice(0, 3)" :key="tag"><span class="badge badge-outline badge-xs" x-text="tag"></span></template></div>
+                  </label>
+                </template>
+                <div x-show="filteredPickerModels.length === 0" class="text-sm opacity-50 text-center py-6">No matching models</div>
+              </div>
+              <!-- Footer -->
+              <div class="modal-action">
+                <span class="text-sm opacity-50 mr-auto self-center" x-text="pickerSelected.length + ' selected'"></span>
+                <button class="btn btn-ghost btn-sm" @click="showModelPicker = false">Cancel</button>
+                <button class="btn btn-primary btn-sm" @click="addPickerModels()" :disabled="pickerSelected.length === 0" x-text="'Add ' + pickerSelected.length + ' Model' + (pickerSelected.length !== 1 ? 's' : '')"></button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showModelPicker = false"></div>
           </dialog>
 
           <!-- Tiers table -->
@@ -1184,7 +1219,7 @@
                       <td class="max-w-xs">
                         <div class="flex flex-wrap gap-1">
                           <template x-for="(m, i) in (t.model_refs || [])" :key="i">
-                            <span class="badge badge-ghost badge-sm font-mono" x-text="m"></span>
+                            <span class="badge badge-ghost badge-sm font-mono" x-text="_displayName(m)" :title="m"></span>
                           </template>
                           <span x-show="!t.model_refs || t.model_refs.length === 0" class="text-xs opacity-50">empty</span>
                         </div>
