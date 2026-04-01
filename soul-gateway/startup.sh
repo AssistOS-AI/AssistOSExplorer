@@ -17,15 +17,11 @@ elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/so
     cp -r "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/app/"* "$APP_DIR/"
 fi
 
-# Install deps if needed
-if [ -f "$APP_DIR/package.json" ] && [ ! -d "$APP_DIR/node_modules" ]; then
+# Install deps — always force fresh achillesAgentLib from GitHub HEAD
+if [ -f "$APP_DIR/package.json" ]; then
     cd "$APP_DIR"
-    npm install --production
-elif [ -f "$APP_DIR/package.json" ] && [ -d "$APP_DIR/node_modules" ]; then
-    # Force fresh achillesAgentLib on every start (bypass npm cache)
-    cd "$APP_DIR"
-    rm -rf node_modules/achillesAgentLib
-    npm install --production
+    rm -rf node_modules/achillesAgentLib package-lock.json
+    npm install --production --no-package-lock
 fi
 
 # Load encryption key from shared storage if ENCRYPTION_KEY not set
