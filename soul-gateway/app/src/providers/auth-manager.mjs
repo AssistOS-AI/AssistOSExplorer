@@ -158,19 +158,28 @@ export async function reconcileProviders() {
   }
 }
 
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const HEALTH_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+let lastHealthCheck = Date.now(); // don't run immediately on startup
+
 export function startRefreshLoop(intervalMs = 60_000) {
   if (refreshInterval) return;
 
   refreshInterval = setInterval(async () => {
+    const runHealthCheck = Date.now() - lastHealthCheck > HEALTH_CHECK_INTERVAL_MS;
+    if (runHealthCheck) lastHealthCheck = Date.now();
+
     for (const [name, adapter] of adapters) {
       try {
         const accounts = await store.readAccounts(name);
         for (const account of accounts) {
+          let dirty = false;
+
           // Reset quota if reset time has passed
           if (account.quotaExhausted && account.quotaResetAt && new Date(account.quotaResetAt) <= new Date()) {
             account.quotaExhausted = false;
             account.quotaResetAt = null;
-            await store.writeAccount(name, account._index, account);
+            dirty = true;
             log.info(`Quota reset for ${name} account ${account._index}`);
           }
 
@@ -179,6 +188,42 @@ export function startRefreshLoop(intervalMs = 60_000) {
               Date.now() + (adapter.refreshMarginMs || 60000) > account.expiresAt) {
             await refreshAccountToken(name, account._index, adapter, account);
           }
+
+          // Flag accounts with no refresh token
+          const hasNoRefresh = !account.refreshToken && account.expiresAt;
+          if (hasNoRefresh !== !!account.noRefreshToken) {
+            account.noRefreshToken = hasNoRefresh || false;
+            dirty = true;
+          }
+
+          // Check expiry warning (within 30 days)
+          if (account.expiresAt) {
+            const daysLeft = Math.floor((account.expiresAt - Date.now()) / 86400000);
+            const shouldWarn = daysLeft <= 30 && daysLeft > 0;
+            if (shouldWarn !== !!account.expiryWarning) {
+              account.expiryWarning = shouldWarn;
+              dirty = true;
+              if (shouldWarn) {
+                log.warn(`Token expiring soon for ${name} account ${account._index}`, {
+                  daysUntilExpiry: daysLeft, email: account.email,
+                });
+              }
+            }
+          }
+
+          // Periodic health check: validate token still works
+          if (runHealthCheck && !account.needsReauth && adapter.validateToken) {
+            const valid = await adapter.validateToken(account);
+            if (!valid) {
+              account.needsReauth = true;
+              dirty = true;
+              log.warn(`Token validation failed for ${name} account ${account._index}`, {
+                email: account.email,
+              });
+            }
+          }
+
+          if (dirty) await store.writeAccount(name, account._index, account);
         }
       } catch (err) {
         log.error(`Refresh loop error for ${name}`, { error: err.message });
@@ -355,6 +400,9 @@ export async function getAuthStatus(providerName) {
       quotaExhausted: !!a.quotaExhausted,
       quotaResetAt: a.quotaResetAt || null,
       needsReauth: !!a.needsReauth,
+      expiryWarning: !!a.expiryWarning,
+      noRefreshToken: !!a.noRefreshToken,
+      daysUntilExpiry: a.expiresAt ? Math.floor((a.expiresAt - Date.now()) / 86400000) : null,
     })),
   };
 }

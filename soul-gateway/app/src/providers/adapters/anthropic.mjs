@@ -101,29 +101,16 @@ export default {
     }
 
     const tokenRes = await res.json();
+    const accessToken = tokenRes.access_token || tokenRes.key;
 
     let email = tokenRes.email || null;
-
-    // If no email in token response, try userinfo endpoint
-    if (!email && tokenRes.access_token) {
-      try {
-        const infoRes = await fetch('https://api.anthropic.com/v1/oauth/userinfo', {
-          headers: {
-            'Authorization': `Bearer ${tokenRes.access_token}`,
-            ...(this.config.extraTokenHeaders || {}),
-          },
-        });
-        if (infoRes.ok) {
-          const info = await infoRes.json();
-          email = info.email || null;
-        }
-      } catch (err) {
-        log.warn('Failed to fetch Anthropic userinfo', { error: err.message });
-      }
+    // Extract email from account object in token response
+    if (!email && tokenRes.account?.email_address) {
+      email = tokenRes.account.email_address;
     }
 
     return {
-      accessToken: tokenRes.access_token || tokenRes.key,
+      accessToken,
       refreshToken: null, // Anthropic tokens are long-lived (~1 year)
       expiresAt: tokenRes.expires_in ? Date.now() + tokenRes.expires_in * 1000 : Date.now() + 365 * 24 * 60 * 60 * 1000,
       email,
@@ -137,6 +124,28 @@ export default {
       throw new Error('Anthropic token expired — re-authentication required');
     }
     return creds;
+  },
+
+  async validateToken(creds) {
+    try {
+      // Use /v1/messages with a minimal invalid request — a 400 (bad request)
+      // means the token is valid; 401/403 means it's not
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${creds.accessToken}`,
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'oauth-2025-04-20',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1, messages: [] }),
+        signal: AbortSignal.timeout(10000),
+      });
+      // 400 = token works but request is invalid (expected), 401/403 = token dead
+      return res.status !== 401 && res.status !== 403;
+    } catch {
+      return false;
+    }
   },
 
   async getHeaders(creds) {

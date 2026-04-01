@@ -829,10 +829,12 @@
                         <td x-text="a.index" :class="{'font-bold': a.index === authStatus?.activeIndex}"></td>
                         <td x-text="a.email || '(unknown)'"></td>
                         <td class="text-xs" x-text="a.expiresAt ? new Date(a.expiresAt).toLocaleString() : 'n/a'"></td>
-                        <td>
+                        <td class="flex flex-wrap gap-0.5">
                           <span x-show="a.quotaExhausted" class="badge badge-xs badge-error">exhausted</span>
                           <span x-show="a.needsReauth" class="badge badge-xs badge-warning">needs reauth</span>
-                          <span x-show="!a.quotaExhausted && !a.needsReauth" class="badge badge-xs badge-success">ok</span>
+                          <span x-show="a.expiryWarning" class="badge badge-xs badge-warning" x-text="'expires in ' + a.daysUntilExpiry + 'd'"></span>
+                          <span x-show="a.noRefreshToken" class="badge badge-xs badge-warning badge-outline">no refresh token</span>
+                          <span x-show="!a.quotaExhausted && !a.needsReauth && !a.expiryWarning && !a.noRefreshToken" class="badge badge-xs badge-success">ok</span>
                         </td>
                         <td><button class="btn btn-ghost btn-xs text-error" @click="removeAuthAccount(a.index)">Remove</button></td>
                       </tr>

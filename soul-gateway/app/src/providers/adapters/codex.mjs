@@ -116,6 +116,18 @@ export default {
     };
   },
 
+  async validateToken(creds) {
+    try {
+      const res = await fetch('https://api.openai.com/v1/models', {
+        headers: { 'Authorization': `Bearer ${creds.accessToken}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  },
+
   async getHeaders(creds) {
     return {
       'Authorization': `Bearer ${creds.accessToken}`,
