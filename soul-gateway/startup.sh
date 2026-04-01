@@ -21,6 +21,11 @@ fi
 if [ -f "$APP_DIR/package.json" ] && [ ! -d "$APP_DIR/node_modules" ]; then
     cd "$APP_DIR"
     npm install --production
+elif [ -f "$APP_DIR/package.json" ] && [ -d "$APP_DIR/node_modules" ]; then
+    # Force fresh achillesAgentLib on every start (bypass npm cache)
+    cd "$APP_DIR"
+    rm -rf node_modules/achillesAgentLib
+    npm install --production
 fi
 
 # Load encryption key from shared storage if ENCRYPTION_KEY not set
