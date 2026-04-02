@@ -4,8 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { config } from '../config.mjs';
 import { createLogger } from '../utils/logger.mjs';
-import { seedProviders } from './seed-providers.mjs';
-import { buildModelName, stripLegacyPrefix } from '../utils/model-naming.mjs';
+import { buildModelName, buildTierName, stripLegacyPrefix, providerSlug } from '../utils/model-naming.mjs';
 
 const log = createLogger('db');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,9 +56,6 @@ export async function initDb() {
   // Seed default data if tables are empty
   await seedDefaults();
   await seedDefaultTiers();
-
-  // Seed providers from environment variables
-  await seedProviders();
 
   log.info('Database initialization complete');
 }
@@ -178,33 +174,35 @@ async function migrate(p) {
   await p.query(`ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS request_cost NUMERIC DEFAULT 0`);
 
   // Set per-request pricing for copilot models (base: $0.04/premium request)
-  // Handles both legacy names (copilot-*) and new names (axl/copilot/*)
+  // Handles legacy (copilot-*), intermediate (axl/copilot/*), and current (copilot/*) names
   await p.query(`
     UPDATE model_configs SET pricing_type = 'request', request_cost = CASE
       WHEN name IN ('copilot-gpt-4o', 'copilot-gpt-4.1', 'copilot-gpt-5-mini', 'copilot-raptor-mini',
-                    'axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gpt-5-mini', 'axl/copilot/raptor-mini') THEN 0
-      WHEN name LIKE 'copilot-grok%' OR name LIKE 'axl/copilot/grok%' THEN 0.01
+                    'axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gpt-5-mini', 'axl/copilot/raptor-mini',
+                    'copilot/gpt-4o', 'copilot/gpt-4.1', 'copilot/gpt-5-mini', 'copilot/raptor-mini') THEN 0
+      WHEN name LIKE 'copilot-grok%' OR name LIKE 'axl/copilot/grok%' OR name LIKE 'copilot/grok%' THEN 0.01
       WHEN name LIKE 'copilot-%-haiku%' OR name LIKE 'copilot-gemini-%-flash%' OR name LIKE 'copilot-gpt-5.4-mini%'
-        OR name LIKE 'axl/copilot/%-haiku%' OR name LIKE 'axl/copilot/gemini-%-flash%' OR name LIKE 'axl/copilot/gpt-5.4-mini%' THEN 0.0132
-      WHEN name LIKE 'copilot-opus-4%' OR name LIKE 'axl/copilot/opus-4%' THEN 0.12
+        OR name LIKE 'axl/copilot/%-haiku%' OR name LIKE 'axl/copilot/gemini-%-flash%' OR name LIKE 'axl/copilot/gpt-5.4-mini%'
+        OR name LIKE 'copilot/%-haiku%' OR name LIKE 'copilot/gemini-%-flash%' OR name LIKE 'copilot/gpt-5.4-mini%' THEN 0.0132
+      WHEN name LIKE 'copilot-opus-4%' OR name LIKE 'axl/copilot/opus-4%' OR name LIKE 'copilot/opus-4%' THEN 0.12
       ELSE 0.04
     END
-    WHERE (name LIKE 'copilot-%' OR name LIKE 'axl/copilot/%') AND pricing_type = 'token'
+    WHERE (name LIKE 'copilot-%' OR name LIKE 'axl/copilot/%' OR name LIKE 'copilot/%') AND pricing_type = 'token'
   `);
 
   // Set per-request pricing for kiro models (base: $0.04/credit)
-  // Handles both legacy names (kiro-*) and new names (axl/kiro/*)
+  // Handles legacy (kiro-*), intermediate (axl/kiro/*), and current (kiro/*) names
   await p.query(`
     UPDATE model_configs SET pricing_type = 'request', request_cost = CASE
-      WHEN name IN ('kiro-qwen3-coder-next', 'axl/kiro/qwen3-coder-next') THEN 0.002
-      WHEN name IN ('kiro-minimax-m2.1', 'axl/kiro/minimax-m2.1') THEN 0.006
-      WHEN name IN ('kiro-deepseek-3.2', 'kiro-minimax-m2.5', 'axl/kiro/deepseek-3.2', 'axl/kiro/minimax-m2.5') THEN 0.01
-      WHEN name IN ('kiro-claude-haiku-4.5', 'axl/kiro/claude-haiku-4.5') THEN 0.016
-      WHEN name LIKE 'kiro-claude-sonnet%' OR name LIKE 'axl/kiro/claude-sonnet%' THEN 0.052
-      WHEN name LIKE 'kiro-claude-opus%' OR name LIKE 'axl/kiro/claude-opus%' THEN 0.088
+      WHEN name IN ('kiro-qwen3-coder-next', 'axl/kiro/qwen3-coder-next', 'kiro/qwen3-coder-next') THEN 0.002
+      WHEN name IN ('kiro-minimax-m2.1', 'axl/kiro/minimax-m2.1', 'kiro/minimax-m2.1') THEN 0.006
+      WHEN name IN ('kiro-deepseek-3.2', 'kiro-minimax-m2.5', 'axl/kiro/deepseek-3.2', 'axl/kiro/minimax-m2.5', 'kiro/deepseek-3.2', 'kiro/minimax-m2.5') THEN 0.01
+      WHEN name IN ('kiro-claude-haiku-4.5', 'axl/kiro/claude-haiku-4.5', 'kiro/claude-haiku-4.5') THEN 0.016
+      WHEN name LIKE 'kiro-claude-sonnet%' OR name LIKE 'axl/kiro/claude-sonnet%' OR name LIKE 'kiro/claude-sonnet%' THEN 0.052
+      WHEN name LIKE 'kiro-claude-opus%' OR name LIKE 'axl/kiro/claude-opus%' OR name LIKE 'kiro/claude-opus%' THEN 0.088
       ELSE 0.04
     END
-    WHERE (name LIKE 'kiro-%' OR name = 'auto-kiro' OR name LIKE 'axl/kiro/%') AND pricing_type = 'token'
+    WHERE (name LIKE 'kiro-%' OR name = 'auto-kiro' OR name LIKE 'axl/kiro/%' OR name LIKE 'kiro/%') AND pricing_type = 'token'
   `);
 
   // Add billing_type to provider_configs (subscription vs api_key)
@@ -302,16 +300,19 @@ async function migrate(p) {
   // Add middlewares_applied column to call_logs
   await p.query(`ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS middlewares_applied TEXT[] DEFAULT '{}'`);
 
-  // Rename models to axl/<provider>/<model> convention
+  // Rename models from legacy names to slash convention
   await migrateModelNames(p);
+
+  // Flip axl/ prefix: strip from models, add to tiers
+  await migrateNamingConvention(p);
 
   // Seed initial tags for known models
   await seedModelTags(p);
 }
 
 /**
- * Rename existing models to the axl/<provider-slug>/<model> convention.
- * Idempotent: skips models already prefixed with 'axl/'.
+ * Rename legacy models (e.g. copilot-gpt-4o) to the <provider-slug>/<model> convention.
+ * Idempotent: skips models already containing a '/' (already in proper format).
  * Also updates model_refs arrays in tier-type model_configs.
  */
 async function migrateModelNames(p) {
@@ -321,7 +322,7 @@ async function migrateModelNames(p) {
     await client.query(`SET search_path TO ${config.pgSchema}, public`);
 
     const { rows: models } = await client.query(
-      `SELECT id, name, provider_key FROM model_configs WHERE name NOT LIKE 'axl/%' AND provider_key IS NOT NULL`
+      `SELECT id, name, provider_key FROM model_configs WHERE name NOT LIKE '%/%' AND provider_key IS NOT NULL`
     );
     if (models.length === 0) return;
 
@@ -360,7 +361,112 @@ async function migrateModelNames(p) {
       }
     }
 
-    log.info(`Renamed ${renames.length} models to axl/ convention`);
+    log.info(`Renamed ${renames.length} legacy models to slash convention`);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Flip naming convention: strip axl/ from models, add axl/ to tiers.
+ * Idempotent: skips if any tier already has the axl/ prefix.
+ * Also updates model_refs and fallback_model references.
+ */
+async function migrateNamingConvention(p) {
+  const client = await p.connect();
+  try {
+    await client.query(`SET search_path TO ${config.pgSchema}, public`);
+
+    // Check if name renames are needed (Steps 1-2)
+    const { rows: axlTiers } = await client.query(
+      `SELECT id FROM model_configs WHERE type = 'tier' AND name LIKE 'axl/%' LIMIT 1`
+    );
+    const renamesNeeded = axlTiers.length === 0;
+
+    // Steps 1-2: Rename models and tiers (only if not already done)
+    if (renamesNeeded) {
+      // Step 1: Strip axl/ from models
+      const { rows: models } = await client.query(
+        `SELECT id, name FROM model_configs WHERE type = 'model' AND name LIKE 'axl/%'`
+      );
+      for (const m of models) {
+        const newName = m.name.slice(4); // strip 'axl/'
+        try {
+          await client.query(
+            `UPDATE model_configs SET name = $1 WHERE id = $2`,
+            [newName, m.id]
+          );
+        } catch (err) {
+          if (err.code !== '23505') throw err;
+          log.warn(`Skipping model rename ${m.name} -> ${newName}: name conflict`);
+        }
+      }
+
+      // Step 2: Add axl/ to tiers
+      const { rows: tiers } = await client.query(
+        `SELECT id, name FROM model_configs WHERE type = 'tier' AND name NOT LIKE 'axl/%'`
+      );
+      const tierRenames = [];
+      for (const t of tiers) {
+        const newName = `axl/${t.name}`;
+        try {
+          await client.query(
+            `UPDATE model_configs SET name = $1 WHERE id = $2`,
+            [newName, t.id]
+          );
+          tierRenames.push({ oldName: t.name, newName });
+        } catch (err) {
+          if (err.code !== '23505') throw err;
+          log.warn(`Skipping tier rename ${t.name} -> ${newName}: name conflict`);
+        }
+      }
+
+      // Step 2b: Update fallback_model references (tier names changed)
+      if (tierRenames.length > 0) {
+        const { rows: allTiers } = await client.query(
+          `SELECT id, fallback_model FROM model_configs WHERE type = 'tier' AND fallback_model IS NOT NULL`
+        );
+        for (const tier of allTiers) {
+          const rename = tierRenames.find(r => r.oldName === tier.fallback_model);
+          if (rename) {
+            await client.query(
+              'UPDATE model_configs SET fallback_model = $1 WHERE id = $2',
+              [rename.newName, tier.id]
+            );
+          }
+        }
+      }
+
+      log.info(`Naming convention migration: renamed ${models.length} models, ${tiers.length} tiers`);
+    }
+
+    // Step 3: Update model_refs arrays (strip axl/ from model references)
+    // Always runs — catches stale refs even after initial migration
+    // Handles both renamed models and stale refs to models not in the DB
+    {
+      const { rows: allTiers } = await client.query(
+        `SELECT id, model_refs FROM model_configs WHERE type = 'tier'`
+      );
+      for (const tier of allTiers) {
+        let changed = false;
+        const updated = (tier.model_refs || []).map(ref => {
+          // Strip axl/ from any model ref that looks like axl/<provider>/<model>
+          if (ref.startsWith('axl/') && ref.indexOf('/', 4) !== -1) {
+            changed = true;
+            return ref.slice(4);
+          }
+          return ref;
+        });
+        if (changed) {
+          await client.query(
+            'UPDATE model_configs SET model_refs = $1 WHERE id = $2',
+            [updated, tier.id]
+          );
+        }
+      }
+    }
+
+    // (fallback_model updates are handled in Step 2b above)
   } finally {
     client.release();
   }
@@ -378,7 +484,7 @@ async function seedModelTags(p) {
     // More specific patterns first; broader catch-alls at the end.
     const tagRules = [
       // Search models
-      { pattern: 'axl/search/%', tags: ['search'], like: true },
+      { pattern: 'search/%', tags: ['search'], like: true },
       // Code-specialized models (specific first)
       { pattern: '%codex%', tags: ['coding', 'reasoning', 'agentic'], like: true },
       { pattern: '%codestral%', tags: ['coding', 'fast'], like: true },
@@ -483,7 +589,7 @@ async function seedModelTags(p) {
       // Apriel / ServiceNow
       { pattern: '%apriel%', tags: ['chat', 'reasoning'], like: true },
       // Kiro auto-router
-      { pattern: 'axl/kiro/auto', tags: ['agentic'] },
+      { pattern: 'kiro/auto', tags: ['agentic'] },
       // Catch-all: any remaining instruct/chat-tuned model
       { pattern: '%instruct%', tags: ['chat', 'instruction-following'], like: true },
       { pattern: '%-chat%', tags: ['chat'], like: true },
@@ -523,7 +629,7 @@ async function seedModelTags(p) {
     ];
     // Exclude specific models known NOT to support tool calling
     const noToolCalling = [
-      'axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1',
+      'copilot/gpt-4o', 'copilot/gpt-4.1',
     ];
 
     await client.query(`
@@ -589,10 +695,10 @@ async function seedDefaults() {
   if (models.length === 0) {
     log.info('Seeding model configs...');
     const defaultModels = [
-      { name: 'axl/anthropic/claude-opus-4.6', providerKey: 'anthropic', providerModel: 'claude-opus-4-6', upstreamSource: 'anthropic', mode: 'deep', inputPrice: 5, outputPrice: 25 },
-      { name: 'axl/anthropic/claude-sonnet-4.5', providerKey: 'anthropic', providerModel: 'claude-sonnet-4-5', upstreamSource: 'anthropic', mode: 'fast', inputPrice: 3, outputPrice: 15 },
-      { name: 'axl/openai/gpt-5.3-codex', providerKey: 'openai', providerModel: 'gpt-5.3-codex', upstreamSource: 'openai', mode: 'deep', inputPrice: 3, outputPrice: 15 },
-      { name: 'axl/google/gemini-2.5-pro', providerKey: 'google', providerModel: 'gemini-2.5-pro', upstreamSource: 'google', mode: 'deep', inputPrice: 1.25, outputPrice: 10 },
+      { name: 'anthropic/claude-opus-4.6', providerKey: 'anthropic', providerModel: 'claude-opus-4-6', upstreamSource: 'anthropic', mode: 'deep', inputPrice: 5, outputPrice: 25 },
+      { name: 'anthropic/claude-sonnet-4.5', providerKey: 'anthropic', providerModel: 'claude-sonnet-4-5', upstreamSource: 'anthropic', mode: 'fast', inputPrice: 3, outputPrice: 15 },
+      { name: 'openai/gpt-5.3-codex', providerKey: 'openai', providerModel: 'gpt-5.3-codex', upstreamSource: 'openai', mode: 'deep', inputPrice: 3, outputPrice: 15 },
+      { name: 'google/gemini-2.5-pro', providerKey: 'google', providerModel: 'gemini-2.5-pro', upstreamSource: 'google', mode: 'deep', inputPrice: 1.25, outputPrice: 10 },
     ];
     for (const m of defaultModels) {
       await query(`
@@ -610,13 +716,13 @@ async function seedDefaultTiers() {
   if (tiers.length === 0) {
     log.info('Seeding default model tiers...');
     const defaults = [
-      { name: 'fast', display_name: 'Fast', model_refs: ['axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gpt-5-mini', 'axl/kiro/claude-haiku-4.5'], fallback_model: null, sort_order: 10 },
-      { name: 'plan', display_name: 'Plan', model_refs: ['axl/copilot/gpt-4o', 'axl/copilot/gpt-4.1', 'axl/copilot/gemini-3-flash'], fallback_model: 'fast', sort_order: 20 },
-      { name: 'write', display_name: 'Write', model_refs: ['axl/copilot/gemini-3-flash'], fallback_model: 'fast', sort_order: 30 },
-      { name: 'code', display_name: 'Code', model_refs: ['axl/kiro/claude-sonnet-4.5', 'axl/kiro/claude-sonnet-4'], fallback_model: 'code-paid', sort_order: 40 },
-      { name: 'code-paid', display_name: 'Code (Paid)', model_refs: [], fallback_model: 'deep', sort_order: 50 },
-      { name: 'deep', display_name: 'Deep', model_refs: ['axl/copilot/opus-4.6', 'axl/openai/gpt-5.3-codex'], fallback_model: null, sort_order: 60 },
-      { name: 'ultra', display_name: 'Ultra', model_refs: ['axl/copilot/opus-4.6', 'axl/openai/gpt-5.3-codex'], fallback_model: null, sort_order: 70 },
+      { name: 'axl/fast', display_name: 'Fast', model_refs: ['copilot/gpt-4o', 'copilot/gpt-4.1', 'copilot/gpt-5-mini', 'kiro/claude-haiku-4.5'], fallback_model: null, sort_order: 10 },
+      { name: 'axl/plan', display_name: 'Plan', model_refs: ['copilot/gpt-4o', 'copilot/gpt-4.1', 'copilot/gemini-3-flash'], fallback_model: 'axl/fast', sort_order: 20 },
+      { name: 'axl/write', display_name: 'Write', model_refs: ['copilot/gemini-3-flash'], fallback_model: 'axl/fast', sort_order: 30 },
+      { name: 'axl/code', display_name: 'Code', model_refs: ['kiro/claude-sonnet-4.5', 'kiro/claude-sonnet-4'], fallback_model: 'axl/code-paid', sort_order: 40 },
+      { name: 'axl/code-paid', display_name: 'Code (Paid)', model_refs: [], fallback_model: 'axl/deep', sort_order: 50 },
+      { name: 'axl/deep', display_name: 'Deep', model_refs: ['copilot/opus-4.6', 'openai/gpt-5.3-codex'], fallback_model: null, sort_order: 60 },
+      { name: 'axl/ultra', display_name: 'Ultra', model_refs: ['copilot/opus-4.6', 'openai/gpt-5.3-codex'], fallback_model: null, sort_order: 70 },
     ];
     for (const t of defaults) {
       await query(`

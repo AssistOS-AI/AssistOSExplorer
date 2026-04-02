@@ -31,6 +31,15 @@ const PROVIDER_TEMPLATES = {
   custom:     { display_name: 'Custom',              protocol: 'openai',    base_url: '' },
   // Internal providers
   search:     { display_name: 'Web Search (Built-in)', protocol: 'openai',  base_url: '', auth_type: 'internal' },
+  // Search providers
+  tavily:        { display_name: 'Tavily',         protocol: 'openai', base_url: 'https://api.tavily.com/search',                                billing_type: 'search' },
+  brave:         { display_name: 'Brave Search',   protocol: 'openai', base_url: 'https://api.search.brave.com/res/v1/web/search',               billing_type: 'search' },
+  exa:           { display_name: 'Exa',            protocol: 'openai', base_url: 'https://api.exa.ai/search',                                    billing_type: 'search' },
+  serper:        { display_name: 'Serper',          protocol: 'openai', base_url: 'https://google.serper.dev/search',                             billing_type: 'search' },
+  jina:          { display_name: 'Jina',            protocol: 'openai', base_url: 'https://s.jina.ai/',                                           billing_type: 'search' },
+  duckduckgo:    { display_name: 'DuckDuckGo',      protocol: 'openai', base_url: 'https://html.duckduckgo.com/html/',                           billing_type: 'search' },
+  searxng:       { display_name: 'SearXNG',         protocol: 'openai', base_url: '',                                                             billing_type: 'search' },
+  gemini_search: { display_name: 'Gemini Search',   protocol: 'openai', base_url: 'https://generativelanguage.googleapis.com/v1beta/models/',    billing_type: 'search' },
 };
 
 function stripBaseUrl(url) {
@@ -49,10 +58,13 @@ export const handleProviders = {
 
   async create(req, res) {
     const body = await readJsonBody(req);
-    if (!body?.name || !body?.base_url) {
-      return sendError(res, 400, 'name and base_url are required');
+    if (!body?.name) {
+      return sendError(res, 400, 'name is required');
     }
-    if (body.auth_type !== 'managed' && !body.api_key) {
+    if (!body.base_url && body.auth_type !== 'internal' && body.billing_type !== 'search') {
+      return sendError(res, 400, 'base_url is required');
+    }
+    if (body.auth_type !== 'managed' && body.auth_type !== 'internal' && !body.api_key) {
       return sendError(res, 400, 'api_key is required for non-OAuth providers');
     }
     try {
@@ -276,7 +288,6 @@ export const handleProviders = {
       }
 
       // Disable models from this provider that are no longer discovered
-      // Build set of expected names (with axl/ prefix) from discovered raw IDs
       const expectedNames = new Set([...discoveredNames].map(id => buildModelName(provider.name, id)));
       const existingModels = await getModelsByProviderConfigId(provider.id);
       let disabledCount = 0;
@@ -290,7 +301,7 @@ export const handleProviders = {
 
       // Update search tier if it exists (or create it)
       if (synced.length > 0) {
-        const searchTier = await getTierByName('search');
+        const searchTier = await getTierByName('axl/search');
         if (searchTier) {
           // Merge: keep existing models, add new ones
           const tierModels = new Set(searchTier.model_refs || []);
@@ -303,7 +314,7 @@ export const handleProviders = {
           syncLog.info(`Updated search tier with ${tierModels.size} models`);
         } else {
           await createTier({
-            name: 'search',
+            name: 'axl/search',
             display_name: 'Web Search',
             model_refs: synced,
             sort_order: 50,

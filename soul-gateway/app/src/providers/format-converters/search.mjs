@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 const log = createLogger('search-converter');
 
-// ---- Search provider config from env vars ----
+// ---- Search provider config ----
 
 const SEARCH_PROVIDERS = {
   tavily:    { type: 'tavily',    envKey: 'TAVILY_API_KEY',  requiresKey: true  },
@@ -30,13 +30,68 @@ const MODEL_PROVIDER_MAP = {
   'jina-search':       'jina',
 };
 
-function getSearchApiKey(providerType) {
-  const cfg = SEARCH_PROVIDERS[providerType];
-  if (!cfg || !cfg.envKey) return null;
-  return process.env[cfg.envKey] || null;
+// DB-loaded API keys cache (from search_gateway.search_providers and provider_configs)
+let dbKeysLoaded = false;
+const dbKeys = new Map();
+
+async function loadDbKeys() {
+  if (dbKeysLoaded) return;
+  dbKeysLoaded = true;
+  try {
+    const { query } = await import('../../db/init.mjs');
+    const { decrypt } = await import('../../utils/crypto.mjs');
+
+    // Source 1: search_gateway schema (same PostgreSQL instance)
+    try {
+      const { rows } = await query(
+        `SELECT provider_type, encrypted_api_key FROM search_gateway.search_providers WHERE is_enabled = true AND encrypted_api_key IS NOT NULL`
+      ).catch(() => ({ rows: [] }));
+      for (const row of rows) {
+        try {
+          const key = decrypt(row.encrypted_api_key);
+          if (key) dbKeys.set(row.provider_type, key);
+        } catch {}
+      }
+    } catch {
+      // search_gateway schema may not exist — that's fine
+    }
+
+    // Source 2: provider_configs (search providers added via dashboard UI)
+    try {
+      const { rows } = await query(
+        `SELECT name, encrypted_api_key FROM provider_configs WHERE encrypted_api_key IS NOT NULL AND billing_type = 'search'`
+      ).catch(() => ({ rows: [] }));
+      for (const row of rows) {
+        if (dbKeys.has(row.name)) continue; // search_gateway takes priority
+        try {
+          const key = decrypt(row.encrypted_api_key);
+          if (key) dbKeys.set(row.name, key);
+        } catch {}
+      }
+    } catch {}
+
+    if (dbKeys.size > 0) {
+      log.info(`Loaded ${dbKeys.size} search API keys from DB`);
+    }
+  } catch {
+    // DB may not be ready yet — that's fine
+  }
 }
 
-function getEnabledProviders() {
+function getSearchApiKey(providerType) {
+  const cfg = SEARCH_PROVIDERS[providerType];
+  if (!cfg) return null;
+  // First check env var
+  if (cfg.envKey) {
+    const envKey = process.env[cfg.envKey];
+    if (envKey) return envKey;
+  }
+  // Fall back to DB-loaded key
+  return dbKeys.get(providerType) || null;
+}
+
+async function getEnabledProviders() {
+  await loadDbKeys();
   const enabled = [];
   for (const [name, cfg] of Object.entries(SEARCH_PROVIDERS)) {
     if (cfg.requiresKey) {
@@ -124,7 +179,7 @@ async function* deepResearch(messages, signal) {
     return;
   }
 
-  const providers = getEnabledProviders();
+  const providers = await getEnabledProviders();
   if (providers.length === 0) {
     yield { type: 'text_delta', text: 'No search providers configured.' };
     yield { type: 'done', fullText: 'No search providers configured.', toolCalls: null, usage: null, stopReason: 'stop' };
@@ -181,6 +236,7 @@ async function* deepResearch(messages, signal) {
 // ---- Single provider search ----
 
 async function* singleSearch(providerType, messages, signal) {
+  await loadDbKeys();
   const { query, params } = extractQuery(messages);
   if (!query) {
     yield { type: 'text_delta', text: 'No search query found in messages.' };

@@ -707,11 +707,11 @@
                   <span class="label-text-alt text-info">After creating, use "Manage" button to add OAuth accounts</span>
                 </label>
               </div>
-              <div class="form-control">
+              <div class="form-control" x-show="form.auth_type !== 'internal' && form.billing_type !== 'search'">
                 <label class="label"><span class="label-text">Base URL</span></label>
                 <input type="text" class="input input-bordered font-mono text-sm" x-model="form.base_url" placeholder="https://api.example.com/v1/chat/completions">
               </div>
-              <div class="form-control" x-show="form.auth_type !== 'managed'">
+              <div class="form-control" x-show="form.auth_type !== 'managed' && form.auth_type !== 'internal'">
                 <label class="label"><span class="label-text">API Key</span></label>
                 <input type="password" class="input input-bordered font-mono text-sm" x-model="form.api_key" placeholder="sk-...">
               </div>
@@ -942,7 +942,7 @@
                 <tbody>
                   <template x-for="m in filteredModels" :key="m.id">
                     <tr :class="{'opacity-40': !m.is_enabled, 'hover cursor-pointer': true}" @click="editModel(m)">
-                      <td class="font-mono text-sm" x-text="_displayName(m.name)" :title="m.name"></td>
+                      <td class="font-mono text-sm" x-text="m.name" :title="m.name"></td>
                       <td class="text-xs">
                         <template x-if="m.billing_types">
                           <div class="flex flex-wrap gap-0.5">
@@ -1216,7 +1216,7 @@
                 <tbody>
                   <template x-for="t in tiers" :key="t.id">
                     <tr :class="{'opacity-40': !t.is_enabled}">
-                      <td x-text="t.name" class="font-mono font-bold"></td>
+                      <td x-text="_displayName(t.name)" class="font-mono font-bold"></td>
                       <td x-text="t.display_name || '-'"></td>
                       <td class="max-w-xs">
                         <div class="flex flex-wrap gap-1">
@@ -1226,7 +1226,7 @@
                           <span x-show="!t.model_refs || t.model_refs.length === 0" class="text-xs opacity-50">empty</span>
                         </div>
                       </td>
-                      <td><span x-text="t.fallback_model || '-'" class="font-mono text-xs"></span></td>
+                      <td><span x-text="t.fallback_model ? _displayName(t.fallback_model) : '-'" class="font-mono text-xs"></span></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="t.is_enabled" @change="toggleTier(t)"></td>
                       <td class="flex gap-1">
                         <button class="btn btn-ghost btn-xs" @click="editTier(t)">Edit</button>

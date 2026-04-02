@@ -1,8 +1,11 @@
 /**
- * Model naming convention: axl/<provider-slug>/<model>
+ * Model naming convention:
+ *   Models: <provider-slug>/<model>   e.g. copilot/gpt-4o
+ *   Tiers:  axl/<tier-name>           e.g. axl/fast
  *
- * All models in Soul Gateway follow this convention so consumers
- * can immediately tell which upstream provider a model routes through.
+ * Models use a bare provider-slug prefix so consumers can immediately
+ * tell which upstream provider a model routes through.  Tiers use the
+ * axl/ prefix to mark them as Soul Gateway abstraction-layer names.
  *
  * NOTE: The provider slug map is duplicated in app/src/public/js/app.mjs
  * for the dashboard client. Keep both in sync when adding new slugs.
@@ -22,11 +25,18 @@ export function providerSlug(providerKey) {
 }
 
 /**
- * Build a canonical model name: axl/<slug>/<providerModel>
+ * Build a canonical model name: <slug>/<providerModel>
  */
 export function buildModelName(providerKey, providerModel) {
   const slug = providerSlug(providerKey);
-  return `axl/${slug}/${providerModel}`;
+  return `${slug}/${providerModel}`;
+}
+
+/**
+ * Build a canonical tier name: axl/<tierSlug>
+ */
+export function buildTierName(tierSlug) {
+  return `axl/${tierSlug}`;
 }
 
 /**

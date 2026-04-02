@@ -77,6 +77,7 @@ async function resolveFromTier(tierName, visited = new Set()) {
  * Resolve the requested model to a provider/model pair.
  * 1. Looks up model_configs by name
  * 2. If not found, looks up model_tiers by name and picks the first enabled model
+ * 3. Backward compat: tries stripping/adding axl/ prefix for old-style names
  * Returns: { resolvedModel, providerKey, providerModel, mode, inputPrice, outputPrice, maxConcurrency }
  */
 export async function resolveModel(requestedModel) {
@@ -98,6 +99,24 @@ export async function resolveModel(requestedModel) {
   // 3. Handle disabled tier
   if (modelConfig && modelConfig.type === 'tier' && !modelConfig.is_enabled) {
     throw new ModelNotFoundError(`${requestedModel} (disabled)`);
+  }
+
+  // 4. Backward compat: old axl/<provider>/<model> → try <provider>/<model>
+  if (requestedModel.startsWith('axl/')) {
+    const stripped = requestedModel.slice(4);
+    const mc = await getModelByName(stripped);
+    if (mc && mc.type !== 'tier' && mc.is_enabled) {
+      return buildModelInfo(requestedModel, mc, null);
+    }
+  }
+
+  // 5. Backward compat: old plain tier name → try axl/<name>
+  if (!requestedModel.includes('/')) {
+    const prefixed = `axl/${requestedModel}`;
+    const tierResolved = await resolveFromTier(prefixed);
+    if (tierResolved) {
+      return buildModelInfo(requestedModel, tierResolved.modelConfig, tierResolved.tier);
+    }
   }
 
   throw new ModelNotFoundError(requestedModel);

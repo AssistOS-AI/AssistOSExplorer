@@ -1,7 +1,7 @@
 // ---- Model naming convention ----
 const _SLUG_MAP = { axiologic_kiro: 'kiro', search_gateway: 'search' };
 function _providerSlug(providerKey) { return _SLUG_MAP[providerKey] || providerKey; }
-function _buildModelName(providerKey, providerModel) { return `axl/${_providerSlug(providerKey)}/${providerModel}`; }
+function _buildModelName(providerKey, providerModel) { return `${_providerSlug(providerKey)}/${providerModel}`; }
 function _displayName(name) { return name?.startsWith('axl/') ? name.slice(4) : name; }
 
 // ---- Helpers ----
@@ -269,7 +269,7 @@ function providersPage() {
       if (!this.discoverProvider) return;
       const slug = _providerSlug(this.discoverProvider.name);
       await api.post('/api/v1/models', {
-        name: `axl/${slug}/${model.id}`,
+        name: `${slug}/${model.id}`,
         provider_key: this.discoverProvider.name,
         provider_model: model.id,
         provider_config_id: this.discoverProvider.id,
