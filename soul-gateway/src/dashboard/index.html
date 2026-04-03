@@ -1,0 +1,1789 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soul Gateway</title>
+  <base href="/management/">
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body class="min-h-screen bg-base-200">
+  <div x-data="app()" x-init="init()">
+
+    <!-- Login Screen -->
+    <template x-if="!authenticated">
+      <div class="flex items-center justify-center min-h-screen">
+        <div x-data="loginForm()" class="card bg-base-100 shadow-xl w-96">
+          <div class="card-body">
+            <h2 class="card-title justify-center text-2xl mb-4">Soul Gateway</h2>
+            <div class="form-control">
+              <label class="label"><span class="label-text">Password</span></label>
+              <input type="password" class="input input-bordered" x-model="password"
+                     @keydown.enter="login()" placeholder="Enter dashboard password" autofocus>
+            </div>
+            <div x-show="error" class="alert alert-error mt-2 text-sm">
+              <span x-text="error"></span>
+            </div>
+            <div class="form-control mt-4">
+              <button class="btn btn-primary" @click="login()" :disabled="loading">
+                <span x-show="!loading">Login</span>
+                <span x-show="loading" class="loading loading-spinner loading-sm"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Authenticated Dashboard -->
+    <template x-if="authenticated">
+      <div>
+    <!-- Navbar -->
+    <div class="navbar bg-base-100 shadow-lg">
+      <div class="navbar-start">
+        <div class="dropdown">
+          <label tabindex="0" class="btn btn-ghost lg:hidden">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h8m-8 6h16" /></svg>
+          </label>
+          <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-100 rounded-box w-52">
+            <template x-for="p in pages" :key="p.id">
+              <li><a :class="{'active': page === p.id}" @click="navigate(p.id)" x-text="p.label"></a></li>
+            </template>
+          </ul>
+        </div>
+        <a class="btn btn-ghost text-xl" @click="navigate('providers')">Soul Gateway</a>
+      </div>
+      <div class="navbar-center hidden lg:flex">
+        <ul class="menu menu-horizontal px-1">
+          <template x-for="p in pages" :key="p.id">
+            <li><a :class="{'active': page === p.id}" @click="navigate(p.id)" x-text="p.label"></a></li>
+          </template>
+        </ul>
+      </div>
+      <div class="navbar-end">
+        <div class="flex items-center gap-2">
+          <div class="badge badge-sm" :class="wsConnected ? 'badge-success' : 'badge-error'" x-text="wsConnected ? 'Live' : 'Offline'"></div>
+          <div class="text-xs opacity-50" x-show="streamMode" x-text="streamMode === 'ws' ? 'WS' : 'SSE'"></div>
+          <button class="btn btn-ghost btn-xs" @click="logout()">Logout</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main content -->
+    <div class="container mx-auto p-4">
+      <!-- Logs Page -->
+      <div x-show="page === 'logs'" x-cloak>
+        <div x-data="logsPage()" x-init="init()">
+          <div class="flex gap-4 h-[calc(100vh-10rem)]">
+            <!-- Keys Panel -->
+            <div class="w-64 flex-shrink-0 flex flex-col">
+              <div class="card bg-base-100 shadow flex-1 overflow-y-auto">
+                <div class="p-2 text-sm">
+                  <template x-for="key in filteredKeys()" :key="key.api_key_id">
+                    <div class="flex items-center gap-2 cursor-pointer hover:bg-base-200 px-2 py-1.5 rounded"
+                         :class="{'bg-primary/20': selectedKey?.api_key_id === key.api_key_id}"
+                         @click="selectKey(key)">
+                      <div class="flex-1 min-w-0">
+                        <div class="font-medium text-xs truncate" x-text="key.key_label || key.key_hint || key.api_key_id?.slice(0,8)"></div>
+                        <div class="text-xs opacity-40 font-mono" x-text="key.key_hint || ''"></div>
+                      </div>
+                      <span class="badge badge-ghost badge-xs" x-text="Number(key.request_count).toLocaleString()"></span>
+                    </div>
+                  </template>
+                  <div x-show="filteredKeys().length === 0" class="text-center opacity-50 py-4">No data</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Log Detail Panel -->
+            <div class="flex-1 flex flex-col">
+              <div class="card bg-base-100 shadow flex-1 overflow-hidden">
+                <div class="card-body p-0 flex flex-col h-full">
+                  <!-- Header: search + time filter -->
+                  <div class="px-4 py-2 border-b border-base-300 flex items-center gap-2 flex-wrap">
+                    <input type="text" class="input input-bordered input-xs w-48" placeholder="Search model, agent, content..." x-model="keyword" @keydown.enter="onSearch()" @input="if (!keyword.trim()) onSearch()" @change="onSearch()">
+                    <span class="text-xs opacity-50" x-text="logsTotal + ' requests'"></span>
+                    <div class="flex-1"></div>
+                    <!-- Time range -->
+                    <div class="join">
+                      <button class="join-item btn btn-xs" :class="timeRange === 'day' ? 'btn-primary' : ''" @click="timeRange = 'day'; onTimeChange()">Day</button>
+                      <button class="join-item btn btn-xs" :class="timeRange === 'week' ? 'btn-primary' : ''" @click="timeRange = 'week'; onTimeChange()">Week</button>
+                      <button class="join-item btn btn-xs" :class="timeRange === 'month' ? 'btn-primary' : ''" @click="timeRange = 'month'; onTimeChange()">Month</button>
+                      <button class="join-item btn btn-xs" :class="timeRange === 'custom' ? 'btn-primary' : ''" @click="timeRange = 'custom'">Custom</button>
+                    </div>
+                    <template x-if="timeRange === 'custom'">
+                      <div class="flex gap-1 items-center">
+                        <input type="date" class="input input-bordered input-xs" x-model="customFrom" @change="onTimeChange()">
+                        <span class="text-xs">to</span>
+                        <input type="date" class="input input-bordered input-xs" x-model="customTo" @change="onTimeChange()">
+                      </div>
+                    </template>
+                  </div>
+                  <!-- Active filter chips -->
+                  <div class="px-4 py-1 flex gap-1 flex-wrap" x-show="activeFilters.length > 0">
+                    <template x-for="f in activeFilters" :key="f.key">
+                      <span class="badge badge-info badge-sm gap-1">
+                        <span x-text="f.label"></span>
+                        <button class="text-xs font-bold" @click="removeFilter(f.key)">&times;</button>
+                      </span>
+                    </template>
+                  </div>
+                  <div class="overflow-auto flex-1">
+                    <table class="table table-xs table-zebra">
+                      <thead class="sticky top-0 bg-base-100 z-10"><tr><th colspan="10" class="p-0">
+                        <div class="flex items-center px-3 py-2">
+                          <div class="w-5"></div>
+                          <div class="flex-1 flex items-center gap-0">
+                            <div class="resizable-col text-xs cursor-pointer select-none flex items-center gap-1" :style="{width: cw('time')}" @click="setSort('started_at')">Time <span x-show="sortCol === 'started_at'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('time', $event)"></div></div>
+                            <div class="resizable-col text-xs cursor-pointer select-none flex items-center gap-1" :style="{width: cw('model')}" @click="setSort('resolved_model')">Model <span x-show="sortCol === 'resolved_model'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('model', $event)"></div></div>
+                            <div class="resizable-col text-xs flex items-center" :style="{width: cw('agent')}">Agent<div class="col-resize-handle" @mousedown="startResize('agent', $event)"></div></div>
+                            <div class="resizable-col text-xs flex items-center" :style="{width: cw('session')}">Session<div class="col-resize-handle" @mousedown="startResize('session', $event)"></div></div>
+                            <div class="resizable-col text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" :style="{width: cw('latency')}" @click="setSort('latency_ms')">Latency <span x-show="sortCol === 'latency_ms'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('latency', $event)"></div></div>
+                            <div class="resizable-col text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" :style="{width: cw('tokens')}" @click="setSort('total_tokens')">Tokens <span x-show="sortCol === 'total_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('tokens', $event)"></div></div>
+                            <div class="resizable-col text-right text-xs cursor-pointer select-none flex items-center justify-end gap-1" :style="{width: cw('cost')}" @click="setSort('total_cost')">Cost <span x-show="sortCol === 'total_cost'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span><div class="col-resize-handle" @mousedown="startResize('cost', $event)"></div></div>
+                            <div class="resizable-col text-xs text-center flex items-center justify-center" :style="{width: cw('cache')}">Cache<div class="col-resize-handle" @mousedown="startResize('cache', $event)"></div></div>
+                            <div class="text-xs pl-2" :style="{width: cw('status')}">Status</div>
+                          </div>
+                        </div>
+                      </th></tr></thead>
+                      <tbody>
+                        <template x-for="log in selectedLogs" :key="log.id">
+                          <tr>
+                            <td colspan="10" class="p-0">
+                              <div class="flex items-center cursor-pointer hover:bg-base-200 px-3 py-1.5" @click="toggleDetail(log)">
+                                <div class="w-5"><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
+                                <div class="flex-1 flex items-center gap-0">
+                                  <div class="text-xs truncate flex-shrink-0" :style="{width: cw('time')}" x-text="formatTime(log.started_at)"></div>
+                                  <div class="font-mono text-xs truncate flex-shrink-0" :style="{width: cw('model')}" x-text="log.resolved_model || log.requested_model || '-'"></div>
+                                  <div class="text-xs truncate flex-shrink-0 cursor-pointer hover:underline" :style="{width: cw('agent')}" x-text="log.agent_name || '-'" @click.stop="log.agent_name && addFilter('agent_name', log.agent_name)"></div>
+                                  <div class="text-xs font-mono opacity-50 truncate flex-shrink-0 cursor-pointer hover:underline" :style="{width: cw('session')}" x-text="log.session_id ? log.session_id.slice(0,8) : '-'" @click.stop="log.session_id && addFilter('session_id', log.session_id)"></div>
+                                  <div class="text-right text-xs flex-shrink-0" :style="{width: cw('latency')}" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
+                                  <div class="text-right text-xs flex-shrink-0" :style="{width: cw('tokens')}" x-text="formatTokens(log.total_tokens)"></div>
+                                  <div class="text-right text-xs flex-shrink-0" :style="{width: cw('cost')}" x-text="formatCost(log.total_cost)"></div>
+                                  <div class="text-center flex-shrink-0 cursor-pointer" :style="{width: cw('cache')}" @click.stop="addFilter('cache_hit', !!log.cache_hit)"><span class="badge badge-xs" :class="log.cache_hit ? 'badge-success' : 'badge-ghost'" x-text="log.cache_hit ? 'HIT' : 'MISS'"></span></div>
+                                  <div class="pl-2 flex-shrink-0" :style="{width: cw('status')}">
+                                    <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
+                                    <span x-show="!log.error_type && log.status_code === 200" class="badge badge-success badge-xs">OK</span>
+                                  </div>
+                                </div>
+                              </div>
+                              <!-- Expanded Detail -->
+                              <div x-show="expandedDetail === log.id" x-transition class="px-8 py-4 bg-base-200 border-t border-base-300">
+                                <template x-if="log._detail">
+                                  <div class="flex flex-col gap-4">
+                                    <div><h4 class="font-bold mb-2 text-xs">Request Messages</h4>
+                                      <div class="flex flex-col gap-2 max-h-96 overflow-auto">
+                                        <template x-for="(msg, mi) in formatMessages(log._detail.request_messages)" :key="mi">
+                                          <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+                                            <div class="mb-1"><span class="badge badge-sm" :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'" x-text="msg.role"></span></div>
+                                            <template x-if="!msg.isLong"><div class="sg-md text-xs" x-html="msg.html"></div></template>
+                                            <template x-if="msg.isLong"><div><div x-show="!msg._expanded" class="text-xs opacity-70" x-text="msg.raw.slice(0, 200) + '...'"></div><div x-show="msg._expanded" class="sg-md text-xs" x-html="msg.html"></div><button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"></button></div></template>
+                                          </div>
+                                        </template>
+                                      </div>
+                                    </div>
+                                    <div><h4 class="font-bold mb-2 text-xs">Response</h4><div class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3" x-html="renderContent(log._detail.response_content) || '(empty)'"></div></div>
+                                    <div>
+                                      <div class="stats stats-horizontal shadow w-full text-xs">
+                                        <div class="stat py-2"><div class="stat-title text-xs">Input Tokens</div><div class="stat-value text-sm" x-text="log._detail.prompt_tokens || 0"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Output Tokens</div><div class="stat-value text-sm" x-text="log._detail.completion_tokens || 0"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">TTFB</div><div class="stat-value text-sm" x-text="(log._detail.ttfb_ms || 0) + 'ms'"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Retries</div><div class="stat-value text-sm" x-text="log._detail.retry_count || 0"></div></div>
+                                        <div class="stat py-2"><div class="stat-title text-xs">Finish Reason</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </template>
+                                <template x-if="!log._detail"><span class="loading loading-spinner loading-sm"></span></template>
+                              </div>
+                            </td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                  <!-- Pagination -->
+                  <div class="flex justify-between items-center px-4 py-2 border-t border-base-300" x-show="logsTotal > logsLimit">
+                    <div class="text-xs" x-text="'Showing ' + (logsOffset+1) + '-' + Math.min(logsOffset+logsLimit, logsTotal) + ' of ' + logsTotal"></div>
+                    <div class="join">
+                      <button class="join-item btn btn-xs" :disabled="logsOffset === 0" @click="logsOffset -= logsLimit; loadLogs()">Prev</button>
+                      <button class="join-item btn btn-xs" :disabled="logsOffset + logsLimit >= logsTotal" @click="logsOffset += logsLimit; loadLogs()">Next</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Activity Page (Per-Key) -->
+      <div x-show="page === 'activity'" x-cloak>
+        <div x-data="activityPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Key Activity</h2>
+            <div class="flex gap-2 items-center">
+              <div class="join">
+                <button class="join-item btn btn-xs" :class="timeRange === 'day' ? 'btn-primary' : ''" @click="timeRange = 'day'; onTimeChange()">Day</button>
+                <button class="join-item btn btn-xs" :class="timeRange === 'week' ? 'btn-primary' : ''" @click="timeRange = 'week'; onTimeChange()">Week</button>
+                <button class="join-item btn btn-xs" :class="timeRange === 'month' ? 'btn-primary' : ''" @click="timeRange = 'month'; onTimeChange()">Month</button>
+                <button class="join-item btn btn-xs" :class="timeRange === 'custom' ? 'btn-primary' : ''" @click="timeRange = 'custom'">Custom</button>
+              </div>
+              <template x-if="timeRange === 'custom'">
+                <div class="flex gap-1 items-center">
+                  <input type="date" class="input input-bordered input-xs" x-model="customFrom" @change="onTimeChange()">
+                  <span class="text-xs">to</span>
+                  <input type="date" class="input input-bordered input-xs" x-model="customTo" @change="onTimeChange()">
+                </div>
+              </template>
+            </div>
+          </div>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <template x-for="k in keyData" :key="k.api_key_id">
+                <div class="border-b border-base-300 last:border-b-0">
+                  <!-- Key summary row -->
+                  <div class="flex items-center cursor-pointer hover:bg-base-200 px-4 py-3 gap-3" @click="toggleKey(k)">
+                    <svg :class="{'rotate-90': expandedKey === k.api_key_id}" class="w-4 h-4 transition-transform flex-shrink-0 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2">
+                        <span class="font-medium truncate" x-text="k.key_label || 'Unnamed Key'"></span>
+                        <span class="font-mono text-xs opacity-40" x-text="k.key_hint"></span>
+                        <span class="badge badge-ghost badge-xs" x-text="k.key_hint"></span>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-6 text-sm flex-shrink-0">
+                      <div class="text-right"><div class="text-xs opacity-50">Requests</div><div class="font-medium" x-text="k.request_count.toLocaleString()"></div></div>
+                      <div class="text-right"><div class="text-xs opacity-50">Cost</div><div class="font-mono font-medium" x-text="formatCost(k.total_cost)"></div></div>
+                      <div class="text-right w-20" x-show="k.error_count > 0"><div class="text-xs opacity-50">Errors</div><div class="text-error font-medium" x-text="k.error_count"></div></div>
+                      <div class="w-28">
+                        <template x-if="budgetPct(k) != null">
+                          <div>
+                            <div class="text-xs opacity-50 mb-0.5">Budget</div>
+                            <div class="flex items-center gap-1">
+                              <progress class="progress progress-sm flex-1" :class="budgetPct(k) >= 90 ? 'progress-error' : budgetPct(k) >= 70 ? 'progress-warning' : 'progress-success'" :value="budgetPct(k)" max="100"></progress>
+                              <span class="text-xs font-mono" x-text="budgetPct(k).toFixed(0) + '%'"></span>
+                            </div>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- Expanded: request logs for this key -->
+                  <div x-show="expandedKey === k.api_key_id" x-transition class="border-t border-base-300 bg-base-200/30">
+                    <div class="overflow-x-auto">
+                      <table class="table table-xs">
+                        <thead><tr>
+                          <th class="w-5"></th>
+                          <th class="w-40 cursor-pointer select-none" @click="setSort('started_at')"><span class="flex items-center gap-1">Time <span x-show="sortCol === 'started_at'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-36 cursor-pointer select-none" @click="setSort('resolved_model')"><span class="flex items-center gap-1">Model <span x-show="sortCol === 'resolved_model'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-16">Stream</th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('latency_ms')"><span class="flex items-center justify-end gap-1">Latency <span x-show="sortCol === 'latency_ms'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('prompt_tokens')"><span class="flex items-center justify-end gap-1">Input <span x-show="sortCol === 'prompt_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('completion_tokens')"><span class="flex items-center justify-end gap-1">Output <span x-show="sortCol === 'completion_tokens'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-24 text-right cursor-pointer select-none" @click="setSort('total_cost')"><span class="flex items-center justify-end gap-1">Cost <span x-show="sortCol === 'total_cost'" x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'" class="text-primary text-[10px]"></span></span></th>
+                          <th class="w-20">Status</th>
+                        </tr></thead>
+                        <tbody>
+                          <template x-for="log in keyLogs" :key="log.id">
+                            <tr class="cursor-pointer hover:bg-base-200" @click="toggleDetail(log)">
+                              <td><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></td>
+                              <td class="text-xs" x-text="formatTime(log.started_at)"></td>
+                              <td class="font-mono text-xs" x-text="log.resolved_model || log.requested_model || '-'"></td>
+                              <td><span class="badge badge-xs" :class="log.is_streaming ? 'badge-info' : 'badge-ghost'" x-text="log.is_streaming ? 'SSE' : 'sync'"></span></td>
+                              <td class="text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></td>
+                              <td class="text-right text-xs" x-text="formatTokens(log.prompt_tokens)"></td>
+                              <td class="text-right text-xs" x-text="formatTokens(log.completion_tokens)"></td>
+                              <td class="text-right text-xs font-mono" x-text="formatCost(log.total_cost)"></td>
+                              <td>
+                                <span x-show="log.error_type" class="badge badge-error badge-xs" x-text="log.error_type"></span>
+                                <span x-show="!log.error_type && log.status_code === 200" class="badge badge-success badge-xs">OK</span>
+                                <span x-show="!log.error_type && log.status_code && log.status_code !== 200" class="badge badge-warning badge-xs" x-text="log.status_code"></span>
+                              </td>
+                            </tr>
+                            <!-- Expanded log detail -->
+                            <template x-if="expandedDetail === log.id">
+                              <tr>
+                                <td colspan="9" class="p-0">
+                                  <div class="px-8 py-4 bg-base-200 border-t border-base-300">
+                                    <template x-if="log._detail">
+                                      <div class="flex flex-col gap-4">
+                                        <div>
+                                          <h4 class="font-bold mb-2 text-xs">Request Messages</h4>
+                                          <div class="flex flex-col gap-2 max-h-96 overflow-auto">
+                                            <template x-for="(msg, mi) in formatMessages(log._detail.request_messages)" :key="mi">
+                                              <div class="rounded-lg border border-base-300 bg-base-100 p-3">
+                                                <div class="mb-1">
+                                                  <span class="badge badge-sm"
+                                                    :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'"
+                                                    x-text="msg.role"></span>
+                                                </div>
+                                                <template x-if="!msg.isLong">
+                                                  <div class="sg-md text-xs" x-html="msg.html"></div>
+                                                </template>
+                                                <template x-if="msg.isLong">
+                                                  <div>
+                                                    <div x-show="!msg._expanded" class="text-xs opacity-70" x-text="msg.raw.slice(0, 200) + '...'"></div>
+                                                    <div x-show="msg._expanded" class="sg-md text-xs" x-html="msg.html"></div>
+                                                    <button class="btn btn-ghost btn-xs mt-1" @click.stop="msg._expanded = !msg._expanded" x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"></button>
+                                                  </div>
+                                                </template>
+                                              </div>
+                                            </template>
+                                          </div>
+                                        </div>
+                                        <div>
+                                          <h4 class="font-bold mb-2 text-xs">Response</h4>
+                                          <div class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3" x-html="renderContent(log._detail.response_content) || '(empty)'"></div>
+                                        </div>
+                                        <div>
+                                          <div class="stats stats-horizontal shadow w-full text-xs">
+                                            <div class="stat py-2"><div class="stat-title text-xs">Agent</div><div class="stat-value text-sm" x-text="log._detail.agent_name || '-'"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">Input Tokens</div><div class="stat-value text-sm" x-text="log._detail.prompt_tokens || 0"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">Output Tokens</div><div class="stat-value text-sm" x-text="log._detail.completion_tokens || 0"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">TTFB</div><div class="stat-value text-sm" x-text="(log._detail.ttfb_ms || 0) + 'ms'"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">Retries</div><div class="stat-value text-sm" x-text="log._detail.retry_count || 0"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">Finish Reason</div><div class="stat-value text-sm" x-text="log._detail.stop_reason || '-'"></div></div>
+                                            <div class="stat py-2"><div class="stat-title text-xs">Cache</div><div class="stat-value text-sm" x-text="log._detail.cache_hit ? 'Hit' : 'Miss'"></div></div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </template>
+                                    <template x-if="!log._detail">
+                                      <span class="loading loading-spinner loading-sm"></span>
+                                    </template>
+                                  </div>
+                                </td>
+                              </tr>
+                            </template>
+                          </template>
+                          <template x-if="keyLogs.length === 0">
+                            <tr><td colspan="9" class="text-center opacity-50 py-4">No requests found</td></tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                    <!-- Pagination -->
+                    <div class="flex justify-between items-center px-4 py-2 border-t border-base-300" x-show="keyLogsTotal > keyLogsLimit">
+                      <div class="text-xs" x-text="'Showing ' + (keyLogsOffset+1) + '-' + Math.min(keyLogsOffset+keyLogsLimit, keyLogsTotal) + ' of ' + keyLogsTotal"></div>
+                      <div class="join">
+                        <button class="join-item btn btn-xs" :disabled="keyLogsOffset === 0" @click="keyLogsOffset -= keyLogsLimit; loadKeyLogs()">Prev</button>
+                        <button class="join-item btn btn-xs" :disabled="keyLogsOffset + keyLogsLimit >= keyLogsTotal" @click="keyLogsOffset += keyLogsLimit; loadKeyLogs()">Next</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div x-show="keyData.length === 0" class="text-center opacity-50 py-8">No key activity data</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Costs Page -->
+      <div x-show="page === 'costs'" x-cloak x-effect="if (page === 'costs') $dispatch('costs-visible')">
+        <div x-data="costsPage()" x-init="init()" @costs-visible.window="$nextTick(() => renderChart())">
+          <!-- Header -->
+          <div class="flex justify-between items-start mb-6">
+            <div>
+              <h2 class="text-xl font-bold">Cost</h2>
+              <p class="text-sm opacity-60">Usage costs broken down by model.</p>
+            </div>
+            <div class="text-right">
+              <div class="text-sm opacity-60" x-text="timeLabel"></div>
+              <div class="text-2xl font-bold font-mono" x-text="'$' + totalCost.toFixed(2)"></div>
+              <div class="text-xs opacity-40" x-text="totalRequests.toLocaleString() + ' requests  ·  ' + totalTokens.toLocaleString() + ' tokens'"></div>
+            </div>
+          </div>
+          <!-- Controls -->
+          <div class="flex items-center gap-3 mb-4">
+            <div class="join">
+              <button class="join-item btn btn-xs" :class="timeRange === 'day' ? 'btn-primary' : ''" @click="timeRange = 'day'; onTimeChange()">Day</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'week' ? 'btn-primary' : ''" @click="timeRange = 'week'; onTimeChange()">Week</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'month' ? 'btn-primary' : ''" @click="timeRange = 'month'; onTimeChange()">Month</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'custom' ? 'btn-primary' : ''" @click="timeRange = 'custom'">Custom</button>
+            </div>
+            <template x-if="timeRange === 'custom'">
+              <div class="flex gap-1 items-center">
+                <input type="date" class="input input-bordered input-xs" x-model="customFrom" @change="onTimeChange()">
+                <span class="text-xs">to</span>
+                <input type="date" class="input input-bordered input-xs" x-model="customTo" @change="onTimeChange()">
+              </div>
+            </template>
+            <select class="select select-bordered select-sm" x-model="filterModel" @change="onFilterChange()">
+              <option value="">All Models</option>
+              <template x-for="m in availableModels" :key="m"><option :value="m" x-text="m"></option></template>
+            </select>
+            <select class="select select-bordered select-sm" x-model="filterKey" @change="onFilterChange()">
+              <option value="">All Keys</option>
+              <template x-for="k in availableKeys" :key="k.id"><option :value="k.id" x-text="k.label || k.key_hint || k.id.slice(0,8)"></option></template>
+            </select>
+          </div>
+          <!-- Chart -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body" style="position:relative; height:280px;">
+              <canvas x-ref="usageChart"></canvas>
+              <div x-show="_dailyData.length === 0" class="text-center opacity-50 py-8">No usage data for this period</div>
+            </div>
+          </div>
+
+          <!-- Model Requests Table -->
+          <h3 class="text-md font-bold mt-6 mb-3">Model Requests</h3>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th></th><th>Model</th><th class="text-right">Total</th><th class="text-right">Non-Cached</th><th class="text-right">Cached</th></tr></thead>
+                <template x-for="row in modelRequestRows" :key="row.model">
+                  <tbody>
+                    <tr class="cursor-pointer hover:bg-base-200" @click="expandedModel = expandedModel === row.model ? null : row.model">
+                      <td class="w-5">
+                        <svg :class="{'rotate-90': expandedModel === row.model}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                      </td>
+                      <td class="font-mono text-sm" x-text="row.model"></td>
+                      <td class="text-right font-mono" x-text="row.total.toLocaleString()"></td>
+                      <td class="text-right font-mono" x-text="row.nonCached.toLocaleString()"></td>
+                      <td class="text-right font-mono" x-text="row.cached.toLocaleString()"></td>
+                    </tr>
+                    <template x-for="k in expandedModel === row.model ? row.keys : []" :key="k.api_key_id">
+                      <tr class="bg-base-200 text-xs">
+                        <td></td>
+                        <td class="pl-8" x-text="k.key_label || k.key_hint || (k.api_key_id ? k.api_key_id.slice(0,8) + '...' : 'unknown')"></td>
+                        <td class="text-right font-mono" x-text="k.total.toLocaleString()"></td>
+                        <td class="text-right font-mono" x-text="k.nonCached.toLocaleString()"></td>
+                        <td class="text-right font-mono" x-text="k.cached.toLocaleString()"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </template>
+                <tbody x-show="modelRequestRows.length === 0">
+                  <tr><td colspan="5" class="text-center opacity-50 py-6">No request data for this period</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Errors Page -->
+      <div x-show="page === 'errors'" x-cloak>
+        <div x-data="errorsPage()" x-init="init()">
+          <!-- Summary Stats -->
+          <div class="stats shadow mb-4 w-full">
+            <div class="stat"><div class="stat-title">Total Requests</div><div class="stat-value text-lg" x-text="summary.total_requests || 0"></div></div>
+            <div class="stat"><div class="stat-title">Errors</div><div class="stat-value text-lg text-error" x-text="summary.error_count || 0"></div></div>
+            <div class="stat"><div class="stat-title">Blocked</div><div class="stat-value text-lg text-warning" x-text="summary.blocked_count || 0"></div></div>
+            <div class="stat"><div class="stat-title">Rate Limited</div><div class="stat-value text-lg text-info" x-text="summary.rate_limited_count || 0"></div></div>
+            <div class="stat"><div class="stat-title">Truncated</div><div class="stat-value text-lg" x-text="summary.truncated_count || 0"></div></div>
+            <div class="stat"><div class="stat-title">Slow</div><div class="stat-value text-lg" x-text="summary.slow_count || 0"></div></div>
+          </div>
+
+          <!-- Filters & Actions -->
+          <div class="flex flex-wrap items-center gap-2 mb-4">
+            <!-- Time range -->
+            <div class="join">
+              <button class="join-item btn btn-xs" :class="timeRange === 'day' ? 'btn-primary' : ''" @click="timeRange = 'day'; onTimeChange()">Day</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'week' ? 'btn-primary' : ''" @click="timeRange = 'week'; onTimeChange()">Week</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'month' ? 'btn-primary' : ''" @click="timeRange = 'month'; onTimeChange()">Month</button>
+              <button class="join-item btn btn-xs" :class="timeRange === 'custom' ? 'btn-primary' : ''" @click="timeRange = 'custom'">Custom</button>
+            </div>
+            <template x-if="timeRange === 'custom'">
+              <div class="flex gap-1 items-center">
+                <input type="date" class="input input-bordered input-xs" x-model="customFrom" @change="onTimeChange()">
+                <span class="text-xs">to</span>
+                <input type="date" class="input input-bordered input-xs" x-model="customTo" @change="onTimeChange()">
+              </div>
+            </template>
+            <!-- Error type badges as quick filters -->
+            <template x-for="b in breakdown" :key="b.error_type">
+              <button class="badge badge-lg cursor-pointer gap-1"
+                      :class="filterType === b.error_type ? 'badge-error' : 'badge-outline badge-error'"
+                      @click="applyFilter(b.error_type)">
+                <span x-text="b.error_type"></span>
+                <span class="font-bold" x-text="b.count"></span>
+              </button>
+            </template>
+            <div class="flex-1"></div>
+            <!-- Model filter -->
+            <select class="select select-bordered select-sm" x-model="filterModel" @change="onFilterChange()">
+              <option value="">All Models</option>
+              <template x-for="m in errorModels" :key="m">
+                <option :value="m" x-text="m"></option>
+              </template>
+            </select>
+            <!-- Trend chart button -->
+            <button class="btn btn-outline btn-sm" @click="openChart()">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
+              Trend
+            </button>
+          </div>
+
+          <!-- Error Logs Table -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0 flex flex-col">
+              <div class="overflow-auto" style="max-height: calc(100vh - 20rem);">
+                <table class="table table-xs table-zebra">
+                  <thead class="sticky top-0 bg-base-100 z-10">
+                    <tr><th colspan="8" class="p-0">
+                      <div class="flex items-center px-3 py-2">
+                        <div class="w-5"></div>
+                        <div class="flex-1 flex items-center gap-0">
+                          <div class="w-40 text-xs">Time</div>
+                          <div class="w-32 text-xs">Error Type</div>
+                          <div class="w-16 text-xs">Status</div>
+                          <div class="w-36 text-xs">Model</div>
+                          <div class="w-28 text-xs">Agent</div>
+                          <div class="w-20 text-right text-xs">Latency</div>
+                          <div class="flex-1 text-xs pl-3">Error Message</div>
+                        </div>
+                      </div>
+                    </th></tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="log in errorLogs" :key="log.id">
+                      <tr>
+                        <td colspan="8" class="p-0">
+                          <div class="flex items-center cursor-pointer hover:bg-base-200 px-3 py-1.5" @click="toggleDetail(log)">
+                            <div class="w-5"><svg :class="{'rotate-90': expandedDetail === log.id}" class="w-3 h-3 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg></div>
+                            <div class="flex-1 flex items-center gap-0">
+                              <div class="w-40 text-xs" x-text="formatTime(log.started_at)"></div>
+                              <div class="w-32"><span class="badge badge-error badge-xs" x-text="log.error_type"></span></div>
+                              <div class="w-16 text-xs font-mono" x-text="log.status_code || '-'"></div>
+                              <div class="w-36 text-xs font-mono truncate" x-text="log.resolved_model || log.requested_model || '-'"></div>
+                              <div class="w-28 text-xs truncate" x-text="log.agent_name || '-'"></div>
+                              <div class="w-20 text-right text-xs" x-text="log.latency_ms ? log.latency_ms + 'ms' : '-'"></div>
+                              <div class="flex-1 text-xs truncate opacity-70 pl-3" x-text="log.error_message || '-'"></div>
+                            </div>
+                          </div>
+                          <!-- Expanded Detail -->
+                          <div x-show="expandedDetail === log.id" x-transition class="px-8 py-4 bg-base-200 border-t border-base-300">
+                            <template x-if="log._detail">
+                              <div class="space-y-3">
+                                <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                                  <div><span class="opacity-50">Key:</span> <span class="font-mono" x-text="log._detail.api_key_id?.slice(0,8) || '-'"></span></div>
+                                  <div><span class="opacity-50">Session:</span> <span class="font-mono" x-text="log._detail.session_id?.slice(0,8) || '-'"></span></div>
+                                  <div><span class="opacity-50">Streaming:</span> <span x-text="log._detail.is_streaming ? 'Yes' : 'No'"></span></div>
+                                  <div><span class="opacity-50">Retries:</span> <span x-text="log._detail.retry_count || 0"></span></div>
+                                  <div><span class="opacity-50">Retry Reason:</span> <span x-text="log._detail.retry_reason || '-'"></span></div>
+                                  <div><span class="opacity-50">TTFB:</span> <span x-text="(log._detail.ttfb_ms || 0) + 'ms'"></span></div>
+                                  <div><span class="opacity-50">Requested Model:</span> <span class="font-mono" x-text="log._detail.requested_model || '-'"></span></div>
+                                </div>
+                                <div x-show="log._detail.error_message" class="alert alert-error text-xs">
+                                  <span x-text="log._detail.error_message"></span>
+                                </div>
+                                <div x-show="log._detail.retries_detail" class="text-xs">
+                                  <h4 class="font-bold mb-1">Retry Details</h4>
+                                  <div class="mockup-code text-xs max-h-32 overflow-auto">
+                                    <pre><code x-text="JSON.stringify(log._detail.retries_detail, null, 2)"></code></pre>
+                                  </div>
+                                </div>
+                                <div class="flex flex-col gap-4">
+                                  <div>
+                                    <h4 class="font-bold mb-1 text-xs">Request Messages</h4>
+                                    <div class="mockup-code text-xs max-h-48 overflow-auto">
+                                      <pre><code x-text="JSON.stringify(log._detail.request_messages, null, 2)"></code></pre>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <h4 class="font-bold mb-1 text-xs">Response</h4>
+                                    <div class="mockup-code text-xs max-h-48 overflow-auto">
+                                      <pre><code x-text="log._detail.response_content || '(empty)'"></code></pre>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </template>
+                            <template x-if="!log._detail">
+                              <span class="loading loading-spinner loading-sm"></span>
+                            </template>
+                          </div>
+                        </td>
+                      </tr>
+                    </template>
+                    <template x-if="errorLogs.length === 0">
+                      <tr><td colspan="8" class="text-center py-8 opacity-50">No errors found</td></tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <!-- Pagination -->
+              <div class="flex justify-between items-center px-4 py-2 border-t border-base-300" x-show="logsTotal > logsLimit">
+                <div class="text-xs" x-text="'Showing ' + (logsOffset+1) + '-' + Math.min(logsOffset+logsLimit, logsTotal) + ' of ' + logsTotal"></div>
+                <div class="join">
+                  <button class="join-item btn btn-xs" :disabled="logsOffset === 0" @click="logsOffset -= logsLimit; loadErrorLogs()">Prev</button>
+                  <button class="join-item btn btn-xs" :disabled="logsOffset + logsLimit >= logsTotal" @click="logsOffset += logsLimit; loadErrorLogs()">Next</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Chart Modal -->
+          <dialog class="modal" :class="{'modal-open': showChart}">
+            <div class="modal-box max-w-3xl">
+              <h3 class="font-bold text-lg mb-4">Error Rates Over Time</h3>
+              <canvas x-ref="errorChart" height="200"></canvas>
+              <div class="modal-action">
+                <button class="btn" @click="closeChart()">Close</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="closeChart()"></div>
+          </dialog>
+        </div>
+      </div>
+
+      <!-- Providers Page -->
+      <div x-show="page === 'providers'" x-cloak>
+        <div x-data="providersPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">LLM Providers</h2>
+            <button class="btn btn-primary btn-sm" @click="openCreate()">Add Provider</button>
+          </div>
+
+          <!-- Test result alert -->
+          <div x-show="testResult" x-transition class="alert mb-4" :class="testResult?.ok ? 'alert-success' : 'alert-error'">
+            <span x-text="testResult?.ok ? (testResult.message || 'Connected — ' + testResult.model_count + ' models available') : 'Connection failed: ' + (testResult?.error || 'Unknown error')"></span>
+            <button class="btn btn-ghost btn-xs" @click="testResult = null">Dismiss</button>
+          </div>
+
+          <!-- Providers table -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Display Name</th><th>Adapter</th><th>Auth Strategy</th><th>Base URL</th><th>Key</th><th>Enabled</th><th>Auth</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="p in providers" :key="p.id">
+                    <tr :class="{'opacity-40': !(p.enabled ?? p.is_enabled)}">
+                      <td class="font-mono font-bold" x-text="p.name"></td>
+                      <td x-text="p.display_name || '-'"></td>
+                      <td><span class="badge badge-ghost badge-sm" x-text="p.adapter_key || p.protocol"></span></td>
+                      <td><span class="badge badge-sm" :class="(p.auth_strategy || p.billing_type) === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="(p.auth_strategy || p.billing_type || 'api_key').replace('_', ' ')"></span></td>
+                      <td class="text-xs font-mono max-w-[300px] truncate" x-text="p.base_url" :title="p.base_url"></td>
+                      <td class="text-xs font-mono opacity-60" x-text="p.key_hint || '-'"></td>
+                      <td><input type="checkbox" class="toggle toggle-sm" :checked="p.enabled ?? p.is_enabled" disabled></td>
+                      <td>
+                        <template x-if="p.auth_type === 'managed'">
+                          <button class="btn btn-xs btn-outline" @click="viewAuth(p)">Manage</button>
+                        </template>
+                        <template x-if="p.auth_type !== 'managed'">
+                          <span class="badge badge-xs badge-ghost">API Key</span>
+                        </template>
+                      </td>
+                      <td>
+                        <div class="flex gap-1">
+                          <button class="btn btn-ghost btn-xs" @click="testConnection(p)" :disabled="testing === p.id">
+                            <span x-show="testing !== p.id">Test</span>
+                            <span x-show="testing === p.id" class="loading loading-spinner loading-xs"></span>
+                          </button>
+                          <button class="btn btn-ghost btn-xs" @click="discoverModels(p)">Models</button>
+                          <button class="btn btn-ghost btn-xs" @click="openComposer(p)">Pipeline</button>
+                          <button class="btn btn-ghost btn-xs" @click="edit(p)">Edit</button>
+                          <button class="btn btn-error btn-xs" @click="remove(p)">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                  <tr x-show="providers.length === 0"><td colspan="9" class="text-center opacity-50 py-6">No providers configured. Click "Add Provider" to get started.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Create Provider Modal -->
+          <dialog class="modal" :class="{'modal-open': showCreate}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg mb-4">Add Provider</h3>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Template</span></label>
+                <select class="select select-bordered" x-model="form.template" @change="onTemplateChange()">
+                  <option value="custom">Custom</option>
+                  <template x-for="[key, tmpl] in Object.entries(templates)" :key="key">
+                    <option :value="key" x-text="tmpl.display_name || key"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Name</span></label>
+                <input type="text" class="input input-bordered" x-model="form.name" placeholder="e.g. nvidia">
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Display Name</span></label>
+                <input type="text" class="input input-bordered" x-model="form.display_name" placeholder="e.g. NVIDIA">
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Provider Mode</span></label>
+                <select class="select select-bordered" x-model="form.provider_mode">
+                  <option value="external_api">External API</option>
+                  <option value="custom">Custom Pipeline</option>
+                </select>
+                <label class="label py-0" x-show="form.provider_mode === 'custom'">
+                  <span class="label-text-alt text-info">After creating, use the "Pipeline" button to compose hooks and executor</span>
+                </label>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div class="form-control">
+                  <label class="label"><span class="label-text">Adapter</span></label>
+                  <select class="select select-bordered" x-model="form.adapter_key">
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="google">Google</option>
+                  </select>
+                </div>
+                <div class="form-control">
+                  <label class="label"><span class="label-text">Auth Strategy</span></label>
+                  <select class="select select-bordered" x-model="form.auth_strategy">
+                    <option value="api_key">API Key</option>
+                    <option value="oauth">OAuth</option>
+                    <option value="subscription">Subscription</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-control" x-show="form.auth_strategy === 'oauth'">
+                <label class="label"><span class="label-text">OAuth Adapter</span></label>
+                <select class="select select-bordered select-sm" x-model="form.oauth_adapter_key">
+                  <option value="">Select...</option>
+                  <template x-for="tpl in oauthAdapterOptions" :key="tpl.key">
+                    <option :value="tpl.key" x-text="tpl.label"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Auth Type</span></label>
+                <select class="select select-bordered" x-model="form.auth_type">
+                  <option value="api_key">API Key (static key)</option>
+                  <option value="managed">OAuth (managed credentials)</option>
+                </select>
+                <label class="label py-0" x-show="form.auth_type === 'managed'">
+                  <span class="label-text-alt text-info">After creating, use "Manage" button to add OAuth accounts</span>
+                </label>
+              </div>
+              <div class="form-control" x-show="form.auth_type !== 'internal' && form.auth_strategy !== 'search'">
+                <label class="label"><span class="label-text">Base URL</span></label>
+                <input type="text" class="input input-bordered font-mono text-sm" x-model="form.base_url" placeholder="https://api.example.com/v1/chat/completions">
+              </div>
+              <div class="form-control" x-show="form.auth_type !== 'managed' && form.auth_type !== 'internal'">
+                <label class="label"><span class="label-text">API Key</span></label>
+                <input type="password" class="input input-bordered font-mono text-sm" x-model="form.api_key" placeholder="sk-...">
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showCreate = false">Cancel</button>
+                <button class="btn btn-primary" @click="create()">Create</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showCreate = false"></div>
+          </dialog>
+
+          <!-- Edit Provider Modal -->
+          <dialog class="modal" :class="{'modal-open': showEdit}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg mb-4">Edit Provider</h3>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Display Name</span></label>
+                <input type="text" class="input input-bordered" x-model="editForm.display_name">
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Adapter</span></label>
+                <select class="select select-bordered" x-model="editForm.adapter_key">
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="google">Google</option>
+                </select>
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Base URL</span></label>
+                <input type="text" class="input input-bordered font-mono text-sm" x-model="editForm.base_url">
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">API Key (leave empty to keep current)</span></label>
+                <input type="password" class="input input-bordered font-mono text-sm" x-model="editForm.api_key" placeholder="Leave empty to keep current key">
+              </div>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Auth Strategy</span></label>
+                <select class="select select-bordered" x-model="editForm.auth_strategy">
+                  <option value="api_key">API Key</option>
+                  <option value="oauth">OAuth</option>
+                  <option value="subscription">Subscription</option>
+                </select>
+              </div>
+              <div class="form-control mt-2">
+                <label class="label cursor-pointer">
+                  <span class="label-text">Enabled</span>
+                  <input type="checkbox" class="toggle" x-model="editForm.enabled">
+                </label>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showEdit = false; editing = null">Cancel</button>
+                <button class="btn btn-primary" @click="saveEdit()">Save</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showEdit = false; editing = null"></div>
+          </dialog>
+
+          <!-- Discover Models Modal -->
+          <dialog class="modal" :class="{'modal-open': showDiscover}">
+            <div class="modal-box max-w-3xl">
+              <h3 class="font-bold text-lg mb-4">Models from <span x-text="discoverProvider?.display_name || discoverProvider?.name || ''"></span></h3>
+              <div x-show="discoveredModels === null" class="text-center py-8">
+                <span class="loading loading-spinner loading-md"></span>
+                <p class="mt-2 opacity-50">Fetching models...</p>
+              </div>
+              <div x-show="discoveredModels !== null && discoveredModels.length === 0" class="text-center py-8">
+                <p class="opacity-50">No models found for this provider. You can add models manually on the Models page.</p>
+              </div>
+              <div x-show="discoveredModels !== null && discoveredModels.length > 0" class="overflow-auto" style="max-height: 60vh;">
+                <table class="table table-xs">
+                  <thead class="sticky top-0 bg-base-100"><tr><th>Model ID</th><th class="text-right">Input $/1M</th><th class="text-right">Output $/1M</th><th>Owned By</th><th></th></tr></thead>
+                  <tbody>
+                    <template x-for="(m, idx) in discoveredModels" :key="idx">
+                      <tr>
+                        <td class="font-mono text-xs" x-text="m.id"></td>
+                        <td class="text-right text-xs" x-text="m.input_price || 0"></td>
+                        <td class="text-right text-xs" x-text="m.output_price || 0"></td>
+                        <td class="text-xs" x-text="m.owned_by || '-'"></td>
+                        <td>
+                          <button class="btn btn-primary btn-xs" @click="addDiscoveredModel(m)" :disabled="m._added" x-text="m._added ? 'Added' : 'Add'"></button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <div class="modal-action">
+                <button class="btn" @click="showDiscover = false; discoverProvider = null">Close</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showDiscover = false; discoverProvider = null"></div>
+          </dialog>
+
+          <!-- Auth Management Modal -->
+          <dialog class="modal" :class="{'modal-open': showAuthModal}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg" x-text="'Auth: ' + (authProvider?.display_name || authProvider?.name || '')"></h3>
+
+              <!-- Status -->
+              <div class="my-3">
+                <span class="badge" :class="{
+                  'badge-success': authStatus?.status === 'active',
+                  'badge-warning': authStatus?.status === 'expiring' || authStatus?.status === 'all_exhausted',
+                  'badge-error': authStatus?.status === 'needs_reauth' || authStatus?.status === 'no_accounts',
+                  'badge-ghost': !authStatus
+                }" x-text="authStatus?.status || 'loading...'"></span>
+              </div>
+
+              <!-- Account List -->
+              <div class="overflow-x-auto" x-show="authStatus?.accounts?.length > 0">
+                <table class="table table-xs">
+                  <thead><tr><th>#</th><th>Email</th><th>Expires</th><th>Quota</th><th></th></tr></thead>
+                  <tbody>
+                    <template x-for="a in (authStatus?.accounts || [])" :key="a.id ?? a.index">
+                      <tr>
+                        <td x-text="a.id ?? a.index" :class="{'font-bold': (a.id ?? a.index) === authStatus?.activeIndex}"></td>
+                        <td x-text="a.email || '(unknown)'"></td>
+                        <td class="text-xs" x-text="a.expiresAt ? new Date(a.expiresAt).toLocaleString() : 'n/a'"></td>
+                        <td class="flex flex-wrap gap-0.5">
+                          <span x-show="a.quotaExhausted" class="badge badge-xs badge-error">exhausted</span>
+                          <span x-show="a.needsReauth" class="badge badge-xs badge-warning">needs reauth</span>
+                          <span x-show="a.expiryWarning" class="badge badge-xs badge-warning" x-text="'expires in ' + a.daysUntilExpiry + 'd'"></span>
+                          <span x-show="a.noRefreshToken" class="badge badge-xs badge-warning badge-outline">no refresh token</span>
+                          <span x-show="!a.quotaExhausted && !a.needsReauth && !a.expiryWarning && !a.noRefreshToken" class="badge badge-xs badge-success">ok</span>
+                        </td>
+                        <td class="flex gap-1">
+                          <button class="btn btn-ghost btn-xs" x-show="a.quotaExhausted" @click="resetAuthQuota(a)">Reset</button>
+                          <button class="btn btn-ghost btn-xs text-error" @click="removeAuthAccount(a)">Remove</button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+              <div x-show="!authStatus?.accounts?.length" class="text-sm opacity-50 py-4 text-center">No accounts configured</div>
+
+              <!-- Auth Flow in progress -->
+              <div x-show="authFlow" class="my-3 space-y-3">
+
+                <!-- Device Flow: show code + verification URL -->
+                <template x-if="authFlow?.type === 'device-flow'">
+                  <div class="card bg-base-200">
+                    <div class="card-body p-4">
+                      <p class="text-sm font-bold mb-2">Device Code: <span class="text-success text-xs font-normal" x-show="authFlow?._copied">Copied!</span></p>
+                      <p class="font-mono text-3xl tracking-widest text-center py-2 cursor-pointer select-all"
+                         x-text="authFlow?.userCode"
+                         x-init="if (authFlow?.userCode) { navigator.clipboard.writeText(authFlow.userCode).then(() => { authFlow._copied = true; setTimeout(() => authFlow._copied = false, 3000); }).catch(() => {}) }"
+                         @click="navigator.clipboard.writeText(authFlow?.userCode); authFlow._copied = true; setTimeout(() => authFlow._copied = false, 2000)"
+                         title="Click to copy"></p>
+                      <p class="text-sm mt-2">Enter this code at:</p>
+                      <div class="bg-base-100 p-2 rounded font-mono text-xs break-all" x-text="authFlow?.verificationUri"></div>
+                      <div class="flex gap-2 mt-2">
+                        <button class="btn btn-sm btn-outline" @click="navigator.clipboard.writeText(authFlow?.verificationUri)">Copy Link</button>
+                        <button class="btn btn-sm btn-primary" @click="window.open(authFlow?.verificationUri, '_blank')">Open Link</button>
+                      </div>
+                      <p x-show="authPolling" class="text-xs opacity-70 mt-2">Waiting for authorization...</p>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- PKCE Flow: show auth URL + callback paste -->
+                <template x-if="authFlow?.type === 'pkce'">
+                  <div class="card bg-base-200">
+                    <div class="card-body p-4">
+                      <p class="text-sm font-bold mb-2">Authorization URL:</p>
+                      <div class="bg-base-100 p-2 rounded font-mono text-xs break-all max-h-20 overflow-y-auto" x-text="authFlow?.authUrl"></div>
+                      <div class="flex gap-2 mt-2">
+                        <button class="btn btn-sm btn-outline" @click="navigator.clipboard.writeText(authFlow?.authUrl)">Copy Link</button>
+                        <button class="btn btn-sm btn-primary" @click="window.open(authFlow?.authUrl, '_blank', 'width=600,height=700')">Open Link</button>
+                      </div>
+
+                      <div class="divider text-xs my-2">After signing in</div>
+
+                      <p class="text-xs opacity-70">After the provider redirects to <code>localhost:...</code>, copy the full URL from the browser and paste it here:</p>
+                      <div class="form-control mt-1">
+                        <label class="label py-1"><span class="label-text text-xs">Callback URL</span></label>
+                        <input type="text" class="input input-bordered input-sm font-mono text-xs"
+                               placeholder="http://localhost:3128/oauth/callback?code=...&state=..." x-model="callbackUrl">
+                      </div>
+                      <button class="btn btn-sm btn-primary mt-2" @click="submitCallbackUrl()" :disabled="!callbackUrl">Submit Callback URL</button>
+                      <p x-show="authPolling" class="text-xs opacity-70 mt-1">Waiting for authentication...</p>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- Error -->
+                <div x-show="authFlow?.error" class="alert alert-error">
+                  <span x-text="typeof authFlow?.error === 'string' ? authFlow.error : JSON.stringify(authFlow?.error)"></span>
+                </div>
+              </div>
+
+              <!-- Actions -->
+              <div class="modal-action">
+                <button class="btn btn-sm btn-primary" @click="addAccount()" :disabled="authPolling">Add Account</button>
+                <button class="btn btn-sm btn-ghost" @click="closeAuthModal()">Close</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="closeAuthModal()"></div>
+          </dialog>
+
+          <!-- Pipeline Composer Modal -->
+          <dialog class="modal" :class="{'modal-open': showComposer}">
+            <div class="modal-box max-w-4xl">
+              <h3 class="font-bold text-lg mb-4">Pipeline Composer <span class="text-sm font-normal opacity-60" x-text="composerProvider?.display_name || composerProvider?.name || ''"></span></h3>
+
+              <!-- Executor selector -->
+              <div class="form-control mb-4">
+                <label class="label"><span class="label-text font-semibold">Executor (terminal backend)</span></label>
+                <select class="select select-bordered" x-model="composerExecutor">
+                  <option value="">Select executor...</option>
+                  <template x-for="exec in availableExecutors" :key="exec.key">
+                    <option :value="exec.key" x-text="(exec.name || exec.key) + ' (' + exec.executorType + ')'"></option>
+                  </template>
+                </select>
+              </div>
+
+              <!-- Phase lanes -->
+              <div class="grid grid-cols-3 gap-4 mb-4">
+                <!-- Request hooks lane -->
+                <div class="card bg-base-200">
+                  <div class="card-body p-3">
+                    <h4 class="card-title text-sm">Request Hooks</h4>
+                    <div class="flex flex-col gap-1 min-h-[60px]">
+                      <template x-for="(hook, i) in composerPipeline.request" :key="hook.id || ('r-' + i)">
+                        <div class="flex items-center gap-1 py-1 bg-base-100 rounded px-2">
+                          <span class="text-xs flex-1 truncate" x-text="hook.hookKey" :title="hook.hookKey"></span>
+                          <button class="btn btn-xs btn-ghost" @click="moveHookUp('request', i)" :disabled="i === 0">&#8593;</button>
+                          <button class="btn btn-xs btn-ghost" @click="moveHookDown('request', i)" :disabled="i === composerPipeline.request.length - 1">&#8595;</button>
+                          <button class="btn btn-xs btn-ghost" @click="openHookSettings('request', i)">&#9881;</button>
+                          <button class="btn btn-xs btn-error btn-ghost" @click="removeHookFromPhase('request', i)">&times;</button>
+                        </div>
+                      </template>
+                      <div x-show="composerPipeline.request.length === 0" class="text-xs opacity-40 text-center py-2">No request hooks</div>
+                    </div>
+                    <select class="select select-bordered select-xs mt-2" @change="addHookToPhase('request', $event.target.value); $event.target.value = ''">
+                      <option value="">+ Add hook...</option>
+                      <template x-for="h in availableProviderHooks.filter(h => h.phases?.includes('request'))" :key="h.key">
+                        <option :value="h.key" x-text="h.name || h.key"></option>
+                      </template>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Stream hooks lane -->
+                <div class="card bg-base-200">
+                  <div class="card-body p-3">
+                    <h4 class="card-title text-sm">Stream Hooks</h4>
+                    <div class="flex flex-col gap-1 min-h-[60px]">
+                      <template x-for="(hook, i) in composerPipeline.stream" :key="hook.id || ('s-' + i)">
+                        <div class="flex items-center gap-1 py-1 bg-base-100 rounded px-2">
+                          <span class="text-xs flex-1 truncate" x-text="hook.hookKey" :title="hook.hookKey"></span>
+                          <button class="btn btn-xs btn-ghost" @click="moveHookUp('stream', i)" :disabled="i === 0">&#8593;</button>
+                          <button class="btn btn-xs btn-ghost" @click="moveHookDown('stream', i)" :disabled="i === composerPipeline.stream.length - 1">&#8595;</button>
+                          <button class="btn btn-xs btn-ghost" @click="openHookSettings('stream', i)">&#9881;</button>
+                          <button class="btn btn-xs btn-error btn-ghost" @click="removeHookFromPhase('stream', i)">&times;</button>
+                        </div>
+                      </template>
+                      <div x-show="composerPipeline.stream.length === 0" class="text-xs opacity-40 text-center py-2">No stream hooks</div>
+                    </div>
+                    <select class="select select-bordered select-xs mt-2" @change="addHookToPhase('stream', $event.target.value); $event.target.value = ''">
+                      <option value="">+ Add hook...</option>
+                      <template x-for="h in availableProviderHooks.filter(h => h.phases?.includes('stream'))" :key="h.key">
+                        <option :value="h.key" x-text="h.name || h.key"></option>
+                      </template>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Response hooks lane -->
+                <div class="card bg-base-200">
+                  <div class="card-body p-3">
+                    <h4 class="card-title text-sm">Response Hooks</h4>
+                    <div class="flex flex-col gap-1 min-h-[60px]">
+                      <template x-for="(hook, i) in composerPipeline.response" :key="hook.id || ('p-' + i)">
+                        <div class="flex items-center gap-1 py-1 bg-base-100 rounded px-2">
+                          <span class="text-xs flex-1 truncate" x-text="hook.hookKey" :title="hook.hookKey"></span>
+                          <button class="btn btn-xs btn-ghost" @click="moveHookUp('response', i)" :disabled="i === 0">&#8593;</button>
+                          <button class="btn btn-xs btn-ghost" @click="moveHookDown('response', i)" :disabled="i === composerPipeline.response.length - 1">&#8595;</button>
+                          <button class="btn btn-xs btn-ghost" @click="openHookSettings('response', i)">&#9881;</button>
+                          <button class="btn btn-xs btn-error btn-ghost" @click="removeHookFromPhase('response', i)">&times;</button>
+                        </div>
+                      </template>
+                      <div x-show="composerPipeline.response.length === 0" class="text-xs opacity-40 text-center py-2">No response hooks</div>
+                    </div>
+                    <select class="select select-bordered select-xs mt-2" @change="addHookToPhase('response', $event.target.value); $event.target.value = ''">
+                      <option value="">+ Add hook...</option>
+                      <template x-for="h in availableProviderHooks.filter(h => h.phases?.includes('response'))" :key="h.key">
+                        <option :value="h.key" x-text="h.name || h.key"></option>
+                      </template>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showComposer = false; composerProvider = null">Cancel</button>
+                <button class="btn btn-primary" @click="saveComposer()">Save Pipeline</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showComposer = false; composerProvider = null"></div>
+          </dialog>
+
+          <!-- Hook Settings Modal -->
+          <dialog class="modal" :class="{'modal-open': hookSettingsOpen}">
+            <div class="modal-box max-w-md">
+              <h3 class="font-bold text-lg mb-2">Hook Settings</h3>
+              <p class="text-sm opacity-60 mb-3" x-text="hookSettingsPhase && hookSettingsIndex >= 0 ? composerPipeline[hookSettingsPhase]?.[hookSettingsIndex]?.hookKey || '' : ''"></p>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Settings JSON</span></label>
+                <textarea class="textarea textarea-bordered font-mono text-xs h-40" x-model="hookSettingsJson"></textarea>
+              </div>
+              <div x-show="hookSettingsError" class="alert alert-error mt-2 text-sm">
+                <span x-text="hookSettingsError"></span>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="hookSettingsOpen = false">Cancel</button>
+                <button class="btn btn-primary" @click="saveHookSettings()">Apply</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="hookSettingsOpen = false"></div>
+          </dialog>
+        </div>
+      </div>
+
+      <!-- Models Page -->
+      <div x-show="page === 'models'" x-cloak>
+        <div x-data="modelsPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Models</h2>
+            <div class="flex gap-2 items-center">
+              <input type="text" class="input input-bordered input-sm w-48" placeholder="Filter models..." x-model="modelFilter">
+              <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Enabled only</span><input type="checkbox" class="toggle toggle-xs" x-model="modelEnabledOnly"></label>
+              <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Free only</span><input type="checkbox" class="toggle toggle-xs toggle-success" x-model="freeOnly"></label>
+              <div class="flex gap-0.5 items-center">
+                <button class="badge badge-sm cursor-pointer" :class="billingFilter === '' ? 'badge-primary' : 'badge-ghost'" @click="billingFilter = ''">All</button>
+                <button class="badge badge-sm cursor-pointer" :class="billingFilter === 'subscription' ? 'badge-secondary' : 'badge-ghost'" @click="billingFilter = billingFilter === 'subscription' ? '' : 'subscription'">Subscription</button>
+                <button class="badge badge-sm cursor-pointer" :class="billingFilter === 'api_key' ? 'badge-info badge-outline' : 'badge-ghost'" @click="billingFilter = billingFilter === 'api_key' ? '' : 'api_key'">API Key</button>
+              </div>
+              <button class="btn btn-primary btn-sm" @click="openCreate()">Add Model</button>
+            </div>
+          </div>
+          <!-- Tag filter -->
+          <div class="flex flex-wrap gap-1 mb-3" x-show="allTags.length > 0">
+            <span class="text-xs opacity-50 mr-1 self-center">Filter by tag:</span>
+            <template x-for="tag in allTags" :key="tag">
+              <button class="badge badge-sm cursor-pointer" :class="tagFilter === tag ? 'badge-primary' : 'badge-ghost'" @click="tagFilter = tagFilter === tag ? '' : tag" x-text="tag"></button>
+            </template>
+          </div>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-xs">
+                <thead><tr><th>Name</th><th>Billing</th><th>Tags</th><th>Pricing</th><th>Context</th><th>Enabled</th></tr></thead>
+                <tbody>
+                  <template x-for="m in filteredModels" :key="m.id">
+                    <tr :class="{'opacity-40': !(m.enabled ?? m.is_enabled), 'hover cursor-pointer': true}" @click="editModel(m)">
+                      <td class="font-mono text-sm" x-text="m.model_key || m.name" :title="m.model_key || m.name"></td>
+                      <td class="text-xs">
+                        <template x-if="m.billing_types">
+                          <div class="flex flex-wrap gap-0.5">
+                            <template x-for="bt in m.billing_types" :key="bt">
+                              <span class="badge badge-xs" :class="bt === 'free' ? 'badge-success' : bt === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="bt === 'api_key' ? 'api key' : bt"></span>
+                            </template>
+                          </div>
+                        </template>
+                        <template x-if="!m.billing_types">
+                          <div>
+                            <span x-show="m.is_free" class="badge badge-xs badge-success">free</span>
+                            <span x-show="!m.is_free && (m.auth_strategy || m.billing_type) === 'subscription'" class="badge badge-xs badge-secondary">subscription</span>
+                            <span x-show="!m.is_free && (m.auth_strategy || m.billing_type) !== 'subscription'" class="badge badge-xs badge-info badge-outline">api key</span>
+                          </div>
+                        </template>
+                      </td>
+                      <td class="text-xs"><div class="flex flex-wrap gap-0.5 max-w-[200px]"><template x-for="tag in (m.tags || [])" :key="tag"><span class="badge badge-xs badge-outline" x-text="tag"></span></template><span x-show="!m.tags || m.tags.length === 0" class="opacity-30">-</span></div></td>
+                      <td class="text-xs"><span x-show="m.pricing_type === 'request'" class="badge badge-info badge-xs" x-text="'$' + (Number(m.request_cost) || 0).toFixed(3) + '/req'"></span><span x-show="m.pricing_type !== 'request'" class="text-xs opacity-50" x-text="'$' + (Number(m.input_price) || 0) + '/' + (Number(m.output_price) || 0)"></span></td>
+                      <td class="text-xs" x-text="m.context_window || '-'"></td>
+                      <td @click.stop><input type="checkbox" class="toggle toggle-xs" :checked="m.enabled ?? m.is_enabled" @change="toggleModel(m)"></td>
+                    </tr>
+                  </template>
+                  <tr x-show="filteredModels.length === 0"><td colspan="6" class="text-center opacity-50 py-4">No models match</td></tr>
+                </tbody>
+              </table>
+              <div class="text-xs opacity-50 px-4 py-2" x-text="`${filteredModels.length} of ${models.length} models`"></div>
+            </div>
+          </div>
+
+          <!-- Model Create Modal -->
+          <dialog class="modal" :class="{'modal-open': showModelCreate}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg mb-4">Add Model</h3>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Provider</span></label>
+                <select class="select select-bordered" x-model="createProvider" @change="onCreateProviderChange()">
+                  <option value="" disabled>Select provider...</option>
+                  <template x-for="p in providers" :key="p.key">
+                    <option :value="p.key" x-text="p.key"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="form-control" x-show="createProvider">
+                <label class="label"><span class="label-text">Upstream Model</span></label>
+                <select class="select select-bordered" x-model="createModel" :disabled="loadingCreateModels" @change="onCreateModelChange()">
+                  <option value="" disabled x-text="loadingCreateModels ? 'Loading models...' : 'Select model...'"></option>
+                  <template x-for="[source, mods] in groupedCreateModels" :key="source">
+                    <optgroup :label="source">
+                      <template x-for="m in mods" :key="m.id">
+                        <option :value="m.id" x-text="m.id + (m.input_price ? ' ($' + m.input_price + '/' + m.output_price + ')' : '')"></option>
+                      </template>
+                    </optgroup>
+                  </template>
+                </select>
+                <label class="label py-0" x-show="createModelsError"><span class="label-text-alt text-error" x-text="createModelsError"></span></label>
+              </div>
+              <div class="form-control" x-show="createModel">
+                <label class="label"><span class="label-text">Model Name</span></label>
+                <input type="text" class="input input-bordered font-mono" x-model="createName" placeholder="Name for this model in Soul Gateway">
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showModelCreate = false">Cancel</button>
+                <button class="btn btn-primary" @click="createNewModel()" :disabled="!createProvider || !createModel">Create</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showModelCreate = false"></div>
+          </dialog>
+
+          <!-- Model Edit Modal -->
+          <dialog class="modal" :class="{'modal-open': showModelEdit}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg mb-4">Edit Model</h3>
+              <div class="grid grid-cols-2 gap-3">
+                <div class="form-control col-span-2">
+                  <label class="label py-1"><span class="label-text text-xs">Name</span></label>
+                  <input type="text" class="input input-bordered input-sm" x-model="modelForm.model_key">
+                </div>
+                <div class="form-control col-span-2">
+                  <label class="label py-1"><span class="label-text text-xs">Display Name</span></label>
+                  <input type="text" class="input input-bordered input-sm" x-model="modelForm.display_name" placeholder="Optional">
+                </div>
+                <div class="form-control">
+                  <label class="label py-1"><span class="label-text text-xs">Provider</span></label>
+                  <select class="select select-bordered select-sm" x-model="modelForm.provider_key" @change="onProviderChange()">
+                    <template x-for="p in providers" :key="p.key">
+                      <option :value="p.key" x-text="p.key"></option>
+                    </template>
+                  </select>
+                </div>
+                <div class="form-control">
+                  <label class="label py-1"><span class="label-text text-xs">Provider Model ID</span></label>
+                  <input type="text" class="input input-bordered input-sm" x-model="modelForm.provider_model_id">
+                </div>
+                <div class="form-control col-span-2">
+                  <label class="label py-1"><span class="label-text text-xs">Execution Kind</span></label>
+                  <select class="select select-bordered select-sm" x-model="modelForm.execution_kind">
+                    <option value="provider_model">Provider Model (external API)</option>
+                    <option value="search_model">Search Model</option>
+                    <option value="local_model">Local Model (in-gateway)</option>
+                    <option value="wrapper_model">Wrapper Model</option>
+                  </select>
+                </div>
+                <div class="form-control" x-show="modelForm.pricing_mode === 'token' || modelForm.pricing_mode === 'external_directory'">
+                  <label class="label py-1"><span class="label-text text-xs">Input Price ($/1M)</span></label>
+                  <input type="number" step="0.01" class="input input-bordered input-sm" x-model.number="modelForm.input_price">
+                </div>
+                <div class="form-control" x-show="modelForm.pricing_mode === 'token' || modelForm.pricing_mode === 'external_directory'">
+                  <label class="label py-1"><span class="label-text text-xs">Output Price ($/1M)</span></label>
+                  <input type="number" step="0.01" class="input input-bordered input-sm" x-model.number="modelForm.output_price">
+                </div>
+                <div class="form-control">
+                  <label class="label py-1"><span class="label-text text-xs">Pricing Mode</span></label>
+                  <select class="select select-bordered select-sm" x-model="modelForm.pricing_mode">
+                    <option value="external_directory">External Directory (auto-lookup)</option>
+                    <option value="token">Token-based (per million)</option>
+                    <option value="request">Per-request flat fee</option>
+                    <option value="free">Free</option>
+                  </select>
+                </div>
+                <div class="form-control" x-show="modelForm.pricing_mode === 'request'">
+                  <label class="label py-1"><span class="label-text text-xs">Request Cost ($)</span></label>
+                  <input type="number" step="0.001" class="input input-bordered input-sm" x-model.number="modelForm.request_cost">
+                </div>
+                <div class="form-control">
+                  <label class="label py-1"><span class="label-text text-xs">Context Window</span></label>
+                  <input type="text" class="input input-bordered input-sm" x-model="modelForm.context_window" placeholder="e.g. 200k">
+                </div>
+                <div class="form-control">
+                  <label class="label py-1"><span class="label-text text-xs">Max Concurrency</span></label>
+                  <input type="number" class="input input-bordered input-sm" x-model.number="modelForm.max_concurrency">
+                </div>
+                <div class="form-control">
+                  <label class="label py-1"><span class="label-text text-xs">Sort Order</span></label>
+                  <input type="number" class="input input-bordered input-sm" x-model.number="modelForm.sort_order">
+                </div>
+              </div>
+              <div class="form-control mt-2">
+                <label class="label cursor-pointer">
+                  <span class="label-text text-xs">Free (does not count against API key budget)</span>
+                  <input type="checkbox" class="toggle toggle-sm toggle-success" x-model="modelForm.is_free">
+                </label>
+              </div>
+              <!-- Tags editor -->
+              <div class="form-control mt-2">
+                <label class="label py-1"><span class="label-text text-xs">Tags</span></label>
+                <div class="flex flex-wrap gap-1 mb-2">
+                  <template x-for="tag in modelForm.tags" :key="tag">
+                    <span class="badge badge-sm badge-primary gap-1">
+                      <span x-text="tag"></span>
+                      <button class="text-xs font-bold opacity-70 hover:opacity-100" @click="toggleTag(tag)" type="button">&times;</button>
+                    </span>
+                  </template>
+                  <span x-show="modelForm.tags.length === 0" class="text-xs opacity-40">No tags</span>
+                </div>
+                <div class="flex flex-wrap gap-1 mb-2">
+                  <template x-for="tag in predefinedTags" :key="tag">
+                    <button class="badge badge-sm cursor-pointer" :class="modelForm.tags.includes(tag) ? 'badge-primary' : 'badge-outline'" @click="toggleTag(tag)" x-text="tag" type="button"></button>
+                  </template>
+                </div>
+                <div class="flex gap-1">
+                  <input type="text" class="input input-bordered input-xs flex-1" x-model="customTagInput" placeholder="Custom tag..." @keydown.enter.prevent="addCustomTag()">
+                  <button class="btn btn-xs btn-ghost" @click="addCustomTag()" type="button">Add</button>
+                </div>
+              </div>
+              <div class="modal-action flex justify-between">
+                <button class="btn btn-error btn-sm" @click="deleteModel(editingModel)">Delete</button>
+                <div class="flex gap-2">
+                  <button class="btn btn-sm" @click="showModelEdit = false; editingModel = null">Cancel</button>
+                  <button class="btn btn-primary btn-sm" @click="saveModel()">Save</button>
+                </div>
+              </div>
+            </div>
+            <form method="dialog" class="modal-backdrop" @click="showModelEdit = false; editingModel = null"><button>close</button></form>
+          </dialog>
+        </div>
+      </div>
+
+      <!-- Tiers Page -->
+      <div x-show="page === 'tiers'" x-cloak>
+        <div x-data="tiersPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Model Tiers</h2>
+            <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier_id: '' };">Add Tier</button>
+          </div>
+
+          <!-- Tier Create/Edit Modal -->
+          <dialog class="modal" :class="{'modal-open': showTierCreate}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg" x-text="editingTier ? 'Edit Tier' : 'Add Tier'"></h3>
+              <div class="form-control"><label class="label">Name</label><input type="text" class="input input-bordered" x-model="tierForm.name" :disabled="!!editingTier"></div>
+              <div class="form-control"><label class="label">Display Name</label><input type="text" class="input input-bordered" x-model="tierForm.display_name"></div>
+              <div class="form-control"><label class="label">Fallback Tier</label>
+                <select class="select select-bordered" x-model="tierForm.fallback_tier_id">
+                  <option value="">None</option>
+                  <template x-for="t in tiers.filter(t => !editingTier || t.id !== editingTier.id)" :key="t.id">
+                    <option :value="t.id" x-text="t.name"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="form-control mt-2">
+                <label class="label font-semibold">Models</label>
+                <button class="btn btn-sm btn-outline w-fit" @click="openModelPicker()">Add Models...</button>
+              </div>
+              <div class="form-control mt-2">
+                <label class="label font-semibold">Models (in priority order)</label>
+                <div class="space-y-1">
+                  <template x-for="(model, idx) in tierForm.models" :key="model">
+                    <div class="flex items-center gap-2 bg-base-200 rounded px-2 py-1 transition-opacity"
+                         draggable="true"
+                         @dragstart="onDragStart(idx)"
+                         @dragover.prevent="onDragOver($event, idx)"
+                         @drop="onDrop(idx)"
+                         @dragend="onDragEnd()"
+                         :class="{ 'opacity-30': dragIdx === idx, 'border-t-2 border-primary': dropIdx === idx && dragIdx !== idx }">
+                      <span class="cursor-grab active:cursor-grabbing select-none text-base-content/40 text-lg" title="Drag to reorder">&#8801;</span>
+                      <span class="badge badge-sm" x-text="idx + 1"></span>
+                      <span class="font-mono text-sm flex-1" x-text="_displayName(model)" :title="model"></span>
+                      <button class="btn btn-ghost btn-xs text-error" @click="tierForm.models.splice(idx, 1)">&#10005;</button>
+                    </div>
+                  </template>
+                  <div x-show="tierForm.models.length === 0" class="text-sm opacity-50 py-2">No models added yet</div>
+                </div>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showTierCreate = false; editingTier = null">Cancel</button>
+                <button class="btn btn-primary" @click="saveTier()" x-text="editingTier ? 'Save' : 'Create'"></button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showTierCreate = false; editingTier = null"></div>
+          </dialog>
+
+          <!-- Model Picker Modal -->
+          <dialog class="modal" :class="{'modal-open': showModelPicker}">
+            <div class="modal-box max-w-2xl">
+              <h3 class="font-bold text-lg mb-3">Add Models to Tier</h3>
+              <!-- Search -->
+              <input type="text" class="input input-bordered input-sm w-full mb-2" placeholder="Search models, tags, providers..." x-model="pickerSearch">
+              <!-- Billing filter chips -->
+              <div class="flex gap-1 mb-3">
+                <button class="badge badge-sm cursor-pointer" :class="pickerBilling === '' ? 'badge-primary' : 'badge-ghost'" @click="pickerBilling = ''">All</button>
+                <button class="badge badge-sm cursor-pointer" :class="pickerBilling === 'subscription' ? 'badge-secondary' : 'badge-ghost'" @click="pickerBilling = pickerBilling === 'subscription' ? '' : 'subscription'">Subscription</button>
+                <button class="badge badge-sm cursor-pointer" :class="pickerBilling === 'api_key' ? 'badge-info badge-outline' : 'badge-ghost'" @click="pickerBilling = pickerBilling === 'api_key' ? '' : 'api_key'">API Key</button>
+                <button class="badge badge-sm cursor-pointer" :class="pickerBilling === 'free' ? 'badge-success' : 'badge-ghost'" @click="pickerBilling = pickerBilling === 'free' ? '' : 'free'">Free</button>
+              </div>
+              <!-- Model list -->
+              <div class="max-h-80 overflow-y-auto border rounded-lg">
+                <template x-for="m in filteredPickerModels" :key="m.id">
+                  <label class="flex items-center gap-2 px-3 py-2 hover:bg-base-200 cursor-pointer border-b border-base-200 last:border-0">
+                    <input type="checkbox" class="checkbox checkbox-sm" :checked="pickerSelected.includes(m.model_key || m.name)" @change="togglePickerModel(m.model_key || m.name)">
+                    <span class="font-mono text-sm flex-1 truncate" x-text="_displayName(m.model_key || m.name)" :title="m.model_key || m.name"></span>
+                    <span class="badge badge-ghost badge-xs" x-text="m.provider_key"></span>
+                    <span x-show="m.is_free" class="badge badge-success badge-xs">free</span>
+                    <span x-show="!m.is_free && (m.auth_strategy || m.billing_type) === 'subscription'" class="badge badge-secondary badge-xs">sub</span>
+                    <span x-show="!m.is_free && (m.auth_strategy || m.billing_type) !== 'subscription'" class="badge badge-info badge-outline badge-xs">api</span>
+                    <div class="flex gap-0.5"><template x-for="tag in (m.tags || []).slice(0, 3)" :key="tag"><span class="badge badge-outline badge-xs" x-text="tag"></span></template></div>
+                  </label>
+                </template>
+                <div x-show="filteredPickerModels.length === 0" class="text-sm opacity-50 text-center py-6">No matching models</div>
+              </div>
+              <!-- Footer -->
+              <div class="modal-action">
+                <span class="text-sm opacity-50 mr-auto self-center" x-text="pickerSelected.length + ' selected'"></span>
+                <button class="btn btn-ghost btn-sm" @click="showModelPicker = false">Cancel</button>
+                <button class="btn btn-primary btn-sm" @click="addPickerModels()" :disabled="pickerSelected.length === 0" x-text="'Add ' + pickerSelected.length + ' Model' + (pickerSelected.length !== 1 ? 's' : '')"></button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showModelPicker = false"></div>
+          </dialog>
+
+          <!-- Tiers table -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Name</th><th>Display Name</th><th>Models</th><th>Fallback</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="t in tiers" :key="t.id">
+                    <tr :class="{'opacity-40': !(t.enabled ?? t.is_enabled)}">
+                      <td x-text="_displayName(t.name)" class="font-mono font-bold"></td>
+                      <td x-text="t.display_name || '-'"></td>
+                      <td class="max-w-xs">
+                        <div class="flex flex-wrap gap-1">
+                          <template x-for="(m, i) in (t.models || t.model_refs || [])" :key="i">
+                            <span class="badge badge-ghost badge-sm font-mono" x-text="_displayName(m)" :title="m"></span>
+                          </template>
+                          <span x-show="!(t.models || t.model_refs || []).length" class="text-xs opacity-50">empty</span>
+                        </div>
+                      </td>
+                      <td><span x-text="t.fallback_tier_id ? _displayName(t.fallback_tier_id) : (t.fallback_model ? _displayName(t.fallback_model) : '-')" class="font-mono text-xs"></span></td>
+                      <td><input type="checkbox" class="toggle toggle-sm" :checked="t.enabled ?? t.is_enabled" @change="toggleTier(t)"></td>
+                      <td class="flex gap-1">
+                        <button class="btn btn-ghost btn-xs" @click="editTier(t)">Edit</button>
+                        <button class="btn btn-error btn-xs" @click="removeTier(t)">Delete</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Keys Management Page -->
+      <div x-show="page === 'keys'" x-cloak>
+        <div x-data="keysPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">API Keys</h2>
+            <button class="btn btn-primary btn-sm" @click="showCreate = true">Create Key</button>
+          </div>
+          <dialog class="modal" :class="{'modal-open': showCreate}">
+            <div class="modal-box">
+              <h3 class="font-bold text-lg">Create API Key</h3>
+              <div class="form-control"><label class="label">API Key</label>
+                <div class="flex gap-2">
+                  <input type="text" class="input input-bordered flex-1 font-mono text-sm" placeholder="Paste your API key or click Generate" x-model="form.key">
+                  <button class="btn btn-outline btn-sm self-center" type="button" @click="generate()">Generate</button>
+                </div>
+                <label class="label"><span class="label-text-alt opacity-60">Leave empty to auto-generate a key</span></label>
+              </div>
+              <div class="form-control"><label class="label">Label</label><input type="text" class="input input-bordered" x-model="form.label"></div>
+              <div class="form-control"><label class="label">Daily Budget ($)</label><input type="number" step="0.01" class="input input-bordered" x-model="form.daily_budget_usd" placeholder="Leave empty for unlimited"></div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showCreate = false">Cancel</button>
+                <button class="btn btn-primary" @click="create()">Create</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showCreate = false"></div>
+          </dialog>
+          <!-- Edit key modal -->
+          <dialog class="modal" :class="{'modal-open': showEdit}">
+            <div class="modal-box">
+              <h3 class="font-bold text-lg">Edit API Key</h3>
+              <div class="form-control"><label class="label">Label</label><input type="text" class="input input-bordered" x-model="editForm.label"></div>
+              <div class="form-control"><label class="label">Daily Budget ($)</label><input type="number" step="0.01" class="input input-bordered" x-model="editForm.daily_budget_usd" placeholder="Leave empty for unlimited"></div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showEdit = false; editing = null">Cancel</button>
+                <button class="btn btn-primary" @click="saveEdit()">Save</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showEdit = false; editing = null"></div>
+          </dialog>
+          <!-- Show created key -->
+          <div x-show="newKey" class="alert alert-info mb-4">
+            <div class="flex-1">
+              <span class="font-bold">New API Key (copy now, it won't be shown again):</span>
+              <code class="ml-2 select-all" x-text="newKey"></code>
+            </div>
+            <div class="flex gap-1">
+              <button class="btn btn-sm" x-data="{copied: false}" @click="navigator.clipboard.writeText(newKey); copied = true; setTimeout(() => copied = false, 2000)" x-text="copied ? 'Copied!' : 'Copy'"></button>
+              <button class="btn btn-ghost btn-sm" @click="newKey = ''">Dismiss</button>
+            </div>
+          </div>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Label</th><th>Key</th><th>Daily Budget</th><th>Spent Today</th><th>RPM</th><th>Last Used</th><th>Created</th><th>Status</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="k in keys" :key="k.id">
+                    <tr :class="{'opacity-40': k.status === 'revoked' || k.is_revoked}">
+                      <td x-text="k.label || '-'"></td>
+                      <td class="font-mono text-xs opacity-60" x-text="k.key_hint || '-'"></td>
+                      <td x-text="_budget(k) != null ? '$' + Number(_budget(k)).toFixed(2) : '-'"></td>
+                      <td>
+                        <template x-if="_budget(k) != null && Number(_budget(k)) > 0">
+                          <div class="flex flex-col gap-0.5 min-w-[7rem]">
+                            <div class="flex justify-between text-xs">
+                              <span class="font-mono" x-text="'$' + k.daily_spent.toFixed(2)"></span>
+                              <span class="opacity-50 font-mono" x-text="'$' + remaining(k).toFixed(2) + ' left'"></span>
+                            </div>
+                            <div class="w-full bg-base-300 rounded-full h-1.5"><div class="h-1.5 rounded-full transition-all" :class="budgetPct(k) >= 90 ? 'bg-error' : budgetPct(k) >= 70 ? 'bg-warning' : 'bg-success'" :style="'width:' + budgetPct(k) + '%'"></div></div>
+                          </div>
+                        </template>
+                        <template x-if="_budget(k) == null || Number(_budget(k)) === 0">
+                          <span x-text="k.daily_spent > 0 ? '$' + k.daily_spent.toFixed(2) : '-'"></span>
+                        </template>
+                      </td>
+                      <td x-text="k.rpm_limit || 60"></td>
+                      <td x-text="k.last_used_at ? formatDate(k.last_used_at) : 'Never'"></td>
+                      <td x-text="formatDate(k.created_at)"></td>
+                      <td><span class="badge badge-sm" :class="(k.status === 'revoked' || k.is_revoked) ? 'badge-error' : 'badge-success'" x-text="(k.status === 'revoked' || k.is_revoked) ? 'Revoked' : 'Active'"></span></td>
+                      <td class="flex gap-1"><button class="btn btn-ghost btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="edit(k)">Edit</button><button class="btn btn-ghost btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="resetBudget(k)">Reset</button><button class="btn btn-error btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="revoke(k)">Revoke</button></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Blacklist Management Page -->
+      <div x-show="page === 'blacklist'" x-cloak>
+        <div x-data="blacklistPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Blacklist Rules</h2>
+            <button class="btn btn-primary btn-sm" @click="showCreate = true">Add Rule</button>
+          </div>
+          <dialog class="modal" :class="{'modal-open': showCreate}">
+            <div class="modal-box">
+              <h3 class="font-bold text-lg" x-text="editing ? 'Edit Rule' : 'Add Rule'"></h3>
+              <div class="form-control"><label class="label">Pattern</label><input type="text" class="input input-bordered" x-model="form.pattern"></div>
+              <div class="form-control"><label class="label">Match Type</label>
+                <select class="select select-bordered" x-model="form.match_type"><option>substring</option><option>exact</option><option>regex</option></select>
+              </div>
+              <div class="form-control"><label class="label">Description</label><input type="text" class="input input-bordered" x-model="form.description"></div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showCreate = false; editing = null">Cancel</button>
+                <button class="btn btn-primary" @click="save()">Save</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showCreate = false; editing = null"></div>
+          </dialog>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body p-0">
+              <table class="table table-sm">
+                <thead><tr><th>Pattern</th><th>Type</th><th>Description</th><th>Enabled</th><th>Actions</th></tr></thead>
+                <tbody>
+                  <template x-for="r in rules" :key="r.id">
+                    <tr>
+                      <td class="font-mono text-xs" x-text="r.pattern"></td>
+                      <td><span class="badge badge-sm" x-text="r.match_type"></span></td>
+                      <td x-text="r.description || '-'"></td>
+                      <td><input type="checkbox" class="toggle toggle-sm" :checked="r.enabled ?? r.is_enabled" @change="toggleEnabled(r)"></td>
+                      <td class="flex gap-1">
+                        <button class="btn btn-ghost btn-xs" @click="edit(r)">Edit</button>
+                        <button class="btn btn-error btn-xs" @click="remove(r)">Delete</button>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Middlewares Page -->
+      <div x-show="page === 'middlewares'" x-cloak>
+        <div x-data="middlewaresPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Middlewares</h2>
+            <button class="btn btn-sm btn-outline" @click="rescan()">Rescan Files</button>
+          </div>
+
+          <div class="flex gap-4">
+            <!-- Left panel: middleware list -->
+            <div class="w-64 shrink-0">
+              <div class="card bg-base-100 shadow">
+                <div class="card-body p-2">
+                  <template x-for="mw in middlewares" :key="mw.id">
+                    <div class="p-2 rounded cursor-pointer hover:bg-base-200 flex flex-col gap-1"
+                         :class="{'bg-base-200': selectedMw?.id === mw.id}"
+                         @click="selectMw(mw)">
+                      <div class="flex items-center gap-2">
+                        <span class="font-mono text-sm font-bold" x-text="mw.name"></span>
+                        <span class="badge badge-xs" :class="typeBadge(mw.hook_mode || mw.type)" x-text="(mw.hook_mode || mw.type || '').toUpperCase()"></span>
+                      </div>
+                      <div class="flex items-center gap-2 text-xs opacity-60">
+                        <span x-text="'v' + (mw.version || '1.0.0')"></span>
+                        <span x-show="mw.supports_streaming" class="badge badge-xs badge-outline">stream</span>
+                        <span x-show="mw.source_type === 'missing' || (!mw.source_type && !mw.is_discovered)" class="badge badge-xs badge-error">missing</span>
+                      </div>
+                    </div>
+                  </template>
+                  <div x-show="middlewares.length === 0" class="text-center text-sm opacity-50 py-4">
+                    No middlewares found.<br>Add .mjs files to middlewares/
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right panel: middleware details + tier assignments -->
+            <div class="flex-1">
+              <template x-if="selectedMw">
+                <div>
+                  <!-- Middleware info -->
+                  <div class="card bg-base-100 shadow mb-4">
+                    <div class="card-body p-4">
+                      <h3 class="font-bold text-lg" x-text="selectedMw.name"></h3>
+                      <p class="text-sm opacity-70" x-text="selectedMw.description || 'No description'"></p>
+                      <div class="flex gap-3 mt-2 text-xs">
+                        <span>Type: <span class="badge badge-sm" :class="typeBadge(selectedMw.hook_mode || selectedMw.type)" x-text="selectedMw.hook_mode || selectedMw.type"></span></span>
+                        <span>File: <code class="text-xs" x-text="selectedMw.module_path || selectedMw.file_name"></code></span>
+                        <span>Version: <span x-text="selectedMw.version || '1.0.0'"></span></span>
+                        <span x-show="selectedMw.supports_streaming">Streaming: Yes</span>
+                      </div>
+                      <div class="mt-2" x-show="selectedMw.default_settings && Object.keys(selectedMw.default_settings).length > 0">
+                        <span class="text-xs font-bold">Default Settings:</span>
+                        <pre class="text-xs bg-base-200 p-2 rounded mt-1 overflow-x-auto" x-text="JSON.stringify(selectedMw.default_settings, null, 2)"></pre>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Model & tier assignments (unified) -->
+                  <div class="card bg-base-100 shadow">
+                    <div class="card-body p-0">
+                      <div class="p-4 pb-2"><h3 class="font-bold">Assignments</h3></div>
+                      <table class="table table-sm">
+                        <thead><tr><th>Name</th><th>Attached</th><th>Enabled</th><th>Order</th><th>Settings</th></tr></thead>
+                        <tbody>
+                          <template x-for="a in modelAssignments" :key="a.model.id">
+                            <tr>
+                              <td>
+                                <span class="font-mono text-xs" x-text="a.model.display_name || a.model.model_key || a.model.name"></span>
+                                <span class="badge badge-xs ml-1" :class="(a.model.enabled ?? a.model.is_enabled) ? 'badge-success' : 'badge-ghost'"
+                                      x-text="(a.model.enabled ?? a.model.is_enabled) ? 'on' : 'off'"></span>
+                              </td>
+                              <td><input type="checkbox" class="toggle toggle-sm toggle-primary" :checked="a.assigned" @change="toggleModelAssignment(a)"></td>
+                              <td>
+                                <input type="checkbox" class="toggle toggle-sm" :checked="a.enabled" :disabled="!a.assigned"
+                                       @change="toggleModelEnabled(a)">
+                              </td>
+                              <td>
+                                <input type="number" class="input input-bordered input-xs w-16" :value="a.sort_order"
+                                       :disabled="!a.assigned" @change="a.sort_order = $event.target.value; updateModelSortOrder(a)">
+                              </td>
+                              <td>
+                                <button class="btn btn-ghost btn-xs" :disabled="!a.assigned" @click="openSettings(a)">Configure</button>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div x-show="!selectedMw" class="text-center opacity-50 py-12">Select a middleware to view details</div>
+            </div>
+          </div>
+
+          <!-- Settings modal -->
+          <dialog class="modal" :class="{'modal-open': showSettings}">
+            <div class="modal-box max-w-lg">
+              <h3 class="font-bold text-lg">Configure Middleware</h3>
+              <p class="text-sm opacity-70 mb-2" x-text="'Settings for: ' + (editingAssignment?.model?.model_key || editingAssignment?.model?.name || '')"></p>
+              <div class="form-control">
+                <textarea class="textarea textarea-bordered font-mono text-xs h-48" x-model="settingsJson"></textarea>
+                <span class="text-error text-xs mt-1" x-show="settingsError" x-text="settingsError"></span>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost" @click="showSettings = false">Cancel</button>
+                <button class="btn btn-primary" @click="saveSettings()">Save</button>
+              </div>
+            </div>
+            <div class="modal-backdrop" @click="showSettings = false"></div>
+          </dialog>
+        </div>
+      </div>
+
+      <!-- Export Page -->
+      <div x-show="page === 'export'" x-cloak>
+        <div x-data="exportPage()" x-init="init()">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">Export Configuration</h2>
+          </div>
+
+          <!-- Format tabs + API key -->
+          <div class="flex flex-wrap gap-4 items-end mb-4">
+            <div>
+              <span class="text-xs opacity-50 block mb-1">Format</span>
+              <div class="flex gap-0.5">
+                <button class="btn btn-sm" :class="format === 'opencode' ? 'btn-primary' : 'btn-ghost'" @click="format = 'opencode'">OpenCode</button>
+                <button class="btn btn-sm" :class="format === 'claude-code' ? 'btn-primary' : 'btn-ghost'" @click="format = 'claude-code'">Claude Code</button>
+                <button class="btn btn-sm" :class="format === 'codex' ? 'btn-primary' : 'btn-ghost'" @click="format = 'codex'">Codex</button>
+              </div>
+            </div>
+            <div class="form-control">
+              <span class="text-xs opacity-50 block mb-1">API Key <span class="text-warning">(paste full key -- hints shown for reference only)</span></span>
+              <div class="flex gap-1 items-center">
+                <input type="text" class="input input-bordered input-sm w-80 font-mono" x-model="apiKey" placeholder="sk-soul-...">
+                <span class="text-xs opacity-40" x-show="keys.length > 0">Keys:</span>
+                <template x-for="k in keys" :key="k.id">
+                  <span class="badge badge-xs badge-ghost font-mono" x-text="(k.label || '') + ' ' + (k.key_hint || '')" :title="'Hint: ' + k.key_hint"></span>
+                </template>
+              </div>
+            </div>
+            <div class="form-control">
+              <span class="text-xs opacity-50 block mb-1">Gateway URL</span>
+              <input type="text" class="input input-bordered input-sm w-64 font-mono" x-model="gatewayUrl">
+            </div>
+          </div>
+
+          <!-- Two-column layout -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <!-- Left: Model selector -->
+            <div class="card bg-base-100 shadow">
+              <div class="card-body p-3">
+                <div class="flex flex-wrap gap-2 items-center mb-2">
+                  <input type="text" class="input input-bordered input-sm flex-1 min-w-[150px]" placeholder="Search models, providers, tags..." x-model="search">
+                  <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Enabled</span><input type="checkbox" class="toggle toggle-xs" x-model="enabledOnly"></label>
+                  <label class="label cursor-pointer gap-1"><span class="label-text text-xs">Free</span><input type="checkbox" class="toggle toggle-xs toggle-success" x-model="freeOnly"></label>
+                  <div class="flex gap-0.5">
+                    <button class="badge badge-xs cursor-pointer" :class="billingFilter === '' ? 'badge-primary' : 'badge-ghost'" @click="billingFilter = ''">All</button>
+                    <button class="badge badge-xs cursor-pointer" :class="billingFilter === 'subscription' ? 'badge-secondary' : 'badge-ghost'" @click="billingFilter = billingFilter === 'subscription' ? '' : 'subscription'">Sub</button>
+                    <button class="badge badge-xs cursor-pointer" :class="billingFilter === 'api_key' ? 'badge-info badge-outline' : 'badge-ghost'" @click="billingFilter = billingFilter === 'api_key' ? '' : 'api_key'">API</button>
+                  </div>
+                </div>
+                <!-- Tag chips -->
+                <div class="flex flex-wrap gap-0.5 mb-2" x-show="allTags.length > 0">
+                  <template x-for="tag in allTags" :key="tag">
+                    <button class="badge badge-xs cursor-pointer" :class="tagFilter === tag ? 'badge-primary' : 'badge-ghost'" @click="tagFilter = tagFilter === tag ? '' : tag" x-text="tag"></button>
+                  </template>
+                </div>
+                <!-- Actions -->
+                <div class="flex gap-2 items-center mb-2">
+                  <button class="btn btn-xs btn-ghost" @click="selectAllVisible()">Select all visible</button>
+                  <button class="btn btn-xs btn-ghost" @click="clearAll()">Clear</button>
+                  <span class="text-xs opacity-50" x-text="`${selectedCount} selected`"></span>
+                  <div class="flex-1"></div>
+                  <span class="text-xs opacity-50" x-text="`${filteredModels.length} models`"></span>
+                </div>
+                <!-- Default model -->
+                <div class="flex gap-2 items-center mb-2" x-show="selectedCount > 0">
+                  <span class="text-xs opacity-50">Default model:</span>
+                  <select class="select select-bordered select-xs font-mono" x-model="defaultModel">
+                    <template x-for="name in selectedModels" :key="name">
+                      <option :value="name" x-text="name"></option>
+                    </template>
+                  </select>
+                </div>
+                <!-- Model list -->
+                <div class="overflow-auto" style="max-height: 50vh;">
+                  <table class="table table-xs">
+                    <thead class="sticky top-0 bg-base-100"><tr><th class="w-8"></th><th>Model</th><th>Tags</th><th>Billing</th></tr></thead>
+                    <tbody>
+                      <template x-for="m in filteredModels" :key="m.id">
+                        <tr class="hover cursor-pointer" :class="{'bg-primary/10': isSelected(m.model_key || m.name)}" @click="toggleModel(m.model_key || m.name)">
+                          <td @click.stop><input type="checkbox" class="checkbox checkbox-xs checkbox-primary" :checked="isSelected(m.model_key || m.name)" @change="toggleModel(m.model_key || m.name)"></td>
+                          <td class="font-mono text-xs" x-text="m.model_key || m.name"></td>
+                          <td class="text-xs"><div class="flex flex-wrap gap-0.5 max-w-[150px]"><template x-for="tag in (m.tags || []).slice(0, 3)" :key="tag"><span class="badge badge-xs badge-outline" x-text="tag"></span></template></div></td>
+                          <td><span class="badge badge-xs" :class="(m.auth_strategy || m.billing_type) === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="(m.auth_strategy || m.billing_type || 'api_key').replace('_', ' ')"></span></td>
+                        </tr>
+                      </template>
+                      <tr x-show="filteredModels.length === 0"><td colspan="4" class="text-center opacity-50 py-4">No models match</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Config preview -->
+            <div class="card bg-base-100 shadow">
+              <div class="card-body p-3">
+                <div class="flex justify-between items-center mb-2">
+                  <span class="text-sm font-bold" x-text="configFileName"></span>
+                  <div class="flex gap-1">
+                    <button class="btn btn-sm btn-ghost" @click="copyConfig()" x-text="copied ? 'Copied!' : 'Copy'" :class="{'text-success': copied}"></button>
+                    <button class="btn btn-sm btn-primary" @click="downloadConfig()">Download</button>
+                  </div>
+                </div>
+                <pre class="bg-base-200 rounded-lg p-3 overflow-auto text-xs font-mono whitespace-pre" style="max-height: 60vh;" x-text="configOutput || 'Select models to generate config...'"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+      </div>
+    </template>
+  </div>
+
+  <script src="js/markdown.js"></script>
+  <script src="js/app.mjs"></script>
+</body>
+</html>
