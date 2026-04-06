@@ -882,16 +882,20 @@
                         <td x-text="a.id ?? a.index" :class="{'font-bold': (a.id ?? a.index) === authStatus?.activeIndex}"></td>
                         <td x-text="a.email || '(unknown)'"></td>
                         <td class="text-xs" x-text="a.expiresAt ? new Date(a.expiresAt).toLocaleString() : 'n/a'"></td>
-                        <td class="flex flex-wrap gap-0.5">
-                          <span x-show="a.quotaExhausted" class="badge badge-xs badge-error">exhausted</span>
-                          <span x-show="a.needsReauth" class="badge badge-xs badge-warning">needs reauth</span>
-                          <span x-show="a.expiryWarning" class="badge badge-xs badge-warning" x-text="'expires in ' + a.daysUntilExpiry + 'd'"></span>
-                          <span x-show="a.noRefreshToken" class="badge badge-xs badge-warning badge-outline">no refresh token</span>
-                          <span x-show="!a.quotaExhausted && !a.needsReauth && !a.expiryWarning && !a.noRefreshToken" class="badge badge-xs badge-success">ok</span>
+                        <td>
+                          <div class="flex flex-wrap gap-0.5">
+                            <span x-show="a.quotaExhausted" class="badge badge-xs badge-error whitespace-nowrap">exhausted</span>
+                            <span x-show="a.needsReauth" class="badge badge-xs badge-warning whitespace-nowrap">needs reauth</span>
+                            <span x-show="a.expiryWarning" class="badge badge-xs badge-warning whitespace-nowrap" x-text="'expires in ' + a.daysUntilExpiry + 'd'"></span>
+                            <span x-show="a.noRefreshToken" class="badge badge-xs badge-warning badge-outline whitespace-nowrap">no refresh token</span>
+                            <span x-show="!a.quotaExhausted && !a.needsReauth && !a.expiryWarning && !a.noRefreshToken" class="badge badge-xs badge-success whitespace-nowrap">ok</span>
+                          </div>
                         </td>
-                        <td class="flex gap-1">
-                          <button class="btn btn-ghost btn-xs" x-show="a.quotaExhausted" @click="resetAuthQuota(a)">Reset</button>
-                          <button class="btn btn-ghost btn-xs text-error" @click="removeAuthAccount(a)">Remove</button>
+                        <td>
+                          <div class="flex gap-1">
+                            <button class="btn btn-ghost btn-xs" x-show="a.quotaExhausted" @click="resetAuthQuota(a)">Reset</button>
+                            <button class="btn btn-ghost btn-xs text-error" @click="removeAuthAccount(a)">Remove</button>
+                          </div>
                         </td>
                       </tr>
                     </template>
@@ -1403,9 +1407,11 @@
                       </td>
                       <td><span x-text="t.fallback_tier_id ? _displayName(t.fallback_tier_id) : (t.fallback_model ? _displayName(t.fallback_model) : '-')" class="font-mono text-xs"></span></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="t.enabled ?? t.is_enabled" @change="toggleTier(t)"></td>
-                      <td class="flex gap-1">
-                        <button class="btn btn-ghost btn-xs" @click="editTier(t)">Edit</button>
-                        <button class="btn btn-error btn-xs" @click="removeTier(t)">Delete</button>
+                      <td>
+                        <div class="flex gap-1">
+                          <button class="btn btn-ghost btn-xs" @click="editTier(t)">Edit</button>
+                          <button class="btn btn-error btn-xs" @click="removeTier(t)">Delete</button>
+                        </div>
                       </td>
                     </tr>
                   </template>
@@ -1494,7 +1500,13 @@
                       <td x-text="k.last_used_at ? formatDate(k.last_used_at) : 'Never'"></td>
                       <td x-text="formatDate(k.created_at)"></td>
                       <td><span class="badge badge-sm" :class="(k.status === 'revoked' || k.is_revoked) ? 'badge-error' : 'badge-success'" x-text="(k.status === 'revoked' || k.is_revoked) ? 'Revoked' : 'Active'"></span></td>
-                      <td class="flex gap-1"><button class="btn btn-ghost btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="edit(k)">Edit</button><button class="btn btn-ghost btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="resetBudget(k)">Reset</button><button class="btn btn-error btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="revoke(k)">Revoke</button></td>
+                      <td>
+                        <div class="flex gap-1">
+                          <button class="btn btn-ghost btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="edit(k)">Edit</button>
+                          <button class="btn btn-ghost btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="resetBudget(k)">Reset</button>
+                          <button class="btn btn-error btn-xs" :disabled="k.status === 'revoked' || k.is_revoked" @click="revoke(k)">Revoke</button>
+                        </div>
+                      </td>
                     </tr>
                   </template>
                 </tbody>
@@ -1537,9 +1549,11 @@
                       <td><span class="badge badge-sm" x-text="r.match_type"></span></td>
                       <td x-text="r.description || '-'"></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="r.enabled ?? r.is_enabled" @change="toggleEnabled(r)"></td>
-                      <td class="flex gap-1">
-                        <button class="btn btn-ghost btn-xs" @click="edit(r)">Edit</button>
-                        <button class="btn btn-error btn-xs" @click="remove(r)">Delete</button>
+                      <td>
+                        <div class="flex gap-1">
+                          <button class="btn btn-ghost btn-xs" @click="edit(r)">Edit</button>
+                          <button class="btn btn-error btn-xs" @click="remove(r)">Delete</button>
+                        </div>
                       </td>
                     </tr>
                   </template>
