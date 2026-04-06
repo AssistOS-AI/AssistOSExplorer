@@ -119,8 +119,25 @@ export async function handleCreateProvider(ctx) {
     apiKey,
   });
 
-  // Refresh runtime snapshot after mutation
+  // Refresh runtime snapshot so the credential manager can lease
+  // the just-created account on the auto-provision call below.
   requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'provider.create' });
+
+  // Auto-provision models from the provider's /models endpoint when
+  // we already have a usable credential. For OAuth providers we skip
+  // this and defer to the post-OAuth path in oauth-manager — no
+  // credentials exist yet at create time.
+  if (apiKey) {
+    try {
+      const { autoProvisionModels } = await import('../runtime/providers/auto-provisioner.mjs');
+      await autoProvisionModels(appCtx, row);
+    } catch (err) {
+      appCtx.log.warn('auto-provision on provider.create failed', {
+        provider: row.provider_key,
+        error: err.message,
+      });
+    }
+  }
 
   sendJson(res, 201, { provider: toProviderView(row) });
 }

@@ -1631,10 +1631,72 @@ describe('codex-api payload builder', () => {
   });
 
   describe('discoverModels / manifest', () => {
-    it('only exposes gpt-5 family models (no gpt-4o, o3, etc.)', async () => {
-      const discovered = await codexPlugin.discoverModels();
-      for (const m of discovered) {
-        assert.match(m.modelId, /^gpt-5/, `unexpected model in known list: ${m.modelId}`);
+    let originalFetch;
+
+    function stubFetch(responder) {
+      originalFetch = globalThis.fetch;
+      globalThis.fetch = async (url, init) => responder(String(url), init);
+    }
+    function restoreFetch() { globalThis.fetch = originalFetch; }
+
+    it('throws a helpful error when no OAuth credential is leased', async () => {
+      await assert.rejects(
+        () => codexPlugin.discoverModels({
+          providerRecord: { base_url: 'https://chatgpt.com/backend-api/codex' },
+          credentialLease: null,
+        }),
+        /requires an OAuth access token/i,
+      );
+    });
+
+    it('live-queries /backend-api/codex/models via achilles and returns the normalized list', async () => {
+      stubFetch(async (url) => {
+        assert.ok(url.startsWith('https://chatgpt.com/backend-api/codex/models?client_version='),
+          `unexpected URL: ${url}`);
+        return new Response(JSON.stringify({
+          models: [
+            { slug: 'gpt-5.2-codex', display_name: 'gpt-5.2-codex', context_window: 272000, visibility: 'list', supported_in_api: true, input_modalities: ['text', 'image'] },
+            { slug: 'gpt-5', display_name: 'gpt-5', context_window: 128000, visibility: 'hide', supported_in_api: true, input_modalities: ['text'] },
+            { slug: 'legacy', visibility: 'list', supported_in_api: false },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+
+      try {
+        const discovered = await codexPlugin.discoverModels({
+          providerRecord: { base_url: 'https://chatgpt.com/backend-api/codex' },
+          credentialLease: { oauth: { accessToken: 'tok' } },
+        });
+        assert.equal(discovered.length, 2, 'supported_in_api=false entries should be filtered out');
+        assert.equal(discovered[0].modelId, 'gpt-5.2-codex');
+        assert.equal(discovered[0].contextWindow, 272000);
+        assert.equal(discovered[0].supportsVision, true);
+        assert.equal(discovered[1].modelId, 'gpt-5');
+        assert.equal(discovered[1].visibility, 'hide');
+      } finally {
+        restoreFetch();
+      }
+    });
+
+    it('surfaces structured errors from the upstream /models endpoint', async () => {
+      stubFetch(async () => new Response(
+        JSON.stringify({ detail: 'scope denied' }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      ));
+
+      try {
+        let caught;
+        try {
+          await codexPlugin.discoverModels({
+            providerRecord: { base_url: 'https://chatgpt.com/backend-api/codex' },
+            credentialLease: { oauth: { accessToken: 'tok' } },
+          });
+        } catch (err) { caught = err; }
+        assert.ok(caught);
+        assert.equal(caught.status, 403);
+        assert.ok(/scope denied/.test(caught.message));
+      } finally {
+        restoreFetch();
       }
     });
 

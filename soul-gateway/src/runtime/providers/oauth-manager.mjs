@@ -193,14 +193,16 @@ export class OAuthManager {
       adapterKey: adapter.key,
     });
 
-    // Auto-provision models for this provider if needed
+    // Auto-provision models for this provider after the first
+    // successful OAuth flow. The plugin makes a live /models call
+    // via achillesAgentLib using the credentials we just persisted.
     if (this._appCtx) {
       try {
-        const { autoProvisionAfterOAuth } = await import('./auto-provisioner.mjs');
+        const { autoProvisionModels } = await import('./auto-provisioner.mjs');
         const providersDao = await import('../../db/dao/providers-dao.mjs');
-        const provider = await providersDao.findById(this._pool, providerId);
-        if (provider) {
-          await autoProvisionAfterOAuth(this._appCtx, provider, adapter.key);
+        const providerRow = await providersDao.findById(this._pool, providerId);
+        if (providerRow) {
+          await autoProvisionModels(this._appCtx, providerRow, adapter.key);
         }
       } catch (err) {
         this._log.warn('auto-provision after OAuth failed', { error: err.message });

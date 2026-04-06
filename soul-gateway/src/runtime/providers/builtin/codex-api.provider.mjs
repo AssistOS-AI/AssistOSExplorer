@@ -22,11 +22,13 @@
  *     it with 400 "Unsupported parameter: max_output_tokens". This
  *     plugin deliberately never sets it, even when the normalized
  *     request carries `max_tokens`.
- *  4. Only gpt-5 family models are accepted (gpt-5, gpt-5.x,
- *     gpt-5.x-codex). gpt-4o, gpt-4.1, o3, o4-mini, codex-mini-latest
- *     are explicitly rejected by the backend with "not supported when
- *     using Codex with a ChatGPT account" and are excluded from
- *     `KNOWN_MODELS`.
+ *  4. Available models are discovered live via the backend's
+ *     `/backend-api/codex/models?client_version=...` endpoint; this
+ *     plugin has NO hardcoded model list. The Codex backend with a
+ *     ChatGPT account only lists gpt-5.x family models (gpt-5, gpt-5.x,
+ *     gpt-5.x-codex); other OpenAI models are rejected at inference
+ *     time with "not supported when using Codex with a ChatGPT
+ *     account".
  */
 
 import {
@@ -62,25 +64,6 @@ const manifest = {
   oauthAdapterKey: 'openai-codex',
 };
 
-// Models confirmed against the live Codex backend on 2026-04-06.
-// Codex with a ChatGPT account only accepts gpt-5.x family models; it
-// rejects gpt-4o, gpt-4.1, o3, o4-mini, codex-mini-latest etc. with a
-// 400 "not supported when using Codex with a ChatGPT account".
-const KNOWN_MODELS = [
-  { modelId: 'gpt-5.4', displayName: 'GPT-5.4', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5.4-mini', displayName: 'GPT-5.4 Mini', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5.3-codex', displayName: 'GPT-5.3 Codex', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5.2', displayName: 'GPT-5.2', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5.2-codex', displayName: 'GPT-5.2 Codex', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5.1', displayName: 'GPT-5.1', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5.1-codex', displayName: 'GPT-5.1 Codex', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5.1-codex-max', displayName: 'GPT-5.1 Codex Max', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5.1-codex-mini', displayName: 'GPT-5.1 Codex Mini', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5', displayName: 'GPT-5', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5-codex', displayName: 'GPT-5 Codex', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-  { modelId: 'gpt-5-codex-mini', displayName: 'GPT-5 Codex Mini', contextWindow: 1000000, supportsTools: true, supportsStreaming: true, supportsVision: true },
-];
-
 export const providerPlugin = {
   manifest,
 
@@ -96,8 +79,25 @@ export const providerPlugin = {
     }
   },
 
-  async discoverModels() {
-    return KNOWN_MODELS;
+  async discoverModels(ctx) {
+    // Models are discovered live from the Codex ChatGPT backend's
+    // /models endpoint via achillesResponses.listModels. There is no
+    // hardcoded fallback — if the upstream listing fails we surface
+    // the error so the auto-provisioner can log and skip.
+    const baseURL = ctx?.providerRecord?.base_url || 'https://chatgpt.com/backend-api/codex';
+    const token = getCredentialToken(ctx?.credentialLease);
+    if (!token) {
+      throw new Error('Codex discoverModels requires an OAuth access token — complete the Add Account flow first');
+    }
+
+    return achillesResponses.listModels({
+      baseURL,
+      apiKey: token,
+      signal: ctx?.signal,
+      headers: {
+        'User-Agent': 'codex-cli/1.0.0',
+      },
+    });
   },
 
   async testConnection(ctx) {
