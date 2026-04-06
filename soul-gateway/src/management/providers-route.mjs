@@ -34,6 +34,8 @@ import {
 } from './provider-route-helpers.mjs';
 import { sendConflict, sendNotFound, sendOperationError } from './route-response-helpers.mjs';
 import { toAccountView, buildAccountsPayload } from './account-view.mjs';
+import { toProviderView, toProviderList } from './provider-view.mjs';
+import { toDiscoveryList } from './model-discovery-view.mjs';
 
 /**
  * GET /management/providers/templates
@@ -66,7 +68,7 @@ export async function handleListProviders(ctx) {
   const offset = parseInt(query.offset, 10) || 0;
 
   const rows = await providersDao.list(pool, { enabled, kind, limit, offset });
-  sendJson(res, 200, { data: rows });
+  sendJson(res, 200, { data: toProviderList(rows) });
 }
 
 /**
@@ -120,7 +122,7 @@ export async function handleCreateProvider(ctx) {
   // Refresh runtime snapshot after mutation
   requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'provider.create' });
 
-  sendJson(res, 201, { provider: row });
+  sendJson(res, 201, { provider: toProviderView(row) });
 }
 
 /**
@@ -136,7 +138,7 @@ export async function handleGetProvider(ctx) {
   const rows = await accountsDao.listByProvider(pool, params.providerId);
   const accounts = rows.map(toAccountView).filter(Boolean);
 
-  sendJson(res, 200, { provider, accounts });
+  sendJson(res, 200, { provider: toProviderView(provider), accounts });
 }
 
 /**
@@ -307,29 +309,30 @@ function extractDetailString(detail) {
  */
 export async function handleDiscoverModels(ctx) {
   const { res, params, appCtx } = ctx;
-  const { pool } = appCtx;
 
   const provider = await loadProviderOrRespond(ctx, params.providerId);
   if (!provider) return;
 
-  if (appCtx.services.providerCatalog) {
-    try {
-      const discoveries = await appCtx.services.providerCatalog.discoverModels(
-        provider,
-        buildProviderLifecycleOptions(appCtx),
-      );
-      sendJson(res, 200, { data: discoveries });
-    } catch (err) {
-      sendOperationError(res, {
-        status: HTTP_STATUS.INTERNAL_SERVER_ERROR,
-        message: err.message,
-        type: ERROR_TYPES.DISCOVERY_ERROR,
-      });
-    }
+  if (!appCtx.services.providerCatalog) {
+    sendJson(res, 200, { data: [] });
     return;
   }
 
-  sendJson(res, 200, { data: [] });
+  try {
+    const discoveries = await appCtx.services.providerCatalog.discoverModels(
+      provider,
+      buildProviderLifecycleOptions(appCtx),
+    );
+    sendJson(res, 200, {
+      data: toDiscoveryList(discoveries, { providerName: provider.provider_key }),
+    });
+  } catch (err) {
+    sendOperationError(res, {
+      status: HTTP_STATUS.INTERNAL_SERVER_ERROR,
+      message: err.message,
+      type: ERROR_TYPES.DISCOVERY_ERROR,
+    });
+  }
 }
 
 /**
