@@ -81,6 +81,7 @@ export async function installProviderAuthServices(appCtx) {
   }
 
   const accountsDao = await import('../db/dao/provider-accounts-dao.mjs');
+  const providersDao = await import('../db/dao/providers-dao.mjs');
   const { AccountPool } = await import('../runtime/providers/account-pool.mjs');
   const { CredentialManager } = await import('../runtime/providers/credential-manager.mjs');
   const { OAuthManager } = await import('../runtime/providers/oauth-manager.mjs');
@@ -92,20 +93,24 @@ export async function installProviderAuthServices(appCtx) {
     encryptionKey: appCtx.services.encryptionKey,
     log,
   });
-  const credentialManager = new CredentialManager({
-    pool,
-    accountsDao,
-    accountPool,
-    encryptionKey: appCtx.services.encryptionKey,
-    oauthCredentialStore,
-    log,
-  });
+  // OAuthManager must be constructed before CredentialManager so the
+  // latter can dispatch inline refreshes through it on token expiry.
   const oauthManager = new OAuthManager({
     pool,
     accountsDao,
     accountPool,
     oauthCredentialStore,
     appCtx,
+    log,
+  });
+  const credentialManager = new CredentialManager({
+    pool,
+    accountsDao,
+    accountPool,
+    encryptionKey: appCtx.services.encryptionKey,
+    oauthCredentialStore,
+    oauthManager,
+    providersDao,
     log,
   });
 

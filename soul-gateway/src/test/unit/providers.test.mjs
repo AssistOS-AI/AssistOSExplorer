@@ -830,6 +830,17 @@ describe('CredentialManager', () => {
   let manager;
   let mockAccountPool;
 
+  // Default oauth-manager stub for the main suite: never signals that a
+  // refresh is needed, so these tests don't have to model the inline
+  // refresh path. The dedicated suite below exercises it explicitly.
+  const noopOAuthManager = {
+    needsRefresh() { return false; },
+    async refreshTokens() {},
+  };
+  const noopProvidersDao = {
+    async findById() { return null; },
+  };
+
   beforeEach(() => {
     mockAccountPool = {
       _nextAccount: null,
@@ -838,8 +849,10 @@ describe('CredentialManager', () => {
     manager = new CredentialManager({
       pool: {},
       accountsDao: {},
+      providersDao: noopProvidersDao,
       accountPool: mockAccountPool,
       encryptionKey: Buffer.alloc(32, 'a'),
+      oauthManager: noopOAuthManager,
       log: { info() {}, error() {}, warn() {} },
     });
   });
@@ -901,6 +914,187 @@ describe('CredentialManager', () => {
     assert.equal(manager.activeLeaseCount, 1);
     manager.release(lease2);
     assert.equal(manager.activeLeaseCount, 0);
+  });
+
+  describe('inline OAuth refresh', () => {
+    const PROVIDER_ID = 'prov-1';
+
+    function buildManager({ oauthManager, providersDao, accountsDao }) {
+      return new CredentialManager({
+        pool: {},
+        accountsDao,
+        providersDao,
+        accountPool: mockAccountPool,
+        encryptionKey: Buffer.alloc(32, 'a'),
+        oauthManager,
+        log: { info() {}, error() {}, warn() {}, debug() {} },
+      });
+    }
+
+    it('refreshes an expiring oauth account synchronously before leasing', async () => {
+      const staleAccount = {
+        id: 'acc-expiring',
+        provider_id: PROVIDER_ID,
+        auth_type: 'oauth',
+        metadata: { access_token: 'stale', refresh_token: 'rt' },
+        access_token_expires_at: new Date(Date.now() + 60_000).toISOString(),
+        refresh_margin_seconds: 300,
+      };
+      const freshAccount = {
+        ...staleAccount,
+        metadata: { access_token: 'fresh', refresh_token: 'rt2' },
+        access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      };
+
+      mockAccountPool._nextAccount = staleAccount;
+      const refreshCalls = [];
+      const oauthManager = {
+        needsRefresh(account) {
+          const expiresAt = new Date(account.access_token_expires_at).getTime();
+          const marginMs = (account.refresh_margin_seconds || 300) * 1000;
+          return Date.now() >= expiresAt - marginMs;
+        },
+        async refreshTokens(accountId, adapterKey) {
+          refreshCalls.push({ accountId, adapterKey });
+        },
+      };
+      const providersDao = {
+        async findById(_pool, id) {
+          assert.equal(id, PROVIDER_ID);
+          return { id: PROVIDER_ID, oauth_adapter_key: 'openai-codex' };
+        },
+      };
+      const accountsDao = {
+        async findById(_pool, id) {
+          assert.equal(id, 'acc-expiring');
+          return freshAccount;
+        },
+      };
+
+      const m = buildManager({ oauthManager, providersDao, accountsDao });
+      const lease = await m.getCredentials(PROVIDER_ID);
+
+      assert.equal(refreshCalls.length, 1);
+      assert.deepEqual(refreshCalls[0], { accountId: 'acc-expiring', adapterKey: 'openai-codex' });
+      assert.equal(lease.oauth.accessToken, 'fresh');
+      assert.equal(lease.oauth.refreshToken, 'rt2');
+    });
+
+    it('does not refresh when the token is comfortably fresh', async () => {
+      mockAccountPool._nextAccount = {
+        id: 'acc-fresh',
+        provider_id: PROVIDER_ID,
+        auth_type: 'oauth',
+        metadata: { access_token: 'fresh', refresh_token: 'rt' },
+        access_token_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        refresh_margin_seconds: 300,
+      };
+      const oauthManager = {
+        needsRefresh() { return false; },
+        async refreshTokens() {
+          throw new Error('refreshTokens should not be called');
+        },
+      };
+      const m = buildManager({
+        oauthManager,
+        providersDao: { async findById() { throw new Error('lookup should be skipped'); } },
+        accountsDao: {},
+      });
+
+      const lease = await m.getCredentials(PROVIDER_ID);
+      assert.equal(lease.oauth.accessToken, 'fresh');
+    });
+
+    it('falls through with the stale token when the refresh throws', async () => {
+      const stale = {
+        id: 'acc-err',
+        provider_id: PROVIDER_ID,
+        auth_type: 'oauth',
+        metadata: { access_token: 'stale', refresh_token: 'rt' },
+        access_token_expires_at: new Date(Date.now() + 30_000).toISOString(),
+        refresh_margin_seconds: 300,
+      };
+      mockAccountPool._nextAccount = stale;
+      const warnings = [];
+      const oauthManager = {
+        needsRefresh() { return true; },
+        async refreshTokens() { throw new Error('network down'); },
+      };
+      const providersDao = {
+        async findById() { return { oauth_adapter_key: 'openai-codex' }; },
+      };
+      const m = new CredentialManager({
+        pool: {},
+        accountsDao: {},
+        providersDao,
+        accountPool: mockAccountPool,
+        encryptionKey: Buffer.alloc(32, 'a'),
+        oauthManager,
+        log: {
+          info() {},
+          error() {},
+          warn(msg, meta) { warnings.push({ msg, meta }); },
+          debug() {},
+        },
+      });
+
+      const lease = await m.getCredentials(PROVIDER_ID);
+      assert.equal(lease.oauth.accessToken, 'stale');
+      assert.equal(warnings.length, 1);
+      assert.equal(warnings[0].msg, 'inline_oauth_refresh_failed');
+      assert.equal(warnings[0].meta.accountId, 'acc-err');
+      assert.equal(warnings[0].meta.error, 'network down');
+    });
+
+    it('skips refresh for api_key accounts even when oauthManager is present', async () => {
+      mockAccountPool._nextAccount = {
+        id: 'acc-apikey',
+        provider_id: PROVIDER_ID,
+        auth_type: 'api_key',
+        secret_ciphertext: null,
+        metadata: {},
+      };
+      const oauthManager = {
+        needsRefresh() { throw new Error('should not be consulted for api_key'); },
+        async refreshTokens() { throw new Error('should not be called'); },
+      };
+      const m = buildManager({ oauthManager, providersDao: {}, accountsDao: {} });
+
+      const lease = await m.getCredentials(PROVIDER_ID);
+      assert.equal(lease.authType, 'api_key');
+    });
+
+    it('uses oauth_adapter_key already on the account row without a providers lookup', async () => {
+      const stale = {
+        id: 'acc-inline-key',
+        provider_id: PROVIDER_ID,
+        oauth_adapter_key: 'aws-kiro',
+        auth_type: 'oauth',
+        metadata: { access_token: 'stale', refresh_token: 'rt' },
+        access_token_expires_at: new Date(Date.now() + 30_000).toISOString(),
+        refresh_margin_seconds: 300,
+      };
+      const fresh = { ...stale, metadata: { access_token: 'fresh', refresh_token: 'rt' } };
+      mockAccountPool._nextAccount = stale;
+      const calls = [];
+      const oauthManager = {
+        needsRefresh() { return true; },
+        async refreshTokens(accountId, adapterKey) {
+          calls.push({ accountId, adapterKey });
+        },
+      };
+      const providersDao = {
+        async findById() { throw new Error('providersDao should not be called'); },
+      };
+      const accountsDao = {
+        async findById() { return fresh; },
+      };
+      const m = buildManager({ oauthManager, providersDao, accountsDao });
+
+      const lease = await m.getCredentials(PROVIDER_ID);
+      assert.deepEqual(calls, [{ accountId: 'acc-inline-key', adapterKey: 'aws-kiro' }]);
+      assert.equal(lease.oauth.accessToken, 'fresh');
+    });
   });
 });
 

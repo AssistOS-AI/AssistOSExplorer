@@ -14,16 +14,29 @@ export class CredentialManager {
    * @param {object} deps
    * @param {object} deps.pool                  pg Pool
    * @param {object} deps.accountsDao           provider-accounts DAO
+   * @param {object} deps.providersDao          providers DAO (for adapter-key lookup)
    * @param {object} deps.accountPool           AccountPool instance
    * @param {Buffer} deps.encryptionKey         32-byte AES key
+   * @param {object} deps.oauthManager          OAuthManager (for inline refresh)
    * @param {object} [deps.oauthCredentialStore]
    * @param {object} deps.log
    */
-  constructor({ pool, accountsDao, accountPool, encryptionKey, oauthCredentialStore = null, log }) {
+  constructor({
+    pool,
+    accountsDao,
+    providersDao,
+    accountPool,
+    encryptionKey,
+    oauthManager,
+    oauthCredentialStore = null,
+    log,
+  }) {
     this._pool = pool;
     this._accountsDao = accountsDao;
+    this._providersDao = providersDao;
     this._accountPool = accountPool;
     this._encryptionKey = encryptionKey;
+    this._oauthManager = oauthManager;
     this._oauthCredentialStore = oauthCredentialStore;
     this._log = log;
     /** Track active leases for release/accounting. Map<leaseId, lease> */
@@ -43,8 +56,36 @@ export class CredentialManager {
     const { excludeAccountIds = new Set() } = options;
 
     // Ask account pool for the next available account
-    const account = await this._accountPool.getNextAccount(providerId, { excludeAccountIds });
+    let account = await this._accountPool.getNextAccount(providerId, { excludeAccountIds });
     if (!account) return null;
+
+    // Inline refresh safety net: the background token-refresh job
+    // normally handles expiry proactively, but if the gateway just
+    // restarted, the adapter margin is tighter than the job interval,
+    // or a refresh failed on a previous tick, we can still end up
+    // handing out a token that's inside its refresh window. Do the
+    // refresh synchronously here so the provider call never sees an
+    // expired token. The OAuthManager dedups concurrent refreshes per
+    // account, so parallel requests won't stampede the token endpoint.
+    if (account.auth_type === 'oauth' && this._oauthManager.needsRefresh(account)) {
+      const adapterKey = await this._resolveAdapterKey(account);
+      if (adapterKey) {
+        try {
+          await this._oauthManager.refreshTokens(account.id, adapterKey);
+          const fresh = await this._reloadAccount(account.id);
+          if (fresh) account = fresh;
+        } catch (err) {
+          // Fall through with the stale token — it may still have a
+          // few seconds of life, and the execution engine will surface
+          // a ProviderAuthError if the upstream rejects it.
+          this._log.warn('inline_oauth_refresh_failed', {
+            accountId: account.id,
+            adapterKey,
+            error: err.message,
+          });
+        }
+      }
+    }
 
     const oauthPayload = await this._readOAuthPayload(account);
 
@@ -148,6 +189,34 @@ export class CredentialManager {
     } catch (err) {
       this._log.warn('oauth_credentials_fallback_to_db_metadata', {
         accountId: account.id,
+        error: err.message,
+      });
+      return null;
+    }
+  }
+
+  async _resolveAdapterKey(account) {
+    // Prefer adapter_key already joined onto the account row (some
+    // paths enrich the row via JOIN) and fall back to a providers lookup.
+    if (account.oauth_adapter_key) return account.oauth_adapter_key;
+    try {
+      const provider = await this._providersDao.findById(this._pool, account.provider_id);
+      return provider?.oauth_adapter_key || null;
+    } catch (err) {
+      this._log.warn('credential_manager_adapter_lookup_failed', {
+        providerId: account.provider_id,
+        error: err.message,
+      });
+      return null;
+    }
+  }
+
+  async _reloadAccount(accountId) {
+    try {
+      return await this._accountsDao.findById(this._pool, accountId);
+    } catch (err) {
+      this._log.warn('credential_manager_account_reload_failed', {
+        accountId,
         error: err.message,
       });
       return null;

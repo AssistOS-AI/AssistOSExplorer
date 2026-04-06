@@ -241,6 +241,7 @@ describe('CredentialManager OAuth file support', () => {
       const manager = new CredentialManager({
         pool: {},
         accountsDao: {},
+        providersDao: { async findById() { return null; } },
         accountPool: {
           async getNextAccount() {
             return {
@@ -248,12 +249,13 @@ describe('CredentialManager OAuth file support', () => {
               auth_type: 'oauth',
               metadata: { access_token: 'db-access', refresh_token: 'db-refresh' },
               credentials_path: path,
-              access_token_expires_at: '2026-04-01T00:00:00.000Z',
+              access_token_expires_at: '2027-07-01T00:00:00.000Z',
             };
           },
         },
         encryptionKey: randomBytes(32),
         oauthCredentialStore: store,
+        oauthManager: { needsRefresh() { return false; }, async refreshTokens() {} },
         log,
       });
 
