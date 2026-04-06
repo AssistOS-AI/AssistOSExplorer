@@ -170,6 +170,14 @@ export async function handleUpdateProvider(ctx) {
     throw new BadRequestError('Empty update body');
   }
 
+  // Load the provider first so a 404 reflects an actually-missing row.
+  // Doing this up front also lets us answer api-key-only PATCHes
+  // without ever hitting the providers DAO update path — that path
+  // returns null on an empty fields object, which the previous
+  // implementation (incorrectly) mapped to "Provider not found".
+  const existing = await loadProviderOrRespond(ctx, params.providerId);
+  if (!existing) return;
+
   const allowed = [
     'displayName', 'display_name', 'adapterKey', 'adapter_key', 'authStrategy', 'auth_strategy',
     'providerMode', 'provider_mode', 'executorKey', 'executor_key',
@@ -201,10 +209,21 @@ export async function handleUpdateProvider(ctx) {
     fields.kind = fields.providerMode === 'custom' ? 'custom' : 'external_api';
   }
 
-  const row = await providersDao.update(pool, params.providerId, fields);
-  if (!row) {
-    sendNotFound(res, 'Provider');
-    return;
+  // Only run the providers DAO update when the PATCH actually carries
+  // a column change. A PATCH that only rotates `api_key` is valid —
+  // the upsert below handles credential rotation without touching the
+  // providers row.
+  let row = existing;
+  if (Object.keys(fields).length > 0) {
+    const updated = await providersDao.update(pool, params.providerId, fields);
+    if (!updated) {
+      // Race: another caller deleted the provider between the load
+      // above and this update. Surface the same 404 the dashboard
+      // expects so the UI can refresh its list.
+      sendNotFound(res, 'Provider');
+      return;
+    }
+    row = updated;
   }
 
   // If an API key was provided, upsert an account for it

@@ -356,13 +356,14 @@ describe('management/providers-route', () => {
   let handleListProviders;
   let handleCreateProvider;
   let handleGetProvider;
+  let handleUpdateProvider;
   let handleDeleteProvider;
   let handleAuthCallback;
   let handleListAccounts;
   let handleTestConnection;
 
   beforeEach(async () => {
-    ({ handleListProviders, handleCreateProvider, handleGetProvider, handleDeleteProvider, handleAuthCallback, handleListAccounts, handleTestConnection } =
+    ({ handleListProviders, handleCreateProvider, handleGetProvider, handleUpdateProvider, handleDeleteProvider, handleAuthCallback, handleListAccounts, handleTestConnection } =
       await import('../../management/providers-route.mjs'));
   });
 
@@ -433,6 +434,122 @@ describe('management/providers-route', () => {
     assert.equal(body.provider.provider_mode, 'custom');
     assert.equal(body.provider.executor_key, 'browser-executor');
     assert.equal(body.provider.oauth_adapter_key, 'google-gemini');
+  });
+
+  it('handleUpdateProvider accepts an api_key only PATCH and creates a provider_accounts row', async () => {
+    // Regression: an earlier version of the handler returned "Provider
+    // not found" when the PATCH body carried only `api_key`. The
+    // `allowed` field list excluded api_key, so the DAO was called with
+    // an empty fields object, returned null, and the handler mapped
+    // that null to a 404 — even though the provider clearly existed.
+    // The fix loads the provider first (so 404 is honest), only calls
+    // the DAO when there is something to update, and always runs the
+    // api-key upsert separately.
+    const providerRow = {
+      id: 'p-nv',
+      provider_key: 'nvidia',
+      display_name: 'NVIDIA',
+      kind: 'external_api',
+      adapter_key: 'openai-api',
+      auth_strategy: 'api_key',
+      base_url: 'https://integrate.api.nvidia.com/v1',
+      enabled: true,
+      settings: {},
+      metadata: {},
+    };
+
+    const calls = [];
+    const pool = createMockPool(async (sql, params) => {
+      calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+
+      if (sql.includes('FROM soul_gateway.providers') && sql.includes('WHERE id')) {
+        return { rows: [providerRow] };
+      }
+      if (sql.includes('FROM soul_gateway.provider_accounts') && sql.includes('provider_id = $1')) {
+        return { rows: [] };
+      }
+      if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+        return {
+          rows: [{
+            id: 'acc-new',
+            provider_id: 'p-nv',
+            auth_type: 'api_key',
+            status: 'active',
+          }],
+        };
+      }
+      // Defensive: any UPDATE on the providers table is a regression — the
+      // handler must NOT touch the providers row when only api_key is sent.
+      if (sql.includes('UPDATE soul_gateway.providers')) {
+        throw new Error('Unexpected UPDATE on providers table for api_key-only PATCH');
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const appCtx = createMockAppCtx({
+      pool,
+      services: { encryptionKey: randomBytes(32) },
+    });
+    const req = createMockReq({
+      method: 'PATCH',
+      body: { api_key: 'sk-test-12345' },
+    });
+    const res = createMockRes();
+
+    await handleUpdateProvider({
+      req,
+      res,
+      params: { providerId: 'p-nv' },
+      query: {},
+      appCtx,
+    });
+
+    assert.equal(res.statusCode, 200, 'PATCH should succeed even when only api_key is sent');
+    const body = parseJsonResponse(res);
+    assert.equal(body.provider.id, 'p-nv');
+    assert.equal(body.provider.provider_key, 'nvidia');
+
+    const inserted = calls.find((c) => c.sql.includes('INSERT INTO soul_gateway.provider_accounts'));
+    assert.ok(inserted, 'expected an INSERT into provider_accounts to back the api_key upsert');
+  });
+
+  it('handleUpdateProvider returns 404 when the provider id does not exist', async () => {
+    // The honest 404: we now look up the provider before deciding
+    // anything else, so a missing id surfaces a real not-found error
+    // instead of the previous "fields object is empty" false negative.
+    const pool = createMockPool(async (sql) => {
+      if (sql.includes('FROM soul_gateway.providers') && sql.includes('WHERE id')) {
+        return { rows: [] };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const appCtx = createMockAppCtx({ pool });
+    const req = createMockReq({
+      method: 'PATCH',
+      body: { display_name: 'Anything' },
+    });
+    const res = createMockRes();
+
+    await handleUpdateProvider({
+      req,
+      res,
+      params: { providerId: 'missing' },
+      query: {},
+      appCtx,
+    });
+
+    assert.equal(res.statusCode, 404);
+  });
+
+  it('handleUpdateProvider rejects an empty PATCH body with 400', async () => {
+    const appCtx = createMockAppCtx();
+    const req = createMockReq({ method: 'PATCH', body: {} });
+    const res = createMockRes();
+
+    await assert.rejects(
+      () => handleUpdateProvider({ req, res, params: { providerId: 'p1' }, query: {}, appCtx }),
+      (err) => err.httpStatus === 400,
+    );
   });
 
   it('handleDeleteProvider returns 409 when models depend on it', async () => {
