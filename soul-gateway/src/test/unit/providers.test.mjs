@@ -1428,6 +1428,133 @@ describe('ProviderCatalog', () => {
     assert.equal(templates['gemini-openai'].oauth_adapter_key, 'google-gemini');
     assert.equal(templates['claudeai-api'].oauth_adapter_key, 'anthropic-claudeai');
   });
+
+  describe('preset catalog merge', () => {
+    // Minimal openai-api plugin stub so the openai-compatible presets
+    // (nvidia, groq, fireworks, ...) pass the getPlugin() filter.
+    const openaiApiPlugin = {
+      manifest: {
+        key: 'openai-api',
+        kind: 'external_api',
+        authStrategy: 'api_key',
+        supportsStreaming: true,
+        supportsTools: true,
+        supportedFormats: ['openai_chat'],
+        displayName: 'OpenAI-Compatible API',
+      },
+      async init() {}, async shutdown() {}, async execute() {}, classifyError() {},
+    };
+
+    // Stub for the search-builtin plugin so search presets surface.
+    const searchBuiltinPlugin = {
+      manifest: {
+        key: 'search-builtin',
+        kind: 'search',
+        authStrategy: 'api_key',
+        supportsStreaming: false,
+        supportsTools: false,
+        supportedFormats: ['openai_chat'],
+        displayName: 'Web Search (Built-in)',
+      },
+      async init() {}, async shutdown() {}, async execute() {}, classifyError() {},
+    };
+
+    const anthropicApiPlugin = {
+      manifest: {
+        key: 'anthropic-api',
+        kind: 'external_api',
+        authStrategy: 'api_key',
+        supportsStreaming: true,
+        supportsTools: true,
+        supportedFormats: ['anthropic_messages'],
+        displayName: 'Anthropic API',
+      },
+      async init() {}, async shutdown() {}, async execute() {}, classifyError() {},
+    };
+
+    it('includes openai-compat presets when the openai-api plugin is loaded', () => {
+      catalog.load([openaiApiPlugin]);
+      const templates = catalog.getTemplates();
+
+      for (const key of ['openai', 'nvidia', 'groq', 'fireworks', 'together', 'deepseek', 'mistral', 'xai', 'perplexity', 'cohere', 'openrouter', 'deepinfra']) {
+        assert.ok(templates[key], `missing preset: ${key}`);
+        assert.equal(templates[key].adapter_key, 'openai-api');
+        assert.equal(templates[key].kind, 'external_api');
+        assert.equal(templates[key].auth_strategy, 'api_key');
+        assert.ok(templates[key].base_url && templates[key].base_url.length > 0,
+          `${key} should have a base_url`);
+      }
+    });
+
+    it('includes all 8 search presets when search-builtin is loaded', () => {
+      catalog.load([searchBuiltinPlugin]);
+      const templates = catalog.getTemplates();
+
+      for (const key of ['tavily', 'brave', 'exa', 'serper', 'jina', 'duckduckgo', 'searxng', 'gemini-search']) {
+        assert.ok(templates[key], `missing search preset: ${key}`);
+        assert.equal(templates[key].adapter_key, 'search-builtin');
+        assert.equal(templates[key].kind, 'search');
+      }
+      // SearXNG ships with an empty base_url (self-hosted) — user fills it in.
+      assert.equal(templates['searxng'].base_url, '');
+    });
+
+    it('includes the anthropic-direct preset only when anthropic-api is loaded', () => {
+      // No plugins → no preset
+      const emptyCatalog = new ProviderCatalog({ log: { info() {}, error() {} } });
+      emptyCatalog.load([]);
+      assert.equal(emptyCatalog.getTemplates()['anthropic-direct'], undefined);
+
+      // anthropic-api loaded → preset appears
+      catalog.load([anthropicApiPlugin]);
+      const templates = catalog.getTemplates();
+      assert.ok(templates['anthropic-direct']);
+      assert.equal(templates['anthropic-direct'].adapter_key, 'anthropic-api');
+      assert.equal(templates['anthropic-direct'].base_url, 'https://api.anthropic.com');
+    });
+
+    it('filters out presets whose plugin is not loaded', () => {
+      // Load only anthropic-api — openai-compat + search presets should be absent
+      catalog.load([anthropicApiPlugin]);
+      const templates = catalog.getTemplates();
+      assert.equal(templates['nvidia'], undefined);
+      assert.equal(templates['groq'], undefined);
+      assert.equal(templates['tavily'], undefined);
+      assert.ok(templates['anthropic-direct']);
+    });
+
+    it('plugin template overrides preset on key collision', () => {
+      // Preset with key 'openai-api' would collide with the plugin key.
+      // Since the presets list uses 'openai' (not 'openai-api'), there's
+      // no actual collision in production — this test verifies the
+      // ordering guarantees the plugin wins if one is ever introduced.
+      catalog.load([openaiApiPlugin]);
+      const templates = catalog.getTemplates();
+      assert.equal(templates['openai-api'].display_name, 'OpenAI-Compatible API');
+      assert.equal(templates['openai-api'].adapter_key, 'openai-api');
+    });
+
+    it('total dropdown count is the sum of loaded plugins + applicable presets', () => {
+      catalog.load([openaiApiPlugin, searchBuiltinPlugin, anthropicApiPlugin]);
+      const templates = catalog.getTemplates();
+
+      // 3 plugin templates + 12 openai-compat + 8 search + 1 anthropic-direct = 24
+      const pluginKeys = ['openai-api', 'search-builtin', 'anthropic-api'];
+      const openaiPresetKeys = ['openai', 'openrouter', 'nvidia', 'fireworks', 'groq', 'together', 'deepseek', 'deepinfra', 'perplexity', 'mistral', 'xai', 'cohere'];
+      const searchPresetKeys = ['tavily', 'brave', 'exa', 'serper', 'jina', 'duckduckgo', 'searxng', 'gemini-search'];
+      const anthropicPresetKeys = ['anthropic-direct'];
+
+      for (const k of pluginKeys) assert.ok(templates[k], `missing plugin: ${k}`);
+      for (const k of openaiPresetKeys) assert.ok(templates[k], `missing openai preset: ${k}`);
+      for (const k of searchPresetKeys) assert.ok(templates[k], `missing search preset: ${k}`);
+      for (const k of anthropicPresetKeys) assert.ok(templates[k], `missing anthropic preset: ${k}`);
+
+      assert.equal(
+        Object.keys(templates).length,
+        pluginKeys.length + openaiPresetKeys.length + searchPresetKeys.length + anthropicPresetKeys.length,
+      );
+    });
+  });
 });
 
 // ── Codex provider plugin ───────────────────────────────────────────

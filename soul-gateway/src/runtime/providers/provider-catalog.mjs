@@ -9,6 +9,7 @@
 import { validateManifest } from './provider-interface.mjs';
 import { createProviderContext } from './provider-context.mjs';
 import { withProviderFieldAliases } from './record-aliases.mjs';
+import { PROVIDER_PRESETS } from './provider-presets.mjs';
 
 /**
  * Maps provider adapter_key values to the protocol-family plugin that handles them.
@@ -160,12 +161,37 @@ export class ProviderCatalog {
   }
 
   /**
-   * Return built-in provider templates (manifests with metadata).
+   * Return built-in provider templates surfaced in the dashboard's
+   * "Add Provider" dropdown.
+   *
+   * The returned object merges two sources:
+   *   1. Plugin templates — one entry per currently-loaded plugin,
+   *      using the plugin's manifest as the source of truth.
+   *   2. Provider presets — the static catalog in
+   *      `provider-presets.mjs`, each referencing an existing plugin
+   *      via `adapter_key` and filling in vendor-specific defaults
+   *      like base_url and display_name. This is how generic plugins
+   *      (`openai-api`, `search-builtin`) surface as multiple
+   *      vendor-labelled dropdown entries (NVIDIA, Groq, Fireworks,
+   *      Tavily, Brave, …) without duplicating plugin code.
+   *
+   * Plugins take precedence on key collisions — plugin manifests are
+   * authoritative code, presets are configuration.
    *
    * @returns {object} key -> template info
    */
   getTemplates() {
     const templates = {};
+
+    // 1. Presets first, so plugins can overwrite on collision.
+    for (const preset of PROVIDER_PRESETS) {
+      // Filter out presets whose adapter plugin isn't loaded — no
+      // point showing NVIDIA if `openai-api` isn't in the catalog.
+      if (!this.getPlugin(preset.adapter_key)) continue;
+      templates[preset.key] = { ...preset };
+    }
+
+    // 2. Plugin-derived templates (authoritative).
     for (const [key, plugin] of this._plugins) {
       templates[key] = {
         key: plugin.manifest.key,
