@@ -7,6 +7,8 @@
  * and persists credentials to the account pool.
  */
 
+import { randomBytes } from 'node:crypto';
+
 export class OAuthManager {
   /**
    * @param {object} deps
@@ -73,7 +75,11 @@ export class OAuthManager {
       throw new Error(`No OAuth adapter registered for key: ${adapterKey}`);
     }
 
-    const flowId = String(++this._flowCounter);
+    // Generate a cryptographically random flowId (used as the OAuth state).
+    // OAuth providers like Auth0 (used by OpenAI) reject simple/predictable
+    // values as invalid_state for CSRF-protection reasons.
+    const flowId = randomBytes(16).toString('hex');
+    this._flowCounter++; // keep counter for logging purposes
     const ctx = {
       flowId,
       providerId,
