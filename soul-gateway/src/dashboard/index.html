@@ -659,7 +659,7 @@
                       <td class="font-mono font-bold" x-text="p.name"></td>
                       <td x-text="p.display_name || '-'"></td>
                       <td><span class="badge badge-ghost badge-sm" x-text="p.adapter_key || p.protocol"></span></td>
-                      <td><span class="badge badge-sm" :class="(p.auth_strategy || p.billing_type) === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="(p.auth_strategy || p.billing_type || 'api_key').replace('_', ' ')"></span></td>
+                      <td><span class="badge badge-sm" :class="sgAuthBadge(p).classes" x-text="sgAuthBadge(p).label"></span></td>
                       <td class="text-xs font-mono max-w-[300px] truncate" x-text="p.base_url" :title="p.base_url"></td>
                       <td class="text-xs font-mono opacity-60" x-text="p.key_hint || '-'"></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="p.enabled ?? p.is_enabled" disabled></td>
@@ -1124,16 +1124,12 @@
                         <template x-if="m.billing_types">
                           <div class="flex flex-wrap gap-0.5">
                             <template x-for="bt in m.billing_types" :key="bt">
-                              <span class="badge badge-xs" :class="bt === 'free' ? 'badge-success' : bt === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="bt === 'api_key' ? 'api key' : bt"></span>
+                              <span class="badge badge-xs" :class="sgAuthBadge({ auth_strategy: bt, is_free: bt === 'free' }).classes" x-text="sgAuthBadge({ auth_strategy: bt, is_free: bt === 'free' }).label"></span>
                             </template>
                           </div>
                         </template>
                         <template x-if="!m.billing_types">
-                          <div>
-                            <span x-show="m.is_free" class="badge badge-xs badge-success">free</span>
-                            <span x-show="!m.is_free && (m.auth_strategy || m.billing_type) === 'subscription'" class="badge badge-xs badge-secondary">subscription</span>
-                            <span x-show="!m.is_free && (m.auth_strategy || m.billing_type) !== 'subscription'" class="badge badge-xs badge-info badge-outline">api key</span>
-                          </div>
+                          <span class="badge badge-xs" :class="sgAuthBadge(m).classes" x-text="sgAuthBadge(m).label"></span>
                         </template>
                       </td>
                       <td class="text-xs"><div class="flex flex-wrap gap-0.5 max-w-[200px]"><template x-for="tag in (m.tags || [])" :key="tag"><span class="badge badge-xs badge-outline" x-text="tag"></span></template><span x-show="!m.tags || m.tags.length === 0" class="opacity-30">-</span></div></td>
@@ -1371,9 +1367,7 @@
                     <input type="checkbox" class="checkbox checkbox-sm" :checked="pickerSelected.includes(m.model_key || m.name)" @change="togglePickerModel(m.model_key || m.name)">
                     <span class="font-mono text-sm flex-1 truncate" x-text="_displayName(m.model_key || m.name)" :title="m.model_key || m.name"></span>
                     <span class="badge badge-ghost badge-xs" x-text="m.provider_key"></span>
-                    <span x-show="m.is_free" class="badge badge-success badge-xs">free</span>
-                    <span x-show="!m.is_free && (m.auth_strategy || m.billing_type) === 'subscription'" class="badge badge-secondary badge-xs">sub</span>
-                    <span x-show="!m.is_free && (m.auth_strategy || m.billing_type) !== 'subscription'" class="badge badge-info badge-outline badge-xs">api</span>
+                    <span class="badge badge-xs" :class="sgAuthBadge(m, { short: true }).classes" x-text="sgAuthBadge(m, { short: true }).label"></span>
                     <div class="flex gap-0.5"><template x-for="tag in (m.tags || []).slice(0, 3)" :key="tag"><span class="badge badge-outline badge-xs" x-text="tag"></span></template></div>
                   </label>
                 </template>
@@ -1751,7 +1745,7 @@
                           <td @click.stop><input type="checkbox" class="checkbox checkbox-xs checkbox-primary" :checked="isSelected(m.model_key || m.name)" @change="toggleModel(m.model_key || m.name)"></td>
                           <td class="font-mono text-xs" x-text="m.model_key || m.name"></td>
                           <td class="text-xs"><div class="flex flex-wrap gap-0.5 max-w-[150px]"><template x-for="tag in (m.tags || []).slice(0, 3)" :key="tag"><span class="badge badge-xs badge-outline" x-text="tag"></span></template></div></td>
-                          <td><span class="badge badge-xs" :class="(m.auth_strategy || m.billing_type) === 'subscription' ? 'badge-secondary' : 'badge-info badge-outline'" x-text="(m.auth_strategy || m.billing_type || 'api_key').replace('_', ' ')"></span></td>
+                          <td><span class="badge badge-xs" :class="sgAuthBadge(m).classes" x-text="sgAuthBadge(m).label"></span></td>
                         </tr>
                       </template>
                       <tr x-show="filteredModels.length === 0"><td colspan="4" class="text-center opacity-50 py-4">No models match</td></tr>

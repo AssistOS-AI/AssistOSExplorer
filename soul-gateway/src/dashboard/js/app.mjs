@@ -7,6 +7,46 @@ function _displayName(name) {
   return typeof name === 'string' && name.startsWith('axl/') ? name.slice(4) : (name || '');
 }
 
+// ---- Auth / billing badge helper ----
+//
+// Single source of truth for how providers AND models render their
+// auth-strategy badge in the dashboard. Every table / modal that used
+// to inline the same if-ladder reads from this function instead, so
+// (a) the label is consistent across pages and (b) the color map
+// lives in one place.
+//
+// Color palette (intentionally distinct):
+//   free          → badge-success   (green solid)
+//   subscription  → badge-secondary  (purple solid)
+//   oauth/managed → badge-warning badge-outline (yellow outline)
+//   api_key / ?   → badge-info badge-outline    (blue outline)
+//
+// Input object can be a provider row (auth_strategy / auth_type) or a
+// model row (auth_strategy joined from its provider, or a legacy
+// billing_type). `is_free` overrides everything else.
+//
+// @param {object} obj
+// @param {object} [opts]
+// @param {boolean} [opts.short]  Use the compact label ("sub", "api")
+// @returns {{ label: string, classes: string }}
+function sgAuthBadge(obj, { short = false } = {}) {
+  if (!obj) return { label: short ? '?' : 'unknown', classes: 'badge-ghost' };
+  if (obj.is_free) return { label: 'free', classes: 'badge-success' };
+  const strategy = obj.auth_strategy || obj.billing_type || obj.auth_type || null;
+  if (strategy === 'subscription') {
+    return { label: short ? 'sub' : 'subscription', classes: 'badge-secondary' };
+  }
+  if (strategy === 'oauth' || strategy === 'managed') {
+    return { label: 'oauth', classes: 'badge-warning badge-outline' };
+  }
+  // api_key or unknown → default "api key" styling
+  return { label: short ? 'api' : 'api key', classes: 'badge-info badge-outline' };
+}
+// Alpine templates resolve free identifiers against the component
+// scope and its ancestors; to make sgAuthBadge available everywhere
+// without importing it into every component, expose it on `window`.
+window.sgAuthBadge = sgAuthBadge;
+
 // ---- Auth token management ----
 function getAuthToken() {
   return sessionStorage.getItem('sg_auth_token') || '';

@@ -60,19 +60,35 @@ export async function list(pool, { enabled = null, executionKind = null, limit =
   let idx = 1;
 
   if (enabled !== null) {
-    conditions.push(`enabled = $${idx++}`);
+    conditions.push(`m.enabled = $${idx++}`);
     params.push(enabled);
   }
   if (executionKind !== null) {
-    conditions.push(`execution_kind = $${idx++}`);
+    conditions.push(`m.execution_kind = $${idx++}`);
     params.push(executionKind);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(limit, offset);
 
+  // LEFT JOIN providers so the dashboard's Models tab can render
+  // provider-derived billing info (auth_strategy, provider_key,
+  // provider_kind) without a second round-trip. The dashboard renders
+  // the "Billing" badge from `auth_strategy`; models don't have that
+  // column of their own — it lives on the provider record — so it has
+  // to be denormalized here. LEFT JOIN (not INNER) so orphan model
+  // rows still appear with `auth_strategy = null` if their provider
+  // was deleted out from under them.
   const { rows } = await pool.query(
-    `SELECT * FROM ${TABLE} ${where} ORDER BY display_name ASC LIMIT $${idx++} OFFSET $${idx}`,
+    `SELECT m.*,
+            p.provider_key,
+            p.auth_strategy,
+            p.kind AS provider_kind
+     FROM ${TABLE} m
+     LEFT JOIN soul_gateway.providers p ON p.id = m.provider_id
+     ${where}
+     ORDER BY m.display_name ASC
+     LIMIT $${idx++} OFFSET $${idx}`,
     params,
   );
   return rows;
