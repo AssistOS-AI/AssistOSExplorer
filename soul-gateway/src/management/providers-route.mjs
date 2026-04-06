@@ -33,6 +33,7 @@ import {
   upsertProviderApiKeyAccount,
 } from './provider-route-helpers.mjs';
 import { sendConflict, sendNotFound, sendOperationError } from './route-response-helpers.mjs';
+import { toAccountView, buildAccountsPayload } from './account-view.mjs';
 
 /**
  * GET /management/providers/templates
@@ -132,7 +133,8 @@ export async function handleGetProvider(ctx) {
   const provider = await loadProviderOrRespond(ctx, params.providerId);
   if (!provider) return;
 
-  const accounts = await accountsDao.listByProvider(pool, params.providerId);
+  const rows = await accountsDao.listByProvider(pool, params.providerId);
+  const accounts = rows.map(toAccountView).filter(Boolean);
 
   sendJson(res, 200, { provider, accounts });
 }
@@ -444,8 +446,8 @@ export async function handleListAccounts(ctx) {
   const { res, params, appCtx } = ctx;
   const { pool } = appCtx;
 
-  const accounts = await accountsDao.listByProvider(pool, params.providerId);
-  sendJson(res, 200, { data: accounts, accounts });
+  const rows = await accountsDao.listByProvider(pool, params.providerId);
+  sendJson(res, 200, buildAccountsPayload(rows));
 }
 
 /**
