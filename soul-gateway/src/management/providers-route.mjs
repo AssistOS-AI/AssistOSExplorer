@@ -237,31 +237,69 @@ export async function handleDeleteProvider(ctx) {
  */
 export async function handleTestConnection(ctx) {
   const { res, params, appCtx } = ctx;
-  const { pool } = appCtx;
 
   const provider = await loadProviderOrRespond(ctx, params.providerId);
   if (!provider) return;
 
-  // Delegate to provider catalog if available
-  if (appCtx.services.providerCatalog) {
-    const start = Date.now();
-    try {
-      const result = await appCtx.services.providerCatalog.testConnection(
-        provider,
-        buildProviderLifecycleOptions(appCtx),
-      );
-      sendJson(res, 200, { ok: result.ok, detail: result.detail, latencyMs: Date.now() - start });
-    } catch (err) {
-      sendJson(res, 200, { ok: false, detail: { error: err.message }, latencyMs: Date.now() - start });
-    }
+  if (!appCtx.services.providerCatalog) {
+    sendJson(res, HTTP_STATUS.OK, {
+      ok: false,
+      error: ERROR_MESSAGES.PROVIDER_CATALOG_NOT_INITIALIZED,
+      latencyMs: 0,
+    });
     return;
   }
 
-  sendJson(res, HTTP_STATUS.OK, {
-    ok: false,
-    detail: { error: ERROR_MESSAGES.PROVIDER_CATALOG_NOT_INITIALIZED },
-    latencyMs: 0,
-  });
+  const start = Date.now();
+  let result;
+  try {
+    result = await appCtx.services.providerCatalog.testConnection(
+      provider,
+      buildProviderLifecycleOptions(appCtx),
+    );
+  } catch (err) {
+    sendJson(res, 200, {
+      ok: false,
+      error: err.message || 'Test failed',
+      latencyMs: Date.now() - start,
+    });
+    return;
+  }
+
+  sendJson(res, 200, buildTestConnectionResponse(result, Date.now() - start));
+}
+
+/**
+ * Translate a provider plugin's `{ ok, detail }` contract into the
+ * `{ ok, message | error, latencyMs }` shape the dashboard expects.
+ *
+ * @param {{ ok: boolean, detail?: any }} result
+ * @param {number} latencyMs
+ * @returns {object}
+ */
+function buildTestConnectionResponse(result, latencyMs) {
+  const message = extractDetailString(result?.detail);
+  if (result?.ok) {
+    return { ok: true, message: message || 'Connected', latencyMs };
+  }
+  return { ok: false, error: message || 'Connection failed', latencyMs };
+}
+
+/**
+ * Plugins historically returned `detail` as either a string or an
+ * object (e.g. `{ error: '...' }`). Collapse both shapes to a plain
+ * string so the dashboard can render it directly.
+ *
+ * @param {any} detail
+ * @returns {string|null}
+ */
+function extractDetailString(detail) {
+  if (detail == null) return null;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail === 'object') {
+    return detail.error || detail.message || detail.detail || null;
+  }
+  return String(detail);
 }
 
 /**

@@ -359,9 +359,10 @@ describe('management/providers-route', () => {
   let handleDeleteProvider;
   let handleAuthCallback;
   let handleListAccounts;
+  let handleTestConnection;
 
   beforeEach(async () => {
-    ({ handleListProviders, handleCreateProvider, handleGetProvider, handleDeleteProvider, handleAuthCallback, handleListAccounts } =
+    ({ handleListProviders, handleCreateProvider, handleGetProvider, handleDeleteProvider, handleAuthCallback, handleListAccounts, handleTestConnection } =
       await import('../../management/providers-route.mjs'));
   });
 
@@ -502,6 +503,132 @@ describe('management/providers-route', () => {
     const body = parseJsonResponse(res);
     assert.equal(body.data.length, 1);
     assert.equal(body.accounts.length, 1);
+  });
+
+  describe('handleTestConnection', () => {
+    function createProviderCatalogMock(testConnectionImpl) {
+      return {
+        testConnection: testConnectionImpl,
+      };
+    }
+
+    function buildCtx({ providerRow, catalog }) {
+      const pool = createMockPool(async () => ({ rows: [providerRow] }));
+      const appCtx = createMockAppCtx({
+        pool,
+        services: { providerCatalog: catalog },
+      });
+      return {
+        req: createMockReq({ method: 'POST' }),
+        res: createMockRes(),
+        params: { providerId: providerRow.id },
+        query: {},
+        appCtx,
+      };
+    }
+
+    it('translates a successful plugin result to { ok:true, message }', async () => {
+      const catalog = createProviderCatalogMock(async () => ({
+        ok: true,
+        detail: 'Codex OAuth credentials present',
+      }));
+      const ctx = buildCtx({
+        providerRow: { id: 'p1', provider_key: 'codex', oauth_adapter_key: 'openai-codex' },
+        catalog,
+      });
+
+      await handleTestConnection(ctx);
+
+      assert.equal(ctx.res.statusCode, 200);
+      const body = parseJsonResponse(ctx.res);
+      assert.equal(body.ok, true);
+      assert.equal(body.message, 'Codex OAuth credentials present');
+      assert.equal(typeof body.latencyMs, 'number');
+      assert.equal(body.detail, undefined);
+      assert.equal(body.error, undefined);
+    });
+
+    it('translates a failed plugin result to { ok:false, error }', async () => {
+      const catalog = createProviderCatalogMock(async () => ({
+        ok: false,
+        detail: 'HTTP 403',
+      }));
+      const ctx = buildCtx({
+        providerRow: { id: 'p1', provider_key: 'codex' },
+        catalog,
+      });
+
+      await handleTestConnection(ctx);
+
+      const body = parseJsonResponse(ctx.res);
+      assert.equal(body.ok, false);
+      assert.equal(body.error, 'HTTP 403');
+      assert.equal(body.message, undefined);
+    });
+
+    it('supplies a default error when the plugin returns no detail string', async () => {
+      const catalog = createProviderCatalogMock(async () => ({ ok: false }));
+      const ctx = buildCtx({ providerRow: { id: 'p1' }, catalog });
+
+      await handleTestConnection(ctx);
+      const body = parseJsonResponse(ctx.res);
+      assert.equal(body.ok, false);
+      assert.equal(body.error, 'Connection failed');
+    });
+
+    it('supplies a default message when the plugin returns ok without a detail string', async () => {
+      const catalog = createProviderCatalogMock(async () => ({ ok: true }));
+      const ctx = buildCtx({ providerRow: { id: 'p1' }, catalog });
+
+      await handleTestConnection(ctx);
+      const body = parseJsonResponse(ctx.res);
+      assert.equal(body.ok, true);
+      assert.equal(body.message, 'Connected');
+    });
+
+    it('flattens an object-shaped detail into a string', async () => {
+      const catalog = createProviderCatalogMock(async () => ({
+        ok: false,
+        detail: { error: 'credentials missing' },
+      }));
+      const ctx = buildCtx({ providerRow: { id: 'p1' }, catalog });
+
+      await handleTestConnection(ctx);
+      const body = parseJsonResponse(ctx.res);
+      assert.equal(body.ok, false);
+      assert.equal(body.error, 'credentials missing');
+    });
+
+    it('returns { ok:false, error } when the plugin throws', async () => {
+      const catalog = createProviderCatalogMock(async () => {
+        throw new Error('plugin blew up');
+      });
+      const ctx = buildCtx({ providerRow: { id: 'p1' }, catalog });
+
+      await handleTestConnection(ctx);
+      const body = parseJsonResponse(ctx.res);
+      assert.equal(body.ok, false);
+      assert.equal(body.error, 'plugin blew up');
+    });
+
+    it('responds with a helpful error when the provider catalog is not installed', async () => {
+      const pool = createMockPool(async () => ({ rows: [{ id: 'p1' }] }));
+      const appCtx = createMockAppCtx({ pool }); // no providerCatalog in services
+      const res = createMockRes();
+
+      await handleTestConnection({
+        req: createMockReq({ method: 'POST' }),
+        res,
+        params: { providerId: 'p1' },
+        query: {},
+        appCtx,
+      });
+
+      const body = parseJsonResponse(res);
+      assert.equal(body.ok, false);
+      assert.ok(body.error, 'error field should be populated');
+      assert.equal(body.message, undefined);
+    });
   });
 });
 

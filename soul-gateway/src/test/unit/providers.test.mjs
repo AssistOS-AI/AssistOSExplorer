@@ -1429,3 +1429,55 @@ describe('ProviderCatalog', () => {
     assert.equal(templates['claudeai-api'].oauth_adapter_key, 'anthropic-claudeai');
   });
 });
+
+// ── Codex provider plugin ───────────────────────────────────────────
+
+describe('codex-api provider plugin', () => {
+  it('testConnection fails when no oauth token is leased', async () => {
+    const result = await codexPlugin.testConnection({ credentialLease: {} });
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /No Codex OAuth token/);
+  });
+
+  it('testConnection reports expiry without hitting the network', async () => {
+    const result = await codexPlugin.testConnection({
+      credentialLease: {
+        oauth: {
+          accessToken: 'tok',
+          expiresAt: new Date(Date.now() - 1000).toISOString(),
+        },
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /expired/);
+  });
+
+  it('testConnection succeeds when an unexpired oauth token is present', async () => {
+    const result = await codexPlugin.testConnection({
+      credentialLease: {
+        oauth: {
+          accessToken: 'tok',
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /credentials present/);
+  });
+
+  it('testConnection does not perform any HTTP call (scope cannot list /v1/models)', async () => {
+    // If testConnection were making a live request it would fail with a
+    // connection error in this test environment. Reaching the success
+    // branch proves no outbound fetch happened.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = () => { throw new Error('testConnection must not call fetch'); };
+    try {
+      const result = await codexPlugin.testConnection({
+        credentialLease: { oauth: { accessToken: 'tok' } },
+      });
+      assert.equal(result.ok, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});

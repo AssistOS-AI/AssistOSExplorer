@@ -75,17 +75,26 @@ export const providerPlugin = {
   },
 
   async testConnection(ctx) {
-    const token = ctx.credentialLease?.oauth?.accessToken || ctx.credentialLease?.secret;
+    // The Codex OAuth token is issued with OIDC scopes
+    // (openid/email/profile/offline_access) and is only accepted by
+    // the ChatGPT backend API at chatgpt.com/backend-api/codex. It is
+    // NOT accepted by api.openai.com/v1/models — that endpoint will
+    // return 401/403 even for a perfectly valid, unexpired token.
+    // Mirroring the old gateway's behaviour, we validate the lease
+    // itself (presence + non-expired) rather than making a live call
+    // that is known to fail.
+    const lease = ctx.credentialLease?.oauth;
+    const token = lease?.accessToken || ctx.credentialLease?.secret;
     if (!token) return { ok: false, detail: 'No Codex OAuth token configured' };
 
-    try {
-      await httpGet('https://api.openai.com/v1/models', {
-        Authorization: `Bearer ${token}`,
-      });
-      return { ok: true, detail: 'Connected to OpenAI Codex OAuth' };
-    } catch (err) {
-      return { ok: false, detail: err.message };
+    if (lease?.expiresAt) {
+      const expiresAtMs = new Date(lease.expiresAt).getTime();
+      if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+        return { ok: false, detail: 'Codex OAuth token expired — reconnect from the Auth panel' };
+      }
     }
+
+    return { ok: true, detail: 'Codex OAuth credentials present' };
   },
 
   async execute(ctx) {
@@ -208,25 +217,5 @@ function collectBody(res) {
     res.on('data', (chunk) => { body += chunk; });
     res.on('end', () => resolve(body));
     res.on('error', reject);
-  });
-}
-
-function httpGet(url, headers) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const client = parsed.protocol === 'https:' ? httpsRequest : httpRequest;
-    const req = client(parsed, { method: 'GET', headers }, async (res) => {
-      const body = await collectBody(res);
-      if (res.statusCode >= 400) {
-        const err = new Error(`HTTP ${res.statusCode}`);
-        err.status = res.statusCode;
-        err.body = body;
-        reject(err);
-        return;
-      }
-      resolve(body);
-    });
-    req.on('error', reject);
-    req.end();
   });
 }
