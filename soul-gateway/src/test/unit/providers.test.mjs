@@ -1430,8 +1430,20 @@ describe('ProviderCatalog', () => {
   });
 
   describe('preset catalog merge', () => {
-    // Minimal openai-api plugin stub so the openai-compatible presets
-    // (nvidia, groq, fireworks, ...) pass the getPlugin() filter.
+    // Stubs mirror the production manifests of the dispatcher plugins:
+    //   openai-api      → generic OpenAI-compatible client used by every
+    //                     vendor preset (nvidia, groq, fireworks, …)
+    //   anthropic-api   → generic Anthropic API client behind the
+    //                     `anthropic-direct` preset
+    //   search-builtin  → multi-engine search dispatcher behind the
+    //                     tavily/brave/exa/… presets
+    //
+    // Each carries `hidden: true` so getTemplates() does not surface
+    // the dispatcher key itself in the dropdown — the only way to
+    // configure them is via a preset (which fills in the vendor-specific
+    // base_url, display_name, etc.). Without `hidden`, the dropdown
+    // would show meaningless raw entries like "search-builtin" with no
+    // base_url, and a user picking one would have nothing to point at.
     const openaiApiPlugin = {
       manifest: {
         key: 'openai-api',
@@ -1441,11 +1453,11 @@ describe('ProviderCatalog', () => {
         supportsTools: true,
         supportedFormats: ['openai_chat'],
         displayName: 'OpenAI-Compatible API',
+        hidden: true,
       },
       async init() {}, async shutdown() {}, async execute() {}, classifyError() {},
     };
 
-    // Stub for the search-builtin plugin so search presets surface.
     const searchBuiltinPlugin = {
       manifest: {
         key: 'search-builtin',
@@ -1455,6 +1467,7 @@ describe('ProviderCatalog', () => {
         supportsTools: false,
         supportedFormats: ['openai_chat'],
         displayName: 'Web Search (Built-in)',
+        hidden: true,
       },
       async init() {}, async shutdown() {}, async execute() {}, classifyError() {},
     };
@@ -1468,6 +1481,7 @@ describe('ProviderCatalog', () => {
         supportsTools: true,
         supportedFormats: ['anthropic_messages'],
         displayName: 'Anthropic API',
+        hidden: true,
       },
       async init() {}, async shutdown() {}, async execute() {}, classifyError() {},
     };
@@ -1476,7 +1490,7 @@ describe('ProviderCatalog', () => {
       catalog.load([openaiApiPlugin]);
       const templates = catalog.getTemplates();
 
-      for (const key of ['openai', 'nvidia', 'groq', 'fireworks', 'together', 'deepseek', 'mistral', 'xai', 'perplexity', 'cohere', 'openrouter', 'deepinfra']) {
+      for (const key of ['openai', 'nvidia', 'groq', 'fireworks', 'together', 'deepseek', 'mistral', 'codestral', 'xai', 'perplexity', 'cohere', 'openrouter', 'deepinfra']) {
         assert.ok(templates[key], `missing preset: ${key}`);
         assert.equal(templates[key].adapter_key, 'openai-api');
         assert.equal(templates[key].kind, 'external_api');
@@ -1484,6 +1498,14 @@ describe('ProviderCatalog', () => {
         assert.ok(templates[key].base_url && templates[key].base_url.length > 0,
           `${key} should have a base_url`);
       }
+
+      // Codestral runs on a separate host from the main Mistral API
+      // (api.mistral.ai). Asserting both URLs side-by-side guards
+      // against accidentally collapsing the two presets onto the same
+      // base_url, which would silently break code-completion routing.
+      assert.equal(templates['mistral'].base_url, 'https://api.mistral.ai/v1');
+      assert.equal(templates['codestral'].base_url, 'https://codestral.mistral.ai/v1');
+      assert.equal(templates['codestral'].display_name, 'Mistral Codestral');
     });
 
     it('includes all 8 search presets when search-builtin is loaded', () => {
@@ -1523,35 +1545,59 @@ describe('ProviderCatalog', () => {
       assert.ok(templates['anthropic-direct']);
     });
 
-    it('plugin template overrides preset on key collision', () => {
-      // Preset with key 'openai-api' would collide with the plugin key.
-      // Since the presets list uses 'openai' (not 'openai-api'), there's
-      // no actual collision in production — this test verifies the
-      // ordering guarantees the plugin wins if one is ever introduced.
-      catalog.load([openaiApiPlugin]);
+    it('hides dispatcher plugin keys from getTemplates() even when their plugin is loaded', () => {
+      // Regression: before this fix, getTemplates() unconditionally
+      // surfaced every loaded plugin's key — including the protocol-
+      // family dispatchers — which polluted the dropdown with raw
+      // `openai-api`, `anthropic-api`, `search-builtin` entries that
+      // had no base_url and no meaningful display name. Vendors are
+      // configured exclusively through presets; the dispatcher keys
+      // are an implementation detail and must stay out of the dropdown.
+      catalog.load([openaiApiPlugin, anthropicApiPlugin, searchBuiltinPlugin]);
       const templates = catalog.getTemplates();
-      assert.equal(templates['openai-api'].display_name, 'OpenAI-Compatible API');
-      assert.equal(templates['openai-api'].adapter_key, 'openai-api');
+
+      assert.equal(templates['openai-api'], undefined);
+      assert.equal(templates['anthropic-api'], undefined);
+      assert.equal(templates['search-builtin'], undefined);
+
+      // …and yet the presets routed through them still appear.
+      assert.ok(templates['nvidia']);
+      assert.ok(templates['anthropic-direct']);
+      assert.ok(templates['tavily']);
     });
 
-    it('total dropdown count is the sum of loaded plugins + applicable presets', () => {
+    it('OAuth-backed plugins remain visible alongside the presets', () => {
+      // OAuth providers are distinct vendor offerings (not dispatchers),
+      // so their plugin keys MUST appear in the dropdown — there are no
+      // presets for claude.ai / Codex / Copilot / Kiro / Gemini OAuth.
+      catalog.load([codexPlugin, geminiOAuthPlugin, claudeaiPlugin, openaiApiPlugin]);
+      const templates = catalog.getTemplates();
+
+      assert.ok(templates['codex-api'], 'codex-api should be in dropdown');
+      assert.equal(templates['codex-api'].auth_strategy, 'oauth');
+      assert.ok(templates['gemini-openai'], 'gemini-openai should be in dropdown');
+      assert.ok(templates['claudeai-api'], 'claudeai-api should be in dropdown');
+
+      // The hidden dispatcher loaded alongside them is still filtered.
+      assert.equal(templates['openai-api'], undefined);
+    });
+
+    it('total dropdown count: hidden dispatchers contribute zero, presets surface in full', () => {
+      // 3 dispatcher plugins (all hidden) + 22 vendor presets = 22 entries.
       catalog.load([openaiApiPlugin, searchBuiltinPlugin, anthropicApiPlugin]);
       const templates = catalog.getTemplates();
 
-      // 3 plugin templates + 12 openai-compat + 8 search + 1 anthropic-direct = 24
-      const pluginKeys = ['openai-api', 'search-builtin', 'anthropic-api'];
-      const openaiPresetKeys = ['openai', 'openrouter', 'nvidia', 'fireworks', 'groq', 'together', 'deepseek', 'deepinfra', 'perplexity', 'mistral', 'xai', 'cohere'];
+      const openaiPresetKeys = ['openai', 'openrouter', 'nvidia', 'fireworks', 'groq', 'together', 'deepseek', 'deepinfra', 'perplexity', 'mistral', 'codestral', 'xai', 'cohere'];
       const searchPresetKeys = ['tavily', 'brave', 'exa', 'serper', 'jina', 'duckduckgo', 'searxng', 'gemini-search'];
       const anthropicPresetKeys = ['anthropic-direct'];
 
-      for (const k of pluginKeys) assert.ok(templates[k], `missing plugin: ${k}`);
       for (const k of openaiPresetKeys) assert.ok(templates[k], `missing openai preset: ${k}`);
       for (const k of searchPresetKeys) assert.ok(templates[k], `missing search preset: ${k}`);
       for (const k of anthropicPresetKeys) assert.ok(templates[k], `missing anthropic preset: ${k}`);
 
       assert.equal(
         Object.keys(templates).length,
-        pluginKeys.length + openaiPresetKeys.length + searchPresetKeys.length + anthropicPresetKeys.length,
+        openaiPresetKeys.length + searchPresetKeys.length + anthropicPresetKeys.length,
       );
     });
   });
@@ -1831,5 +1877,151 @@ describe('codex-api payload builder', () => {
       assert.equal(codexPlugin.manifest.defaultBaseUrl, 'https://chatgpt.com/backend-api/codex');
       assert.equal(codexPlugin.manifest.oauthAdapterKey, 'openai-codex');
     });
+  });
+});
+
+// ── openai-api testConnection HTTP behavior ─────────────────────────
+
+import { createServer } from 'node:http';
+import { providerPlugin as openaiApiPlugin } from '../../runtime/providers/builtin/openai-api.provider.mjs';
+
+/**
+ * Spin up a tiny HTTP server that returns canned responses for the
+ * two endpoints openai-api's testConnection() probes:
+ *   GET  /v1/models
+ *   POST /v1/chat/completions
+ *
+ * Pass `null` (or omit) for either endpoint to make it 404. The
+ * fixture mirrors what a real OpenAI-compatible vendor exposes so
+ * the plugin can be exercised end-to-end without mocking node:http.
+ *
+ * @param {{ models?: { status: number, body?: string }|null,
+ *           completions?: { status: number, body?: string }|null }} opts
+ */
+async function spinUpFakeOpenAI(opts = {}) {
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push({ method: req.method, url: req.url });
+
+    let route = null;
+    if (req.method === 'GET' && req.url === '/v1/models') route = opts.models;
+    else if (req.method === 'POST' && req.url === '/v1/chat/completions') route = opts.completions;
+
+    if (!route) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{"error":"not found"}');
+      return;
+    }
+
+    // Drain the request body so the socket can be released even though
+    // testConnection() doesn't care about it.
+    req.on('data', () => {});
+    req.on('end', () => {
+      res.writeHead(route.status, { 'Content-Type': 'application/json' });
+      res.end(route.body || '{}');
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  return {
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    seen,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+function makeOpenAITestCtx(baseUrl, secret = 'test-key') {
+  return {
+    providerRecord: { base_url: baseUrl },
+    credentialLease: { secret },
+  };
+}
+
+describe('openai-api testConnection HTTP behavior', () => {
+  it('returns ok=true when /models returns 200', async () => {
+    // Happy path — every vendor that exposes /models hits this branch.
+    const fake = await spinUpFakeOpenAI({
+      models: { status: 200, body: JSON.stringify({ data: [{ id: 'gpt-test' }] }) },
+    });
+    try {
+      const result = await openaiApiPlugin.testConnection(makeOpenAITestCtx(fake.baseUrl));
+      assert.equal(result.ok, true);
+      // The plugin must NOT touch /chat/completions when /models worked.
+      assert.equal(fake.seen.length, 1);
+      assert.equal(fake.seen[0].url, '/v1/models');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it('falls back to /chat/completions probe when /models returns 404 (Codestral case)', async () => {
+    // Mirrors Codestral: the restricted subdomain only exposes
+    // /chat/completions and /fim/completions, so /models 404s. The
+    // plugin should probe /chat/completions with an empty body — a
+    // 400 from the vendor means "your payload is bad but your
+    // credential is fine", which is the strongest signal we can get
+    // without spending API quota.
+    const fake = await spinUpFakeOpenAI({
+      models: { status: 404, body: '{"error":"not found"}' },
+      completions: { status: 400, body: '{"error":"missing model field"}' },
+    });
+    try {
+      const result = await openaiApiPlugin.testConnection(makeOpenAITestCtx(fake.baseUrl));
+      assert.equal(result.ok, true);
+      assert.match(result.detail, /model listing not exposed/i);
+      // Both endpoints must have been probed in order.
+      assert.equal(fake.seen.length, 2);
+      assert.equal(fake.seen[0].url, '/v1/models');
+      assert.equal(fake.seen[1].url, '/v1/chat/completions');
+      assert.equal(fake.seen[1].method, 'POST');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it('does NOT fall back when /models returns 401 (auth bad)', async () => {
+    // 401 from /models is unambiguous: the credential is wrong, no
+    // amount of probing /chat/completions will rescue it. Falling
+    // back here would waste a request and could mislead the user.
+    const fake = await spinUpFakeOpenAI({
+      models: { status: 401, body: '{"error":"unauthorized"}' },
+    });
+    try {
+      const result = await openaiApiPlugin.testConnection(makeOpenAITestCtx(fake.baseUrl));
+      assert.equal(result.ok, false);
+      assert.match(result.detail, /401/);
+      assert.equal(fake.seen.length, 1, 'must not probe /chat/completions on 401 from /models');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it('reports failure when both /models and /chat/completions return 404', async () => {
+    // base_url is wrong — neither endpoint exists. The plugin must
+    // not optimistically report success here.
+    const fake = await spinUpFakeOpenAI({});
+    try {
+      const result = await openaiApiPlugin.testConnection(makeOpenAITestCtx(fake.baseUrl));
+      assert.equal(result.ok, false);
+      assert.match(result.detail, /404/);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it('reports auth failure when /models 404 and /chat/completions returns 401', async () => {
+    // Codestral-shaped layout (no /models) but the credential is bad.
+    // The probe surfaces the 401 instead of the leading 404.
+    const fake = await spinUpFakeOpenAI({
+      completions: { status: 401, body: '{"detail":"Unauthorized"}' },
+    });
+    try {
+      const result = await openaiApiPlugin.testConnection(makeOpenAITestCtx(fake.baseUrl));
+      assert.equal(result.ok, false);
+      assert.match(result.detail, /401/);
+    } finally {
+      await fake.close();
+    }
   });
 });

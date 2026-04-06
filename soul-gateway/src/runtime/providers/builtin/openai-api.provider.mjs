@@ -37,6 +37,12 @@ const manifest = {
   supportedFormats: ['openai_chat'],
   displayName: 'OpenAI-Compatible API',
   defaultBaseUrl: 'https://api.openai.com/v1',
+  // Dispatcher plugin: every OpenAI-compatible vendor (NVIDIA, Groq,
+  // OpenRouter, Fireworks, …) is configured through its own preset in
+  // provider-presets.mjs. Hide the raw `openai-api` key from the
+  // dropdown so users always pick a vendor preset that fills in the
+  // base_url and display name.
+  hidden: true,
 };
 
 // ── Plugin ──────────────────────────────────────────────────────────
@@ -92,14 +98,56 @@ export const providerPlugin = {
     const baseUrl = ctx.providerRecord?.base_url || 'https://api.openai.com/v1';
     const token = ctx.credentialLease?.secret || ctx.credentialLease?.oauth?.accessToken;
     if (!token) return { ok: false, detail: 'No credentials configured' };
+    const authHeaders = { Authorization: `Bearer ${token}` };
 
+    // Most OpenAI-compatible vendors expose GET /models, so try that
+    // first — a 200 is the strongest signal we can get ("auth works,
+    // base URL is right, and the vendor speaks the listing dialect").
     try {
-      await httpGet(baseUrl + '/models', {
-        Authorization: `Bearer ${token}`,
-      });
+      await httpGet(baseUrl + '/models', authHeaders);
       return { ok: true, detail: 'Connected to OpenAI API' };
-    } catch (err) {
-      return { ok: false, detail: err.message };
+    } catch (modelsErr) {
+      // 401/403 → credential is wrong. Falling back here would just
+      // hit the same wall and waste a request, so surface immediately.
+      if (modelsErr.status === 401 || modelsErr.status === 403) {
+        return { ok: false, detail: modelsErr.message };
+      }
+      // Anything other than a missing endpoint (5xx, network, …)
+      // also propagates as-is — the user needs to know what failed.
+      if (modelsErr.status !== 404) {
+        return { ok: false, detail: modelsErr.message };
+      }
+
+      // 404 specifically: this base URL does not host /models. The
+      // canonical example is Mistral's Codestral subdomain, which
+      // restricts the surface to /chat/completions and /fim/completions.
+      // Probe the chat-completions route with a deliberately empty
+      // body — we only care whether the route exists and the credential
+      // is recognised, not whether the payload is valid:
+      //   200 / 4xx (other than 401/403/404) → endpoint is reachable
+      //                                        and auth was at least
+      //                                        read → success
+      //   401 / 403 → credential rejected → fail
+      //   404       → base URL has no /chat/completions either →
+      //               wrong base URL → fail
+      let probeStatus;
+      try {
+        probeStatus = await httpProbeStatus(
+          baseUrl + '/chat/completions',
+          { ...authHeaders, 'Content-Type': 'application/json' },
+          '{}',
+        );
+      } catch (probeErr) {
+        return { ok: false, detail: probeErr.message };
+      }
+
+      if (probeStatus === 401 || probeStatus === 403) {
+        return { ok: false, detail: `HTTP ${probeStatus}` };
+      }
+      if (probeStatus === 404) {
+        return { ok: false, detail: 'HTTP 404 (no /models or /chat/completions at base URL)' };
+      }
+      return { ok: true, detail: 'Connected (model listing not exposed at this base URL)' };
     }
   },
 
@@ -342,6 +390,45 @@ function httpGet(urlStr, headers) {
       res.on('error', reject);
     });
     req.on('error', reject);
+    req.end();
+  });
+}
+
+/**
+ * POST `body` and resolve with the response status code, draining
+ * the body so the socket is released. Used by testConnection() as a
+ * fallback probe when /models is not available — unlike httpGet
+ * above, this resolves on every HTTP response (including 4xx/5xx)
+ * because the probe needs to inspect the status, not the body.
+ *
+ * @param {string} urlStr
+ * @param {object} headers
+ * @param {string} body
+ * @returns {Promise<number>} HTTP status code
+ */
+function httpProbeStatus(urlStr, headers, body) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlStr);
+    const isHttps = url.protocol === 'https:';
+    const reqFn = isHttps ? httpsRequest : httpRequest;
+
+    const opts = {
+      hostname: url.hostname,
+      port: url.port || (isHttps ? 443 : 80),
+      path: url.pathname + url.search,
+      method: 'POST',
+      headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
+    };
+
+    const req = reqFn(opts, (res) => {
+      // Drain the body so the underlying socket can be released even
+      // though we only care about the status code.
+      res.on('data', () => {});
+      res.on('end', () => resolve(res.statusCode));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.write(body);
     req.end();
   });
 }

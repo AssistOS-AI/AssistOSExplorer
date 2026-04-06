@@ -23,10 +23,11 @@
  * Shape notes:
  *  - `key`              dropdown key; becomes the default `provider_key`
  *                       at creation time
- *  - `adapter_key`      MUST match a loaded plugin's manifest.key
- *                       (e.g. `openai-api`, `anthropic-api`,
- *                       `search-builtin`) so the catalog's
- *                       `ADAPTER_TO_PLUGIN` fallback can resolve it
+ *  - `adapter_key`      MUST exactly match a loaded plugin's
+ *                       `manifest.key` (e.g. `openai-api`,
+ *                       `anthropic-api`, `search-builtin`); the
+ *                       catalog looks plugins up by direct key
+ *                       lookup, no legacy short-name aliasing
  *  - `kind`             matches the plugin kind (`external_api`,
  *                       `search`, `custom`)
  *  - `auth_strategy`    `api_key` | `oauth` | `subscription` |
@@ -132,6 +133,17 @@ export const PROVIDER_PRESETS = Object.freeze([
     key: 'mistral',
     display_name: 'Mistral',
     base_url: 'https://api.mistral.ai/v1',
+    ...OPENAI_COMPAT_DEFAULTS,
+  }),
+  Object.freeze({
+    // Codestral runs on its own subdomain, distinct from Mistral's
+    // main API (api.mistral.ai). Listed as a separate preset because
+    // a user picking "Mistral" expects general-purpose chat models,
+    // while "Codestral" is a code-completion-tuned endpoint with its
+    // own auth/billing surface.
+    key: 'codestral',
+    display_name: 'Mistral Codestral',
+    base_url: 'https://codestral.mistral.ai/v1',
     ...OPENAI_COMPAT_DEFAULTS,
   }),
   Object.freeze({

@@ -11,24 +11,6 @@ import { createProviderContext } from './provider-context.mjs';
 import { withProviderFieldAliases } from './record-aliases.mjs';
 import { PROVIDER_PRESETS } from './provider-presets.mjs';
 
-/**
- * Maps provider adapter_key values to the protocol-family plugin that handles them.
- * Providers like nvidia, mistral, openrouter all use OpenAI-compatible APIs.
- */
-const ADAPTER_TO_PLUGIN = Object.freeze({
-  openai: 'openai-api',
-  nvidia: 'openai-api',
-  mistral: 'openai-api',
-  openrouter: 'openai-api',
-  anthropic: 'anthropic-api',
-  copilot: 'copilot-api',
-  axiologic_kiro: 'kiro-api',
-  kiro: 'kiro-api',
-  codex: 'codex-api',
-  gemini: 'gemini-openai',
-  search: 'search-builtin',
-});
-
 export class ProviderCatalog {
   constructor({ log }) {
     this._log = log;
@@ -77,17 +59,18 @@ export class ProviderCatalog {
   }
 
   /**
-   * Get a plugin by provider adapter key.
-   * Falls back to protocol-family mapping for providers that use standard protocols
-   * (e.g., nvidia -> openai-api, mistral -> openai-api, openrouter -> openai-api).
+   * Get a plugin by its manifest key. Callers MUST pass the
+   * canonical plugin key (e.g. `openai-api`, `anthropic-api`,
+   * `search-builtin`), which on a real provider record lives in
+   * `providers.adapter_key`. The schema declares `adapter_key` as
+   * `text NOT NULL` and the create endpoint always populates it,
+   * so there is no longer a legacy short-name fallback.
    *
-   * @param {string} providerKey
-   * @returns {object|null} ProviderPlugin or null
+   * @param {string} pluginKey  e.g. `openai-api`
+   * @returns {object|null}     ProviderPlugin or null
    */
-  getPlugin(providerKey) {
-    return this._plugins.get(providerKey)
-      || this._plugins.get(ADAPTER_TO_PLUGIN[providerKey])
-      || null;
+  getPlugin(pluginKey) {
+    return this._plugins.get(pluginKey) || null;
   }
 
   /**
@@ -191,8 +174,17 @@ export class ProviderCatalog {
       templates[preset.key] = { ...preset };
     }
 
-    // 2. Plugin-derived templates (authoritative).
+    // 2. Plugin-derived templates (authoritative). Skip dispatchers
+    //    that opt out via `manifest.hidden = true` — those are
+    //    protocol-family glue (openai-api, anthropic-api,
+    //    search-builtin) and have no useful base_url or display_name
+    //    of their own; users only configure them through a preset.
+    //    OAuth-backed plugins (codex-api, copilot-api, claudeai-api,
+    //    kiro-api, gemini-openai) leave `hidden` unset and continue
+    //    to appear in the dropdown as their own dropdown entries
+    //    because there are no presets for them.
     for (const [key, plugin] of this._plugins) {
+      if (plugin.manifest.hidden) continue;
       templates[key] = {
         key: plugin.manifest.key,
         adapter_key: plugin.manifest.key,

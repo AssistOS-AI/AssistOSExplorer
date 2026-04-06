@@ -41,6 +41,11 @@ const manifest = {
   supportedFormats: ['openai_chat', 'anthropic_messages'],
   displayName: 'Anthropic API',
   defaultBaseUrl: 'https://api.anthropic.com',
+  // Dispatcher plugin: configured exclusively via the
+  // `anthropic-direct` preset (which fills in display_name + base_url
+  // + supported_formats). Hide the raw `anthropic-api` key from the
+  // dropdown so users always pick the preset.
+  hidden: true,
 };
 
 // Known model families for discovery

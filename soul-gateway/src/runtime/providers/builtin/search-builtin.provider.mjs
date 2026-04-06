@@ -28,6 +28,14 @@ const manifest = {
   supportsStreaming: false,
   supportsTools: false,
   supportedFormats: ['openai_chat'],
+  // Dispatcher plugin: routes to one of 8 search engines (Tavily,
+  // Brave, Exa, Serper, Jina, DuckDuckGo, SearXNG, Gemini grounding)
+  // based on the resolved model's provider_model_id. Each engine is
+  // surfaced through its own preset in provider-presets.mjs with the
+  // correct base_url. Hide the raw `search-builtin` key from the
+  // dropdown — picking it directly would leave the user with a blank
+  // base_url and nothing meaningful to point at.
+  hidden: true,
 };
 
 // ── Search provider endpoints ───────────────────────────────────────
