@@ -4,6 +4,12 @@
  * The encryption key is a 32-byte Buffer derived from the base64
  * ENCRYPTION_KEY env var.  When no key is configured, one is
  * auto-generated and persisted to DATA_DIR/encryption.key.
+ *
+ * encrypt() returns Buffers (not hex strings) so the values map
+ * cleanly onto Postgres `bytea` columns via node-postgres without any
+ * encoding dance. Callers that need to persist the result through a
+ * text/JSON channel (e.g. OAuthCredentialStore) must explicitly
+ * convert the Buffers to hex on write and back on read.
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
@@ -19,40 +25,39 @@ const KEY_BYTES = 32;
  *
  * @param {string} plaintext
  * @param {Buffer} key  32-byte key
- * @returns {{ ciphertext: string, iv: string, authTag: string }}
- *   All values are hex-encoded strings.
+ * @returns {{ ciphertext: Buffer, iv: Buffer, authTag: Buffer }}
  */
 export function encrypt(plaintext, key) {
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv(ALGO, key, iv);
 
-  let encrypted = cipher.update(plaintext, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  const authTag = cipher.getAuthTag().toString('hex');
+  const ciphertext = Buffer.concat([
+    cipher.update(plaintext, 'utf8'),
+    cipher.final(),
+  ]);
+  const authTag = cipher.getAuthTag();
 
-  return {
-    ciphertext: encrypted,
-    iv: iv.toString('hex'),
-    authTag,
-  };
+  return { ciphertext, iv, authTag };
 }
 
 /**
  * Decrypt ciphertext encrypted with AES-256-GCM.
  *
- * @param {string} ciphertext  hex-encoded
- * @param {string} iv          hex-encoded
- * @param {string} authTag     hex-encoded
+ * @param {Buffer} ciphertext
+ * @param {Buffer} iv          12-byte GCM nonce
+ * @param {Buffer} authTag     16-byte GCM auth tag
  * @param {Buffer} key         32-byte key
  * @returns {string} plaintext
  */
 export function decrypt(ciphertext, iv, authTag, key) {
-  const decipher = createDecipheriv(ALGO, key, Buffer.from(iv, 'hex'));
-  decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+  const decipher = createDecipheriv(ALGO, key, iv);
+  decipher.setAuthTag(authTag);
 
-  let decrypted = decipher.update(ciphertext, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+  const plaintext = Buffer.concat([
+    decipher.update(ciphertext),
+    decipher.final(),
+  ]);
+  return plaintext.toString('utf8');
 }
 
 /**

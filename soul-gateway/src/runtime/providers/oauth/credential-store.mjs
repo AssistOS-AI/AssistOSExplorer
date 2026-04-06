@@ -22,7 +22,13 @@ export class OAuthCredentialStore {
     const serialized = JSON.stringify(payload);
     const encrypted = encrypt(serialized, this._encryptionKey);
     const tempPath = `${path}.${randomUUID()}.tmp`;
-    const content = JSON.stringify(encrypted);
+    // encrypt() returns Buffers; JSON can't serialize them directly,
+    // so encode each component to hex at the file boundary.
+    const content = JSON.stringify({
+      ciphertext: encrypted.ciphertext.toString('hex'),
+      iv: encrypted.iv.toString('hex'),
+      authTag: encrypted.authTag.toString('hex'),
+    });
     await writeFile(tempPath, content, { mode: 0o600 });
     await rename(tempPath, path);
   }
@@ -33,9 +39,9 @@ export class OAuthCredentialStore {
       const raw = await readFile(path, 'utf8');
       const encrypted = JSON.parse(raw);
       return JSON.parse(decrypt(
-        encrypted.ciphertext,
-        encrypted.iv,
-        encrypted.authTag,
+        Buffer.from(encrypted.ciphertext, 'hex'),
+        Buffer.from(encrypted.iv, 'hex'),
+        Buffer.from(encrypted.authTag, 'hex'),
         this._encryptionKey,
       ));
     } catch (err) {
