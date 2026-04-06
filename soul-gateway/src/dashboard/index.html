@@ -636,7 +636,7 @@
 
       <!-- Providers Page -->
       <div x-show="page === 'providers'" x-cloak>
-        <div x-data="providersPage()" x-init="init()">
+        <div x-data="providersPage()" x-init="init()" @page-change.window="$event.detail === 'providers' && init()">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">LLM Providers</h2>
             <button class="btn btn-primary btn-sm" @click="openCreate()">Add Provider</button>
@@ -1090,7 +1090,7 @@
 
       <!-- Models Page -->
       <div x-show="page === 'models'" x-cloak>
-        <div x-data="modelsPage()" x-init="init()">
+        <div x-data="modelsPage()" x-init="init()" @page-change.window="$event.detail === 'models' && init()">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">Models</h2>
             <div class="flex gap-2 items-center">
@@ -1299,7 +1299,7 @@
 
       <!-- Tiers Page -->
       <div x-show="page === 'tiers'" x-cloak>
-        <div x-data="tiersPage()" x-init="init()">
+        <div x-data="tiersPage()" x-init="init()" @page-change.window="$event.detail === 'tiers' && init()">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">Model Tiers</h2>
             <button class="btn btn-primary btn-sm" @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier_id: '' };">Add Tier</button>
@@ -1424,7 +1424,7 @@
 
       <!-- Keys Management Page -->
       <div x-show="page === 'keys'" x-cloak>
-        <div x-data="keysPage()" x-init="init()">
+        <div x-data="keysPage()" x-init="init()" @page-change.window="$event.detail === 'keys' && init()">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">API Keys</h2>
             <button class="btn btn-primary btn-sm" @click="showCreate = true">Create Key</button>
@@ -1512,7 +1512,7 @@
 
       <!-- Blacklist Management Page -->
       <div x-show="page === 'blacklist'" x-cloak>
-        <div x-data="blacklistPage()" x-init="init()">
+        <div x-data="blacklistPage()" x-init="init()" @page-change.window="$event.detail === 'blacklist' && init()">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">Blacklist Rules</h2>
             <button class="btn btn-primary btn-sm" @click="showCreate = true">Add Rule</button>
@@ -1558,7 +1558,7 @@
 
       <!-- Middlewares Page -->
       <div x-show="page === 'middlewares'" x-cloak>
-        <div x-data="middlewaresPage()" x-init="init()">
+        <div x-data="middlewaresPage()" x-init="init()" @page-change.window="$event.detail === 'middlewares' && init()">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-bold">Middlewares</h2>
             <button class="btn btn-sm btn-outline" @click="rescan()">Rescan Files</button>

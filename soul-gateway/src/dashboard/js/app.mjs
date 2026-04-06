@@ -191,6 +191,15 @@ function app() {
     navigate(p) {
       this.page = p;
       window.location.hash = p;
+      // Notify per-tab Alpine components so they can re-fetch their
+      // data. Every data-tab wrapper (providers / models / tiers /
+      // keys / blacklist / middlewares) binds
+      // @page-change.window="..." to its own init() — without this
+      // dispatch the tab stays stuck on whatever state it had on
+      // first mount and a user has to hard-refresh the browser to
+      // see mutations made from another tab (e.g. a provider created
+      // in the Providers tab that auto-provisioned models).
+      window.dispatchEvent(new CustomEvent('page-change', { detail: p }));
     },
 
     logout() {
