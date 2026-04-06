@@ -325,6 +325,121 @@ describe('executeResolvedRequest', () => {
     assert.equal(releasedLease.secret, null);
   });
 
+  it('resolves the plugin via providerRecord.adapter_key when provider_key differs (preset-based providers)', async () => {
+    // Regression: preset-based providers (codestral, nvidia, groq,
+    // fireworks, …) all share the `openai-api` plugin via their
+    // `adapter_key` field, but their `provider_key` is the vendor
+    // name. The execution engine used to resolve the plugin by
+    // `provider_key` only, so it threw "Execution backend not
+    // loaded: codestral" — even though the catalog had `openai-api`
+    // loaded the whole time. Mirrors the same `adapterKey ||
+    // providerKey || name` resolution that ProviderCatalog
+    // ._resolveLifecycleTarget already uses for testConnection /
+    // discoverModels.
+    let pluginKeyAskedFor = null;
+
+    async function* gen() {
+      yield { type: 'message_start', data: { role: 'assistant' } };
+      yield { type: 'text_delta', data: { text: 'def add(a, b): return a + b' } };
+      yield { type: 'usage', data: { input_tokens: 5, output_tokens: 9 } };
+      yield { type: 'done', data: { finish_reason: 'stop' } };
+    }
+
+    const plugin = {
+      async execute(ctx) {
+        return { accountId: ctx.credentialLease?.accountId || null, stream: gen(), abort: async () => {} };
+      },
+      classifyError(error) { return error; },
+    };
+
+    const providerCatalog = {
+      getPlugin(key) {
+        pluginKeyAskedFor = key;
+        // Only the openai-api plugin is loaded — return null for any
+        // other key so the test fails loudly if the engine resolves
+        // by provider_key instead of adapter_key.
+        return key === 'openai-api' ? plugin : null;
+      },
+    };
+
+    const credentialManager = {
+      async getCredentials() {
+        return {
+          leaseId: 'lease-1',
+          accountId: 'account-1',
+          authType: 'api_key',
+          secret: 'sk-test',
+          oauth: null,
+          metadata: {},
+        };
+      },
+      release() {},
+    };
+
+    const appCtx = {
+      config: {
+        env: {
+          DEFAULT_REQUEST_TIMEOUT_MS: 1000,
+          DEFAULT_QUEUE_TIMEOUT_MS: 1000,
+          DEFAULT_MODEL_CONCURRENCY: 1,
+          HTTP_RETRY_MAX_ATTEMPTS: 1,
+          HTTP_RETRY_BASE_DELAY_MS: 1,
+          HTTP_RETRY_MULTIPLIER: 1,
+          HTTP_RETRY_MAX_DELAY_MS: 1,
+          HTTP_RETRY_JITTER_PCT: 0,
+        },
+        defaults: { responseExcerptChars: 2000 },
+      },
+      services: { extensionServices: {} },
+      log: { info() {}, warn() {}, error() {} },
+    };
+
+    // The snapshot is keyed by provider_key (here 'codestral'), but
+    // the provider record carries adapter_key='openai-api' — exactly
+    // what the dashboard writes when a user picks the Codestral
+    // preset from the dropdown.
+    const snapshot = {
+      providers: new Map([[
+        'codestral',
+        {
+          id: 'provider-codestral',
+          providerKey: 'codestral',
+          adapterKey: 'openai-api',
+          baseUrl: 'https://codestral.mistral.ai/v1',
+          settings: {},
+        },
+      ]]),
+    };
+
+    const result = await executeResolvedRequest({
+      requestId: 'req-codestral',
+      resolvedModel: {
+        id: 'model-1',
+        modelKey: 'codestral/codestral-latest',
+        providerId: 'provider-codestral',
+        providerKey: 'codestral',
+        providerModelId: 'codestral-latest',
+        requestTimeoutMs: 1000,
+        queueTimeoutMs: 1000,
+        concurrencyLimit: 1,
+        retryPolicy: {},
+      },
+      resolvedTier: null,
+      normalizedRequest: { model: 'codestral/codestral-latest', messages: [] },
+      snapshot,
+      appCtx,
+      concurrencyController: null,
+      providerCatalog,
+      credentialManager,
+      onCooldown() {},
+      log: appCtx.log,
+    });
+
+    assert.equal(pluginKeyAskedFor, 'openai-api',
+      'execution engine must look up the plugin by provider.adapter_key, not provider_key');
+    assert.equal(result.collected.content, 'def add(a, b): return a + b');
+  });
+
   it('lets response hooks inspect and mutate the buffered collected response', async () => {
     async function* gen() {
       yield { type: 'message_start', data: { role: 'assistant' } };

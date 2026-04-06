@@ -238,61 +238,26 @@ describe('ExecutorCatalog', () => {
     assert.equal(cat.getExecutor('nonexistent'), null);
   });
 
-  it('getExecutor falls back through ADAPTER_TO_PLUGIN mapping', () => {
+  it('getExecutor returns the registered executor by exact key', () => {
+    // The catalog is keyed by the plugin's manifest.key (e.g.
+    // `openai-api`), and every caller is required to look up by the
+    // same key — there is no longer a legacy short-name fallback
+    // (`nvidia`/`mistral`/`anthropic` → `openai-api`/`anthropic-api`).
+    // The schema declares providers.adapter_key as NOT NULL and the
+    // create endpoint always populates it with a real plugin key, so
+    // a fallback table would only be a brittle abstraction with no
+    // remaining production caller. See providers-route + the
+    // execution engine — both pass the resolved adapter_key directly.
     const cat = new ExecutorCatalog();
     const openaiExec = makeExecutor('openai-api');
     cat.register('openai-api', openaiExec);
 
-    // nvidia, mistral, openrouter should all resolve to openai-api
-    assert.strictEqual(cat.getExecutor('nvidia'), openaiExec);
-    assert.strictEqual(cat.getExecutor('mistral'), openaiExec);
-    assert.strictEqual(cat.getExecutor('openrouter'), openaiExec);
-  });
-
-  it('ADAPTER_TO_PLUGIN fallback works for anthropic', () => {
-    const cat = new ExecutorCatalog();
-    const anthExec = makeExecutor('anthropic-api');
-    cat.register('anthropic-api', anthExec);
-    assert.strictEqual(cat.getExecutor('anthropic'), anthExec);
-  });
-
-  it('ADAPTER_TO_PLUGIN fallback works for copilot', () => {
-    const cat = new ExecutorCatalog();
-    const copExec = makeExecutor('copilot-api');
-    cat.register('copilot-api', copExec);
-    assert.strictEqual(cat.getExecutor('copilot'), copExec);
-  });
-
-  it('ADAPTER_TO_PLUGIN fallback works for kiro variants', () => {
-    const cat = new ExecutorCatalog();
-    const kiroExec = makeExecutor('kiro-api');
-    cat.register('kiro-api', kiroExec);
-    assert.strictEqual(cat.getExecutor('kiro'), kiroExec);
-    assert.strictEqual(cat.getExecutor('axiologic_kiro'), kiroExec);
-  });
-
-  it('ADAPTER_TO_PLUGIN fallback works for search', () => {
-    const cat = new ExecutorCatalog();
-    const searchExec = makeExecutor('search-builtin', { executorType: 'search' });
-    cat.register('search-builtin', searchExec);
-    assert.strictEqual(cat.getExecutor('search'), searchExec);
-  });
-
-  it('ADAPTER_TO_PLUGIN fallback works for gemini', () => {
-    const cat = new ExecutorCatalog();
-    const gemExec = makeExecutor('gemini-openai');
-    cat.register('gemini-openai', gemExec);
-    assert.strictEqual(cat.getExecutor('gemini'), gemExec);
-  });
-
-  it('direct key match takes precedence over fallback', () => {
-    const cat = new ExecutorCatalog();
-    const openaiExec = makeExecutor('openai-api');
-    const nvidiaExec = makeExecutor('nvidia');
-    cat.register('openai-api', openaiExec);
-    cat.register('nvidia', nvidiaExec);
-    // Direct match returns nvidia, not the openai-api fallback
-    assert.strictEqual(cat.getExecutor('nvidia'), nvidiaExec);
+    assert.strictEqual(cat.getExecutor('openai-api'), openaiExec);
+    // Legacy short names no longer resolve — callers must pass the
+    // canonical plugin key.
+    assert.equal(cat.getExecutor('nvidia'), null);
+    assert.equal(cat.getExecutor('mistral'), null);
+    assert.equal(cat.getExecutor('openrouter'), null);
   });
 
   it('rejects invalid manifest on register', () => {

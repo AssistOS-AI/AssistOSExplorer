@@ -8,24 +8,6 @@
 
 import { validateExecutorManifest } from './executor-interface.mjs';
 
-/**
- * Maps provider adapter_key values to the protocol-family executor that handles them.
- * Copied from provider-catalog.mjs — kept in sync during migration.
- */
-const ADAPTER_TO_PLUGIN = Object.freeze({
-  openai: 'openai-api',
-  nvidia: 'openai-api',
-  mistral: 'openai-api',
-  openrouter: 'openai-api',
-  anthropic: 'anthropic-api',
-  copilot: 'copilot-api',
-  axiologic_kiro: 'kiro-api',
-  kiro: 'kiro-api',
-  codex: 'codex-api',
-  gemini: 'gemini-openai',
-  search: 'search-builtin',
-});
-
 export class ExecutorCatalog {
   constructor() {
     /** @type {Map<string, object>} */
@@ -44,15 +26,20 @@ export class ExecutorCatalog {
   }
 
   /**
-   * Look up an executor by key, with fallback through ADAPTER_TO_PLUGIN mapping.
+   * Look up an executor by its registered key. Callers MUST pass
+   * the canonical plugin key (which on a real provider record lives
+   * in `providers.adapter_key`); legacy short-name fallbacks
+   * (`nvidia` → `openai-api`, etc.) were removed once every caller
+   * was migrated to pass `adapter_key` directly. The schema declares
+   * `providers.adapter_key` as `text NOT NULL`, so a fallback table
+   * would only mask routing bugs without serving any real provider
+   * row.
    *
-   * @param {string} key
+   * @param {string} key  e.g. `openai-api`, `anthropic-api`
    * @returns {object|null} ExecutorPlugin or null
    */
   getExecutor(key) {
-    return this._executors.get(key)
-      || this._executors.get(ADAPTER_TO_PLUGIN[key])
-      || null;
+    return this._executors.get(key) || null;
   }
 
   /**

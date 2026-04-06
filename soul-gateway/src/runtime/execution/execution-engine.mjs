@@ -147,13 +147,30 @@ async function executeModelAttempt(model, execCtx) {
         const providerRecord = withProviderFieldAliases(
           execCtx.snapshot.providers.get(resolvedModel.providerKey || resolvedModel.provider_key)
         );
+
+        // Resolve which plugin handles this provider. The
+        // authoritative field is `adapter_key` (every provider record
+        // points at a protocol-family plugin like `openai-api`,
+        // `anthropic-api`, `search-builtin` …); `executor_key` is the
+        // optional override for custom executors, and `provider_key`
+        // is only kept as a last-ditch legacy fallback for old
+        // single-vendor providers where the two happened to coincide
+        // (codex-api, copilot-api). Without `adapter_key` in the
+        // chain, every preset-based provider (codestral, nvidia,
+        // groq, fireworks, …) blew up with "Execution backend not
+        // loaded: <vendor>" because the lookup asked for the vendor
+        // name instead of the protocol family. The lifecycle path
+        // (testConnection / discoverModels) already uses this same
+        // resolution order via ProviderCatalog._resolveLifecycleTarget.
         const executorKey = providerRecord?.executorKey
           || providerRecord?.executor_key
+          || providerRecord?.adapterKey
+          || providerRecord?.adapter_key
           || resolvedModel.providerKey
           || resolvedModel.provider_key;
 
         const executor = activeExecutorCatalog?.getExecutor(executorKey)
-          || providerCatalog?.getPlugin(resolvedModel.providerKey || resolvedModel.provider_key)
+          || providerCatalog?.getPlugin(executorKey)
           || null;
         if (!executor) {
           throw new ConfigurationError(`Execution backend not loaded: ${executorKey}`);
