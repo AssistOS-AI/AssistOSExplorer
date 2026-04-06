@@ -1481,3 +1481,177 @@ describe('codex-api provider plugin', () => {
     }
   });
 });
+
+describe('codex-api payload builder', () => {
+  let buildCodexPayload, splitSystemMessages;
+
+  beforeEach(async () => {
+    ({ buildCodexPayload, splitSystemMessages } = await import(
+      '../../runtime/providers/builtin/codex-api.provider.mjs'
+    ));
+  });
+
+  describe('splitSystemMessages', () => {
+    it('extracts system messages into instructions and strips them from input', () => {
+      const { instructions, input } = splitSystemMessages([
+        { role: 'system', content: 'Be concise.' },
+        { role: 'user', content: 'hi' },
+      ]);
+      assert.equal(instructions, 'Be concise.');
+      assert.equal(input.length, 1);
+      assert.equal(input[0].role, 'user');
+      assert.equal(input[0].content, 'hi');
+    });
+
+    it('joins multiple system messages with a blank line separator', () => {
+      const { instructions } = splitSystemMessages([
+        { role: 'system', content: 'rule 1' },
+        { role: 'user', content: 'x' },
+        { role: 'system', content: 'rule 2' },
+      ]);
+      assert.equal(instructions, 'rule 1\n\nrule 2');
+    });
+
+    it('JSON-stringifies structured system content', () => {
+      const { instructions } = splitSystemMessages([
+        { role: 'system', content: [{ type: 'text', text: 'A' }] },
+      ]);
+      assert.ok(instructions.includes('A'));
+    });
+
+    it('maps assistant and tool roles through, coercing anything else to user', () => {
+      const { input } = splitSystemMessages([
+        { role: 'assistant', content: 'previous reply' },
+        { role: 'tool', content: 'tool output' },
+        { role: 'function', content: 'legacy fn output' },
+      ]);
+      assert.equal(input[0].role, 'assistant');
+      assert.equal(input[1].role, 'tool');
+      assert.equal(input[2].role, 'user');
+    });
+
+    it('converts content-part arrays to input_text / input_image parts', () => {
+      const { input } = splitSystemMessages([
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'describe this' },
+            { type: 'image_url', image_url: { url: 'https://example.test/pic.png' } },
+          ],
+        },
+      ]);
+      assert.deepEqual(input[0].content, [
+        { type: 'input_text', text: 'describe this' },
+        { type: 'input_image', image_url: 'https://example.test/pic.png' },
+      ]);
+    });
+  });
+
+  describe('buildCodexPayload', () => {
+    it('produces a Codex-shaped payload with stream/store flags and the DEFAULT_INSTRUCTIONS fallback', () => {
+      const payload = buildCodexPayload(
+        { messages: [{ role: 'user', content: 'hi' }] },
+        'gpt-5.4',
+      );
+      assert.equal(payload.model, 'gpt-5.4');
+      assert.equal(payload.stream, true);
+      assert.equal(payload.store, false);
+      assert.ok(payload.instructions && payload.instructions.length > 0);
+      assert.equal(payload.input.length, 1);
+      assert.equal(payload.input[0].role, 'user');
+      assert.equal(payload.input[0].content, 'hi');
+    });
+
+    it('prefers system messages over the default instructions', () => {
+      const payload = buildCodexPayload(
+        {
+          messages: [
+            { role: 'system', content: 'You are a pirate.' },
+            { role: 'user', content: 'hi' },
+          ],
+        },
+        'gpt-5.2-codex',
+      );
+      assert.equal(payload.instructions, 'You are a pirate.');
+      assert.equal(payload.input.length, 1);
+      assert.equal(payload.input[0].role, 'user');
+    });
+
+    it('does NOT include max_output_tokens even when the normalized request has max_tokens', () => {
+      const payload = buildCodexPayload(
+        { messages: [{ role: 'user', content: 'hi' }], max_tokens: 500 },
+        'gpt-5.4',
+      );
+      assert.equal(payload.max_output_tokens, undefined);
+      assert.equal(payload.max_tokens, undefined);
+    });
+
+    it('passes temperature and top_p through when present', () => {
+      const payload = buildCodexPayload(
+        {
+          messages: [{ role: 'user', content: 'hi' }],
+          temperature: 0.5,
+          top_p: 0.8,
+        },
+        'gpt-5.4',
+      );
+      assert.equal(payload.temperature, 0.5);
+      assert.equal(payload.top_p, 0.8);
+    });
+
+    it('converts chat-completions tool definitions to the Responses API shape', () => {
+      const payload = buildCodexPayload(
+        {
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'lookup',
+                description: 'look something up',
+                parameters: { type: 'object', properties: { q: { type: 'string' } } },
+              },
+            },
+          ],
+        },
+        'gpt-5.4',
+      );
+      assert.equal(payload.tools.length, 1);
+      assert.equal(payload.tools[0].type, 'function');
+      assert.equal(payload.tools[0].name, 'lookup');
+      assert.equal(payload.tools[0].description, 'look something up');
+      assert.deepEqual(payload.tools[0].parameters, {
+        type: 'object',
+        properties: { q: { type: 'string' } },
+      });
+    });
+
+    it('omits tools entirely when no tools are requested', () => {
+      const payload = buildCodexPayload(
+        { messages: [{ role: 'user', content: 'hi' }] },
+        'gpt-5.4',
+      );
+      assert.equal(payload.tools, undefined);
+    });
+
+    it('defaults to an empty message list when normalizedReq has no messages', () => {
+      const payload = buildCodexPayload({}, 'gpt-5.4');
+      assert.deepEqual(payload.input, []);
+      assert.ok(payload.instructions && payload.instructions.length > 0);
+    });
+  });
+
+  describe('discoverModels / manifest', () => {
+    it('only exposes gpt-5 family models (no gpt-4o, o3, etc.)', async () => {
+      const discovered = await codexPlugin.discoverModels();
+      for (const m of discovered) {
+        assert.match(m.modelId, /^gpt-5/, `unexpected model in known list: ${m.modelId}`);
+      }
+    });
+
+    it('declares the correct default base URL and oauth adapter key', () => {
+      assert.equal(codexPlugin.manifest.defaultBaseUrl, 'https://chatgpt.com/backend-api/codex');
+      assert.equal(codexPlugin.manifest.oauthAdapterKey, 'openai-codex');
+    });
+  });
+});
