@@ -392,6 +392,140 @@ describe('Search error classification', () => {
   });
 });
 
+// ── search-builtin testConnection engine resolution ─────────────────
+
+describe('search-builtin testConnection engine resolution', () => {
+  // The lifecycle path (Test button in the dashboard / POST
+  // /management/providers/:id/test) calls testConnection() WITHOUT
+  // a resolved model in scope, so the plugin can't read the engine
+  // off ctx.resolvedModel. The previous implementation hardcoded
+  // 'tavily' as the fallback, which made every search provider's
+  // Test button report "Tavily Search credentials present" — even
+  // for an Exa, Brave, Serper, etc. provider. The fix walks
+  // providerRecord (settings → provider_key → base_url hostname)
+  // to figure out which engine the row actually represents.
+
+  function makeCtx(providerRecord, secret = 'fake-secret') {
+    return {
+      providerRecord,
+      credentialLease: { secret },
+      // resolvedModel deliberately omitted — this is the lifecycle case
+    };
+  }
+
+  it('reports the right engine name for an Exa provider via provider_key', async () => {
+    const result = await searchPlugin.testConnection(makeCtx({
+      provider_key: 'exa',
+      adapter_key: 'search-builtin',
+      base_url: 'https://api.exa.ai/search',
+    }));
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /Exa Search/);
+    assert.doesNotMatch(result.detail, /Tavily/);
+  });
+
+  it('reports the right engine name for a Brave provider via provider_key', async () => {
+    const result = await searchPlugin.testConnection(makeCtx({
+      provider_key: 'brave',
+      adapter_key: 'search-builtin',
+      base_url: 'https://api.search.brave.com/res/v1/web/search',
+    }));
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /Brave Search/);
+  });
+
+  it('reports the right engine name for a Tavily provider', async () => {
+    const result = await searchPlugin.testConnection(makeCtx({
+      provider_key: 'tavily',
+      adapter_key: 'search-builtin',
+      base_url: 'https://api.tavily.com/search',
+    }));
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /Tavily Search/);
+  });
+
+  it('reports DuckDuckGo as credential-free even with no secret', async () => {
+    const result = await searchPlugin.testConnection({
+      providerRecord: {
+        provider_key: 'duckduckgo',
+        adapter_key: 'search-builtin',
+        base_url: 'https://html.duckduckgo.com/html/',
+      },
+      credentialLease: null,
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /DuckDuckGo/);
+    assert.match(result.detail, /does not require authentication/);
+  });
+
+  it('falls back to base_url hostname when provider_key was renamed', async () => {
+    // User renamed the provider but the base URL still points at
+    // the canonical Exa endpoint — the plugin should still resolve
+    // to "Exa Search", not the literal hardcoded fallback.
+    const result = await searchPlugin.testConnection(makeCtx({
+      provider_key: 'my-search-provider',
+      adapter_key: 'search-builtin',
+      base_url: 'https://api.exa.ai/search',
+    }));
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /Exa Search/);
+  });
+
+  it('honours an explicit settings.engine override', async () => {
+    // settings.engine wins over provider_key + base_url so users
+    // running a forked endpoint can still pin the engine they meant.
+    const result = await searchPlugin.testConnection(makeCtx({
+      provider_key: 'mystery',
+      adapter_key: 'search-builtin',
+      base_url: 'https://forked.example.com/search',
+      settings: { engine: 'serper' },
+    }));
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /Serper Search/);
+  });
+
+  it('keeps using the resolved model when the execution path passes one in', async () => {
+    // execute() / discoverModels() pass ctx.resolvedModel; that
+    // remains the most specific signal and beats provider_key.
+    const result = await searchPlugin.testConnection({
+      providerRecord: {
+        provider_key: 'exa',
+        adapter_key: 'search-builtin',
+        base_url: 'https://api.exa.ai/search',
+      },
+      resolvedModel: { provider_model_id: 'brave' },
+      credentialLease: { secret: 'fake' },
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /Brave Search/);
+  });
+
+  it('reports a generic credential-present message when no engine can be identified', async () => {
+    const result = await searchPlugin.testConnection(makeCtx({
+      provider_key: 'totally-custom',
+      adapter_key: 'search-builtin',
+      base_url: 'https://unknown.example.com/api',
+    }));
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /credentials present/);
+    assert.doesNotMatch(result.detail, /Tavily/);
+  });
+
+  it('reports missing credentials with the engine name when secret is absent', async () => {
+    const result = await searchPlugin.testConnection({
+      providerRecord: {
+        provider_key: 'exa',
+        adapter_key: 'search-builtin',
+        base_url: 'https://api.exa.ai/search',
+      },
+      credentialLease: null,
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /Exa Search/);
+    assert.match(result.detail, /API key/i);
+  });
+});
+
 // ── Anthropic converter ─────────────────────────────────────────────
 
 import * as anthropicConverter from '../../runtime/providers/converters/anthropic-converter.mjs';

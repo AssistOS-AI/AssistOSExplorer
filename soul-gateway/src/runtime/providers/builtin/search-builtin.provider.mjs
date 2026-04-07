@@ -38,6 +38,24 @@ const manifest = {
   hidden: true,
 };
 
+// ── Engine ↔ canonical hostname map ─────────────────────────────────
+//
+// Used by resolveEngineKey() to figure out which search engine a
+// provider represents when the call site doesn't already have a
+// resolved model in scope (e.g. the lifecycle Test button). Each
+// entry is the hostname produced by the matching preset's base_url
+// in provider-presets.mjs.
+const ENGINE_HOSTNAMES = Object.freeze({
+  'api.tavily.com': 'tavily',
+  'api.search.brave.com': 'brave',
+  'api.exa.ai': 'exa',
+  'google.serper.dev': 'serper',
+  's.jina.ai': 'jina',
+  'api.duckduckgo.com': 'duckduckgo',
+  'html.duckduckgo.com': 'duckduckgo',
+  'generativelanguage.googleapis.com': 'gemini',
+});
+
 // ── Search provider endpoints ───────────────────────────────────────
 
 const SEARCH_PROVIDERS = {
@@ -208,18 +226,28 @@ export const providerPlugin = {
 
   async testConnection(ctx) {
     const secret = ctx.credentialLease?.secret;
-    const engineId = ctx.resolvedModel?.provider_model_id || 'tavily';
-    const engineKey = engineId.replace(/^search-/, '');
-    const engine = SEARCH_PROVIDERS[engineKey];
-    if (!engine) return { ok: false, detail: `Unknown search engine: ${engineKey}` };
+    const engineKey = resolveEngineKey(ctx.providerRecord, ctx);
 
-    // DuckDuckGo and SearXNG don't require auth
+    // No engine could be identified. The credential decryption
+    // already succeeded (we wouldn't be here otherwise), so we can
+    // still answer the credential-presence question — we just can't
+    // name the upstream service.
+    if (!engineKey) {
+      return secret
+        ? { ok: true, detail: 'Search credentials present (engine unknown)' }
+        : { ok: false, detail: 'No API key configured' };
+    }
+
+    const engine = SEARCH_PROVIDERS[engineKey];
+
+    // DuckDuckGo and SearXNG don't require auth — short-circuit
+    // before we look at the credential at all.
     if (!engine.authHeader && engineKey !== 'tavily' && engineKey !== 'gemini') {
       return { ok: true, detail: `${engine.displayName} does not require authentication` };
     }
 
     if (!secret && engineKey !== 'duckduckgo' && engineKey !== 'searxng') {
-      return { ok: false, detail: 'No API key configured' };
+      return { ok: false, detail: `${engine.displayName}: no API key configured` };
     }
 
     return { ok: true, detail: `${engine.displayName} credentials present` };
@@ -314,6 +342,70 @@ export const providerPlugin = {
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Resolve which search engine a provider record represents. Used by
+ * lifecycle entry points (testConnection, future discoverModels
+ * filtering) where there is no resolved model in scope and the
+ * engine has to be inferred from the provider row itself.
+ *
+ * Resolution order, most specific to least:
+ *   1. ctx.resolvedModel.provider_model_id — the execution path
+ *      passes this in, and it's the only signal that's exact
+ *      (the user explicitly chose which engine to invoke).
+ *   2. providerRecord.settings.engine — explicit override for
+ *      providers running a forked endpoint behind a custom URL.
+ *   3. providerRecord.provider_key — matches the preset key for
+ *      anything added via the Add Provider dropdown
+ *      (provider_key === 'exa', 'brave', 'tavily', …).
+ *   4. providerRecord.base_url hostname — last resort, covers
+ *      providers that have been renamed but still point at a
+ *      canonical engine endpoint.
+ *
+ * Returns the engine key (e.g. 'exa') or null if nothing matches.
+ *
+ * @param {object} providerRecord  raw or aliased provider row
+ * @param {object} [ctx]           plugin context (for resolvedModel)
+ * @returns {string|null}
+ */
+function resolveEngineKey(providerRecord, ctx = {}) {
+  // 1. Resolved model wins — most specific signal.
+  const resolvedRaw = ctx.resolvedModel?.provider_model_id
+    || ctx.resolvedModel?.providerModelId;
+  if (resolvedRaw) {
+    const stripped = String(resolvedRaw).replace(/^search-/, '');
+    if (SEARCH_PROVIDERS[stripped]) return stripped;
+  }
+
+  // 2. Explicit settings.engine override.
+  const explicit = providerRecord?.settings?.engine;
+  if (explicit && SEARCH_PROVIDERS[explicit]) return explicit;
+
+  // 3. provider_key matches a preset key directly.
+  const providerKey = providerRecord?.provider_key || providerRecord?.providerKey;
+  if (providerKey) {
+    const normalized = String(providerKey).toLowerCase();
+    if (SEARCH_PROVIDERS[normalized]) return normalized;
+    // Tolerate suffixed names like "exa-direct", "tavily-prod" by
+    // matching against any engine key that prefixes the provider_key.
+    for (const engineKey of Object.keys(SEARCH_PROVIDERS)) {
+      if (normalized.startsWith(engineKey)) return engineKey;
+    }
+  }
+
+  // 4. base_url hostname as the final fallback.
+  const baseUrl = providerRecord?.base_url || providerRecord?.baseUrl;
+  if (baseUrl) {
+    try {
+      const host = new URL(baseUrl).hostname.toLowerCase();
+      if (ENGINE_HOSTNAMES[host]) return ENGINE_HOSTNAMES[host];
+    } catch {
+      // Malformed base_url — fall through to null.
+    }
+  }
+
+  return null;
+}
 
 function extractSearchQuery(normalizedReq) {
   const messages = normalizedReq.messages || [];
