@@ -358,7 +358,22 @@ function providersPage() {
           }
         }
       }
-      // Sort alphabetically by label
+      return options.sort((a, b) => a.label.localeCompare(b.label));
+    },
+
+    /** Derive adapter options from loaded templates. */
+    get adapterOptions() {
+      const options = [];
+      const seen = new Set();
+      if (this.templates && typeof this.templates === 'object') {
+        for (const [, tpl] of Object.entries(this.templates)) {
+          const adapterKey = tpl.adapter_key || tpl.adapterKey;
+          if (adapterKey && !seen.has(adapterKey)) {
+            seen.add(adapterKey);
+            options.push({ key: adapterKey, label: tpl.display_name || tpl.displayName || adapterKey });
+          }
+        }
+      }
       return options.sort((a, b) => a.label.localeCompare(b.label));
     },
 
@@ -373,16 +388,24 @@ function providersPage() {
 
     onTemplateChange() {
       const t = this.templates[this.form.template];
-      if (t) {
-        this.form.display_name = t.display_name || '';
-        this.form.adapter_key = t.adapter_key || t.protocol || 'openai';
-        this.form.base_url = t.base_url || '';
-        this.form.auth_strategy = t.auth_strategy || t.billing_type || 'api_key';
-        this.form.auth_type = t.auth_type || 'api_key';
-        if (this.form.template !== 'custom') {
-          this.form.name = this.form.template;
-        }
+      if (!t) return;
+
+      // Set scalar fields immediately
+      this.form.display_name = t.display_name || '';
+      this.form.base_url = t.base_url || '';
+      this.form.auth_strategy = t.auth_strategy || t.billing_type || 'api_key';
+      this.form.auth_type = t.auth_type || (t.auth_strategy === 'oauth' ? 'managed' : 'api_key');
+      if (this.form.template !== 'custom') {
+        this.form.name = this.form.template;
       }
+
+      // Defer dropdown-bound fields to next tick so x-for options render first
+      const adapterKey = t.adapter_key || t.protocol || 'openai';
+      const oauthKey = t.oauth_adapter_key || '';
+      this.$nextTick(() => {
+        this.form.adapter_key = adapterKey;
+        this.form.oauth_adapter_key = oauthKey;
+      });
     },
 
     openCreate() {

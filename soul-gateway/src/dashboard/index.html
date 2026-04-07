@@ -420,7 +420,7 @@
             </select>
             <select class="select select-bordered select-sm" x-model="filterKey" @change="onFilterChange()">
               <option value="">All Keys</option>
-              <template x-for="k in availableKeys" :key="k.id"><option :value="k.id" x-text="k.label || k.key_hint || k.id.slice(0,8)"></option></template>
+              <template x-for="k in availableKeys" :key="k.id || k.key_hint"><option :value="k.id" x-text="k.label || k.key_hint || (k.id ? k.id.slice(0,8) : '')"></option></template>
             </select>
           </div>
           <!-- Chart -->
@@ -664,10 +664,10 @@
                       <td class="text-xs font-mono opacity-60" x-text="p.key_hint || '-'"></td>
                       <td><input type="checkbox" class="toggle toggle-sm" :checked="p.enabled ?? p.is_enabled" disabled></td>
                       <td>
-                        <template x-if="p.auth_type === 'managed'">
+                        <template x-if="(p.auth_strategy || p.auth_type) === 'oauth' || p.auth_type === 'managed'">
                           <button class="btn btn-xs btn-outline" @click="viewAuth(p)">Manage</button>
                         </template>
-                        <template x-if="p.auth_type !== 'managed'">
+                        <template x-if="(p.auth_strategy || p.auth_type) !== 'oauth' && p.auth_type !== 'managed'">
                           <span class="badge badge-xs badge-ghost">API Key</span>
                         </template>
                       </td>
@@ -722,43 +722,46 @@
                   <span class="label-text-alt text-info">After creating, use the "Pipeline" button to compose hooks and executor</span>
                 </label>
               </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div class="form-control">
-                  <label class="label"><span class="label-text">Adapter</span></label>
-                  <select class="select select-bordered" x-model="form.adapter_key">
-                    <option value="openai">OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="google">Google</option>
-                  </select>
+              <!-- Advanced fields: only shown for Custom template (built-in templates set these automatically) -->
+              <div x-show="form.template === 'custom'">
+                <div class="grid grid-cols-2 gap-3">
+                  <div class="form-control">
+                    <label class="label"><span class="label-text">Adapter</span></label>
+                    <select class="select select-bordered" x-model="form.adapter_key">
+                      <template x-for="opt in adapterOptions" :key="opt.key">
+                        <option :value="opt.key" x-text="opt.label"></option>
+                      </template>
+                    </select>
+                  </div>
+                  <div class="form-control">
+                    <label class="label"><span class="label-text">Auth Strategy</span></label>
+                    <select class="select select-bordered" x-model="form.auth_strategy">
+                      <option value="api_key">API Key</option>
+                      <option value="oauth">OAuth</option>
+                      <option value="subscription">Subscription</option>
+                    </select>
+                  </div>
                 </div>
-                <div class="form-control">
-                  <label class="label"><span class="label-text">Auth Strategy</span></label>
-                  <select class="select select-bordered" x-model="form.auth_strategy">
-                    <option value="api_key">API Key</option>
-                    <option value="oauth">OAuth</option>
-                    <option value="subscription">Subscription</option>
+                <div class="form-control" x-show="form.auth_strategy === 'oauth'">
+                  <label class="label"><span class="label-text">OAuth Adapter</span></label>
+                  <select class="select select-bordered select-sm" x-model="form.oauth_adapter_key">
+                    <option value="">Select...</option>
+                    <template x-for="tpl in oauthAdapterOptions" :key="tpl.key">
+                      <option :value="tpl.key" x-text="tpl.label"></option>
+                    </template>
                   </select>
                 </div>
               </div>
-              <div class="form-control" x-show="form.auth_strategy === 'oauth'">
-                <label class="label"><span class="label-text">OAuth Adapter</span></label>
-                <select class="select select-bordered select-sm" x-model="form.oauth_adapter_key">
-                  <option value="">Select...</option>
-                  <template x-for="tpl in oauthAdapterOptions" :key="tpl.key">
-                    <option :value="tpl.key" x-text="tpl.label"></option>
-                  </template>
-                </select>
-              </div>
-              <div class="form-control">
+              <div class="form-control" x-show="form.template === 'custom'">
                 <label class="label"><span class="label-text">Auth Type</span></label>
                 <select class="select select-bordered" x-model="form.auth_type">
                   <option value="api_key">API Key (static key)</option>
                   <option value="managed">OAuth (managed credentials)</option>
                 </select>
-                <label class="label py-0" x-show="form.auth_type === 'managed'">
-                  <span class="label-text-alt text-info">After creating, use "Manage" button to add OAuth accounts</span>
-                </label>
               </div>
+              <label class="label py-0" x-show="form.auth_type === 'managed'">
+                <span class="label-text-alt text-info">After creating, use "Manage" button to add OAuth accounts</span>
+              </label>
               <div class="form-control" x-show="form.auth_type !== 'internal' && form.auth_strategy !== 'search'">
                 <label class="label"><span class="label-text">Base URL</span></label>
                 <input type="text" class="input input-bordered font-mono text-sm" x-model="form.base_url" placeholder="https://api.example.com/v1/chat/completions">
@@ -941,11 +944,13 @@
 
                       <div class="divider text-xs my-2">After signing in</div>
 
-                      <p class="text-xs opacity-70">After the provider redirects to <code>localhost:...</code>, copy the full URL from the browser and paste it here:</p>
+                      <div class="alert alert-warning text-xs my-2">
+                        <span><strong>The browser will show "site can't be reached" after sign-in.</strong> That's expected — the redirect URI is a local port that isn't running. Copy the FULL URL from the browser's address bar (it contains <code>?code=...&state=...</code>) and paste it below.</span>
+                      </div>
                       <div class="form-control mt-1">
-                        <label class="label py-1"><span class="label-text text-xs">Callback URL</span></label>
+                        <label class="label py-1"><span class="label-text text-xs">Callback URL (paste from browser address bar)</span></label>
                         <input type="text" class="input input-bordered input-sm font-mono text-xs"
-                               placeholder="http://localhost:3128/oauth/callback?code=...&state=..." x-model="callbackUrl">
+                               placeholder="http://localhost:1455/auth/callback?code=...&state=..." x-model="callbackUrl">
                       </div>
                       <button class="btn btn-sm btn-primary mt-2" @click="submitCallbackUrl()" :disabled="!callbackUrl">Submit Callback URL</button>
                       <p x-show="authPolling" class="text-xs opacity-70 mt-1">Waiting for authentication...</p>
