@@ -38,6 +38,8 @@ In addition to client-facing SSE, the gateway broadcasts completed request logs 
 
 A full-duplex connection exposed at the management API. Subscribers can apply optional filters by soul ID and model, update their filters without reconnecting, and receive a heartbeat that keeps the connection alive through network proxies and tunnels (default heartbeat interval 15 seconds, tuned to survive Cloudflare tunnel timeouts). The server implementation follows RFC 6455 and supports text frames only.
 
+WebSocket upgrades authenticate via the same admin session token as the management API, but the token is extracted from one of three places (in this order): an `Authorization: Bearer <token>` header, a `?token=...` query string parameter, or the session cookie. The query-string path exists because browser WebSocket clients can't set custom headers on the upgrade request, so the dashboard appends the session token to the WebSocket URL when opening a stream. Failed authentication returns a proper `HTTP/1.1 401 Unauthorized` line on the socket before closing, so client libraries see a real auth error instead of a silent disconnect.
+
 ### Server-Sent Events (SSE)
 
 A one-way stream for environments where WebSocket is unavailable. Same filtering support as the WebSocket path. Periodic keepalive comments prevent timeout on long-lived connections.

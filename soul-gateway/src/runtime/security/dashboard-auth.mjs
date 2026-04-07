@@ -128,17 +128,30 @@ function verifySessionToken(token, signingKey) {
  * Extract a session token from cookies or Authorization header.
  */
 function extractToken(req) {
-  // 1. Cookie
+  // 1. Authorization: Bearer <token> — most explicit
+  const auth = req.headers?.authorization;
+  if (auth && auth.startsWith('Bearer ')) {
+    return auth.slice(7).trim();
+  }
+
+  // 2. Query string ?token=... (for WebSocket upgrades that can't set headers)
+  const url = req.url || '';
+  const qIdx = url.indexOf('?');
+  if (qIdx >= 0) {
+    const search = url.slice(qIdx + 1);
+    for (const pair of search.split('&')) {
+      const [k, v] = pair.split('=');
+      if (decodeURIComponent(k) === 'token' && v) {
+        return decodeURIComponent(v);
+      }
+    }
+  }
+
+  // 3. Cookie — fallback for browser navigation
   const cookieHeader = req.headers?.cookie;
   if (cookieHeader) {
     const cookies = parseCookies(cookieHeader);
     if (cookies[COOKIE_NAME]) return cookies[COOKIE_NAME];
-  }
-
-  // 2. Authorization: Bearer <token>
-  const auth = req.headers?.authorization;
-  if (auth && auth.startsWith('Bearer ')) {
-    return auth.slice(7).trim();
   }
 
   return null;

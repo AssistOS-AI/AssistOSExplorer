@@ -51,7 +51,7 @@ export function createHttpServer(appCtx, httpRouter, wsRouter) {
 
   // WebSocket upgrade handling
   if (wsRouter) {
-    server.on('upgrade', (req, socket, head) => {
+    server.on('upgrade', async (req, socket, head) => {
       const { pathname } = parseUrl(req);
       let match = wsRouter.match('GET', pathname);
 
@@ -66,9 +66,13 @@ export function createHttpServer(appCtx, httpRouter, wsRouter) {
       }
 
       try {
-        match.handler({ req, socket, head, params: match.params, appCtx });
+        await match.handler({ req, socket, head, params: match.params, appCtx });
       } catch (err) {
-        log.error('ws upgrade error', { path: pathname, error: err.message });
+        if (err instanceof GatewayError && err.httpStatus === 401) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        } else {
+          log.error('ws upgrade error', { path: pathname, error: err.message });
+        }
         socket.destroy();
       }
     });
