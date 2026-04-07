@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Specifications - Soul Gateway</title>
+  <link rel="stylesheet" href="assets/style.css" />
+  <script src="site-nav.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"></div>
+          <div>Soul Gateway Specifications</div>
+        </div>
+      </div>
+    </header>
+    <main>
+      <section class="hero">
+        <span class="tag">Specs</span>
+        <h1>Specifications</h1>
+        <p>Capability-focused design specifications for Soul Gateway. Each spec is the authoritative source for its domain. Start with the <a href="specs-viewer.html?doc=README.md">README</a> for the architectural overview and the three-abstraction model (gateway hooks, provider hooks, executors).</p>
+      </section>
+
+      <section class="section">
+        <h2>Design Specifications</h2>
+        <div class="grid grid-3">
+
+          <a class="card" href="specs-viewer.html?doc=DS001-request-pipeline.md">
+            <span class="tag">DS001</span>
+            <h3>Request Pipeline</h3>
+            <p>Request lifecycle for the three accepted formats (Chat Completions, Anthropic Messages, OpenAI Responses). Bearer auth, identity headers, request IDs, validation, streaming vs non-streaming, and the full pipeline phases.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS002-provider-auth.md">
+            <span class="tag">DS002</span>
+            <h3>Provider Authentication</h3>
+            <p>Auth strategies (api_key / oauth / subscription), the five managed OAuth flows, multi-account pooling, token refresh with inline safety net, auto-provisioning, format converters, the provider template catalog, and custom search providers.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS003-middleware-framework.md">
+            <span class="tag">DS003</span>
+            <h3>Middleware, Hooks &amp; Extensions</h3>
+            <p>The three abstractions (gateway hooks, provider hooks, executors), provider mode, provider pipeline execution, the shared hook contract, extension discovery, custom in-gateway models, and deprecated <code>kind='wrapper'</code> notes.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS004-model-routing.md">
+            <span class="tag">DS004</span>
+            <h3>Model Routing</h3>
+            <p>Model resolution algorithm, tier-based fallback with cycle detection, the cooldown system, cascade behaviors, per-model concurrency semaphores, and pricing lookup (token-based and per-request).</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS005-streaming.md">
+            <span class="tag">DS005</span>
+            <h3>Streaming</h3>
+            <p>SSE pass-through to clients with internal stream tap for logging, non-streaming buffering, tool-call streaming, usage and finish-reason normalization, and real-time log broadcasting via WebSocket and SSE.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS006-database-schema.md">
+            <span class="tag">DS006</span>
+            <h3>Database Schema</h3>
+            <p>Table families (provider configuration, model registry, API keys, middleware, observability), encryption note (raw <code>bytea</code> not hex), and the audit log monthly partitioning strategy.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS007-rate-limiting-budgets.md">
+            <span class="tag">DS007</span>
+            <h3>Rate Limiting, Budgets &amp; API Keys</h3>
+            <p>Per-key RPM hard limit, per-key TPM soft limit, daily and monthly budgets, cost calculation formulas, the spend cache, the API key lifecycle, and per-tier / per-model overrides.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS008-content-filtering.md">
+            <span class="tag">DS008</span>
+            <h3>Content Filtering</h3>
+            <p>Pre-dispatch blacklist with exact, substring, and regex match types. Post-dispatch response filter with regex find/replace. Both configurable per tier and per model via the management API.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS009-error-handling.md">
+            <span class="tag">DS009</span>
+            <h3>Error Handling</h3>
+            <p>Error classification taxonomy, the shared error envelope, HTTP-level retry with exponential backoff and jitter, model-level cascade, account rotation on quota exhaustion, and retry logging.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS010-agent-loop-detector.md">
+            <span class="tag">DS010</span>
+            <h3>Agent Loop Detector</h3>
+            <p>Two detection signals (response similarity and growth-with-repetition), three response modes (intervene / block / log), session tracking, and per-tier configuration overrides.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS012-api-reference.md">
+            <span class="tag">DS012</span>
+            <h3>Management API &amp; Dashboard</h3>
+            <p>Dashboard authentication and CSRF, the provider template catalog, the full management operation catalog, connectivity tests with the chat-completions probe fallback, and the provider pipeline composer.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS013-configuration-deployment.md">
+            <span class="tag">DS013</span>
+            <h3>Configuration &amp; Deployment</h3>
+            <p>Environment variables, application defaults, self-initialization sequence on startup, <code>achillesAgentLib</code> discovery vs direct-provider modes, health check, graceful shutdown, and encryption key management.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS014-built-in-middlewares.md">
+            <span class="tag">DS014</span>
+            <h3>Built-in Middlewares</h3>
+            <p>Per-middleware capability documentation for the 12 gateway middlewares that ship with the runtime: cache, rate limiter, budget enforcer, content blocker, loop detector, context compressor, prompt injector, session context, token tracker, request logger, response filter, output compressor.</p>
+          </a>
+
+          <a class="card" href="specs-viewer.html?doc=DS015-observability.md">
+            <span class="tag">DS015</span>
+            <h3>Observability</h3>
+            <p>Audit logging with full request context, real-time log streaming over WebSocket and SSE, metrics dashboards (cost, usage, error, activity, token, system), session and agent tracking, and bulk data export.</p>
+          </a>
+
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

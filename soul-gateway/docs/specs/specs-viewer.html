@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Spec Viewer - Soul Gateway</title>
+  <link rel="stylesheet" href="assets/style.css" />
+  <script src="site-nav.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"></div>
+          <div>Soul Gateway Specifications</div>
+        </div>
+      </div>
+    </header>
+    <div class="specs-layout">
+      <nav class="specs-toc" id="toc"></nav>
+      <main class="specs-content" id="content">
+        <p>Loading...</p>
+      </main>
+    </div>
+  </div>
+  <script>
+    (function () {
+      'use strict';
+
+      // --- Security: validate doc parameter ---
+      var params = new URLSearchParams(window.location.search);
+      var doc = params.get('doc') || '';
+
+      if (!doc || !/^[A-Za-z0-9_-]+\.md$/.test(doc) || doc.indexOf('..') !== -1) {
+        document.getElementById('content').innerHTML =
+          '<h1>Invalid Document</h1><p>The requested document name is invalid. ' +
+          '<a href="index.html">Return to specifications index</a>.</p>';
+        return;
+      }
+
+      // --- Fetch and render ---
+      fetch(doc)
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.text();
+        })
+        .then(function (md) {
+          var html = renderMarkdown(md);
+          document.getElementById('content').innerHTML = html;
+          buildToc();
+          // Update page title from first h1
+          var h1 = document.querySelector('.specs-content h1');
+          if (h1) document.title = h1.textContent + ' - Soul Gateway Specs';
+        })
+        .catch(function (err) {
+          document.getElementById('content').innerHTML =
+            '<h1>Document Not Found</h1><p>Could not load <code>' + escapeHtml(doc) +
+            '</code>: ' + escapeHtml(err.message) + '.</p>' +
+            '<p><a href="index.html">Return to specifications index</a>.</p>';
+        });
+
+      // --- Markdown Renderer ---
+      function escapeHtml(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      function slugify(text) {
+        return text.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+      }
+
+      function renderInline(text) {
+        // Images
+        text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2" style="max-width:100%;" />');
+        // Links
+        text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+        // Bold+italic
+        text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+        // Bold
+        text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        // Italic
+        text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+        // Inline code
+        text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+        return text;
+      }
+
+      function renderMarkdown(src) {
+        var lines = src.split('\n');
+        var out = [];
+        var i = 0;
+
+        while (i < lines.length) {
+          var line = lines[i];
+
+          // Blank line
+          if (/^\s*$/.test(line)) { i++; continue; }
+
+          // Code block
+          if (/^```/.test(line)) {
+            var lang = line.slice(3).trim();
+            var code = [];
+            i++;
+            while (i < lines.length && !/^```/.test(lines[i])) {
+              code.push(lines[i]);
+              i++;
+            }
+            i++; // skip closing ```
+            out.push('<pre><code' + (lang ? ' class="language-' + escapeHtml(lang) + '"' : '') + '>' +
+              escapeHtml(code.join('\n')) + '</code></pre>');
+            continue;
+          }
+
+          // Heading
+          var hMatch = /^(#{1,6})\s+(.+)$/.exec(line);
+          if (hMatch) {
+            var level = hMatch[1].length;
+            var text = hMatch[2];
+            var slug = slugify(text.replace(/\*\*(.+?)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1'));
+            out.push('<h' + level + ' id="' + slug + '">' + renderInline(escapeHtml(text)) + '</h' + level + '>');
+            i++;
+            continue;
+          }
+
+          // Horizontal rule
+          if (/^-{3,}\s*$/.test(line)) {
+            out.push('<hr />');
+            i++;
+            continue;
+          }
+
+          // Table
+          if (line.indexOf('|') !== -1 && i + 1 < lines.length && /^\|?\s*[-:]+/.test(lines[i + 1])) {
+            var tableRows = [];
+            while (i < lines.length && lines[i].indexOf('|') !== -1) {
+              tableRows.push(lines[i]);
+              i++;
+            }
+            out.push(renderTable(tableRows));
+            continue;
+          }
+
+          // Blockquote
+          if (/^>\s?/.test(line)) {
+            var bqLines = [];
+            while (i < lines.length && /^>\s?/.test(lines[i])) {
+              bqLines.push(lines[i].replace(/^>\s?/, ''));
+              i++;
+            }
+            out.push('<blockquote>' + bqLines.map(function (l) {
+              return '<p>' + renderInline(escapeHtml(l)) + '</p>';
+            }).join('') + '</blockquote>');
+            continue;
+          }
+
+          // Unordered list
+          if (/^(\s*)[*\-+]\s+/.test(line)) {
+            out.push(renderList(lines, i, 'ul'));
+            // Advance past list
+            while (i < lines.length && (/^(\s*)[*\-+]\s+/.test(lines[i]) || /^\s+\S/.test(lines[i]))) i++;
+            // Skip trailing blanks within the list block
+            while (i < lines.length && /^\s*$/.test(lines[i])) i++;
+            continue;
+          }
+
+          // Ordered list
+          if (/^(\s*)\d+\.\s+/.test(line)) {
+            out.push(renderList(lines, i, 'ol'));
+            while (i < lines.length && (/^(\s*)\d+\.\s+/.test(lines[i]) || /^\s+\S/.test(lines[i]))) i++;
+            while (i < lines.length && /^\s*$/.test(lines[i])) i++;
+            continue;
+          }
+
+          // Paragraph
+          var para = [];
+          while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) &&
+                 !/^```/.test(lines[i]) && !/^-{3,}\s*$/.test(lines[i]) &&
+                 !/^[*\-+]\s+/.test(lines[i]) && !/^\d+\.\s+/.test(lines[i]) &&
+                 !(lines[i].indexOf('|') !== -1 && i + 1 < lines.length && /^\|?\s*[-:]+/.test(lines[i + 1])) &&
+                 !/^>\s?/.test(lines[i])) {
+            para.push(lines[i]);
+            i++;
+          }
+          if (para.length > 0) {
+            out.push('<p>' + renderInline(escapeHtml(para.join(' '))) + '</p>');
+          }
+        }
+
+        return out.join('\n');
+      }
+
+      function renderTable(rows) {
+        if (rows.length < 2) return '';
+        function parseCells(row) {
+          return row.replace(/^\|/, '').replace(/\|$/, '').split('|').map(function (c) { return c.trim(); });
+        }
+        var headers = parseCells(rows[0]);
+        var body = rows.slice(2); // skip separator row
+
+        var html = '<table><thead><tr>';
+        for (var h = 0; h < headers.length; h++) {
+          html += '<th>' + renderInline(escapeHtml(headers[h])) + '</th>';
+        }
+        html += '</tr></thead><tbody>';
+        for (var r = 0; r < body.length; r++) {
+          var cells = parseCells(body[r]);
+          html += '<tr>';
+          for (var c = 0; c < cells.length; c++) {
+            html += '<td>' + renderInline(escapeHtml(cells[c])) + '</td>';
+          }
+          html += '</tr>';
+        }
+        html += '</tbody></table>';
+        return html;
+      }
+
+      function renderList(lines, startIdx, tag) {
+        var items = [];
+        var i = startIdx;
+        var listPattern = tag === 'ul' ? /^(\s*)[*\-+]\s+(.*)/ : /^(\s*)\d+\.\s+(.*)/;
+
+        while (i < lines.length) {
+          var m = listPattern.exec(lines[i]);
+          if (m) {
+            items.push(m[2]);
+            i++;
+            // Collect continuation lines (indented, not a new list item)
+            while (i < lines.length && /^\s+\S/.test(lines[i]) && !listPattern.test(lines[i])) {
+              items[items.length - 1] += ' ' + lines[i].trim();
+              i++;
+            }
+          } else if (/^\s*$/.test(lines[i])) {
+            i++;
+          } else {
+            break;
+          }
+        }
+
+        var html = '<' + tag + '>';
+        for (var j = 0; j < items.length; j++) {
+          html += '<li>' + renderInline(escapeHtml(items[j])) + '</li>';
+        }
+        html += '</' + tag + '>';
+        return html;
+      }
+
+      // --- Table of Contents ---
+      function buildToc() {
+        var headings = document.querySelectorAll('.specs-content h1, .specs-content h2, .specs-content h3');
+        if (headings.length === 0) return;
+
+        var toc = document.getElementById('toc');
+        var ul = document.createElement('ul');
+
+        for (var i = 0; i < headings.length; i++) {
+          var h = headings[i];
+          var level = parseInt(h.tagName.charAt(1), 10);
+          var li = document.createElement('li');
+          var a = document.createElement('a');
+          a.textContent = h.textContent;
+          a.href = '#' + h.id;
+          a.className = 'toc-h' + level;
+          li.appendChild(a);
+          ul.appendChild(li);
+        }
+
+        toc.appendChild(ul);
+      }
+    })();
+  </script>
+</body>
+</html>
