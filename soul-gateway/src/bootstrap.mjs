@@ -157,4 +157,10 @@ function registerCoreRoutes(router, appCtx) {
     const metrics = ctx.appCtx.services.systemMetrics.collect();
     sendJson(ctx.res, 200, metrics);
   });
+
+  // Favicon — return 204 to stop browsers from 404-ing
+  router.add('GET', '/favicon.ico', async (ctx) => {
+    ctx.res.writeHead(204);
+    ctx.res.end();
+  });
 }
