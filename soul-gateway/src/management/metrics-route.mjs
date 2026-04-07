@@ -86,8 +86,11 @@ export async function handleTokenMetrics(ctx) {
 // ── helpers ──────────────────────────────────────────────────────────
 
 function requireDateRange(query) {
-  if (!query.from || !query.to) {
-    throw new BadRequestError('Missing required query parameters: from, to');
+  if (!query.from) {
+    throw new BadRequestError('Missing required query parameter: from');
   }
-  return { from: query.from, to: query.to };
+  return {
+    from: query.from,
+    to: query.to || new Date().toISOString(),
+  };
 }

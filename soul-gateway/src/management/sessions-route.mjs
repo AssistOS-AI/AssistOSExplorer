@@ -97,11 +97,11 @@ export async function handleAgentsTree(ctx) {
   let idx = 1;
 
   if (from) {
-    conditions.push(`created_at >= $${idx++}`);
+    conditions.push(`started_at >= $${idx++}`);
     params.push(from);
   }
   if (to) {
-    conditions.push(`created_at <= $${idx++}`);
+    conditions.push(`started_at <= $${idx++}`);
     params.push(to);
   }
 
