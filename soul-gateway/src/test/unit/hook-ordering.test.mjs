@@ -15,7 +15,8 @@
  *
  * Limitation: the gateway middleware engine does not support wrapStream.
  * Gateway stream hooks are not part of the runtime ordering today.
- * See CAPABILITIES.md §17 / §18 for details.
+ * See DS003 (Provider-Scoped Hook Pipelines / Extension Discovery) for
+ * details.
  */
 
 import { describe, it } from 'node:test';
