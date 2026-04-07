@@ -495,13 +495,17 @@ function providersPage() {
     async addDiscoveredModel(model) {
       if (!this.discoverProvider) return;
       const slug = _providerSlug(this.discoverProvider.name);
+      // handleCreateModel requires camelCase fields (modelKey,
+      // displayName, providerId, providerModelId) — sending the
+      // snake_case shape from older code paths trips a 400 with
+      // "Missing required fields".
       await api.post('/management/models', {
-        model_key: `${slug}/${model.id}`,
-        provider_key: this.discoverProvider.name,
-        provider_model_id: model.id,
-        provider_id: this.discoverProvider.id,
-        input_price: model.input_price || 0,
-        output_price: model.output_price || 0,
+        modelKey: `${slug}/${model.id}`,
+        displayName: model.display_name || model.id,
+        providerId: this.discoverProvider.id,
+        providerModelId: model.id,
+        inputPricePerMillion: model.input_price || 0,
+        outputPricePerMillion: model.output_price || 0,
       });
       model._added = true;
     },
