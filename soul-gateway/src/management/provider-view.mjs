@@ -18,11 +18,11 @@
  * @returns {object|null}
  */
 export function toProviderView(row) {
-  if (!row) return null;
-  return {
-    ...row,
-    name: row.provider_key || row.name || null,
-  };
+    if (!row) return null;
+    return {
+        ...row,
+        name: row.provider_key || row.name || null,
+    };
 }
 
 /**
@@ -30,6 +30,6 @@ export function toProviderView(row) {
  * @returns {Array<object>}
  */
 export function toProviderList(rows) {
-  if (!Array.isArray(rows)) return [];
-  return rows.map(toProviderView).filter(Boolean);
+    if (!Array.isArray(rows)) return [];
+    return rows.map(toProviderView).filter(Boolean);
 }

@@ -17,7 +17,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ALGO = 'aes-256-gcm';
-const IV_BYTES = 12;       // GCM recommended nonce length
+const IV_BYTES = 12; // GCM recommended nonce length
 const KEY_BYTES = 32;
 
 /**
@@ -28,16 +28,16 @@ const KEY_BYTES = 32;
  * @returns {{ ciphertext: Buffer, iv: Buffer, authTag: Buffer }}
  */
 export function encrypt(plaintext, key) {
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv(ALGO, key, iv);
+    const iv = randomBytes(IV_BYTES);
+    const cipher = createCipheriv(ALGO, key, iv);
 
-  const ciphertext = Buffer.concat([
-    cipher.update(plaintext, 'utf8'),
-    cipher.final(),
-  ]);
-  const authTag = cipher.getAuthTag();
+    const ciphertext = Buffer.concat([
+        cipher.update(plaintext, 'utf8'),
+        cipher.final(),
+    ]);
+    const authTag = cipher.getAuthTag();
 
-  return { ciphertext, iv, authTag };
+    return { ciphertext, iv, authTag };
 }
 
 /**
@@ -50,14 +50,14 @@ export function encrypt(plaintext, key) {
  * @returns {string} plaintext
  */
 export function decrypt(ciphertext, iv, authTag, key) {
-  const decipher = createDecipheriv(ALGO, key, iv);
-  decipher.setAuthTag(authTag);
+    const decipher = createDecipheriv(ALGO, key, iv);
+    decipher.setAuthTag(authTag);
 
-  const plaintext = Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final(),
-  ]);
-  return plaintext.toString('utf8');
+    const plaintext = Buffer.concat([
+        decipher.update(ciphertext),
+        decipher.final(),
+    ]);
+    return plaintext.toString('utf8');
 }
 
 /**
@@ -72,40 +72,42 @@ export function decrypt(ciphertext, iv, authTag, key) {
  * @returns {Buffer} 32-byte key
  */
 export function ensureEncryptionKey(config) {
-  // 1. From env
-  if (config.ENCRYPTION_KEY) {
-    const buf = decodeKey(config.ENCRYPTION_KEY);
-    if (buf && buf.length === KEY_BYTES) return buf;
-    throw new Error(`ENCRYPTION_KEY must decode to exactly ${KEY_BYTES} bytes`);
-  }
+    // 1. From env
+    if (config.ENCRYPTION_KEY) {
+        const buf = decodeKey(config.ENCRYPTION_KEY);
+        if (buf && buf.length === KEY_BYTES) return buf;
+        throw new Error(
+            `ENCRYPTION_KEY must decode to exactly ${KEY_BYTES} bytes`
+        );
+    }
 
-  // 2. From persisted file
-  const keyPath = join(config.DATA_DIR, 'encryption.key');
-  try {
-    const raw = readFileSync(keyPath, 'utf8').trim();
-    const buf = decodeKey(raw);
-    if (buf && buf.length === KEY_BYTES) return buf;
-  } catch {
-    // file doesn't exist — fall through
-  }
+    // 2. From persisted file
+    const keyPath = join(config.DATA_DIR, 'encryption.key');
+    try {
+        const raw = readFileSync(keyPath, 'utf8').trim();
+        const buf = decodeKey(raw);
+        if (buf && buf.length === KEY_BYTES) return buf;
+    } catch {
+        // file doesn't exist — fall through
+    }
 
-  // 3. Generate and persist
-  const newKey = randomBytes(KEY_BYTES);
-  mkdirSync(config.DATA_DIR, { recursive: true });
-  writeFileSync(keyPath, newKey.toString('base64') + '\n', { mode: 0o600 });
-  return newKey;
+    // 3. Generate and persist
+    const newKey = randomBytes(KEY_BYTES);
+    mkdirSync(config.DATA_DIR, { recursive: true });
+    writeFileSync(keyPath, newKey.toString('base64') + '\n', { mode: 0o600 });
+    return newKey;
 }
 
 /**
  * Decode a key string that may be hex or base64 encoded.
  */
 function decodeKey(raw) {
-  // Try hex first (64 hex chars = 32 bytes)
-  if (/^[0-9a-f]{64}$/i.test(raw)) {
-    return Buffer.from(raw, 'hex');
-  }
-  // Try base64
-  const buf = Buffer.from(raw, 'base64');
-  if (buf.length > 0) return buf;
-  return null;
+    // Try hex first (64 hex chars = 32 bytes)
+    if (/^[0-9a-f]{64}$/i.test(raw)) {
+        return Buffer.from(raw, 'hex');
+    }
+    // Try base64
+    const buf = Buffer.from(raw, 'base64');
+    if (buf.length > 0) return buf;
+    return null;
 }

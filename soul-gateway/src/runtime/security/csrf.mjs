@@ -13,7 +13,7 @@ const TOKEN_BYTES = 32;
  * @returns {string} 64-character hex string
  */
 export function generateCsrfToken() {
-  return randomBytes(TOKEN_BYTES).toString('hex');
+    return randomBytes(TOKEN_BYTES).toString('hex');
 }
 
 /**
@@ -26,18 +26,18 @@ export function generateCsrfToken() {
  * @throws {Error} if token is missing or mismatched
  */
 export function verifyCsrf(reqCtx) {
-  const headerToken = reqCtx.headers?.[HEADER_NAMES.X_CSRF_TOKEN];
-  const sessionToken = reqCtx.session?.csrfToken;
+    const headerToken = reqCtx.headers?.[HEADER_NAMES.X_CSRF_TOKEN];
+    const sessionToken = reqCtx.session?.csrfToken;
 
-  if (!headerToken) {
-    throw new BadRequestError('Missing CSRF token header');
-  }
-  if (!sessionToken) {
-    throw new BadRequestError('No CSRF token in session');
-  }
-  if (headerToken !== sessionToken) {
-    throw new BadRequestError('CSRF token mismatch');
-  }
+    if (!headerToken) {
+        throw new BadRequestError('Missing CSRF token header');
+    }
+    if (!sessionToken) {
+        throw new BadRequestError('No CSRF token in session');
+    }
+    if (headerToken !== sessionToken) {
+        throw new BadRequestError('CSRF token mismatch');
+    }
 
-  return true;
+    return true;
 }

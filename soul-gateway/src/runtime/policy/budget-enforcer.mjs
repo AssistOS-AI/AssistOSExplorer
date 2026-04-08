@@ -16,40 +16,46 @@
  * @returns {Promise<{ allowed: boolean, dailySpend: number, monthlySpend: number, dailyLimit: number|null, monthlyLimit: number|null }>}
  */
 export async function checkBudget(keyRecord, spendCache, pool) {
-  const keyId = keyRecord.id;
-  const dailyLimit = keyRecord.daily_budget_usd ?? null;
-  const monthlyLimit = keyRecord.monthly_budget_usd ?? null;
+    const keyId = keyRecord.id;
+    const dailyLimit = keyRecord.daily_budget_usd ?? null;
+    const monthlyLimit = keyRecord.monthly_budget_usd ?? null;
 
-  // If no limits are configured, always allow
-  if (dailyLimit == null && monthlyLimit == null) {
-    return { allowed: true, dailySpend: 0, monthlySpend: 0, dailyLimit, monthlyLimit };
-  }
+    // If no limits are configured, always allow
+    if (dailyLimit == null && monthlyLimit == null) {
+        return {
+            allowed: true,
+            dailySpend: 0,
+            monthlySpend: 0,
+            dailyLimit,
+            monthlyLimit,
+        };
+    }
 
-  // Ensure cache is fresh
-  let dailySpend = spendCache.getDailySpend(keyId);
-  let monthlySpend = spendCache.getMonthlySpend(keyId);
+    // Ensure cache is fresh
+    let dailySpend = spendCache.getDailySpend(keyId);
+    let monthlySpend = spendCache.getMonthlySpend(keyId);
 
-  if (dailySpend == null || monthlySpend == null) {
-    await spendCache.refresh(keyId, pool);
-    dailySpend = spendCache.getDailySpend(keyId);
-    monthlySpend = spendCache.getMonthlySpend(keyId);
-  }
+    if (dailySpend == null || monthlySpend == null) {
+        await spendCache.refresh(keyId, pool);
+        dailySpend = spendCache.getDailySpend(keyId);
+        monthlySpend = spendCache.getMonthlySpend(keyId);
+    }
 
-  // Fallback to 0 if cache somehow still null
-  dailySpend = dailySpend ?? 0;
-  monthlySpend = monthlySpend ?? 0;
+    // Fallback to 0 if cache somehow still null
+    dailySpend = dailySpend ?? 0;
+    monthlySpend = monthlySpend ?? 0;
 
-  let allowed = true;
+    let allowed = true;
 
-  if (dailyLimit != null && dailySpend >= dailyLimit) {
-    allowed = false;
-  }
+    if (dailyLimit != null && dailySpend >= dailyLimit) {
+        allowed = false;
+    }
 
-  if (monthlyLimit != null && monthlySpend >= monthlyLimit) {
-    allowed = false;
-  }
+    if (monthlyLimit != null && monthlySpend >= monthlyLimit) {
+        allowed = false;
+    }
 
-  return { allowed, dailySpend, monthlySpend, dailyLimit, monthlyLimit };
+    return { allowed, dailySpend, monthlySpend, dailyLimit, monthlyLimit };
 }
 
 /**
@@ -60,5 +66,5 @@ export async function checkBudget(keyRecord, spendCache, pool) {
  * @param {import('./spend-cache.mjs').SpendCache} spendCache
  */
 export function recordSpend(keyId, costUsd, spendCache) {
-  spendCache.recordCost(keyId, costUsd);
+    spendCache.recordCost(keyId, costUsd);
 }

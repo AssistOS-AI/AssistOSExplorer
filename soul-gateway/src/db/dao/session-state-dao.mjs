@@ -9,19 +9,22 @@ const TABLE = 'soul_gateway.session_state';
  * Insert or update session state for a given session.
  * All fields are replaced on conflict (full upsert).
  */
-export async function upsert(pool, {
-  sessionId,
-  summaryText = '',
-  factsJson = [],
-  recentFingerprints = [],
-  recentSimilarity = [],
-  recentTokenVolume = 0,
-  responseCount = 0,
-  lastResponseAt = null,
-  lastLoopDetectedAt = null,
-}) {
-  const { rows } = await pool.query(
-    `INSERT INTO ${TABLE}
+export async function upsert(
+    pool,
+    {
+        sessionId,
+        summaryText = '',
+        factsJson = [],
+        recentFingerprints = [],
+        recentSimilarity = [],
+        recentTokenVolume = 0,
+        responseCount = 0,
+        lastResponseAt = null,
+        lastLoopDetectedAt = null,
+    }
+) {
+    const { rows } = await pool.query(
+        `INSERT INTO ${TABLE}
        (session_id, summary_text, facts_json,
         recent_fingerprints, recent_similarity,
         recent_token_volume, response_count,
@@ -38,18 +41,25 @@ export async function upsert(pool, {
        last_loop_detected_at = EXCLUDED.last_loop_detected_at,
        updated_at = now()
      RETURNING *`,
-    [sessionId, summaryText, JSON.stringify(factsJson),
-     JSON.stringify(recentFingerprints), JSON.stringify(recentSimilarity),
-     recentTokenVolume, responseCount,
-     lastResponseAt, lastLoopDetectedAt],
-  );
-  return rows[0];
+        [
+            sessionId,
+            summaryText,
+            JSON.stringify(factsJson),
+            JSON.stringify(recentFingerprints),
+            JSON.stringify(recentSimilarity),
+            recentTokenVolume,
+            responseCount,
+            lastResponseAt,
+            lastLoopDetectedAt,
+        ]
+    );
+    return rows[0];
 }
 
 export async function findBySessionId(pool, sessionId) {
-  const { rows } = await pool.query(
-    `SELECT * FROM ${TABLE} WHERE session_id = $1`,
-    [sessionId],
-  );
-  return rows[0] || null;
+    const { rows } = await pool.query(
+        `SELECT * FROM ${TABLE} WHERE session_id = $1`,
+        [sessionId]
+    );
+    return rows[0] || null;
 }

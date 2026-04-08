@@ -5,8 +5,8 @@ import { DEFAULTS } from './defaults.mjs';
  * immutable config object consumed by the rest of the application.
  */
 export function buildConfig(env) {
-  return Object.freeze({
-    env,
-    defaults: DEFAULTS,
-  });
+    return Object.freeze({
+        env,
+        defaults: DEFAULTS,
+    });
 }

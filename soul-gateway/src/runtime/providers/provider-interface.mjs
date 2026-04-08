@@ -15,10 +15,8 @@ import { ConfigurationError } from '../../core/errors.mjs';
 /**
  * @typedef {Object} ProviderManifest
  * @property {string} key              Unique provider adapter key (e.g. 'openai-api')
- * @property {'external_api'|'search'|'local_model'|'custom'|'wrapper'} kind
- *           Canonical executor kinds: external_api, search, local_model, custom.
- *           DEPRECATED: 'wrapper' — still accepted for backward compatibility,
- *           but wrappers should be implemented as provider hooks going forward.
+ * @property {'external_api'|'search'|'local_model'|'custom'} kind
+ *           Canonical provider kinds.
  * @property {'none'|'api_key'|'oauth'|'hybrid'|'custom'} authStrategy
  * @property {boolean} supportsStreaming
  * @property {boolean} supportsTools
@@ -113,88 +111,66 @@ import { ConfigurationError } from '../../core/errors.mjs';
 // ── Manifest validation helper ──────────────────────────────────────
 
 /**
- * Canonical executor kinds going forward.
- * 'wrapper' is DEPRECATED — kept for backward compatibility only.
- * Wrappers should be implemented as provider hooks, not as provider plugins.
+ * Canonical provider kinds.
  */
-const EXECUTOR_KINDS = new Set(['external_api', 'search', 'local_model', 'custom']);
-const DEPRECATED_KINDS = new Set(['wrapper']);
-const VALID_KINDS = new Set([...EXECUTOR_KINDS, ...DEPRECATED_KINDS]);
+const VALID_KINDS = new Set([
+    'external_api',
+    'search',
+    'local_model',
+    'custom',
+]);
 const VALID_AUTH = new Set(['none', 'api_key', 'oauth', 'hybrid', 'custom']);
-
-/** @type {Array<{kind: string, message: string}>} */
-const _deprecationLog = [];
-
-/**
- * Return and clear accumulated deprecation warnings (for testing).
- * @returns {Array<{kind: string, message: string}>}
- */
-export function drainDeprecationWarnings() {
-  return _deprecationLog.splice(0);
-}
 
 /**
  * Validate a provider manifest object.  Throws on invalid.
  *
  * @param {object} manifest
  * @param {object} [options]
- * @param {object} [options.log]  Logger instance; receives deprecation warnings
+ * @param {object} [options.log]  Logger instance (reserved for future use)
  */
 export function validateManifest(manifest, options = {}) {
-  if (!manifest || typeof manifest !== 'object') {
-    throw new ConfigurationError('Provider manifest must be a non-null object');
-  }
-  if (typeof manifest.key !== 'string' || manifest.key.length === 0) {
-    throw new ConfigurationError('Provider manifest.key must be a non-empty string');
-  }
-  if (!VALID_KINDS.has(manifest.kind)) {
-    throw new ConfigurationError(`Provider manifest.kind must be one of: ${[...VALID_KINDS].join(', ')}`);
-  }
-
-  // Deprecation: kind='wrapper' is accepted but discouraged.
-  // Wrappers are now provider hooks; only executors are terminal backends.
-  if (DEPRECATED_KINDS.has(manifest.kind)) {
-    const msg = `Provider manifest kind '${manifest.kind}' is deprecated. ` +
-      `Use provider hooks (onRequest/onResponse/wrapStream) for wrapping behavior, ` +
-      `or an executor kind (${[...EXECUTOR_KINDS].join(', ')}) for terminal backends.`;
-    _deprecationLog.push({ kind: manifest.kind, message: msg });
-    if (options.log && typeof options.log.warn === 'function') {
-      options.log.warn('provider_manifest_deprecated_kind', {
-        key: manifest.key,
-        kind: manifest.kind,
-        message: msg,
-      });
+    if (!manifest || typeof manifest !== 'object') {
+        throw new ConfigurationError(
+            'Provider manifest must be a non-null object'
+        );
     }
-  }
-
-  if (!VALID_AUTH.has(manifest.authStrategy)) {
-    throw new ConfigurationError(`Provider manifest.authStrategy must be one of: ${[...VALID_AUTH].join(', ')}`);
-  }
-  if (typeof manifest.supportsStreaming !== 'boolean') {
-    throw new ConfigurationError('Provider manifest.supportsStreaming must be a boolean');
-  }
-  if (typeof manifest.supportsTools !== 'boolean') {
-    throw new ConfigurationError('Provider manifest.supportsTools must be a boolean');
-  }
-  if (!Array.isArray(manifest.supportedFormats)) {
-    throw new ConfigurationError('Provider manifest.supportedFormats must be an array');
-  }
+    if (typeof manifest.key !== 'string' || manifest.key.length === 0) {
+        throw new ConfigurationError(
+            'Provider manifest.key must be a non-empty string'
+        );
+    }
+    if (!VALID_KINDS.has(manifest.kind)) {
+        throw new ConfigurationError(
+            `Provider manifest.kind must be one of: ${[...VALID_KINDS].join(', ')}`
+        );
+    }
+    if (!VALID_AUTH.has(manifest.authStrategy)) {
+        throw new ConfigurationError(
+            `Provider manifest.authStrategy must be one of: ${[...VALID_AUTH].join(', ')}`
+        );
+    }
+    if (typeof manifest.supportsStreaming !== 'boolean') {
+        throw new ConfigurationError(
+            'Provider manifest.supportsStreaming must be a boolean'
+        );
+    }
+    if (typeof manifest.supportsTools !== 'boolean') {
+        throw new ConfigurationError(
+            'Provider manifest.supportsTools must be a boolean'
+        );
+    }
+    if (!Array.isArray(manifest.supportedFormats)) {
+        throw new ConfigurationError(
+            'Provider manifest.supportedFormats must be an array'
+        );
+    }
 }
 
 /**
- * Check whether a provider manifest kind is a canonical executor kind.
+ * Check whether a provider manifest kind is canonical.
  * @param {string} kind
  * @returns {boolean}
  */
-export function isExecutorKind(kind) {
-  return EXECUTOR_KINDS.has(kind);
-}
-
-/**
- * Check whether a provider manifest kind is deprecated.
- * @param {string} kind
- * @returns {boolean}
- */
-export function isDeprecatedKind(kind) {
-  return DEPRECATED_KINDS.has(kind);
+export function isProviderKind(kind) {
+    return VALID_KINDS.has(kind);
 }

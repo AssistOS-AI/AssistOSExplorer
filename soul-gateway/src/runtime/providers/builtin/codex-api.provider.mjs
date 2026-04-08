@@ -12,7 +12,7 @@
  *  1. The endpoint path is `/responses` — NOT `/v1/responses` like the
  *     standard OpenAI Responses API. achilles's `resolveResponsesURL`
  *     detects the `/backend-api/` segment and appends `/responses`
- *     directly, so we just pass the provider's `base_url` through.
+ *     directly, so we just pass the provider's `baseUrl` through.
  *  2. The payload MUST include an `instructions` field (the Codex
  *     backend rejects the request with 400 "Instructions are required"
  *     otherwise). We extract system messages from the chat request
@@ -32,140 +32,173 @@
  */
 
 import {
-  ProviderAuthError,
-  ProviderRateLimitError,
-  ProviderQuotaError,
-  ProviderContentPolicyError,
-  ProviderModelNotFoundError,
+    ProviderAuthError,
+    ProviderRateLimitError,
+    ProviderQuotaError,
+    ProviderContentPolicyError,
+    ProviderModelNotFoundError,
 } from '../../../core/errors.mjs';
 import { HTTP_STATUS } from '../../../core/constants.mjs';
 import {
-  classifyTransportOrServerError,
-  getProviderErrorType,
-  getProviderMessage,
-  getProviderStatus,
-  looksLikeContentPolicyError,
-  looksLikeQuotaError,
+    classifyTransportOrServerError,
+    getProviderErrorType,
+    getProviderMessage,
+    getProviderStatus,
+    looksLikeContentPolicyError,
+    looksLikeQuotaError,
 } from '../error-helpers.mjs';
 import * as achillesResponses from 'achillesAgentLib/utils/LLMProviders/providers/openaiResponses.mjs';
-import { createAchillesExecutionHandle, getCredentialToken } from '../achilles/bridge.mjs';
+import {
+    createAchillesExecutionHandle,
+    getCredentialToken,
+} from '../achilles/bridge.mjs';
 
 const DEFAULT_INSTRUCTIONS = 'You are a helpful assistant.';
 
 const manifest = {
-  key: 'codex-api',
-  kind: 'external_api',
-  authStrategy: 'oauth',
-  supportsStreaming: true,
-  supportsTools: true,
-  supportedFormats: ['openai_chat', 'openai_responses'],
-  displayName: 'OpenAI Codex',
-  defaultBaseUrl: 'https://chatgpt.com/backend-api/codex',
-  oauthAdapterKey: 'openai-codex',
+    key: 'codex-api',
+    kind: 'external_api',
+    authStrategy: 'oauth',
+    supportsStreaming: true,
+    supportsTools: true,
+    supportedFormats: ['openai_chat', 'openai_responses'],
+    displayName: 'OpenAI Codex',
+    defaultBaseUrl: 'https://chatgpt.com/backend-api/codex',
+    oauthAdapterKey: 'openai-codex',
 };
 
 export const providerPlugin = {
-  manifest,
+    manifest,
 
-  async init() {},
+    async init() {},
 
-  async shutdown() {},
+    async shutdown() {},
 
-  validateProviderRecord() {},
+    validateProviderRecord() {},
 
-  validateModelRecord(modelRecord) {
-    if (!modelRecord.provider_model_id && !modelRecord.model_key) {
-      throw new Error('Codex model requires provider_model_id or model_key');
-    }
-  },
+    validateModelRecord(modelRecord) {
+        if (!modelRecord.providerModelId && !modelRecord.modelKey) {
+            throw new Error('Codex model requires providerModelId or modelKey');
+        }
+    },
 
-  async discoverModels(ctx) {
-    // Models are discovered live from the Codex ChatGPT backend's
-    // /models endpoint via achillesResponses.listModels. There is no
-    // hardcoded fallback — if the upstream listing fails we surface
-    // the error so the auto-provisioner can log and skip.
-    const baseURL = ctx?.providerRecord?.base_url || 'https://chatgpt.com/backend-api/codex';
-    const token = getCredentialToken(ctx?.credentialLease);
-    if (!token) {
-      throw new Error('Codex discoverModels requires an OAuth access token — complete the Add Account flow first');
-    }
+    async discoverModels(ctx) {
+        // Models are discovered live from the Codex ChatGPT backend's
+        // /models endpoint via achillesResponses.listModels. There is no
+        // hardcoded fallback — if the upstream listing fails we surface
+        // the error so the auto-provisioner can log and skip.
+        const baseURL =
+            ctx?.providerRecord?.baseUrl ||
+            'https://chatgpt.com/backend-api/codex';
+        const token = getCredentialToken(ctx?.credentialLease);
+        if (!token) {
+            throw new Error(
+                'Codex discoverModels requires an OAuth access token — complete the Add Account flow first'
+            );
+        }
 
-    return achillesResponses.listModels({
-      baseURL,
-      apiKey: token,
-      signal: ctx?.signal,
-      headers: {
-        'User-Agent': 'codex-cli/1.0.0',
-      },
-    });
-  },
+        return achillesResponses.listModels({
+            baseURL,
+            apiKey: token,
+            signal: ctx?.signal,
+            headers: {
+                'User-Agent': 'codex-cli/1.0.0',
+            },
+        });
+    },
 
-  async testConnection(ctx) {
-    // The Codex OAuth token is issued with OIDC scopes
-    // (openid/email/profile/offline_access) and is only accepted by
-    // the ChatGPT backend API at chatgpt.com/backend-api/codex. It is
-    // NOT accepted by api.openai.com/v1/models — that endpoint will
-    // return 401/403 even for a perfectly valid, unexpired token.
-    // Mirroring the old gateway's behaviour, we validate the lease
-    // itself (presence + non-expired) rather than making a live call
-    // that is known to fail.
-    const lease = ctx.credentialLease?.oauth;
-    const token = lease?.accessToken || ctx.credentialLease?.secret;
-    if (!token) return { ok: false, detail: 'No Codex OAuth token configured' };
+    async testConnection(ctx) {
+        // The Codex OAuth token is issued with OIDC scopes
+        // (openid/email/profile/offline_access) and is only accepted by
+        // the ChatGPT backend API at chatgpt.com/backend-api/codex. It is
+        // NOT accepted by api.openai.com/v1/models — that endpoint will
+        // return 401/403 even for a perfectly valid, unexpired token.
+        // Mirroring the old gateway's behaviour, we validate the lease
+        // itself (presence + non-expired) rather than making a live call
+        // that is known to fail.
+        const lease = ctx.credentialLease?.oauth;
+        const token = lease?.accessToken || ctx.credentialLease?.secret;
+        if (!token)
+            return { ok: false, detail: 'No Codex OAuth token configured' };
 
-    if (lease?.expiresAt) {
-      const expiresAtMs = new Date(lease.expiresAt).getTime();
-      if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
-        return { ok: false, detail: 'Codex OAuth token expired — reconnect from the Auth panel' };
-      }
-    }
+        if (lease?.expiresAt) {
+            const expiresAtMs = new Date(lease.expiresAt).getTime();
+            if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+                return {
+                    ok: false,
+                    detail: 'Codex OAuth token expired — reconnect from the Auth panel',
+                };
+            }
+        }
 
-    return { ok: true, detail: 'Codex OAuth credentials present' };
-  },
+        return { ok: true, detail: 'Codex OAuth credentials present' };
+    },
 
-  async execute(ctx) {
-    const { request: normalizedReq, resolvedModel, providerRecord, credentialLease, signal } = ctx;
-    const baseURL = providerRecord.base_url || 'https://chatgpt.com/backend-api/codex';
-    const model = resolvedModel.provider_model_id || resolvedModel.model_key;
+    async execute(ctx) {
+        const {
+            request: normalizedReq,
+            resolvedModel,
+            providerRecord,
+            credentialLease,
+            signal,
+        } = ctx;
+        const baseURL =
+            providerRecord.baseUrl || 'https://chatgpt.com/backend-api/codex';
+        const model = resolvedModel.providerModelId || resolvedModel.modelKey;
 
-    return createAchillesExecutionHandle(ctx, achillesResponses, {
-      model,
-      apiKey: getCredentialToken(credentialLease),
-      baseURL,
-      signal,
-      params: buildCodexParams(normalizedReq),
-      headers: {
-        Accept: 'text/event-stream',
-        'User-Agent': 'codex-cli/1.0.0',
-      },
-    });
-  },
+        return createAchillesExecutionHandle(ctx, achillesResponses, {
+            model,
+            apiKey: getCredentialToken(credentialLease),
+            baseURL,
+            signal,
+            params: buildCodexParams(normalizedReq),
+            headers: {
+                Accept: 'text/event-stream',
+                'User-Agent': 'codex-cli/1.0.0',
+            },
+        });
+    },
 
-  classifyError(error) {
-    const status = getProviderStatus(error);
-    const errorType = getProviderErrorType(error);
-    const message = getProviderMessage(error);
+    classifyError(error) {
+        const status = getProviderStatus(error);
+        const errorType = getProviderErrorType(error);
+        const message = getProviderMessage(error);
 
-    if (status === HTTP_STATUS.UNAUTHORIZED || status === HTTP_STATUS.FORBIDDEN) {
-      return new ProviderAuthError('codex', message || 'Codex auth failed');
-    }
-    if (status === HTTP_STATUS.NOT_FOUND) {
-      return new ProviderModelNotFoundError('codex', message || 'unknown');
-    }
-    if (status === HTTP_STATUS.TOO_MANY_REQUESTS) {
-      if (errorType === 'insufficient_quota' || looksLikeQuotaError(message)) {
-        return new ProviderQuotaError('codex');
-      }
-      return new ProviderRateLimitError('codex');
-    }
-    if (status === HTTP_STATUS.BAD_REQUEST && looksLikeContentPolicyError(message)) {
-      return new ProviderContentPolicyError('codex');
-    }
-    if (status >= HTTP_STATUS.INTERNAL_SERVER_ERROR && status < 600) {
-      return classifyTransportOrServerError('codex', error, status);
-    }
-    return classifyTransportOrServerError('codex', error);
-  },
+        if (
+            status === HTTP_STATUS.UNAUTHORIZED ||
+            status === HTTP_STATUS.FORBIDDEN
+        ) {
+            return new ProviderAuthError(
+                'codex',
+                message || 'Codex auth failed'
+            );
+        }
+        if (status === HTTP_STATUS.NOT_FOUND) {
+            return new ProviderModelNotFoundError(
+                'codex',
+                message || 'unknown'
+            );
+        }
+        if (status === HTTP_STATUS.TOO_MANY_REQUESTS) {
+            if (
+                errorType === 'insufficient_quota' ||
+                looksLikeQuotaError(message)
+            ) {
+                return new ProviderQuotaError('codex');
+            }
+            return new ProviderRateLimitError('codex');
+        }
+        if (
+            status === HTTP_STATUS.BAD_REQUEST &&
+            looksLikeContentPolicyError(message)
+        ) {
+            return new ProviderContentPolicyError('codex');
+        }
+        if (status >= HTTP_STATUS.INTERNAL_SERVER_ERROR && status < 600) {
+            return classifyTransportOrServerError('codex', error, status);
+        }
+        return classifyTransportOrServerError('codex', error);
+    },
 };
 
 /**
@@ -189,22 +222,23 @@ export const providerPlugin = {
  * @returns {object}              Params merged into the achilles payload
  */
 export function buildCodexParams(normalizedReq) {
-  const instructions = extractInstructions(normalizedReq?.messages || []);
-  const params = {
-    store: false,
-    instructions: instructions || DEFAULT_INSTRUCTIONS,
-  };
+    const instructions = extractInstructions(normalizedReq?.messages || []);
+    const params = {
+        store: false,
+        instructions: instructions || DEFAULT_INSTRUCTIONS,
+    };
 
-  if (normalizedReq?.temperature != null) params.temperature = normalizedReq.temperature;
-  if (normalizedReq?.top_p != null) params.top_p = normalizedReq.top_p;
-  if (Array.isArray(normalizedReq?.tools) && normalizedReq.tools.length > 0) {
-    params.tools = normalizedReq.tools;
-  }
-  // NOTE: max_output_tokens is deliberately omitted. Codex rejects it
-  // with 400 "Unsupported parameter: max_output_tokens" even though
-  // the standard OpenAI Responses API accepts it.
+    if (normalizedReq?.temperature != null)
+        params.temperature = normalizedReq.temperature;
+    if (normalizedReq?.top_p != null) params.top_p = normalizedReq.top_p;
+    if (Array.isArray(normalizedReq?.tools) && normalizedReq.tools.length > 0) {
+        params.tools = normalizedReq.tools;
+    }
+    // NOTE: max_output_tokens is deliberately omitted. Codex rejects it
+    // with 400 "Unsupported parameter: max_output_tokens" even though
+    // the standard OpenAI Responses API accepts it.
 
-  return params;
+    return params;
 }
 
 /**
@@ -219,13 +253,14 @@ export function buildCodexParams(normalizedReq) {
  * @returns {string}  Possibly empty
  */
 export function extractInstructions(messages) {
-  const parts = [];
-  for (const msg of messages || []) {
-    if (msg?.role !== 'system') continue;
-    const text = typeof msg.content === 'string'
-      ? msg.content
-      : JSON.stringify(msg.content);
-    if (text) parts.push(text);
-  }
-  return parts.join('\n\n');
+    const parts = [];
+    for (const msg of messages || []) {
+        if (msg?.role !== 'system') continue;
+        const text =
+            typeof msg.content === 'string'
+                ? msg.content
+                : JSON.stringify(msg.content);
+        if (text) parts.push(text);
+    }
+    return parts.join('\n\n');
 }

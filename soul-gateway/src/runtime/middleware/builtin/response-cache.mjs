@@ -1,148 +1,135 @@
 /**
  * Built-in middleware: Response Cache
  *
- * Pre-hook: hash prompt + model, check in-memory LRU cache.
- *           On hit, abort with cached response (SyntheticResponseAbort).
- * Post-hook: store the response in cache.
- *
- * @type {import('../middleware-catalog.mjs').MiddlewareMeta}
+ * Caches buffered responses by request hash and short-circuits on hits.
  */
 
 import { createHash } from 'node:crypto';
+import { abortSuccess } from '../../kernel/abort.mjs';
 
-/**
- * Simple bounded LRU cache.
- * Uses a Map (insertion-ordered) with eviction on overflow.
- */
 class LruCache {
-  #map = new Map();
-  #maxEntries;
-  #ttlMs;
+    #map = new Map();
+    #maxEntries;
+    #ttlMs;
 
-  constructor(maxEntries, ttlMs) {
-    this.#maxEntries = maxEntries;
-    this.#ttlMs = ttlMs;
-  }
-
-  get(key) {
-    const entry = this.#map.get(key);
-    if (!entry) return undefined;
-    if (Date.now() - entry.createdAt > this.#ttlMs) {
-      this.#map.delete(key);
-      return undefined;
+    constructor(maxEntries, ttlMs) {
+        this.#maxEntries = maxEntries;
+        this.#ttlMs = ttlMs;
     }
-    // Move to end (most-recently used)
-    this.#map.delete(key);
-    this.#map.set(key, entry);
-    return entry.value;
-  }
 
-  set(key, value) {
-    if (this.#map.has(key)) this.#map.delete(key);
-    this.#map.set(key, { value, createdAt: Date.now() });
-    if (this.#map.size > this.#maxEntries) {
-      // Evict oldest (first key)
-      const oldest = this.#map.keys().next().value;
-      this.#map.delete(oldest);
+    get(key) {
+        const entry = this.#map.get(key);
+        if (!entry) return undefined;
+        if (Date.now() - entry.createdAt > this.#ttlMs) {
+            this.#map.delete(key);
+            return undefined;
+        }
+        this.#map.delete(key);
+        this.#map.set(key, entry);
+        return entry.value;
     }
-  }
 
-  get size() {
-    return this.#map.size;
-  }
+    set(key, value) {
+        if (this.#map.has(key)) {
+            this.#map.delete(key);
+        }
+        this.#map.set(key, { value, createdAt: Date.now() });
+        if (this.#map.size > this.#maxEntries) {
+            const oldest = this.#map.keys().next().value;
+            this.#map.delete(oldest);
+        }
+    }
 
-  clear() {
-    this.#map.clear();
-  }
+    clear() {
+        this.#map.clear();
+    }
+
+    get size() {
+        return this.#map.size;
+    }
 }
 
-/** Module-level cache instance (shared across all requests). */
 let _cache = null;
 
+export const meta = Object.freeze({
+    key: 'response-cache',
+    name: 'Response Cache',
+    description:
+        'In-memory LRU cache keyed by prompt hash + model. Returns cached responses for identical requests.',
+    version: '2.0.0',
+    scope: 'gateway',
+    defaultSettings: Object.freeze({
+        ttlMs: 300_000,
+        maxEntries: 10_000,
+        hashAlgorithm: 'sha256',
+    }),
+});
+
+export function factory(settings = {}) {
+    const merged = { ...meta.defaultSettings, ...settings };
+    const cache = getCache(merged);
+
+    return async function responseCache(ctx, next) {
+        const key = buildCacheKey(
+            ctx.request || {},
+            merged.hashAlgorithm || 'sha256'
+        );
+
+        if (ctx.state?.set) {
+            ctx.state.set('response-cache:key', key);
+        }
+
+        const cached = cache.get(key);
+        if (cached) {
+            ctx.log.debug('Response cache hit', { cacheKey: key.slice(0, 12) });
+            abortSuccess(ctx, cached);
+        }
+
+        await next();
+
+        if (!ctx.response) {
+            return;
+        }
+
+        cache.set(key, ctx.response);
+        ctx.log.debug('Response cached', { cacheKey: key.slice(0, 12) });
+    };
+}
+
 function getCache(settings) {
-  if (!_cache) {
-    _cache = new LruCache(
-      settings.maxEntries || 10_000,
-      settings.ttlMs || 300_000,
-    );
-  }
-  return _cache;
+    if (!_cache) {
+        _cache = new LruCache(
+            settings.maxEntries || 10_000,
+            settings.ttlMs || 300_000
+        );
+    }
+    return _cache;
 }
 
-export const meta = {
-  key: 'response-cache',
-  name: 'Response Cache',
-  description: 'In-memory LRU cache keyed by prompt hash + model. Returns cached responses for identical requests.',
-  version: '1.0.0',
-  defaultSettings: {
-    ttlMs: 300_000,       // 5 minutes
-    maxEntries: 10_000,
-    hashAlgorithm: 'sha256',
-  },
-  hooks: 'both',
-};
-
-/**
- * Build a deterministic cache key from the request model + messages.
- */
 function buildCacheKey(request, algorithm) {
-  const h = createHash(algorithm);
-  h.update(request.model || '');
-  const messages = request.messages || [];
-  for (const msg of messages) {
-    h.update(msg.role || '');
-    h.update(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || ''));
-  }
-  // Include temperature/top_p so different sampling params don't collide
-  if (request.temperature != null) h.update(String(request.temperature));
-  if (request.top_p != null) h.update(String(request.top_p));
-  return h.digest('hex');
+    const hash = createHash(algorithm);
+    hash.update(request.model || '');
+    const messages = request.messages || [];
+    for (const message of messages) {
+        hash.update(message.role || '');
+        hash.update(
+            typeof message.content === 'string'
+                ? message.content
+                : JSON.stringify(message.content || '')
+        );
+    }
+    if (request.temperature != null) hash.update(String(request.temperature));
+    if (request.top_p != null) hash.update(String(request.top_p));
+    return hash.digest('hex');
 }
 
-/**
- * Pre-hook: check cache, abort with synthetic response on hit.
- * @param {Object} ctx
- * @param {Object} settings
- */
-export async function pre(ctx, settings) {
-  const cache = getCache(settings);
-  const key = buildCacheKey(ctx.request, settings.hashAlgorithm || 'sha256');
-
-  // Stash the key in request-scoped middleware state for the post-hook to use.
-  if (ctx.state?.set) {
-    ctx.state.set('response-cache:key', key);
-  }
-
-  const cached = cache.get(key);
-  if (cached) {
-    ctx.log.debug('Response cache hit', { cacheKey: key.slice(0, 12) });
-    ctx.abort.success(cached);
-    // abort.success throws — control never reaches here
-  }
-}
-
-/**
- * Post-hook: store the response in cache.
- * @param {Object} ctx
- * @param {Object} settings
- */
-export async function post(ctx, settings) {
-  if (!ctx.response) return;
-
-  const cache = getCache(settings);
-  const key = ctx.state?.get ? ctx.state.get('response-cache:key') : null;
-  if (!key) return;
-
-  cache.set(key, ctx.response);
-  ctx.log.debug('Response cached', { cacheKey: key.slice(0, 12) });
-}
-
-/** Exposed for testing. */
 export function _resetCache() {
-  if (_cache) _cache.clear();
-  _cache = null;
+    if (_cache) {
+        _cache.clear();
+    }
+    _cache = null;
 }
 
 export function _getCacheInstance() {
-  return _cache;
+    return _cache;
 }

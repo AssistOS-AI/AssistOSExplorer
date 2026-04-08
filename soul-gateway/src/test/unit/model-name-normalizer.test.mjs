@@ -4,141 +4,171 @@ import { normalizeModelName } from '../../runtime/registry/model-name-normalizer
 
 /**
  * Build a minimal mock snapshot for normalizer tests.
+ *
+ * Phase 7b: every addressable target lives in `snapshot.models`, both
+ * direct models and the synthesized cascade models that the snapshot
+ * loader builds from the legacy tiers table.  These mocks model the
+ * post-loader shape directly — `axl/fast` and `axl/deep` are entries
+ * in `models`, not in a separate `tiers` map.
  */
 function createMockSnapshot() {
-  const models = new Map();
-  models.set('openai/gpt-4o', { modelKey: 'openai/gpt-4o' });
-  models.set('copilot/gpt-4o', { modelKey: 'copilot/gpt-4o' });
-  models.set('anthropic/claude-sonnet-4', { modelKey: 'anthropic/claude-sonnet-4' });
-  models.set('openai/o1-mini', { modelKey: 'openai/o1-mini' });
+    const models = new Map();
+    models.set('openai/gpt-4o', {
+        modelKey: 'openai/gpt-4o',
+        strategyKind: 'direct',
+    });
+    models.set('copilot/gpt-4o', {
+        modelKey: 'copilot/gpt-4o',
+        strategyKind: 'direct',
+    });
+    models.set('anthropic/claude-sonnet-4', {
+        modelKey: 'anthropic/claude-sonnet-4',
+        strategyKind: 'direct',
+    });
+    models.set('openai/o1-mini', {
+        modelKey: 'openai/o1-mini',
+        strategyKind: 'direct',
+    });
+    // Synthesized cascade models — same key namespace as direct models
+    models.set('axl/fast', { modelKey: 'axl/fast', strategyKind: 'cascade' });
+    models.set('axl/deep', { modelKey: 'axl/deep', strategyKind: 'cascade' });
 
-  const aliases = new Map();
-  aliases.set('gpt4o', 'openai/gpt-4o');
-  aliases.set('sonnet', 'anthropic/claude-sonnet-4');
+    const aliases = new Map();
+    aliases.set('gpt4o', 'openai/gpt-4o');
+    aliases.set('sonnet', 'anthropic/claude-sonnet-4');
 
-  const tiers = new Map();
-  tiers.set('axl/fast', { tierKey: 'axl/fast' });
-  tiers.set('axl/deep', { tierKey: 'axl/deep' });
+    // tiers map remains for management API but the normalizer must not
+    // consult it; populate as empty so a leaked branch fails loudly.
+    const tiers = new Map();
 
-  return { models, aliases, tiers };
+    return { models, aliases, tiers };
 }
 
 describe('normalizeModelName', () => {
-  const snapshot = createMockSnapshot();
+    const snapshot = createMockSnapshot();
 
-  // ── exact matches ─────────────────────────────────────────────────
+    // ── exact matches ─────────────────────────────────────────────────
 
-  it('returns exact model match', () => {
-    const result = normalizeModelName('openai/gpt-4o', snapshot);
-    assert.equal(result.normalized, 'openai/gpt-4o');
-    assert.equal(result.kind, 'model');
-  });
+    it('returns exact direct-model match with kind="model"', () => {
+        const result = normalizeModelName('openai/gpt-4o', snapshot);
+        assert.equal(result.normalized, 'openai/gpt-4o');
+        assert.equal(result.kind, 'model');
+    });
 
-  it('returns exact tier match', () => {
-    const result = normalizeModelName('axl/fast', snapshot);
-    assert.equal(result.normalized, 'axl/fast');
-    assert.equal(result.kind, 'tier');
-  });
+    it('returns exact cascade-model match with kind="model" (no separate "tier" kind)', () => {
+        const result = normalizeModelName('axl/fast', snapshot);
+        assert.equal(result.normalized, 'axl/fast');
+        assert.equal(result.kind, 'model');
+    });
 
-  // ── alias resolution ──────────────────────────────────────────────
+    // ── alias resolution ──────────────────────────────────────────────
 
-  it('resolves alias to canonical model key', () => {
-    const result = normalizeModelName('gpt4o', snapshot);
-    assert.equal(result.normalized, 'openai/gpt-4o');
-    assert.equal(result.kind, 'model');
-  });
+    it('resolves alias to canonical model key', () => {
+        const result = normalizeModelName('gpt4o', snapshot);
+        assert.equal(result.normalized, 'openai/gpt-4o');
+        assert.equal(result.kind, 'model');
+    });
 
-  it('resolves another alias', () => {
-    const result = normalizeModelName('sonnet', snapshot);
-    assert.equal(result.normalized, 'anthropic/claude-sonnet-4');
-    assert.equal(result.kind, 'model');
-  });
+    it('resolves another alias', () => {
+        const result = normalizeModelName('sonnet', snapshot);
+        assert.equal(result.normalized, 'anthropic/claude-sonnet-4');
+        assert.equal(result.kind, 'model');
+    });
 
-  // ── legacy mode: prefix ───────────────────────────────────────────
+    // ── legacy mode: prefix → cascade model ───────────────────────────
 
-  it('normalizes mode:fast -> axl/fast', () => {
-    const result = normalizeModelName('mode:fast', snapshot);
-    assert.equal(result.normalized, 'axl/fast');
-    assert.equal(result.kind, 'tier');
-  });
+    it('normalizes mode:fast -> axl/fast (cascade model)', () => {
+        const result = normalizeModelName('mode:fast', snapshot);
+        assert.equal(result.normalized, 'axl/fast');
+        assert.equal(result.kind, 'model');
+    });
 
-  it('normalizes mode:deep -> axl/deep', () => {
-    const result = normalizeModelName('mode:deep', snapshot);
-    assert.equal(result.normalized, 'axl/deep');
-    assert.equal(result.kind, 'tier');
-  });
+    it('normalizes mode:deep -> axl/deep (cascade model)', () => {
+        const result = normalizeModelName('mode:deep', snapshot);
+        assert.equal(result.normalized, 'axl/deep');
+        assert.equal(result.kind, 'model');
+    });
 
-  it('normalizes mode:axl/deep -> axl/deep (already prefixed)', () => {
-    const result = normalizeModelName('mode:axl/deep', snapshot);
-    assert.equal(result.normalized, 'axl/deep');
-    assert.equal(result.kind, 'tier');
-  });
+    it('normalizes mode:axl/deep -> axl/deep (already prefixed)', () => {
+        const result = normalizeModelName('mode:axl/deep', snapshot);
+        assert.equal(result.normalized, 'axl/deep');
+        assert.equal(result.kind, 'model');
+    });
 
-  // ── bare model names ──────────────────────────────────────────────
+    // ── bare names ────────────────────────────────────────────────────
 
-  it('resolves bare model name to first matching provider-prefixed key', () => {
-    const result = normalizeModelName('o1-mini', snapshot);
-    assert.equal(result.normalized, 'openai/o1-mini');
-    assert.equal(result.kind, 'model');
-  });
+    it('resolves bare model name to first matching provider-prefixed key', () => {
+        const result = normalizeModelName('o1-mini', snapshot);
+        assert.equal(result.normalized, 'openai/o1-mini');
+        assert.equal(result.kind, 'model');
+    });
 
-  it('resolves bare tier name with axl/ prefix', () => {
-    const result = normalizeModelName('fast', snapshot);
-    assert.equal(result.normalized, 'axl/fast');
-    assert.equal(result.kind, 'tier');
-  });
+    it('resolves bare cascade name with axl/ prefix', () => {
+        const result = normalizeModelName('fast', snapshot);
+        assert.equal(result.normalized, 'axl/fast');
+        assert.equal(result.kind, 'model');
+    });
 
-  // ── case-insensitive ──────────────────────────────────────────────
+    // ── case-insensitive ──────────────────────────────────────────────
 
-  it('resolves case-insensitive model match', () => {
-    const result = normalizeModelName('OpenAI/GPT-4o', snapshot);
-    assert.equal(result.normalized, 'openai/gpt-4o');
-    assert.equal(result.kind, 'model');
-  });
+    it('resolves case-insensitive direct-model match', () => {
+        const result = normalizeModelName('OpenAI/GPT-4o', snapshot);
+        assert.equal(result.normalized, 'openai/gpt-4o');
+        assert.equal(result.kind, 'model');
+    });
 
-  it('resolves case-insensitive alias match', () => {
-    const result = normalizeModelName('GPT4O', snapshot);
-    // First tries alias exact (fails), then bare name (gpt-4o != GPT4O),
-    // then case-insensitive alias search
-    assert.equal(result.normalized, 'openai/gpt-4o');
-    assert.equal(result.kind, 'model');
-  });
+    it('resolves case-insensitive alias match', () => {
+        const result = normalizeModelName('GPT4O', snapshot);
+        assert.equal(result.normalized, 'openai/gpt-4o');
+        assert.equal(result.kind, 'model');
+    });
 
-  it('resolves case-insensitive tier match', () => {
-    const result = normalizeModelName('AXL/FAST', snapshot);
-    assert.equal(result.normalized, 'axl/fast');
-    assert.equal(result.kind, 'tier');
-  });
+    it('resolves case-insensitive cascade match', () => {
+        const result = normalizeModelName('AXL/FAST', snapshot);
+        assert.equal(result.normalized, 'axl/fast');
+        assert.equal(result.kind, 'model');
+    });
 
-  // ── unknown / edge cases ──────────────────────────────────────────
+    // ── unknown / edge cases ──────────────────────────────────────────
 
-  it('returns unknown for unrecognized input', () => {
-    const result = normalizeModelName('does-not-exist-anywhere', snapshot);
-    assert.equal(result.normalized, 'does-not-exist-anywhere');
-    assert.equal(result.kind, 'unknown');
-  });
+    it('returns unknown for unrecognized input', () => {
+        const result = normalizeModelName('does-not-exist-anywhere', snapshot);
+        assert.equal(result.normalized, 'does-not-exist-anywhere');
+        assert.equal(result.kind, 'unknown');
+    });
 
-  it('handles empty string', () => {
-    const result = normalizeModelName('', snapshot);
-    assert.equal(result.normalized, '');
-    assert.equal(result.kind, 'unknown');
-  });
+    it('handles empty string', () => {
+        const result = normalizeModelName('', snapshot);
+        assert.equal(result.normalized, '');
+        assert.equal(result.kind, 'unknown');
+    });
 
-  it('handles null input', () => {
-    const result = normalizeModelName(null, snapshot);
-    assert.equal(result.normalized, null);
-    assert.equal(result.kind, 'unknown');
-  });
+    it('handles null input', () => {
+        const result = normalizeModelName(null, snapshot);
+        assert.equal(result.normalized, null);
+        assert.equal(result.kind, 'unknown');
+    });
 
-  it('handles undefined input', () => {
-    const result = normalizeModelName(undefined, snapshot);
-    assert.equal(result.normalized, undefined);
-    assert.equal(result.kind, 'unknown');
-  });
+    it('handles undefined input', () => {
+        const result = normalizeModelName(undefined, snapshot);
+        assert.equal(result.normalized, undefined);
+        assert.equal(result.kind, 'unknown');
+    });
 
-  it('trims whitespace', () => {
-    const result = normalizeModelName('  openai/gpt-4o  ', snapshot);
-    assert.equal(result.normalized, 'openai/gpt-4o');
-    assert.equal(result.kind, 'model');
-  });
+    it('trims whitespace', () => {
+        const result = normalizeModelName('  openai/gpt-4o  ', snapshot);
+        assert.equal(result.normalized, 'openai/gpt-4o');
+        assert.equal(result.kind, 'model');
+    });
+
+    it('does NOT consult snapshot.tiers (only snapshot.models)', () => {
+        const tierOnlySnapshot = {
+            models: new Map(),
+            aliases: new Map(),
+            // The normalizer should ignore this map.
+            tiers: new Map([['axl/orphan', { tierKey: 'axl/orphan' }]]),
+        };
+        const result = normalizeModelName('axl/orphan', tierOnlySnapshot);
+        assert.equal(result.kind, 'unknown');
+    });
 });

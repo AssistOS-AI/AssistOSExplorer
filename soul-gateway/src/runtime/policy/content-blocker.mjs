@@ -13,26 +13,27 @@
  * @returns {{ blocked: boolean, matchedRule?: object, matchedText?: string }}
  */
 export function evaluateBlacklist(rules, messages) {
-  if (!Array.isArray(rules) || rules.length === 0) return { blocked: false };
-  if (!Array.isArray(messages) || messages.length === 0) return { blocked: false };
+    if (!Array.isArray(rules) || rules.length === 0) return { blocked: false };
+    if (!Array.isArray(messages) || messages.length === 0)
+        return { blocked: false };
 
-  for (const msg of messages) {
-    const content = typeof msg.content === 'string' ? msg.content : '';
-    if (!content) continue;
+    for (const msg of messages) {
+        const content = typeof msg.content === 'string' ? msg.content : '';
+        if (!content) continue;
 
-    for (const rule of rules) {
-      const matched = testRule(rule, content);
-      if (matched) {
-        return {
-          blocked: true,
-          matchedRule: rule,
-          matchedText: matched,
-        };
-      }
+        for (const rule of rules) {
+            const matched = testRule(rule, content);
+            if (matched) {
+                return {
+                    blocked: true,
+                    matchedRule: rule,
+                    matchedText: matched,
+                };
+            }
+        }
     }
-  }
 
-  return { blocked: false };
+    return { blocked: false };
 }
 
 // ── internals ─────────────────────────────────────────────────────────
@@ -45,36 +46,36 @@ export function evaluateBlacklist(rules, messages) {
  * @returns {string|null} The matched text, or null
  */
 function testRule(rule, content) {
-  const { pattern, matchType, caseSensitive = true } = rule;
+    const { pattern, matchType, caseSensitive = true } = rule;
 
-  if (matchType === 'exact') {
-    if (caseSensitive) {
-      return content === pattern ? content : null;
+    if (matchType === 'exact') {
+        if (caseSensitive) {
+            return content === pattern ? content : null;
+        }
+        return content.toLowerCase() === pattern.toLowerCase() ? content : null;
     }
-    return content.toLowerCase() === pattern.toLowerCase() ? content : null;
-  }
 
-  if (matchType === 'substring') {
-    const haystack = caseSensitive ? content : content.toLowerCase();
-    const needle = caseSensitive ? pattern : pattern.toLowerCase();
-    const idx = haystack.indexOf(needle);
-    if (idx !== -1) {
-      return content.substring(idx, idx + pattern.length);
+    if (matchType === 'substring') {
+        const haystack = caseSensitive ? content : content.toLowerCase();
+        const needle = caseSensitive ? pattern : pattern.toLowerCase();
+        const idx = haystack.indexOf(needle);
+        if (idx !== -1) {
+            return content.substring(idx, idx + pattern.length);
+        }
+        return null;
     }
+
+    if (matchType === 'regex') {
+        try {
+            const flags = caseSensitive ? '' : 'i';
+            const re = new RegExp(pattern, flags);
+            const match = re.exec(content);
+            return match ? match[0] : null;
+        } catch {
+            // Invalid regex — treat as no match
+            return null;
+        }
+    }
+
     return null;
-  }
-
-  if (matchType === 'regex') {
-    try {
-      const flags = caseSensitive ? '' : 'i';
-      const re = new RegExp(pattern, flags);
-      const match = re.exec(content);
-      return match ? match[0] : null;
-    } catch {
-      // Invalid regex — treat as no match
-      return null;
-    }
-  }
-
-  return null;
 }

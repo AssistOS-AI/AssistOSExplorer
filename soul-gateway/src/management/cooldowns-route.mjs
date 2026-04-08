@@ -15,11 +15,11 @@ import { requestRuntimeRefresh } from '../runtime/registry/runtime-refresh.mjs';
  * List all active cooldowns.
  */
 export async function handleListCooldowns(ctx) {
-  const { res, appCtx } = ctx;
-  const { pool } = appCtx;
+    const { res, appCtx } = ctx;
+    const { pool } = appCtx;
 
-  const rows = await cooldownsDao.listActive(pool);
-  sendJson(res, 200, { data: rows });
+    const rows = await cooldownsDao.listActive(pool);
+    sendJson(res, 200, { data: rows });
 }
 
 /**
@@ -27,20 +27,23 @@ export async function handleListCooldowns(ctx) {
  * Clear all cooldowns.
  */
 export async function handleClearAll(ctx) {
-  const { res, appCtx } = ctx;
-  const { pool } = appCtx;
+    const { res, appCtx } = ctx;
+    const { pool } = appCtx;
 
-  const cleared = await cooldownsDao.clearAll(pool, 'admin');
+    const cleared = await cooldownsDao.clearAll(pool, 'admin');
 
-  // Also clear from in-memory cooldown store if available
-  if (appCtx.services.cooldownStore) {
-    appCtx.services.cooldownStore.clearAll();
-  }
+    // Also clear from in-memory cooldown store if available
+    if (appCtx.services.cooldownStore) {
+        appCtx.services.cooldownStore.clearAll();
+    }
 
-  // Refresh runtime snapshot after mutation
-  requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'cooldown.clear-all' });
+    // Refresh runtime snapshot after mutation
+    requestRuntimeRefresh(appCtx, {
+        snapshot: true,
+        reason: 'cooldown.clear-all',
+    });
 
-  sendJson(res, 200, { cleared });
+    sendJson(res, 200, { cleared });
 }
 
 /**
@@ -48,18 +51,21 @@ export async function handleClearAll(ctx) {
  * Clear cooldown for one model.
  */
 export async function handleClearModel(ctx) {
-  const { res, params, appCtx } = ctx;
-  const { pool } = appCtx;
+    const { res, params, appCtx } = ctx;
+    const { pool } = appCtx;
 
-  await cooldownsDao.clearByModel(pool, params.modelId, 'admin');
+    await cooldownsDao.clearByModel(pool, params.modelId, 'admin');
 
-  // Also clear from in-memory store if available
-  if (appCtx.services.cooldownStore) {
-    appCtx.services.cooldownStore.clear(params.modelId);
-  }
+    // Also clear from in-memory store if available
+    if (appCtx.services.cooldownStore) {
+        appCtx.services.cooldownStore.clear(params.modelId);
+    }
 
-  // Refresh runtime snapshot after mutation
-  requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'cooldown.clear-one' });
+    // Refresh runtime snapshot after mutation
+    requestRuntimeRefresh(appCtx, {
+        snapshot: true,
+        reason: 'cooldown.clear-one',
+    });
 
-  sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true });
 }

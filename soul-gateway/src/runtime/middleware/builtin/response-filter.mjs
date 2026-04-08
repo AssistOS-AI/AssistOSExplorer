@@ -1,63 +1,69 @@
 /**
  * Built-in middleware: Response Filter
  *
- * Post-hook: apply regex find/replace patterns to the response text.
- * Useful for redacting PII, stripping unwanted content, or normalizing output.
+ * Applies regex find/replace filters to buffered assistant content.
  */
 
-export const meta = {
-  key: 'response-filter',
-  name: 'Response Filter',
-  description: 'Applies configurable regex patterns to filter or transform response content.',
-  version: '1.0.0',
-  defaultSettings: {
-    patterns: [],
-    // Each pattern: { find: string, replace: string, flags?: string }
-  },
-  hooks: 'post',
-};
+export const meta = Object.freeze({
+    key: 'response-filter',
+    name: 'Response Filter',
+    description:
+        'Applies configurable regex patterns to filter or transform response content.',
+    version: '2.0.0',
+    scope: 'gateway',
+    defaultSettings: Object.freeze({
+        patterns: [],
+    }),
+});
 
-/**
- * Post-hook: apply all filter patterns to the response.
- */
-export async function post(ctx, settings) {
-  const patterns = settings.patterns;
-  if (!Array.isArray(patterns) || patterns.length === 0) return;
-  if (!ctx.response) return;
+export function factory(settings = {}) {
+    const merged = { ...meta.defaultSettings, ...settings };
 
-  const choices = ctx.response.choices;
-  if (!Array.isArray(choices)) return;
+    return async function responseFilter(ctx, next) {
+        await next();
 
-  let modified = false;
+        const patterns = merged.patterns;
+        if (!Array.isArray(patterns) || patterns.length === 0 || !ctx.response) {
+            return;
+        }
 
-  for (const choice of choices) {
-    const msg = choice.message || choice.delta;
-    if (!msg || typeof msg.content !== 'string') continue;
+        const choices = ctx.response.choices;
+        if (!Array.isArray(choices)) {
+            return;
+        }
 
-    let text = msg.content;
+        let modified = false;
 
-    for (const pat of patterns) {
-      if (!pat.find) continue;
+        for (const choice of choices) {
+            const message = choice.message || choice.delta;
+            if (!message || typeof message.content !== 'string') continue;
 
-      let regex;
-      try {
-        regex = new RegExp(pat.find, pat.flags || 'g');
-      } catch {
-        ctx.log.warn('Invalid response-filter pattern', { find: pat.find });
-        continue;
-      }
+            let text = message.content;
+            for (const pattern of patterns) {
+                if (!pattern.find) continue;
 
-      const replaced = text.replace(regex, pat.replace ?? '');
-      if (replaced !== text) {
-        text = replaced;
-        modified = true;
-      }
-    }
+                let regex;
+                try {
+                    regex = new RegExp(pattern.find, pattern.flags || 'g');
+                } catch {
+                    ctx.log.warn('Invalid response-filter pattern', {
+                        find: pattern.find,
+                    });
+                    continue;
+                }
 
-    msg.content = text;
-  }
+                const replaced = text.replace(regex, pattern.replace ?? '');
+                if (replaced !== text) {
+                    text = replaced;
+                    modified = true;
+                }
+            }
 
-  if (modified) {
-    ctx.log.debug('Response filtered', { patternCount: patterns.length });
-  }
+            message.content = text;
+        }
+
+        if (modified) {
+            ctx.log.debug('Response filtered', { patternCount: patterns.length });
+        }
+    };
 }

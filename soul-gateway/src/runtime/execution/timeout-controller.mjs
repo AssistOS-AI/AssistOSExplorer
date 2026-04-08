@@ -5,13 +5,15 @@ import { ProviderTimeoutError } from '../../core/errors.mjs';
  * Returns { signal, clear } — caller MUST call clear() to prevent leaks.
  */
 export function withExecutionTimeout(timeoutMs, providerKey = 'unknown') {
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort(new ProviderTimeoutError(providerKey));
-  }, timeoutMs);
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+        controller.abort(new ProviderTimeoutError(providerKey));
+    }, timeoutMs);
 
-  return {
-    signal: controller.signal,
-    clear() { clearTimeout(timer); },
-  };
+    return {
+        signal: controller.signal,
+        clear() {
+            clearTimeout(timer);
+        },
+    };
 }

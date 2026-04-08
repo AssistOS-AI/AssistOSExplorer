@@ -22,33 +22,33 @@ import * as sessionsDao from '../db/dao/sessions-dao.mjs';
  * @returns {Promise<object>} session record
  */
 export async function resolveSession(reqCtx) {
-  const { identity, apiKey, appCtx } = reqCtx;
-  const { pool, config } = appCtx;
-  const timeoutMinutes = config.env.SESSION_TIMEOUT_MINUTES;
+    const { identity, apiKey, appCtx } = reqCtx;
+    const { pool, config } = appCtx;
+    const timeoutMinutes = config.env.SESSION_TIMEOUT_MINUTES;
 
-  let session;
+    let session;
 
-  if (identity.explicitSessionId) {
-    session = await resolveExplicitSession(pool, {
-      explicitSessionId: identity.explicitSessionId,
-      apiKeyId: apiKey.id,
-      agentName: identity.agentName,
-      soulId: identity.soulId,
-    });
-  } else {
-    const result = await sessionsDao.findOrCreateImplicit(pool, {
-      apiKeyId: apiKey.id,
-      agentName: identity.agentName,
-      soulId: identity.soulId,
-      timeoutMinutes,
-    });
-    session = result.session;
-  }
+    if (identity.explicitSessionId) {
+        session = await resolveExplicitSession(pool, {
+            explicitSessionId: identity.explicitSessionId,
+            apiKeyId: apiKey.id,
+            agentName: identity.agentName,
+            soulId: identity.soulId,
+        });
+    } else {
+        const result = await sessionsDao.findOrCreateImplicit(pool, {
+            apiKeyId: apiKey.id,
+            agentName: identity.agentName,
+            soulId: identity.soulId,
+            timeoutMinutes,
+        });
+        session = result.session;
+    }
 
-  // Update activity timestamp
-  await sessionsDao.updateActivity(pool, session.id);
+    // Update activity timestamp
+    await sessionsDao.updateActivity(pool, session.id);
 
-  return session;
+    return session;
 }
 
 // ── Explicit session resolution ─────────────────────────────────────
@@ -56,36 +56,39 @@ export async function resolveSession(reqCtx) {
 /**
  * Find a session by explicit session ID, or create one if it doesn't exist.
  */
-async function resolveExplicitSession(pool, { explicitSessionId, apiKeyId, agentName, soulId }) {
-  // First, try to find an existing session with this explicit ID
-  const existing = await findByExplicitId(pool, explicitSessionId, apiKeyId);
-  if (existing) return existing;
+async function resolveExplicitSession(
+    pool,
+    { explicitSessionId, apiKeyId, agentName, soulId }
+) {
+    // First, try to find an existing session with this explicit ID
+    const existing = await findByExplicitId(pool, explicitSessionId, apiKeyId);
+    if (existing) return existing;
 
-  // Create a new session with the explicit ID
-  const groupKey = `explicit:${apiKeyId}:${explicitSessionId}`;
-  return sessionsDao.create(pool, {
-    groupKey,
-    groupDisplay: `${agentName} (${explicitSessionId})`,
-    sequenceNo: 1,
-    apiKeyId,
-    soulId,
-    agentName,
-    explicitSessionId,
-  });
+    // Create a new session with the explicit ID
+    const groupKey = `explicit:${apiKeyId}:${explicitSessionId}`;
+    return sessionsDao.create(pool, {
+        groupKey,
+        groupDisplay: `${agentName} (${explicitSessionId})`,
+        sequenceNo: 1,
+        apiKeyId,
+        soulId,
+        agentName,
+        explicitSessionId,
+    });
 }
 
 /**
  * Look up an existing session by explicit_session_id and api_key_id.
  */
 async function findByExplicitId(pool, explicitSessionId, apiKeyId) {
-  const { rows } = await pool.query(
-    `SELECT * FROM soul_gateway.sessions
+    const { rows } = await pool.query(
+        `SELECT * FROM soul_gateway.sessions
      WHERE explicit_session_id = $1
        AND api_key_id = $2
        AND status = 'open'
      ORDER BY last_activity_at DESC
      LIMIT 1`,
-    [explicitSessionId, apiKeyId],
-  );
-  return rows[0] || null;
+        [explicitSessionId, apiKeyId]
+    );
+    return rows[0] || null;
 }

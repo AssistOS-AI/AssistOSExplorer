@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
  * Format: `{prefix}{base36-timestamp}-{random-hex}`
  */
 export function createRequestId(prefix = 'chatcmpl-') {
-  const ts = Date.now().toString(36);
-  const rand = randomBytes(8).toString('hex');
-  return `${prefix}${ts}-${rand}`;
+    const ts = Date.now().toString(36);
+    const rand = randomBytes(8).toString('hex');
+    return `${prefix}${ts}-${rand}`;
 }

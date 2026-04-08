@@ -18,79 +18,79 @@ import { MetricsService } from '../observability/metrics-service.mjs';
  * GET /management/metrics/cost
  */
 export async function handleCostMetrics(ctx) {
-  const { res, query, appCtx } = ctx;
+    const { res, query, appCtx } = ctx;
 
-  const { from, to } = requireDateRange(query);
-  const groupBy = query.groupBy || 'day';
+    const { from, to } = requireDateRange(query);
+    const groupBy = query.groupBy || 'day';
 
-  const svc = new MetricsService(appCtx.pool);
-  const data = await svc.getCostMetrics({ from, to, groupBy });
-  sendJson(res, 200, { data });
+    const svc = new MetricsService(appCtx.pool);
+    const data = await svc.getCostMetrics({ from, to, groupBy });
+    sendJson(res, 200, { data });
 }
 
 /**
  * GET /management/metrics/usage
  */
 export async function handleUsageMetrics(ctx) {
-  const { res, query, appCtx } = ctx;
+    const { res, query, appCtx } = ctx;
 
-  const { from, to } = requireDateRange(query);
-  const groupBy = query.groupBy || 'day';
+    const { from, to } = requireDateRange(query);
+    const groupBy = query.groupBy || 'day';
 
-  const svc = new MetricsService(appCtx.pool);
-  const data = await svc.getUsageMetrics({ from, to, groupBy });
-  sendJson(res, 200, { data });
+    const svc = new MetricsService(appCtx.pool);
+    const data = await svc.getUsageMetrics({ from, to, groupBy });
+    sendJson(res, 200, { data });
 }
 
 /**
  * GET /management/metrics/errors
  */
 export async function handleErrorMetrics(ctx) {
-  const { res, query, appCtx } = ctx;
+    const { res, query, appCtx } = ctx;
 
-  const { from, to } = requireDateRange(query);
+    const { from, to } = requireDateRange(query);
 
-  const svc = new MetricsService(appCtx.pool);
-  const data = await svc.getErrorMetrics({ from, to });
-  sendJson(res, 200, { data });
+    const svc = new MetricsService(appCtx.pool);
+    const data = await svc.getErrorMetrics({ from, to });
+    sendJson(res, 200, { data });
 }
 
 /**
  * GET /management/metrics/activity
  */
 export async function handleActivityMetrics(ctx) {
-  const { res, query, appCtx } = ctx;
+    const { res, query, appCtx } = ctx;
 
-  const { from, to } = requireDateRange(query);
-  const bucket = query.bucket || 'minute';
+    const { from, to } = requireDateRange(query);
+    const bucket = query.bucket || 'minute';
 
-  const svc = new MetricsService(appCtx.pool);
-  const data = await svc.getActivityMetrics({ from, to, bucket });
-  sendJson(res, 200, { data });
+    const svc = new MetricsService(appCtx.pool);
+    const data = await svc.getActivityMetrics({ from, to, bucket });
+    sendJson(res, 200, { data });
 }
 
 /**
  * GET /management/metrics/tokens
  */
 export async function handleTokenMetrics(ctx) {
-  const { res, query, appCtx } = ctx;
+    const { res, query, appCtx } = ctx;
 
-  const { from, to } = requireDateRange(query);
-  const groupBy = query.groupBy || 'day';
+    const { from, to } = requireDateRange(query);
+    const groupBy = query.groupBy || 'day';
 
-  const svc = new MetricsService(appCtx.pool);
-  const data = await svc.getTokenMetrics({ from, to, groupBy });
-  sendJson(res, 200, { data });
+    const svc = new MetricsService(appCtx.pool);
+    const data = await svc.getTokenMetrics({ from, to, groupBy });
+    sendJson(res, 200, { data });
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
 
 function requireDateRange(query) {
-  if (!query.from) {
-    throw new BadRequestError('Missing required query parameter: from');
-  }
-  return {
-    from: query.from,
-    to: query.to || new Date().toISOString(),
-  };
+    if (!query.from) {
+        throw new BadRequestError('Missing required query parameter: from');
+    }
+    return {
+        from: query.from,
+        to: query.to || new Date().toISOString(),
+    };
 }

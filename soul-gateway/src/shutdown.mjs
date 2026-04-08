@@ -14,29 +14,29 @@
  * 10. Exit
  */
 export async function shutdown(appCtx, server, reason = 'SIGTERM') {
-  const { log, config } = appCtx;
-  const graceMs = config.env.SHUTDOWN_GRACE_MS;
+    const { log, config } = appCtx;
+    const graceMs = config.env.SHUTDOWN_GRACE_MS;
 
-  log.info('shutdown starting', { reason, graceMs });
+    log.info('shutdown starting', { reason, graceMs });
 
-  // 1. Stop accepting connections
-  appCtx.draining = true;
+    // 1. Stop accepting connections
+    appCtx.draining = true;
 
-  await new Promise((resolve) => {
-    server.close(() => resolve());
-    // If server.close doesn't finish in grace period, proceed anyway
-    setTimeout(resolve, graceMs);
-  });
+    await new Promise((resolve) => {
+        server.close(() => resolve());
+        // If server.close doesn't finish in grace period, proceed anyway
+        setTimeout(resolve, graceMs);
+    });
 
-  // 9. Close database pool
-  if (appCtx.pool) {
-    try {
-      await appCtx.pool.end();
-      log.info('database pool closed');
-    } catch (err) {
-      log.error('error closing db pool', { error: err.message });
+    // 9. Close database pool
+    if (appCtx.pool) {
+        try {
+            await appCtx.pool.end();
+            log.info('database pool closed');
+        } catch (err) {
+            log.error('error closing db pool', { error: err.message });
+        }
     }
-  }
 
-  log.info('shutdown complete', { reason });
+    log.info('shutdown complete', { reason });
 }

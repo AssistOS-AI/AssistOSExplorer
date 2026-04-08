@@ -2,13 +2,15 @@
  * MetricsService — aggregated dashboard metrics from audit_logs.
  */
 export class MetricsService {
-  constructor(pool) {
-    this.pool = pool;
-  }
+    constructor(pool) {
+        this.pool = pool;
+    }
 
-  async getCostMetrics({ from, to, groupBy = 'day' }) {
-    const trunc = groupBy === 'hour' ? 'hour' : groupBy === 'week' ? 'week' : 'day';
-    const { rows } = await this.pool.query(`
+    async getCostMetrics({ from, to, groupBy = 'day' }) {
+        const trunc =
+            groupBy === 'hour' ? 'hour' : groupBy === 'week' ? 'week' : 'day';
+        const { rows } = await this.pool.query(
+            `
       SELECT
         date_trunc($3, started_at AT TIME ZONE 'UTC') AS period,
         requested_model,
@@ -19,13 +21,17 @@ export class MetricsService {
         AND status = 'succeeded'
       GROUP BY 1, 2
       ORDER BY 1, 2
-    `, [from, to, trunc]);
-    return rows;
-  }
+    `,
+            [from, to, trunc]
+        );
+        return rows;
+    }
 
-  async getUsageMetrics({ from, to, groupBy = 'day' }) {
-    const trunc = groupBy === 'hour' ? 'hour' : groupBy === 'week' ? 'week' : 'day';
-    const { rows } = await this.pool.query(`
+    async getUsageMetrics({ from, to, groupBy = 'day' }) {
+        const trunc =
+            groupBy === 'hour' ? 'hour' : groupBy === 'week' ? 'week' : 'day';
+        const { rows } = await this.pool.query(
+            `
       SELECT
         date_trunc($3, started_at AT TIME ZONE 'UTC') AS period,
         requested_model,
@@ -38,12 +44,15 @@ export class MetricsService {
       WHERE started_at >= $1 AND started_at < $2
       GROUP BY 1, 2
       ORDER BY 1, 2
-    `, [from, to, trunc]);
-    return rows;
-  }
+    `,
+            [from, to, trunc]
+        );
+        return rows;
+    }
 
-  async getErrorMetrics({ from, to }) {
-    const { rows } = await this.pool.query(`
+    async getErrorMetrics({ from, to }) {
+        const { rows } = await this.pool.query(
+            `
       SELECT
         date_trunc('hour', started_at AT TIME ZONE 'UTC') AS hour_utc,
         error_type,
@@ -53,13 +62,17 @@ export class MetricsService {
         AND status = 'failed'
       GROUP BY 1, 2
       ORDER BY 1, 2
-    `, [from, to]);
-    return rows;
-  }
+    `,
+            [from, to]
+        );
+        return rows;
+    }
 
-  async getActivityMetrics({ from, to, bucket = 'minute' }) {
-    const trunc = bucket === 'hour' ? 'hour' : bucket === 'day' ? 'day' : 'minute';
-    const { rows } = await this.pool.query(`
+    async getActivityMetrics({ from, to, bucket = 'minute' }) {
+        const trunc =
+            bucket === 'hour' ? 'hour' : bucket === 'day' ? 'day' : 'minute';
+        const { rows } = await this.pool.query(
+            `
       SELECT
         date_trunc($3, started_at AT TIME ZONE 'UTC') AS period,
         COUNT(*) FILTER (WHERE status = 'succeeded') AS succeeded,
@@ -70,13 +83,17 @@ export class MetricsService {
       WHERE started_at >= $1 AND started_at < $2
       GROUP BY 1
       ORDER BY 1
-    `, [from, to, trunc]);
-    return rows;
-  }
+    `,
+            [from, to, trunc]
+        );
+        return rows;
+    }
 
-  async getTokenMetrics({ from, to, groupBy = 'day' }) {
-    const trunc = groupBy === 'hour' ? 'hour' : groupBy === 'week' ? 'week' : 'day';
-    const { rows } = await this.pool.query(`
+    async getTokenMetrics({ from, to, groupBy = 'day' }) {
+        const trunc =
+            groupBy === 'hour' ? 'hour' : groupBy === 'week' ? 'week' : 'day';
+        const { rows } = await this.pool.query(
+            `
       SELECT
         date_trunc($3, started_at AT TIME ZONE 'UTC') AS period,
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
@@ -87,7 +104,9 @@ export class MetricsService {
         AND status = 'succeeded'
       GROUP BY 1
       ORDER BY 1
-    `, [from, to, trunc]);
-    return rows;
-  }
+    `,
+            [from, to, trunc]
+        );
+        return rows;
+    }
 }

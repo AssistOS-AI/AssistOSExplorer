@@ -1,89 +1,87 @@
 /**
  * Built-in middleware: Request Logger
  *
- * Pre-hook:  log request start (model, message count, key).
- * Post-hook: log response metadata (status, token usage, latency).
+ * Logs request ingress and completion metadata.
  */
 
-export const meta = {
-  key: 'request-logger',
-  name: 'Request Logger',
-  description: 'Logs request start and response metadata for observability.',
-  version: '1.0.0',
-  defaultSettings: {
-    logRequestBody: false,    // if true, include message content (expensive)
-    logResponseBody: false,   // if true, include response content
-    excerptChars: 200,        // max chars for body excerpts
-  },
-  hooks: 'both',
-};
+export const meta = Object.freeze({
+    key: 'request-logger',
+    name: 'Request Logger',
+    description: 'Logs request start and response metadata for observability.',
+    version: '2.0.0',
+    scope: 'gateway',
+    defaultSettings: Object.freeze({
+        logRequestBody: false,
+        logResponseBody: false,
+        excerptChars: 200,
+    }),
+});
 
-/**
- * Pre-hook: log request start.
- */
-export async function pre(ctx, settings) {
-  const req = ctx.request;
+export function factory(settings = {}) {
+    const merged = { ...meta.defaultSettings, ...settings };
 
-  // Stash start time for latency measurement in post-hook
-  ctx.state?.set?.('request-logger:startMs', Date.now());
+    return async function requestLogger(ctx, next) {
+        const request = ctx.request || {};
+        ctx.state?.set?.('request-logger:startMs', Date.now());
 
-  const entry = {
-    model: req.model,
-    messageCount: req.messages?.length ?? 0,
-    keyId: ctx.auth?.keyId || 'anonymous',
-    stream: !!req.stream,
-  };
+        const entry = {
+            model: request.model,
+            messageCount: request.messages?.length ?? 0,
+            keyId: ctx.auth?.keyId || 'anonymous',
+            stream: !!request.stream,
+        };
 
-  if (settings.logRequestBody && req.messages?.length > 0) {
-    const last = req.messages[req.messages.length - 1];
-    const text = typeof last.content === 'string' ? last.content : JSON.stringify(last.content || '');
-    const maxChars = settings.excerptChars || 200;
-    entry.lastMessageExcerpt = text.length > maxChars
-      ? text.slice(0, maxChars) + '...'
-      : text;
-  }
+        if (merged.logRequestBody && request.messages?.length > 0) {
+            const last = request.messages[request.messages.length - 1];
+            const text =
+                typeof last.content === 'string'
+                    ? last.content
+                    : JSON.stringify(last.content || '');
+            const maxChars = merged.excerptChars || 200;
+            entry.lastMessageExcerpt =
+                text.length > maxChars ? text.slice(0, maxChars) + '...' : text;
+        }
 
-  ctx.log.info('Request start', entry);
-}
+        ctx.log.info('Request start', entry);
 
-/**
- * Post-hook: log response metadata.
- */
-export async function post(ctx, settings) {
-  const req = ctx.request;
-  const startMs = ctx.state?.get?.('request-logger:startMs') || Date.now();
-  const latencyMs = Date.now() - startMs;
+        await next();
 
-  const entry = {
-    model: req.model,
-    keyId: ctx.auth?.keyId || 'anonymous',
-    latencyMs,
-  };
+        const startMs = ctx.state?.get?.('request-logger:startMs') || Date.now();
+        const latencyMs = Date.now() - startMs;
+        const usage = ctx.response?.usage ?? ctx.usage;
+        const responseEntry = {
+            model: request.model,
+            keyId: ctx.auth?.keyId || 'anonymous',
+            latencyMs,
+        };
 
-  if (ctx.usage) {
-    entry.promptTokens = ctx.usage.prompt_tokens ?? ctx.usage.promptTokens ?? 0;
-    entry.completionTokens = ctx.usage.completion_tokens ?? ctx.usage.completionTokens ?? 0;
-    entry.totalTokens = ctx.usage.total_tokens ?? ctx.usage.totalTokens ?? 0;
-  }
+        if (usage) {
+            responseEntry.promptTokens =
+                usage.prompt_tokens ?? usage.promptTokens ?? 0;
+            responseEntry.completionTokens =
+                usage.completion_tokens ?? usage.completionTokens ?? 0;
+            responseEntry.totalTokens =
+                usage.total_tokens ?? usage.totalTokens ?? 0;
+        }
 
-  if (settings.logResponseBody && ctx.response) {
-    const text = extractResponseText(ctx.response);
-    const maxChars = settings.excerptChars || 200;
-    entry.responseExcerpt = text.length > maxChars
-      ? text.slice(0, maxChars) + '...'
-      : text;
-  }
+        if (merged.logResponseBody && ctx.response) {
+            const text = extractResponseText(ctx.response);
+            const maxChars = merged.excerptChars || 200;
+            responseEntry.responseExcerpt =
+                text.length > maxChars ? text.slice(0, maxChars) + '...' : text;
+        }
 
-  ctx.log.info('Request complete', entry);
+        ctx.log.info('Request complete', responseEntry);
+    };
 }
 
 function extractResponseText(response) {
-  if (!response) return '';
-  if (typeof response === 'string') return response;
-  const choices = response.choices || [];
-  if (choices.length > 0) {
-    const msg = choices[0].message || {};
-    return typeof msg.content === 'string' ? msg.content : '';
-  }
-  return '';
+    if (!response) return '';
+    if (typeof response === 'string') return response;
+    const choices = response.choices || [];
+    if (choices.length > 0) {
+        const message = choices[0].message || {};
+        return typeof message.content === 'string' ? message.content : '';
+    }
+    return '';
 }

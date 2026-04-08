@@ -24,74 +24,88 @@
  * @param {string} [modelId]       Model ID for directory lookup
  * @returns {{ inputCostUsd: number, outputCostUsd: number, totalCostUsd: number, budgetExempt: boolean, pricingMissing: boolean }}
  */
-export function calculateRequestCost(pricingRecord, usage, pricingDirectory, providerKey, modelId) {
-  const { pricingMode } = pricingRecord;
+export function calculateRequestCost(
+    pricingRecord,
+    usage,
+    pricingDirectory,
+    providerKey,
+    modelId
+) {
+    const { pricingMode } = pricingRecord;
 
-  if (pricingMode === 'free') {
-    return {
-      inputCostUsd: 0,
-      outputCostUsd: 0,
-      totalCostUsd: 0,
-      budgetExempt: true,
-      pricingMissing: false,
-    };
-  }
-
-  if (pricingMode === 'request') {
-    const cost = pricingRecord.requestPriceUsd || 0;
-    return {
-      inputCostUsd: 0,
-      outputCostUsd: 0,
-      totalCostUsd: cost,
-      budgetExempt: false,
-      pricingMissing: false,
-    };
-  }
-
-  if (pricingMode === 'token') {
-    const inputCost = (usage.inputTokens / 1_000_000) * (pricingRecord.inputPricePerMillion || 0);
-    const outputCost = (usage.outputTokens / 1_000_000) * (pricingRecord.outputPricePerMillion || 0);
-    return {
-      inputCostUsd: inputCost,
-      outputCostUsd: outputCost,
-      totalCostUsd: inputCost + outputCost,
-      budgetExempt: false,
-      pricingMissing: false,
-    };
-  }
-
-  if (pricingMode === 'external_directory') {
-    if (pricingDirectory && providerKey && modelId) {
-      const entry = pricingDirectory.lookup(providerKey, modelId);
-      if (entry) {
-        const inputCost = (usage.inputTokens / 1_000_000) * entry.inputPricePerMillion;
-        const outputCost = (usage.outputTokens / 1_000_000) * entry.outputPricePerMillion;
+    if (pricingMode === 'free') {
         return {
-          inputCostUsd: inputCost,
-          outputCostUsd: outputCost,
-          totalCostUsd: inputCost + outputCost,
-          budgetExempt: false,
-          pricingMissing: false,
+            inputCostUsd: 0,
+            outputCostUsd: 0,
+            totalCostUsd: 0,
+            budgetExempt: true,
+            pricingMissing: false,
         };
-      }
     }
 
-    // Directory lookup failed — return 0 with warning flag
-    return {
-      inputCostUsd: 0,
-      outputCostUsd: 0,
-      totalCostUsd: 0,
-      budgetExempt: false,
-      pricingMissing: true,
-    };
-  }
+    if (pricingMode === 'request') {
+        const cost = pricingRecord.requestPriceUsd || 0;
+        return {
+            inputCostUsd: 0,
+            outputCostUsd: 0,
+            totalCostUsd: cost,
+            budgetExempt: false,
+            pricingMissing: false,
+        };
+    }
 
-  // Unknown pricing mode — treat as missing
-  return {
-    inputCostUsd: 0,
-    outputCostUsd: 0,
-    totalCostUsd: 0,
-    budgetExempt: false,
-    pricingMissing: true,
-  };
+    if (pricingMode === 'token') {
+        const inputCost =
+            (usage.inputTokens / 1_000_000) *
+            (pricingRecord.inputPricePerMillion || 0);
+        const outputCost =
+            (usage.outputTokens / 1_000_000) *
+            (pricingRecord.outputPricePerMillion || 0);
+        return {
+            inputCostUsd: inputCost,
+            outputCostUsd: outputCost,
+            totalCostUsd: inputCost + outputCost,
+            budgetExempt: false,
+            pricingMissing: false,
+        };
+    }
+
+    if (pricingMode === 'external_directory') {
+        if (pricingDirectory && providerKey && modelId) {
+            const entry = pricingDirectory.lookup(providerKey, modelId);
+            if (entry) {
+                const inputCost =
+                    (usage.inputTokens / 1_000_000) *
+                    entry.inputPricePerMillion;
+                const outputCost =
+                    (usage.outputTokens / 1_000_000) *
+                    entry.outputPricePerMillion;
+                return {
+                    inputCostUsd: inputCost,
+                    outputCostUsd: outputCost,
+                    totalCostUsd: inputCost + outputCost,
+                    budgetExempt: false,
+                    pricingMissing: false,
+                };
+            }
+        }
+
+        // Directory lookup failed — return 0 with warning flag
+        return {
+            inputCostUsd: 0,
+            outputCostUsd: 0,
+            totalCostUsd: 0,
+            budgetExempt: false,
+            pricingMissing: true,
+        };
+    }
+
+    // Unknown pricing mode — treat as missing
+    return {
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+        totalCostUsd: 0,
+        budgetExempt: false,
+        pricingMissing: true,
+    };
 }

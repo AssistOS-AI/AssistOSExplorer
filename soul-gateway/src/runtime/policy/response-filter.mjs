@@ -13,19 +13,19 @@
  * @returns {string} The filtered text
  */
 export function applyResponseFilters(text, patterns) {
-  if (!text || !Array.isArray(patterns) || patterns.length === 0) return text;
+    if (!text || !Array.isArray(patterns) || patterns.length === 0) return text;
 
-  let result = text;
+    let result = text;
 
-  for (const pattern of patterns) {
-    try {
-      const re = new RegExp(pattern.find, pattern.flags || 'g');
-      result = result.replace(re, pattern.replace);
-    } catch {
-      // Invalid regex — skip this pattern
-      continue;
+    for (const pattern of patterns) {
+        try {
+            const re = new RegExp(pattern.find, pattern.flags || 'g');
+            result = result.replace(re, pattern.replace);
+        } catch {
+            // Invalid regex — skip this pattern
+            continue;
+        }
     }
-  }
 
-  return result;
+    return result;
 }

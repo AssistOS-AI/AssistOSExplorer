@@ -21,27 +21,27 @@
  * @returns {object} ExecuteContext for the provider plugin
  */
 export function createProviderContext(execCtx) {
-  const {
-    requestId,
-    request,
-    resolvedModel,
-    providerRecord,
-    credentialLease = null,
-    attempt = { index: 0, previousErrors: [] },
-    signal,
-    logger,
-    services = {},
-  } = execCtx;
+    const {
+        requestId,
+        request,
+        resolvedModel,
+        providerRecord,
+        credentialLease = null,
+        attempt = { index: 0, previousErrors: [] },
+        signal,
+        logger,
+        services = {},
+    } = execCtx;
 
-  return Object.freeze({
-    requestId,
-    request,
-    resolvedModel,
-    providerRecord,
-    credentialLease,
-    attempt: Object.freeze({ ...attempt }),
-    signal,
-    logger,
-    services: Object.freeze({ ...services }),
-  });
+    return Object.freeze({
+        requestId,
+        request,
+        resolvedModel,
+        providerRecord,
+        credentialLease,
+        attempt: Object.freeze({ ...attempt }),
+        signal,
+        logger,
+        services: Object.freeze({ ...services }),
+    });
 }

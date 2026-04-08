@@ -1,69 +1,62 @@
 /**
  * Built-in middleware: Token Tracker
  *
- * Post-hook: record tokens-per-minute usage after response.
- * Maintains an in-memory per-key TPM counter for observability.
+ * Records token usage in an in-memory sliding window per API key.
  */
 
-export const meta = {
-  key: 'token-tracker',
-  name: 'Token Tracker',
-  description: 'Records token usage (TPM) per API key after each response.',
-  version: '1.0.0',
-  defaultSettings: {
-    windowMs: 60_000,  // 1-minute window
-  },
-  hooks: 'post',
-};
+export const meta = Object.freeze({
+    key: 'token-tracker',
+    name: 'Token Tracker',
+    description: 'Records token usage (TPM) per API key after each response.',
+    version: '2.0.0',
+    scope: 'gateway',
+    defaultSettings: Object.freeze({
+        windowMs: 60_000,
+    }),
+});
 
-/**
- * In-memory TPM tracker.
- * key -> { timestamps: Array<{ ts: number, tokens: number }> }
- */
 const _tpm = new Map();
 
-/**
- * Post-hook: record token usage.
- */
-export async function post(ctx, settings) {
-  const usage = ctx.usage;
-  if (!usage) return;
+export function factory(settings = {}) {
+    const merged = { ...meta.defaultSettings, ...settings };
+    const windowMs = merged.windowMs || 60_000;
 
-  const totalTokens = usage.total_tokens ?? usage.totalTokens ?? 0;
-  if (totalTokens <= 0) return;
+    return async function tokenTracker(ctx, next) {
+        await next();
 
-  const apiKey = ctx.auth?.keyId || 'anonymous';
-  const windowMs = settings.windowMs || 60_000;
-  const now = Date.now();
+        const usage = ctx.response?.usage ?? ctx.usage;
+        const totalTokens = usage?.total_tokens ?? usage?.totalTokens ?? 0;
+        if (totalTokens <= 0) {
+            return;
+        }
 
-  let entries = _tpm.get(apiKey);
-  if (!entries) {
-    entries = [];
-    _tpm.set(apiKey, entries);
-  }
+        const apiKey = ctx.auth?.keyId || 'anonymous';
+        const now = Date.now();
+        let entries = _tpm.get(apiKey);
+        if (!entries) {
+            entries = [];
+            _tpm.set(apiKey, entries);
+        }
 
-  entries.push({ ts: now, tokens: totalTokens });
+        entries.push({ ts: now, tokens: totalTokens });
+        const cutoff = now - windowMs;
+        while (entries.length > 0 && entries[0].ts <= cutoff) {
+            entries.shift();
+        }
 
-  // Prune expired entries
-  const cutoff = now - windowMs;
-  while (entries.length > 0 && entries[0].ts <= cutoff) {
-    entries.shift();
-  }
-
-  const currentTpm = entries.reduce((sum, e) => sum + e.tokens, 0);
-
-  ctx.log.debug('Token usage recorded', {
-    keyId: apiKey,
-    tokens: totalTokens,
-    tpm: currentTpm,
-  });
+        const currentTpm = entries.reduce((sum, entry) => sum + entry.tokens, 0);
+        ctx.log.debug('Token usage recorded', {
+            keyId: apiKey,
+            tokens: totalTokens,
+            tpm: currentTpm,
+        });
+    };
 }
 
-/** Exposed for testing. */
 export function _resetTpm() {
-  _tpm.clear();
+    _tpm.clear();
 }
 
 export function _getTpm(apiKey) {
-  return _tpm.get(apiKey) || [];
+    return _tpm.get(apiKey) || [];
 }

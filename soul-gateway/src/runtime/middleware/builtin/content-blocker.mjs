@@ -1,50 +1,57 @@
 /**
  * Built-in middleware: Content Blocker
  *
- * Pre-hook: evaluate request messages against blacklist rules.
- * Abort with ContentBlockedError on match.
+ * Blocks requests whose messages match configurable blacklist patterns.
  */
 
-export const meta = {
-  key: 'content-blocker',
-  name: 'Content Blocker',
-  description: 'Blocks requests whose messages match configurable blacklist patterns.',
-  version: '1.0.0',
-  defaultSettings: {
-    rules: [],
-    // Each rule: { pattern: string, flags?: string, description?: string }
-  },
-  hooks: 'pre',
-};
+export const meta = Object.freeze({
+    key: 'content-blocker',
+    name: 'Content Blocker',
+    description:
+        'Blocks requests whose messages match configurable blacklist patterns.',
+    version: '2.0.0',
+    scope: 'gateway',
+    defaultSettings: Object.freeze({
+        rules: [],
+    }),
+});
 
-/**
- * Pre-hook: scan all message contents against blacklist rules.
- */
-export async function pre(ctx, settings) {
-  const rules = settings.rules;
-  if (!Array.isArray(rules) || rules.length === 0) return;
+export function factory(settings = {}) {
+    const merged = { ...meta.defaultSettings, ...settings };
 
-  const messages = ctx.request.messages || [];
-  const fullText = messages
-    .map((m) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''))
-    .join('\n');
+    return async function contentBlocker(ctx, next) {
+        const rules = merged.rules;
+        if (Array.isArray(rules) && rules.length > 0) {
+            const messages = ctx.request?.messages || [];
+            const fullText = messages
+                .map((message) =>
+                    typeof message.content === 'string'
+                        ? message.content
+                        : JSON.stringify(message.content || '')
+                )
+                .join('\n');
 
-  for (const rule of rules) {
-    if (!rule.pattern) continue;
+            for (const rule of rules) {
+                if (!rule.pattern) continue;
 
-    let regex;
-    try {
-      regex = new RegExp(rule.pattern, rule.flags || 'i');
-    } catch {
-      ctx.log.warn('Invalid content-blocker rule pattern', { pattern: rule.pattern });
-      continue;
-    }
+                let regex;
+                try {
+                    regex = new RegExp(rule.pattern, rule.flags || 'i');
+                } catch {
+                    ctx.log.warn('Invalid content-blocker rule pattern', {
+                        pattern: rule.pattern,
+                    });
+                    continue;
+                }
 
-    if (regex.test(fullText)) {
-      const description = rule.description || rule.pattern;
-      ctx.log.warn('Content blocked', { rule: description });
-      ctx.abort.error(400, `Content blocked: ${description}`);
-      return;
-    }
-  }
+                if (regex.test(fullText)) {
+                    const description = rule.description || rule.pattern;
+                    ctx.log.warn('Content blocked', { rule: description });
+                    ctx.abort.error(400, `Content blocked: ${description}`);
+                }
+            }
+        }
+
+        await next();
+    };
 }

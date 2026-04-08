@@ -28,61 +28,61 @@ import { createHash } from 'node:crypto';
  * @returns {{ loopDetected: boolean, signal: 'similarity'|'growth'|null, mode: 'intervene'|'block'|'log' }}
  */
 export function evaluateLoopSignal(sessionState, response, settings) {
-  const {
-    minResponses = 3,
-    windowSize = 7,
-    similarityThreshold = 5,
-    growthThresholdTokens = 50_000,
-    repetitiveRatioThreshold = 0.60,
-    mode = 'log',
-  } = settings || {};
+    const {
+        minResponses = 3,
+        windowSize = 7,
+        similarityThreshold = 5,
+        growthThresholdTokens = 50_000,
+        repetitiveRatioThreshold = 0.6,
+        mode = 'log',
+    } = settings || {};
 
-  // Ensure the fingerprint array exists
-  if (!Array.isArray(sessionState.recent_fingerprints)) {
-    sessionState.recent_fingerprints = [];
-  }
-
-  // Compute fingerprint for this response
-  const fingerprint = hashResponse(response);
-
-  // Add to rolling window
-  sessionState.recent_fingerprints.push(fingerprint);
-
-  // Trim to window size
-  while (sessionState.recent_fingerprints.length > windowSize) {
-    sessionState.recent_fingerprints.shift();
-  }
-
-  const fps = sessionState.recent_fingerprints;
-
-  // Not enough data yet
-  if (fps.length < minResponses) {
-    return { loopDetected: false, signal: null, mode };
-  }
-
-  // ── Similarity check ──────────────────────────────────────────────
-  // Count how many of the recent fingerprints are identical to the current one
-  let identicalCount = 0;
-  for (const fp of fps) {
-    if (fp === fingerprint) identicalCount++;
-  }
-
-  if (identicalCount >= similarityThreshold) {
-    return { loopDetected: true, signal: 'similarity', mode };
-  }
-
-  // ── Growth check ──────────────────────────────────────────────────
-  // Estimate total token volume in the window
-  const totalTokens = estimateResponseTokens(response) * fps.length;
-
-  if (totalTokens > growthThresholdTokens) {
-    const repetitiveRatio = identicalCount / fps.length;
-    if (repetitiveRatio >= repetitiveRatioThreshold) {
-      return { loopDetected: true, signal: 'growth', mode };
+    // Ensure the fingerprint array exists
+    if (!Array.isArray(sessionState.recent_fingerprints)) {
+        sessionState.recent_fingerprints = [];
     }
-  }
 
-  return { loopDetected: false, signal: null, mode };
+    // Compute fingerprint for this response
+    const fingerprint = hashResponse(response);
+
+    // Add to rolling window
+    sessionState.recent_fingerprints.push(fingerprint);
+
+    // Trim to window size
+    while (sessionState.recent_fingerprints.length > windowSize) {
+        sessionState.recent_fingerprints.shift();
+    }
+
+    const fps = sessionState.recent_fingerprints;
+
+    // Not enough data yet
+    if (fps.length < minResponses) {
+        return { loopDetected: false, signal: null, mode };
+    }
+
+    // ── Similarity check ──────────────────────────────────────────────
+    // Count how many of the recent fingerprints are identical to the current one
+    let identicalCount = 0;
+    for (const fp of fps) {
+        if (fp === fingerprint) identicalCount++;
+    }
+
+    if (identicalCount >= similarityThreshold) {
+        return { loopDetected: true, signal: 'similarity', mode };
+    }
+
+    // ── Growth check ──────────────────────────────────────────────────
+    // Estimate total token volume in the window
+    const totalTokens = estimateResponseTokens(response) * fps.length;
+
+    if (totalTokens > growthThresholdTokens) {
+        const repetitiveRatio = identicalCount / fps.length;
+        if (repetitiveRatio >= repetitiveRatioThreshold) {
+            return { loopDetected: true, signal: 'growth', mode };
+        }
+    }
+
+    return { loopDetected: false, signal: null, mode };
 }
 
 // ── internals ─────────────────────────────────────────────────────────
@@ -91,41 +91,41 @@ export function evaluateLoopSignal(sessionState, response, settings) {
  * Create a SHA-256 fingerprint from response content + tool calls.
  */
 function hashResponse(response) {
-  const hash = createHash('sha256');
+    const hash = createHash('sha256');
 
-  // Include text content
-  if (response && typeof response.content === 'string') {
-    hash.update(response.content);
-  }
-
-  // Include tool calls (name + arguments)
-  if (response && Array.isArray(response.tool_calls)) {
-    for (const tc of response.tool_calls) {
-      if (tc.function) {
-        hash.update(tc.function.name || '');
-        hash.update(tc.function.arguments || '');
-      }
+    // Include text content
+    if (response && typeof response.content === 'string') {
+        hash.update(response.content);
     }
-  }
 
-  return hash.digest('hex');
+    // Include tool calls (name + arguments)
+    if (response && Array.isArray(response.tool_calls)) {
+        for (const tc of response.tool_calls) {
+            if (tc.function) {
+                hash.update(tc.function.name || '');
+                hash.update(tc.function.arguments || '');
+            }
+        }
+    }
+
+    return hash.digest('hex');
 }
 
 /**
  * Rough token estimate for a response (for growth check).
  */
 function estimateResponseTokens(response) {
-  let chars = 0;
-  if (response && typeof response.content === 'string') {
-    chars += response.content.length;
-  }
-  if (response && Array.isArray(response.tool_calls)) {
-    for (const tc of response.tool_calls) {
-      if (tc.function) {
-        chars += (tc.function.name || '').length;
-        chars += (tc.function.arguments || '').length;
-      }
+    let chars = 0;
+    if (response && typeof response.content === 'string') {
+        chars += response.content.length;
     }
-  }
-  return Math.ceil(chars / 4);
+    if (response && Array.isArray(response.tool_calls)) {
+        for (const tc of response.tool_calls) {
+            if (tc.function) {
+                chars += (tc.function.name || '').length;
+                chars += (tc.function.arguments || '').length;
+            }
+        }
+    }
+    return Math.ceil(chars / 4);
 }

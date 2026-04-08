@@ -26,30 +26,30 @@
  * @returns {object|null}
  */
 export function toDiscoveryView(model, { providerName = null } = {}) {
-  if (!model) return null;
+    if (!model) return null;
 
-  const id = model.modelId || model.model_key || model.id || null;
-  if (!id) return null;
+    const id = model.modelId || model.model_key || model.id || null;
+    if (!id) return null;
 
-  const inputPrice = Number.parseFloat(
-    model.input_price ?? model.inputPrice ?? 0,
-  ) || 0;
-  const outputPrice = Number.parseFloat(
-    model.output_price ?? model.outputPrice ?? 0,
-  ) || 0;
+    const inputPrice =
+        Number.parseFloat(model.input_price ?? model.inputPrice ?? 0) || 0;
+    const outputPrice =
+        Number.parseFloat(model.output_price ?? model.outputPrice ?? 0) || 0;
 
-  return {
-    id,
-    display_name: model.displayName || model.display_name || id,
-    owned_by: model.owned_by || model.ownedBy || providerName || null,
-    input_price: inputPrice,
-    output_price: outputPrice,
-    context_window: model.contextWindow ?? model.context_window ?? null,
-    max_output_tokens: model.maxOutputTokens ?? model.max_output_tokens ?? null,
-    supports_tools: model.supportsTools ?? model.supports_tools ?? null,
-    supports_streaming: model.supportsStreaming ?? model.supports_streaming ?? null,
-    supports_vision: model.supportsVision ?? model.supports_vision ?? null,
-  };
+    return {
+        id,
+        display_name: model.displayName || model.display_name || id,
+        owned_by: model.owned_by || model.ownedBy || providerName || null,
+        input_price: inputPrice,
+        output_price: outputPrice,
+        context_window: model.contextWindow ?? model.context_window ?? null,
+        max_output_tokens:
+            model.maxOutputTokens ?? model.max_output_tokens ?? null,
+        supports_tools: model.supportsTools ?? model.supports_tools ?? null,
+        supports_streaming:
+            model.supportsStreaming ?? model.supports_streaming ?? null,
+        supports_vision: model.supportsVision ?? model.supports_vision ?? null,
+    };
 }
 
 /**
@@ -60,6 +60,6 @@ export function toDiscoveryView(model, { providerName = null } = {}) {
  * @returns {Array<object>}
  */
 export function toDiscoveryList(models, options = {}) {
-  if (!Array.isArray(models)) return [];
-  return models.map((m) => toDiscoveryView(m, options)).filter(Boolean);
+    if (!Array.isArray(models)) return [];
+    return models.map((m) => toDiscoveryView(m, options)).filter(Boolean);
 }

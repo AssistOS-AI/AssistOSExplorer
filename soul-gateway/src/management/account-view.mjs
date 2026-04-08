@@ -14,12 +14,12 @@
 const DAY_MS = 86_400_000;
 const EXPIRY_WARNING_DAYS = 30;
 const SECRET_METADATA_KEYS = new Set([
-  'access_token',
-  'refresh_token',
-  'github_access_token',
-  'githubAccessToken',
-  'id_token',
-  'idToken',
+    'access_token',
+    'refresh_token',
+    'github_access_token',
+    'githubAccessToken',
+    'id_token',
+    'idToken',
 ]);
 
 /**
@@ -29,57 +29,58 @@ const SECRET_METADATA_KEYS = new Set([
  * @returns {object}    Sanitised view with flat, camelCase fields
  */
 export function toAccountView(row) {
-  if (!row) return null;
+    if (!row) return null;
 
-  const metadata = row.metadata || {};
-  const email = metadata.email || metadata.login || null;
-  const expiresAt = row.access_token_expires_at || null;
-  const expiresAtMs = expiresAt ? new Date(expiresAt).getTime() : null;
-  const nowMs = Date.now();
-  const daysUntilExpiry = expiresAtMs != null
-    ? Math.floor((expiresAtMs - nowMs) / DAY_MS)
-    : null;
+    const metadata = row.metadata || {};
+    const email = metadata.email || metadata.login || null;
+    const expiresAt = row.access_token_expires_at || null;
+    const expiresAtMs = expiresAt ? new Date(expiresAt).getTime() : null;
+    const nowMs = Date.now();
+    const daysUntilExpiry =
+        expiresAtMs != null ? Math.floor((expiresAtMs - nowMs) / DAY_MS) : null;
 
-  const quotaExhausted = row.status === 'quota_exhausted';
-  const needsReauth = row.status === 'reauth_required' || row.status === 'disabled';
-  const hasRefreshToken = Boolean(
-    metadata.refresh_token
-      || metadata.refreshToken
-      || metadata.github_access_token
-      || metadata.githubAccessToken,
-  );
-  const noRefreshToken = !hasRefreshToken && expiresAtMs != null;
-  const expiryWarning = daysUntilExpiry != null
-    && daysUntilExpiry > 0
-    && daysUntilExpiry <= EXPIRY_WARNING_DAYS;
+    const quotaExhausted = row.status === 'quota_exhausted';
+    const needsReauth =
+        row.status === 'reauth_required' || row.status === 'disabled';
+    const hasRefreshToken = Boolean(
+        metadata.refresh_token ||
+            metadata.refreshToken ||
+            metadata.github_access_token ||
+            metadata.githubAccessToken
+    );
+    const noRefreshToken = !hasRefreshToken && expiresAtMs != null;
+    const expiryWarning =
+        daysUntilExpiry != null &&
+        daysUntilExpiry > 0 &&
+        daysUntilExpiry <= EXPIRY_WARNING_DAYS;
 
-  // Strip secret-bearing keys from metadata before exposing it.
-  const safeMetadata = {};
-  for (const [key, value] of Object.entries(metadata)) {
-    if (SECRET_METADATA_KEYS.has(key)) continue;
-    safeMetadata[key] = value;
-  }
+    // Strip secret-bearing keys from metadata before exposing it.
+    const safeMetadata = {};
+    for (const [key, value] of Object.entries(metadata)) {
+        if (SECRET_METADATA_KEYS.has(key)) continue;
+        safeMetadata[key] = value;
+    }
 
-  return {
-    id: row.id,
-    label: row.account_label || null,
-    email,
-    authType: row.auth_type,
-    status: row.status,
-    externalAccountId: row.external_account_id || null,
-    expiresAt,
-    refreshTokenExpiresAt: row.refresh_token_expires_at || null,
-    quotaExhausted,
-    quotaResetAt: row.quota_resets_at || null,
-    needsReauth,
-    expiryWarning,
-    noRefreshToken,
-    daysUntilExpiry,
-    lastUsedAt: row.last_used_at || null,
-    lastErrorType: row.last_error_type || null,
-    lastErrorMessage: row.last_error_message || null,
-    metadata: safeMetadata,
-  };
+    return {
+        id: row.id,
+        label: row.account_label || null,
+        email,
+        authType: row.auth_type,
+        status: row.status,
+        externalAccountId: row.external_account_id || null,
+        expiresAt,
+        refreshTokenExpiresAt: row.refresh_token_expires_at || null,
+        quotaExhausted,
+        quotaResetAt: row.quota_resets_at || null,
+        needsReauth,
+        expiryWarning,
+        noRefreshToken,
+        daysUntilExpiry,
+        lastUsedAt: row.last_used_at || null,
+        lastErrorType: row.last_error_type || null,
+        lastErrorMessage: row.last_error_message || null,
+        metadata: safeMetadata,
+    };
 }
 
 /**
@@ -92,44 +93,42 @@ export function toAccountView(row) {
  * @returns {{ status: string, activeIndex: string|null }}
  */
 export function deriveAggregateStatus(views) {
-  if (!views.length) {
-    return { status: 'no_accounts', activeIndex: null };
-  }
-  if (views.every((v) => v.quotaExhausted)) {
-    return { status: 'all_exhausted', activeIndex: null };
-  }
-
-  const primary = views.find((v) => !v.quotaExhausted && !v.needsReauth) || null;
-  const activeIndex = primary ? primary.id : null;
-
-  if (!primary) {
-    if (views.some((v) => v.needsReauth)) {
-      return { status: 'needs_reauth', activeIndex: null };
+    if (!views.length) {
+        return { status: 'no_accounts', activeIndex: null };
     }
-    return { status: 'no_accounts', activeIndex: null };
-  }
+    if (views.every((v) => v.quotaExhausted)) {
+        return { status: 'all_exhausted', activeIndex: null };
+    }
 
-  if (primary.expiryWarning) {
-    return { status: 'expiring', activeIndex };
-  }
-  return { status: 'active', activeIndex };
+    const primary =
+        views.find((v) => !v.quotaExhausted && !v.needsReauth) || null;
+    const activeIndex = primary ? primary.id : null;
+
+    if (!primary) {
+        if (views.some((v) => v.needsReauth)) {
+            return { status: 'needs_reauth', activeIndex: null };
+        }
+        return { status: 'no_accounts', activeIndex: null };
+    }
+
+    if (primary.expiryWarning) {
+        return { status: 'expiring', activeIndex };
+    }
+    return { status: 'active', activeIndex };
 }
 
 /**
- * Build the full accounts payload the dashboard consumes. Returns both
- * `data` (legacy compat) and `accounts` (dashboard reads this) pointing
- * to the same transformed list.
+ * Build the full accounts payload the dashboard consumes.
  *
  * @param {Array<object>} rows  Raw DB rows
  * @returns {object}            Payload ready for sendJson
  */
 export function buildAccountsPayload(rows) {
-  const views = (rows || []).map(toAccountView).filter(Boolean);
-  const { status, activeIndex } = deriveAggregateStatus(views);
-  return {
-    status,
-    activeIndex,
-    accounts: views,
-    data: views,
-  };
+    const views = (rows || []).map(toAccountView).filter(Boolean);
+    const { status, activeIndex } = deriveAggregateStatus(views);
+    return {
+        status,
+        activeIndex,
+        accounts: views,
+    };
 }

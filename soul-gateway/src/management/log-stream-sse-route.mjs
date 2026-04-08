@@ -13,22 +13,27 @@ import { sendJson } from '../core/responses.mjs';
  * Redacted live log stream over SSE.
  */
 export async function handleLogStreamSse(ctx) {
-  const { res, query, appCtx } = ctx;
+    const { res, query, appCtx } = ctx;
 
-  if (!appCtx.services.broadcastHub) {
-    sendJson(res, 503, { error: { message: 'Broadcast hub not initialized', type: 'service_unavailable' } });
-    return;
-  }
+    if (!appCtx.services.broadcastHub) {
+        sendJson(res, 503, {
+            error: {
+                message: 'Broadcast hub not initialized',
+                type: 'service_unavailable',
+            },
+        });
+        return;
+    }
 
-  const filters = {};
-  if (query.soul_id) filters.soul_id = query.soul_id;
-  if (query.model)   filters.model = query.model;
-  if (query.status)  filters.status = query.status;
+    const filters = {};
+    if (query.soul_id) filters.soul_id = query.soul_id;
+    if (query.model) filters.model = query.model;
+    if (query.status) filters.status = query.status;
 
-  const stream = createSseStream(res);
-  stream.comment('connected');
+    const stream = createSseStream(res);
+    stream.comment('connected');
 
-  appCtx.services.broadcastHub.addSseSubscriber(stream, filters, false);
+    appCtx.services.broadcastHub.addSseSubscriber(stream, filters, false);
 }
 
 /**
@@ -36,16 +41,21 @@ export async function handleLogStreamSse(ctx) {
  * Unredacted SSE stream for one soul.
  */
 export async function handleLogStreamSoul(ctx) {
-  const { res, params, appCtx } = ctx;
+    const { res, params, appCtx } = ctx;
 
-  if (!appCtx.services.broadcastHub) {
-    sendJson(res, 503, { error: { message: 'Broadcast hub not initialized', type: 'service_unavailable' } });
-    return;
-  }
+    if (!appCtx.services.broadcastHub) {
+        sendJson(res, 503, {
+            error: {
+                message: 'Broadcast hub not initialized',
+                type: 'service_unavailable',
+            },
+        });
+        return;
+    }
 
-  const filters = { soul_id: params.soulId };
-  const stream = createSseStream(res);
-  stream.comment('connected');
+    const filters = { soul_id: params.soulId };
+    const stream = createSseStream(res);
+    stream.comment('connected');
 
-  appCtx.services.broadcastHub.addSseSubscriber(stream, filters, true);
+    appCtx.services.broadcastHub.addSseSubscriber(stream, filters, true);
 }
