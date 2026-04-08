@@ -1,7 +1,7 @@
-import { providerPlugin as anthropicProviderPlugin } from './anthropic-api.provider.mjs';
+import { backendModule as anthropicBackend } from './anthropic-api.backend.mjs';
 
 const manifest = {
-    ...anthropicProviderPlugin.manifest,
+    ...anthropicBackend.manifest,
     key: 'claudeai-api',
     authStrategy: 'oauth',
     displayName: 'Anthropic Claude.ai',
@@ -12,7 +12,7 @@ const manifest = {
     hidden: false,
 };
 
-export const providerPlugin = {
-    ...anthropicProviderPlugin,
+export const backendModule = {
+    ...anthropicBackend,
     manifest,
 };

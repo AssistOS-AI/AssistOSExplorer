@@ -90,7 +90,7 @@ describe('cascadeMiddleware: single-success cases', () => {
                     usage: { total_tokens: 1 },
                 },
                 metadata: {
-                    transportAccountId: 'acct-1',
+                    backendAccountId: 'acct-1',
                     retryTrace: [],
                     queueWaitMs: 5,
                 },
@@ -129,7 +129,7 @@ describe('cascadeMiddleware: fallback', () => {
                     usage: {},
                 },
                 metadata: {
-                    transportAccountId: 'acct-2',
+                    backendAccountId: 'acct-2',
                 },
                 target: { model },
             };

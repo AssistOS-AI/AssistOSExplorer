@@ -65,7 +65,7 @@ export function formatSearchResults(results, query, options = {}) {
  * @param {Array<SearchResult>} results  Parsed search results
  * @param {string} query                 Original query
  * @param {object} meta                  { requestId, model, provider }
- * @returns {Array<import('../provider-interface.mjs').NormalizedChunk>}
+ * @returns {Array<import('../backend-interface.mjs').NormalizedChunk>}
  */
 export function toNormalizedChunks(results, query, meta) {
     const formatted = formatSearchResults(results, query);

@@ -74,7 +74,7 @@ export const ERROR_MESSAGES = Object.freeze({
     DASHBOARD_READ_FAILED: 'Failed to read dashboard',
     DASHBOARD_NOT_FOUND_TEXT:
         'Dashboard not found. Run the build step or check DASHBOARD_STATIC_DIR.',
-    PROVIDER_CATALOG_NOT_INITIALIZED: 'Provider catalog not initialized',
+    BACKEND_CATALOG_NOT_INITIALIZED: 'Backend catalog not initialized',
 });
 
 export const HEADER_NAMES = Object.freeze({

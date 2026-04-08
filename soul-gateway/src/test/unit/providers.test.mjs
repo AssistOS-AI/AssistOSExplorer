@@ -101,7 +101,7 @@ describe('Extension SDK stubs', () => {
 
 // ── Provider Interface (manifest validation) ────────────────────────
 
-import { validateManifest } from '../../runtime/providers/provider-interface.mjs';
+import { validateBackendManifest } from '../../runtime/backends/backend-interface.mjs';
 
 describe('Provider manifest validation', () => {
     const validManifest = {
@@ -114,26 +114,26 @@ describe('Provider manifest validation', () => {
     };
 
     it('accepts a valid manifest', () => {
-        assert.doesNotThrow(() => validateManifest(validManifest));
+        assert.doesNotThrow(() => validateBackendManifest(validManifest));
     });
 
     it('rejects null manifest', () => {
         assert.throws(
-            () => validateManifest(null),
+            () => validateBackendManifest(null),
             /must be a non-null object/
         );
     });
 
     it('rejects missing key', () => {
         assert.throws(
-            () => validateManifest({ ...validManifest, key: '' }),
+            () => validateBackendManifest({ ...validManifest, key: '' }),
             /non-empty string/
         );
     });
 
     it('rejects invalid kind', () => {
         assert.throws(
-            () => validateManifest({ ...validManifest, kind: 'invalid' }),
+            () => validateBackendManifest({ ...validManifest, kind: 'invalid' }),
             /kind must be one of/
         );
     });
@@ -146,7 +146,7 @@ describe('Provider manifest validation', () => {
             'custom',
         ]) {
             assert.doesNotThrow(() =>
-                validateManifest({ ...validManifest, kind })
+                validateBackendManifest({ ...validManifest, kind })
             );
         }
     });
@@ -154,7 +154,7 @@ describe('Provider manifest validation', () => {
     it('rejects invalid authStrategy', () => {
         assert.throws(
             () =>
-                validateManifest({ ...validManifest, authStrategy: 'invalid' }),
+                validateBackendManifest({ ...validManifest, authStrategy: 'invalid' }),
             /authStrategy must be one of/
         );
     });
@@ -168,7 +168,7 @@ describe('Provider manifest validation', () => {
             'custom',
         ]) {
             assert.doesNotThrow(() =>
-                validateManifest({ ...validManifest, authStrategy })
+                validateBackendManifest({ ...validManifest, authStrategy })
             );
         }
     });
@@ -176,7 +176,7 @@ describe('Provider manifest validation', () => {
     it('rejects non-boolean supportsStreaming', () => {
         assert.throws(
             () =>
-                validateManifest({
+                validateBackendManifest({
                     ...validManifest,
                     supportsStreaming: 'yes',
                 }),
@@ -186,7 +186,7 @@ describe('Provider manifest validation', () => {
 
     it('rejects non-boolean supportsTools', () => {
         assert.throws(
-            () => validateManifest({ ...validManifest, supportsTools: 1 }),
+            () => validateBackendManifest({ ...validManifest, supportsTools: 1 }),
             /boolean/
         );
     });
@@ -194,7 +194,7 @@ describe('Provider manifest validation', () => {
     it('rejects non-array supportedFormats', () => {
         assert.throws(
             () =>
-                validateManifest({
+                validateBackendManifest({
                     ...validManifest,
                     supportedFormats: 'openai_chat',
                 }),
@@ -205,11 +205,11 @@ describe('Provider manifest validation', () => {
 
 // ── Provider Context ────────────────────────────────────────────────
 
-import { createProviderContext } from '../../runtime/providers/provider-context.mjs';
+import { createBackendExecutionContext } from '../../runtime/backends/backend-context.mjs';
 
 describe('Provider context', () => {
     it('creates a frozen context from exec context', () => {
-        const ctx = createProviderContext({
+        const ctx = createBackendExecutionContext({
             requestId: 'req-1',
             request: { messages: [] },
             resolvedModel: { id: 'm1' },
@@ -229,7 +229,7 @@ describe('Provider context', () => {
 
 // ── Error classification: OpenAI ────────────────────────────────────
 
-import { providerPlugin as openaiPlugin } from '../../runtime/providers/builtin/openai-api.provider.mjs';
+import { backendModule as openaiPlugin } from '../../runtime/backends/builtin/openai-api.backend.mjs';
 
 describe('OpenAI error classification', () => {
     it('classifies 401 as ProviderAuthError', () => {
@@ -296,7 +296,7 @@ describe('OpenAI error classification', () => {
 
 // ── Error classification: Anthropic ─────────────────────────────────
 
-import { providerPlugin as anthropicPlugin } from '../../runtime/providers/builtin/anthropic-api.provider.mjs';
+import { backendModule as anthropicPlugin } from '../../runtime/backends/builtin/anthropic-api.backend.mjs';
 
 describe('Anthropic error classification', () => {
     it('classifies authentication_error as ProviderAuthError', () => {
@@ -357,7 +357,7 @@ describe('Anthropic error classification', () => {
 
 // ── Error classification: Copilot ───────────────────────────────────
 
-import { providerPlugin as copilotPlugin } from '../../runtime/providers/builtin/copilot-api.provider.mjs';
+import { backendModule as copilotPlugin } from '../../runtime/backends/builtin/copilot-api.backend.mjs';
 
 describe('Copilot error classification', () => {
     it('classifies 401 as ProviderAuthError', () => {
@@ -385,7 +385,7 @@ describe('Copilot error classification', () => {
 
 // ── Error classification: Kiro ──────────────────────────────────────
 
-import { providerPlugin as kiroPlugin } from '../../runtime/providers/builtin/kiro-api.provider.mjs';
+import { backendModule as kiroPlugin } from '../../runtime/backends/builtin/kiro-api.backend.mjs';
 
 describe('Kiro error classification', () => {
     it('classifies AccessDeniedException as ProviderAuthError', () => {
@@ -438,7 +438,7 @@ describe('Kiro error classification', () => {
 
 // ── Error classification: Search ────────────────────────────────────
 
-import { providerPlugin as searchPlugin } from '../../runtime/providers/builtin/search-builtin.provider.mjs';
+import { backendModule as searchPlugin } from '../../runtime/backends/builtin/search-builtin.backend.mjs';
 
 describe('Search error classification', () => {
     it('classifies 401 as ProviderAuthError', () => {
@@ -462,7 +462,7 @@ describe('Search error classification', () => {
 describe('search-builtin testConnection engine resolution', () => {
     // The lifecycle path (Test button in the dashboard / POST
     // /management/providers/:id/test) calls testConnection() WITHOUT
-    // a resolved model in scope, so the plugin can't read the engine
+    // a resolved model in scope, so the backend can't read the engine
     // off ctx.resolvedModel. The previous implementation hardcoded
     // 'tavily' as the fallback, which made every search provider's
     // Test button report "Tavily Search credentials present" — even
@@ -531,7 +531,7 @@ describe('search-builtin testConnection engine resolution', () => {
 
     it('falls back to baseUrl hostname when providerKey was renamed', async () => {
         // User renamed the provider but the base URL still points at
-        // the canonical Exa endpoint — the plugin should still resolve
+        // the canonical Exa endpoint — the backend should still resolve
         // to "Exa Search", not the literal hardcoded fallback.
         const result = await searchPlugin.testConnection(
             makeCtx({
@@ -605,7 +605,7 @@ describe('search-builtin testConnection engine resolution', () => {
 
 // ── Anthropic converter ─────────────────────────────────────────────
 
-import * as anthropicConverter from '../../runtime/providers/converters/anthropic-converter.mjs';
+import * as anthropicConverter from '../../runtime/backends/converters/anthropic-converter.mjs';
 
 describe('Anthropic converter', () => {
     describe('toProviderRequest', () => {
@@ -825,7 +825,7 @@ describe('Anthropic converter', () => {
 
 // ── Copilot converter ───────────────────────────────────────────────
 
-import * as copilotConverter from '../../runtime/providers/converters/copilot-converter.mjs';
+import * as copilotConverter from '../../runtime/backends/converters/copilot-converter.mjs';
 
 describe('Copilot converter', () => {
     describe('resolveEndpoint', () => {
@@ -923,7 +923,7 @@ describe('Copilot converter', () => {
 
 // ── Kiro converter ──────────────────────────────────────────────────
 
-import * as kiroConverter from '../../runtime/providers/converters/kiro-converter.mjs';
+import * as kiroConverter from '../../runtime/backends/converters/kiro-converter.mjs';
 
 describe('Kiro converter', () => {
     describe('toProviderRequest', () => {
@@ -1027,7 +1027,7 @@ describe('Kiro converter', () => {
 
 // ── Search converter ────────────────────────────────────────────────
 
-import * as searchConverter from '../../runtime/providers/converters/search-converter.mjs';
+import * as searchConverter from '../../runtime/backends/converters/search-converter.mjs';
 
 describe('Search converter', () => {
     describe('formatSearchResults', () => {
@@ -1650,21 +1650,21 @@ describe('AccountPool', () => {
     });
 });
 
-// ── Provider Catalog ────────────────────────────────────────────────
+// ── Backend Catalog ────────────────────────────────────────────────
 
-import { ProviderCatalog } from '../../runtime/providers/provider-catalog.mjs';
-import { providerPlugin as codexPlugin } from '../../runtime/providers/builtin/codex-api.provider.mjs';
-import { providerPlugin as geminiOAuthPlugin } from '../../runtime/providers/builtin/gemini-openai.provider.mjs';
-import { providerPlugin as claudeaiPlugin } from '../../runtime/providers/builtin/claudeai-api.provider.mjs';
+import { BackendCatalog } from '../../runtime/backends/backend-catalog.mjs';
+import { backendModule as codexBackend } from '../../runtime/backends/builtin/codex-api.backend.mjs';
+import { backendModule as geminiOAuthBackend } from '../../runtime/backends/builtin/gemini-openai.backend.mjs';
+import { backendModule as claudeaiBackend } from '../../runtime/backends/builtin/claudeai-api.backend.mjs';
 
-describe('ProviderCatalog', () => {
+describe('BackendCatalog', () => {
     let catalog;
 
     beforeEach(() => {
-        catalog = new ProviderCatalog({ log: { info() {}, error() {} } });
+        catalog = new BackendCatalog({ log: { info() {}, error() {} } });
     });
 
-    function makePlugin(key) {
+    function makeBackendModule(key) {
         return {
             manifest: {
                 key,
@@ -1686,53 +1686,60 @@ describe('ProviderCatalog', () => {
         assert.equal(catalog.generation, 0);
     });
 
-    it('loads plugins and increments generation', () => {
-        catalog.load([makePlugin('test-1'), makePlugin('test-2')]);
+    it('loads backend modules and increments generation', () => {
+        catalog.load([
+            makeBackendModule('test-1'),
+            makeBackendModule('test-2'),
+        ]);
         assert.equal(catalog.size, 2);
         assert.equal(catalog.generation, 1);
     });
 
-    it('retrieves plugin by key', () => {
-        catalog.load([makePlugin('test-1')]);
-        const plugin = catalog.getPlugin('test-1');
-        assert.ok(plugin);
-        assert.equal(plugin.manifest.key, 'test-1');
+    it('retrieves backend module by key', () => {
+        catalog.load([makeBackendModule('test-1')]);
+        const backendModule = catalog.getBackend('test-1');
+        assert.ok(backendModule);
+        assert.equal(backendModule.manifest.key, 'test-1');
     });
 
     it('returns null for unknown key', () => {
-        catalog.load([makePlugin('test-1')]);
-        assert.equal(catalog.getPlugin('nonexistent'), null);
+        catalog.load([makeBackendModule('test-1')]);
+        assert.equal(catalog.getBackend('nonexistent'), null);
     });
 
     it('rejects duplicate keys', () => {
         assert.throws(
-            () => catalog.load([makePlugin('dup'), makePlugin('dup')]),
-            /Duplicate provider key/
+            () =>
+                catalog.load([
+                    makeBackendModule('dup'),
+                    makeBackendModule('dup'),
+                ]),
+            /Duplicate backend key/
         );
     });
 
     it('listKeys returns all keys', () => {
-        catalog.load([makePlugin('a'), makePlugin('b')]);
+        catalog.load([makeBackendModule('a'), makeBackendModule('b')]);
         const keys = catalog.listKeys();
         assert.deepEqual(keys.sort(), ['a', 'b']);
     });
 
-    it('shutdownAll clears all plugins', async () => {
+    it('shutdownAll clears all backend modules', async () => {
         let shutdownCount = 0;
-        const plugin = makePlugin('test');
-        plugin.shutdown = async () => {
+        const backendModule = makeBackendModule('test');
+        backendModule.shutdown = async () => {
             shutdownCount++;
         };
-        catalog.load([plugin]);
+        catalog.load([backendModule]);
         await catalog.shutdownAll();
         assert.equal(catalog.size, 0);
         assert.equal(shutdownCount, 1);
     });
 
-    it('testConnection leases credentials for plugins that need them', async () => {
+    it('testConnection leases credentials for backend modules that need them', async () => {
         let releasedLease = null;
-        const plugin = makePlugin('test-provider');
-        plugin.testConnection = async (ctx) => {
+        const backendModule = makeBackendModule('test-provider');
+        backendModule.testConnection = async (ctx) => {
             assert.equal(ctx.credentialLease.secret, 'sk-test');
             assert.equal(
                 ctx.providerRecord.base_url,
@@ -1740,7 +1747,7 @@ describe('ProviderCatalog', () => {
             );
             return { ok: true, detail: 'ok' };
         };
-        catalog.load([plugin]);
+        catalog.load([backendModule]);
 
         const result = await catalog.testConnection(
             {
@@ -1774,12 +1781,12 @@ describe('ProviderCatalog', () => {
 
     it('discoverModels leases credentials and releases them after discovery', async () => {
         let releasedLease = null;
-        const plugin = makePlugin('discovery-provider');
-        plugin.discoverModels = async (ctx) => {
+        const backendModule = makeBackendModule('discovery-provider');
+        backendModule.discoverModels = async (ctx) => {
             assert.equal(ctx.credentialLease.oauth.accessToken, 'oauth-token');
             return [{ modelId: 'm1' }];
         };
-        catalog.load([plugin]);
+        catalog.load([backendModule]);
 
         const result = await catalog.discoverModels(
             { id: 'provider-2', adapter_key: 'discovery-provider' },
@@ -1811,62 +1818,40 @@ describe('ProviderCatalog', () => {
         assert.equal(releasedLease.leaseId, 'lease-2');
     });
 
-    it('testConnection falls back to transportCatalog for custom providers', async () => {
-        const result = await catalog.testConnection(
-            {
-                id: 'provider-custom',
-                provider_key: 'custom-provider',
-                adapter_key: 'custom-transport',
-                provider_mode: 'custom',
-            },
-            {
-                transportCatalog: {
-                    getTransport(key) {
-                        assert.equal(key, 'custom-transport');
-                        return {
-                            async testConnection(ctx) {
-                                assert.equal(
-                                    ctx.providerRecord.adapter_key,
-                                    'custom-transport'
-                                );
-                                return { ok: true, detail: 'custom-ok' };
-                            },
-                        };
-                    },
-                },
-            }
-        );
+    it('routes custom-mode providers through the same backend catalog as built-ins', async () => {
+        // After unifying provider and transport catalogs, custom-mode
+        // providers no longer need a separate fallback registry: their
+        // backend module is loaded into the same BackendCatalog and
+        // resolved via getBackend(provider.backendKey) just like every
+        // built-in.
+        const customBackend = makeBackendModule('custom-backend');
+        customBackend.testConnection = async (ctx) => {
+            assert.equal(ctx.providerRecord.backendKey, 'custom-backend');
+            return { ok: true, detail: 'custom-ok' };
+        };
+        customBackend.discoverModels = async () => [{ modelId: 'custom-model' }];
 
-        assert.deepEqual(result, { ok: true, detail: 'custom-ok' });
-    });
+        catalog.load([customBackend]);
 
-    it('discoverModels falls back to transportCatalog for custom providers', async () => {
-        const result = await catalog.discoverModels(
-            {
-                id: 'provider-custom',
-                provider_key: 'custom-provider',
-                adapter_key: 'custom-transport',
-                provider_mode: 'custom',
-            },
-            {
-                transportCatalog: {
-                    getTransport(key) {
-                        assert.equal(key, 'custom-transport');
-                        return {
-                            async discoverModels() {
-                                return [{ modelId: 'custom-model' }];
-                            },
-                        };
-                    },
-                },
-            }
-        );
+        const test = await catalog.testConnection({
+            id: 'provider-custom',
+            provider_key: 'custom-provider',
+            adapter_key: 'custom-backend',
+            provider_mode: 'custom',
+        });
+        assert.deepEqual(test, { ok: true, detail: 'custom-ok' });
 
-        assert.deepEqual(result, [{ modelId: 'custom-model' }]);
+        const discovered = await catalog.discoverModels({
+            id: 'provider-custom',
+            provider_key: 'custom-provider',
+            adapter_key: 'custom-backend',
+            provider_mode: 'custom',
+        });
+        assert.deepEqual(discovered, [{ modelId: 'custom-model' }]);
     });
 
     it('getTemplates exposes dashboard metadata for OAuth-capable providers', () => {
-        catalog.load([codexPlugin, geminiOAuthPlugin, claudeaiPlugin]);
+        catalog.load([codexBackend, geminiOAuthBackend, claudeaiBackend]);
 
         const templates = catalog.getTemplates();
 
@@ -1889,7 +1874,7 @@ describe('ProviderCatalog', () => {
     });
 
     describe('preset catalog merge', () => {
-        // Stubs mirror the production manifests of the dispatcher plugins:
+        // Stubs mirror the production manifests of the dispatcher backends:
         //   openai-api      → generic OpenAI-compatible client used by every
         //                     vendor preset (nvidia, groq, fireworks, …)
         //   anthropic-api   → generic Anthropic API client behind the
@@ -1954,7 +1939,7 @@ describe('ProviderCatalog', () => {
             classifyError() {},
         };
 
-        it('includes openai-compat presets when the openai-api plugin is loaded', () => {
+        it('includes openai-compat presets when the openai-api backend is loaded', () => {
             catalog.load([openaiApiPlugin]);
             const templates = catalog.getTemplates();
 
@@ -2025,8 +2010,8 @@ describe('ProviderCatalog', () => {
         });
 
         it('includes the anthropic-direct preset only when anthropic-api is loaded', () => {
-            // No plugins → no preset
-            const emptyCatalog = new ProviderCatalog({
+            // No backends → no preset
+            const emptyCatalog = new BackendCatalog({
                 log: { info() {}, error() {} },
             });
             emptyCatalog.load([]);
@@ -2049,7 +2034,7 @@ describe('ProviderCatalog', () => {
             );
         });
 
-        it('filters out presets whose plugin is not loaded', () => {
+        it('filters out presets whose backend is not loaded', () => {
             // Load only anthropic-api — openai-compat + search presets should be absent
             catalog.load([anthropicApiPlugin]);
             const templates = catalog.getTemplates();
@@ -2059,9 +2044,9 @@ describe('ProviderCatalog', () => {
             assert.ok(templates['anthropic-direct']);
         });
 
-        it('hides dispatcher plugin keys from getTemplates() even when their plugin is loaded', () => {
+        it('hides dispatcher backend keys from getTemplates() even when their backend is loaded', () => {
             // Regression: before this fix, getTemplates() unconditionally
-            // surfaced every loaded plugin's key — including the protocol-
+            // surfaced every loaded backend key — including the protocol-
             // family dispatchers — which polluted the dropdown with raw
             // `openai-api`, `anthropic-api`, `search-builtin` entries that
             // had no base_url and no meaningful display name. Vendors are
@@ -2084,14 +2069,14 @@ describe('ProviderCatalog', () => {
             assert.ok(templates['tavily']);
         });
 
-        it('OAuth-backed plugins remain visible alongside the presets', () => {
+        it('OAuth-backed backends remain visible alongside the presets', () => {
             // OAuth providers are distinct vendor offerings (not dispatchers),
-            // so their plugin keys MUST appear in the dropdown — there are no
+            // so their backend keys MUST appear in the dropdown — there are no
             // presets for claude.ai / Codex / Copilot / Kiro / Gemini OAuth.
             catalog.load([
-                codexPlugin,
-                geminiOAuthPlugin,
-                claudeaiPlugin,
+                codexBackend,
+                geminiOAuthBackend,
+                claudeaiBackend,
                 openaiApiPlugin,
             ]);
             const templates = catalog.getTemplates();
@@ -2115,7 +2100,7 @@ describe('ProviderCatalog', () => {
         });
 
         it('total dropdown count: hidden dispatchers contribute zero, presets surface in full', () => {
-            // 3 dispatcher plugins (all hidden) + 22 vendor presets = 22 entries.
+            // 3 dispatcher backends (all hidden) + 22 vendor presets = 22 entries.
             catalog.load([
                 openaiApiPlugin,
                 searchBuiltinPlugin,
@@ -2167,11 +2152,11 @@ describe('ProviderCatalog', () => {
     });
 });
 
-// ── Codex provider plugin ───────────────────────────────────────────
+// ── Codex backend module ────────────────────────────────────────────
 
-describe('codex-api provider plugin', () => {
+describe('codex-api backend module', () => {
     it('testConnection fails when no oauth token is leased', async () => {
-        const result = await codexPlugin.testConnection({
+        const result = await codexBackend.testConnection({
             credentialLease: {},
         });
         assert.equal(result.ok, false);
@@ -2179,7 +2164,7 @@ describe('codex-api provider plugin', () => {
     });
 
     it('testConnection reports expiry without hitting the network', async () => {
-        const result = await codexPlugin.testConnection({
+        const result = await codexBackend.testConnection({
             credentialLease: {
                 oauth: {
                     accessToken: 'tok',
@@ -2192,7 +2177,7 @@ describe('codex-api provider plugin', () => {
     });
 
     it('testConnection succeeds when an unexpired oauth token is present', async () => {
-        const result = await codexPlugin.testConnection({
+        const result = await codexBackend.testConnection({
             credentialLease: {
                 oauth: {
                     accessToken: 'tok',
@@ -2213,7 +2198,7 @@ describe('codex-api provider plugin', () => {
             throw new Error('testConnection must not call fetch');
         };
         try {
-            const result = await codexPlugin.testConnection({
+            const result = await codexBackend.testConnection({
                 credentialLease: { oauth: { accessToken: 'tok' } },
             });
             assert.equal(result.ok, true);
@@ -2228,7 +2213,7 @@ describe('codex-api payload builder', () => {
 
     beforeEach(async () => {
         ({ buildCodexParams, extractInstructions } = await import(
-            '../../runtime/providers/builtin/codex-api.provider.mjs'
+            '../../runtime/backends/builtin/codex-api.backend.mjs'
         ));
     });
 
@@ -2349,7 +2334,7 @@ describe('codex-api payload builder', () => {
     describe('execute / achilles transport contract', () => {
         it('dispatches via achillesResponses and does NOT call fetch directly', async () => {
             // Regression fuse against anyone re-adding a local HTTP path.
-            // The plugin must hand its work off to achilles via
+            // The backend must hand its work off to achilles via
             // createAchillesExecutionHandle; this test swaps achillesResponses
             // out from under the module cache and asserts the replacement was
             // what got invoked.
@@ -2361,16 +2346,16 @@ describe('codex-api payload builder', () => {
             };
 
             try {
-                // Import the plugin's execute path and inspect that the call site
+                // Import the backend execute path and inspect that the call site
                 // references achillesResponses.callLLMStreaming. A black-box way:
                 // drive execute() with a controllable credentialLease and verify
                 // the returned handle has the expected shape without an actual
                 // network call (achilles will throw inside the generator when we
                 // start consuming it, which is fine — we don't consume here).
-                const plugin = await import(
-                    '../../runtime/providers/builtin/codex-api.provider.mjs'
+                const backendModule = await import(
+                    '../../runtime/backends/builtin/codex-api.backend.mjs'
                 );
-                const handle = await plugin.providerPlugin.execute({
+                const handle = await backendModule.backendModule.execute({
                     request: { messages: [{ role: 'user', content: 'hi' }] },
                     resolvedModel: {
                         provider_model_id: 'gpt-5.4',
@@ -2409,7 +2394,7 @@ describe('codex-api payload builder', () => {
         it('throws a helpful error when no OAuth credential is leased', async () => {
             await assert.rejects(
                 () =>
-                    codexPlugin.discoverModels({
+                    codexBackend.discoverModels({
                         providerRecord: {
                             base_url: 'https://chatgpt.com/backend-api/codex',
                         },
@@ -2461,7 +2446,7 @@ describe('codex-api payload builder', () => {
             });
 
             try {
-                const discovered = await codexPlugin.discoverModels({
+                const discovered = await codexBackend.discoverModels({
                     providerRecord: {
                         base_url: 'https://chatgpt.com/backend-api/codex',
                     },
@@ -2494,7 +2479,7 @@ describe('codex-api payload builder', () => {
             try {
                 let caught;
                 try {
-                    await codexPlugin.discoverModels({
+                    await codexBackend.discoverModels({
                         providerRecord: {
                             base_url: 'https://chatgpt.com/backend-api/codex',
                         },
@@ -2513,10 +2498,10 @@ describe('codex-api payload builder', () => {
 
         it('declares the correct default base URL and oauth adapter key', () => {
             assert.equal(
-                codexPlugin.manifest.defaultBaseUrl,
+                codexBackend.manifest.defaultBaseUrl,
                 'https://chatgpt.com/backend-api/codex'
             );
-            assert.equal(codexPlugin.manifest.oauthAdapterKey, 'openai-codex');
+            assert.equal(codexBackend.manifest.oauthAdapterKey, 'openai-codex');
         });
     });
 });
@@ -2524,7 +2509,7 @@ describe('codex-api payload builder', () => {
 // ── openai-api testConnection HTTP behavior ─────────────────────────
 
 import { createServer } from 'node:http';
-import { providerPlugin as openaiApiPlugin } from '../../runtime/providers/builtin/openai-api.provider.mjs';
+import { backendModule as openaiApiPlugin } from '../../runtime/backends/builtin/openai-api.backend.mjs';
 
 /**
  * Spin up a tiny HTTP server that returns canned responses for the
@@ -2534,7 +2519,7 @@ import { providerPlugin as openaiApiPlugin } from '../../runtime/providers/built
  *
  * Pass `null` (or omit) for either endpoint to make it 404. The
  * fixture mirrors what a real OpenAI-compatible vendor exposes so
- * the plugin can be exercised end-to-end without mocking node:http.
+ * the backend module can be exercised end-to-end without mocking node:http.
  *
  * @param {{ models?: { status: number, body?: string }|null,
  *           completions?: { status: number, body?: string }|null }} opts
@@ -2595,7 +2580,7 @@ describe('openai-api testConnection HTTP behavior', () => {
                 makeOpenAITestCtx(fake.baseUrl)
             );
             assert.equal(result.ok, true);
-            // The plugin must NOT touch /chat/completions when /models worked.
+            // The backend must NOT touch /chat/completions when /models worked.
             assert.equal(fake.seen.length, 1);
             assert.equal(fake.seen[0].url, '/v1/models');
         } finally {
@@ -2606,7 +2591,7 @@ describe('openai-api testConnection HTTP behavior', () => {
     it('falls back to /chat/completions probe when /models returns 404 (Codestral case)', async () => {
         // Mirrors Codestral: the restricted subdomain only exposes
         // /chat/completions and /fim/completions, so /models 404s. The
-        // plugin should probe /chat/completions with an empty body — a
+        // backend should probe /chat/completions with an empty body — a
         // 400 from the vendor means "your payload is bad but your
         // credential is fine", which is the strongest signal we can get
         // without spending API quota.
@@ -2657,7 +2642,7 @@ describe('openai-api testConnection HTTP behavior', () => {
     });
 
     it('reports failure when both /models and /chat/completions return 404', async () => {
-        // base_url is wrong — neither endpoint exists. The plugin must
+        // base_url is wrong — neither endpoint exists. The backend must
         // not optimistically report success here.
         const fake = await spinUpFakeOpenAI({});
         try {

@@ -1,7 +1,7 @@
 /**
  * View transform for provider-model discovery results.
  *
- * Provider plugins return discovered models in a camelCase,
+ * Backend lifecycle discovery returns models in a camelCase,
  * capability-rich shape:
  *
  *   { modelId, displayName, contextWindow, maxOutputTokens,
@@ -12,15 +12,15 @@
  *
  *   { id, display_name, owned_by, input_price, output_price, ... }
  *
- * Translate the plugin contract into the dashboard contract at the
- * management-API boundary so the plugin interface can stay
- * domain-focused and the dashboard stays untouched.
+ * Translate the backend discovery contract into the dashboard contract at the
+ * management-API boundary so the backend interface can stay domain-focused and
+ * the dashboard stays untouched.
  */
 
 /**
  * Transform a single discovered model.
  *
- * @param {object} model                Plugin discovery object
+ * @param {object} model                Backend discovery object
  * @param {object} [options]
  * @param {string|null} [options.providerName]  Used as owned_by fallback
  * @returns {object|null}

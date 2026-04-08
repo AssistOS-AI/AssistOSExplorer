@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 
 import {
     installMiddlewareServices,
-    installProviderCatalogServices,
+    installBackendCatalogServices,
 } from '../../bootstrap/service-installers.mjs';
 
 describe('service installers extension integration', () => {
@@ -41,7 +41,7 @@ describe('service installers extension integration', () => {
         await rm(tmpDir, { recursive: true, force: true });
     });
 
-    it('wires gateway middleware, provider middleware, and transport extensions into live catalogs', async () => {
+    it('wires gateway middleware, provider middleware, and backend extensions into live catalogs', async () => {
         await writeModule(
             join(tmpDir, 'middlewares', 'gateway-audit.middleware.mjs'),
             `
@@ -59,17 +59,30 @@ describe('service installers extension integration', () => {
       `
         );
         await writeModule(
-            join(tmpDir, 'transports', 'browser-search.transport.mjs'),
+            join(tmpDir, 'backends', 'browser-search.backend.mjs'),
             `
-        export const manifest = { key: 'browser-search', name: 'Browser Search' };
-        export async function execute() {
-          return { accountId: null, stream: (async function* () { yield { type: 'done', data: { finish_reason: 'stop' } }; })(), abort: async () => {} };
-        }
+        export const backendModule = {
+            manifest: {
+                key: 'browser-search',
+                kind: 'search',
+                authStrategy: 'api_key',
+                supportsStreaming: false,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+                displayName: 'Browser Search'
+            },
+            async execute() {
+                return { accountId: null, stream: (async function* () { yield { type: 'done', data: { finish_reason: 'stop' } }; })(), abort: async () => {} };
+            },
+            classifyError(error) {
+                return error;
+            }
+        };
       `
         );
 
         await installMiddlewareServices(appCtx);
-        await installProviderCatalogServices(appCtx);
+        await installBackendCatalogServices(appCtx);
 
         // Gateway middleware extension is registered as a middleware catalog
         // entry with a usable factory.
@@ -93,11 +106,16 @@ describe('service installers extension integration', () => {
         );
         assert.equal(typeof providerModule.factory, 'function');
 
-        // Transport extension is registered in the transport catalog.
-        const transport =
-            appCtx.services.transportCatalog.getTransport('browser-search');
-        assert.ok(transport);
-        assert.equal(transport.manifest.transportType, 'custom');
+        // Backend extension is registered in the backend catalog.
+        const backend =
+            appCtx.services.backendCatalog.getBackend('browser-search');
+        assert.ok(backend);
+        assert.equal(backend.manifest.kind, 'search');
+
+        // The catalog also exposes a precompiled terminal.
+        const terminal =
+            appCtx.services.backendCatalog.getTerminal('browser-search');
+        assert.equal(typeof terminal, 'function');
 
         assert.ok(appCtx.services.extensionCatalog);
         assert.equal(appCtx.services.extensionCatalog.middlewares.length, 1);
@@ -105,7 +123,7 @@ describe('service installers extension integration', () => {
             appCtx.services.extensionCatalog.providerMiddlewares.length,
             1
         );
-        assert.equal(appCtx.services.extensionCatalog.transports.length, 1);
+        assert.equal(appCtx.services.extensionCatalog.backends.length, 1);
     });
 });
 

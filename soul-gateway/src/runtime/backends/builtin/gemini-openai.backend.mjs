@@ -1,7 +1,7 @@
-import { providerPlugin as openaiProviderPlugin } from './openai-api.provider.mjs';
+import { backendModule as openaiBackend } from './openai-api.backend.mjs';
 
 const manifest = {
-    ...openaiProviderPlugin.manifest,
+    ...openaiBackend.manifest,
     key: 'gemini-openai',
     authStrategy: 'oauth',
     displayName: 'Google Gemini (OAuth)',
@@ -12,7 +12,7 @@ const manifest = {
     hidden: false,
 };
 
-export const providerPlugin = {
-    ...openaiProviderPlugin,
+export const backendModule = {
+    ...openaiBackend,
     manifest,
 };

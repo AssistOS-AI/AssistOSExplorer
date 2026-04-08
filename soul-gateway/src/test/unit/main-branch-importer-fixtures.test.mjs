@@ -7,6 +7,7 @@ import { importMainBranchData } from '../../db/import/main-branch-importer.mjs';
 import { normalizeModelName } from '../../runtime/registry/model-name-normalizer.mjs';
 import { compose, createKernelContext } from '../../runtime/kernel/index.mjs';
 import { modelExecutionMiddleware } from '../../runtime/execution/model-execution.mjs';
+import { createBackendTerminal } from '../../runtime/backends/backend-terminal.mjs';
 import { MiddlewareCatalog } from '../../runtime/middleware/middleware-catalog.mjs';
 import { ProviderRateLimitError } from '../../core/errors.mjs';
 
@@ -218,8 +219,8 @@ describe('main-branch importer: fixture verification', () => {
         });
         assert.ok(gatewayChain.length > 0);
 
-        const transportCalls = [];
-        const transportPlugin = {
+        const backendCalls = [];
+        const stubBackendModule = {
             manifest: {
                 key: 'openai-api',
                 kind: 'external_api',
@@ -232,7 +233,7 @@ describe('main-branch importer: fixture verification', () => {
                 const modelId =
                     ctx.resolvedModel.providerModelId ||
                     ctx.resolvedModel.provider_model_id;
-                transportCalls.push(modelId);
+                backendCalls.push(modelId);
                 if (modelId === 'gpt-4o-mini') {
                     throw new ProviderRateLimitError('openai');
                 }
@@ -246,6 +247,7 @@ describe('main-branch importer: fixture verification', () => {
                 return error;
             },
         };
+        const stubTerminal = createBackendTerminal(stubBackendModule);
 
         const cascadeModel = snapshot.models.get('axl/fast');
         const appCtx = {
@@ -265,9 +267,12 @@ describe('main-branch importer: fixture verification', () => {
                 },
             },
             services: {
-                transportCatalog: {
-                    getTransport(key) {
-                        return key === 'openai-api' ? transportPlugin : null;
+                backendCatalog: {
+                    getTerminal(key) {
+                        return key === 'openai-api' ? stubTerminal : null;
+                    },
+                    getBackend(key) {
+                        return key === 'openai-api' ? stubBackendModule : null;
                     },
                 },
                 providerMiddlewareRegistry: { build: () => null },
@@ -293,7 +298,7 @@ describe('main-branch importer: fixture verification', () => {
 
         await compose([modelExecutionMiddleware()])(ctx);
 
-        assert.deepEqual(transportCalls, ['gpt-4o-mini', 'gpt-4.1']);
+        assert.deepEqual(backendCalls, ['gpt-4o-mini', 'gpt-4.1']);
         const cascadeModelChosen = ctx.metadata.cascadeModel;
         assert.equal(
             cascadeModelChosen?.modelKey || cascadeModelChosen?.model_key,
@@ -305,7 +310,7 @@ describe('main-branch importer: fixture verification', () => {
         );
         assert.deepEqual(
             computeLegacyDispatchOrder(source, 'axl/fast'),
-            transportCalls
+            backendCalls
         );
     });
 });
@@ -1200,7 +1205,7 @@ function buildSnapshotFromImportState(state) {
                 provider_key: row.provider_key,
                 displayName: row.display_name,
                 display_name: row.display_name,
-                adapterKey: row.adapter_key,
+                backendKey: row.adapter_key,
                 adapter_key: row.adapter_key,
                 baseUrl: row.base_url,
                 base_url: row.base_url,

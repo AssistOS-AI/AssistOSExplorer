@@ -71,8 +71,8 @@ describe('management/provider-view', () => {
 });
 
 describe('management/model-discovery-view', () => {
-    it('translates a plugin model object to the dashboard shape', () => {
-        const pluginModel = {
+    it('translates a backend discovery model object to the dashboard shape', () => {
+        const backendModel = {
             modelId: 'gpt-5.4',
             displayName: 'GPT-5.4',
             contextWindow: 1_000_000,
@@ -81,7 +81,7 @@ describe('management/model-discovery-view', () => {
             supportsStreaming: true,
             supportsVision: true,
         };
-        const view = toDiscoveryView(pluginModel, { providerName: 'codex' });
+        const view = toDiscoveryView(backendModel, { providerName: 'codex' });
 
         assert.equal(view.id, 'gpt-5.4');
         assert.equal(view.display_name, 'GPT-5.4');
@@ -109,7 +109,7 @@ describe('management/model-discovery-view', () => {
         assert.equal(view.output_price, 10);
     });
 
-    it('falls back to provider name for owned_by when the plugin omits it', () => {
+    it('falls back to provider name for owned_by when the backend omits it', () => {
         const view = toDiscoveryView(
             { modelId: 'claude-sonnet-4' },
             { providerName: 'anthropic' }
@@ -122,7 +122,7 @@ describe('management/model-discovery-view', () => {
         assert.equal(view.display_name, 'gpt-5');
     });
 
-    it('returns null when the plugin object has no identifier', () => {
+    it('returns null when the backend object has no identifier', () => {
         assert.equal(toDiscoveryView({ displayName: 'Nameless' }), null);
         assert.equal(toDiscoveryView(null), null);
     });
@@ -138,7 +138,7 @@ describe('management/model-discovery-view', () => {
     });
 
     describe('toDiscoveryList', () => {
-        it('translates an array of plugin models', () => {
+        it('translates an array of backend discovery models', () => {
             const list = toDiscoveryList(
                 [
                     { modelId: 'a', displayName: 'A' },

@@ -1,10 +1,10 @@
 /**
  * Canonical stream representation for the gateway runtime.
  *
- * Once a transport produces a response, the kernel represents it as either
- * a buffered completion or a `CanonicalStream`.  Middlewares wrap streams
- * by replacing `ctx.response.stream` with a new async iterable that yields
- * the canonical event types defined in `runtime/providers/provider-interface`:
+ * Once a backend terminal produces a response, the kernel represents it as
+ * either a buffered completion or a `CanonicalStream`.  Middlewares wrap
+ * streams by replacing `ctx.response.stream` with a new async iterable that
+ * yields the canonical event types defined in `runtime/backends/backend-interface`:
  *
  *   - `message_start`
  *   - `text_delta`

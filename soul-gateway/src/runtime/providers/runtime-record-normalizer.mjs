@@ -1,7 +1,7 @@
 /**
  * Runtime record normalizers.
  *
- * Provider plugins and execution helpers operate on camelCase runtime
+ * Backend modules and execution helpers operate on camelCase runtime
  * records. These helpers accept either DAO rows or already-normalized
  * runtime records and return a single camelCase view.
  */
@@ -15,8 +15,12 @@ export function normalizeProviderRecord(providerRecord) {
             providerRecord.providerKey ?? providerRecord.provider_key ?? null,
         displayName:
             providerRecord.displayName ?? providerRecord.display_name ?? null,
-        adapterKey:
-            providerRecord.adapterKey ?? providerRecord.adapter_key ?? null,
+        backendKey:
+            providerRecord.backendKey ??
+            providerRecord.backend_key ??
+            providerRecord.adapterKey ??
+            providerRecord.adapter_key ??
+            null,
         authStrategy:
             providerRecord.authStrategy ??
             providerRecord.auth_strategy ??

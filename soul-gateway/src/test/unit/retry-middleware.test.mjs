@@ -129,16 +129,16 @@ describe('retryMiddleware', () => {
         assert.equal(ctx.request.mutated, undefined);
     });
 
-    it('records the transport account id from the successful attempt', async () => {
+    it('records the backend account id from the successful attempt', async () => {
         const ctx = makeCtx();
         const middleware = retryMiddleware({
             attemptChain: attempting(async (innerCtx) => {
-                innerCtx.metadata.transportAccountId = 'acct-99';
+                innerCtx.metadata.backendAccountId = 'acct-99';
                 innerCtx.response = { ok: true };
             }),
         });
         await compose([middleware, async () => {}])(ctx);
-        assert.equal(ctx.metadata.transportAccountId, 'acct-99');
+        assert.equal(ctx.metadata.backendAccountId, 'acct-99');
     });
 
     it('rejects misuse without an attemptChain array', () => {

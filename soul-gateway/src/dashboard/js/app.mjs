@@ -434,9 +434,9 @@ function providersPage() {
         // Pipeline composer state
         showComposer: false,
         composerProvider: null,
-        composerTransport: '',
+        composerBackendKey: '',
         composerPipeline: [],
-        availableTransports: [],
+        availableBackends: [],
         availableProviderMiddlewares: [],
         // Per-binding settings editor
         bindingSettingsOpen: false,
@@ -808,20 +808,20 @@ function providersPage() {
 
         async openComposer(provider) {
             this.composerProvider = provider;
-            this.composerTransport = provider.adapter_key || '';
+            this.composerBackendKey = provider.adapter_key || '';
             this.composerPipeline = [];
 
-            // Fetch transports, available middlewares, and current bindings in parallel
-            const [transportsRes, middlewaresRes, bindingsRes] =
+            // Fetch backends, available middlewares, and current bindings in parallel
+            const [backendsRes, middlewaresRes, bindingsRes] =
                 await Promise.all([
-                    api.get('/management/transports'),
+                    api.get('/management/backends'),
                     api.get('/management/provider-middlewares'),
                     api.get(`/management/providers/${provider.id}/middlewares`),
                 ]);
 
-            this.availableTransports = Array.isArray(transportsRes?.transports)
-                ? transportsRes.transports
-                : unwrapArray(transportsRes);
+            this.availableBackends = Array.isArray(backendsRes?.backends)
+                ? backendsRes.backends
+                : unwrapArray(backendsRes);
             this.availableProviderMiddlewares = Array.isArray(
                 middlewaresRes?.middlewares
             )
@@ -841,9 +841,9 @@ function providersPage() {
             if (!this.composerProvider) return;
             const pid = this.composerProvider.id;
 
-            // 1. Update provider transport (adapter_key)
+            // 1. Update provider backend selection (adapter_key)
             await api.patch(`/management/providers/${pid}`, {
-                adapter_key: this.composerTransport || null,
+                adapter_key: this.composerBackendKey || null,
             });
 
             // 2. Sync provider middleware bindings: delete removed, upsert kept

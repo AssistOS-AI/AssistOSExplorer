@@ -29,7 +29,7 @@ import { retryMiddleware } from './retry-middleware.mjs';
 import { attemptContextMiddleware } from './attempt-context-middleware.mjs';
 import { timeoutMiddleware } from './timeout-middleware.mjs';
 import { credentialLeaseMiddleware } from './credential-lease-middleware.mjs';
-import { transportDispatchMiddleware } from './transport-dispatch-middleware.mjs';
+import { backendDispatchMiddleware } from './backend-dispatch-middleware.mjs';
 import { finalizeDirectResultMiddleware } from './finalize-direct-result-middleware.mjs';
 import { invokeModelCapabilityMiddleware } from './invoke-model-capability-middleware.mjs';
 import { cascadeMiddleware } from './cascade-middleware.mjs';
@@ -144,13 +144,13 @@ function providerBindingsMiddleware() {
         const responseExcerptChars =
             ctx.appCtx?.config?.defaults?.responseExcerptChars;
         const chainEntries = wantStream
-            ? [...providerMiddlewares, transportDispatchMiddleware()]
+            ? [...providerMiddlewares, backendDispatchMiddleware()]
             : [
                   bufferingMiddleware({
                       maxExcerptChars: responseExcerptChars,
                   }),
                   ...providerMiddlewares,
-                  transportDispatchMiddleware(),
+                  backendDispatchMiddleware(),
               ];
 
         const chain = compose(chainEntries);

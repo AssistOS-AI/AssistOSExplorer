@@ -10,7 +10,7 @@ export function installRuntimeRefreshServices(appCtx) {
         const {
             snapshot = false,
             middlewareCatalog = false,
-            providerCatalog = false,
+            backendCatalog = false,
             reason = 'unspecified',
         } = options;
 
@@ -19,27 +19,25 @@ export function installRuntimeRefreshServices(appCtx) {
             snapshotGeneration: appCtx.snapshotGeneration,
             middlewareGeneration: null,
             middlewareCount: null,
-            providerCatalogGeneration: null,
-            providerCount: null,
+            backendCatalogGeneration: null,
+            backendCount: null,
             extensionGeneration: null,
-            transportCount: null,
             providerMiddlewareCount: null,
         };
 
         if (
-            providerCatalog &&
-            typeof appCtx.services.reloadProviderCatalog === 'function'
+            backendCatalog &&
+            typeof appCtx.services.reloadBackendCatalog === 'function'
         ) {
-            const providerResult =
-                await appCtx.services.reloadProviderCatalog();
-            result.providerCatalogGeneration =
-                providerResult?.generation ?? null;
-            result.providerCount = providerResult?.count ?? null;
+            const backendResult =
+                await appCtx.services.reloadBackendCatalog();
+            result.backendCatalogGeneration =
+                backendResult?.generation ?? null;
+            result.backendCount = backendResult?.count ?? null;
             result.extensionGeneration =
-                providerResult?.extensionGeneration ?? null;
-            result.transportCount = providerResult?.transportCount ?? null;
+                backendResult?.extensionGeneration ?? null;
             result.providerMiddlewareCount =
-                providerResult?.providerMiddlewareCount ?? null;
+                backendResult?.providerMiddlewareCount ?? null;
         }
 
         if (
@@ -91,10 +89,9 @@ export async function performRuntimeRefresh(appCtx, options = {}) {
         snapshotGeneration: appCtx.snapshotGeneration,
         middlewareGeneration: null,
         middlewareCount: null,
-        providerCatalogGeneration: null,
-        providerCount: null,
+        backendCatalogGeneration: null,
+        backendCount: null,
         extensionGeneration: null,
-        transportCount: null,
         providerMiddlewareCount: null,
     };
 }

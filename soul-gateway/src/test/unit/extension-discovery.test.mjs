@@ -9,7 +9,6 @@ import {
     EXTENSION_SCOPES,
     EXTENSION_TYPES,
 } from '../../runtime/plugins/extension-constants.mjs';
-import { TRANSPORT_TYPES } from '../../runtime/transports/transport-constants.mjs';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -26,13 +25,27 @@ const noopLog = {
  */
 async function writeExtension(dir, filename, manifest, options = {}) {
     await mkdir(dir, { recursive: true });
-    const parts = [`export const manifest = ${JSON.stringify(manifest)};`];
+    const parts = [];
+
+    if (!options.backendModuleOnly) {
+        parts.push(`export const manifest = ${JSON.stringify(manifest)};`);
+    }
+
     if (options.factory)
         parts.push(
             'export const meta = manifest; export function factory() { return async (ctx, next) => { await next(); }; }'
         );
     if (options.execute)
         parts.push('export async function execute(ctx) { return {}; }');
+    if (options.backendModule) {
+        parts.push(
+            `export const backendModule = {
+    manifest: ${JSON.stringify(manifest)},
+    async execute() { return {}; },
+    classifyError(error) { return error; }
+};`
+        );
+    }
     await writeFile(join(dir, filename), parts.join('\n') + '\n');
 }
 
@@ -89,21 +102,74 @@ describe('ExtensionLoader — canonical paths', () => {
         assert.equal(entry.type, EXTENSION_TYPES.MIDDLEWARE);
     });
 
-    it('discovers transport files and tags type=transport', async () => {
+    it('discovers backend files and tags type=backend', async () => {
         await writeExtension(
-            join(tmpDir, 'transports'),
-            'custom-backend.transport.mjs',
-            { key: 'custom-backend' },
+            join(tmpDir, 'backends'),
+            'custom-backend.backend.mjs',
+            {
+                key: 'custom-backend',
+                kind: 'custom',
+                authStrategy: 'none',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
             { execute: true }
         );
 
         const catalog = await loader.scan();
 
-        assert.equal(catalog.transports.length, 1);
-        const entry = catalog.transports[0];
+        assert.equal(catalog.backends.length, 1);
+        const entry = catalog.backends[0];
         assert.equal(entry.manifest.key, 'custom-backend');
         assert.equal(entry.scope, null);
-        assert.equal(entry.type, EXTENSION_TYPES.TRANSPORT);
+        assert.equal(entry.type, EXTENSION_TYPES.BACKEND);
+    });
+
+    it('discovers backend files that export backendModule only', async () => {
+        await writeExtension(
+            join(tmpDir, 'backends'),
+            'external-api.backend.mjs',
+            {
+                key: 'external-api',
+                kind: 'external_api',
+                authStrategy: 'api_key',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
+            { backendModule: true, backendModuleOnly: true }
+        );
+
+        const catalog = await loader.scan();
+
+        assert.equal(catalog.backends.length, 1);
+        const entry = catalog.backends[0];
+        assert.equal(entry.manifest.key, 'external-api');
+        assert.equal(entry.manifest.kind, 'external_api');
+    });
+
+    it('preserves canonical backend kinds on bare execute-style extensions', async () => {
+        await writeExtension(
+            join(tmpDir, 'backends'),
+            'web-search.backend.mjs',
+            {
+                key: 'web-search',
+                kind: 'search',
+                authStrategy: 'api_key',
+                supportsStreaming: false,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
+            { execute: true }
+        );
+
+        const catalog = await loader.scan();
+
+        assert.equal(catalog.backends.length, 1);
+        const entry = catalog.backends[0];
+        assert.equal(entry.manifest.key, 'web-search');
+        assert.equal(entry.manifest.kind, 'search');
     });
 
     it('skips files that do not match the suffix', async () => {
@@ -132,7 +198,7 @@ describe('ExtensionLoader — canonical paths', () => {
         const catalog = await loader.scan();
         assert.equal(catalog.middlewares.length, 0);
         assert.equal(catalog.providerMiddlewares.length, 0);
-        assert.equal(catalog.transports.length, 0);
+        assert.equal(catalog.backends.length, 0);
     });
 
     it('discovers from all canonical directories in a single scan', async () => {
@@ -149,8 +215,8 @@ describe('ExtensionLoader — canonical paths', () => {
             { factory: true }
         );
         await writeExtension(
-            join(tmpDir, 'transports'),
-            'ollama.transport.mjs',
+            join(tmpDir, 'backends'),
+            'ollama.backend.mjs',
             { key: 'ollama' },
             { execute: true }
         );
@@ -159,7 +225,7 @@ describe('ExtensionLoader — canonical paths', () => {
 
         assert.equal(catalog.middlewares.length, 1);
         assert.equal(catalog.providerMiddlewares.length, 1);
-        assert.equal(catalog.transports.length, 1);
+        assert.equal(catalog.backends.length, 1);
 
         assert.equal(catalog.middlewares[0].scope, EXTENSION_SCOPES.GATEWAY);
         assert.equal(catalog.middlewares[0].type, EXTENSION_TYPES.MIDDLEWARE);
@@ -171,8 +237,8 @@ describe('ExtensionLoader — canonical paths', () => {
             catalog.providerMiddlewares[0].type,
             EXTENSION_TYPES.MIDDLEWARE
         );
-        assert.equal(catalog.transports[0].scope, null);
-        assert.equal(catalog.transports[0].type, EXTENSION_TYPES.TRANSPORT);
+        assert.equal(catalog.backends[0].scope, null);
+        assert.equal(catalog.backends[0].type, EXTENSION_TYPES.BACKEND);
     });
 
     it('increments generation on each scan', async () => {
@@ -213,14 +279,21 @@ describe('ExtensionLoader — manifest validation', () => {
 
     it('rejects extensions with invalid key format', async () => {
         await writeExtension(
-            join(tmpDir, 'transports'),
-            'bad-key.transport.mjs',
-            { key: 'Bad_Key!' },
+            join(tmpDir, 'backends'),
+            'bad-key.backend.mjs',
+            {
+                key: 'Bad_Key!',
+                kind: 'custom',
+                authStrategy: 'none',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
             { execute: true }
         );
 
         const catalog = await loader.scan();
-        assert.equal(catalog.transports.length, 0);
+        assert.equal(catalog.backends.length, 0);
     });
 
     it('accepts native gateway middleware extensions', async () => {
@@ -259,17 +332,7 @@ describe('extension-constants', () => {
 
     it('exports frozen EXTENSION_TYPES', () => {
         assert.equal(EXTENSION_TYPES.MIDDLEWARE, 'middleware');
-        assert.equal(EXTENSION_TYPES.TRANSPORT, 'transport');
+        assert.equal(EXTENSION_TYPES.BACKEND, 'backend');
         assert.ok(Object.isFrozen(EXTENSION_TYPES));
-    });
-});
-
-describe('transport-constants', () => {
-    it('exports frozen TRANSPORT_TYPES', () => {
-        assert.equal(TRANSPORT_TYPES.EXTERNAL_API, 'external_api');
-        assert.equal(TRANSPORT_TYPES.SEARCH, 'search');
-        assert.equal(TRANSPORT_TYPES.LOCAL_MODEL, 'local_model');
-        assert.equal(TRANSPORT_TYPES.CUSTOM, 'custom');
-        assert.ok(Object.isFrozen(TRANSPORT_TYPES));
     });
 });

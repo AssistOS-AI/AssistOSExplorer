@@ -159,7 +159,7 @@ export function toProviderRequest(normalizedReq, modelRecord, providerRecord) {
  *
  * @param {object} rawChunk  Parsed chunk data
  * @param {object} state     Mutable converter state
- * @returns {Array<import('../provider-interface.mjs').NormalizedChunk>}
+ * @returns {Array<import('../backend-interface.mjs').NormalizedChunk>}
  */
 export function fromCompletionsChunk(rawChunk, state) {
     if (!state._initialized) {
@@ -243,7 +243,7 @@ export function fromCompletionsChunk(rawChunk, state) {
  *
  * @param {object} rawChunk  Parsed Responses API event
  * @param {object} state     Mutable converter state
- * @returns {Array<import('../provider-interface.mjs').NormalizedChunk>}
+ * @returns {Array<import('../backend-interface.mjs').NormalizedChunk>}
  */
 export function fromResponsesChunk(rawChunk, state) {
     if (!state._initialized) {

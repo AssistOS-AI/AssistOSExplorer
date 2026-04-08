@@ -33,8 +33,8 @@ function createMockAppCtx(overrides = {}) {
                 snapshotGeneration: 1,
                 middlewareGeneration: null,
                 middlewareCount: null,
-                providerCatalogGeneration: null,
-                providerCount: null,
+                backendCatalogGeneration: null,
+                backendCount: null,
             };
 
             if (
@@ -47,13 +47,13 @@ function createMockAppCtx(overrides = {}) {
             }
 
             if (
-                options.providerCatalog &&
-                typeof services.reloadProviderCatalog === 'function'
+                options.backendCatalog &&
+                typeof services.reloadBackendCatalog === 'function'
             ) {
-                const providers = await services.reloadProviderCatalog();
-                result.providerCatalogGeneration =
-                    providers?.generation ?? null;
-                result.providerCount = providers?.count ?? null;
+                const backends = await services.reloadBackendCatalog();
+                result.backendCatalogGeneration =
+                    backends?.generation ?? null;
+                result.backendCount = backends?.count ?? null;
             }
 
             if (
@@ -780,7 +780,7 @@ describe('management/providers-route', () => {
     });
 
     describe('handleTestConnection', () => {
-        function createProviderCatalogMock(testConnectionImpl) {
+        function createBackendCatalogMock(testConnectionImpl) {
             return {
                 testConnection: testConnectionImpl,
             };
@@ -790,7 +790,7 @@ describe('management/providers-route', () => {
             const pool = createMockPool(async () => ({ rows: [providerRow] }));
             const appCtx = createMockAppCtx({
                 pool,
-                services: { providerCatalog: catalog },
+                services: { backendCatalog: catalog },
             });
             return {
                 req: createMockReq({ method: 'POST' }),
@@ -801,8 +801,8 @@ describe('management/providers-route', () => {
             };
         }
 
-        it('translates a successful plugin result to { ok:true, message }', async () => {
-            const catalog = createProviderCatalogMock(async () => ({
+        it('translates a successful backend result to { ok:true, message }', async () => {
+            const catalog = createBackendCatalogMock(async () => ({
                 ok: true,
                 detail: 'Codex OAuth credentials present',
             }));
@@ -826,8 +826,8 @@ describe('management/providers-route', () => {
             assert.equal(body.error, undefined);
         });
 
-        it('translates a failed plugin result to { ok:false, error }', async () => {
-            const catalog = createProviderCatalogMock(async () => ({
+        it('translates a failed backend result to { ok:false, error }', async () => {
+            const catalog = createBackendCatalogMock(async () => ({
                 ok: false,
                 detail: 'HTTP 403',
             }));
@@ -844,8 +844,8 @@ describe('management/providers-route', () => {
             assert.equal(body.message, undefined);
         });
 
-        it('supplies a default error when the plugin returns no detail string', async () => {
-            const catalog = createProviderCatalogMock(async () => ({
+        it('supplies a default error when the backend returns no detail string', async () => {
+            const catalog = createBackendCatalogMock(async () => ({
                 ok: false,
             }));
             const ctx = buildCtx({ providerRow: { id: 'p1' }, catalog });
@@ -856,8 +856,8 @@ describe('management/providers-route', () => {
             assert.equal(body.error, 'Connection failed');
         });
 
-        it('supplies a default message when the plugin returns ok without a detail string', async () => {
-            const catalog = createProviderCatalogMock(async () => ({
+        it('supplies a default message when the backend returns ok without a detail string', async () => {
+            const catalog = createBackendCatalogMock(async () => ({
                 ok: true,
             }));
             const ctx = buildCtx({ providerRow: { id: 'p1' }, catalog });
@@ -869,7 +869,7 @@ describe('management/providers-route', () => {
         });
 
         it('flattens an object-shaped detail into a string', async () => {
-            const catalog = createProviderCatalogMock(async () => ({
+            const catalog = createBackendCatalogMock(async () => ({
                 ok: false,
                 detail: { error: 'credentials missing' },
             }));
@@ -881,21 +881,21 @@ describe('management/providers-route', () => {
             assert.equal(body.error, 'credentials missing');
         });
 
-        it('returns { ok:false, error } when the plugin throws', async () => {
-            const catalog = createProviderCatalogMock(async () => {
-                throw new Error('plugin blew up');
+        it('returns { ok:false, error } when the backend throws', async () => {
+            const catalog = createBackendCatalogMock(async () => {
+                throw new Error('backend blew up');
             });
             const ctx = buildCtx({ providerRow: { id: 'p1' }, catalog });
 
             await handleTestConnection(ctx);
             const body = parseJsonResponse(ctx.res);
             assert.equal(body.ok, false);
-            assert.equal(body.error, 'plugin blew up');
+            assert.equal(body.error, 'backend blew up');
         });
 
-        it('responds with a helpful error when the provider catalog is not installed', async () => {
+        it('responds with a helpful error when the backend catalog is not installed', async () => {
             const pool = createMockPool(async () => ({ rows: [{ id: 'p1' }] }));
-            const appCtx = createMockAppCtx({ pool }); // no providerCatalog in services
+            const appCtx = createMockAppCtx({ pool }); // no backendCatalog in services
             const res = createMockRes();
 
             await handleTestConnection({

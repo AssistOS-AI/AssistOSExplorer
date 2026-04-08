@@ -76,7 +76,7 @@ export function toProviderRequest(normalizedReq, modelRecord, providerRecord) {
  *
  * @param {object} rawChunk  Parsed Anthropic SSE event data
  * @param {object} state     Mutable converter state (tracks current block indices)
- * @returns {Array<import('../provider-interface.mjs').NormalizedChunk>}
+ * @returns {Array<import('../backend-interface.mjs').NormalizedChunk>}
  */
 export function fromProviderChunk(rawChunk, state) {
     if (!state._initialized) {

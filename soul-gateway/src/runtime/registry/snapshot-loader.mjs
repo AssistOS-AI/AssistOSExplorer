@@ -270,7 +270,7 @@ function freezeProviderRecord(row) {
         providerKey: row.provider_key,
         displayName: row.display_name,
         kind: row.kind,
-        adapterKey: row.adapter_key,
+        backendKey: row.adapter_key,
         authStrategy: row.auth_strategy,
         providerMode: row.provider_mode,
         oauthAdapterKey: row.oauth_adapter_key,

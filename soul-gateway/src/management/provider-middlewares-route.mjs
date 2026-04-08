@@ -7,7 +7,7 @@
  *
  * Endpoints:
  *
- *   GET    /management/transports                                          → list registered transport plugin keys
+ *   GET    /management/backends                                            → list registered backend module keys
  *   GET    /management/provider-middlewares                                → list available provider middleware modules
  *   GET    /management/providers/:providerId/middlewares                   → list provider-scope bindings for a provider
  *   POST   /management/providers/:providerId/middlewares                   → create a provider-scope binding
@@ -66,28 +66,26 @@ export async function handleListProviderMiddlewares(ctx) {
 }
 
 /**
- * GET /management/transports
- * Returns the registered transport plugin inventory from the transport
- * catalog.
+ * GET /management/backends
+ * Returns the registered backend module inventory from the backend
+ * catalog.  Each backend is a terminal middleware that fulfills an
+ * external request.
  */
-export async function handleListTransports(ctx) {
+export async function handleListBackends(ctx) {
     const { res, appCtx } = ctx;
-    const catalog = appCtx.services.transportCatalog;
-    const transports = [];
+    const catalog = appCtx.services.backendCatalog;
+    const backends = [];
     if (catalog && typeof catalog.listKeys === 'function') {
         for (const key of catalog.listKeys()) {
-            const plugin = catalog.getTransport?.(key);
-            transports.push({
+            const backendModule = catalog.getBackend?.(key);
+            backends.push({
                 key,
-                name: plugin?.manifest?.name || key,
-                transport_type:
-                    plugin?.manifest?.transportType ||
-                    plugin?.manifest?.kind ||
-                    'external_api',
+                name: backendModule?.manifest?.displayName || key,
+                kind: backendModule?.manifest?.kind || 'external_api',
             });
         }
     }
-    sendJson(res, 200, { transports });
+    sendJson(res, 200, { backends });
 }
 
 /**

@@ -5,5 +5,5 @@ export const EXTENSION_SCOPES = Object.freeze({
 
 export const EXTENSION_TYPES = Object.freeze({
     MIDDLEWARE: 'middleware',
-    TRANSPORT: 'transport',
+    BACKEND: 'backend',
 });

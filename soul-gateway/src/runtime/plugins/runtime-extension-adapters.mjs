@@ -1,22 +1,39 @@
 import { ConfigurationError } from '../../core/errors.mjs';
-import { validateTransportManifest } from '../transports/transport-interface.mjs';
+import { validateBackendManifest } from '../backends/backend-interface.mjs';
 
-export function adaptExtensionEntryToTransport(entry) {
+/**
+ * Adapt a backend extension entry into a BackendModule the catalog can
+ * register.  Extension modules can either:
+ *
+ *   - export `backendModule` directly (preferred), or
+ *   - export `execute()` plus optional lifecycle methods alongside a
+ *     `manifest` / `meta` object.
+ *
+ * In either case the result is normalized to the `BackendModule`
+ * shape declared in `runtime/backends/backend-interface.mjs`.
+ *
+ * @param {object} entry  ExtensionLoader catalog entry
+ * @returns {object}      BackendModule
+ */
+export function adaptExtensionEntryToBackend(entry) {
     const mod = entry?.module || {};
-    if (mod.transportPlugin) {
-        validateTransportManifest(mod.transportPlugin.manifest);
-        return mod.transportPlugin;
+    if (mod.backendModule) {
+        validateBackendManifest(mod.backendModule.manifest);
+        return mod.backendModule;
     }
 
     const manifest = mod.manifest || mod.meta || entry?.manifest || {};
     if (typeof mod.execute !== 'function') {
         throw new ConfigurationError(
-            `Transport extension ${manifest.key || entry?.filePath || 'unknown'} must export execute() or transportPlugin`
+            `Backend extension ${manifest.key || entry?.filePath || 'unknown'} must export execute() or backendModule`
         );
     }
 
-    const transport = {
-        manifest: normalizeTransportManifest(manifest, entry),
+    const normalizedManifest = normalizeBackendManifest(manifest);
+    validateBackendManifest(normalizedManifest);
+
+    const backendModule = {
+        manifest: normalizedManifest,
         execute: mod.execute.bind(mod),
         classifyError:
             typeof mod.classifyError === 'function'
@@ -25,32 +42,34 @@ export function adaptExtensionEntryToTransport(entry) {
     };
 
     if (typeof mod.discoverModels === 'function') {
-        transport.discoverModels = mod.discoverModels.bind(mod);
+        backendModule.discoverModels = mod.discoverModels.bind(mod);
     }
     if (typeof mod.testConnection === 'function') {
-        transport.testConnection = mod.testConnection.bind(mod);
+        backendModule.testConnection = mod.testConnection.bind(mod);
     }
     if (typeof mod.init === 'function') {
-        transport.init = mod.init.bind(mod);
+        backendModule.init = mod.init.bind(mod);
     }
     if (typeof mod.shutdown === 'function') {
-        transport.shutdown = mod.shutdown.bind(mod);
+        backendModule.shutdown = mod.shutdown.bind(mod);
     }
 
-    validateTransportManifest(transport.manifest);
-    return transport;
+    return backendModule;
 }
 
-function normalizeTransportManifest(manifest, entry) {
+function normalizeBackendManifest(manifest) {
     return {
         key: manifest.key,
-        name: manifest.name || manifest.displayName || manifest.key,
-        transportType: manifest.transportType || inferTransportType(entry),
+        kind: manifest.kind || 'custom',
+        authStrategy: manifest.authStrategy || 'none',
         supportsStreaming: manifest.supportsStreaming ?? true,
         supportsTools: manifest.supportsTools ?? false,
+        supportedFormats: Array.isArray(manifest.supportedFormats)
+            ? manifest.supportedFormats
+            : ['openai_chat'],
+        displayName: manifest.displayName || manifest.name || manifest.key,
+        defaultBaseUrl: manifest.defaultBaseUrl || null,
+        oauthAdapterKey: manifest.oauthAdapterKey || null,
+        hidden: manifest.hidden ?? false,
     };
-}
-
-function inferTransportType(_entry) {
-    return 'custom';
 }

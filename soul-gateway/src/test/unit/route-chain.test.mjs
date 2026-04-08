@@ -37,6 +37,7 @@ import {
 } from '../../runtime/route/run-route-request.mjs';
 import { _resetPermissiveWarning as _resetAuthLatch } from '../../runtime/route/authenticate.mjs';
 import { compose, createKernelContext } from '../../runtime/kernel/index.mjs';
+import * as backendTerminalModule from '../../runtime/backends/backend-terminal.mjs';
 import { ModelNotFoundError, ValidationError } from '../../core/errors.mjs';
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -106,8 +107,7 @@ function makeAppCtx({
         services: {
             snapshot,
             middlewareCatalog,
-            providerCatalog: services.providerCatalog ?? null,
-            transportCatalog: services.transportCatalog ?? null,
+            backendCatalog: services.backendCatalog ?? null,
             providerMiddlewareRegistry:
                 services.providerMiddlewareRegistry ?? null,
             credentialManager: null,
@@ -510,7 +510,7 @@ describe('full route chain integration', () => {
                     Object.freeze({
                         id: 'provider-1',
                         providerKey: model.providerKey,
-                        adapterKey: 'stub-transport',
+                        backendKey: 'stub-backend',
                         settings: {},
                     }),
                 ],
@@ -524,10 +524,16 @@ describe('full route chain integration', () => {
         });
     }
 
-    function buildTransportCatalog(transport) {
+    function buildBackendCatalog(backendModule) {
+        const { createBackendTerminal } = backendTerminalModule;
+        const terminal = createBackendTerminal(backendModule);
         return {
-            getTransport(key) {
-                if (key === 'stub-transport') return transport;
+            getTerminal(key) {
+                if (key === backendModule.manifest.key) return terminal;
+                return null;
+            },
+            getBackend(key) {
+                if (key === backendModule.manifest.key) return backendModule;
                 return null;
             },
         };
@@ -547,9 +553,9 @@ describe('full route chain integration', () => {
             yield { type: 'done', data: { finish_reason: 'stop' } };
         }
 
-        const stubTransport = {
+        const stubBackend = {
             manifest: {
-                key: 'stub-transport',
+                key: 'stub-backend',
                 kind: 'external_api',
                 authStrategy: 'api_key',
                 supportsStreaming: true,
@@ -581,11 +587,11 @@ describe('full route chain integration', () => {
         });
 
         const snapshot = buildSnapshot(model);
-        const transportCatalog = buildTransportCatalog(stubTransport);
+        const backendCatalog = buildBackendCatalog(stubBackend);
 
         const appCtx = makeAppCtx({
             snapshot,
-            services: { transportCatalog },
+            services: { backendCatalog },
         });
 
         const req = makeFakeReq({

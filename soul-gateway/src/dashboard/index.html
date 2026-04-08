@@ -3160,18 +3160,18 @@
                                             >
                                             <select
                                                 class="select select-bordered"
-                                                x-model="composerTransport"
+                                                x-model="composerBackendKey"
                                             >
                                                 <option value="">
-                                                    Select transport...
+                                                    Select backend...
                                                 </option>
                                                 <template
-                                                    x-for="t in availableTransports"
+                                                    x-for="t in availableBackends"
                                                     :key="t.key"
                                                 >
                                                     <option
                                                         :value="t.key"
-                                                        x-text="(t.name || t.key) + ' (' + t.transport_type + ')'"
+                                                        x-text="(t.name || t.key) + ' (' + t.kind + ')'"
                                                     ></option>
                                                 </template>
                                             </select>

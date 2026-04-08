@@ -7,14 +7,10 @@ import { ConcurrencyController } from '../runtime/execution/concurrency-controll
 import { ensureEncryptionKey } from '../runtime/security/encryption.mjs';
 import { MiddlewareCatalog } from '../runtime/middleware/middleware-catalog.mjs';
 import { ProviderMiddlewareRegistry } from '../runtime/middleware/provider-middleware-registry.mjs';
-import { ProviderCatalog } from '../runtime/providers/provider-catalog.mjs';
-import { ProviderLoader } from '../runtime/providers/provider-loader.mjs';
-import { TransportCatalog } from '../runtime/transports/transport-catalog.mjs';
-import { adaptProviderToTransport } from '../runtime/transports/provider-transport-adapter.mjs';
+import { BackendCatalog } from '../runtime/backends/backend-catalog.mjs';
+import { BackendLoader } from '../runtime/backends/backend-loader.mjs';
 import { ExtensionLoader } from '../runtime/plugins/extension-loader.mjs';
-import {
-    adaptExtensionEntryToTransport,
-} from '../runtime/plugins/runtime-extension-adapters.mjs';
+import { adaptExtensionEntryToBackend } from '../runtime/plugins/runtime-extension-adapters.mjs';
 import { createExtensionContext } from '../runtime/providers/extension-sdk.mjs';
 import { installRuntimeRefreshServices } from '../runtime/registry/runtime-refresh.mjs';
 import { loadRuntimeSnapshot } from '../runtime/registry/snapshot-loader.mjs';
@@ -208,73 +204,65 @@ export async function installMiddlewareServices(appCtx) {
 }
 
 /**
- * Install the provider plugin registry and the transport catalog.
+ * Install the unified backend catalog and the provider middleware
+ * registry.
  *
  * This installer owns:
  *
- *   - `providerCatalog` — raw ProviderPlugin objects keyed by manifest
- *     key.  The provider lifecycle (testConnection, discoverModels,
- *     init, shutdown) goes through this registry.
- *   - `transportCatalog` — the registry the runtime hot path reads via
- *     `getTransport(key)` to resolve a transport plugin per dispatch.
- *     The kernel adapter `adaptProviderPluginToTransport` then wraps
- *     the looked-up plugin as a terminal middleware.
- *   - `providerMiddlewareRegistry` — native `(ctx, next)` provider
- *     middlewares.  Built-ins are loaded at startup; extension
+ *   - `backendCatalog` — single registry of BackendModule objects
+ *     keyed by manifest key.  Both the request hot path
+ *     (`backendDispatchMiddleware` -> `getTerminal(key)`) and
+ *     lifecycle/admin operations (`testConnection`, `discoverModels`,
+ *     `getTemplates`) read from this one catalog.  At register time
+ *     each module's `execute()` is wrapped once into a kernel terminal
+ *     middleware via `createBackendTerminal` so the dispatch path has
+ *     no per-request adapter step.
+ *   - `providerMiddlewareRegistry` — native `(ctx, next)` provider-
+ *     scope middlewares.  Built-ins are loaded at startup; extension
  *     modules are registered into the same registry on every reload.
  */
-export async function installProviderCatalogServices(appCtx) {
+export async function installBackendCatalogServices(appCtx) {
     const { config, log } = appCtx;
     const extensionsDir = config.env.EXTENSIONS_DIR || null;
-    const builtinDir = new URL('../runtime/providers/builtin', import.meta.url)
+    const builtinDir = new URL('../runtime/backends/builtin', import.meta.url)
         .pathname;
 
-    const providerCatalog = new ProviderCatalog({ log });
-    const loader = new ProviderLoader({ builtinDir, extensionsDir, log });
+    const backendCatalog = new BackendCatalog({ log });
+    const loader = new BackendLoader({ builtinDir, log });
     const extensionLoader =
         appCtx.services.extensionLoader ||
         new ExtensionLoader(extensionsDir || './extensions', log);
 
-    appCtx.services.providerCatalog = providerCatalog;
-    appCtx.services.providerLoader = loader;
+    appCtx.services.backendCatalog = backendCatalog;
+    appCtx.services.backendLoader = loader;
     appCtx.services.extensionLoader = extensionLoader;
-    const transportCatalog = new TransportCatalog();
-    appCtx.services.transportCatalog = transportCatalog;
     // Native provider middleware registry. Built-ins are loaded here;
     // extension modules are registered on reload inside
-    // reloadProviderCatalog below.
+    // reloadBackendCatalog below.
     appCtx.services.providerMiddlewareRegistry =
         new ProviderMiddlewareRegistry().loadBuiltins();
-    appCtx.services.reloadProviderCatalog = async () => {
-        const plugins = await loader.loadAll();
-        providerCatalog.load(plugins);
+    appCtx.services.reloadBackendCatalog = async () => {
+        const builtinModules = await loader.loadAll();
+        backendCatalog.load(builtinModules);
         const extCatalog = await extensionLoader.scan();
 
-        // Build a fresh transport catalog on every reload.
-        const nextTransportCatalog = new TransportCatalog();
-        for (const [key, plugin] of providerCatalog.getAllPlugins()) {
-            nextTransportCatalog.register(
-                key,
-                adaptProviderToTransport(plugin)
-            );
-        }
-        for (const ext of extCatalog.transports) {
+        // Merge extension-shipped backend modules into the current
+        // generation.  These do not increment the generation — they are
+        // additive on top of the built-in modules just registered above.
+        for (const ext of extCatalog.backends) {
             try {
-                const transport = adaptExtensionEntryToTransport(ext);
-                nextTransportCatalog.register(
-                    transport.manifest.key,
-                    transport
-                );
+                const extensionModule = adaptExtensionEntryToBackend(ext);
+                backendCatalog.registerExtension(extensionModule);
             } catch (err) {
-                log.warn('transport extension integration failed', {
-                    key: ext.manifest.key,
+                log.warn('backend extension integration failed', {
+                    key: ext.manifest?.key,
                     error: err.message,
                 });
             }
         }
 
-        // Register extension-shipped provider middlewares into the native
-        // registry.
+        // Register extension-shipped provider middlewares into the
+        // native registry.
         const registry = appCtx.services.providerMiddlewareRegistry;
         let extensionProviderCount = 0;
         for (const ext of extCatalog.providerMiddlewares) {
@@ -295,21 +283,20 @@ export async function installProviderCatalogServices(appCtx) {
             }
         }
 
-        appCtx.services.transportCatalog = nextTransportCatalog;
         appCtx.services.extensionCatalog = extCatalog;
 
         return {
-            generation: providerCatalog.generation,
-            count: providerCatalog.size,
+            generation: backendCatalog.generation,
+            count: backendCatalog.size,
             extensionGeneration: extCatalog.generation,
-            transportCount: nextTransportCatalog.size,
+            backendCount: backendCatalog.size,
             providerMiddlewareCount: registry.size,
             extensionProviderMiddlewareCount: extensionProviderCount,
         };
     };
 
-    const providerLoad = await appCtx.services.reloadProviderCatalog();
-    log.info('provider catalog loaded', providerLoad);
+    const backendLoad = await appCtx.services.reloadBackendCatalog();
+    log.info('backend catalog loaded', backendLoad);
 
     if (typeof appCtx.services.reloadMiddlewareCatalog === 'function') {
         await appCtx.services.reloadMiddlewareCatalog();

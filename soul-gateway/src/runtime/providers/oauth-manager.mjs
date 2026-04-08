@@ -215,7 +215,7 @@ export class OAuthManager {
         });
 
         // Auto-provision models for this provider after the first
-        // successful OAuth flow. The plugin makes a live /models call
+        // successful OAuth flow. The backend module makes a live /models call
         // via achillesAgentLib using the credentials we just persisted.
         if (this._appCtx) {
             try {
@@ -258,13 +258,14 @@ export class OAuthManager {
             );
         }
 
-        const adapterKey = provider.oauthAdapterKey || provider.adapterKey;
+        const oauthAdapterKey =
+            provider.oauthAdapterKey || provider.backendKey || provider.adapterKey;
 
-        if (!adapterKey) {
+        if (!oauthAdapterKey) {
             throw new Error('Provider does not define an OAuth adapter');
         }
 
-        return this.startAuthFlow(provider.id, adapterKey, options);
+        return this.startAuthFlow(provider.id, oauthAdapterKey, options);
     }
 
     /**

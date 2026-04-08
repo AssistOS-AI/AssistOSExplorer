@@ -1,13 +1,14 @@
 /**
- * Transport adapter tests.
+ * Backend terminal contract tests.
  *
- * Proves the kernel terminal contract for `adaptProviderPluginToTransport`:
+ * Proves the kernel terminal middleware produced by
+ * `createBackendTerminal(backendModule)`:
  *
  *   - reads request, target, signal, attempt from the kernel ctx
- *   - calls plugin.execute with a legacy ExecuteContext shape
+ *   - calls module.execute with a frozen BackendExecutionContext
  *   - wraps the returned async iterable as a CanonicalStream
- *   - records accountId on ctx.metadata
- *   - classifies thrown errors via plugin.classifyError
+ *   - records accountId on ctx.metadata.backendAccountId
+ *   - classifies thrown errors via module.classifyError
  *   - integrates with provider middleware + buffering as a real terminal
  */
 
@@ -20,8 +21,8 @@ import {
     createCanonicalStream,
     isCanonicalStream,
     bufferingMiddleware,
-    adaptProviderPluginToTransport,
 } from '../../runtime/kernel/index.mjs';
+import { createBackendTerminal } from '../../runtime/backends/backend-terminal.mjs';
 import { ProviderRateLimitError } from '../../core/errors.mjs';
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -32,7 +33,7 @@ function noopLog() {
 
 function makeCtx(overrides = {}) {
     return createKernelContext({
-        requestId: 'req-trans-1',
+        requestId: 'req-bt-1',
         request: overrides.request ?? {
             model: 'm',
             messages: [{ role: 'user', content: 'hi' }],
@@ -62,14 +63,14 @@ async function* sample(text = 'hello') {
     yield { type: 'done', data: { finish_reason: 'stop' } };
 }
 
-function makeStubPlugin({
+function makeStubModule({
     behavior = 'success',
     stream = sample(),
     accountId = 'acct-1',
 } = {}) {
     return {
         manifest: {
-            key: 'stub-transport',
+            key: 'stub-backend',
             kind: 'external_api',
             authStrategy: 'api_key',
             supportsStreaming: true,
@@ -82,8 +83,7 @@ function makeStubPlugin({
                 err.status = 429;
                 throw err;
             }
-            // Capture the ctx for assertions in the test
-            makeStubPlugin._lastCtx = ctx;
+            makeStubModule._lastCtx = ctx;
             return { accountId, stream, abort: async () => {} };
         },
         classifyError(err) {
@@ -95,75 +95,76 @@ function makeStubPlugin({
 
 // ── validation ─────────────────────────────────────────────────────────
 
-describe('adaptProviderPluginToTransport: validation', () => {
-    it('rejects a missing plugin', () => {
+describe('createBackendTerminal: validation', () => {
+    it('rejects a missing module', () => {
         assert.throws(
-            () => adaptProviderPluginToTransport(null),
-            /plugin is required/
+            () => createBackendTerminal(null),
+            /backendModule is required/
         );
     });
 
-    it('rejects a plugin with no execute method', () => {
+    it('rejects a module with no execute method', () => {
         assert.throws(
-            () => adaptProviderPluginToTransport({ manifest: { key: 'x' } }),
-            /plugin\.execute is required/
+            () => createBackendTerminal({ manifest: { key: 'x' } }),
+            /backendModule\.execute is required/
         );
     });
 });
 
 // ── basic terminal contract ────────────────────────────────────────────
 
-describe('adaptProviderPluginToTransport: terminal contract', () => {
-    it('calls plugin.execute with the legacy ExecuteContext shape', async () => {
-        const plugin = makeStubPlugin();
-        const transport = adaptProviderPluginToTransport(plugin);
+describe('createBackendTerminal: terminal contract', () => {
+    it('calls module.execute with a frozen BackendExecutionContext', async () => {
+        const mod = makeStubModule();
+        const terminal = createBackendTerminal(mod);
         const ctx = makeCtx();
 
-        await compose([transport])(ctx);
+        await compose([terminal])(ctx);
 
-        const lastCtx = makeStubPlugin._lastCtx;
+        const lastCtx = makeStubModule._lastCtx;
         assert.ok(lastCtx);
-        assert.equal(lastCtx.requestId, 'req-trans-1');
+        assert.equal(lastCtx.requestId, 'req-bt-1');
         assert.deepEqual(lastCtx.request, ctx.request);
         assert.equal(lastCtx.resolvedModel.modelKey, 'm');
         assert.equal(lastCtx.providerRecord.providerKey, 'p');
         assert.equal(lastCtx.credentialLease.accountId, 'acct-default');
         assert.equal(lastCtx.attempt.index, 0);
+        assert.ok(Object.isFrozen(lastCtx));
     });
 
     it('wraps the returned stream as a CanonicalStream and tags meta', async () => {
-        const plugin = makeStubPlugin();
-        const transport = adaptProviderPluginToTransport(plugin);
+        const mod = makeStubModule();
+        const terminal = createBackendTerminal(mod);
         const ctx = makeCtx();
-        await compose([transport])(ctx);
+        await compose([terminal])(ctx);
 
         assert.equal(isCanonicalStream(ctx.response), true);
-        assert.equal(ctx.response.meta.transport, 'stub-transport');
+        assert.equal(ctx.response.meta.backend, 'stub-backend');
         assert.equal(ctx.response.meta.model, 'm');
     });
 
-    it('records accountId on ctx.metadata.transportAccountId', async () => {
-        const plugin = makeStubPlugin({ accountId: 'acct-99' });
-        const transport = adaptProviderPluginToTransport(plugin);
+    it('records accountId on ctx.metadata.backendAccountId', async () => {
+        const mod = makeStubModule({ accountId: 'acct-99' });
+        const terminal = createBackendTerminal(mod);
         const ctx = makeCtx();
-        await compose([transport])(ctx);
+        await compose([terminal])(ctx);
 
-        assert.equal(ctx.metadata.transportAccountId, 'acct-99');
+        assert.equal(ctx.metadata.backendAccountId, 'acct-99');
     });
 
-    it('classifies plugin errors via plugin.classifyError', async () => {
-        const plugin = makeStubPlugin({ behavior: 'throw' });
-        const transport = adaptProviderPluginToTransport(plugin);
+    it('classifies module errors via module.classifyError', async () => {
+        const mod = makeStubModule({ behavior: 'throw' });
+        const terminal = createBackendTerminal(mod);
         const ctx = makeCtx();
 
         await assert.rejects(
-            compose([transport])(ctx),
+            compose([terminal])(ctx),
             (err) => err instanceof ProviderRateLimitError
         );
     });
 
-    it('falls back to the original error when plugin.classifyError throws', async () => {
-        const plugin = {
+    it('falls back to the original error when module.classifyError throws', async () => {
+        const mod = {
             manifest: {
                 key: 'broken',
                 kind: 'external_api',
@@ -179,12 +180,12 @@ describe('adaptProviderPluginToTransport: terminal contract', () => {
                 throw new Error('classifier-bug');
             },
         };
-        const transport = adaptProviderPluginToTransport(plugin);
-        await assert.rejects(compose([transport])(makeCtx()), /upstream-died/);
+        const terminal = createBackendTerminal(mod);
+        await assert.rejects(compose([terminal])(makeCtx()), /upstream-died/);
     });
 
     it('passes a non-iterable handle through unchanged so callers can decide', async () => {
-        const plugin = {
+        const mod = {
             manifest: {
                 key: 'buffered',
                 kind: 'external_api',
@@ -194,8 +195,6 @@ describe('adaptProviderPluginToTransport: terminal contract', () => {
                 supportedFormats: ['openai_chat'],
             },
             async execute() {
-                // Simulate a future "buffered transport" that returns the
-                // collected shape directly.
                 return {
                     accountId: 'a',
                     stream: null,
@@ -211,9 +210,9 @@ describe('adaptProviderPluginToTransport: terminal contract', () => {
                 return e;
             },
         };
-        const transport = adaptProviderPluginToTransport(plugin);
+        const terminal = createBackendTerminal(mod);
         const ctx = makeCtx();
-        await compose([transport])(ctx);
+        await compose([terminal])(ctx);
 
         assert.equal(isCanonicalStream(ctx.response), false);
         assert.equal(ctx.response.message.content, 'pre-built');
@@ -222,7 +221,7 @@ describe('adaptProviderPluginToTransport: terminal contract', () => {
 
 // ── integration with provider middleware + buffering ───────────────────
 
-describe('adaptProviderPluginToTransport: integration', () => {
+describe('createBackendTerminal: integration', () => {
     it('runs end-to-end as the terminal of a provider chain', async () => {
         const promptInjector = async (ctx, next) => {
             ctx.request.messages.unshift({
@@ -237,35 +236,31 @@ describe('adaptProviderPluginToTransport: integration', () => {
             ctx.response.message.content = `[TAGGED] ${ctx.response.message.content}`;
         };
 
-        const stubPlugin = makeStubPlugin({
+        const stubModule = makeStubModule({
             stream: sample('hello world'),
             accountId: 'acct-int',
         });
-        const transport = adaptProviderPluginToTransport(stubPlugin);
+        const terminal = createBackendTerminal(stubModule);
 
         const dispatch = compose([
             responseTagger,
             bufferingMiddleware(),
             promptInjector,
-            transport,
+            terminal,
         ]);
 
         const ctx = makeCtx();
         await dispatch(ctx);
 
-        // The provider chain ran inject (mutated request), then transport
-        // produced a stream, then tag (with inline buffer) read the buffered
-        // response, then bufferingMiddleware finished the drain (no-op since
-        // tag already drained).
-        const lastExecuteCtx = makeStubPlugin._lastCtx;
+        const lastExecuteCtx = makeStubModule._lastCtx;
         assert.equal(lastExecuteCtx.request.messages[0].role, 'system');
         assert.equal(lastExecuteCtx.request.messages[0].content, 'INJECTED');
 
         assert.equal(ctx.response.message.content, '[TAGGED] hello world');
-        assert.equal(ctx.metadata.transportAccountId, 'acct-int');
+        assert.equal(ctx.metadata.backendAccountId, 'acct-int');
     });
 
-    it('a provider middleware can intercept the canonical events the transport produces', async () => {
+    it('a provider middleware can intercept the canonical events the terminal produces', async () => {
         const upper = async (ctx, next) => {
             await next();
             const stream = ctx.response;
@@ -286,13 +281,13 @@ describe('adaptProviderPluginToTransport: integration', () => {
             );
         };
 
-        const stubPlugin = makeStubPlugin({ stream: sample('quiet') });
-        const transport = adaptProviderPluginToTransport(stubPlugin);
+        const stubModule = makeStubModule({ stream: sample('quiet') });
+        const terminal = createBackendTerminal(stubModule);
 
         const dispatch = compose([
             bufferingMiddleware(),
             upper,
-            transport,
+            terminal,
         ]);
 
         const ctx = makeCtx();
@@ -300,11 +295,11 @@ describe('adaptProviderPluginToTransport: integration', () => {
         assert.equal(ctx.response.message.content, 'QUIET');
     });
 
-    it('an aborted ctx.signal propagates to the plugin via the legacy ctx', async () => {
+    it('an aborted ctx.signal propagates to the module via the execution ctx', async () => {
         const ac = new AbortController();
         let receivedSignal = null;
 
-        const plugin = {
+        const mod = {
             manifest: {
                 key: 'signal-aware',
                 kind: 'external_api',
@@ -326,9 +321,9 @@ describe('adaptProviderPluginToTransport: integration', () => {
             },
         };
 
-        const transport = adaptProviderPluginToTransport(plugin);
+        const terminal = createBackendTerminal(mod);
         const ctx = makeCtx({ signal: ac.signal });
-        await compose([transport])(ctx);
+        await compose([terminal])(ctx);
 
         assert.equal(receivedSignal, ac.signal);
     });

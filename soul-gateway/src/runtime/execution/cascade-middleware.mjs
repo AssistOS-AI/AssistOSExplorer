@@ -84,7 +84,7 @@ export function cascadeMiddleware(options) {
                     childMetadata.cascadeModel || childCtx?.target?.model || model;
                 ctx.metadata.cascadeAccountId =
                     childMetadata.cascadeAccountId ??
-                    childMetadata.transportAccountId ??
+                    childMetadata.backendAccountId ??
                     null;
                 ctx.metadata.cascadeRetryTrace =
                     childMetadata.cascadeRetryTrace ||

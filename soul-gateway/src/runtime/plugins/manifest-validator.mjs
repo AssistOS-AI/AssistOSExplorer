@@ -1,10 +1,6 @@
 import { ConfigurationError } from '../../core/errors.mjs';
 
-const VALID_KINDS = [
-    'middlewares',
-    'providerMiddlewares',
-    'transports',
-];
+const VALID_KINDS = ['middlewares', 'providerMiddlewares', 'backends'];
 
 /**
  * Validate an extension manifest object.
@@ -32,6 +28,7 @@ export function validateExtensionManifest(manifest, expectedKind) {
     }
 
     if (
+        expectedKind !== 'backends' &&
         manifest.kind &&
         !VALID_KINDS.includes(manifest.kind) &&
         manifest.kind !== expectedKind
@@ -40,5 +37,4 @@ export function validateExtensionManifest(manifest, expectedKind) {
             `Extension kind "${manifest.kind}" is not valid (expected ${expectedKind})`
         );
     }
-
 }

@@ -1,5 +1,5 @@
 /**
- * GitHub Copilot provider plugin.
+ * GitHub Copilot backend module.
  *
  * Routes to /chat/completions or /models/{model}/responses based on
  * model capabilities.  Uses Copilot token auth and VS Code User-Agent
@@ -145,9 +145,9 @@ const KNOWN_MODELS = [
     },
 ];
 
-// ── Plugin ──────────────────────────────────────────────────────────
+// ── Backend module ──────────────────────────────────────────────────
 
-export const providerPlugin = {
+export const backendModule = {
     manifest,
 
     formatConverter: copilotConverter,

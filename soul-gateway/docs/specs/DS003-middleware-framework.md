@@ -1,213 +1,238 @@
-# DS003 — Middleware, Hooks, and Extensions
+# DS003 — Middleware, Backends, and Extensions
 
 ## Summary
 
-This spec describes the three kinds of processing units Soul Gateway runs around an LLM request, how they compose into the request pipeline, how they're discovered and loaded at runtime, and how the legacy `kind='wrapper'` concept maps onto the current model.
+Soul Gateway has one execution model: middleware. Route handling, gateway policy, provider-specific shaping, and upstream execution all compose through the same kernel in `src/runtime/kernel/`.
 
-## The three abstractions
+This spec describes:
 
-The runtime is organized around three distinct kinds of processing units. They share a common hook contract but differ in scope and purpose.
+- the kernel contract
+- the shared runtime context
+- gateway, provider, and backend scopes
+- extension discovery
 
-### Gateway hooks ("middleware")
+## Kernel contract
 
-Gateway hooks run once per request at the gateway scope, regardless of which provider ultimately handles the request. Equivalent product term: **middleware**.
+The kernel exports:
 
-- Implement `onRequest` (pre-dispatch) and/or `onResponse` (post-dispatch) phases.
-- Assigned to tiers (broad policies) and/or individual models (specific overrides).
-- Tier-level middlewares execute first, then model-level middlewares. Within each level, execution order is determined by a configurable sort order.
-- Default settings can be overridden per-assignment.
-- Gateway stream hooks (`wrapStream` at gateway scope) are discovered but not executed — this is a known gap in the middleware engine.
-- Managed via the Middlewares page and the middleware management API.
-- Twelve built-in gateway middlewares ship with the runtime (see DS014).
+- `compose([...middlewares])`
+- `createKernelContext(input)`
+- `forkKernelContext(parent, overrides)`
+- `abortSuccess()` / `abortError()` / `createAbortApi(name)`
+- `bufferingMiddleware()` / `wrappingStreamMiddleware(wrap)` / `bufferCanonicalStream(stream)`
+- `createCanonicalStream(source, meta)` / `isCanonicalStream(value)` / `tapStream` / `mapStream`
 
-### Provider hooks ("wrapper")
+The core middleware shape is:
 
-Provider hooks run inside a specific provider's pipeline, around its executor. Equivalent product term: **wrapper**.
+```js
+async function middleware(ctx, next) {
+  await next();
+}
+```
 
-- Implement any combination of `onRequest`, `wrapStream`, and `onResponse` phases.
-- Operate per-provider, allowing provider-specific request shaping, response filtering, and stream transformation.
-- Four built-in provider hooks ship with the runtime:
-  - **provider-context-compacter** (request phase) — summarizes and compresses older conversation messages when the total estimated token count exceeds a configurable threshold, while preserving a configurable number of recent messages.
-  - **provider-prompt-injector** (request phase) — prepends or appends a system message to the conversation. Configurable content, position, and role.
-  - **provider-output-compressor** (request phase) — truncates verbose tool and function output in messages before sending to the provider.
-  - **provider-response-filter** (response phase) — applies configurable regex find/replace patterns to the response content.
-- Built-in provider hooks are not replacements for the gateway middleware versions. They coexist as provider-scoped variants that apply per-provider, inside the provider pipeline, rather than globally at the gateway level.
-- Assignments are persisted alongside providers, loaded at startup, and live-refreshed on every mutation so the provider pipeline reflects changes immediately.
-- A provider without any hook assignments executes through the direct provider path with no overhead.
-- Managed via the provider hook management API and composed on the Providers page via the pipeline composer modal.
+A middleware can:
 
-### Executors
+- mutate `ctx.request`
+- mutate `ctx.response`
+- short-circuit by skipping `next()`
+- throw a classified gateway error
+- wrap a canonical response stream
+- act as the terminal handler
 
-An executor is the terminal component that fulfills a request. It calls an upstream API, runs a local model, performs a search, or executes custom logic.
+## Runtime context
 
-- Every built-in provider plugin (OpenAI-compatible, Anthropic, Copilot, Codex, Kiro, Search, Gemini) is automatically adapted into the executor contract at startup, so the executor catalog is populated alongside the provider catalog.
-- Executor extensions loaded from `extensions/executors/*.executor.mjs` are registered into the same executor catalog as built-ins.
-- An executor has a manifest declaring its key, display name, executor type, and capability flags (`supportsStreaming`, `supportsTools`). Canonical executor types are `external_api`, `search`, `local_model`, `custom`.
-- The executor and provider catalogs resolve plugins by exact manifest key. Every provider row carries an `adapter_key` column pointing directly at the plugin that serves it — NVIDIA, Codestral, Groq, and every other OpenAI-compatible vendor all set `adapter_key='openai-api'`, and every search engine preset sets `adapter_key='search-builtin'`. The execution engine and the provider lifecycle path both walk `executor_key || adapter_key || provider_key`, with `adapter_key` as the authoritative signal.
-- Custom providers with `provider_mode='custom'` resolve their terminal backend through `executor_key`.
-- Provider lifecycle operations (`testConnection`, `discoverModels`) also go through the executor catalog for custom providers.
+Every layer sees the same kernel context shape:
+
+- `ctx.requestId`
+- `ctx.request`
+- `ctx.response`
+- `ctx.auth`
+- `ctx.identity`
+- `ctx.session`
+- `ctx.snapshot`
+- `ctx.target`
+- `ctx.attempt`
+- `ctx.services`
+- `ctx.state`
+- `ctx.metadata`
+- `ctx.signal`
+- `ctx.log`
+- `ctx.abort`
+- `ctx.invokeModel`
+- `ctx.appCtx`
+
+`ctx.response` may be:
+
+- a `CanonicalStream`
+- a stream envelope
+- a buffered completion
+- a route-level OpenAI-style response envelope
+
+## Scopes
+
+### Route scope
+
+The outermost route chain lives in `src/runtime/route/` and handles:
+
+- body parsing
+- auth
+- identity
+- snapshot binding
+- ingress normalization
+- validation
+- model resolution
+- session resolution
+- gateway dispatch
+- response serialization
+
+### Gateway scope
+
+Gateway middlewares run once per incoming request.
+
+They are resolved from unified `middleware_bindings`:
+
+- `scope='gateway'` -> global request policies
+- `scope='model'` -> policies for the resolved model id
+
+The dashboard Tiers page is a compatibility surface over cascade models, so tier-level middleware editing is implemented as model-scoped bindings whose target is a cascade model.
+
+Built-in gateway middlewares export the native module contract:
+
+- `meta`
+- `factory(settings) => async (ctx, next) => {}`
+
+### Provider scope
+
+Provider middlewares run inside one provider attempt, around the terminal backend.
+
+They are resolved from `middleware_bindings(scope='provider')` and compiled through `providerMiddlewareRegistry`.
+
+The registry accepts one module shape:
+
+- native provider middlewares: `{ meta, factory(settings) }`
+
+The built-in provider middlewares are native kernel middlewares in `src/runtime/middleware/provider-builtin/`.
+
+There is no separate `ProviderHookCatalog` or `provider_hook_assignments` table; provider middleware lives entirely in `middleware_bindings(scope='provider')`. The management API exposes provider middleware under middleware-named endpoints (`/management/provider-middlewares`, `/management/providers/:id/middlewares`).
+
+### Backend scope (terminal middleware)
+
+A backend is the terminal middleware in the provider chain. It is the only request-time concept the runtime has for talking to an external system.
+
+It reads:
+
+- `ctx.request`
+- `ctx.target.model`
+- `ctx.target.provider`
+- `ctx.target.credentialLease`
+- `ctx.signal`
+
+It writes `ctx.response` as a canonical stream (or a stream envelope) and does not call `next()`.
+
+A backend module is loaded from `src/runtime/backends/builtin/*.backend.mjs` (or extension `backends/*.backend.mjs`) and exports a `backendModule` object whose shape is declared in `src/runtime/backends/backend-interface.mjs`. Required: `manifest`, `execute(executionCtx)`, `classifyError(err, ctx)`. Optional: `init`, `shutdown`, `validateProviderRecord`, `validateModelRecord`, `discoverModels`, `testConnection`.
+
+The runtime registers each module in the unified `BackendCatalog`. At register time the catalog wraps the module's `execute()` once via `createBackendTerminal(module)` and stores the resulting kernel terminal middleware. There is no per-request adapter step. Lookups:
+
+- `backendCatalog.getTerminal(key)` — returns the precompiled terminal middleware (used by the request hot path)
+- `backendCatalog.getBackend(key)` — returns the BackendModule (used by lifecycle/admin code)
+
+There is no separate `ProviderCatalog` / `TransportCatalog` split, no `ProviderPlugin` / `TransportPlugin` interfaces, and no `adaptProviderToTransport` / `adaptProviderPluginToTransport` adapter — those concepts collapsed into the single backend catalog during the middleware-first cleanup pass.
+
+## Model execution chain
+
+`gatewayDispatchMiddleware()` ends with `modelExecutionMiddleware()`, which reads `ctx.target.model` and branches on `model.strategyKind`. Both branches are kernel middleware composition — there is no helper function that returns a result envelope.
+
+### Direct-model chain
+
+`composeDirectModelChain()` returns:
+
+```text
+[
+  bindDirectTargetMiddleware,         // normalize model + provider records onto ctx.target
+  concurrencyMiddleware,              // outer slot lifecycle (held across retries)
+  retryMiddleware({ attemptChain }),  // wraps the per-attempt subchain
+  finalizeDirectResultMiddleware,     // shape into chat-completion envelope
+]
+```
+
+The `attemptChain` runs in a forked kernel context per attempt:
+
+```text
+[
+  attemptContextMiddleware,    // clones ctx.request, resets ctx.response
+  timeoutMiddleware,           // installs ctx.signal for the attempt
+  credentialLeaseMiddleware,   // leases provider credentials, releases in finally
+  providerBindingsMiddleware,  // terminal: compiles provider middleware + backend dispatch
+]
+```
+
+`providerBindingsMiddleware` is the per-attempt terminal: it compiles `middleware_bindings(scope='provider')` for the resolved provider against `providerMiddlewareRegistry` and runs:
+
+```text
+non-streaming: [ bufferingMiddleware, ...providerMiddlewares, backendDispatchMiddleware ]
+streaming:     [ ...providerMiddlewares, backendDispatchMiddleware ]
+```
+
+`backendDispatchMiddleware()` is the absolute terminal: it resolves the precompiled terminal from `backendCatalog.getTerminal(provider.backendKey)` and invokes it. Backend selection is part of middleware execution, not pre-composition orchestration — each attempt picks up the current snapshot/catalog state.
+
+Ordering rules for provider middleware:
+
+- lower `sort_order` is outer
+- higher `sort_order` is inner
+- provider middlewares unwind in reverse order
+- chain-level buffering is skipped for client streaming
+
+### Cascade chain
+
+A cascade model is not a separate execution system. It is a model whose `strategyKind` is `cascade`.
+
+`composeCascadeModelChain()` returns:
+
+```text
+[
+  finalizeDirectResultMiddleware,       // preserve child envelope/stream or shape buffered leaf result
+  invokeModelCapabilityMiddleware,      // installs ctx.invokeModel(...)
+  cascadeAdapterMiddleware,             // terminal: runs cascadeMiddleware over children
+]
+```
+
+`cascadeMiddleware` iterates the cascade model's children and dispatches each candidate through `ctx.invokeModel(child)`. Each invocation composes a fresh direct or cascade chain in a forked child kernel context and returns that finished child ctx, so the parent's `ctx.target`, `ctx.attempt`, and `ctx.response` stay isolated until the leaf attempt succeeds.
+
+## Provider composition model
+
+A provider record in the runtime is now visibly a composition concept:
+
+- **provider config** — DB row in `providers` (display name, base URL, auth, settings)
+- **ordered provider middlewares** — `middleware_bindings(scope='provider', target_id=<provider_id>)`, sorted by `sort_order`
+- **one terminal backend key** — `provider.backend_key` (stored as `adapter_key` in the DB column for migration compatibility; surfaced in the snapshot as `provider.backendKey`)
+
+Adding a same-family vendor (e.g. NVIDIA, Groq, Fireworks for OpenAI-compatible) is a configuration change: a new entry in `provider-presets.mjs` pointing at the existing `openai-api` backend module. No new code.
+
+Adding a vendor that genuinely speaks a custom protocol means writing one backend module under `runtime/backends/builtin/` (or shipping it as a backend extension under `extensions/backends/`). Everything else remains middleware bindings + config.
 
 ## Provider mode
 
-Each provider has a mode that determines how its requests are dispatched:
+Providers expose `provider_mode` in management:
 
-- **`external_api`** — the default. The provider has a specific plugin (`openai-api`, `anthropic-api`, `search-builtin`, `codex-api`, etc.) that handles dispatch.
-- **`custom`** — for providers that compose hooks around a custom executor. An optional `executor_key` on the provider record references a specific executor from the executor catalog.
+- `external_api` -> standard backend dispatch
+- `custom` -> the provider points at a custom backend module via `backend_key`
 
-`provider_mode` and `executor_key` are persisted on provider records, exposed through the management API, present in the runtime snapshot, and aliased into the provider execution context. For custom providers, `adapter_key` defaults to `executor_key` (or `provider_key`) if the caller does not send one explicitly.
-
-## Provider pipeline execution
-
-When a provider has hook assignments, the request executes through a structured pipeline instead of calling the provider executor directly:
-
-```
-  Request hooks (ascending sort order)
-    → Executor (terminal call to upstream API or custom logic)
-  Stream hooks (stack semantics — last hook wraps outermost)
-  Response hooks (reverse sort order — around-style nesting)
-```
-
-- A hook can implement any subset of phases: request-only, stream-only, response-only, request+response, or all three.
-- Hook errors are caught and logged but do not abort the pipeline, matching the fault-tolerance model of the gateway middleware engine.
-- Settings are resolved per assignment entry by merging the hook's default settings with that assignment's overrides. Reusing the same hook key in multiple phases or multiple assignments preserves distinct settings per binding.
-- Provider request hooks receive a mutable hook context that can replace or mutate the normalized request before executor dispatch.
-- Provider response hooks run against the buffered collected result and usage object after stream collection. They can inspect or mutate the final response payload before it returns to the gateway response-middlewares layer.
-
-## Relationship to gateway middlewares
-
-Provider hooks run inside the provider pipeline, after gateway request middlewares have already executed and before gateway response middlewares run. Gateway middlewares and provider hooks are separate scoping layers with distinct persistence and execution paths. The full request lifecycle when both are present is:
-
-```
-gateway request middlewares
-  → provider request hooks
-    → executor
-  → provider stream hooks
-  → provider response hooks
-gateway response middlewares
-```
-
-This ordering is structurally guaranteed by the runtime: the middleware engine runs pre-hooks, calls the dispatch function (which contains the entire provider pipeline), and then runs post-hooks. The provider pipeline is fully enclosed within the dispatch boundary.
-
-## Middleware pipeline details
-
-### Plugin system
-
-- The system supports pluggable processing units (middlewares) that can run before and/or after the LLM dispatch.
-- Middlewares are automatically discovered from a designated directory at startup.
-- New middlewares can be added without restarting the system by triggering a rescan via the management API.
-- Custom middlewares placed in the extensions directory are automatically loaded during middleware rescan, validated, registered with their pre/post hooks, and persisted to the database so they appear in management listings alongside built-in middlewares.
-- Middleware catalog rescans and middleware assignment mutations refresh the live runtime state so subsequent requests see the new middleware definitions and assignment plans without a process restart.
-
-### Middleware types
-
-- **Pre-dispatch** — runs before the request is sent to the LLM. Can inspect or modify the request messages and parameters, abort the request (with an error or a cached response), or set metadata for later use.
-- **Post-dispatch** — runs after the LLM response is received. Can inspect the response and usage metrics, modify response content (non-streaming only), or record metrics.
-- **Both** — wraps the full dispatch cycle with before and after hooks.
-
-### Hook context
-
-Middleware hooks receive a structured hook context that includes the normalized request, caller/auth metadata, session metadata, bounded runtime services, response/usage data for post hooks, and per-request middleware state. Middleware behavior does not depend on private request annotations.
-
-### Abort mechanics
-
-- A pre-dispatch middleware can abort with an error (e.g., 429 rate limit, 400 content blocked).
-- A pre-dispatch middleware can also abort with a success — returning a cached or synthetic response without calling the LLM. This is how response caching works.
-- A middleware that fails does not crash the request — errors are caught, logged, and processing continues.
-
-Post-dispatch middlewares run against the final buffered response and usage data produced by the dispatch pipeline, so caching, logging, filtering, token tracking, and budget accounting execute through the same middleware contract as pre-dispatch policy.
-
-## Custom in-gateway models
-
-The system supports registering models whose inference logic runs entirely inside the gateway, without calling any external provider. A custom in-gateway model is a unit of code that receives the standard request (messages, parameters) and produces a standard response (text, tool calls, usage metrics).
-
-### Use cases
-
-- **Multi-LLM orchestrators** — a model that routes sub-requests to multiple upstream LLMs, combines their outputs, and returns a synthesized response (majority voting, chain-of-thought decomposition, debate-style refinement).
-- **Augmented pipelines** — retrieval-augmented generation that fetches context from a knowledge base before calling an upstream LLM, then post-processes the response.
-- **Transformation models** — deterministic transformations (template expansion, code generation from specs, format conversion) returning results without calling an LLM at all.
-- **Caching layers** — semantic caching that finds similar past queries and returns stored responses when the match exceeds a confidence threshold.
-- **Evaluation models** — scoring or judging the output of another model, returning structured evaluation results.
-
-### Integration
-
-Custom in-gateway models are registered in the model registry like any other model. They can:
-
-- Be included in tiers and participate in fallback chains.
-- Have middleware assigned to them.
-- Be rate-limited and budget-tracked.
-- Produce streaming or non-streaming responses.
-- Report token usage and cost metrics.
-- Appear in logs, metrics, and the dashboard.
-
-The system discovers custom model implementations from a designated directory, similar to how middlewares are discovered. Extensions that export a provider plugin are validated against the same contract as built-in providers (manifest validation, required methods check) before being merged into the provider catalog. Invalid extensions are skipped with a warning. Custom in-gateway models receive the same curated gateway service surface as other extensions, which allows orchestration and credential use without coupling those extensions to internal registry or bootstrap state.
+In both cases the terminal is the same backend dispatch path through the unified `BackendCatalog`. There is no separate execution path for "custom" providers.
 
 ## Extension discovery
 
-The extension loader discovers modules from multiple directory conventions under the configured extensions root.
+The extension loader scans three canonical directories under the configured extensions root:
 
-### First-class paths
+- `extensions/middlewares/*.middleware.mjs` — gateway-scope middleware (`{ meta, factory }` shape)
+- `extensions/provider-middlewares/*.middleware.mjs` — provider-scope middleware (`{ meta, factory }` shape)
+- `extensions/backends/*.backend.mjs` — terminal backend extensions (must export `backendModule`, or a bare `execute()` plus optional lifecycle methods alongside a `manifest` / `meta` object)
 
-- `extensions/gateway-hooks/*.hook.mjs` — gateway-scoped hooks
-- `extensions/provider-hooks/*.hook.mjs` — provider-scoped hooks
-- `extensions/executors/*.executor.mjs` — executor extensions
-
-These paths are wired into the live runtime at startup and on rescans:
-
-- Gateway hooks are adapted into the middleware catalog.
-- Provider hooks are registered into the provider-hook catalog.
-- Executors are registered into the executor catalog.
-
-The loader cache-busts extension imports with the file mtime, so rescans load changed code rather than reusing stale module instances.
-
-### Compatibility paths
-
-These older conventions are still scanned, but the `src` runtime treats `gateway-hooks`, `provider-hooks`, and `executors` as the first-class model:
-
-- `extensions/middlewares/*.middleware.mjs` — gateway-scoped middleware hooks
-- `extensions/wrappers/*.wrapper.mjs` — provider-scoped hooks
-- `extensions/search/*.search.mjs` — search executor extensions
-- `extensions/models/*.model.mjs` — custom model executor extensions
-
-All paths are scanned in a single pass.
-
-### Runtime metadata
-
-Every discovered extension carries runtime metadata:
-
-- `scope` — `'gateway'` or `'provider'` (hooks only; `null` for executors)
-- `type` — `'hook'` or `'executor'`
-
-Legacy path mapping:
-
-- Middlewares are tagged `scope='gateway'`, `type='hook'`.
-- Wrappers are tagged `scope='provider'`, `type='hook'`.
-- Search and model extensions are tagged `type='executor'`.
-
-Discovery metadata is descriptive only. New executor semantics come from explicit executor manifests, not from directory names.
-
-## Shared hook contract
-
-All processing units — both existing gateway middlewares and provider hooks — conform to a single generic hook contract. A hook module exports metadata (`key`, `name`, `scope`, `phases`, `defaultSettings`) and one or more phase functions: `onRequest` (runs before dispatch), `wrapStream` (wraps the response stream), and `onResponse` (runs after dispatch). The `scope` field is either `'gateway'` (runs once per request, regardless of provider) or `'provider'` (runs around a specific provider's executor). The `phases` array declares which phase functions the hook implements: any combination of `'request'`, `'stream'`, and `'response'`.
-
-Existing built-in middlewares are not rewritten. An adapter layer translates between the legacy middleware format (`pre`/`post` exports) and the shared hook contract (`onRequest`/`onResponse`). The adapter is bidirectional: legacy middlewares can be queried as hooks, and new hook-style modules can run through the existing middleware engine.
-
-## Deprecated: `kind='wrapper'`
-
-The concept of "provider wrappers" as a distinct provider kind (`kind='wrapper'`) is deprecated. Wrapping behavior — custom logic around a provider's request/response cycle — should be implemented as provider hooks. Terminal execution of requests should use executors. The `kind='wrapper'` value is still accepted for backward compatibility but produces a deprecation warning.
-
-When the system loads a provider plugin with `kind='wrapper'`:
-
-- If the module exports hook functions (`onRequest`, `onResponse`, `wrapStream`), it is classified as a provider hook internally.
-- If the module only exports executor functions (`execute`, `classifyError`), it is classified as an executor for backward compatibility.
-
-The dashboard no longer exposes `kind='wrapper'` as a creation option. New providers created through management flows use `kind='external_api'` for standard upstream providers or `kind='custom'` for custom pipelines, derived from `provider_mode`.
-
-Legacy wrapper extensions in `extensions/wrappers/*.wrapper.mjs` are still discovered and loaded. They are tagged with `scope='provider'` and `type='hook'` in the extension catalog for compatibility.
+There is no separate "wrapper", "executor", "hook", or "transport" extension kind. Discovery metadata tags every entry with `scope` (`gateway` or `provider` for middlewares; `null` for backends) and `type` (`middleware` or `backend`).
 
 ## Related specs
 
-- **DS001** — where the pipeline actually runs these layers around each request.
-- **DS002** — provider plugins and how they plug into the executor contract.
-- **DS004** — tier assignments, which is where gateway middlewares get attached.
-- **DS012** — management API for assigning middlewares to tiers/models and composing provider pipelines.
-- **DS014** — per-middleware capability descriptions for the 12 built-in gateway middlewares.
+- **DS001** — where these layers run in the request lifecycle
+- **DS004** — how cascade models invoke child model attempts
+- **DS005** — stream wrapping and buffering behavior
+- **DS012** — management APIs for bindings, providers, tiers, and observability endpoints
+- **DS014** — built-in gateway middleware catalog

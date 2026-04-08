@@ -2,38 +2,38 @@
  * Provider preset catalog.
  *
  * A "preset" is a pre-baked configuration bundle that references an
- * existing plugin (via `adapter_key`) and fills in the base_url,
+ * existing backend module (via `adapter_key`) and fills in the base_url,
  * display name, auth strategy, and any vendor-specific defaults so
- * the user doesn't have to look them up. Presets are NOT plugins:
- * they contain no code, they reuse the plugin's execution path by
- * setting `adapter_key` to the plugin's manifest key.
+ * the user doesn't have to look them up. Presets are NOT backend
+ * modules: they contain no code, they reuse the backend module's
+ * execution path by setting `adapter_key` to the module's manifest key.
  *
  * This is the new-gateway equivalent of the old
  * `proxies/soul-gateway/app/src/api/providers.mjs PROVIDER_TEMPLATES`
- * map, adapted to the plugin-driven architecture: the plugin catalog
- * stays at one-plugin-per-protocol-family (so adding a new
+ * map, adapted to the backend-module architecture: the backend catalog
+ * stays at one-module-per-protocol-family (so adding a new
  * OpenAI-compatible vendor is configuration, not code), while the
  * preset catalog gives the dashboard a ready-to-pick list of known
  * vendors with their base URLs already filled in.
  *
  * Every preset is merged into the response from
- * `ProviderCatalog.getTemplates()` and surfaces in the dashboard's
+ * `BackendCatalog.getTemplates()` and surfaces in the dashboard's
  * "Add Provider" dropdown.
  *
  * Shape notes:
  *  - `key`              dropdown key; becomes the default `provider_key`
  *                       at creation time
- *  - `adapter_key`      MUST exactly match a loaded plugin's
+ *  - `adapter_key`      MUST exactly match a loaded backend module's
  *                       `manifest.key` (e.g. `openai-api`,
  *                       `anthropic-api`, `search-builtin`); the
- *                       catalog looks plugins up by direct key
+ *                       catalog looks backend modules up by direct key
  *                       lookup
- *  - `kind`             matches the plugin kind (`external_api`,
+ *  - `kind`             matches the backend kind (`external_api`,
  *                       `search`, `custom`)
  *  - `auth_strategy`    `api_key` | `oauth` | `subscription` |
  *                       `managed` | `search`
  *  - `auth_type`        `api_key` | `managed` — dashboard-facing auth label
- *  - `base_url`         vendor's canonical base URL (the plugin
+ *  - `base_url`         vendor's canonical base URL (the backend module
  *                       appends `/chat/completions`, `/responses`,
  *                       etc. via its own URL resolver)
  *  - `supported_formats` protocol families the upstream speaks; used
@@ -73,7 +73,7 @@ const SEARCH_DEFAULTS = Object.freeze({
  * immutable so callers can't mutate catalog state at runtime.
  */
 export const PROVIDER_PRESETS = Object.freeze([
-    // ── OpenAI-compatible vendors (all use the `openai-api` plugin) ──
+    // ── OpenAI-compatible vendors (all use the `openai-api` backend) ──
     Object.freeze({
         key: 'openai',
         display_name: 'OpenAI (Direct)',
@@ -158,7 +158,7 @@ export const PROVIDER_PRESETS = Object.freeze([
         ...OPENAI_COMPAT_DEFAULTS,
     }),
 
-    // ── Anthropic direct (api-key, not the claude.ai OAuth plugin) ──
+    // ── Anthropic direct (api-key, not the claude.ai OAuth backend) ──
     Object.freeze({
         key: 'anthropic-direct',
         display_name: 'Anthropic (Direct)',
@@ -173,7 +173,7 @@ export const PROVIDER_PRESETS = Object.freeze([
         supported_formats: ['anthropic_messages'],
     }),
 
-    // ── Search engines (all use the `search-builtin` plugin) ────────
+    // ── Search engines (all use the `search-builtin` backend) ────────
     Object.freeze({
         key: 'tavily',
         display_name: 'Tavily',
@@ -207,7 +207,7 @@ export const PROVIDER_PRESETS = Object.freeze([
     Object.freeze({
         key: 'duckduckgo',
         display_name: 'DuckDuckGo',
-        // DuckDuckGo has no API key requirement; the plugin knows to
+        // DuckDuckGo has no API key requirement; the backend knows to
         // treat this as unauthenticated.
         base_url: 'https://html.duckduckgo.com/html/',
         ...SEARCH_DEFAULTS,
@@ -230,7 +230,7 @@ export const PROVIDER_PRESETS = Object.freeze([
 
 /**
  * Return the preset catalog as an object keyed by `preset.key`,
- * ready to be merged into `ProviderCatalog.getTemplates()`.
+ * ready to be merged into `BackendCatalog.getTemplates()`.
  *
  * @returns {object}  key -> preset
  */

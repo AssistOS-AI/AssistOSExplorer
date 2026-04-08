@@ -55,14 +55,11 @@ import { toDiscoveryList } from './model-discovery-view.mjs';
 export async function handleListTemplates(ctx) {
     const { res, appCtx } = ctx;
 
-    // If a provider catalog service is available, use it
-    if (appCtx.services.providerCatalog) {
-        const templates = appCtx.services.providerCatalog.getTemplates();
+    if (appCtx.services.backendCatalog) {
+        const templates = appCtx.services.backendCatalog.getTemplates();
         sendJson(res, 200, { data: templates });
         return;
     }
-
-    // Fallback: return empty list
     sendJson(res, 200, { data: [] });
 }
 
@@ -342,10 +339,10 @@ export async function handleTestConnection(ctx) {
     const provider = await loadProviderOrRespond(ctx, params.providerId);
     if (!provider) return;
 
-    if (!appCtx.services.providerCatalog) {
+    if (!appCtx.services.backendCatalog) {
         sendJson(res, HTTP_STATUS.OK, {
             ok: false,
-            error: ERROR_MESSAGES.PROVIDER_CATALOG_NOT_INITIALIZED,
+            error: ERROR_MESSAGES.BACKEND_CATALOG_NOT_INITIALIZED,
             latencyMs: 0,
         });
         return;
@@ -354,7 +351,7 @@ export async function handleTestConnection(ctx) {
     const start = Date.now();
     let result;
     try {
-        result = await appCtx.services.providerCatalog.testConnection(
+        result = await appCtx.services.backendCatalog.testConnection(
             provider,
             buildProviderLifecycleOptions(appCtx)
         );
@@ -371,7 +368,7 @@ export async function handleTestConnection(ctx) {
 }
 
 /**
- * Translate a provider plugin's `{ ok, detail }` contract into the
+ * Translate a backend module's `{ ok, detail }` contract into the
  * `{ ok, message | error, latencyMs }` shape the dashboard expects.
  *
  * @param {{ ok: boolean, detail?: any }} result
@@ -387,7 +384,7 @@ function buildTestConnectionResponse(result, latencyMs) {
 }
 
 /**
- * Plugins historically returned `detail` as either a string or an
+ * Backend modules historically returned `detail` as either a string or an
  * object (e.g. `{ error: '...' }`). Collapse both shapes to a plain
  * string so the dashboard can render it directly.
  *
@@ -412,14 +409,14 @@ export async function handleDiscoverModels(ctx) {
     const provider = await loadProviderOrRespond(ctx, params.providerId);
     if (!provider) return;
 
-    if (!appCtx.services.providerCatalog) {
+    if (!appCtx.services.backendCatalog) {
         sendJson(res, 200, { data: [] });
         return;
     }
 
     try {
         const discoveries =
-            await appCtx.services.providerCatalog.discoverModels(
+            await appCtx.services.backendCatalog.discoverModels(
                 provider,
                 buildProviderLifecycleOptions(appCtx)
             );
@@ -451,8 +448,8 @@ export async function handleSyncModels(ctx) {
 
     // Use provided discoveries or discover fresh
     let discoveries = body?.discoveries;
-    if (!discoveries && appCtx.services.providerCatalog) {
-        discoveries = await appCtx.services.providerCatalog.discoverModels(
+    if (!discoveries && appCtx.services.backendCatalog) {
+        discoveries = await appCtx.services.backendCatalog.discoverModels(
             provider,
             buildProviderLifecycleOptions(appCtx)
         );
@@ -649,24 +646,17 @@ export async function handleResetAccountQuota(ctx) {
 export async function handleRescan(ctx) {
     const { res, appCtx } = ctx;
 
-    let providerCatalogGeneration = null;
-    let providerCount = null;
-    let extensionGeneration = null;
-
     const refresh = await performRuntimeRefresh(appCtx, {
-        providerCatalog: true,
+        backendCatalog: true,
         snapshot: true,
         reason: 'provider.rescan',
     });
-    providerCatalogGeneration = refresh.providerCatalogGeneration;
-    providerCount = refresh.providerCount;
-    extensionGeneration = refresh.extensionGeneration ?? null;
 
     sendJson(res, 200, {
         ok: true,
         snapshotGeneration: refresh.snapshotGeneration,
-        providerCatalogGeneration,
-        providerCount,
-        extensionGeneration,
+        backendCatalogGeneration: refresh.backendCatalogGeneration,
+        backendCount: refresh.backendCount,
+        extensionGeneration: refresh.extensionGeneration ?? null,
     });
 }

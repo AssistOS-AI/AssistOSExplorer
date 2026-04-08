@@ -140,10 +140,10 @@ import {
     handleAgentsTree,
 } from './sessions-route.mjs';
 
-// Provider middlewares + transports.
+// Provider middlewares + backends.
 import {
     handleListProviderMiddlewares,
-    handleListTransports,
+    handleListBackends,
     handleListProviderMiddlewareBindings,
     handleCreateProviderMiddlewareBinding,
     handleUpdateProviderMiddlewareBinding,
@@ -329,7 +329,7 @@ export function buildManagementRouter(appCtx) {
         admin(handleResetAccountQuota)
     );
 
-    // ── Provider middlewares & transports ────────────────────────────
+    // ── Provider middlewares & backends ──────────────────────────────
     httpRouter.add(
         'GET',
         '/management/provider-middlewares',
@@ -337,8 +337,8 @@ export function buildManagementRouter(appCtx) {
     );
     httpRouter.add(
         'GET',
-        '/management/transports',
-        admin(handleListTransports)
+        '/management/backends',
+        admin(handleListBackends)
     );
     httpRouter.add(
         'GET',

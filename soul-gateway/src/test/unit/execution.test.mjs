@@ -5,11 +5,38 @@ import { executeWithHttpRetry } from '../../runtime/execution/http-retry.mjs';
 import { collectNormalizedStream } from '../../runtime/execution/stream-collector.mjs';
 import { compose, createKernelContext } from '../../runtime/kernel/index.mjs';
 import { modelExecutionMiddleware } from '../../runtime/execution/model-execution.mjs';
+import { createBackendTerminal } from '../../runtime/backends/backend-terminal.mjs';
 import { withExecutionTimeout } from '../../runtime/execution/timeout-controller.mjs';
 import {
     ModelQueueTimeoutError,
     ProviderTimeoutError,
 } from '../../core/errors.mjs';
+
+/**
+ * Build a fake backend catalog from one or more stub backend modules.
+ * The dispatch hot path looks up `getTerminal(key)`; lifecycle code
+ * uses `getBackend(key)`.  Both are honored here so the same fake
+ * stands in for the real catalog.
+ */
+function makeBackendCatalog(modules, { onLookup } = {}) {
+    const list = Array.isArray(modules) ? modules : [modules];
+    const byKey = new Map();
+    for (const mod of list) {
+        byKey.set(mod.manifest.key, {
+            module: mod,
+            terminal: createBackendTerminal(mod),
+        });
+    }
+    return {
+        getTerminal(key) {
+            if (onLookup) onLookup(key);
+            return byKey.get(key)?.terminal || null;
+        },
+        getBackend(key) {
+            return byKey.get(key)?.module || null;
+        },
+    };
+}
 
 /**
  * Build and run the model-execution middleware against a fresh kernel ctx
@@ -284,8 +311,15 @@ describe('modelExecutionMiddleware (direct model)', () => {
             yield { type: 'done', data: { finish_reason: 'stop' } };
         }
 
-        const plugin = {
-            manifest: { key: 'openai-api' },
+        const stubBackend = {
+            manifest: {
+                key: 'openai-api',
+                kind: 'external_api',
+                authStrategy: 'api_key',
+                supportsStreaming: true,
+                supportsTools: true,
+                supportedFormats: ['openai_chat'],
+            },
             async execute(ctx) {
                 seenSecret = ctx.credentialLease?.secret || null;
                 seenProviderBaseUrl = ctx.providerRecord?.baseUrl || null;
@@ -301,12 +335,9 @@ describe('modelExecutionMiddleware (direct model)', () => {
             },
         };
 
-        const transportCatalog = {
-            getTransport(key) {
-                assert.equal(key, 'openai-api');
-                return plugin;
-            },
-        };
+        const backendCatalog = makeBackendCatalog(stubBackend, {
+            onLookup: (key) => assert.equal(key, 'openai-api'),
+        });
 
         const credentialManager = {
             async getCredentials(providerId) {
@@ -344,7 +375,7 @@ describe('modelExecutionMiddleware (direct model)', () => {
             },
             services: {
                 extensionServices: {},
-                transportCatalog,
+                backendCatalog,
                 credentialManager,
                 providerMiddlewareRegistry: { build: () => null },
             },
@@ -358,7 +389,7 @@ describe('modelExecutionMiddleware (direct model)', () => {
                     {
                         id: 'provider-1',
                         providerKey: 'openai-api',
-                        adapterKey: 'openai-api',
+                        backendKey: 'openai-api',
                         baseUrl: 'https://api.example.test/v1',
                         settings: {},
                     },
@@ -393,13 +424,13 @@ describe('modelExecutionMiddleware (direct model)', () => {
         assert.equal(releasedLease.secret, null);
     });
 
-    it('resolves the transport via providerRecord.adapter_key when provider_key differs (preset-based providers)', async () => {
+    it('resolves the backend via providerRecord.backendKey when provider_key differs (preset-based providers)', async () => {
         // Regression: preset-based providers (codestral, nvidia, groq,
-        // fireworks, …) all share the `openai-api` plugin via their
-        // `adapter_key` field, but their `provider_key` is the vendor
-        // name. The transport-dispatch middleware looks up the plugin by
-        // adapter_key, not provider_key.
-        let transportKeyAskedFor = null;
+        // fireworks, …) all share the `openai-api` backend module via
+        // their `backendKey` field, but their `provider_key` is the
+        // vendor name. The backend-dispatch middleware looks up the
+        // module by backendKey, not provider_key.
+        let backendKeyAskedFor = null;
 
         async function* gen() {
             yield { type: 'message_start', data: { role: 'assistant' } };
@@ -414,8 +445,15 @@ describe('modelExecutionMiddleware (direct model)', () => {
             yield { type: 'done', data: { finish_reason: 'stop' } };
         }
 
-        const plugin = {
-            manifest: { key: 'openai-api' },
+        const stubBackend = {
+            manifest: {
+                key: 'openai-api',
+                kind: 'external_api',
+                authStrategy: 'api_key',
+                supportsStreaming: true,
+                supportsTools: true,
+                supportedFormats: ['openai_chat'],
+            },
             async execute(ctx) {
                 return {
                     accountId: ctx.credentialLease?.accountId || null,
@@ -428,12 +466,11 @@ describe('modelExecutionMiddleware (direct model)', () => {
             },
         };
 
-        const transportCatalog = {
-            getTransport(key) {
-                transportKeyAskedFor = key;
-                return key === 'openai-api' ? plugin : null;
+        const backendCatalog = makeBackendCatalog(stubBackend, {
+            onLookup: (key) => {
+                backendKeyAskedFor = key;
             },
-        };
+        });
 
         const credentialManager = {
             async getCredentials() {
@@ -465,7 +502,7 @@ describe('modelExecutionMiddleware (direct model)', () => {
             },
             services: {
                 extensionServices: {},
-                transportCatalog,
+                backendCatalog,
                 credentialManager,
                 providerMiddlewareRegistry: { build: () => null },
             },
@@ -473,9 +510,9 @@ describe('modelExecutionMiddleware (direct model)', () => {
         };
 
         // The snapshot is keyed by provider_key (here 'codestral'), but
-        // the provider record carries adapter_key='openai-api' — exactly
-        // what the dashboard writes when a user picks the Codestral
-        // preset from the dropdown.
+        // the provider record carries backendKey='openai-api' — exactly
+        // what the snapshot loader emits when a user picks the Codestral
+        // preset from the dropdown (DB column adapter_key='openai-api').
         const snapshot = {
             providers: new Map([
                 [
@@ -483,7 +520,7 @@ describe('modelExecutionMiddleware (direct model)', () => {
                     {
                         id: 'provider-codestral',
                         providerKey: 'codestral',
-                        adapterKey: 'openai-api',
+                        backendKey: 'openai-api',
                         baseUrl: 'https://codestral.mistral.ai/v1',
                         settings: {},
                     },
@@ -514,9 +551,9 @@ describe('modelExecutionMiddleware (direct model)', () => {
         });
 
         assert.equal(
-            transportKeyAskedFor,
+            backendKeyAskedFor,
             'openai-api',
-            'transport-dispatch must look up the plugin by provider.adapter_key, not provider_key'
+            'backend-dispatch must look up the module by provider.backendKey, not provider_key'
         );
         assert.equal(
             ctx.response.choices[0].message.content,
@@ -535,7 +572,15 @@ describe('modelExecutionMiddleware (direct model)', () => {
             yield { type: 'done', data: { finish_reason: 'stop' } };
         }
 
-        const transport = {
+        const stubBackend = {
+            manifest: {
+                key: 'custom-backend',
+                kind: 'custom',
+                authStrategy: 'none',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
             async execute() {
                 return {
                     accountId: null,
@@ -623,7 +668,7 @@ describe('modelExecutionMiddleware (direct model)', () => {
                             id: 'provider-1',
                             providerKey: 'custom-provider',
                             providerMode: 'custom',
-                            adapterKey: 'custom-transport',
+                            backendKey: 'custom-backend',
                             settings: {},
                         },
                     ],
@@ -667,12 +712,10 @@ describe('modelExecutionMiddleware (direct model)', () => {
                 },
                 services: {
                     extensionServices: {},
-                    transportCatalog: {
-                        getTransport(key) {
-                            assert.equal(key, 'custom-transport');
-                            return transport;
-                        },
-                    },
+                    backendCatalog: makeBackendCatalog(stubBackend, {
+                        onLookup: (key) =>
+                            assert.equal(key, 'custom-backend'),
+                    }),
                     providerMiddlewareRegistry,
                 },
                 log: { info() {}, warn() {}, error() {} },
@@ -687,13 +730,35 @@ describe('modelExecutionMiddleware (direct model)', () => {
         });
     });
 
-    it('uses transportCatalog for custom providers when provider plugins are not present', async () => {
+    it('dispatches custom-mode providers through the unified backend catalog', async () => {
         let executed = false;
 
         async function* gen() {
             yield { type: 'text_delta', data: { text: 'custom' } };
             yield { type: 'done', data: { finish_reason: 'stop' } };
         }
+
+        const customBackend = {
+            manifest: {
+                key: 'custom-backend',
+                kind: 'custom',
+                authStrategy: 'none',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
+            async execute() {
+                executed = true;
+                return {
+                    accountId: null,
+                    stream: gen(),
+                    abort: async () => {},
+                };
+            },
+            classifyError(error) {
+                return error;
+            },
+        };
 
         const ctx = await runModelExecution({
             requestId: 'req-custom',
@@ -718,7 +783,7 @@ describe('modelExecutionMiddleware (direct model)', () => {
                             id: 'provider-1',
                             providerKey: 'custom-provider',
                             providerMode: 'custom',
-                            adapterKey: 'custom-transport',
+                            backendKey: 'custom-backend',
                             settings: {},
                         },
                     ],
@@ -742,30 +807,7 @@ describe('modelExecutionMiddleware (direct model)', () => {
                 },
                 services: {
                     extensionServices: {},
-                    transportCatalog: {
-                        getTransport(key) {
-                            assert.equal(key, 'custom-transport');
-                            return {
-                                manifest: { key: 'custom-transport' },
-                                async execute() {
-                                    executed = true;
-                                    return {
-                                        accountId: null,
-                                        stream: gen(),
-                                        abort: async () => {},
-                                    };
-                                },
-                                classifyError(error) {
-                                    return error;
-                                },
-                            };
-                        },
-                    },
-                    providerCatalog: {
-                        getPlugin() {
-                            return null;
-                        },
-                    },
+                    backendCatalog: makeBackendCatalog(customBackend),
                     providerMiddlewareRegistry: {
                         build() {
                             return null;

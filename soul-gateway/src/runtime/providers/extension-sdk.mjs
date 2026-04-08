@@ -1,5 +1,5 @@
 /**
- * Extension SDK surface — services available to provider plugins and extensions.
+ * Extension SDK surface — services available to backend modules and extensions.
  *
  * invokeModel: route a sub-request through the gateway pipeline
  * invokeSearch: dispatch a search query to a search-type model
@@ -11,7 +11,8 @@ import { estimatePromptTokens } from '../policy/token-estimator.mjs';
 import { ConfigurationError, ModelNotFoundError } from '../../core/errors.mjs';
 
 /**
- * Create the extension context that provider plugins receive via ctx.services.
+ * Create the extension context that backend modules and extensions receive via
+ * ctx.services.
  *
  * @param {object} appCtx - Application context with pool, config, services
  * @returns {{ services: object }}
@@ -53,7 +54,7 @@ export function createExtensionContext(appCtx) {
 
         return {
             collected: ctx.response,
-            accountId: ctx.metadata.transportAccountId || null,
+            accountId: ctx.metadata.backendAccountId || null,
             queueWaitMs: ctx.metadata.queueWaitMs || 0,
             retryTrace: ctx.metadata.retryTrace || [],
             model: ctx.target?.model || result.model,

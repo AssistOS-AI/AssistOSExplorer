@@ -1,9 +1,9 @@
 /**
- * OpenAI Codex provider plugin.
+ * OpenAI Codex backend module.
  *
  * Codex uses the ChatGPT backend Responses API at
- * `chatgpt.com/backend-api/codex/responses`. The transport layer lives
- * in achillesAgentLib's `openaiResponses.mjs` — this plugin is a thin
+ * `chatgpt.com/backend-api/codex/responses`. The low-level request helper lives
+ * in achillesAgentLib's `openaiResponses.mjs` — this backend module is a thin
  * wrapper that supplies the Codex-specific payload shape through
  * `createAchillesExecutionHandle`.
  *
@@ -20,11 +20,11 @@
  *     messages from `input` when `params.instructions` is set.
  *  3. `max_output_tokens` is NOT a supported parameter — Codex rejects
  *     it with 400 "Unsupported parameter: max_output_tokens". This
- *     plugin deliberately never sets it, even when the normalized
+ *     backend deliberately never sets it, even when the normalized
  *     request carries `max_tokens`.
  *  4. Available models are discovered live via the backend's
  *     `/backend-api/codex/models?client_version=...` endpoint; this
- *     plugin has NO hardcoded model list. The Codex backend with a
+ *     backend has NO hardcoded model list. The Codex backend with a
  *     ChatGPT account only lists gpt-5.x family models (gpt-5, gpt-5.x,
  *     gpt-5.x-codex); other OpenAI models are rejected at inference
  *     time with "not supported when using Codex with a ChatGPT
@@ -67,7 +67,7 @@ const manifest = {
     oauthAdapterKey: 'openai-codex',
 };
 
-export const providerPlugin = {
+export const backendModule = {
     manifest,
 
     async init() {},

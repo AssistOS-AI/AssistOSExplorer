@@ -1,5 +1,5 @@
 /**
- * Anthropic Messages API provider plugin.
+ * Anthropic Messages API backend module.
  *
  * Communicates with the Anthropic API via POST /v1/messages with
  * x-api-key header authentication.  Uses the anthropic converter
@@ -44,7 +44,7 @@ const manifest = {
     supportedFormats: ['openai_chat', 'anthropic_messages'],
     displayName: 'Anthropic API',
     defaultBaseUrl: 'https://api.anthropic.com',
-    // Dispatcher plugin: configured exclusively via the
+    // Dispatcher backend: configured exclusively via the
     // `anthropic-direct` preset (which fills in display_name + base_url
     // + supported_formats). Hide the raw `anthropic-api` key from the
     // dropdown so users always pick the preset.
@@ -102,9 +102,9 @@ const KNOWN_MODELS = [
 
 const DEFAULT_API_VERSION = '2023-06-01';
 
-// ── Plugin ──────────────────────────────────────────────────────────
+// ── Backend module ──────────────────────────────────────────────────
 
-export const providerPlugin = {
+export const backendModule = {
     manifest,
 
     // Optional converter reference (ISP — present because Anthropic needs conversion)

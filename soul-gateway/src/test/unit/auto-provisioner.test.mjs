@@ -14,9 +14,9 @@ function createMockLog() {
     };
 }
 
-function createMockCatalog(plugins = {}) {
+function createMockCatalog(modules = {}) {
     return {
-        getPlugin: (key) => plugins[key] || null,
+        getBackend: (key) => modules[key] || null,
     };
 }
 
@@ -39,7 +39,7 @@ function createMockAppCtx({ catalog, credentialManager, log, pool }) {
         pool: pool || { query: async () => ({ rows: [], rowCount: 0 }) },
         log: log || createMockLog(),
         services: {
-            providerCatalog: catalog || null,
+            backendCatalog: catalog || null,
             credentialManager: credentialManager || null,
             refreshRuntimeAsync: () => Promise.resolve(null),
         },
@@ -83,15 +83,15 @@ describe('auto-provisioner.autoProvisionModels', () => {
         ));
     });
 
-    it('looks up the plugin via provider.adapter_key (Bug A regression fuse)', async () => {
-        const plugin = {
+    it('looks up the backend via provider.backendKey (Bug A regression fuse)', async () => {
+        const backendModule = {
             async discoverModels() {
                 return [];
             },
         };
         const catalog = createMockCatalog({
-            // Only registered under the PLUGIN key, not the OAuth adapter key
-            'codex-api': plugin,
+            // Only registered under the BACKEND key, not the OAuth adapter key
+            'codex-api': backendModule,
         });
         const appCtx = createMockAppCtx({ catalog, log });
 
@@ -103,14 +103,14 @@ describe('auto-provisioner.autoProvisionModels', () => {
         );
         assert.equal(result.discovered, 0);
         assert.equal(
-            log._entries.warn.filter((w) => w.msg.includes('plugin missing'))
+            log._entries.warn.filter((w) => w.msg.includes('backend module missing'))
                 .length,
             0,
-            'plugin should be resolved via provider.adapter_key, not the OAuth adapter key'
+            'backend should be resolved via provider.backendKey, not the OAuth adapter key'
         );
     });
 
-    it('warns with a structured message when the plugin has no discoverModels function', async () => {
+    it('warns with a structured message when the backend has no discoverModels function', async () => {
         const catalog = createMockCatalog({ 'codex-api': { manifest: {} } });
         const appCtx = createMockAppCtx({ catalog, log });
 
@@ -121,17 +121,17 @@ describe('auto-provisioner.autoProvisionModels', () => {
         });
 
         const warn = log._entries.warn.find((w) =>
-            w.msg.includes('plugin missing')
+            w.msg.includes('backend module missing')
         );
         assert.ok(
             warn,
-            'expected a warn log when plugin is missing discoverModels'
+            'expected a warn log when backend module is missing discoverModels'
         );
         assert.equal(warn.meta.provider, 'codex-api');
-        assert.equal(warn.meta.pluginKey, 'codex-api');
+        assert.equal(warn.meta.backendKey, 'codex-api');
     });
 
-    it('warns (not silent no-op) when no plugin is registered at all', async () => {
+    it('warns (not silent no-op) when no backend is registered at all', async () => {
         const catalog = createMockCatalog({});
         const appCtx = createMockAppCtx({ catalog, log });
 
@@ -142,11 +142,11 @@ describe('auto-provisioner.autoProvisionModels', () => {
         });
         assert.equal(result.discovered, 0);
         assert.ok(
-            log._entries.warn.find((w) => w.msg.includes('plugin missing'))
+            log._entries.warn.find((w) => w.msg.includes('backend module missing'))
         );
     });
 
-    it('leases credentials, passes them to plugin.discoverModels, and releases after', async () => {
+    it('leases credentials, passes them to backend.discoverModels, and releases after', async () => {
         const lease = {
             accountId: 'acc-1',
             oauth: { accessToken: 'tok' },
@@ -154,14 +154,14 @@ describe('auto-provisioner.autoProvisionModels', () => {
         };
         const credentialManager = createMockCredentialManager(lease);
         let capturedCtx;
-        const plugin = {
+        const backendModule = {
             async discoverModels(ctx) {
                 capturedCtx = ctx;
                 return [];
             },
         };
         const appCtx = createMockAppCtx({
-            catalog: createMockCatalog({ 'codex-api': plugin }),
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
             credentialManager,
             log,
         });
@@ -182,16 +182,16 @@ describe('auto-provisioner.autoProvisionModels', () => {
         assert.equal(capturedCtx.providerRecord.provider_key, 'codex-api');
     });
 
-    it('releases the credential lease even when the plugin throws', async () => {
+    it('releases the credential lease even when the backend throws', async () => {
         const lease = { accountId: 'acc-err', oauth: { accessToken: 'tok' } };
         const credentialManager = createMockCredentialManager(lease);
-        const plugin = {
+        const backendModule = {
             async discoverModels() {
                 throw new Error('upstream boom');
             },
         };
         const appCtx = createMockAppCtx({
-            catalog: createMockCatalog({ 'codex-api': plugin }),
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
             credentialManager,
             log,
         });
@@ -225,7 +225,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
             },
             { modelId: 'gpt-5.1-codex', displayName: 'gpt-5.1-codex' },
         ];
-        const plugin = {
+        const backendModule = {
             async discoverModels() {
                 return discovered;
             },
@@ -243,7 +243,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
         };
 
         const appCtx = createMockAppCtx({
-            catalog: createMockCatalog({ 'codex-api': plugin }),
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
             credentialManager: createMockCredentialManager({
                 oauth: { accessToken: 'tok' },
             }),
@@ -276,7 +276,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
     });
 
     it('tolerates duplicate-key races without surfacing them as warnings', async () => {
-        const plugin = {
+        const backendModule = {
             async discoverModels() {
                 return [{ modelId: 'dup', displayName: 'dup' }];
             },
@@ -291,7 +291,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
             },
         };
         const appCtx = createMockAppCtx({
-            catalog: createMockCatalog({ 'codex-api': plugin }),
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
             credentialManager: createMockCredentialManager({
                 oauth: { accessToken: 'tok' },
             }),
@@ -316,7 +316,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
     });
 
     it('keys inserted models as `${provider_key}/${modelId}` to match dashboard convention', async () => {
-        const plugin = {
+        const backendModule = {
             async discoverModels() {
                 return [{ modelId: 'm1' }, { modelId: 'm2' }];
             },
@@ -330,7 +330,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
             },
         };
         const appCtx = createMockAppCtx({
-            catalog: createMockCatalog({ 'my-adapter': plugin }),
+            catalog: createMockCatalog({ 'my-adapter': backendModule }),
             credentialManager: createMockCredentialManager({
                 oauth: { accessToken: 'tok' },
             }),

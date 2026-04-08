@@ -31,4 +31,3 @@ export {
     bufferingMiddleware,
     wrappingStreamMiddleware,
 } from './response-buffer.mjs';
-export { adaptProviderPluginToTransport } from './transport.mjs';

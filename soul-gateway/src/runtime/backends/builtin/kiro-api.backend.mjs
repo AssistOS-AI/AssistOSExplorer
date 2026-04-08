@@ -1,5 +1,5 @@
 /**
- * AWS Kiro provider plugin.
+ * AWS Kiro backend module.
  *
  * Communicates with the Kiro API using AWS-style auth and binary
  * event-stream protocol.  Uses the kiro converter for format
@@ -124,9 +124,9 @@ const KNOWN_MODELS = [
     },
 ];
 
-// ── Plugin ──────────────────────────────────────────────────────────
+// ── Backend module ──────────────────────────────────────────────────
 
-export const providerPlugin = {
+export const backendModule = {
     manifest,
 
     formatConverter: kiroConverter,

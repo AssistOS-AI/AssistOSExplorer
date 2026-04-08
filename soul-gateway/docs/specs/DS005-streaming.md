@@ -2,55 +2,106 @@
 
 ## Summary
 
-This spec describes how Soul Gateway handles streaming LLM responses — both SSE pass-through to clients and the internal tap that captures the stream for logging, cost calculation, and post-dispatch middlewares — and how non-streaming requests are buffered on the gateway side. It also covers the real-time log broadcasting layer that streams audit events to dashboard subscribers.
+Soul Gateway streams responses through one canonical event pipeline.
 
-## Streaming response path
+There are two streaming layers:
 
-When a client sends `stream: true`, the pipeline forwards incremental chunks from the upstream provider to the client as Server-Sent Events while simultaneously capturing the full response into an internal buffer.
+1. provider-chain streaming inside the runtime
+2. route-level SSE egress to the client
 
-- Upstream providers emit typed chunks through the shared transport layer (`achillesAgentLib`): `text_delta`, `tool_calls_delta`, `usage`, `done`, `error`. This is the same chunk shape regardless of whether the upstream speaks OpenAI SSE, Anthropic named events, AWS binary event streams, or Copilot's Responses API — the format converter normalizes everything to the shared shape before the chunks enter the pipeline.
-- Each chunk is re-encoded as an OpenAI SSE event and written to the client connection.
-- Each chunk is also appended to a buffer that captures the final content, tool calls, finish reason, and token usage for the audit log and for post-dispatch middlewares.
-- Client disconnection aborts the upstream call via an `AbortController` so the gateway doesn't keep fetching tokens nobody will see.
-- The stream terminates with an OpenAI-shaped `data: [DONE]` sentinel when the upstream `done` chunk arrives.
+Both are shipped on this branch.
 
-## Non-streaming response path
+## Canonical stream
 
-When a client sends `stream: false` (or omits the field), the pipeline collects the full response into a buffer before returning. The same streaming tap machinery runs internally, but instead of forwarding chunks to the client, the complete buffered response is serialized as a single JSON object and returned once the stream completes.
+Transports emit `CanonicalStream` events such as:
 
-Post-dispatch middlewares always run against this buffered response regardless of the client's streaming preference, so caching, logging, filtering, token tracking, and budget accounting see the same data shape in both modes.
+- `message_start`
+- `text_delta`
+- `tool_call_delta`
+- `usage`
+- `done`
+- `error`
 
-## Tool-call streaming
+Provider protocols are normalized into that shared event stream before route egress or buffering.
 
-Tool calls are streamed the same way text content is, through `tool_calls_delta` chunks that carry the incremental function name, arguments, and index. The collector accumulates these into the final `choices[0].message.tool_calls` array in the buffered response. Providers that emit complete tool calls in a single chunk (rather than streaming them token-by-token) still produce a single `tool_calls_delta` event with the full payload.
+## Provider-chain streaming
 
-## Usage and finish reason
+Inside a provider attempt:
 
-The `usage` chunk carries token counts (`prompt_tokens`, `completion_tokens`, `total_tokens`) for cost calculation (see DS007). Upstream providers vary in when they emit usage: some stream it as a final event before `done`, some include it in `done` itself, and some (notably Kiro) don't provide usage data at all — in which case the `usage` object is null and cost reporting falls back to per-request pricing or estimated counts.
+- provider middlewares can wrap or transform the canonical stream
+- chain-level buffering is optional
+- lower `sort_order` wraps outermost
 
-The `done` chunk carries the finish reason (`stop`, `length`, `tool_calls`, `content_filter`, etc.), which is mapped to the OpenAI finish-reason vocabulary regardless of the upstream's native terminology.
+If the client requested buffered output, `bufferingMiddleware()` drains the canonical stream into the buffered completion shape. If the client requested streaming, the provider chain skips that outer buffer and leaves the canonical stream on `ctx.response`.
 
-## Real-time log broadcasting
+## Route egress
 
-In addition to client-facing SSE, the gateway broadcasts completed request logs to connected dashboard subscribers in real time via two protocols:
+`respondMiddleware` branches on the response shape:
 
-### WebSocket
+- `CanonicalStream` -> write SSE
+- buffered response envelope -> write one JSON body
 
-A full-duplex connection exposed at the management API. Subscribers can apply optional filters by soul ID and model, update their filters without reconnecting, and receive a heartbeat that keeps the connection alive through network proxies and tunnels (default heartbeat interval 15 seconds, tuned to survive Cloudflare tunnel timeouts). The server implementation follows RFC 6455 and supports text frames only.
+`gatewayDispatch` sets `wantStream` from `ctx.request.stream === true`, so the route layer can preserve the stream end to end.
 
-WebSocket upgrades authenticate via the same admin session token as the management API, but the token is extracted from one of three places (in this order): an `Authorization: Bearer <token>` header, a `?token=...` query string parameter, or the session cookie. The query-string path exists because browser WebSocket clients can't set custom headers on the upgrade request, so the dashboard appends the session token to the WebSocket URL when opening a stream. Failed authentication returns a proper `HTTP/1.1 401 Unauthorized` line on the socket before closing, so client libraries see a real auth error instead of a silent disconnect.
+### SSE wire formats
 
-### Server-Sent Events (SSE)
+Route egress supports:
 
-A one-way stream for environments where WebSocket is unavailable. Same filtering support as the WebSocket path. Periodic keepalive comments prevent timeout on long-lived connections.
+- OpenAI Chat Completions chunk frames plus `[DONE]`
+- Anthropic Messages named events
+- OpenAI Responses named events
 
-### Soul-specific stream
+The response format is selected from `route.kind`.
 
-A dedicated endpoint provides unredacted logs (including full request/response content) for a single soul ID. Useful for debugging individual users or agents. Access is gated by the management API's auth.
+## Client disconnect handling
+
+The SSE writer listens for socket close, stops iteration, and ends the response cleanly. Back-pressure is honored through the normal `write` / `drain` flow.
+
+## Buffered path
+
+In non-streaming mode the buffered provider result is normalized to:
+
+```json
+{
+  "message": { "role": "assistant", "content": "..." },
+  "content": "...",
+  "excerpt": "...",
+  "finishReason": "stop",
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0
+  },
+  "toolCalls": []
+}
+```
+
+`gatewayDispatch` maps that buffered shape into the route-level OpenAI-style response envelope before `respondMiddleware` serializes it.
+
+## Gateway post-phase caveat
+
+Gateway post-phase middleware does not get a buffered response when the client requested streaming.
+
+In streaming mode:
+
+- `ctx.response` is a `CanonicalStream`
+- gateway middlewares that need a buffered body must buffer inline before reading `ctx.response`
+- route-level SSE still works because `respondMiddleware` consumes the stream directly
+
+In buffered mode those same middlewares run against the buffered/OpenAI-style response as usual.
+
+## Real-time log streaming
+
+Separate from client-facing LLM streaming, the dashboard supports:
+
+- WebSocket log streaming
+- SSE log streaming
+
+Those management streams publish completed request logs, not provider delta events.
 
 ## Related specs
 
-- **DS001** — where streaming slots into the request pipeline.
-- **DS002** — format converters that normalize upstream responses into the shared chunk shape.
-- **DS007** — usage data from streaming is what feeds cost calculation.
-- **DS015** — audit log + metrics that are populated after the stream completes.
+- **DS001** — where streaming fits into the request pipeline
+- **DS003** — middleware primitives for buffering and stream wrapping
+- **DS007** — usage data feeds cost and budgets
+- **DS015** — dashboard log streaming and observability

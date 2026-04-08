@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 
 import { compose, createKernelContext } from '../../runtime/kernel/index.mjs';
 import { invokeModelCapabilityMiddleware } from '../../runtime/execution/invoke-model-capability-middleware.mjs';
+import { createBackendTerminal } from '../../runtime/backends/backend-terminal.mjs';
 import { ConfigurationError } from '../../core/errors.mjs';
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -19,7 +20,7 @@ function noopLog() {
     return { debug() {}, info() {}, warn() {}, error() {}, fatal() {} };
 }
 
-function makeAppCtx({ transportCatalog } = {}) {
+function makeAppCtx({ backendCatalog } = {}) {
     return {
         config: {
             defaults: { responseExcerptChars: 2000 },
@@ -37,7 +38,7 @@ function makeAppCtx({ transportCatalog } = {}) {
         pool: null,
         log: noopLog(),
         services: {
-            transportCatalog: transportCatalog || null,
+            backendCatalog: backendCatalog || null,
             providerMiddlewareRegistry: { build: () => null },
             concurrencyController: null,
             credentialManager: null,
@@ -57,7 +58,7 @@ function makeSnapshot(model) {
                 Object.freeze({
                     id: 'provider-1',
                     providerKey: model.providerKey,
-                    adapterKey: 'stub-transport',
+                    backendKey: 'stub-backend',
                     settings: {},
                 }),
             ],
@@ -72,10 +73,27 @@ function makeSnapshot(model) {
     });
 }
 
-function makeStubTransport(textOrFn) {
+/**
+ * Build a fake backend catalog from a single stub backend module.
+ * The dispatch hot path looks up `getTerminal(key)`; lifecycle code
+ * uses `getBackend(key)`.  Both are honored here.
+ */
+function makeBackendCatalog(stubModule) {
+    const terminal = createBackendTerminal(stubModule);
+    return {
+        getTerminal(key) {
+            return key === stubModule.manifest.key ? terminal : null;
+        },
+        getBackend(key) {
+            return key === stubModule.manifest.key ? stubModule : null;
+        },
+    };
+}
+
+function makeStubBackend(textOrFn) {
     return {
         manifest: {
-            key: 'stub-transport',
+            key: 'stub-backend',
             kind: 'external_api',
             authStrategy: 'api_key',
             supportsStreaming: true,
@@ -170,19 +188,17 @@ describe('ctx.invokeModel: dispatch', () => {
             strategyKind: 'direct',
         });
 
-        const transport = makeStubTransport('hello from stub');
-        const transportCatalog = {
-            getTransport: (k) => (k === 'stub-transport' ? transport : null),
-        };
+        const stubBackend = makeStubBackend('hello from stub');
+        const backendCatalog = makeBackendCatalog(stubBackend);
         const snapshot = makeSnapshot(model);
-        const appCtx = makeAppCtx({ transportCatalog });
+        const appCtx = makeAppCtx({ backendCatalog });
 
         const ctx = await buildCtxWithInvokeModel({ snapshot, appCtx });
 
         const childCtx = await ctx.invokeModel(model);
         assert.equal(childCtx.response.choices[0].message.content, 'hello from stub');
         assert.equal(childCtx.response.usage.total_tokens, 3);
-        assert.equal(childCtx.metadata.transportAccountId, 'acct-stub-model');
+        assert.equal(childCtx.metadata.backendAccountId, 'acct-stub-model');
     });
 
     it('resolves a model by string key from the snapshot', async () => {
@@ -198,14 +214,12 @@ describe('ctx.invokeModel: dispatch', () => {
             strategyKind: 'direct',
         });
 
-        const transport = makeStubTransport(
+        const stubBackend = makeStubBackend(
             (execCtx) => `${execCtx.resolvedModel.modelKey}!`
         );
-        const transportCatalog = {
-            getTransport: (k) => (k === 'stub-transport' ? transport : null),
-        };
+        const backendCatalog = makeBackendCatalog(stubBackend);
         const snapshot = makeSnapshot(model);
-        const appCtx = makeAppCtx({ transportCatalog });
+        const appCtx = makeAppCtx({ backendCatalog });
 
         const ctx = await buildCtxWithInvokeModel({ snapshot, appCtx });
 

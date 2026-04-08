@@ -20,7 +20,7 @@
  * Writes:
  *   - `ctx.response` — copied from the successful attempt
  *   - `ctx.metadata.retryTrace` — error trace across attempts
- *   - `ctx.metadata.transportAccountId` — copied from the successful attempt
+ *   - `ctx.metadata.backendAccountId` — copied from the successful attempt
  *
  * @module runtime/execution/retry-middleware
  */
@@ -75,7 +75,7 @@ export function retryMiddleware(options = {}) {
 
                 return {
                     response: attemptCtx.response,
-                    accountId: attemptCtx.metadata?.transportAccountId || null,
+                    accountId: attemptCtx.metadata?.backendAccountId || null,
                     metadata: attemptCtx.metadata || {},
                 };
             }
@@ -89,7 +89,7 @@ export function retryMiddleware(options = {}) {
         // back to the parent ctx.
         ctx.response = result.response;
         if (result.accountId !== null && result.accountId !== undefined) {
-            ctx.metadata.transportAccountId = result.accountId;
+            ctx.metadata.backendAccountId = result.accountId;
         }
 
         await next();

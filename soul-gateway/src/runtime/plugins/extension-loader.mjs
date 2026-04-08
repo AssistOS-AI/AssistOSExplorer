@@ -14,10 +14,10 @@ import { EXTENSION_SCOPES, EXTENSION_TYPES } from './extension-constants.mjs';
  *
  *   extensions/middlewares/*.middleware.mjs          — gateway-scope middleware
  *   extensions/provider-middlewares/*.middleware.mjs — provider-scope middleware
- *   extensions/transports/*.transport.mjs            — terminal transport extensions
+ *   extensions/backends/*.backend.mjs                — terminal backend extensions
  *
  * The runtime concepts are: gateway middleware, provider middleware,
- * and transports.
+ * and backends.
  */
 export class ExtensionLoader {
     constructor(extensionsDir, log) {
@@ -32,7 +32,7 @@ export class ExtensionLoader {
      *
      * Every catalog entry carries runtime metadata:
      *   scope  — 'gateway' | 'provider' (middleware only)
-     *   type   — 'middleware' | 'transport'
+     *   type   — 'middleware' | 'backend'
      */
     async scan() {
         this._generation++;
@@ -40,7 +40,7 @@ export class ExtensionLoader {
             generation: this._generation,
             middlewares: [],
             providerMiddlewares: [],
-            transports: [],
+            backends: [],
         };
 
         const kinds = [
@@ -59,11 +59,11 @@ export class ExtensionLoader {
                 type: EXTENSION_TYPES.MIDDLEWARE,
             },
             {
-                dir: 'transports',
-                suffix: '.transport.mjs',
-                target: 'transports',
+                dir: 'backends',
+                suffix: '.backend.mjs',
+                target: 'backends',
                 scope: null,
-                type: EXTENSION_TYPES.TRANSPORT,
+                type: EXTENSION_TYPES.BACKEND,
             },
         ];
 
@@ -91,7 +91,12 @@ export class ExtensionLoader {
                 const mod = await import(
                     pathToFileURL(filePath).href + `?v=${mtime}`
                 );
-                const manifest = mod.manifest || mod.meta;
+                const manifest =
+                    target === 'backends'
+                        ? mod.backendModule?.manifest ||
+                          mod.manifest ||
+                          mod.meta
+                        : mod.manifest || mod.meta;
 
                 if (!manifest) {
                     this.log.warn('extension missing manifest', {

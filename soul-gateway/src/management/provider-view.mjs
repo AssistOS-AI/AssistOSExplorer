@@ -7,7 +7,7 @@
  * or renaming the column — alias `name` in the view layer so both
  * resolve to the same value.
  *
- * All other columns are passed through unchanged. If the plugin
+ * All other columns are passed through unchanged. If the backend
  * catalog or another layer starts adding derived fields to provider
  * rows (e.g. `has_accounts`, `health`), this is the natural place
  * to thread them through.

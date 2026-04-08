@@ -149,7 +149,7 @@ export function parseBinaryFrame(buffer) {
  *
  * @param {object} rawChunk  Parsed event ({ headers, payload } or plain JSON)
  * @param {object} state     Mutable converter state
- * @returns {Array<import('../provider-interface.mjs').NormalizedChunk>}
+ * @returns {Array<import('../backend-interface.mjs').NormalizedChunk>}
  */
 export function fromProviderChunk(rawChunk, state) {
     if (!state._initialized) {

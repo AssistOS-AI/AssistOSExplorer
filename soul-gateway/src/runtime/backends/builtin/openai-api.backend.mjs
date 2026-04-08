@@ -1,5 +1,5 @@
 /**
- * OpenAI Chat Completions API provider plugin.
+ * OpenAI Chat Completions API backend module.
  *
  * Communicates with any OpenAI-compatible API (OpenAI, OpenRouter,
  * Together, Groq, etc.) via POST /chat/completions with bearer token.
@@ -40,7 +40,7 @@ const manifest = {
     supportedFormats: ['openai_chat'],
     displayName: 'OpenAI-Compatible API',
     defaultBaseUrl: 'https://api.openai.com/v1',
-    // Dispatcher plugin: every OpenAI-compatible vendor (NVIDIA, Groq,
+    // Dispatcher backend: every OpenAI-compatible vendor (NVIDIA, Groq,
     // OpenRouter, Fireworks, …) is configured through its own preset in
     // provider-presets.mjs. Hide the raw `openai-api` key from the
     // dropdown so users always pick a vendor preset that fills in the
@@ -48,9 +48,9 @@ const manifest = {
     hidden: true,
 };
 
-// ── Plugin ──────────────────────────────────────────────────────────
+// ── Backend module ──────────────────────────────────────────────────
 
-export const providerPlugin = {
+export const backendModule = {
     manifest,
 
     async init() {

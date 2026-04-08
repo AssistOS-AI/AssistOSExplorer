@@ -32,6 +32,7 @@ import {
     createKernelContext,
     createCanonicalStream,
 } from '../../runtime/kernel/index.mjs';
+import { createBackendTerminal } from '../../runtime/backends/backend-terminal.mjs';
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -404,7 +405,7 @@ describe('route chain: end-to-end streaming', () => {
                     Object.freeze({
                         id: 'provider-1',
                         providerKey: model.providerKey,
-                        adapterKey: 'stub-transport',
+                        backendKey: 'stub-backend',
                         settings: {},
                     }),
                 ],
@@ -418,7 +419,8 @@ describe('route chain: end-to-end streaming', () => {
         });
     }
 
-    function makeAppCtx(transport) {
+    function makeAppCtx(backendModule) {
+        const terminal = createBackendTerminal(backendModule);
         return {
             config: {
                 defaults: {
@@ -443,11 +445,12 @@ describe('route chain: end-to-end streaming', () => {
             pool: null,
             log: noopLog(),
             services: {
-                transportCatalog: {
-                    getTransport: (k) =>
-                        k === 'stub-transport' ? transport : null,
+                backendCatalog: {
+                    getTerminal: (k) =>
+                        k === backendModule.manifest.key ? terminal : null,
+                    getBackend: (k) =>
+                        k === backendModule.manifest.key ? backendModule : null,
                 },
-                providerCatalog: null,
                 providerMiddlewareRegistry: null,
                 credentialManager: null,
                 concurrencyController: null,
@@ -469,10 +472,10 @@ describe('route chain: end-to-end streaming', () => {
         strategyKind: 'direct',
     });
 
-    function stubTransport(text = 'streamed body') {
+    function stubBackend(text = 'streamed body') {
         return {
             manifest: {
-                key: 'stub-transport',
+                key: 'stub-backend',
                 kind: 'external_api',
                 authStrategy: 'api_key',
                 supportsStreaming: true,
@@ -497,10 +500,10 @@ describe('route chain: end-to-end streaming', () => {
         stream = true,
         text = 'hello stream',
     } = {}) {
-        const transport = stubTransport(text);
+        const backendModule = stubBackend(text);
         const snapshot = buildSnapshot(model);
         snapshot.models.set(model.modelKey, model);
-        const appCtx = makeAppCtx(transport);
+        const appCtx = makeAppCtx(backendModule);
         appCtx.services.snapshot = snapshot;
 
         // Route kinds accept different request body shapes.  The

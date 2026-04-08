@@ -2,84 +2,130 @@
 
 ## Summary
 
-This spec describes the lifecycle of an LLM request through Soul Gateway, from HTTP ingress to final response. The same pipeline handles `/v1/chat/completions` (OpenAI Chat Completions), `/v1/messages` (Anthropic Messages), and `/v1/responses` (OpenAI Responses) after normalizing each input format to a common internal representation.
+Soul Gateway runs every public completion request through one kernel-composed route chain. The same chain handles `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` after ingress normalization.
+
+The route handler in `src/public-api/register-routes.mjs` calls `runRouteRequest({ req, res, appCtx, routeKind })` from `src/runtime/route/run-route-request.mjs`. That function builds the route chain and runs it against a unified kernel context.
 
 ## Accepted request formats
 
-The gateway accepts three public request formats on three distinct endpoints:
+The gateway accepts three public request formats:
 
-- **OpenAI Chat Completions** — the canonical internal format; other endpoints are normalized to this shape before the pipeline runs.
-- **Anthropic Messages** — converted on ingress into the Chat Completions shape (system message handling, tool-use blocks, stop sequences, etc.) before routing.
-- **OpenAI Responses** — converted similarly on ingress, with the `instructions` field mapped to a system message and the Responses-specific event types translated into typed chunks.
+- OpenAI Chat Completions
+- Anthropic Messages
+- OpenAI Responses
 
-From the pipeline's perspective, all three paths land in the same normalized request object.
+`normalizeIngressMiddleware` converts each route kind to the canonical internal request shape before validation and dispatch.
 
-## Bearer token authentication
+## Authentication and identity
 
-Every request requires an `Authorization: Bearer <key>` header. The token identifies the caller and determines their rate limits, budgets, and permissions. The authentication middleware validates the token against the key registry, rejects expired or revoked keys, and attaches the caller identity to the request context for downstream middlewares.
+Every request requires `Authorization: Bearer <key>`.
 
-## Identity headers
+The route chain authenticates the API key and then resolves optional identity headers:
 
-Each request may carry optional identity headers that group related activity and support cross-agent observability:
+- soul id
+- agent name
+- session id
 
-- **Soul ID** — identifies the human or system behind the request.
-- **Agent name** — identifies the software making the call. When the header is absent, the system infers the agent from the `User-Agent` string, recognizing common AI coding tools (Claude Code, Cursor, Copilot, Aider, Cline, Windsurf, etc.).
-- **Session ID** — groups related requests into a conversation. If absent, a session ID is derived from the API key + agent name with an inactivity timeout (see DS015).
-
-All three appear in the audit log, the real-time log stream, and the session/agent hierarchy views.
+Those values are attached to the kernel context and later recorded in logs and session views.
 
 ## Request ID
 
-Every request is assigned a unique ID in an OpenAI-compatible format (`chatcmpl-...`) at ingress. The ID travels with the request through every middleware, through the upstream dispatch, into the audit log, and into every broadcasted log event so a single request can be traced end-to-end.
+Every request gets a unique `chatcmpl-...` style request id at ingress. The route layer also writes it to `X-Request-Id`.
 
 ## Validation
 
-Before the pipeline runs, the gateway validates that required fields are present in the request body:
+`validateRequestMiddleware` enforces only the minimum required fields:
 
-- `model` — required. Used by the model router (DS004) to resolve the upstream provider and model.
-- `messages` — required. An array of message objects.
+- `model`
+- `messages`
 
-Unknown fields are passed through untouched; the gateway does not enforce the OpenAI schema beyond these two required fields.
+Unknown fields pass through untouched.
 
 ## Streaming vs non-streaming
 
-The pipeline supports both modes:
+The pipeline supports both client modes end to end:
 
-- **Streaming** (`stream: true`) — incremental text deltas and tool-call deltas are forwarded to the client as they arrive from the upstream provider, via SSE. The stream is simultaneously captured into a buffer for the audit log, cost calculation, and post-dispatch middlewares (see DS005).
-- **Non-streaming** (`stream: false` or absent) — the full response is buffered on the gateway side, middlewares see the complete response object, and the client receives a single JSON reply.
+- `stream: true` keeps the provider result as a `CanonicalStream`. `respondMiddleware` writes SSE frames in the route-kind-specific wire format.
+- `stream: false` or absent installs chain-level buffering in the provider path. `gatewayDispatch` maps the buffered result to a chat-completion envelope and `respondMiddleware` writes one JSON body.
 
-Post-dispatch middlewares always run against the buffered final response regardless of client mode, so caching, logging, filtering, token tracking, and budget accounting all see the same data shape.
+Gateway post-phase middleware still runs in both modes. In streaming mode `ctx.response` is a stream instead of a buffered OpenAI-style response, so middlewares that require buffered content must buffer inline before they inspect the body.
 
-## Pipeline phases
+## Route chain
 
-Once the request is authenticated, identified, and normalized, the pipeline runs in this order:
+`buildRouteChain()` in `src/runtime/route/run-route-request.mjs` composes this chain:
 
+```text
+errorBoundary
+  parseBody
+  authenticate
+  identity
+  bindSnapshot
+  normalizeIngress
+  validateRequest
+  resolveModel
+  resolveSession
+  respond
+  gatewayDispatch
 ```
+
+`respond` is placed before `gatewayDispatch` so its post phase runs after dispatch has populated `ctx.response`.
+
+## Dispatch path
+
+Inside `gatewayDispatch` (terminal middleware):
+
+1. The middleware catalog resolves the gateway plan from unified bindings:
+   - gateway-scope bindings
+   - model-scope bindings for the resolved model id
+2. The catalog instantiates native kernel middlewares from each bound module's `factory(settings)`.
+3. The gateway chain is composed around `modelExecutionMiddleware()` and run on the same `ctx`.
+
+`modelExecutionMiddleware()` reads `ctx.target.model` and branches on `strategyKind`:
+
+- `direct` -> `composeDirectModelChain()` (target binding → concurrency → retry-with-attempt-subchain → finalize)
+- `cascade` -> `composeCascadeModelChain()` (finalize → invoke-model capability → cascade adapter)
+
+For each direct attempt, the inner attempt subchain runs in a forked kernel context:
+
+```text
+attemptContext     // clones ctx.request, resets attempt-local state
+timeout            // installs ctx.signal for one attempt
+credentialLease    // leases provider credentials, releases in finally
+providerBindings   // terminal: resolves providerMiddlewares + backendDispatch
+
+  bufferingMiddleware?       // skipped for client streaming
+  provider middlewares       // from middleware_bindings(scope='provider')
+  backendDispatchMiddleware  // terminal: backendCatalog.getTerminal(provider.backendKey)
+```
+
+`backendDispatchMiddleware` is the absolute terminal: it resolves the precompiled terminal middleware from `backendCatalog.getTerminal(provider.backendKey)` per attempt and invokes it. Backend selection is part of middleware execution, not pre-composition orchestration — each attempt sees the current snapshot/catalog state.
+
+See **DS003** for the full middleware composition contract and the unified backend layer.
+
+## Full request lifecycle
+
+```text
 HTTP ingress
-  ↓ authentication + identity resolution + request ID
-  ↓ validation (model + messages present)
-  ↓ gateway request middlewares          (see DS003)
-  ↓ model resolution (tier fallback)     (see DS004)
-  ↓ concurrency semaphore acquisition    (see DS004)
-  ↓ provider request hooks               (see DS003)
-  ↓ executor dispatch with HTTP retry    (see DS002, DS009)
-  ↓ provider stream hooks                (see DS003)
-  ↓ response collection                  (streaming tap + buffer)
-  ↓ provider response hooks              (see DS003)
-  ↓ gateway response middlewares         (see DS003)
-  ↓ cost calculation                     (see DS007)
-  ↓ audit log write + real-time broadcast (see DS015)
+  -> parse/auth/identity/snapshot binding
+  -> ingress normalization + validation
+  -> model resolution
+  -> session resolution
+  -> gateway middleware chain
+    -> modelExecutionMiddleware()
+      -> direct model attempt OR cascade model loop
+      -> provider middleware chain
+      -> backend terminal
+  -> respond middleware
 HTTP response
 ```
 
-A request can short-circuit at any pre-dispatch point. The rate limiter (DS007) and content blocker (DS008) reject with a structured error; the cache middleware (DS014) can abort with a cached response; the loop detector (DS010) can abort with an intervention message or outright block.
+Any middleware can short-circuit before dispatch by setting `ctx.response` or throwing a classified gateway error.
 
 ## Related specs
 
-- **DS002** — provider authentication and format converters invoked during executor dispatch.
-- **DS003** — middleware, provider hook, and executor abstractions.
-- **DS004** — model resolution, tier fallback, cooldown, concurrency control.
-- **DS005** — streaming tap and SSE response formatting.
-- **DS007** — rate limiting and budget enforcement (run as middlewares in this pipeline).
-- **DS009** — error classification and retry semantics for upstream dispatch.
-- **DS015** — audit log write and real-time broadcasting at the end of the pipeline.
+- **DS003** — middleware contract, provider middleware, and the unified backend layer
+- **DS004** — model normalization, direct vs cascade routing, cooldowns, concurrency
+- **DS005** — canonical streams and SSE egress
+- **DS007** — rate limiting and budget enforcement in the gateway chain
+- **DS009** — retry and error classification
+- **DS015** — logging, sessions, and observability surfaces

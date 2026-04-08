@@ -1,24 +1,26 @@
 import { normalizeProviderRecord } from './runtime-record-normalizer.mjs';
+import { createBackendLifecycleContext } from '../backends/backend-context.mjs';
 
 /**
- * Auto-provision models for a provider from its plugin's live
- * discoverModels() implementation.
+ * Auto-provision models for a provider from its backend module's live
+ * `discoverModels()` implementation.
  *
  * Called by OAuthManager after a successful OAuth flow and by
  * `handleCreateProvider` after creating an API-key provider with a
- * credential attached. In both cases the plugin is expected to make
- * a live call to the provider's /models endpoint (via achillesAgentLib)
- * and return the canonical list — there is no hardcoded fallback.
+ * credential attached. In both cases the backend module is expected to
+ * make a live call to the provider's /models endpoint (via
+ * achillesAgentLib) and return the canonical list — there is no
+ * hardcoded fallback.
  *
- * The plugin is looked up by the provider's own `adapterKey`, which
- * IS the plugin key. (Earlier revisions passed the OAuth adapter key
- * here, which lived in a different keyspace and made every call
+ * The backend module is looked up by the provider's `backendKey`,
+ * which IS the module key. (Earlier revisions passed the OAuth adapter
+ * key here, which lived in a different keyspace and made every call
  * silently no-op.) The OAuth adapter key is accepted for logging but
- * ignored for plugin lookup.
+ * ignored for module lookup.
  *
  * Credentials are leased from the shared CredentialManager so the
- * plugin can use them to hit the provider's /models endpoint. The
- * lease is always released, even on failure.
+ * backend module can use them to hit the provider's /models endpoint.
+ * The lease is always released, even on failure.
  *
  * @param {object} appCtx
  * @param {object} provider          Raw providers DB row
@@ -31,34 +33,37 @@ export async function autoProvisionModels(
     oauthAdapterKey = null
 ) {
     const log = appCtx.log;
-    const catalog = appCtx.services.providerCatalog;
+    const catalog = appCtx.services.backendCatalog;
     const credentialManager = appCtx.services.credentialManager;
     const normalizedProvider = normalizeProviderRecord(provider);
     const providerKey = normalizedProvider?.providerKey;
-    const adapterKey = normalizedProvider?.adapterKey;
+    const backendKey = normalizedProvider?.backendKey;
 
     if (!catalog || !provider) {
         return { discovered: 0, created: 0 };
     }
 
-    const pluginKey = adapterKey || oauthAdapterKey;
-    const plugin = catalog.getPlugin(pluginKey);
-    if (!plugin || typeof plugin.discoverModels !== 'function') {
+    const moduleKey = backendKey || oauthAdapterKey;
+    const backendModule = catalog.getBackend(moduleKey);
+    if (
+        !backendModule ||
+        typeof backendModule.discoverModels !== 'function'
+    ) {
         log.warn(
-            'auto-provision skipped: plugin missing or has no discoverModels',
+            'auto-provision skipped: backend module missing or has no discoverModels',
             {
                 provider: providerKey,
-                pluginKey,
+                backendKey: moduleKey,
                 oauthAdapterKey,
             }
         );
         return { discovered: 0, created: 0 };
     }
 
-    // Lease credentials so the plugin can hit the provider's /models
-    // endpoint. For providers with no credential configured yet the
-    // lease is null and we let the plugin decide whether to proceed
-    // (some plugins might be able to discover without auth).
+    // Lease credentials so the backend module can hit the provider's
+    // /models endpoint. For providers with no credential configured
+    // yet the lease is null and we let the module decide whether to
+    // proceed (some backends might be able to discover without auth).
     let credentialLease = null;
     if (credentialManager) {
         try {
@@ -76,16 +81,18 @@ export async function autoProvisionModels(
     let discovered = [];
     let discoveryFailed = false;
     try {
-        const result = await plugin.discoverModels({
+        const lifecycleCtx = createBackendLifecycleContext({
             providerRecord: normalizedProvider,
             credentialLease,
+            logger: log,
         });
+        const result = await backendModule.discoverModels(lifecycleCtx);
         if (Array.isArray(result)) discovered = result;
     } catch (err) {
         discoveryFailed = true;
         log.warn('auto-provision discovery failed', {
             provider: providerKey,
-            pluginKey,
+            backendKey: moduleKey,
             error: err.message,
         });
     } finally {
@@ -100,7 +107,7 @@ export async function autoProvisionModels(
     if (!discovered.length) {
         log.info('auto-provision returned no models', {
             provider: providerKey,
-            pluginKey,
+            backendKey: moduleKey,
         });
         return { discovered: 0, created: 0 };
     }
@@ -147,7 +154,7 @@ export async function autoProvisionModels(
 
     log.info('auto-provisioned models', {
         provider: providerKey,
-        pluginKey,
+        backendKey: moduleKey,
         discovered: discovered.length,
         created,
     });

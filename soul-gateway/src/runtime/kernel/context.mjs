@@ -2,7 +2,7 @@
  * Unified runtime context factory.
  *
  * Every middleware in the gateway sees the same context shape, regardless of
- * scope (route, gateway, model, provider, transport).  The context is the
+ * scope (route, gateway, model, provider, backend).  The context is the
  * single mutable object that flows through the kernel.
  *
  * Notable fields (all optional at construction time, populated by middlewares
@@ -11,8 +11,9 @@
  *   - `requestId`   - opaque correlation id, set on creation
  *   - `route`       - route metadata: { kind, path, format }
  *   - `request`     - canonical request payload (mutated by ingress middleware)
- *   - `response`    - canonical response (set by terminal transport, possibly
- *                     transformed by upstream middlewares on the way out)
+ *   - `response`    - canonical response (set by terminal backend middleware,
+ *                     possibly transformed by upstream middlewares on the way
+ *                     out)
  *   - `identity`    - { agentName, soulId, explicitSessionId, ... }
  *   - `auth`        - { keyId, label, rpmLimit, tpmLimit, apiKeyRecord }
  *   - `session`     - { id, key, agentName, soulId }
@@ -22,7 +23,7 @@
  *   - `services`    - frozen view of `appCtx.services`
  *   - `state`       - per-request key/value bag for middleware coordination
  *   - `metadata`    - extensible bag for observability / cross-cutting data
- *   - `signal`      - AbortSignal honoured by transports
+ *   - `signal`      - AbortSignal honoured by backend terminals
  *   - `log`         - logger
  *   - `abort`       - shared { success, error } surface (per-middleware
  *                     instances are created when chains run)

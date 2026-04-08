@@ -2,8 +2,8 @@
  * Native provider middleware: prompt injector.
  *
  * Inserts a system message into `ctx.request.messages` before the
- * provider transport runs. Configurable content, position (prepend or
- * append), and role.
+ * terminal backend runs. Configurable content, position (prepend or append),
+ * and role.
  *
  * @module runtime/middleware/provider-builtin/provider-prompt-injector
  */

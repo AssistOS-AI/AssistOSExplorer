@@ -14,7 +14,6 @@ export async function loadProviderOrRespond(ctx, providerId) {
 export function buildProviderLifecycleOptions(appCtx) {
     return {
         credentialManager: appCtx.services.credentialManager || null,
-        transportCatalog: appCtx.services.transportCatalog || null,
         services: appCtx.services.extensionServices || Object.freeze({}),
         logger: appCtx.log,
     };

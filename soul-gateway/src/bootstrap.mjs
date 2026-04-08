@@ -8,13 +8,13 @@ import { createHttpServer } from './core/http-server.mjs';
 import { runMigrations } from './db/migrator.mjs';
 import { startBackgroundJobs } from './background/scheduler.mjs';
 import {
+    installBackendCatalogServices,
     installExecutionServices,
     installExtensionSdkServices,
     installMiddlewareServices,
     installOAuthAdapters,
     installObservabilityServices,
     installProviderAuthServices,
-    installProviderCatalogServices,
     installRuntimeCoordinationServices,
     installSnapshotServices,
 } from './bootstrap/service-installers.mjs';
@@ -63,7 +63,7 @@ export async function bootstrap() {
     await installProviderAuthServices(appCtx);
     await installSnapshotServices(appCtx);
     await installMiddlewareServices(appCtx);
-    await installProviderCatalogServices(appCtx);
+    await installBackendCatalogServices(appCtx);
     await installOAuthAdapters(appCtx);
     try {
         installExtensionSdkServices(appCtx);

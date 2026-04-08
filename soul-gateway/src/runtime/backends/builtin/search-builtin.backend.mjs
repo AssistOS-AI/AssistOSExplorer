@@ -1,5 +1,5 @@
 /**
- * Built-in search provider plugin.
+ * Built-in search backend module.
  *
  * Dispatches to the appropriate search API based on providerModelId:
  *   tavily, brave, exa, serper, jina, duckduckgo, searxng, gemini
@@ -31,7 +31,7 @@ const manifest = {
     supportsStreaming: false,
     supportsTools: false,
     supportedFormats: ['openai_chat'],
-    // Dispatcher plugin: routes to one of 8 search engines (Tavily,
+    // Dispatcher backend: routes to one of 8 search engines (Tavily,
     // Brave, Exa, Serper, Jina, DuckDuckGo, SearXNG, Gemini grounding)
     // based on the resolved model's providerModelId. Each engine is
     // surfaced through its own preset in provider-presets.mjs with the
@@ -176,9 +176,9 @@ const SEARCH_PROVIDERS = {
     },
 };
 
-// ── Plugin ──────────────────────────────────────────────────────────
+// ── Backend module ──────────────────────────────────────────────────
 
-export const providerPlugin = {
+export const backendModule = {
     manifest,
 
     formatConverter: searchConverter,
@@ -405,7 +405,7 @@ export const providerPlugin = {
  * Returns the engine key (e.g. 'exa') or null if nothing matches.
  *
  * @param {object} providerRecord  normalized provider row
- * @param {object} [ctx]           plugin context (for resolvedModel)
+ * @param {object} [ctx]           backend lifecycle context (for resolvedModel)
  * @returns {string|null}
  */
 function resolveEngineKey(providerRecord, ctx = {}) {
