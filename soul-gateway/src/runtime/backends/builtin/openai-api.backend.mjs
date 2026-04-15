@@ -79,7 +79,11 @@ export const backendModule = {
         const token =
             ctx?.credentialLease?.secret ||
             ctx?.credentialLease?.oauth?.accessToken;
-        if (!token) return [];
+        if (!token) {
+            throw new Error(
+                'OpenAI discoverModels requires configured credentials'
+            );
+        }
 
         try {
             const body = await httpGet(baseUrl + '/models', {
@@ -95,7 +99,30 @@ export const backendModule = {
                 supportsStreaming: true,
                 supportsVision: false,
             }));
-        } catch {
+        } catch (err) {
+            if (err.status !== 404) {
+                throw err;
+            }
+
+            const status = await httpProbeStatus(
+                baseUrl + '/chat/completions',
+                {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                '{}'
+            );
+
+            if (status === 401 || status === 403) {
+                throw new Error(`HTTP ${status}`);
+            }
+
+            if (status === 404) {
+                throw new Error(
+                    'Provider base URL does not expose /models or /chat/completions'
+                );
+            }
+
             return [];
         }
     },

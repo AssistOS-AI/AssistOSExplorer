@@ -56,8 +56,8 @@ The runtime performs self-initialization on startup so there's no manual provisi
 4. **Discover middlewares** — scans built-in and extension middleware directories and syncs the middleware catalog rows into the database.
 5. **Discover backend modules** — loads built-in backend modules from `runtime/backends/builtin/` and any configured backend extensions from `extensions/backends/`. Backend modules and provider-scope middleware extensions are registered into the unified `BackendCatalog` and the `providerMiddlewareRegistry` respectively.
 6. **Register OAuth adapters** — the five OAuth adapters are registered into the OAuth manager.
-7. **Reconcile providers** — any provider with existing stored credentials that lacks model rows gets its auto-provision pass re-run to catch up.
-8. **Load the runtime snapshot** — providers, models, model children, middleware bindings, and API keys are loaded into the in-memory runtime state used by the request path.
+7. **Reconcile providers** — any enabled provider with at least one active stored credential and zero model rows gets its auto-provision pass re-run to catch up before the initial snapshot is built.
+8. **Load the runtime snapshot** — providers, models, model children, middleware bindings, and API keys are loaded into the in-memory runtime state used by the request path. Snapshot load validates enabled providers against the loaded backend catalog and enabled provider-scoped bindings against the loaded provider middleware registry; invalid composition aborts startup/refresh.
 9. **Start background jobs** — token refresh loop, cooldown cleanup, partition maintenance, quota reset sweep, spend cache cleanup.
 10. **Start the HTTP server** — the public and management routes are registered and the server begins accepting requests.
 

@@ -387,4 +387,18 @@ describe('BackendCatalog', () => {
         });
         assert.deepEqual(result, []);
     });
+
+    it('does not fall back from provider_key to backendKey for lifecycle routing', async () => {
+        const catalog = new BackendCatalog({ log: silentLog() });
+        catalog.load([makeBackendModule('openai-api')]);
+
+        const result = await catalog.testConnection({
+            id: 'provider-x',
+            provider_key: 'openai-api',
+            adapter_key: null,
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(result.detail, /Backend module not loaded/);
+    });
 });

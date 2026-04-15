@@ -361,11 +361,10 @@ export class BackendCatalog {
 
     _resolveModuleForRecord(providerRecord) {
         const normalized = normalizeProviderRecord(providerRecord);
-        const key =
-            normalized.backendKey ||
-            normalized.adapterKey ||
-            normalized.providerKey ||
-            normalized.name;
+        const key = normalized.backendKey;
+        if (!key) {
+            return null;
+        }
         return this.getBackend(key);
     }
 

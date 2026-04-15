@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import {
     installMiddlewareServices,
     installBackendCatalogServices,
+    reconcileProvidersOnStartup,
 } from '../../bootstrap/service-installers.mjs';
+import { mock } from 'node:test';
 
 describe('service installers extension integration', () => {
     let tmpDir;
@@ -131,3 +133,201 @@ async function writeModule(filePath, source) {
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, source.trim() + '\n', 'utf8');
 }
+
+async function withStartupReconcileMocks(stubs, fn) {
+    const providerDaoMock = mock.module('../../db/dao/providers-dao.mjs', {
+        namedExports: {
+            list: stubs.listProviders,
+        },
+    });
+    const accountsDaoMock = mock.module(
+        '../../db/dao/provider-accounts-dao.mjs',
+        {
+            namedExports: {
+                listByProvider: stubs.listAccountsByProvider,
+            },
+        }
+    );
+    const modelsDaoMock = mock.module('../../db/dao/models-dao.mjs', {
+        namedExports: {
+            listByProvider: stubs.listModelsByProvider,
+        },
+    });
+    const autoProvisionerMock = mock.module(
+        '../../runtime/providers/auto-provisioner.mjs',
+        {
+            namedExports: {
+                autoProvisionModels: stubs.autoProvisionModels,
+            },
+        }
+    );
+
+    try {
+        return await fn();
+    } finally {
+        providerDaoMock.restore();
+        accountsDaoMock.restore();
+        modelsDaoMock.restore();
+        autoProvisionerMock.restore();
+    }
+}
+
+describe('reconcileProvidersOnStartup', () => {
+    it('reconciles only enabled providers that have an active stored credential and zero model rows', async () => {
+        const calls = [];
+        const appCtx = {
+            config: {
+                env: {
+                    DATABASE_URL: 'postgres://example.test/db',
+                },
+            },
+            pool: {},
+            services: {},
+            log: {
+                info() {},
+                warn() {},
+                error() {},
+                debug() {},
+            },
+        };
+
+        const summary = await withStartupReconcileMocks(
+            {
+                listProviders: async (_pool, { limit, offset }) => {
+                    assert.equal(limit, 200);
+                    if (offset === 0) {
+                        return [
+                            {
+                                id: 'provider-sync',
+                                provider_key: 'openai',
+                                oauth_adapter_key: null,
+                            },
+                            {
+                                id: 'provider-no-creds',
+                                provider_key: 'copilot',
+                                oauth_adapter_key: 'github-copilot',
+                            },
+                            {
+                                id: 'provider-has-models',
+                                provider_key: 'anthropic',
+                                oauth_adapter_key: null,
+                            },
+                        ];
+                    }
+                    return [];
+                },
+                listAccountsByProvider: async (_pool, providerId) => {
+                    if (providerId === 'provider-sync') {
+                        return [
+                            {
+                                id: 'acc-1',
+                                status: 'active',
+                                secret_ciphertext: Buffer.from('secret'),
+                            },
+                        ];
+                    }
+                    if (providerId === 'provider-no-creds') {
+                        return [];
+                    }
+                    return [
+                        {
+                            id: 'acc-2',
+                            status: 'active',
+                            credentials_path: '/tmp/oauth.json',
+                        },
+                    ];
+                },
+                listModelsByProvider: async (_pool, providerId) => {
+                    if (providerId === 'provider-has-models') {
+                        return [{ id: 'model-1' }];
+                    }
+                    return [];
+                },
+                autoProvisionModels: async (
+                    _appCtx,
+                    provider,
+                    oauthAdapterKey,
+                    options
+                ) => {
+                    calls.push({
+                        providerId: provider.id,
+                        oauthAdapterKey,
+                        options,
+                    });
+                    return {
+                        created: 2,
+                        updated: 1,
+                        disabled: 0,
+                    };
+                },
+            },
+            () => reconcileProvidersOnStartup(appCtx)
+        );
+
+        assert.deepEqual(summary, {
+            scanned: 3,
+            reconciled: 1,
+            created: 2,
+            updated: 1,
+            disabled: 0,
+        });
+        assert.deepEqual(calls, [
+            {
+                providerId: 'provider-sync',
+                oauthAdapterKey: null,
+                options: {
+                    strict: true,
+                    discoverySource: 'auto_provisioned',
+                    disableMissing: true,
+                    refreshReason: 'provider.startup-reconcile',
+                },
+            },
+        ]);
+    });
+
+    it('fails startup when reconciliation cannot seed an eligible provider', async () => {
+        const appCtx = {
+            config: {
+                env: {
+                    DATABASE_URL: 'postgres://example.test/db',
+                },
+            },
+            pool: {},
+            services: {},
+            log: {
+                info() {},
+                warn() {},
+                error() {},
+                debug() {},
+            },
+        };
+
+        await assert.rejects(
+            () =>
+                withStartupReconcileMocks(
+                    {
+                        listProviders: async () => [
+                            {
+                                id: 'provider-sync',
+                                provider_key: 'openai',
+                                oauth_adapter_key: null,
+                            },
+                        ],
+                        listAccountsByProvider: async () => [
+                            {
+                                id: 'acc-1',
+                                status: 'active',
+                                secret_ciphertext: Buffer.from('secret'),
+                            },
+                        ],
+                        listModelsByProvider: async () => [],
+                        autoProvisionModels: async () => {
+                            throw new Error('upstream /models failed');
+                        },
+                    },
+                    () => reconcileProvidersOnStartup(appCtx)
+                ),
+            /upstream \/models failed/
+        );
+    });
+});

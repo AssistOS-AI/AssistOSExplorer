@@ -19,7 +19,11 @@ import { readJsonBody } from '../core/json-body.mjs';
 import { sendJson } from '../core/responses.mjs';
 import { BadRequestError } from '../core/errors.mjs';
 import * as bindingsDao from '../db/dao/middleware-bindings-dao.mjs';
-import { requestRuntimeRefresh } from '../runtime/registry/runtime-refresh.mjs';
+import { performRuntimeRefresh } from '../runtime/registry/runtime-refresh.mjs';
+import {
+    badRequestFactory,
+    requireProviderMiddlewareModule,
+} from '../runtime/providers/provider-composition-validator.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
 
 /**
@@ -119,6 +123,12 @@ export async function handleCreateProviderMiddlewareBinding(ctx) {
         throw new BadRequestError('middlewareKey is required');
     }
 
+    requireProviderMiddlewareModule(
+        middlewareKey,
+        appCtx.services?.providerMiddlewareRegistry || null,
+        { errorFactory: badRequestFactory }
+    );
+
     const row = await bindingsDao.create(pool, {
         scope: 'provider',
         targetId: params.providerId,
@@ -128,7 +138,7 @@ export async function handleCreateProviderMiddlewareBinding(ctx) {
         settings: body.settings || {},
     });
 
-    requestRuntimeRefresh(appCtx, {
+    await performRuntimeRefresh(appCtx, {
         snapshot: true,
         reason: 'provider.middleware.create',
     });
@@ -162,7 +172,7 @@ export async function handleUpdateProviderMiddlewareBinding(ctx) {
         return;
     }
 
-    requestRuntimeRefresh(appCtx, {
+    await performRuntimeRefresh(appCtx, {
         snapshot: true,
         reason: 'provider.middleware.update',
     });
@@ -180,7 +190,7 @@ export async function handleDeleteProviderMiddlewareBinding(ctx) {
         sendNotFound(res, 'Binding');
         return;
     }
-    requestRuntimeRefresh(appCtx, {
+    await performRuntimeRefresh(appCtx, {
         snapshot: true,
         reason: 'provider.middleware.delete',
     });

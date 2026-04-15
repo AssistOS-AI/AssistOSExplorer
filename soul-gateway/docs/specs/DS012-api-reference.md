@@ -30,8 +30,12 @@ Current contract details:
 
 - provider create/update requests use canonical camelCase fields such as `providerKey`, `displayName`, `adapterKey`, `authStrategy`, `providerMode`, `oauthAdapterKey`, `baseUrl`, and `apiKey`
 - provider responses are DB-row shaped snake_case objects from `provider-view.mjs` (for example `provider_key`, `display_name`, `adapter_key`, `auth_strategy`)
+- provider create/update rejects unknown `adapterKey` values and backend-invalid provider config before the row is written
+- provider create with usable credentials performs initial model discovery synchronously; if the initial sync fails, the request fails and the newly-created provider row is removed
+- provider update with `apiKey` performs the same strict model sync before the request reports success; if that sync fails, the PATCH returns an error
 - `POST /management/providers/:providerId/test` returns `{ ok, detail, latencyMs }`; `detail` is passed through from the backend module without translation to `message`/`error`
 - `POST /management/providers/:providerId/discover-models` returns the raw backend discovery descriptors (`modelId`, `displayName`, `contextWindow`, `supportsTools`, `supportsStreaming`, `supportsVision`, optional `pricing`, ...)
+- provider create/update/delete performs a synchronous runtime snapshot refresh before returning success
 
 `provider_mode` exposes:
 
@@ -55,6 +59,8 @@ Current implementation details:
 - the binding payload is a flat ordered array, sorted by the DB `sort_order` and exposed through the API as `sortOrder`; there is no phase column
 - the dashboard composer renders one ordered provider-middleware list, matching the runtime's single provider binding chain
 - the provider's terminal backend is selected via `providers.adapter_key`; the snapshot exposes it as `provider.backendKey`. There is no separate `executor_key` or transport key column.
+- create rejects unknown provider middleware keys before writing `middleware_bindings`
+- create/update/delete performs a synchronous runtime snapshot refresh before returning success
 
 ## Model management
 
@@ -68,11 +74,19 @@ The dashboard and API support:
 Current contract details:
 
 - the `Models` dashboard tab edits direct models only, even though `GET /management/models` still returns unified model rows from the database
+- the `Models` page remains DB-backed; it does not list live provider catalogs directly in the main table
+- `GET /management/models/providers` lists all enabled providers, not just providers that already have persisted model rows
+- `GET /management/models/providers/:key/models` is a recovery path for the Add Model modal: it performs live discovery for that provider and returns model-option rows shaped for the modal (`provider_model_id`, `display_name`, pricing fields, capabilities, tags, metadata)
 - the `Tiers` dashboard tab edits cascade models through `GET/POST/PATCH/DELETE /management/tiers` plus `POST /management/tiers/:tierId/enable|disable`
 - tier create/update requests use camelCase fields: `tierKey`, `displayName`, `enabled`, `maxAttempts`, `childModelIds`
 - tier responses use a dashboard-specific view model:
   `{ id, tierKey, displayName, enabled, maxAttempts, children: [{ bindingId, modelId, modelKey, displayName, enabled, priority }] }`
 - the tier management surface is an editor over `models(strategy_kind='cascade')` plus `model_children`; it does not reintroduce a separate tier runtime abstraction
+
+Provider model sync semantics:
+
+- `POST /management/providers/:providerId/sync-models` uses the same discovery-and-sync path as provider create and OAuth completion
+- sync inserts new discovered rows, updates previously auto-discovered rows, preserves `discovery_source='manual'` rows, and disables missing previously-discovered rows instead of deleting them
 
 ## Middleware management
 

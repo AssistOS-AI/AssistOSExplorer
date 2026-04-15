@@ -15,6 +15,44 @@ import { createExtensionContext } from '../runtime/providers/extension-sdk.mjs';
 import { installRuntimeRefreshServices } from '../runtime/registry/runtime-refresh.mjs';
 import { loadRuntimeSnapshot } from '../runtime/registry/snapshot-loader.mjs';
 
+function accountHasUsableStoredCredential(account) {
+    if (!account) {
+        return false;
+    }
+
+    if (account.status !== 'active' && account.status !== 'refreshing') {
+        return false;
+    }
+
+    return Boolean(
+        account.secret_ciphertext ||
+            account.secretCiphertext ||
+            account.credentials_path ||
+            account.credentialsPath ||
+            account.metadata?.access_token ||
+            account.metadata?.accessToken
+    );
+}
+
+async function listEnabledProviders(pool, providersDao) {
+    const pageSize = 200;
+    const providers = [];
+    let offset = 0;
+
+    while (true) {
+        const page = await providersDao.list(pool, {
+            enabled: true,
+            limit: pageSize,
+            offset,
+        });
+        providers.push(...page);
+        if (page.length < pageSize) {
+            return providers;
+        }
+        offset += pageSize;
+    }
+}
+
 export async function installObservabilityServices(appCtx) {
     const { config, pool, log } = appCtx;
     const { env } = config;
@@ -139,6 +177,69 @@ export async function installSnapshotServices(appCtx) {
     }
 }
 
+export async function reconcileProvidersOnStartup(appCtx) {
+    const { config, pool, log } = appCtx;
+
+    if (!config.env.DATABASE_URL) {
+        return {
+            scanned: 0,
+            reconciled: 0,
+            created: 0,
+            updated: 0,
+            disabled: 0,
+        };
+    }
+
+    const providersDao = await import('../db/dao/providers-dao.mjs');
+    const accountsDao = await import('../db/dao/provider-accounts-dao.mjs');
+    const modelsDao = await import('../db/dao/models-dao.mjs');
+    const { autoProvisionModels } = await import(
+        '../runtime/providers/auto-provisioner.mjs'
+    );
+
+    const providers = await listEnabledProviders(pool, providersDao);
+    const summary = {
+        scanned: providers.length,
+        reconciled: 0,
+        created: 0,
+        updated: 0,
+        disabled: 0,
+    };
+
+    for (const provider of providers) {
+        const models = await modelsDao.listByProvider(pool, provider.id);
+        if (models.length > 0) {
+            continue;
+        }
+
+        const accounts = await accountsDao.listByProvider(pool, provider.id);
+        const hasUsableCredential = accounts.some(accountHasUsableStoredCredential);
+        if (!hasUsableCredential) {
+            continue;
+        }
+
+        const result = await autoProvisionModels(
+            appCtx,
+            provider,
+            provider.oauth_adapter_key || null,
+            {
+                strict: true,
+                discoverySource: 'auto_provisioned',
+                disableMissing: true,
+                refreshReason: 'provider.startup-reconcile',
+            }
+        );
+
+        summary.reconciled += 1;
+        summary.created += result.created;
+        summary.updated += result.updated;
+        summary.disabled += result.disabled;
+    }
+
+    log.info('provider startup reconciliation complete', summary);
+    return summary;
+}
+
 export async function installMiddlewareServices(appCtx) {
     const { config, pool, log } = appCtx;
     const { env } = config;
@@ -245,6 +346,8 @@ export async function installBackendCatalogServices(appCtx) {
         const builtinModules = await loader.loadAll();
         backendCatalog.load(builtinModules);
         const extCatalog = await extensionLoader.scan();
+        const registry = new ProviderMiddlewareRegistry().loadBuiltins();
+        appCtx.services.providerMiddlewareRegistry = registry;
 
         // Merge extension-shipped backend modules into the current
         // generation.  These do not increment the generation — they are
@@ -263,7 +366,6 @@ export async function installBackendCatalogServices(appCtx) {
 
         // Register extension-shipped provider middlewares into the
         // native registry.
-        const registry = appCtx.services.providerMiddlewareRegistry;
         let extensionProviderCount = 0;
         for (const ext of extCatalog.providerMiddlewares) {
             try {

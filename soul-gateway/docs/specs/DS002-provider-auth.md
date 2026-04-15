@@ -39,12 +39,15 @@ A background process periodically checks token expiration and refreshes tokens b
 
 ## Auto-provisioning
 
-Whenever a provider first obtains a usable credential — either by completing an OAuth flow or by being created with an API key in the management request payload — the system automatically runs model discovery against the provider and persists the discovered models in the registry.
+Whenever a provider first obtains a usable credential — either by completing an OAuth flow, by being created with an API key in the management request payload, or by later receiving an API key through provider update — the system automatically runs model discovery against the provider and persists the discovered models in the registry.
 
-- Providers created with a static API key run discovery synchronously during the create request so the provider is immediately usable without a second management call.
-- Providers that finish an OAuth flow run discovery as soon as the flow completes.
-- Providers whose upstream cannot expose a meaningful model list (e.g. Mistral's Codestral subdomain, which only serves `/chat/completions` and `/fim/completions`) simply register zero rows, and the operator adds models manually.
-- Auto-provisioning is idempotent and also runs at startup to reconcile any providers that already had stored credentials.
+- Providers created with a static API key run discovery synchronously during the create request so the provider is immediately usable without a second management call. If that initial sync fails, the create request fails and the new provider row is rolled back.
+- Providers updated with a static API key run the same strict discovery-and-sync pass before the PATCH request reports success. If that sync fails, the update request returns an error instead of silently leaving the provider in a "credential saved, models missing" state.
+- Providers that finish an OAuth flow run the same discovery-and-sync path before the callback is reported as complete. If sync fails, the callback reports an error instead of pretending the provider is ready.
+- Auto-provisioning and manual provider sync share one code path: discovery descriptors are normalized, new rows are inserted, non-manual previously discovered rows are updated, and non-manual rows missing from the latest discovery set are disabled instead of deleted.
+- Manual model rows are preserved. The sync path does not overwrite rows whose `discovery_source` is `manual`.
+- Providers whose upstream can validate connectivity but cannot expose a meaningful model list still complete successfully with zero discovered models, leaving manual model creation as the fallback.
+- On process startup, enabled providers that already have an active stored credential but still have zero model rows are reconciled through the same sync path before the initial runtime snapshot is loaded.
 
 ## Format converters
 
@@ -70,6 +73,12 @@ The Test button on each provider invokes the backend module's `testConnection` l
 - **OpenAI-compatible providers** first try `GET /models`. If that returns 404 (as on Mistral's Codestral subdomain, which only exposes `/chat/completions` and `/fim/completions`), the backend module falls back to an empty `POST /chat/completions` probe and interprets the status code: 2xx or 4xx other than 401/403/404 means the endpoint is reachable and the credential is recognised (reported as "Connected (model listing not exposed at this base URL)"), 401/403 surfaces the auth failure, and a double-404 indicates the base URL itself is wrong.
 - **Search providers** resolve which engine the row represents by walking `ctx.resolvedModel.provider_model_id → settings.engine → provider_key → base_url hostname`, so the Test button reports the actual engine name ("Exa Search credentials present", "Brave Search credentials present", "DuckDuckGo does not require authentication") rather than a generic default.
 - **OAuth-backed providers** validate the credential lease (presence + non-expired) rather than making a live call that is known to fail due to scope restrictions (e.g. the Codex OAuth token isn't accepted by `api.openai.com/v1/models` even when it is perfectly valid for the ChatGPT backend).
+
+Model discovery is stricter than connectivity testing:
+
+- discovery is expected to return a model catalog or throw
+- OpenAI-compatible discovery still tolerates the "listing unsupported but API reachable" case by returning zero models after the fallback `/chat/completions` probe succeeds
+- auth failures, wrong base URLs, and transport errors are surfaced as discovery errors instead of being silently converted into an empty list
 
 ## Custom search providers
 

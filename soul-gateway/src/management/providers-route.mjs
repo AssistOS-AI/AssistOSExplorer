@@ -32,8 +32,11 @@ import * as accountsDao from '../db/dao/provider-accounts-dao.mjs';
 import * as modelsDao from '../db/dao/models-dao.mjs';
 import {
     performRuntimeRefresh,
-    requestRuntimeRefresh,
 } from '../runtime/registry/runtime-refresh.mjs';
+import {
+    badRequestFactory,
+    requireBackendModuleForProvider,
+} from '../runtime/providers/provider-composition-validator.mjs';
 import {
     buildProviderLifecycleOptions,
     loadProviderOrRespond,
@@ -46,6 +49,14 @@ import {
 } from './route-response-helpers.mjs';
 import { toAccountView, buildAccountsPayload } from './account-view.mjs';
 import { toProviderView, toProviderList } from './provider-view.mjs';
+
+function validateProviderBackendReference(appCtx, providerRecord) {
+    requireBackendModuleForProvider(
+        providerRecord,
+        appCtx.services?.backendCatalog || null,
+        { errorFactory: badRequestFactory }
+    );
+}
 
 /**
  * GET /management/providers/templates
@@ -113,6 +124,18 @@ export async function handleCreateProvider(ctx) {
         );
     }
 
+    validateProviderBackendReference(appCtx, {
+        providerKey,
+        displayName,
+        authStrategy,
+        providerMode,
+        oauthAdapterKey,
+        adapterKey,
+        baseUrl: body.baseUrl ?? null,
+        settings: body.settings ?? {},
+        metadata: body.metadata ?? {},
+    });
+
     const row = await providersDao.create(pool, {
         providerKey,
         displayName,
@@ -138,7 +161,7 @@ export async function handleCreateProvider(ctx) {
 
     // Refresh runtime snapshot so the credential manager can lease
     // the just-created account on the auto-provision call below.
-    requestRuntimeRefresh(appCtx, {
+    await performRuntimeRefresh(appCtx, {
         snapshot: true,
         reason: 'provider.create',
     });
@@ -152,12 +175,21 @@ export async function handleCreateProvider(ctx) {
             const { autoProvisionModels } = await import(
                 '../runtime/providers/auto-provisioner.mjs'
             );
-            await autoProvisionModels(appCtx, row);
-        } catch (err) {
-            appCtx.log.warn('auto-provision on provider.create failed', {
-                provider: row.provider_key,
-                error: err.message,
+            await autoProvisionModels(appCtx, row, null, {
+                strict: true,
+                discoverySource: 'auto_provisioned',
+                disableMissing: true,
+                refreshReason: 'provider.create.auto-provision',
             });
+        } catch (err) {
+            await providersDao.del(pool, row.id);
+            await performRuntimeRefresh(appCtx, {
+                snapshot: true,
+                reason: 'provider.create.rollback',
+            });
+            throw new BadRequestError(
+                `Provider initial model sync failed: ${err.message}`
+            );
         }
     }
 
@@ -235,6 +267,13 @@ export async function handleUpdateProvider(ctx) {
         );
     }
 
+    if (Object.keys(fields).length > 0) {
+        validateProviderBackendReference(appCtx, {
+            ...existing,
+            ...fields,
+        });
+    }
+
     // Only run the providers DAO update when the PATCH actually carries
     // a column change. A PATCH that only rotates `api_key` is valid —
     // the upsert below handles credential rotation without touching the
@@ -265,10 +304,28 @@ export async function handleUpdateProvider(ctx) {
     });
 
     // Refresh runtime snapshot after mutation
-    requestRuntimeRefresh(appCtx, {
+    await performRuntimeRefresh(appCtx, {
         snapshot: true,
         reason: 'provider.update',
     });
+
+    if (apiKey) {
+        try {
+            const { autoProvisionModels } = await import(
+                '../runtime/providers/auto-provisioner.mjs'
+            );
+            await autoProvisionModels(appCtx, row, null, {
+                strict: true,
+                discoverySource: 'auto_provisioned',
+                disableMissing: true,
+                refreshReason: 'provider.update.auto-provision',
+            });
+        } catch (err) {
+            throw new BadRequestError(
+                `Provider model sync failed after credential update: ${err.message}`
+            );
+        }
+    }
 
     sendJson(res, 200, { provider: toProviderView(row) });
 }
@@ -300,7 +357,7 @@ export async function handleDeleteProvider(ctx) {
     }
 
     // Refresh runtime snapshot after mutation
-    requestRuntimeRefresh(appCtx, {
+    await performRuntimeRefresh(appCtx, {
         snapshot: true,
         reason: 'provider.delete',
     });
@@ -365,11 +422,10 @@ export async function handleDiscoverModels(ctx) {
     }
 
     try {
-        const discoveries =
-            await appCtx.services.backendCatalog.discoverModels(
-                provider,
-                buildProviderLifecycleOptions(appCtx)
-            );
+        const { discoverProviderModels } = await import(
+            '../runtime/providers/auto-provisioner.mjs'
+        );
+        const discoveries = await discoverProviderModels(appCtx, provider);
         sendJson(res, 200, {
             data: Array.isArray(discoveries) ? discoveries : [],
         });
@@ -388,52 +444,45 @@ export async function handleDiscoverModels(ctx) {
  */
 export async function handleSyncModels(ctx) {
     const { req, res, params, appCtx } = ctx;
-    const { pool } = appCtx;
     const body = await readJsonBody(req);
 
     const provider = await loadProviderOrRespond(ctx, params.providerId);
     if (!provider) return;
 
-    // Use provided discoveries or discover fresh
-    let discoveries = body?.discoveries;
-    if (!discoveries && appCtx.services.backendCatalog) {
-        discoveries = await appCtx.services.backendCatalog.discoverModels(
-            provider,
-            buildProviderLifecycleOptions(appCtx)
-        );
-    }
+    try {
+        const {
+            autoProvisionModels,
+            syncProviderModels,
+        } = await import('../runtime/providers/auto-provisioner.mjs');
 
-    if (!discoveries || !Array.isArray(discoveries)) {
-        sendJson(res, 200, { synced: 0, models: [] });
-        return;
-    }
+        const result = Array.isArray(body?.discoveries)
+            ? await syncProviderModels(appCtx, provider, body.discoveries, {
+                  discoverySource: 'synced',
+                  disableMissing: true,
+                  refreshReason: 'provider.sync-models',
+              })
+            : await autoProvisionModels(appCtx, provider, null, {
+                  strict: true,
+                  discoverySource: 'synced',
+                  disableMissing: true,
+                  refreshReason: 'provider.sync-models',
+              });
 
-    const synced = [];
-    for (const d of discoveries) {
-        const row = await modelsDao.syncFromDiscovery(pool, {
-            modelKey: d.modelKey,
-            displayName: d.displayName,
-            providerId: params.providerId,
-            providerModelId: d.providerModelId,
-            executionKind: d.executionKind ?? 'provider_model',
-            pricingMode: d.pricingMode ?? 'external_directory',
-            inputPricePerMillion: d.inputPricePerMillion ?? null,
-            outputPricePerMillion: d.outputPricePerMillion ?? null,
-            requestPriceUsd: d.requestPriceUsd ?? null,
-            isFree: d.isFree ?? false,
-            capabilities: d.capabilities ?? {},
-            tags: d.tags ?? [],
+        sendJson(res, 200, {
+            synced: result.created + result.updated,
+            discovered: result.discovered,
+            created: result.created,
+            updated: result.updated,
+            disabled: result.disabled,
+            models: result.models,
         });
-        synced.push(row);
+    } catch (err) {
+        sendOperationError(res, {
+            status: HTTP_STATUS.INTERNAL_SERVER_ERROR,
+            message: err.message,
+            type: ERROR_TYPES.DISCOVERY_ERROR,
+        });
     }
-
-    // Refresh runtime snapshot after mutation
-    requestRuntimeRefresh(appCtx, {
-        snapshot: true,
-        reason: 'provider.sync-models',
-    });
-
-    sendJson(res, 200, { synced: synced.length, models: synced });
 }
 
 /**

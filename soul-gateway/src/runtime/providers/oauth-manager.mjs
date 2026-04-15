@@ -240,16 +240,17 @@ export class OAuthManager {
                     providerId
                 );
                 if (providerRow) {
-                    await autoProvisionModels(
-                        this._appCtx,
-                        providerRow,
-                        adapter.key
-                    );
+                    await autoProvisionModels(this._appCtx, providerRow, adapter.key, {
+                        strict: true,
+                        discoverySource: 'auto_provisioned',
+                        disableMissing: true,
+                        refreshReason: 'provider.oauth.auto-provision',
+                    });
                 }
             } catch (err) {
-                this._log.warn('auto-provision after OAuth failed', {
-                    error: err.message,
-                });
+                throw new Error(
+                    `Provider initial model sync failed after OAuth: ${err.message}`
+                );
             }
         }
 

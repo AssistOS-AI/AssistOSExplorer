@@ -1,7 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { handleListProviderMiddlewareBindings } from '../../management/provider-middlewares-route.mjs';
+import {
+    handleCreateProviderMiddlewareBinding,
+    handleListProviderMiddlewareBindings,
+} from '../../management/provider-middlewares-route.mjs';
 
 function createMockRes() {
     return {
@@ -14,6 +17,24 @@ function createMockRes() {
         },
         end(data = '') {
             this.body += data;
+        },
+    };
+}
+
+function createMockReq(body) {
+    const listeners = new Map();
+    return {
+        headers: { 'content-type': 'application/json' },
+        on(event, handler) {
+            listeners.set(event, handler);
+            if (event === 'data') {
+                process.nextTick(() =>
+                    handler(Buffer.from(JSON.stringify(body)))
+                );
+            }
+            if (event === 'end') {
+                process.nextTick(() => handler());
+            }
         },
     };
 }
@@ -76,5 +97,39 @@ describe('provider-middlewares-route', () => {
             createdAt: '2026-04-08T10:00:00.000Z',
             updatedAt: '2026-04-08T10:00:00.000Z',
         });
+    });
+
+    it('rejects unknown provider middleware keys on create', async () => {
+        const req = createMockReq({
+            middlewareKey: 'not-a-real-provider-middleware',
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () =>
+                handleCreateProviderMiddlewareBinding({
+                    req,
+                    res,
+                    params: { providerId: 'provider-1' },
+                    appCtx: {
+                        pool: {
+                            async query() {
+                                throw new Error(
+                                    'should not reach middleware_bindings insert'
+                                );
+                            },
+                        },
+                        services: {
+                            providerMiddlewareRegistry: {
+                                get() {
+                                    return null;
+                                },
+                            },
+                            refreshRuntime: async () => ({}),
+                        },
+                    },
+                }),
+            /Unknown provider middleware 'not-a-real-provider-middleware'/
+        );
     });
 });

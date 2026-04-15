@@ -41,6 +41,7 @@ function createMockAppCtx({ catalog, credentialManager, log, pool }) {
         services: {
             backendCatalog: catalog || null,
             credentialManager: credentialManager || null,
+            refreshRuntime: async () => ({ snapshotGeneration: 2 }),
             refreshRuntimeAsync: () => Promise.resolve(null),
         },
         snapshotGeneration: 1,
@@ -55,7 +56,10 @@ async function withStubbedModelsDao(stub, fn) {
     const mocked = mock.module('../../db/dao/models-dao.mjs', {
         namedExports: {
             findByKey: stub.findByKey,
+            listByProvider: stub.listByProvider,
             create: stub.create,
+            update: stub.update,
+            disable: stub.disable,
         },
     });
     // Re-import the auto-provisioner so its dynamic import picks up the mock.
@@ -103,8 +107,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
         );
         assert.equal(result.discovered, 0);
         assert.equal(
-            log._entries.warn.filter((w) => w.msg.includes('backend module missing'))
-                .length,
+            log._entries.warn.length,
             0,
             'backend should be resolved via provider.backendKey, not the OAuth adapter key'
         );
@@ -121,7 +124,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
         });
 
         const warn = log._entries.warn.find((w) =>
-            w.msg.includes('backend module missing')
+            w.msg.includes('auto-provision discovery failed')
         );
         assert.ok(
             warn,
@@ -142,7 +145,9 @@ describe('auto-provisioner.autoProvisionModels', () => {
         });
         assert.equal(result.discovered, 0);
         assert.ok(
-            log._entries.warn.find((w) => w.msg.includes('backend module missing'))
+            log._entries.warn.find((w) =>
+                w.msg.includes('auto-provision discovery failed')
+            )
         );
     });
 
@@ -182,7 +187,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
         assert.equal(capturedCtx.providerRecord.provider_key, 'codex-api');
     });
 
-    it('releases the credential lease even when the backend throws', async () => {
+    it('releases the credential lease even when strict auto-provision throws', async () => {
         const lease = { accountId: 'acc-err', oauth: { accessToken: 'tok' } };
         const credentialManager = createMockCredentialManager(lease);
         const backendModule = {
@@ -196,22 +201,24 @@ describe('auto-provisioner.autoProvisionModels', () => {
             log,
         });
 
-        const result = await autoProvisionModels(appCtx, {
-            id: 'p1',
-            provider_key: 'codex-api',
-            adapter_key: 'codex-api',
-        });
-
-        assert.equal(result.discovered, 0);
-        assert.equal(credentialManager._state.released, 1);
-        assert.ok(
-            log._entries.warn.find((w) =>
-                w.msg.includes('auto-provision discovery failed')
-            )
+        await assert.rejects(
+            () =>
+                autoProvisionModels(
+                    appCtx,
+                    {
+                        id: 'p1',
+                        provider_key: 'codex-api',
+                        adapter_key: 'codex-api',
+                    },
+                    null,
+                    { strict: true }
+                ),
+            /upstream boom/
         );
+        assert.equal(credentialManager._state.released, 1);
     });
 
-    it('inserts only new models, skipping ones that already exist', async () => {
+    it('creates new rows, updates auto-provisioned rows, preserves manual rows, and disables missing discovered rows', async () => {
         const discovered = [
             {
                 modelId: 'gpt-5.2-codex',
@@ -222,6 +229,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
                 modelId: 'gpt-5-codex',
                 displayName: 'gpt-5-codex',
                 contextWindow: 128000,
+                supportsTools: false,
             },
             { modelId: 'gpt-5.1-codex', displayName: 'gpt-5.1-codex' },
         ];
@@ -231,14 +239,42 @@ describe('auto-provisioner.autoProvisionModels', () => {
             },
         };
 
-        const existing = new Set(['codex-api/gpt-5-codex']);
         const created = [];
+        const updated = [];
+        const disabled = [];
         const stub = {
-            findByKey: async (_pool, key) =>
-                existing.has(key) ? { id: 'x', model_key: key } : null,
+            findByKey: async () => null,
+            listByProvider: async () => [
+                {
+                    id: 'existing-auto',
+                    model_key: 'codex-api/gpt-5-codex',
+                    discovery_source: 'auto_provisioned',
+                    enabled: true,
+                },
+                {
+                    id: 'existing-manual',
+                    model_key: 'codex-api/gpt-5.1-codex',
+                    discovery_source: 'manual',
+                    enabled: true,
+                },
+                {
+                    id: 'missing-auto',
+                    model_key: 'codex-api/gpt-4-missing',
+                    discovery_source: 'synced',
+                    enabled: true,
+                },
+            ],
             create: async (_pool, row) => {
                 created.push(row);
                 return { id: `new-${created.length}`, ...row };
+            },
+            update: async (_pool, id, fields) => {
+                updated.push({ id, fields });
+                return { id, ...fields };
+            },
+            disable: async (_pool, id) => {
+                disabled.push(id);
+                return { id, enabled: false };
             },
         };
 
@@ -259,60 +295,27 @@ describe('auto-provisioner.autoProvisionModels', () => {
         );
 
         assert.equal(result.discovered, 3);
-        assert.equal(result.created, 2);
-        assert.deepEqual(created.map((c) => c.modelKey).sort(), [
-            'codex-api/gpt-5.1-codex',
+        assert.equal(result.created, 1);
+        assert.equal(result.updated, 1);
+        assert.equal(result.disabled, 1);
+        assert.deepEqual(created.map((c) => c.modelKey), [
             'codex-api/gpt-5.2-codex',
         ]);
-        // Every row must carry the auto_provisioned discovery source so the
-        // dashboard can distinguish it from manually-added models.
-        for (const row of created) {
-            assert.equal(row.discoverySource, 'auto_provisioned');
-            assert.equal(row.executionKind, 'provider_model');
-            assert.equal(row.enabled, true);
-            assert.equal(row.pricingMode, 'external_directory');
-            assert.equal(row.providerId, 'p1');
-        }
-    });
-
-    it('tolerates duplicate-key races without surfacing them as warnings', async () => {
-        const backendModule = {
-            async discoverModels() {
-                return [{ modelId: 'dup', displayName: 'dup' }];
-            },
-        };
-        const stub = {
-            findByKey: async () => null,
-            create: async () => {
-                const err = new Error(
-                    'duplicate key value violates unique constraint'
-                );
-                throw err;
-            },
-        };
-        const appCtx = createMockAppCtx({
-            catalog: createMockCatalog({ 'codex-api': backendModule }),
-            credentialManager: createMockCredentialManager({
-                oauth: { accessToken: 'tok' },
-            }),
-            log,
-        });
-
-        const result = await withStubbedModelsDao(stub, (mod) =>
-            mod.autoProvisionModels(appCtx, {
-                id: 'p1',
-                provider_key: 'codex-api',
-                adapter_key: 'codex-api',
-            })
-        );
-        assert.equal(result.created, 0);
-        // Race-loss is silent — no "create failed" warning
+        assert.equal(created[0].discoverySource, 'auto_provisioned');
+        assert.equal(created[0].enabled, true);
+        assert.equal(created[0].providerId, 'p1');
+        assert.equal(updated.length, 1);
+        assert.equal(updated[0].id, 'existing-auto');
+        assert.equal(updated[0].fields.discoverySource, 'auto_provisioned');
         assert.equal(
-            log._entries.warn.filter((w) =>
-                w.msg.includes('model create failed')
-            ).length,
-            0
+            updated[0].fields.capabilities.contextWindow,
+            128000
         );
+        assert.equal(
+            updated[0].fields.capabilities.supportsTools,
+            false
+        );
+        assert.deepEqual(disabled, ['missing-auto']);
     });
 
     it('keys inserted models as `${provider_key}/${modelId}` to match dashboard convention', async () => {
@@ -324,9 +327,16 @@ describe('auto-provisioner.autoProvisionModels', () => {
         const captured = [];
         const stub = {
             findByKey: async () => null,
+            listByProvider: async () => [],
             create: async (_pool, row) => {
                 captured.push(row.modelKey);
                 return { id: 'x' };
+            },
+            update: async () => {
+                throw new Error('should not update existing rows');
+            },
+            disable: async () => {
+                throw new Error('should not disable rows');
             },
         };
         const appCtx = createMockAppCtx({

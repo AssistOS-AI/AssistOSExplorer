@@ -20,6 +20,7 @@ import {
     createCanonicalStream,
 } from '../../runtime/kernel/index.mjs';
 import { ProviderMiddlewareRegistry } from '../../runtime/middleware/provider-middleware-registry.mjs';
+import { compileProviderBindingsChain } from '../../runtime/middleware/compile-provider-bindings.mjs';
 import { BUILTIN_PROVIDER_MIDDLEWARES } from '../../runtime/middleware/provider-builtin/index.mjs';
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -95,6 +96,37 @@ describe('ProviderMiddlewareRegistry', () => {
     it('build() returns null for an unknown key', () => {
         const reg = new ProviderMiddlewareRegistry().loadBuiltins();
         assert.equal(reg.build('not-a-real-middleware', {}), null);
+    });
+});
+
+describe('compileProviderBindingsChain', () => {
+    it('throws when a provider binding references an unknown middleware key', () => {
+        const reg = new ProviderMiddlewareRegistry().loadBuiltins();
+        assert.throws(
+            () =>
+                compileProviderBindingsChain({
+                    providerId: 'provider-1',
+                    registry: reg,
+                    snapshot: {
+                        middlewareBindings: {
+                            byProvider: new Map([
+                                [
+                                    'provider-1',
+                                    [
+                                        {
+                                            middlewareKey:
+                                                'not-a-real-provider-middleware',
+                                            middlewareDefaultSettings: {},
+                                            settings: {},
+                                        },
+                                    ],
+                                ],
+                            ]),
+                        },
+                    },
+                }),
+            /Unknown provider middleware 'not-a-real-provider-middleware'/
+        );
     });
 });
 

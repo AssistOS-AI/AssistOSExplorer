@@ -363,6 +363,7 @@ function providerRow(overrides) {
         supports_responses_api: false,
         settings: {},
         metadata: {},
+        ...overrides,
     };
 }
 
@@ -516,5 +517,94 @@ describe('snapshot loader: unified model + children schema', () => {
             'provider-prompt-injector'
         );
         assert.deepEqual(providerBindings[0].settings, { content: 'HI' });
+    });
+
+    it('rejects snapshots whose providers reference missing backend modules', async () => {
+        const pool = makeFakePool({
+            models: [
+                directModelRow({
+                    id: 'm1',
+                    model_key: 'openai/gpt-4o',
+                    provider_id: 'p-1',
+                }),
+            ],
+            providers: [
+                providerRow({
+                    id: 'p-1',
+                    provider_key: 'openai',
+                    adapter_key: 'missing-backend',
+                }),
+            ],
+        });
+
+        await assert.rejects(
+            () =>
+                loadRuntimeSnapshot({
+                    pool,
+                    services: {
+                        backendCatalog: {
+                            getBackend() {
+                                return null;
+                            },
+                        },
+                        providerMiddlewareRegistry: {
+                            get() {
+                                return {
+                                    meta: { key: 'provider-prompt-injector' },
+                                };
+                            },
+                        },
+                    },
+                }),
+            /Unknown provider backend 'missing-backend'/
+        );
+    });
+
+    it('rejects snapshots whose provider bindings reference missing middleware modules', async () => {
+        const pool = makeFakePool({
+            models: [
+                directModelRow({
+                    id: 'm1',
+                    model_key: 'openai/gpt-4o',
+                    provider_id: 'p-1',
+                }),
+            ],
+            providers: [providerRow({ id: 'p-1', provider_key: 'openai' })],
+            middlewareBindings: [
+                {
+                    id: 'b-p',
+                    scope: 'provider',
+                    target_id: 'p-1',
+                    middleware_key: 'ghost-provider-middleware',
+                    sort_order: 30,
+                    settings: {},
+                    module_path: null,
+                    source_type: 'builtin',
+                    middleware_default_settings: {},
+                },
+            ],
+        });
+
+        await assert.rejects(
+            () =>
+                loadRuntimeSnapshot({
+                    pool,
+                    services: {
+                        backendCatalog: {
+                            getBackend(key) {
+                                return key === 'openai-api'
+                                    ? { manifest: { key } }
+                                    : null;
+                            },
+                        },
+                        providerMiddlewareRegistry: {
+                            get() {
+                                return null;
+                            },
+                        },
+                    },
+                }),
+            /Unknown provider middleware 'ghost-provider-middleware'/
+        );
     });
 });

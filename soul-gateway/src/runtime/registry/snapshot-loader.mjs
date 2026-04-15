@@ -19,6 +19,8 @@
  * plus `model_children` rows.
  */
 
+import { validateProviderCompositionSnapshot } from '../providers/provider-composition-validator.mjs';
+
 let _generation = 0;
 
 export async function loadRuntimeSnapshot(appCtx) {
@@ -148,6 +150,19 @@ export async function loadRuntimeSnapshot(appCtx) {
     const cooldowns = new Set();
     for (const row of cooldownsResult.rows) {
         cooldowns.add(row.model_key);
+    }
+
+    if (
+        appCtx.services?.backendCatalog &&
+        appCtx.services?.providerMiddlewareRegistry
+    ) {
+        validateProviderCompositionSnapshot({
+            providers,
+            providerBindingsByProviderId,
+            backendCatalog: appCtx.services.backendCatalog,
+            providerMiddlewareRegistry:
+                appCtx.services.providerMiddlewareRegistry,
+        });
     }
 
     // Build pricing map from model data

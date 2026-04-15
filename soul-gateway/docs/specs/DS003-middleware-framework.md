@@ -113,6 +113,14 @@ The built-in provider middlewares are native kernel middlewares in `src/runtime/
 
 There is no separate `ProviderHookCatalog` or `provider_hook_assignments` table; provider middleware lives entirely in `middleware_bindings(scope='provider')`. The management API exposes provider middleware under middleware-named endpoints (`/management/provider-middlewares`, `/management/providers/:id/middlewares`).
 
+Provider composition is fail-fast:
+
+- provider create/update rejects unknown backend keys and backend-invalid provider config
+- provider-middleware create rejects unknown provider middleware keys
+- runtime snapshot load rejects enabled providers whose `backendKey` is not present in the loaded backend catalog
+- runtime snapshot load rejects enabled provider bindings whose `middlewareKey` is not present in the loaded provider middleware registry
+- request-time provider binding compilation throws on unknown provider middleware keys; bindings are not silently skipped
+
 ### Backend scope (terminal middleware)
 
 A backend is the terminal middleware in the provider chain. It is the only request-time concept the runtime has for talking to an external system.
@@ -207,6 +215,8 @@ A provider record in the runtime is now visibly a composition concept:
 - **provider config** — DB row in `providers` (display name, base URL, auth, settings)
 - **ordered provider middlewares** — `middleware_bindings(scope='provider', target_id=<provider_id>)`, sorted by `sort_order`
 - **one terminal backend key** — `provider.backend_key` (stored as `adapter_key` in the DB column for migration compatibility; surfaced in the snapshot as `provider.backendKey`)
+
+Lifecycle/admin operations (`testConnection`, `discoverModels`) also resolve providers strictly through `provider.backendKey`; they do not fall back to `provider_key` or display name.
 
 Adding a same-family vendor (e.g. NVIDIA, Groq, Fireworks for OpenAI-compatible) is a configuration change: a new entry in `provider-presets.mjs` pointing at the existing `openai-api` backend module. No new code.
 

@@ -1768,7 +1768,7 @@ function modelsPage() {
         },
 
         get groupedCreateModels() {
-            return [['Registered Models', this.createProviderModels]];
+            return [['Discovered Models', this.createProviderModels]];
         },
 
         async createNewModel() {

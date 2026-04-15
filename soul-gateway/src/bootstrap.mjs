@@ -16,6 +16,7 @@ import {
     installOAuthAdapters,
     installObservabilityServices,
     installProviderAuthServices,
+    reconcileProvidersOnStartup,
     installRuntimeCoordinationServices,
     installSnapshotServices,
 } from './bootstrap/service-installers.mjs';
@@ -31,9 +32,10 @@ import {
  *  3. create PostgreSQL pool
  *  4. acquire migration lock and run migrations
  *  5. initialize subsystem services
- *  6. load runtime snapshot (when implemented)
- *  7. start background jobs
- *  8. create HTTP server and bind routes
+ *  6. register OAuth adapters and reconcile provider catalogs
+ *  7. load runtime snapshot
+ *  8. start background jobs
+ *  9. create HTTP server and bind routes
  */
 export async function bootstrap() {
     // 1. Config
@@ -62,10 +64,11 @@ export async function bootstrap() {
     await installObservabilityServices(appCtx);
     await installExecutionServices(appCtx);
     await installProviderAuthServices(appCtx);
-    await installSnapshotServices(appCtx);
     await installMiddlewareServices(appCtx);
     await installBackendCatalogServices(appCtx);
     await installOAuthAdapters(appCtx);
+    await reconcileProvidersOnStartup(appCtx);
+    await installSnapshotServices(appCtx);
     try {
         installExtensionSdkServices(appCtx);
     } catch (err) {

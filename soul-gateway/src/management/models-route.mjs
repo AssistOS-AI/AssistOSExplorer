@@ -14,6 +14,7 @@ import { readJsonBody } from '../core/json-body.mjs';
 import { sendJson } from '../core/responses.mjs';
 import { BadRequestError } from '../core/errors.mjs';
 import * as modelsDao from '../db/dao/models-dao.mjs';
+import * as providersDao from '../db/dao/providers-dao.mjs';
 import { requestRuntimeRefresh } from '../runtime/registry/runtime-refresh.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
 
@@ -213,18 +214,17 @@ export async function handleDisableModel(ctx) {
 
 /**
  * GET /management/models/providers
- * List distinct provider keys that have models registered.
+ * List all configured providers so the Models page can recover even
+ * when a provider has not seeded any model rows yet.
  */
 export async function handleListModelProviders(ctx) {
     const { res, appCtx } = ctx;
     const { pool } = appCtx;
 
     const { rows } = await pool.query(
-        `SELECT DISTINCT provider_id,
-            (SELECT p.provider_key FROM soul_gateway.providers p WHERE p.id = m.provider_id) AS provider_key,
-            (SELECT p.display_name FROM soul_gateway.providers p WHERE p.id = m.provider_id) AS display_name
-     FROM soul_gateway.models m
-     WHERE provider_id IS NOT NULL
+        `SELECT id AS provider_id, provider_key, display_name
+     FROM soul_gateway.providers
+     WHERE enabled = true
      ORDER BY provider_key ASC`
     );
     sendJson(res, 200, { data: rows });
@@ -232,19 +232,36 @@ export async function handleListModelProviders(ctx) {
 
 /**
  * GET /management/models/providers/:key/models
- * List models for a given provider key.
+ * Discover models for a given provider key so the Models page can
+ * recover from failed/partial registry sync.
  */
 export async function handleListProviderModels(ctx) {
     const { res, params, appCtx } = ctx;
-    const { pool } = appCtx;
+    const provider = await providersDao.findByKey(appCtx.pool, params.key);
+    if (!provider) {
+        sendJson(res, 200, { data: [] });
+        return;
+    }
 
-    const { rows } = await pool.query(
-        `SELECT m.* FROM soul_gateway.models m
-     JOIN soul_gateway.providers p ON p.id = m.provider_id
-     WHERE p.provider_key = $1
-     ORDER BY m.display_name ASC`,
-        [params.key]
-    );
+    const { discoverProviderModels, normalizeDiscoveryDescriptor } =
+        await import('../runtime/providers/auto-provisioner.mjs');
+    const discoveries = await discoverProviderModels(appCtx, provider);
+    const rows = discoveries.map((discovery) => {
+        const normalized = normalizeDiscoveryDescriptor(provider, discovery);
+        return {
+            provider_model_id: normalized.providerModelId,
+            display_name: normalized.displayName,
+            pricing_mode: normalized.pricingMode,
+            input_price_per_million: normalized.inputPricePerMillion,
+            output_price_per_million: normalized.outputPricePerMillion,
+            request_price_usd: normalized.requestPriceUsd,
+            is_free: normalized.isFree,
+            capabilities: normalized.capabilities,
+            tags: normalized.tags,
+            metadata: normalized.metadata,
+        };
+    });
+
     sendJson(res, 200, { data: rows });
 }
 

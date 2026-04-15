@@ -7,13 +7,12 @@
  * `(ctx, next)` middleware by asking `providerMiddlewareRegistry` for
  * the module's factory.
  *
- * Bindings whose `middleware_key` is not registered are silently
- * skipped so a bad assignment does not take down the whole request.
- *
  * @module runtime/middleware/compile-provider-bindings
  */
 
+import { ConfigurationError } from '../../core/errors.mjs';
 import { mergeMiddlewareSettings } from './settings-merge.mjs';
+import { requireProviderMiddlewareModule } from '../providers/provider-composition-validator.mjs';
 
 /**
  * @param {object} args
@@ -27,7 +26,21 @@ export function compileProviderBindingsChain({
     snapshot,
     registry,
 }) {
-    if (!providerId || !snapshot || !registry) return [];
+    if (!providerId) {
+        throw new ConfigurationError(
+            'compileProviderBindingsChain: providerId is required'
+        );
+    }
+    if (!snapshot) {
+        throw new ConfigurationError(
+            'compileProviderBindingsChain: snapshot is required'
+        );
+    }
+    if (!registry) {
+        throw new ConfigurationError(
+            'compileProviderBindingsChain: providerMiddlewareRegistry is required'
+        );
+    }
 
     const bindings =
         snapshot.middlewareBindings?.byProvider?.get?.(providerId) || [];
@@ -35,12 +48,12 @@ export function compileProviderBindingsChain({
 
     const chain = [];
     for (const binding of bindings) {
+        requireProviderMiddlewareModule(binding.middlewareKey, registry);
         const settings = mergeMiddlewareSettings(
             binding.middlewareDefaultSettings,
             binding.settings
         );
         const middleware = registry.build(binding.middlewareKey, settings);
-        if (!middleware) continue;
         chain.push(middleware);
     }
     return chain;

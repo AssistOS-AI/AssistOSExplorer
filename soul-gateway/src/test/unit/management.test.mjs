@@ -28,6 +28,81 @@ function signAdminToken(expiresAt, signingKey, csrfToken = null) {
 function createMockAppCtx(overrides = {}) {
     const signingKey = overrides.signingKey || makeSigningKey();
     const services = { ...(overrides.services || {}) };
+    const availableBackends = new Map(
+        (overrides.availableBackends || [
+            'openai-api',
+            'anthropic-api',
+            'gemini-openai',
+            'search-builtin',
+            'codex-api',
+            'copilot-api',
+            'custom-backend',
+        ]).map((key) => [
+            key,
+            {
+                manifest: {
+                    key,
+                    kind: key === 'custom-backend' ? 'custom' : 'external_api',
+                },
+            },
+        ])
+    );
+    const availableProviderMiddlewares = new Map(
+        (overrides.availableProviderMiddlewares || [
+            'provider-context-compacter',
+            'provider-output-compressor',
+            'provider-prompt-injector',
+            'provider-response-filter',
+        ]).map((key) => [
+            key,
+            {
+                meta: {
+                    key,
+                    name: key,
+                    description: '',
+                    version: '1.0.0',
+                    defaultSettings: {},
+                },
+                factory: () => async (_ctx, next) => {
+                    if (typeof next === 'function') {
+                        await next();
+                    }
+                },
+            },
+        ])
+    );
+
+    if (!services.backendCatalog) {
+        services.backendCatalog = {
+            getBackend(key) {
+                return availableBackends.get(key) || null;
+            },
+            listKeys() {
+                return [...availableBackends.keys()];
+            },
+            getTemplates() {
+                return {};
+            },
+        };
+    }
+
+    if (!services.providerMiddlewareRegistry) {
+        services.providerMiddlewareRegistry = {
+            get(key) {
+                return availableProviderMiddlewares.get(key) || null;
+            },
+            listKeys() {
+                return [...availableProviderMiddlewares.keys()];
+            },
+            build(key, settings = {}) {
+                const module = availableProviderMiddlewares.get(key);
+                return module ? module.factory(settings) : null;
+            },
+            get size() {
+                return availableProviderMiddlewares.size;
+            },
+        };
+    }
 
     if (!services.refreshRuntime) {
         services.refreshRuntime = async (options = {}) => {
@@ -384,7 +459,9 @@ describe('management/models-route', () => {
         handleCreateModel,
         handleGetModel,
         handleUpdateModel,
-        handleDeleteModel;
+        handleDeleteModel,
+        handleListModelProviders,
+        handleListProviderModels;
 
     beforeEach(async () => {
         ({
@@ -393,6 +470,8 @@ describe('management/models-route', () => {
             handleGetModel,
             handleUpdateModel,
             handleDeleteModel,
+            handleListModelProviders,
+            handleListProviderModels,
         } = await import('../../management/models-route.mjs'));
     });
 
@@ -484,6 +563,133 @@ describe('management/models-route', () => {
         });
 
         assert.equal(res.statusCode, 404);
+    });
+
+    it('handleListModelProviders returns all enabled providers, not just those with model rows', async () => {
+        const pool = createMockPool(async (sql) => {
+            if (sql.includes('FROM soul_gateway.providers')) {
+                return {
+                    rows: [
+                        {
+                            provider_id: 'p1',
+                            provider_key: 'openai',
+                            display_name: 'OpenAI',
+                        },
+                        {
+                            provider_id: 'p2',
+                            provider_key: 'groq',
+                            display_name: 'Groq',
+                        },
+                    ],
+                };
+            }
+            return { rows: [] };
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListModelProviders({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.deepEqual(body.data, [
+            {
+                provider_id: 'p1',
+                provider_key: 'openai',
+                display_name: 'OpenAI',
+            },
+            {
+                provider_id: 'p2',
+                provider_key: 'groq',
+                display_name: 'Groq',
+            },
+        ]);
+    });
+
+    it('handleListProviderModels discovers provider models from the backend catalog', async () => {
+        const pool = createMockPool(async (sql, params) => {
+            if (
+                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('provider_key = $1')
+            ) {
+                assert.deepEqual(params, ['openai']);
+                return {
+                    rows: [
+                        {
+                            id: 'p1',
+                            provider_key: 'openai',
+                            display_name: 'OpenAI',
+                            adapter_key: 'openai-api',
+                            auth_strategy: 'api_key',
+                            provider_mode: 'external_api',
+                            base_url: 'https://api.openai.com/v1',
+                            enabled: true,
+                            settings: {},
+                            metadata: {},
+                        },
+                    ],
+                };
+            }
+            return { rows: [] };
+        });
+        const appCtx = createMockAppCtx({
+            pool,
+            services: {
+                backendCatalog: {
+                    getBackend(key) {
+                        assert.equal(key, 'openai-api');
+                        return {
+                            manifest: { key: 'openai-api' },
+                            async discoverModels() {
+                                return [
+                                    {
+                                        modelId: 'gpt-5.4',
+                                        displayName: 'GPT-5.4',
+                                        pricing: {
+                                            mode: 'token',
+                                            inputPricePerMillion: 1.25,
+                                            outputPricePerMillion: 10,
+                                        },
+                                    },
+                                ];
+                            },
+                        };
+                    },
+                },
+            },
+        });
+        const res = createMockRes();
+
+        await handleListProviderModels({
+            req: createMockReq(),
+            res,
+            params: { key: 'openai' },
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.deepEqual(body.data, [
+            {
+                provider_model_id: 'gpt-5.4',
+                display_name: 'GPT-5.4',
+                pricing_mode: 'token',
+                input_price_per_million: 1.25,
+                output_price_per_million: 10,
+                request_price_usd: null,
+                is_free: false,
+                capabilities: {},
+                tags: [],
+                metadata: {},
+            },
+        ]);
     });
 });
 
@@ -926,7 +1132,133 @@ describe('management/providers-route', () => {
         assert.equal(body.provider.oauth_adapter_key, 'google-gemini');
     });
 
-    it('handleUpdateProvider accepts an apiKey-only PATCH and creates a provider_accounts row', async () => {
+    it('handleCreateProvider rejects unknown adapterKey values', async () => {
+        const appCtx = createMockAppCtx({
+            availableBackends: ['openai-api'],
+        });
+        const req = createMockReq({
+            method: 'POST',
+            body: {
+                providerKey: 'broken-provider',
+                displayName: 'Broken Provider',
+                adapterKey: 'missing-backend',
+                authStrategy: 'api_key',
+                providerMode: 'external_api',
+            },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () => handleCreateProvider({ req, res, params: {}, query: {}, appCtx }),
+            (err) =>
+                err.httpStatus === 400 &&
+                err.message.includes("Unknown provider backend 'missing-backend'")
+        );
+    });
+
+    it('handleCreateProvider rolls back the provider row when initial model sync fails', async () => {
+        const queries = [];
+        const pool = createMockPool(async (sql, params) => {
+            queries.push(compactSql(sql));
+
+            if (sql.includes('INSERT INTO soul_gateway.providers')) {
+                return {
+                    rows: [
+                        {
+                            id: 'p-sync-fail',
+                            provider_key: params[0],
+                            display_name: params[1],
+                            kind: params[2],
+                            adapter_key: params[3],
+                            auth_strategy: params[4],
+                            provider_mode: params[5],
+                            oauth_adapter_key: params[6],
+                            base_url: params[7],
+                            enabled: true,
+                            settings: {},
+                            metadata: {},
+                        },
+                    ],
+                };
+            }
+
+            if (
+                sql.includes('FROM soul_gateway.provider_accounts') &&
+                sql.includes('provider_id = $1')
+            ) {
+                return { rows: [] };
+            }
+
+            if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+                return {
+                    rows: [
+                        {
+                            id: 'acc-sync-fail',
+                            provider_id: 'p-sync-fail',
+                            auth_type: 'api_key',
+                            status: 'active',
+                        },
+                    ],
+                };
+            }
+
+            if (sql.includes('DELETE FROM soul_gateway.providers')) {
+                return { rows: [], rowCount: 1 };
+            }
+
+            return { rows: [], rowCount: 0 };
+        });
+        const appCtx = createMockAppCtx({
+            pool,
+            services: {
+                encryptionKey: randomBytes(32),
+                backendCatalog: {
+                    getBackend(key) {
+                        assert.equal(key, 'openai-api');
+                        return {
+                            manifest: { key: 'openai-api' },
+                            async discoverModels() {
+                                throw new Error('upstream /models failed');
+                            },
+                        };
+                    },
+                    listKeys() {
+                        return ['openai-api'];
+                    },
+                    getTemplates() {
+                        return {};
+                    },
+                },
+            },
+        });
+        const req = createMockReq({
+            method: 'POST',
+            body: {
+                providerKey: 'openai',
+                displayName: 'OpenAI',
+                adapterKey: 'openai-api',
+                authStrategy: 'api_key',
+                providerMode: 'external_api',
+                baseUrl: 'https://api.openai.com/v1',
+                apiKey: 'sk-test-12345',
+            },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () => handleCreateProvider({ req, res, params: {}, query: {}, appCtx }),
+            (err) =>
+                err.httpStatus === 400 &&
+                err.message.includes('Provider initial model sync failed')
+        );
+
+        assert.ok(
+            queries.find((sql) => sql.includes('DELETE FROM soul_gateway.providers')),
+            'expected the failed create flow to delete the provider row'
+        );
+    });
+
+    it('handleUpdateProvider accepts an apiKey-only PATCH, creates a provider_accounts row, and auto-syncs models', async () => {
         const providerRow = {
             id: 'p-nv',
             provider_key: 'nvidia',
@@ -980,7 +1312,26 @@ describe('management/providers-route', () => {
 
         const appCtx = createMockAppCtx({
             pool,
-            services: { encryptionKey: randomBytes(32) },
+            services: {
+                encryptionKey: randomBytes(32),
+                backendCatalog: {
+                    getBackend(key) {
+                        assert.equal(key, 'openai-api');
+                        return {
+                            manifest: { key: 'openai-api' },
+                            async discoverModels() {
+                                return [];
+                            },
+                        };
+                    },
+                    listKeys() {
+                        return ['openai-api'];
+                    },
+                    getTemplates() {
+                        return {};
+                    },
+                },
+            },
         });
         const req = createMockReq({
             method: 'PATCH',
@@ -1011,6 +1362,96 @@ describe('management/providers-route', () => {
         assert.ok(
             inserted,
             'expected an INSERT into provider_accounts to back the apiKey upsert'
+        );
+    });
+
+    it('handleUpdateProvider rejects an apiKey PATCH when strict model sync fails', async () => {
+        const providerRow = {
+            id: 'p-openai',
+            provider_key: 'openai',
+            display_name: 'OpenAI',
+            kind: 'external_api',
+            adapter_key: 'openai-api',
+            auth_strategy: 'api_key',
+            base_url: 'https://api.openai.com/v1',
+            enabled: true,
+            settings: {},
+            metadata: {},
+        };
+        const pool = createMockPool(async (sql) => {
+            if (
+                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('WHERE id')
+            ) {
+                return { rows: [providerRow] };
+            }
+            if (
+                sql.includes('FROM soul_gateway.provider_accounts') &&
+                sql.includes('provider_id = $1')
+            ) {
+                return { rows: [] };
+            }
+            if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+                return {
+                    rows: [
+                        {
+                            id: 'acc-openai',
+                            provider_id: 'p-openai',
+                            auth_type: 'api_key',
+                            status: 'active',
+                        },
+                    ],
+                };
+            }
+            if (sql.includes('SELECT * FROM soul_gateway.models')) {
+                return { rows: [] };
+            }
+            return { rows: [], rowCount: 0 };
+        });
+
+        const appCtx = createMockAppCtx({
+            pool,
+            services: {
+                encryptionKey: randomBytes(32),
+                backendCatalog: {
+                    getBackend(key) {
+                        assert.equal(key, 'openai-api');
+                        return {
+                            manifest: { key: 'openai-api' },
+                            async discoverModels() {
+                                throw new Error('upstream /models failed');
+                            },
+                        };
+                    },
+                    listKeys() {
+                        return ['openai-api'];
+                    },
+                    getTemplates() {
+                        return {};
+                    },
+                },
+            },
+        });
+        const req = createMockReq({
+            method: 'PATCH',
+            body: { apiKey: 'sk-test-12345' },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () =>
+                handleUpdateProvider({
+                    req,
+                    res,
+                    params: { providerId: 'p-openai' },
+                    query: {},
+                    appCtx,
+                }),
+            (err) =>
+                err.httpStatus === 400 &&
+                err.message.includes(
+                    'Provider model sync failed after credential update'
+                )
         );
     });
 
@@ -1083,6 +1524,53 @@ describe('management/providers-route', () => {
             (err) =>
                 err.httpStatus === 400 &&
                 err.message.includes('No supported update fields provided')
+        );
+    });
+
+    it('handleUpdateProvider rejects unknown adapterKey values', async () => {
+        const providerRow = {
+            id: 'p-nv',
+            provider_key: 'nvidia',
+            display_name: 'NVIDIA',
+            kind: 'external_api',
+            adapter_key: 'openai-api',
+            auth_strategy: 'api_key',
+            base_url: 'https://integrate.api.nvidia.com/v1',
+            enabled: true,
+            settings: {},
+            metadata: {},
+        };
+        const pool = createMockPool(async (sql) => {
+            if (
+                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('WHERE id')
+            ) {
+                return { rows: [providerRow] };
+            }
+            return { rows: [], rowCount: 0 };
+        });
+        const appCtx = createMockAppCtx({
+            pool,
+            availableBackends: ['openai-api'],
+        });
+        const req = createMockReq({
+            method: 'PATCH',
+            body: { adapterKey: 'missing-backend' },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () =>
+                handleUpdateProvider({
+                    req,
+                    res,
+                    params: { providerId: 'p-nv' },
+                    query: {},
+                    appCtx,
+                }),
+            (err) =>
+                err.httpStatus === 400 &&
+                err.message.includes("Unknown provider backend 'missing-backend'")
         );
     });
 
@@ -1305,28 +1793,42 @@ describe('management/providers-route', () => {
 
     describe('handleDiscoverModels', () => {
         it('returns raw backend discovery descriptors unchanged', async () => {
-            const providerRow = { id: 'p1', provider_key: 'codex' };
+            const providerRow = {
+                id: 'p1',
+                provider_key: 'codex',
+                adapter_key: 'codex-api',
+                auth_strategy: 'oauth',
+                provider_mode: 'external_api',
+                settings: {},
+                metadata: {},
+            };
             const pool = createMockPool(async () => ({ rows: [providerRow] }));
             const appCtx = createMockAppCtx({
                 pool,
                 services: {
                     backendCatalog: {
-                        async discoverModels() {
-                            return [
-                                {
-                                    modelId: 'gpt-5.4',
-                                    displayName: 'GPT-5.4',
-                                    contextWindow: 400000,
-                                    supportsTools: true,
-                                    supportsStreaming: true,
-                                    supportsVision: false,
-                                    pricing: {
-                                        mode: 'token',
-                                        inputPricePerMillion: 1.25,
-                                        outputPricePerMillion: 10,
-                                    },
+                        getBackend(key) {
+                            assert.equal(key, 'codex-api');
+                            return {
+                                manifest: { key: 'codex-api' },
+                                async discoverModels() {
+                                    return [
+                                        {
+                                            modelId: 'gpt-5.4',
+                                            displayName: 'GPT-5.4',
+                                            contextWindow: 400000,
+                                            supportsTools: true,
+                                            supportsStreaming: true,
+                                            supportsVision: false,
+                                            pricing: {
+                                                mode: 'token',
+                                                inputPricePerMillion: 1.25,
+                                                outputPricePerMillion: 10,
+                                            },
+                                        },
+                                    ];
                                 },
-                            ];
+                            };
                         },
                     },
                 },

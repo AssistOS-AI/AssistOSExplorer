@@ -173,29 +173,29 @@ export const backendModule = {
         const baseUrl =
             ctx?.providerRecord?.baseUrl || 'https://api.githubcopilot.com';
         const token = ctx?.credentialLease?.oauth?.accessToken;
-        if (!token) return KNOWN_MODELS;
-
-        try {
-            const body = await httpGet(baseUrl + '/models', {
-                Authorization: `Bearer ${token}`,
-                'User-Agent': VSCODE_USER_AGENT,
-                'Copilot-Integration-Id': COPILOT_INTEGRATION_ID,
-            });
-            const parsed = JSON.parse(body);
-            return (parsed.data || []).map((m) => ({
-                modelId: m.id,
-                displayName: m.name || m.id,
-                contextWindow:
-                    m.capabilities?.limits?.max_prompt_tokens || null,
-                maxOutputTokens:
-                    m.capabilities?.limits?.max_output_tokens || null,
-                supportsTools: m.capabilities?.supports?.tool_calls ?? true,
-                supportsStreaming: true,
-                supportsVision: m.capabilities?.supports?.vision ?? false,
-            }));
-        } catch {
-            return KNOWN_MODELS;
+        if (!token) {
+            throw new Error(
+                'Copilot discoverModels requires an OAuth access token'
+            );
         }
+
+        const body = await httpGet(baseUrl + '/models', {
+            Authorization: `Bearer ${token}`,
+            'User-Agent': VSCODE_USER_AGENT,
+            'Copilot-Integration-Id': COPILOT_INTEGRATION_ID,
+        });
+        const parsed = JSON.parse(body);
+        return (parsed.data || []).map((m) => ({
+            modelId: m.id,
+            displayName: m.name || m.id,
+            contextWindow:
+                m.capabilities?.limits?.max_prompt_tokens || null,
+            maxOutputTokens:
+                m.capabilities?.limits?.max_output_tokens || null,
+            supportsTools: m.capabilities?.supports?.tool_calls ?? true,
+            supportsStreaming: true,
+            supportsVision: m.capabilities?.supports?.vision ?? false,
+        }));
     },
 
     async testConnection(ctx) {

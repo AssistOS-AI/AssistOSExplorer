@@ -11,12 +11,15 @@ Migration `004-unified-model-bindings.sql` establishes the current target schema
 ### Provider configuration
 
 - **`providers`** — one row per configured upstream LLM provider. Carries the provider key, display name, adapter key (the backend module key that serves this provider's requests), auth strategy (`api_key` / `oauth` / `subscription`), base URL, OAuth adapter key, kind (`external_api` / `custom`), provider mode, capability flags (supports_streaming, supports_tools, supports_messages_api, supports_responses_api), and free-form settings/metadata JSON blobs. `adapter_key` is declared `NOT NULL` because `backendDispatchMiddleware()` resolves the handling terminal middleware from this field via `backendCatalog.getTerminal(provider.backendKey)`. The DB column keeps the historical name `adapter_key`; the snapshot loader exposes it as `provider.backendKey` in the runtime view.
+- Enabled provider rows are validated against the loaded backend catalog during snapshot load; a row whose `adapter_key` does not match a loaded backend aborts the refresh/startup path instead of being tolerated.
 - **`provider_accounts`** — one row per credential stored for a provider. API-key accounts carry encrypted `secret_ciphertext`, `secret_iv`, and `secret_auth_tag` columns (all `bytea`) holding the AES-256-GCM components of the encrypted key. OAuth accounts carry a `credentials_path` pointing at an encrypted credential file on disk and token expiry metadata used by the refresh loop. Every account tracks status (`active` / `refreshing` / `quota_exhausted` / `reauth_required` / `deleted`), quota reset time, last-used time, and per-account error state.
 - **`middleware_bindings(scope='provider')`** — provider-scoped middleware bindings. This is the replacement for the deleted `provider_hook_assignments` table.
+- Enabled provider-scoped bindings are validated against the loaded provider middleware registry during snapshot load; unknown `middleware_key` values abort the refresh/startup path instead of being skipped.
 
 ### Model registry
 
 - **`models`** — one row per addressable model the gateway can route to. Direct models carry a provider foreign key plus provider-specific model id. Cascade models carry `strategy_kind='cascade'` and no provider foreign key, and act as the runtime backing for the dashboard `Tiers` page.
+- For direct models, `discovery_source` distinguishes operator-managed rows (`manual`) from provider-seeded rows (`auto_provisioned` / `synced`). Provider sync updates only non-manual rows and disables missing discovered rows rather than deleting them.
 - **`model_aliases`** — maps alternative names to canonical model keys so public aliases and dashboard-friendly shortcuts both resolve correctly.
 - **`model_children`** — ordered children for cascade models. This replaces the old tier-membership tables in the active runtime.
 

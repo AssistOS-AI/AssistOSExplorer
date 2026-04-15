@@ -1,85 +1,125 @@
 import { normalizeProviderRecord } from './runtime-record-normalizer.mjs';
 import { createBackendLifecycleContext } from '../backends/backend-context.mjs';
+import {
+    requireBackendModuleForProvider,
+} from './provider-composition-validator.mjs';
+import { performRuntimeRefresh } from '../registry/runtime-refresh.mjs';
 
-/**
- * Auto-provision models for a provider from its backend module's live
- * `discoverModels()` implementation.
- *
- * Called by OAuthManager after a successful OAuth flow and by
- * `handleCreateProvider` after creating an API-key provider with a
- * credential attached. In both cases the backend module is expected to
- * make a live call to the provider's /models endpoint (via
- * achillesAgentLib) and return the canonical list — there is no
- * hardcoded fallback.
- *
- * The backend module is looked up by the provider's `backendKey`,
- * which IS the module key. (Earlier revisions passed the OAuth adapter
- * key here, which lived in a different keyspace and made every call
- * silently no-op.) The OAuth adapter key is accepted for logging but
- * ignored for module lookup.
- *
- * Credentials are leased from the shared CredentialManager so the
- * backend module can use them to hit the provider's /models endpoint.
- * The lease is always released, even on failure.
- *
- * @param {object} appCtx
- * @param {object} provider          Raw providers DB row
- * @param {string} [oauthAdapterKey] OAuth adapter key — for logging only
- * @returns {Promise<{ discovered: number, created: number }>}
- */
-export async function autoProvisionModels(
+function getDiscoveryPricing(discovery) {
+    const pricing = discovery?.pricing || {};
+    return {
+        pricingMode:
+            discovery?.pricingMode ??
+            pricing.mode ??
+            'external_directory',
+        inputPricePerMillion:
+            discovery?.inputPricePerMillion ??
+            pricing.inputPricePerMillion ??
+            null,
+        outputPricePerMillion:
+            discovery?.outputPricePerMillion ??
+            pricing.outputPricePerMillion ??
+            null,
+        requestPriceUsd:
+            discovery?.requestPriceUsd ??
+            pricing.requestPriceUsd ??
+            null,
+    };
+}
+
+function buildDiscoveryCapabilities(discovery) {
+    const capabilities = { ...(discovery?.capabilities || {}) };
+    if (
+        discovery?.contextWindow != null &&
+        capabilities.contextWindow == null
+    ) {
+        capabilities.contextWindow = discovery.contextWindow;
+    }
+    if (
+        discovery?.maxOutputTokens != null &&
+        capabilities.maxOutputTokens == null
+    ) {
+        capabilities.maxOutputTokens = discovery.maxOutputTokens;
+    }
+    if (
+        discovery?.supportsTools != null &&
+        capabilities.supportsTools == null
+    ) {
+        capabilities.supportsTools = discovery.supportsTools;
+    }
+    if (
+        discovery?.supportsStreaming != null &&
+        capabilities.supportsStreaming == null
+    ) {
+        capabilities.supportsStreaming = discovery.supportsStreaming;
+    }
+    if (
+        discovery?.supportsVision != null &&
+        capabilities.supportsVision == null
+    ) {
+        capabilities.supportsVision = discovery.supportsVision;
+    }
+    return capabilities;
+}
+
+export function normalizeDiscoveryDescriptor(providerRecord, discovery) {
+    const provider = normalizeProviderRecord(providerRecord);
+    const providerModelId =
+        discovery?.providerModelId ?? discovery?.modelId ?? discovery?.id ?? null;
+    if (!providerModelId) {
+        throw new Error(
+            `Provider discovery for '${provider?.providerKey || 'unknown'}' returned an entry without modelId`
+        );
+    }
+
+    const { pricingMode, inputPricePerMillion, outputPricePerMillion, requestPriceUsd } =
+        getDiscoveryPricing(discovery);
+
+    return {
+        modelKey:
+            discovery?.modelKey ||
+            `${provider.providerKey}/${providerModelId}`,
+        displayName: discovery?.displayName || providerModelId,
+        providerId: provider.id,
+        providerModelId,
+        executionKind: discovery?.executionKind ?? 'provider_model',
+        pricingMode,
+        inputPricePerMillion,
+        outputPricePerMillion,
+        requestPriceUsd,
+        isFree: discovery?.isFree ?? false,
+        capabilities: buildDiscoveryCapabilities(discovery),
+        tags: discovery?.tags ?? [],
+        metadata: discovery?.metadata ?? {},
+    };
+}
+
+export async function discoverProviderModels(
     appCtx,
     provider,
-    oauthAdapterKey = null
+    { oauthAdapterKey = null } = {}
 ) {
     const log = appCtx.log;
-    const catalog = appCtx.services.backendCatalog;
-    const credentialManager = appCtx.services.credentialManager;
     const normalizedProvider = normalizeProviderRecord(provider);
     const providerKey = normalizedProvider?.providerKey;
-    const backendKey = normalizedProvider?.backendKey;
+    const { backendModule } = requireBackendModuleForProvider(
+        normalizedProvider,
+        appCtx.services?.backendCatalog || null
+    );
+    const backendKey = normalizedProvider.backendKey || oauthAdapterKey;
 
-    if (!catalog || !provider) {
-        return { discovered: 0, created: 0 };
-    }
-
-    const moduleKey = backendKey || oauthAdapterKey;
-    const backendModule = catalog.getBackend(moduleKey);
-    if (
-        !backendModule ||
-        typeof backendModule.discoverModels !== 'function'
-    ) {
-        log.warn(
-            'auto-provision skipped: backend module missing or has no discoverModels',
-            {
-                provider: providerKey,
-                backendKey: moduleKey,
-                oauthAdapterKey,
-            }
+    if (typeof backendModule.discoverModels !== 'function') {
+        throw new Error(
+            `Provider backend '${backendKey}' does not support model discovery`
         );
-        return { discovered: 0, created: 0 };
     }
 
-    // Lease credentials so the backend module can hit the provider's
-    // /models endpoint. For providers with no credential configured
-    // yet the lease is null and we let the module decide whether to
-    // proceed (some backends might be able to discover without auth).
+    const credentialManager = appCtx.services?.credentialManager || null;
     let credentialLease = null;
     if (credentialManager) {
-        try {
-            credentialLease = await credentialManager.getCredentials(
-                provider.id
-            );
-        } catch (err) {
-            log.warn('auto-provision credential lease failed', {
-                provider: providerKey,
-                error: err.message,
-            });
-        }
+        credentialLease = await credentialManager.getCredentials(provider.id);
     }
 
-    let discovered = [];
-    let discoveryFailed = false;
     try {
         const lifecycleCtx = createBackendLifecycleContext({
             providerRecord: normalizedProvider,
@@ -87,88 +127,169 @@ export async function autoProvisionModels(
             logger: log,
         });
         const result = await backendModule.discoverModels(lifecycleCtx);
-        if (Array.isArray(result)) discovered = result;
-    } catch (err) {
-        discoveryFailed = true;
-        log.warn('auto-provision discovery failed', {
-            provider: providerKey,
-            backendKey: moduleKey,
-            error: err.message,
-        });
+        if (!Array.isArray(result)) {
+            throw new Error(
+                `Provider backend '${backendKey}' returned a non-array discovery result`
+            );
+        }
+        return result;
     } finally {
-        if (credentialLease && credentialManager)
+        if (credentialLease && credentialManager) {
             credentialManager.release(credentialLease);
+        }
     }
+}
 
-    if (discoveryFailed) {
-        return { discovered: 0, created: 0 };
-    }
-
-    if (!discovered.length) {
-        log.info('auto-provision returned no models', {
-            provider: providerKey,
-            backendKey: moduleKey,
-        });
-        return { discovered: 0, created: 0 };
-    }
-
+export async function syncProviderModels(
+    appCtx,
+    provider,
+    discoveries,
+    {
+        discoverySource = 'synced',
+        disableMissing = true,
+        refreshReason = 'provider.sync-models',
+    } = {}
+) {
+    const normalizedProvider = normalizeProviderRecord(provider);
+    const normalizedDiscoveries = discoveries.map((discovery) =>
+        normalizeDiscoveryDescriptor(normalizedProvider, discovery)
+    );
     const modelsDao = await import('../../db/dao/models-dao.mjs');
+    const existingRows = await modelsDao.listByProvider(
+        appCtx.pool,
+        normalizedProvider.id
+    );
+    const existingByModelKey = new Map(
+        existingRows.map((row) => [row.model_key, row])
+    );
+    const discoveredModelKeys = new Set();
+    const syncedModels = [];
     let created = 0;
+    let updated = 0;
+    let disabled = 0;
 
-    for (const model of discovered) {
-        const providerModelId = model.modelId || model.id;
-        if (!providerModelId) continue;
-        const modelKey = `${providerKey}/${providerModelId}`;
-        const existing = await modelsDao.findByKey(appCtx.pool, modelKey);
-        if (existing) continue;
+    for (const normalizedDiscovery of normalizedDiscoveries) {
+        discoveredModelKeys.add(normalizedDiscovery.modelKey);
+        const existing = existingByModelKey.get(normalizedDiscovery.modelKey) || null;
 
-        try {
-            await modelsDao.create(appCtx.pool, {
-                modelKey,
-                displayName: model.displayName || providerModelId,
-                providerId: provider.id,
-                providerModelId,
-                executionKind: 'provider_model',
+        if (!existing) {
+            const createdRow = await modelsDao.create(appCtx.pool, {
+                ...normalizedDiscovery,
                 enabled: true,
-                pricingMode: 'external_directory',
-                discoverySource: 'auto_provisioned',
-                tags: [],
-                metadata: model.metadata || {},
+                discoverySource,
             });
+            syncedModels.push(createdRow);
             created++;
-        } catch (err) {
-            // Duplicate key is fine (race condition between concurrent
-            // callers racing to provision the same new model).
-            if (
-                !err.message?.includes('unique') &&
-                !err.message?.includes('duplicate')
-            ) {
-                log.warn('auto-provision model create failed', {
-                    provider: providerKey,
-                    modelKey,
-                    error: err.message,
-                });
+            continue;
+        }
+
+        if (existing.discovery_source === 'manual') {
+            syncedModels.push(existing);
+            continue;
+        }
+
+        const updatedRow = await modelsDao.update(appCtx.pool, existing.id, {
+            displayName: normalizedDiscovery.displayName,
+            providerModelId: normalizedDiscovery.providerModelId,
+            executionKind: normalizedDiscovery.executionKind,
+            pricingMode: normalizedDiscovery.pricingMode,
+            inputPricePerMillion: normalizedDiscovery.inputPricePerMillion,
+            outputPricePerMillion: normalizedDiscovery.outputPricePerMillion,
+            requestPriceUsd: normalizedDiscovery.requestPriceUsd,
+            isFree: normalizedDiscovery.isFree,
+            capabilities: normalizedDiscovery.capabilities,
+            tags: normalizedDiscovery.tags,
+            metadata: normalizedDiscovery.metadata,
+            discoverySource,
+        });
+        syncedModels.push(updatedRow || existing);
+        updated++;
+    }
+
+    if (disableMissing) {
+        for (const existing of existingRows) {
+            if (existing.discovery_source === 'manual') {
+                continue;
             }
+            if (discoveredModelKeys.has(existing.model_key)) {
+                continue;
+            }
+            if (existing.enabled === false) {
+                continue;
+            }
+            await modelsDao.disable(appCtx.pool, existing.id);
+            disabled++;
         }
     }
 
-    log.info('auto-provisioned models', {
-        provider: providerKey,
-        backendKey: moduleKey,
-        discovered: discovered.length,
-        created,
-    });
-
-    if (created > 0) {
-        // Refresh snapshot so new models are immediately routable
-        const { requestRuntimeRefresh } = await import(
-            '../registry/runtime-refresh.mjs'
-        );
-        requestRuntimeRefresh(appCtx, {
+    if (created > 0 || updated > 0 || disabled > 0) {
+        await performRuntimeRefresh(appCtx, {
             snapshot: true,
-            reason: 'auto-provision',
+            reason: refreshReason,
         });
     }
 
-    return { discovered: discovered.length, created };
+    appCtx.log.info('provider models synced', {
+        provider: normalizedProvider.providerKey,
+        discoverySource,
+        discovered: normalizedDiscoveries.length,
+        created,
+        updated,
+        disabled,
+    });
+
+    return {
+        discovered: normalizedDiscoveries.length,
+        created,
+        updated,
+        disabled,
+        models: syncedModels,
+    };
+}
+
+/**
+ * Discover and sync models for one provider.
+ *
+ * The "auto-provision" entry point is used by provider creation and
+ * post-OAuth completion. It is intentionally the same code path as
+ * manual sync so model-registry semantics stay consistent.
+ */
+export async function autoProvisionModels(
+    appCtx,
+    provider,
+    oauthAdapterKey = null,
+    {
+        strict = false,
+        discoverySource = 'auto_provisioned',
+        disableMissing = true,
+        refreshReason = 'auto-provision',
+    } = {}
+) {
+    try {
+        const discoveries = await discoverProviderModels(appCtx, provider, {
+            oauthAdapterKey,
+        });
+        return await syncProviderModels(appCtx, provider, discoveries, {
+            discoverySource,
+            disableMissing,
+            refreshReason,
+        });
+    } catch (err) {
+        if (strict) {
+            throw err;
+        }
+        appCtx.log.warn('auto-provision discovery failed', {
+            provider: normalizeProviderRecord(provider)?.providerKey || null,
+            backendKey: normalizeProviderRecord(provider)?.backendKey || null,
+            oauthAdapterKey,
+            error: err.message,
+        });
+        return {
+            discovered: 0,
+            created: 0,
+            updated: 0,
+            disabled: 0,
+            models: [],
+        };
+    }
 }
