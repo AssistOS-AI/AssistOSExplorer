@@ -4,6 +4,7 @@ import {
     requireBackendModuleForProvider,
 } from './provider-composition-validator.mjs';
 import { performRuntimeRefresh } from '../registry/runtime-refresh.mjs';
+import { enrichModelMetadata } from '../policy/model-metadata-classifier.mjs';
 
 function getDiscoveryPricing(discovery) {
     const pricing = discovery?.pricing || {};
@@ -60,6 +61,231 @@ function buildDiscoveryCapabilities(discovery) {
         capabilities.supportsVision = discovery.supportsVision;
     }
     return capabilities;
+}
+
+async function getPricingDirectory(appCtx) {
+    const directory = appCtx.services?.pricingDirectory || null;
+    if (!directory) {
+        return null;
+    }
+    try {
+        await directory.refreshIfNeeded(appCtx.log);
+        return directory;
+    } catch (err) {
+        appCtx.log.warn('openrouter metadata fallback unavailable', {
+            url: directory.url || null,
+            error: err.message,
+        });
+        return null;
+    }
+}
+
+function envelopeFromDiscovery(discovery, provider) {
+    const providerKey = provider?.providerKey || null;
+    const providerModelId =
+        discovery?.providerModelId ?? discovery?.modelId ?? discovery?.id ?? null;
+    const pricing = discovery?.pricing || {};
+    const modelKey =
+        discovery?.modelKey ||
+        (providerKey && providerModelId
+            ? `${providerKey}/${providerModelId}`
+            : null);
+
+    // Mirror top-level capability shortcuts into the capabilities map so
+    // the enrichment pipeline sees a single source of truth. Explicit
+    // `false` values propagate (they carry provider knowledge) instead
+    // of being treated as missing.
+    const capabilities = { ...(discovery?.capabilities || {}) };
+    if (
+        discovery?.contextWindow != null &&
+        capabilities.contextWindow == null
+    ) {
+        capabilities.contextWindow = discovery.contextWindow;
+    }
+    if (
+        discovery?.maxOutputTokens != null &&
+        capabilities.maxOutputTokens == null
+    ) {
+        capabilities.maxOutputTokens = discovery.maxOutputTokens;
+    }
+    if (
+        discovery?.supportsTools != null &&
+        capabilities.supportsTools == null
+    ) {
+        capabilities.supportsTools = discovery.supportsTools;
+    }
+    if (
+        discovery?.supportsVision != null &&
+        capabilities.supportsVision == null
+    ) {
+        capabilities.supportsVision = discovery.supportsVision;
+    }
+    if (
+        discovery?.supportsStreaming != null &&
+        capabilities.supportsStreaming == null
+    ) {
+        capabilities.supportsStreaming = discovery.supportsStreaming;
+    }
+
+    return {
+        providerKey,
+        providerModelId,
+        modelKey,
+        displayName: discovery?.displayName || providerModelId || null,
+        pricingMode: discovery?.pricingMode ?? pricing.mode ?? null,
+        inputPricePerMillion:
+            discovery?.inputPricePerMillion ??
+            pricing.inputPricePerMillion ??
+            null,
+        outputPricePerMillion:
+            discovery?.outputPricePerMillion ??
+            pricing.outputPricePerMillion ??
+            null,
+        requestPriceUsd:
+            discovery?.requestPriceUsd ?? pricing.requestPriceUsd ?? null,
+        isFree: discovery?.isFree ?? null,
+        contextWindow: capabilities.contextWindow ?? null,
+        maxOutputTokens: capabilities.maxOutputTokens ?? null,
+        supportsTools: capabilities.supportsTools ?? null,
+        supportsVision: capabilities.supportsVision ?? null,
+        supportsStreaming: capabilities.supportsStreaming ?? null,
+        capabilities,
+        tags: Array.isArray(discovery?.tags) ? [...discovery.tags] : [],
+        metadata: discovery?.metadata || {},
+    };
+}
+
+function envelopeToDiscovery(envelope, discovery) {
+    const capabilities = { ...envelope.capabilities };
+    if (envelope.contextWindow != null && capabilities.contextWindow == null) {
+        capabilities.contextWindow = envelope.contextWindow;
+    }
+    if (
+        envelope.maxOutputTokens != null &&
+        capabilities.maxOutputTokens == null
+    ) {
+        capabilities.maxOutputTokens = envelope.maxOutputTokens;
+    }
+    if (
+        envelope.supportsTools != null &&
+        capabilities.supportsTools == null
+    ) {
+        capabilities.supportsTools = envelope.supportsTools;
+    }
+    if (
+        envelope.supportsVision != null &&
+        capabilities.supportsVision == null
+    ) {
+        capabilities.supportsVision = envelope.supportsVision;
+    }
+    if (
+        envelope.supportsStreaming != null &&
+        capabilities.supportsStreaming == null
+    ) {
+        capabilities.supportsStreaming = envelope.supportsStreaming;
+    }
+
+    const next = {
+        ...discovery,
+        pricingMode: envelope.pricingMode,
+        inputPricePerMillion: envelope.inputPricePerMillion,
+        outputPricePerMillion: envelope.outputPricePerMillion,
+        requestPriceUsd: envelope.requestPriceUsd,
+        isFree: envelope.isFree,
+        contextWindow: envelope.contextWindow,
+        maxOutputTokens: envelope.maxOutputTokens,
+        supportsTools: envelope.supportsTools,
+        supportsVision: envelope.supportsVision,
+        supportsStreaming: envelope.supportsStreaming,
+        capabilities,
+        tags: [...envelope.tags],
+        metadata: envelope.metadata,
+    };
+    if (
+        envelope.pricingMode != null ||
+        envelope.inputPricePerMillion != null ||
+        envelope.outputPricePerMillion != null ||
+        envelope.requestPriceUsd != null
+    ) {
+        next.pricing = {
+            mode: envelope.pricingMode,
+            inputPricePerMillion: envelope.inputPricePerMillion,
+            outputPricePerMillion: envelope.outputPricePerMillion,
+            requestPriceUsd: envelope.requestPriceUsd,
+        };
+    }
+    return next;
+}
+
+function envelopeFromModelRow(row) {
+    const capabilities = { ...(row?.capabilities || {}) };
+    return {
+        providerKey: row?.provider_key || null,
+        providerModelId: row?.provider_model_id || null,
+        modelKey: row?.model_key || null,
+        displayName: row?.display_name || null,
+        pricingMode: row?.pricing_mode ?? null,
+        inputPricePerMillion: row?.input_price_per_million ?? null,
+        outputPricePerMillion: row?.output_price_per_million ?? null,
+        requestPriceUsd: row?.request_price_usd ?? null,
+        isFree: row?.is_free ?? null,
+        contextWindow: capabilities.contextWindow ?? null,
+        maxOutputTokens: capabilities.maxOutputTokens ?? null,
+        supportsTools: capabilities.supportsTools ?? null,
+        supportsVision: capabilities.supportsVision ?? null,
+        supportsStreaming: capabilities.supportsStreaming ?? null,
+        capabilities,
+        tags: Array.isArray(row?.tags) ? [...row.tags] : [],
+        metadata: row?.metadata || {},
+    };
+}
+
+function envelopeToModelRow(envelope, row) {
+    return {
+        ...row,
+        pricing_mode: envelope.pricingMode,
+        input_price_per_million: envelope.inputPricePerMillion,
+        output_price_per_million: envelope.outputPricePerMillion,
+        request_price_usd: envelope.requestPriceUsd,
+        is_free:
+            row?.is_free === true || envelope.isFree === true,
+        capabilities: envelope.capabilities,
+        tags: [...envelope.tags],
+        metadata: envelope.metadata,
+    };
+}
+
+export async function enrichDiscoveryDescriptors(appCtx, providerRecord, discoveries) {
+    if (!Array.isArray(discoveries) || discoveries.length === 0) {
+        return [];
+    }
+
+    const directory = await getPricingDirectory(appCtx);
+    const provider = normalizeProviderRecord(providerRecord);
+
+    return discoveries.map((discovery) => {
+        const envelope = envelopeFromDiscovery(discovery, provider);
+        const enriched = enrichModelMetadata(envelope, {
+            pricingDirectory: directory,
+        });
+        return envelopeToDiscovery(enriched, discovery);
+    });
+}
+
+export async function enrichStoredModelRows(appCtx, rows) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return [];
+    }
+
+    const directory = await getPricingDirectory(appCtx);
+
+    return rows.map((row) => {
+        const envelope = envelopeFromModelRow(row);
+        const enriched = enrichModelMetadata(envelope, {
+            pricingDirectory: directory,
+        });
+        return envelopeToModelRow(enriched, row);
+    });
 }
 
 export function normalizeDiscoveryDescriptor(providerRecord, discovery) {
@@ -151,9 +377,25 @@ export async function syncProviderModels(
     } = {}
 ) {
     const normalizedProvider = normalizeProviderRecord(provider);
-    const normalizedDiscoveries = discoveries.map((discovery) =>
-        normalizeDiscoveryDescriptor(normalizedProvider, discovery)
+    const enrichedDiscoveries = await enrichDiscoveryDescriptors(
+        appCtx,
+        normalizedProvider,
+        discoveries
     );
+    const uniqueDiscoveriesByModelKey = new Map();
+    for (const discovery of enrichedDiscoveries) {
+        const normalizedDiscovery = normalizeDiscoveryDescriptor(
+            normalizedProvider,
+            discovery
+        );
+        uniqueDiscoveriesByModelKey.set(
+            normalizedDiscovery.modelKey,
+            normalizedDiscovery
+        );
+    }
+    const normalizedDiscoveries = [...uniqueDiscoveriesByModelKey.values()];
+    const duplicateDiscoveriesDropped =
+        enrichedDiscoveries.length - normalizedDiscoveries.length;
     const modelsDao = await import('../../db/dao/models-dao.mjs');
     const existingRows = await modelsDao.listByProvider(
         appCtx.pool,
@@ -233,6 +475,7 @@ export async function syncProviderModels(
         provider: normalizedProvider.providerKey,
         discoverySource,
         discovered: normalizedDiscoveries.length,
+        duplicateDiscoveriesDropped,
         created,
         updated,
         disabled,

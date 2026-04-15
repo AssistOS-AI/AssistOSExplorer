@@ -616,11 +616,15 @@ function providersPage() {
         async remove(p) {
             if (
                 !confirm(
-                    `Delete provider "${p.provider_key}"? Models using this provider will lose their provider configuration.`
+                    `Delete provider "${p.provider_key}"? Auto-discovered models for this provider will be removed.`
                 )
             )
                 return;
-            await api.del(`/management/providers/${p.id}`);
+            const result = await api.del(`/management/providers/${p.id}`);
+            if (result.error) {
+                alert(result.error.message || result.error);
+                return;
+            }
             this.providers = unwrapArray(
                 await api.get('/management/providers')
             );
@@ -1695,11 +1699,17 @@ function modelsPage() {
                 );
             const q = this.modelFilter.trim().toLowerCase();
             if (q)
-                list = list.filter(
-                    (m) =>
-                        (m.model_key || '').toLowerCase().includes(q) ||
-                        (m.provider_key || '').toLowerCase().includes(q)
-                );
+                list = list.filter((m) => {
+                    if ((m.model_key || '').toLowerCase().includes(q)) return true;
+                    if ((m.display_name || '').toLowerCase().includes(q)) return true;
+                    if ((m.provider_key || '').toLowerCase().includes(q)) return true;
+                    if ((m.provider_model_id || '').toLowerCase().includes(q))
+                        return true;
+                    const tags = Array.isArray(m.tags) ? m.tags : [];
+                    return tags.some((t) =>
+                        String(t).toLowerCase().includes(q)
+                    );
+                });
             return list;
         },
 
@@ -1796,6 +1806,9 @@ function modelsPage() {
                     selected?.output_price_per_million ?? null,
                 requestPriceUsd: selected?.request_price_usd ?? null,
                 isFree: selected?.is_free ?? false,
+                capabilities: { ...(selected?.capabilities || {}) },
+                tags: [...(selected?.tags || [])],
+                metadata: { ...(selected?.metadata || {}) },
             };
             const result = await api.post('/management/models', payload);
             if (result?.error) {

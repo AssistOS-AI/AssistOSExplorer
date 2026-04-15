@@ -101,6 +101,36 @@ Models can define:
 
 Cost is calculated from the model record after each request and feeds budget enforcement and audit logging.
 
+## Model metadata and tagging
+
+Model rows carry pricing, context, capability, and tag metadata that is used by the dashboard, the `/v1/models` listing, and (where it affects routing like `isFree` or `contextWindow`) the request pipeline. Metadata precedence is owned by the shared `enrichModelMetadata()` helper in `src/runtime/policy/model-metadata-classifier.mjs`.
+
+It is applied in three in-memory contexts:
+
+1. `src/runtime/providers/auto-provisioner.mjs` — provider create / OAuth completion / patch-with-credentials / resync / startup reconciliation.
+2. `src/management/models-route.mjs` — the `/management/models` list overlay and the `/management/models/providers/:key/models` Add-Model discovery overlay.
+3. `src/public-api/register-routes.mjs` — direct-model `/v1/models` entries run the same helper against the already-loaded snapshot record plus the already-installed pricing directory, so older sparse rows still render enriched `_pricing`, `_context`, `_tags`, and `_is_free` without a resync.
+
+The enrichment pipeline is strict-precedence:
+
+1. **Provider-supplied metadata wins.** If the provider's own `/models` response surfaced pricing, context, a capability flag, or a tag, that value is preserved — the directory and the classifier never overwrite it (explicit provider values like `supportsVision: false` also win over optimistic directory claims).
+2. **Pricing directory fills remaining gaps.** `src/runtime/policy/pricing-directory.mjs` keeps an OpenRouter-backed model catalog in memory and matches by exact id, canonical slug, curated provider-alias rewrite (NVIDIA `meta/` → `meta-llama/`, Codex models → `openai/`, Copilot vendor prefixes), and finally unique leaf slug. Matching is deterministic; there is no fuzzy search, so adversarial inputs stay unresolved. Directory-sourced fields are stamped in `row.metadata.openrouter` for provenance.
+3. **Classifier adds curated family/domain tags.** The classifier owns `PREDEFINED_MODEL_TAGS`, the family rule set (coding, reasoning, agentic, fast, long-context, instruction-following, multilingual, multimodal, creative, writing, research, finance, medical, etc.), and `TOOL_CALLING_PROVIDER_KEYS` for augmenting `tool-calling` on trusted providers (with explicit opt-outs such as `copilot/gpt-4o`). The classifier is pure and has no side effects. It **never** emits capability-signal tags (`vision`, `audio`, `tool-calling` from direct signal, `structured-outputs`, `moderated`, `free`) — those come from provider or directory data only. Classifier-sourced tags are stamped in `row.metadata.classifier`.
+
+`snapshot.models` records freeze the enriched values (`pricingMode`, `inputPricePerMillion`, `outputPricePerMillion`, `requestPriceUsd`, `isFree`, `tags`, `capabilities`, `metadata`) so request-time code and the public `/v1/models` handler read an already-enriched view without issuing DB or network calls.
+
+## Public model listing
+
+`GET /v1/models` returns the OpenAI-compatible model list derived from `snapshot.models` plus `snapshot.aliases`. The base entry shape (`id`, `object`, `created`, `owned_by`, `permission`, `root`, `parent`) is preserved so vanilla OpenAI clients keep working.
+
+Gateway-specific extensions use the `_`-prefix convention so they cannot collide with a future OpenAI field:
+
+- `_alias: true` and `root`/`parent` pointing at the target on alias entries
+- `_strategy: 'cascade'` with `_child_count`, `_billing_types`, and a derived `_is_free` (true iff every enabled child resolves as free) on cascade models
+- `_pricing`, `_context`, `_tags`, and `_is_free` on direct models, sourced from the snapshot record after the same in-memory enrichment precedence is applied
+
+The handler does not issue DB queries or network calls; it reads the already-loaded snapshot and the already-installed in-memory pricing directory only.
+
 ## Related specs
 
 - **DS001** — request pipeline and dispatch entrypoint

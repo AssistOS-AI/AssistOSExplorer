@@ -32,7 +32,9 @@ Current contract details:
 - provider responses are DB-row shaped snake_case objects from `provider-view.mjs` (for example `provider_key`, `display_name`, `adapter_key`, `auth_strategy`)
 - provider create/update rejects unknown `adapterKey` values and backend-invalid provider config before the row is written
 - provider create with usable credentials performs initial model discovery synchronously; if the initial sync fails, the request fails and the newly-created provider row is removed
+- provider create rollback also removes any partially inserted discovered model rows for that provider before deleting the provider record, so failed initial sync returns the create error instead of a foreign-key `500`
 - provider update with `apiKey` performs the same strict model sync before the request reports success; if that sync fails, the PATCH returns an error
+- provider delete removes provider-seeded direct models (`discovery_source != 'manual'`) before deleting the provider row; delete still rejects when manual models remain attached to the provider
 - `POST /management/providers/:providerId/test` returns `{ ok, detail, latencyMs }`; `detail` is passed through from the backend module without translation to `message`/`error`
 - `POST /management/providers/:providerId/discover-models` returns the raw backend discovery descriptors (`modelId`, `displayName`, `contextWindow`, `supportsTools`, `supportsStreaming`, `supportsVision`, optional `pricing`, ...)
 - provider create/update/delete performs a synchronous runtime snapshot refresh before returning success
@@ -75,8 +77,12 @@ Current contract details:
 
 - the `Models` dashboard tab edits direct models only, even though `GET /management/models` still returns unified model rows from the database
 - the `Models` page remains DB-backed; it does not list live provider catalogs directly in the main table
+- `GET /management/models` overlays missing pricing, context, and tags through the shared `enrichModelMetadata()` pipeline (provider value > pricing directory > local classifier — see DS002 §Auto-provisioning and DS004 §"Model metadata and tagging"), so older DB rows still render enriched metadata without a manual resync; classifier provenance lands in `row.metadata.classifier`
 - `GET /management/models/providers` lists all enabled providers, not just providers that already have persisted model rows
-- `GET /management/models/providers/:key/models` is a recovery path for the Add Model modal: it performs live discovery for that provider and returns model-option rows shaped for the modal (`provider_model_id`, `display_name`, pricing fields, capabilities, tags, metadata)
+- `GET /management/models/providers/:key/models` is a recovery path for the Add Model modal: it performs live discovery for that provider, runs the same `enrichModelMetadata()` pipeline, and returns model-option rows shaped for the modal (`provider_model_id`, `display_name`, pricing fields, capabilities, tags, metadata)
+- `GET /management/models/tags` returns `PREDEFINED_MODEL_TAGS ∪ distinct stored tags`, sorted — the predefined taxonomy (capability-signal tags plus curated family/domain tags) keeps the dashboard tag-filter vocabulary stable even when the DB has no tagged rows yet
+- the Add Model modal now persists the discovered `capabilities`, `tags`, and `metadata` fields along with pricing when it creates a manual direct-model row
+- the Models page search matches `model_key`, `display_name`, `provider_key`, `provider_model_id`, and any of the model's `tags`
 - the `Tiers` dashboard tab edits cascade models through `GET/POST/PATCH/DELETE /management/tiers` plus `POST /management/tiers/:tierId/enable|disable`
 - tier create/update requests use camelCase fields: `tierKey`, `displayName`, `enabled`, `maxAttempts`, `childModelIds`
 - tier responses use a dashboard-specific view model:

@@ -56,6 +56,15 @@ Spend is tracked through a shared in-memory runtime service so the hot path does
 - completed requests record cost back into the cache
 - cache misses can be repopulated from the database
 
+## External-directory pricing
+
+Models with `pricing_mode='external_directory'` resolve prices through the shared cached pricing directory service.
+
+- the default directory source is OpenRouter's public `/api/v1/models` catalog, overridable via `PRICING_DIRECTORY_URL`
+- lookup first tries exact ids / canonical slugs and then a unique leaf-slug match when provider namespaces differ
+- directory entries can resolve token pricing, request pricing, or free models
+- the same directory also supplies management-side fallback context / tags when provider discovery omitted them
+
 ## API key lifecycle
 
 The management API supports:

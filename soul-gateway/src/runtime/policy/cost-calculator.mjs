@@ -74,12 +74,33 @@ export function calculateRequestCost(
         if (pricingDirectory && providerKey && modelId) {
             const entry = pricingDirectory.lookup(providerKey, modelId);
             if (entry) {
+                if (entry.pricingMode === 'free' || entry.isFree === true) {
+                    return {
+                        inputCostUsd: 0,
+                        outputCostUsd: 0,
+                        totalCostUsd: 0,
+                        budgetExempt: true,
+                        pricingMissing: false,
+                    };
+                }
+
+                if (entry.pricingMode === 'request') {
+                    const cost = entry.requestPriceUsd || 0;
+                    return {
+                        inputCostUsd: 0,
+                        outputCostUsd: 0,
+                        totalCostUsd: cost,
+                        budgetExempt: false,
+                        pricingMissing: false,
+                    };
+                }
+
                 const inputCost =
                     (usage.inputTokens / 1_000_000) *
-                    entry.inputPricePerMillion;
+                    (entry.inputPricePerMillion || 0);
                 const outputCost =
                     (usage.outputTokens / 1_000_000) *
-                    entry.outputPricePerMillion;
+                    (entry.outputPricePerMillion || 0);
                 return {
                     inputCostUsd: inputCost,
                     outputCostUsd: outputCost,

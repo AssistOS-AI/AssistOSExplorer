@@ -318,6 +318,99 @@ describe('auto-provisioner.autoProvisionModels', () => {
         assert.deepEqual(disabled, ['missing-auto']);
     });
 
+    it('enriches missing discovery pricing, context, and tags from the pricing directory before persisting', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [
+                    {
+                        modelId: 'google/gemma-3-27b-it',
+                        displayName: 'Gemma 3 27B',
+                        supportsTools: true,
+                        supportsStreaming: true,
+                    },
+                ];
+            },
+        };
+        const created = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [],
+            create: async (_pool, row) => {
+                created.push(row);
+                return { id: 'new-1', ...row };
+            },
+            update: async () => {
+                throw new Error('should not update rows');
+            },
+            disable: async () => {
+                throw new Error('should not disable rows');
+            },
+        };
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'openai-api': backendModule }),
+            credentialManager: createMockCredentialManager({
+                secret: 'sk-test',
+            }),
+            log,
+            pool: {},
+        });
+        appCtx.services.pricingDirectory = {
+            async refreshIfNeeded() {},
+            lookupModel(providerKey, modelId, options) {
+                assert.equal(providerKey, 'nvidia');
+                assert.equal(modelId, 'google/gemma-3-27b-it');
+                assert.equal(options.displayName, 'Gemma 3 27B');
+                return {
+                    id: 'google/gemma-3-27b-it',
+                    canonicalSlug: 'google/gemma-3-27b-it',
+                    matchedBy: 'id',
+                    pricingMode: 'token',
+                    inputPricePerMillion: 0.27,
+                    outputPricePerMillion: 0.4,
+                    requestPriceUsd: null,
+                    isFree: false,
+                    contextWindow: 131072,
+                    maxOutputTokens: 8192,
+                    supportsTools: true,
+                    supportsVision: true,
+                    tags: ['tool-calling', 'vision'],
+                    description: 'test',
+                };
+            },
+            get url() {
+                return 'https://openrouter.ai/api/v1/models';
+            },
+        };
+
+        await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(appCtx, {
+                id: 'provider-nvidia',
+                provider_key: 'nvidia',
+                adapter_key: 'openai-api',
+            })
+        );
+
+        assert.equal(created.length, 1);
+        assert.equal(created[0].pricingMode, 'token');
+        assert.equal(created[0].inputPricePerMillion, 0.27);
+        assert.equal(created[0].capabilities.contextWindow, 131072);
+        assert.equal(created[0].capabilities.maxOutputTokens, 8192);
+        // Directory-sourced capability tags plus classifier-sourced
+        // curated family tags (gemma -> chat/fast; 131072 -> long-context).
+        assert.deepEqual(created[0].tags, [
+            'chat',
+            'fast',
+            'long-context',
+            'tool-calling',
+            'vision',
+        ]);
+        assert.equal(created[0].metadata.openrouter.matchedBy, 'id');
+        assert.equal(
+            created[0].metadata.classifier.source,
+            'model-metadata-classifier'
+        );
+    });
+
     it('keys inserted models as `${provider_key}/${modelId}` to match dashboard convention', async () => {
         const backendModule = {
             async discoverModels() {
@@ -358,6 +451,60 @@ describe('auto-provisioner.autoProvisionModels', () => {
             'my-custom-codex/m1',
             'my-custom-codex/m2',
         ]);
+    });
+
+    it('deduplicates repeated discovery entries by modelKey before inserting', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [
+                    { modelId: 'nemotron', displayName: 'Nemotron' },
+                    {
+                        modelId: 'nemotron',
+                        displayName: 'Nemotron Duplicate',
+                        supportsTools: false,
+                    },
+                    { modelId: 'llama', displayName: 'Llama' },
+                ];
+            },
+        };
+        const created = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [],
+            create: async (_pool, row) => {
+                created.push(row);
+                return { id: `new-${created.length}`, ...row };
+            },
+            update: async () => {
+                throw new Error('should not update rows');
+            },
+            disable: async () => {
+                throw new Error('should not disable rows');
+            },
+        };
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'openai-api': backendModule }),
+            credentialManager: createMockCredentialManager({
+                secret: 'sk-test',
+            }),
+            log,
+        });
+
+        const result = await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(appCtx, {
+                id: 'provider-nvidia',
+                provider_key: 'nvidia',
+                adapter_key: 'openai-api',
+            })
+        );
+
+        assert.equal(result.discovered, 2);
+        assert.deepEqual(
+            created.map((row) => row.modelKey),
+            ['nvidia/nemotron', 'nvidia/llama']
+        );
+        assert.equal(created[0].displayName, 'Nemotron Duplicate');
+        assert.equal(created[0].capabilities.supportsTools, false);
     });
 
     it('returns early (and does not throw) when the catalog is not installed', async () => {

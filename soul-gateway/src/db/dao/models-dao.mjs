@@ -184,6 +184,14 @@ export async function del(pool, id) {
     return rowCount > 0;
 }
 
+export async function delByProvider(pool, providerId) {
+    const { rowCount } = await pool.query(
+        `DELETE FROM ${TABLE} WHERE provider_id = $1`,
+        [providerId]
+    );
+    return rowCount;
+}
+
 export async function enable(pool, id) {
     const { rows } = await pool.query(
         `UPDATE ${TABLE} SET enabled = true, updated_at = now() WHERE id = $1 RETURNING *`,

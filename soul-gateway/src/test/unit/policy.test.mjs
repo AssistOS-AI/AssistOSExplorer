@@ -434,6 +434,7 @@ describe('calculateRequestCost', () => {
             lookup: (provider, model) => {
                 if (provider === 'openai' && model === 'gpt-4') {
                     return {
+                        pricingMode: 'token',
                         inputPricePerMillion: 30,
                         outputPricePerMillion: 60,
                     };
@@ -453,6 +454,51 @@ describe('calculateRequestCost', () => {
         assert.equal(result.inputCostUsd, 0.03);
         // (500 / 1_000_000) * 60 = 0.03
         assert.equal(result.outputCostUsd, 0.03);
+        assert.equal(result.pricingMissing, false);
+    });
+
+    it('uses request pricing returned by the directory for external_directory mode', () => {
+        const fakeDirectory = {
+            lookup: () => ({
+                pricingMode: 'request',
+                requestPriceUsd: 0.015,
+            }),
+        };
+
+        const result = calculateRequestCost(
+            { pricingMode: 'external_directory' },
+            { inputTokens: 1000, outputTokens: 500 },
+            fakeDirectory,
+            'provider',
+            'model'
+        );
+
+        assert.equal(result.totalCostUsd, 0.015);
+        assert.equal(result.inputCostUsd, 0);
+        assert.equal(result.outputCostUsd, 0);
+        assert.equal(result.pricingMissing, false);
+    });
+
+    it('treats free directory entries as budget-exempt for external_directory mode', () => {
+        const fakeDirectory = {
+            lookup: () => ({
+                pricingMode: 'free',
+                isFree: true,
+                inputPricePerMillion: 0,
+                outputPricePerMillion: 0,
+            }),
+        };
+
+        const result = calculateRequestCost(
+            { pricingMode: 'external_directory' },
+            { inputTokens: 1000, outputTokens: 500 },
+            fakeDirectory,
+            'provider',
+            'model'
+        );
+
+        assert.equal(result.totalCostUsd, 0);
+        assert.equal(result.budgetExempt, true);
         assert.equal(result.pricingMissing, false);
     });
 

@@ -16,6 +16,7 @@ import { BadRequestError } from '../core/errors.mjs';
 import * as modelsDao from '../db/dao/models-dao.mjs';
 import * as providersDao from '../db/dao/providers-dao.mjs';
 import { requestRuntimeRefresh } from '../runtime/registry/runtime-refresh.mjs';
+import { PREDEFINED_MODEL_TAGS } from '../runtime/policy/model-metadata-classifier.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
 
 /**
@@ -35,7 +36,11 @@ export async function handleListModels(ctx) {
         limit,
         offset,
     });
-    sendJson(res, 200, { data: rows });
+    const { enrichStoredModelRows } = await import(
+        '../runtime/providers/auto-provisioner.mjs'
+    );
+    const enrichedRows = await enrichStoredModelRows(appCtx, rows);
+    sendJson(res, 200, { data: enrichedRows });
 }
 
 /**
@@ -243,10 +248,18 @@ export async function handleListProviderModels(ctx) {
         return;
     }
 
-    const { discoverProviderModels, normalizeDiscoveryDescriptor } =
-        await import('../runtime/providers/auto-provisioner.mjs');
+    const {
+        discoverProviderModels,
+        enrichDiscoveryDescriptors,
+        normalizeDiscoveryDescriptor,
+    } = await import('../runtime/providers/auto-provisioner.mjs');
     const discoveries = await discoverProviderModels(appCtx, provider);
-    const rows = discoveries.map((discovery) => {
+    const enrichedDiscoveries = await enrichDiscoveryDescriptors(
+        appCtx,
+        provider,
+        discoveries
+    );
+    const rows = enrichedDiscoveries.map((discovery) => {
         const normalized = normalizeDiscoveryDescriptor(provider, discovery);
         return {
             provider_model_id: normalized.providerModelId,
@@ -267,7 +280,12 @@ export async function handleListProviderModels(ctx) {
 
 /**
  * GET /management/models/tags
- * List distinct tags used across all models.
+ *
+ * Returns the union of the curated `PREDEFINED_MODEL_TAGS` taxonomy and
+ * the distinct tags actually stored on model rows, sorted alphabetically.
+ * The union keeps the dashboard tag-filter vocabulary stable even when
+ * no model row has been tagged yet (the pre-refactor behavior returned
+ * only distinct stored tags, which left the filter empty on fresh DBs).
  */
 export async function handleListModelTags(ctx) {
     const { res, appCtx } = ctx;
@@ -276,5 +294,11 @@ export async function handleListModelTags(ctx) {
     const { rows } = await pool.query(
         `SELECT DISTINCT unnest(tags) AS tag FROM soul_gateway.models ORDER BY tag ASC`
     );
-    sendJson(res, 200, { data: rows.map((r) => r.tag) });
+    const merged = new Set(PREDEFINED_MODEL_TAGS);
+    for (const r of rows) {
+        if (typeof r.tag === 'string' && r.tag.length > 0) {
+            merged.add(r.tag);
+        }
+    }
+    sendJson(res, 200, { data: [...merged].sort() });
 }

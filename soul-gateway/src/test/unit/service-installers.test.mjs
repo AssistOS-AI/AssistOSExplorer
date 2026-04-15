@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+    installExecutionServices,
     installMiddlewareServices,
     installBackendCatalogServices,
     reconcileProvidersOnStartup,
@@ -126,6 +127,48 @@ describe('service installers extension integration', () => {
             1
         );
         assert.equal(appCtx.services.extensionCatalog.backends.length, 1);
+    });
+});
+
+describe('installExecutionServices', () => {
+    it('installs the shared pricing directory service with the OpenRouter default URL', async () => {
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = async () =>
+            new Response(JSON.stringify({ data: [] }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        const appCtx = {
+            config: {
+                env: {
+                    SPEND_CACHE_TTL_MS: 10_000,
+                    PRICING_DIRECTORY_URL: null,
+                    PRICING_REFRESH_INTERVAL_MS: 60_000,
+                    DATA_DIR: '/tmp/soul-gateway-test',
+                    ENCRYPTION_KEY: 'a'.repeat(64),
+                },
+            },
+            services: {},
+            log: {
+                debug() {},
+                info() {},
+                warn() {},
+                error() {},
+                fatal() {},
+            },
+        };
+
+        try {
+            await installExecutionServices(appCtx);
+
+            assert.ok(appCtx.services.pricingDirectory);
+            assert.equal(
+                appCtx.services.pricingDirectory.url,
+                'https://openrouter.ai/api/v1/models'
+            );
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
     });
 });
 

@@ -461,7 +461,8 @@ describe('management/models-route', () => {
         handleUpdateModel,
         handleDeleteModel,
         handleListModelProviders,
-        handleListProviderModels;
+        handleListProviderModels,
+        handleListModelTags;
 
     beforeEach(async () => {
         ({
@@ -472,6 +473,7 @@ describe('management/models-route', () => {
             handleDeleteModel,
             handleListModelProviders,
             handleListProviderModels,
+            handleListModelTags,
         } = await import('../../management/models-route.mjs'));
     });
 
@@ -498,6 +500,88 @@ describe('management/models-route', () => {
         const body = parseJsonResponse(res);
         assert.equal(body.data.length, 1);
         assert.equal(body.data[0].model_key, 'gpt-4o');
+    });
+
+    it('handleListModels overlays missing pricing, context, and tags from the pricing directory', async () => {
+        const mockRow = {
+            id: 'm1',
+            model_key: 'nvidia/google/gemma-3-27b-it',
+            display_name: 'Gemma 3 27B',
+            provider_key: 'nvidia',
+            provider_model_id: 'google/gemma-3-27b-it',
+            pricing_mode: 'external_directory',
+            input_price_per_million: null,
+            output_price_per_million: null,
+            request_price_usd: null,
+            capabilities: {},
+            tags: [],
+            metadata: {},
+            is_free: false,
+            enabled: true,
+        };
+        const pool = createMockPool(async () => ({ rows: [mockRow] }));
+        const appCtx = createMockAppCtx({
+            pool,
+            services: {
+                pricingDirectory: {
+                    async refreshIfNeeded() {},
+                    lookupModel(providerKey, modelId) {
+                        assert.equal(providerKey, 'nvidia');
+                        assert.equal(modelId, 'google/gemma-3-27b-it');
+                        return {
+                            id: 'google/gemma-3-27b-it',
+                            canonicalSlug: 'google/gemma-3-27b-it',
+                            matchedBy: 'id',
+                            pricingMode: 'token',
+                            inputPricePerMillion: 0.27,
+                            outputPricePerMillion: 0.4,
+                            requestPriceUsd: null,
+                            isFree: false,
+                            contextWindow: 131072,
+                            maxOutputTokens: 8192,
+                            supportsTools: true,
+                            supportsVision: true,
+                            tags: ['tool-calling', 'vision'],
+                            description: 'test',
+                        };
+                    },
+                    get url() {
+                        return 'https://openrouter.ai/api/v1/models';
+                    },
+                },
+            },
+        });
+        const res = createMockRes();
+
+        await handleListModels({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        const body = parseJsonResponse(res);
+        assert.equal(body.data[0].pricing_mode, 'token');
+        assert.equal(body.data[0].input_price_per_million, 0.27);
+        assert.equal(body.data[0].capabilities.contextWindow, 131072);
+        assert.equal(body.data[0].capabilities.maxOutputTokens, 8192);
+        // Tags union: directory supplies tool-calling/vision capability tags;
+        // the classifier adds curated family tags (chat/fast from the
+        // gemma rule) and long-context (131072 >= threshold). `nvidia` is
+        // not in TOOL_CALLING_PROVIDER_KEYS so no augmentation.
+        assert.deepEqual(body.data[0].tags, [
+            'chat',
+            'fast',
+            'long-context',
+            'tool-calling',
+            'vision',
+        ]);
+        assert.equal(body.data[0].metadata.openrouter.matchedBy, 'id');
+        assert.equal(
+            body.data[0].metadata.classifier.source,
+            'model-metadata-classifier'
+        );
     });
 
     it('handleCreateModel rejects missing required fields', async () => {
@@ -676,20 +760,222 @@ describe('management/models-route', () => {
 
         assert.equal(res.statusCode, 200);
         const body = parseJsonResponse(res);
-        assert.deepEqual(body.data, [
-            {
-                provider_model_id: 'gpt-5.4',
-                display_name: 'GPT-5.4',
-                pricing_mode: 'token',
-                input_price_per_million: 1.25,
-                output_price_per_million: 10,
-                request_price_usd: null,
-                is_free: false,
-                capabilities: {},
-                tags: [],
-                metadata: {},
-            },
+        assert.equal(body.data.length, 1);
+        const [row] = body.data;
+        assert.equal(row.provider_model_id, 'gpt-5.4');
+        assert.equal(row.display_name, 'GPT-5.4');
+        assert.equal(row.pricing_mode, 'token');
+        assert.equal(row.input_price_per_million, 1.25);
+        assert.equal(row.output_price_per_million, 10);
+        assert.equal(row.request_price_usd, null);
+        assert.equal(row.is_free, false);
+        assert.deepEqual(row.capabilities, {});
+        // Classifier tags: gpt-5.4 matches the gpt-5.[1234] rule
+        // (reasoning, coding), the gpt-5 rule (reasoning, chat), and the
+        // catch-all gpt- rule (chat). `openai` is in
+        // TOOL_CALLING_PROVIDER_KEYS so tool-calling is augmented in.
+        assert.deepEqual(row.tags, [
+            'chat',
+            'coding',
+            'reasoning',
+            'tool-calling',
         ]);
+        assert.equal(
+            row.metadata.classifier.source,
+            'model-metadata-classifier'
+        );
+        // No pricingDirectory configured here so no openrouter provenance
+        // should be attached.
+        assert.equal(row.metadata.openrouter, undefined);
+    });
+
+    it('handleListProviderModels overlays missing discovery metadata from the pricing directory', async () => {
+        const pool = createMockPool(async (sql, params) => {
+            if (
+                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('provider_key = $1')
+            ) {
+                assert.deepEqual(params, ['nvidia']);
+                return {
+                    rows: [
+                        {
+                            id: 'p1',
+                            provider_key: 'nvidia',
+                            display_name: 'NVIDIA',
+                            adapter_key: 'openai-api',
+                            auth_strategy: 'api_key',
+                            provider_mode: 'external_api',
+                            base_url: 'https://integrate.api.nvidia.com/v1',
+                            enabled: true,
+                            settings: {},
+                            metadata: {},
+                        },
+                    ],
+                };
+            }
+            return { rows: [] };
+        });
+        const appCtx = createMockAppCtx({
+            pool,
+            services: {
+                backendCatalog: {
+                    getBackend(key) {
+                        assert.equal(key, 'openai-api');
+                        return {
+                            manifest: { key: 'openai-api' },
+                            async discoverModels() {
+                                return [
+                                    {
+                                        modelId: 'google/gemma-3-27b-it',
+                                        displayName: 'Gemma 3 27B',
+                                        supportsTools: true,
+                                        supportsStreaming: true,
+                                        supportsVision: false,
+                                    },
+                                ];
+                            },
+                        };
+                    },
+                },
+                pricingDirectory: {
+                    async refreshIfNeeded() {},
+                    lookupModel(providerKey, modelId, options) {
+                        assert.equal(providerKey, 'nvidia');
+                        assert.equal(modelId, 'google/gemma-3-27b-it');
+                        assert.equal(options.displayName, 'Gemma 3 27B');
+                        return {
+                            id: 'google/gemma-3-27b-it',
+                            canonicalSlug: 'google/gemma-3-27b-it',
+                            matchedBy: 'id',
+                            pricingMode: 'token',
+                            inputPricePerMillion: 0.27,
+                            outputPricePerMillion: 0.4,
+                            requestPriceUsd: null,
+                            isFree: false,
+                            contextWindow: 131072,
+                            maxOutputTokens: 8192,
+                            supportsTools: true,
+                            supportsVision: true,
+                            tags: ['tool-calling', 'vision'],
+                            description: 'test',
+                        };
+                    },
+                    get url() {
+                        return 'https://openrouter.ai/api/v1/models';
+                    },
+                },
+            },
+        });
+        const res = createMockRes();
+
+        await handleListProviderModels({
+            req: createMockReq(),
+            res,
+            params: { key: 'nvidia' },
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.data.length, 1);
+        const [row] = body.data;
+        assert.equal(row.provider_model_id, 'google/gemma-3-27b-it');
+        assert.equal(row.display_name, 'Gemma 3 27B');
+        assert.equal(row.pricing_mode, 'token');
+        assert.equal(row.input_price_per_million, 0.27);
+        assert.equal(row.output_price_per_million, 0.4);
+        assert.equal(row.is_free, false);
+        // Provider explicitly reported supportsVision=false; directory
+        // says true, but provider-supplied capability wins.
+        assert.deepEqual(row.capabilities, {
+            contextWindow: 131072,
+            maxOutputTokens: 8192,
+            supportsTools: true,
+            supportsStreaming: true,
+            supportsVision: false,
+        });
+        // Tags union: provider explicitly reported supportsVision=false,
+        // so the directory's `vision` tag must not be merged back in.
+        // The directory still contributes `tool-calling`; the classifier
+        // adds chat/fast (gemma rule) and long-context (131072 threshold).
+        // nvidia is not in TOOL_CALLING_PROVIDER_KEYS — no augmentation.
+        assert.deepEqual(row.tags, [
+            'chat',
+            'fast',
+            'long-context',
+            'tool-calling',
+        ]);
+        assert.equal(row.metadata.openrouter.matchedBy, 'id');
+        assert.equal(row.metadata.openrouter.id, 'google/gemma-3-27b-it');
+        assert.equal(
+            row.metadata.classifier.source,
+            'model-metadata-classifier'
+        );
+    });
+
+    it('handleListModelTags returns PREDEFINED_MODEL_TAGS union with stored tags on a sparse DB', async () => {
+        const pool = createMockPool(async () => ({ rows: [] }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListModelTags({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        // Even with no stored rows, the predefined taxonomy must surface
+        // so the dashboard tag-filter chip row has a stable vocabulary.
+        for (const tag of [
+            'tool-calling',
+            'vision',
+            'coding',
+            'reasoning',
+            'agentic',
+            'fast',
+            'long-context',
+        ]) {
+            assert.ok(
+                body.data.includes(tag),
+                `expected ${tag} in union with empty DB`
+            );
+        }
+        // Response must be sorted and contain no duplicates.
+        assert.deepEqual(body.data, [...new Set(body.data)].sort());
+    });
+
+    it('handleListModelTags merges custom stored tags that are not part of the taxonomy', async () => {
+        const pool = createMockPool(async () => ({
+            rows: [{ tag: 'custom-internal' }, { tag: 'experimental' }],
+        }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListModelTags({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        const body = parseJsonResponse(res);
+        assert.ok(body.data.includes('custom-internal'));
+        assert.ok(body.data.includes('experimental'));
+        assert.ok(body.data.includes('tool-calling'));
+        // Stored tag duplicates of the taxonomy must not appear twice.
+        const counts = new Map();
+        for (const tag of body.data) {
+            counts.set(tag, (counts.get(tag) || 0) + 1);
+        }
+        for (const [tag, count] of counts) {
+            assert.equal(count, 1, `tag ${tag} must appear once`);
+        }
     });
 });
 
@@ -1258,6 +1544,154 @@ describe('management/providers-route', () => {
         );
     });
 
+    it('handleCreateProvider deletes partially inserted models before provider rollback', async () => {
+        const queries = [];
+        let snapshotReloadCalls = 0;
+        const pool = createMockPool(async (sql, params) => {
+            queries.push(compactSql(sql));
+
+            if (sql.includes('INSERT INTO soul_gateway.providers')) {
+                return {
+                    rows: [
+                        {
+                            id: 'p-partial-sync',
+                            provider_key: params[0],
+                            display_name: params[1],
+                            kind: params[2],
+                            adapter_key: params[3],
+                            auth_strategy: params[4],
+                            provider_mode: params[5],
+                            oauth_adapter_key: params[6],
+                            base_url: params[7],
+                            enabled: true,
+                            settings: {},
+                            metadata: {},
+                        },
+                    ],
+                };
+            }
+
+            if (
+                sql.includes('FROM soul_gateway.provider_accounts') &&
+                sql.includes('provider_id = $1')
+            ) {
+                return { rows: [] };
+            }
+
+            if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+                return {
+                    rows: [
+                        {
+                            id: 'acc-partial-sync',
+                            provider_id: 'p-partial-sync',
+                            auth_type: 'api_key',
+                            status: 'active',
+                        },
+                    ],
+                };
+            }
+
+            if (sql.includes('SELECT * FROM soul_gateway.models')) {
+                return { rows: [] };
+            }
+
+            if (sql.includes('INSERT INTO soul_gateway.models')) {
+                return {
+                    rows: [
+                        {
+                            id: 'm-partial-sync',
+                            provider_id: 'p-partial-sync',
+                            model_key: 'nvidia/meta/llama-3.1-8b-instruct',
+                            discovery_source: 'auto_provisioned',
+                            enabled: true,
+                        },
+                    ],
+                };
+            }
+
+            if (sql.includes('DELETE FROM soul_gateway.models WHERE provider_id = $1')) {
+                assert.equal(params[0], 'p-partial-sync');
+                return { rows: [], rowCount: 1 };
+            }
+
+            if (sql.includes('DELETE FROM soul_gateway.providers')) {
+                assert.equal(params[0], 'p-partial-sync');
+                return { rows: [], rowCount: 1 };
+            }
+
+            return { rows: [], rowCount: 0 };
+        });
+
+        const appCtx = createMockAppCtx({
+            pool,
+            services: {
+                encryptionKey: randomBytes(32),
+                backendCatalog: {
+                    getBackend(key) {
+                        assert.equal(key, 'openai-api');
+                        return {
+                            manifest: { key: 'openai-api' },
+                            async discoverModels() {
+                                return [
+                                    {
+                                        modelId: 'meta/llama-3.1-8b-instruct',
+                                        displayName: 'Llama 3.1 8B Instruct',
+                                    },
+                                ];
+                            },
+                        };
+                    },
+                    listKeys() {
+                        return ['openai-api'];
+                    },
+                    getTemplates() {
+                        return {};
+                    },
+                },
+                reloadRuntimeSnapshot: async () => {
+                    snapshotReloadCalls += 1;
+                    if (snapshotReloadCalls !== 2) {
+                        return { generation: 1 };
+                    }
+                    throw new Error('snapshot reload failed');
+                },
+            },
+        });
+        const req = createMockReq({
+            method: 'POST',
+            body: {
+                providerKey: 'nvidia',
+                displayName: 'NVIDIA',
+                adapterKey: 'openai-api',
+                authStrategy: 'api_key',
+                providerMode: 'external_api',
+                baseUrl: 'https://integrate.api.nvidia.com/v1',
+                apiKey: 'sk-test-12345',
+            },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () => handleCreateProvider({ req, res, params: {}, query: {}, appCtx }),
+            (err) =>
+                err.httpStatus === 400 &&
+                err.message.includes('Provider initial model sync failed: snapshot reload failed')
+        );
+
+        const deleteModelsIndex = queries.findIndex((sql) =>
+            sql.includes('DELETE FROM soul_gateway.models WHERE provider_id = $1')
+        );
+        const deleteProviderIndex = queries.findIndex((sql) =>
+            sql.includes('DELETE FROM soul_gateway.providers')
+        );
+        assert.ok(deleteModelsIndex >= 0, 'expected rollback to delete provider models');
+        assert.ok(deleteProviderIndex >= 0, 'expected rollback to delete the provider row');
+        assert.ok(
+            deleteModelsIndex < deleteProviderIndex,
+            'expected model cleanup before provider delete to satisfy the FK'
+        );
+    });
+
     it('handleUpdateProvider accepts an apiKey-only PATCH, creates a provider_accounts row, and auto-syncs models', async () => {
         const providerRow = {
             id: 'p-nv',
@@ -1592,13 +2026,22 @@ describe('management/providers-route', () => {
         );
     });
 
-    it('handleDeleteProvider returns 409 when models depend on it', async () => {
-        let callCount = 0;
+    it('handleDeleteProvider returns 409 when manual models depend on it', async () => {
         const pool = createMockPool(async (sql) => {
-            callCount++;
-            // First call: listByProvider returns models
             if (sql.includes('provider_id')) {
-                return { rows: [{ id: 'm1' }] };
+                return {
+                    rows: [
+                        {
+                            id: 'm1',
+                            discovery_source: 'manual',
+                        },
+                    ],
+                };
+            }
+            if (sql.includes('DELETE FROM soul_gateway.providers')) {
+                throw new Error(
+                    'Provider delete should not run when manual models exist'
+                );
             }
             return { rows: [], rowCount: 0 };
         });
@@ -1615,7 +2058,75 @@ describe('management/providers-route', () => {
 
         assert.equal(res.statusCode, 409);
         const body = parseJsonResponse(res);
-        assert.ok(body.error.message.includes('model'));
+        assert.equal(
+            body.error.message,
+            'Cannot delete provider: 1 manual model(s) depend on it'
+        );
+        assert.equal(body.error.detail.modelCount, 1);
+        assert.equal(body.error.detail.manualModelCount, 1);
+        assert.equal(body.error.detail.providerSeededModelCount, 0);
+    });
+
+    it('handleDeleteProvider deletes provider-seeded models before deleting the provider', async () => {
+        const queries = [];
+        const pool = createMockPool(async (sql, params) => {
+            queries.push(compactSql(sql));
+
+            if (sql.includes('SELECT * FROM soul_gateway.models')) {
+                return {
+                    rows: [
+                        {
+                            id: 'm-auto-1',
+                            discovery_source: 'auto_provisioned',
+                        },
+                        {
+                            id: 'm-auto-2',
+                            discovery_source: 'synced',
+                        },
+                    ],
+                };
+            }
+
+            if (sql.includes('DELETE FROM soul_gateway.models WHERE provider_id = $1')) {
+                assert.equal(params[0], 'p-auto');
+                return { rows: [], rowCount: 2 };
+            }
+
+            if (sql.includes('DELETE FROM soul_gateway.providers')) {
+                assert.equal(params[0], 'p-auto');
+                return { rows: [], rowCount: 1 };
+            }
+
+            return { rows: [], rowCount: 0 };
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleDeleteProvider({
+            req: createMockReq(),
+            res,
+            params: { providerId: 'p-auto' },
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.ok, true);
+        assert.equal(body.deletedModels, 2);
+
+        const deleteModelsIndex = queries.findIndex((sql) =>
+            sql.includes('DELETE FROM soul_gateway.models WHERE provider_id = $1')
+        );
+        const deleteProviderIndex = queries.findIndex((sql) =>
+            sql.includes('DELETE FROM soul_gateway.providers')
+        );
+        assert.ok(deleteModelsIndex >= 0, 'expected provider model cleanup');
+        assert.ok(deleteProviderIndex >= 0, 'expected provider delete');
+        assert.ok(
+            deleteModelsIndex < deleteProviderIndex,
+            'expected model cleanup before provider delete'
+        );
     });
 
     it('handleAuthCallback returns dashboard-compatible completion shape', async () => {

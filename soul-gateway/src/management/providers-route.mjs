@@ -182,6 +182,7 @@ export async function handleCreateProvider(ctx) {
                 refreshReason: 'provider.create.auto-provision',
             });
         } catch (err) {
+            await modelsDao.delByProvider(pool, row.id);
             await providersDao.del(pool, row.id);
             await performRuntimeRefresh(appCtx, {
                 snapshot: true,
@@ -337,17 +338,25 @@ export async function handleDeleteProvider(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
 
-    // Check for dependent models
     const models = await modelsDao.listByProvider(pool, params.providerId);
-    if (models.length > 0) {
+    const manualModels = models.filter(
+        (model) => model.discovery_source === 'manual'
+    );
+    if (manualModels.length > 0) {
         sendConflict(
             res,
-            `Cannot delete provider: ${models.length} model(s) depend on it`,
+            `Cannot delete provider: ${manualModels.length} manual model(s) depend on it`,
             {
                 modelCount: models.length,
+                manualModelCount: manualModels.length,
+                providerSeededModelCount: models.length - manualModels.length,
             }
         );
         return;
+    }
+
+    if (models.length > 0) {
+        await modelsDao.delByProvider(pool, params.providerId);
     }
 
     const ok = await providersDao.del(pool, params.providerId);
@@ -362,7 +371,7 @@ export async function handleDeleteProvider(ctx) {
         reason: 'provider.delete',
     });
 
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, deletedModels: models.length });
 }
 
 /**

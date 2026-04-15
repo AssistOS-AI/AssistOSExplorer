@@ -48,6 +48,133 @@ const manifest = {
     hidden: true,
 };
 
+function parseOptionalNumber(value) {
+    if (value === undefined || value === null || value === '') {
+        return null;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
+function parsePerMillionPrice(value) {
+    const numeric = parseOptionalNumber(value);
+    return numeric === null ? null : Number((numeric * 1_000_000).toFixed(12));
+}
+
+function buildDiscoveredPricing(pricing = {}) {
+    const inputPricePerMillion = parsePerMillionPrice(pricing.prompt);
+    const outputPricePerMillion = parsePerMillionPrice(pricing.completion);
+    const requestPriceUsd = parseOptionalNumber(pricing.request);
+
+    const hasTokenPricing =
+        inputPricePerMillion !== null || outputPricePerMillion !== null;
+    const hasRequestPricing = requestPriceUsd !== null;
+    const tokenPricesZero =
+        (inputPricePerMillion === null || inputPricePerMillion === 0) &&
+        (outputPricePerMillion === null || outputPricePerMillion === 0);
+    const requestPriceZero =
+        requestPriceUsd === null || requestPriceUsd === 0;
+
+    if (!hasTokenPricing && !hasRequestPricing) {
+        return null;
+    }
+
+    let mode = 'external_directory';
+    if (tokenPricesZero && requestPriceZero) {
+        mode = 'free';
+    } else if (hasTokenPricing) {
+        mode = 'token';
+    } else if (hasRequestPricing) {
+        mode = 'request';
+    }
+
+    return {
+        mode,
+        inputPricePerMillion,
+        outputPricePerMillion,
+        requestPriceUsd,
+    };
+}
+
+function buildDiscoveredTags(model, pricingMode) {
+    const tags = new Set();
+    const architecture = model?.architecture || {};
+    const inputModalities = Array.isArray(architecture.input_modalities)
+        ? architecture.input_modalities
+        : [];
+    const outputModalities = Array.isArray(architecture.output_modalities)
+        ? architecture.output_modalities
+        : [];
+    const supportedParameters = Array.isArray(model?.supported_parameters)
+        ? model.supported_parameters
+        : [];
+
+    if (
+        inputModalities.includes('image') ||
+        outputModalities.includes('image')
+    ) {
+        tags.add('vision');
+    }
+    if (
+        supportedParameters.includes('tools') ||
+        supportedParameters.includes('tool_choice')
+    ) {
+        tags.add('tool-calling');
+    }
+    if (
+        supportedParameters.includes('structured_outputs') ||
+        supportedParameters.includes('response_format')
+    ) {
+        tags.add('structured-outputs');
+    }
+    if (pricingMode === 'free') {
+        tags.add('free');
+    }
+
+    return [...tags].sort();
+}
+
+function normalizeDiscoveredModel(model) {
+    const architecture = model?.architecture || {};
+    const inputModalities = Array.isArray(architecture.input_modalities)
+        ? architecture.input_modalities
+        : [];
+    const outputModalities = Array.isArray(architecture.output_modalities)
+        ? architecture.output_modalities
+        : [];
+    const supportedParameters = Array.isArray(model?.supported_parameters)
+        ? model.supported_parameters
+        : [];
+    const pricing = buildDiscoveredPricing(model?.pricing || {});
+
+    return {
+        modelId: model.id,
+        displayName: model.name || model.id,
+        contextWindow:
+            parseOptionalNumber(model.context_length) ??
+            parseOptionalNumber(model.contextWindow) ??
+            parseOptionalNumber(model.max_context_tokens) ??
+            parseOptionalNumber(model?.top_provider?.context_length),
+        maxOutputTokens:
+            parseOptionalNumber(model?.top_provider?.max_completion_tokens) ??
+            parseOptionalNumber(model.max_completion_tokens) ??
+            parseOptionalNumber(model.max_output_tokens) ??
+            parseOptionalNumber(model.max_tokens),
+        supportsTools:
+            supportedParameters.length > 0
+                ? supportedParameters.includes('tools') ||
+                  supportedParameters.includes('tool_choice')
+                : true,
+        supportsStreaming: true,
+        supportsVision:
+            inputModalities.includes('image') ||
+            outputModalities.includes('image'),
+        pricing,
+        isFree: pricing?.mode === 'free',
+        tags: buildDiscoveredTags(model, pricing?.mode || null),
+    };
+}
+
 // ── Backend module ──────────────────────────────────────────────────
 
 export const backendModule = {
@@ -90,15 +217,9 @@ export const backendModule = {
                 Authorization: `Bearer ${token}`,
             });
             const parsed = JSON.parse(body);
-            return (parsed.data || []).map((m) => ({
-                modelId: m.id,
-                displayName: m.id,
-                contextWindow: null,
-                maxOutputTokens: null,
-                supportsTools: true,
-                supportsStreaming: true,
-                supportsVision: false,
-            }));
+            return (parsed.data || [])
+                .filter((model) => Boolean(model?.id))
+                .map(normalizeDiscoveredModel);
         } catch (err) {
             if (err.status !== 404) {
                 throw err;

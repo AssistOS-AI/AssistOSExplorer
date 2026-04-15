@@ -2566,6 +2566,67 @@ function makeOpenAITestCtx(baseUrl, secret = 'test-key') {
     };
 }
 
+describe('openai-api discoverModels metadata parsing', () => {
+    it('captures pricing and context metadata from rich /models responses', async () => {
+        const fake = await spinUpFakeOpenAI({
+            models: {
+                status: 200,
+                body: JSON.stringify({
+                    data: [
+                        {
+                            id: 'google/gemma-3-27b-it',
+                            name: 'Google: Gemma 3 27B',
+                            context_length: 131072,
+                            pricing: {
+                                prompt: '0.00000027',
+                                completion: '0.00000040',
+                            },
+                            top_provider: {
+                                max_completion_tokens: 8192,
+                            },
+                            architecture: {
+                                input_modalities: ['text', 'image'],
+                                output_modalities: ['text'],
+                            },
+                            supported_parameters: [
+                                'tools',
+                                'structured_outputs',
+                            ],
+                        },
+                    ],
+                }),
+            },
+        });
+
+        try {
+            const discovered = await openaiApiPlugin.discoverModels(
+                makeOpenAITestCtx(fake.baseUrl)
+            );
+            assert.deepEqual(discovered, [
+                {
+                    modelId: 'google/gemma-3-27b-it',
+                    displayName: 'Google: Gemma 3 27B',
+                    contextWindow: 131072,
+                    maxOutputTokens: 8192,
+                    supportsTools: true,
+                    supportsStreaming: true,
+                    supportsVision: true,
+                    pricing: {
+                        mode: 'token',
+                        inputPricePerMillion: 0.27,
+                        outputPricePerMillion: 0.4,
+                        requestPriceUsd: null,
+                    },
+                    isFree: false,
+                    tags: ['structured-outputs', 'tool-calling', 'vision'],
+                },
+            ]);
+        } finally {
+            await fake.close();
+        }
+    });
+});
+
 describe('openai-api testConnection HTTP behavior', () => {
     it('returns ok=true when /models returns 200', async () => {
         // Happy path — every vendor that exposes /models hits this branch.

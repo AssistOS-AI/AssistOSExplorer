@@ -31,6 +31,12 @@ Environment variables cover:
 
 The gateway reads database connectivity from `DATABASE_URL`; the old `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` inputs are not consumed by the current pool implementation. `ENCRYPTION_KEY` is optional because the runtime auto-generates and persists `DATA_DIR/encryption.key` on first run if needed.
 
+Pricing directory detail:
+
+- `PRICING_DIRECTORY_URL` overrides the external model directory source used for `external_directory` pricing and management-side metadata enrichment
+- when `PRICING_DIRECTORY_URL` is unset, the runtime defaults that service to OpenRouter's public `https://openrouter.ai/api/v1/models`
+- `PRICING_REFRESH_INTERVAL_MS` controls the cache refresh interval for that shared directory
+
 ### Application defaults
 
 Application-level defaults are configurable for:
@@ -54,12 +60,13 @@ The runtime performs self-initialization on startup so there's no manual provisi
 2. **Connect to Postgres and apply migrations** — the schema is created and migrated to the latest version automatically.
 3. **Generate encryption key** if not provided — a random 32-byte key is written to `DATA_DIR/encryption.key` with 0600 permissions.
 4. **Discover middlewares** — scans built-in and extension middleware directories and syncs the middleware catalog rows into the database.
-5. **Discover backend modules** — loads built-in backend modules from `runtime/backends/builtin/` and any configured backend extensions from `extensions/backends/`. Backend modules and provider-scope middleware extensions are registered into the unified `BackendCatalog` and the `providerMiddlewareRegistry` respectively.
-6. **Register OAuth adapters** — the five OAuth adapters are registered into the OAuth manager.
-7. **Reconcile providers** — any enabled provider with at least one active stored credential and zero model rows gets its auto-provision pass re-run to catch up before the initial snapshot is built.
-8. **Load the runtime snapshot** — providers, models, model children, middleware bindings, and API keys are loaded into the in-memory runtime state used by the request path. Snapshot load validates enabled providers against the loaded backend catalog and enabled provider-scoped bindings against the loaded provider middleware registry; invalid composition aborts startup/refresh.
-9. **Start background jobs** — token refresh loop, cooldown cleanup, partition maintenance, quota reset sweep, spend cache cleanup.
-10. **Start the HTTP server** — the public and management routes are registered and the server begins accepting requests.
+5. **Install execution services** — creates the concurrency controller, spend cache, encryption key, and the shared cached pricing/model directory service. That directory is used for `external_directory` pricing lookups plus missing pricing/context/tag enrichment in management flows, and the runtime kicks off an initial best-effort background refresh.
+6. **Discover backend modules** — loads built-in backend modules from `runtime/backends/builtin/` and any configured backend extensions from `extensions/backends/`. Backend modules and provider-scope middleware extensions are registered into the unified `BackendCatalog` and the `providerMiddlewareRegistry` respectively.
+7. **Register OAuth adapters** — the five OAuth adapters are registered into the OAuth manager.
+8. **Reconcile providers** — any enabled provider with at least one active stored credential and zero model rows gets its auto-provision pass re-run to catch up before the initial snapshot is built.
+9. **Load the runtime snapshot** — providers, models, model children, middleware bindings, and API keys are loaded into the in-memory runtime state used by the request path. Snapshot load validates enabled providers against the loaded backend catalog and enabled provider-scoped bindings against the loaded provider middleware registry; invalid composition aborts startup/refresh.
+10. **Start background jobs** — token refresh loop, cooldown cleanup, partition maintenance, quota reset sweep, spend cache cleanup.
+11. **Start the HTTP server** — the public and management routes are registered and the server begins accepting requests.
 
 Each step logs a structured event so the operator can see the initialization sequence in the startup log.
 

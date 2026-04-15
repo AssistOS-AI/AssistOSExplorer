@@ -89,9 +89,29 @@ export async function installExecutionServices(appCtx) {
     appCtx.services.encryptionKey = ensureEncryptionKey(config.env);
 
     const { SpendCache } = await import('../runtime/policy/spend-cache.mjs');
+    const {
+        PricingDirectory,
+        DEFAULT_PRICING_DIRECTORY_URL,
+    } = await import('../runtime/policy/pricing-directory.mjs');
     appCtx.services.spendCache = new SpendCache({
         ttlMs: env.SPEND_CACHE_TTL_MS,
     });
+    const pricingDirectoryUrl =
+        env.PRICING_DIRECTORY_URL || DEFAULT_PRICING_DIRECTORY_URL;
+    appCtx.services.pricingDirectory = new PricingDirectory({
+        url: pricingDirectoryUrl,
+        refreshIntervalMs: env.PRICING_REFRESH_INTERVAL_MS,
+        log,
+    });
+
+    void appCtx.services.pricingDirectory
+        .refreshIfNeeded(log)
+        .catch((err) => {
+            log.warn('pricing directory initial load failed', {
+                url: pricingDirectoryUrl,
+                error: err.message,
+            });
+        });
 
     log.info('execution services installed');
 }

@@ -20,6 +20,7 @@ Migration `004-unified-model-bindings.sql` establishes the current target schema
 
 - **`models`** — one row per addressable model the gateway can route to. Direct models carry a provider foreign key plus provider-specific model id. Cascade models carry `strategy_kind='cascade'` and no provider foreign key, and act as the runtime backing for the dashboard `Tiers` page.
 - For direct models, `discovery_source` distinguishes operator-managed rows (`manual`) from provider-seeded rows (`auto_provisioned` / `synced`). Provider sync updates only non-manual rows and disables missing discovered rows rather than deleting them.
+- Provider-seeded direct rows may carry `metadata.openrouter` when the gateway had to enrich missing pricing/context/tag fields from the cached OpenRouter-backed directory during sync or Add Model recovery.
 - **`model_aliases`** — maps alternative names to canonical model keys so public aliases and dashboard-friendly shortcuts both resolve correctly.
 - **`model_children`** — ordered children for cascade models. This replaces the old tier-membership tables in the active runtime.
 
