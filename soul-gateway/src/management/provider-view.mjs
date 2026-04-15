@@ -1,28 +1,44 @@
 /**
- * View transform for provider DB rows exposed to the dashboard.
+ * View transform for provider DB rows exposed to the management API.
  *
- * The dashboard (and the old gateway's HTTP contract) uses `name` as
- * the provider identifier; the new `providers` table stores it in
- * `provider_key`. Rather than touching every dashboard call site —
- * or renaming the column — alias `name` in the view layer so both
- * resolve to the same value.
- *
- * All other columns are passed through unchanged. If the backend
- * catalog or another layer starts adding derived fields to provider
- * rows (e.g. `has_accounts`, `health`), this is the natural place
- * to thread them through.
+ * All columns are passed through unchanged. If the backend catalog
+ * or another layer starts adding derived fields to provider rows
+ * (e.g. `has_accounts`, `health`), this is the natural place to
+ * thread them through.
  */
 
 /**
  * @param {object} row  Raw providers DB row
  * @returns {object|null}
  */
+const PROVIDER_VIEW_FIELDS = [
+    'id',
+    'provider_key',
+    'display_name',
+    'kind',
+    'adapter_key',
+    'auth_strategy',
+    'provider_mode',
+    'oauth_adapter_key',
+    'base_url',
+    'enabled',
+    'supports_streaming',
+    'supports_tools',
+    'supports_messages_api',
+    'supports_responses_api',
+    'settings',
+    'metadata',
+    'created_at',
+    'updated_at',
+];
+
 export function toProviderView(row) {
     if (!row) return null;
-    return {
-        ...row,
-        name: row.provider_key || row.name || null,
-    };
+    const view = {};
+    for (const field of PROVIDER_VIEW_FIELDS) {
+        if (field in row) view[field] = row[field];
+    }
+    return view;
 }
 
 /**

@@ -149,6 +149,16 @@ export class OAuthManager {
             throw new Error('No active flow found — start a flow first');
         }
 
+        if (flow.context.providerId && String(flow.context.providerId) !== String(providerId)) {
+            throw new Error(
+                `OAuth callback provider mismatch: flow belongs to ${flow.context.providerId}, not ${providerId}`
+            );
+        }
+
+        if (flow.context.providerId && String(flow.context.providerId) !== String(providerId)) {
+            throw new Error('OAuth callback provider mismatch');
+        }
+
         let credentials;
         if (adapter.flowType === 'device_code') {
             credentials = await adapter.pollDeviceFlow({

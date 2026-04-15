@@ -1,15 +1,16 @@
 /**
  * Dashboard (admin) authentication.
  *
- * Admin sessions are simple HMAC-signed tokens containing an expiry
- * timestamp.  No external JWT library required.
+ * Admin sessions are HMAC-signed tokens containing an expiry timestamp
+ * and a CSRF token.  Format: `{exp}.{csrfToken}.{hmac}`.
+ * No external JWT library required.
  */
 
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { compareDashboardPassword } from './password.mjs';
 import { parseCookies } from '../../core/cookie.mjs';
 import { DEFAULTS } from '../../config/defaults.mjs';
-import { AuthenticationRequiredError } from '../../core/errors.mjs';
+import { AuthenticationRequiredError, ConfigurationError } from '../../core/errors.mjs';
 
 const COOKIE_NAME = 'soul_session';
 
@@ -37,10 +38,11 @@ export async function loginAdmin(password, config) {
 
     const ttl = DEFAULTS.adminSessionTtlMs;
     const exp = Date.now() + ttl;
+    const csrfToken = randomBytes(32).toString('hex');
     const signingKey = resolveSigningKey(config);
-    const token = signSessionToken(exp, signingKey);
+    const token = signSessionToken(exp, csrfToken, signingKey);
 
-    return { token, expiresAt: exp };
+    return { token, expiresAt: exp, csrfToken };
 }
 
 /**
@@ -86,7 +88,8 @@ export function createAdminSessionCookie(token, ttlMs) {
 // ── Internals ───────────────────────────────────────────────────────
 
 /**
- * Resolve the signing key: use explicit key, derive from ENCRYPTION_KEY, or use a fallback.
+ * Resolve the signing key: use explicit key or derive from ENCRYPTION_KEY.
+ * Throws if neither is configured.
  */
 function resolveSigningKey(config) {
     if (config.ADMIN_SESSION_SIGNING_KEY)
@@ -96,37 +99,51 @@ function resolveSigningKey(config) {
             .update('admin-session')
             .digest('hex');
     }
-    return 'soul-gateway-default-signing-key';
+    throw new ConfigurationError(
+        'Dashboard auth requires ADMIN_SESSION_SIGNING_KEY or ENCRYPTION_KEY'
+    );
 }
 
 /**
- * Sign a session token: `{exp}.{hmac}`.
+ * Sign a session token: `{exp}.{csrfToken}.{hmac}`.
  */
-function signSessionToken(exp, signingKey) {
-    const payload = String(exp);
+function signSessionToken(exp, csrfToken, signingKey) {
+    const payload = `${exp}.${csrfToken}`;
     const sig = createHmac('sha256', signingKey).update(payload).digest('hex');
     return `${payload}.${sig}`;
 }
 
 /**
  * Verify a session token and return its decoded payload, or null.
+ *
+ * Token format: `{exp}.{csrfToken}.{hmac}`
  */
 function verifySessionToken(token, signingKey) {
-    const dotIdx = token.indexOf('.');
-    if (dotIdx < 0) return null;
+    const lastDot = token.lastIndexOf('.');
+    if (lastDot < 0) return null;
 
-    const payload = token.slice(0, dotIdx);
-    const sig = token.slice(dotIdx + 1);
+    const payload = token.slice(0, lastDot);
+    const sig = token.slice(lastDot + 1);
 
     const expected = createHmac('sha256', signingKey)
         .update(payload)
         .digest('hex');
-    if (sig !== expected) return null;
+    const sigBuf = Buffer.from(sig, 'utf8');
+    const expectedBuf = Buffer.from(expected, 'utf8');
+    if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) return null;
 
-    const exp = Number(payload);
+    // Parse payload: "{exp}.{csrfToken}"
+    const firstDot = payload.indexOf('.');
+    if (firstDot < 0) {
+        // Missing CSRF token — reject
+        return null;
+    }
+
+    const exp = Number(payload.slice(0, firstDot));
     if (!Number.isFinite(exp)) return null;
-
-    return { exp };
+    const csrfToken = payload.slice(firstDot + 1);
+    if (!csrfToken) return null;
+    return { exp, csrfToken };
 }
 
 /**

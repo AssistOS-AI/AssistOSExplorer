@@ -21,6 +21,8 @@ Supported rule types:
 
 On match, the middleware aborts the request with a structured content-blocked error.
 
+If a blacklist regex is invalid, the current runtime logs a warning and skips that rule.
+
 ## Post-dispatch response filter
 
 The `response-filter` middleware applies regex replacements to buffered response content.
@@ -30,6 +32,8 @@ Current behavior:
 - buffered responses can be filtered in place
 - streaming responses are not filtered in real time by the gateway middleware path
 - in streaming mode any response filter that needs buffered content must drain the stream first
+- invalid regex patterns are logged and skipped
+- provider-scoped response filtering is available separately through the provider middleware composer (`provider-response-filter`)
 
 ## Override scopes
 
@@ -39,7 +43,7 @@ Filtering behavior can be changed by binding middleware at:
 - direct-model scope
 - cascade-model scope
 
-The dashboard's tier compatibility views edit cascade-model bindings under the hood.
+Provider-specific post-processing can also be bound at provider scope through the provider middleware management endpoints.
 
 ## Related specs
 

@@ -80,6 +80,29 @@ Log fields relevant to retry analysis:
 - `error_message` — upstream error message (redacted if the response filter matched)
 - `retry_details` — structured array of each attempt's status, timing, and cause
 
+## SSE error frames
+
+When an error occurs after HTTP headers have already been sent (i.e. during streaming), the gateway cannot send a normal JSON error response. Instead, the error boundary emits a terminal SSE error frame in the same wire format as the active route serializer:
+
+- OpenAI Chat — unnamed `data: {"error":{"message":"...","type":"..."}}`
+- Anthropic Messages — `event: error`
+- OpenAI Responses — `event: response.failed`
+
+The response is then ended. This ensures streaming clients receive a machine-readable terminal error instead of a silently truncated stream.
+
+If headers have not been sent, the normal JSON error envelope is used (see "Error envelope" above).
+
+At the HTTP server level, if headers were sent and an unhandled error occurs outside the route chain, the response socket is destroyed immediately since no structured error can be written.
+
+## Fail-fast requirements
+
+The gateway enforces fail-fast behavior for configuration and runtime invariants:
+
+- **Missing signing key** — If neither `ADMIN_SESSION_SIGNING_KEY` nor `ENCRYPTION_KEY` is set, dashboard auth throws `ConfigurationError` at the point of use rather than falling back to a default key.
+- **Missing concurrency config** — If a model lacks concurrency configuration, `ConcurrencyController.acquire()` throws `ConfigurationError` instead of silently defaulting.
+- **Missing response** — If the route chain reaches the `respond` middleware without `ctx.response` being set, it throws `InternalServerError` rather than passing `undefined` to the serializer.
+- **DAO update builders** — `models-dao` filters updates through an explicit allowlist, while several other DAO update helpers still build SQL column lists from caller-supplied field names. Callers therefore must pass already-vetted field sets; the current runtime does not enforce a uniform update allowlist across every DAO.
+
 ## Related specs
 
 - **DS001** — the pipeline that drives both the HTTP retry loop and the model cascade loop.

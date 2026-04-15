@@ -2,6 +2,7 @@
  * DAO for the middlewares table.
  * Pure data-access functions — no business logic.
  */
+import { updateRow } from './helpers/query-builder.mjs';
 
 const TABLE = 'soul_gateway.middlewares';
 
@@ -84,21 +85,18 @@ export async function list(
     return rows;
 }
 
+const ALLOWED_UPDATE_FIELDS = new Set([
+    'displayName', 'sourceType', 'modulePath', 'version',
+    'checksum', 'defaultSettings', 'enabled', 'metadata',
+]);
+
+const JSON_FIELDS = new Set(['defaultSettings', 'metadata']);
+
 export async function update(pool, id, fields) {
-    const keys = Object.keys(fields);
-    if (keys.length === 0) return null;
-
-    const jsonFields = new Set(['defaultSettings', 'metadata']);
-    const setClauses = keys.map((k, i) => `${toSnake(k)} = $${i + 2}`);
-    const values = keys.map((k) =>
-        jsonFields.has(k) ? JSON.stringify(fields[k]) : fields[k]
-    );
-
-    const { rows } = await pool.query(
-        `UPDATE ${TABLE} SET ${setClauses.join(', ')}, updated_at = now() WHERE id = $1 RETURNING *`,
-        [id, ...values]
-    );
-    return rows[0] || null;
+    return updateRow(pool, TABLE, id, fields, {
+        allowedFields: ALLOWED_UPDATE_FIELDS,
+        jsonFields: JSON_FIELDS,
+    });
 }
 
 /**
@@ -148,8 +146,3 @@ export async function upsertFromDiscovery(
     return rows[0];
 }
 
-// ── helpers ──────────────────────────────────────────────────────────
-
-function toSnake(camel) {
-    return camel.replace(/[A-Z]/g, (ch) => '_' + ch.toLowerCase());
-}

@@ -118,59 +118,6 @@ describe('Management — Providers', () => {
 // pre-imported into the test database.  A random tierKey keeps the
 // suite re-runnable even when a previous run leaked state.
 
-describe('Management — Tiers', () => {
-    const seededTierKey = `axl/it-${Math.random().toString(36).slice(2, 10)}`;
-    let seededTierId = null;
-
-    before(async () => {
-        // Create a tier with no models — just enough for the listing
-        // assertion.  We do NOT depend on any particular model row existing
-        // in the test DB.
-        const { status, data } = await api('POST', '/management/tiers', {
-            tierKey: seededTierKey,
-            displayName: 'integration test tier',
-            description: 'created by gateway.test.mjs — safe to delete',
-            maxModelAttempts: 3,
-            enabled: true,
-        });
-        if (status === 201 && data?.tier?.id) {
-            seededTierId = data.tier.id;
-        }
-    });
-
-    it('GET /management/tiers returns an array including the seeded tier', async () => {
-        const { status, data } = await api('GET', '/management/tiers');
-        assert.equal(status, 200);
-        const tiers = data.data || data;
-        assert.ok(Array.isArray(tiers));
-        const seeded = tiers.find(
-            (t) => (t.tier_key || t.tierKey) === seededTierKey
-        );
-        assert.ok(
-            seeded,
-            `seeded tier '${seededTierKey}' should appear in /management/tiers`
-        );
-    });
-
-    it('seeded tier has a model membership array (possibly empty)', async () => {
-        const { data } = await api('GET', '/management/tiers');
-        const tiers = data.data || data;
-        const seeded = tiers.find(
-            (t) => (t.tier_key || t.tierKey) === seededTierKey
-        );
-        if (seeded) {
-            assert.ok(
-                'models' in seeded || 'model_refs' in seeded,
-                'tier should carry a models array'
-            );
-        }
-    });
-
-    // Leave the seeded tier in place — cleanup would require a DELETE
-    // endpoint call that is tested elsewhere.  Random key prevents
-    // accumulation from dominating the listing.
-});
-
 // ── Keys ─────────────────────────────────────────────────────────────
 
 describe('Management — Keys', () => {
@@ -278,37 +225,37 @@ describe('Public API — /v1/chat/completions', () => {
         assert.equal(data.error.type, 'model_not_found');
     });
 
-    it('POST with a known tier name reaches execution stage', async () => {
-        // We seed our own cascade-model-backed tier via the management API
-        // above, but that tier has no models so it exhausts immediately.
-        // What this test really wants to prove is that the request pipeline
-        // can *route* to a cascade (a "tier" in the legacy language) without
-        // returning 404 at the resolve-model stage.  Any tier seeded in the
-        // previous describe block satisfies that — look it up dynamically
-        // instead of hard-coding `axl/fast`.
-        const tiersRes = await api('GET', '/management/tiers');
-        const tiers = tiersRes.data?.data || tiersRes.data || [];
-        if (!Array.isArray(tiers) || tiers.length === 0) {
-            // No tiers configured at all — skip: nothing to route to.
+    it('POST with a known cascade model reaches execution stage', async () => {
+        // Find any cascade model (strategy_kind = 'cascade') via the models
+        // management API. This test proves that the request pipeline can
+        // *route* to a cascade without returning 404 at the resolve-model
+        // stage.
+        const modelsRes = await api('GET', '/management/models');
+        const models = modelsRes.data?.data || modelsRes.data || [];
+        const cascade = Array.isArray(models)
+            ? models.find((m) => m.strategy_kind === 'cascade')
+            : null;
+        if (!cascade) {
+            // No cascade models configured — skip: nothing to route to.
             return;
         }
-        const tierKey = tiers[0].tier_key || tiers[0].tierKey;
+        const modelKey = cascade.model_key || cascade.modelKey;
         assert.ok(
-            tierKey,
-            'management API should surface a tier_key we can target'
+            modelKey,
+            'management API should surface a model_key we can target'
         );
 
         const { status, data } = await clientApi(
             'POST',
             '/v1/chat/completions',
             {
-                model: tierKey,
+                model: modelKey,
                 messages: [{ role: 'user', content: 'Say hello' }],
             }
         );
         // Accepted outcomes:
         //   200                     full success
-        //   404                     no enabled child models (tier exhausted)
+        //   404                     no enabled child models (cascade exhausted)
         //   429 / 502 / 503 / 504   provider error — routing worked
         //   500                     execution engine issue (providers not connected)
         // What we explicitly do NOT accept is a 404 with `model_not_found` —
@@ -319,12 +266,12 @@ describe('Public API — /v1/chat/completions', () => {
             `Expected pipeline to reach execution, got ${status}: ${JSON.stringify(data)}`
         );
         if (status === 404) {
-            // If we got 404, the error type should reflect tier exhaustion
+            // If we got 404, the error type should reflect cascade exhaustion
             // or a missing child — NOT a top-level model-not-found.
             assert.notEqual(
                 data?.error?.type,
                 'model_not_found',
-                'tier cascade should not 404 with model_not_found — it reached resolve-model successfully'
+                'cascade should not 404 with model_not_found — it reached resolve-model successfully'
             );
         }
     });

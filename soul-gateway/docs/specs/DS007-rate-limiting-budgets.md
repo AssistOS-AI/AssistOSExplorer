@@ -41,6 +41,11 @@ The effective limits come from:
 2. API-key defaults
 3. environment defaults where applicable
 
+Current implementation detail:
+
+- only the daily budget falls back to an environment default (`DEFAULT_DAILY_BUDGET_USD`)
+- monthly budget has no environment fallback
+
 Free models do not count against budgets.
 
 ## Spend cache
@@ -71,11 +76,15 @@ Rate and budget middleware can be bound at:
 - direct-model scope
 - cascade-model scope
 
-The dashboard still exposes a Tiers page, but tier-level policy editing is implemented as bindings on cascade models.
+The management API writes model-scoped bindings into unified `middleware_bindings` rows. The dashboard exposes `/management/tiers` as a cascade-model editor, but tier-scoped policy still lands in ordinary model-scoped `middleware_bindings` rows targeting the cascade model id.
+
+## Login rate limiting
+
+Dashboard login attempts (`POST /management/auth/login`) are rate-limited to 5 attempts per minute per source IP using an in-memory sliding window. Excess attempts receive HTTP 429.
 
 ## Related specs
 
 - **DS001** — where rate and budget middleware runs in the request path
-- **DS004** — direct vs cascade models and tier compatibility
+- **DS004** — direct vs cascade models
 - **DS014** — built-in middleware catalog entries for rate limiter and budget enforcer
 - **DS015** — spend and usage surfaces in observability

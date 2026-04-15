@@ -4,8 +4,7 @@
  * The backing table is `middleware_bindings` — a single scope/target
  * table for gateway, model, and provider middleware bindings.
  *
- * The management URL surface is preserved so the dashboard does not
- * need to change shape:
+ * URL surface:
  *
  *   GET    /management/middlewares
  *   GET    /management/middlewares/:id
@@ -16,21 +15,11 @@
  *   PATCH  /management/middlewares/assignments/:assignmentId
  *   DELETE /management/middlewares/assignments/:assignmentId
  *
- *   GET    /management/tiers/:tierId/middlewares
- *   POST   /management/tiers/:tierId/middlewares
- *   PATCH  /management/tiers/:tierId/middlewares/:assignmentId
- *   DELETE /management/tiers/:tierId/middlewares/:assignmentId
- *   POST   /management/tiers/:tierId/middlewares/reorder
- *
  *   GET    /management/models/:modelId/middlewares
  *   POST   /management/models/:modelId/middlewares
  *   PATCH  /management/models/:modelId/middlewares/:assignmentId
  *   DELETE /management/models/:modelId/middlewares/:assignmentId
  *   POST   /management/models/:modelId/middlewares/reorder
- *
- * The `tierId` path parameter is the cascade model's UUID — tiers are
- * now cascade models so the URL stays the same but under the hood we
- * write a `scope='model'` binding with `target_id = <cascade model id>`.
  */
 
 import { readJsonBody } from '../core/json-body.mjs';
@@ -58,22 +47,16 @@ async function keyForMiddlewareId(pool, id) {
 }
 
 function shapeAssignmentRow(row) {
-    // Legacy-compatible shape for the dashboard.  The UI reads
-    // `assignment.middleware_key`, `assignment.settings`, etc.  Convert
-    // unified binding row fields into that shape.
     return {
         id: row.id,
-        middleware_key: row.middleware_key,
+        middlewareKey: row.middleware_key,
         scope: row.scope,
-        target_id: row.target_id,
-        sort_order: row.sort_order,
+        targetId: row.target_id,
+        sortOrder: row.sort_order,
         enabled: row.enabled,
         settings: row.settings || {},
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        // Compat fields so the dashboard can keep reading old names too
-        ...(row.scope === 'model' ? { model_id: row.target_id } : {}),
-        ...(row.scope === 'provider' ? { provider_id: row.target_id } : {}),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
     };
 }
 
@@ -158,12 +141,6 @@ export async function handleCreateAssignment(ctx) {
     let targetId = null;
     if (body.targetType === 'gateway') {
         scope = 'gateway';
-    } else if (body.targetType === 'tier') {
-        if (!body.tierId && !body.modelId) {
-            throw new BadRequestError('tierId required for tier assignment');
-        }
-        scope = 'model';
-        targetId = body.tierId || body.modelId;
     } else if (body.targetType === 'model') {
         if (!body.modelId) {
             throw new BadRequestError('modelId required for model assignment');
@@ -223,6 +200,11 @@ export async function handleUpdateAssignment(ctx) {
     if (body.sortOrder !== undefined) fields.sortOrder = body.sortOrder;
     if (body.enabled !== undefined) fields.enabled = body.enabled;
     if (body.settings !== undefined) fields.settings = body.settings;
+    if (Object.keys(fields).length === 0) {
+        throw new BadRequestError(
+            'No supported update fields provided. Use sortOrder, enabled, or settings.'
+        );
+    }
 
     const row = await bindingsDao.update(pool, params.assignmentId, fields);
     if (!row) {
@@ -249,74 +231,6 @@ export async function handleDeleteAssignment(ctx) {
         reason: 'middleware.assignment.delete',
     });
     sendJson(res, 200, { ok: true });
-}
-
-// ── Tier-scoped middleware routes ───────────────────────────────────
-//
-// These remain under `/management/tiers/...` URLs so the dashboard's
-// Tiers page keeps working unchanged.  Under the hood they bind to
-// `scope='model'` with the cascade model id as target.
-
-export async function handleListTierMiddlewares(ctx) {
-    const { res, params, appCtx } = ctx;
-    const { pool } = appCtx;
-    const rows = await bindingsDao.listByTarget(pool, 'model', params.tierId);
-    sendJson(res, 200, { data: rows.map(shapeAssignmentRow) });
-}
-
-export async function handleCreateTierMiddleware(ctx) {
-    const { req, res, params, appCtx } = ctx;
-    const { pool } = appCtx;
-    const body = await readJsonBody(req);
-    if (!body || !body.middlewareId) {
-        throw new BadRequestError('Missing required field: middlewareId');
-    }
-
-    const middlewareKey =
-        body.middlewareKey ||
-        (await keyForMiddlewareId(pool, body.middlewareId));
-    if (!middlewareKey) {
-        throw new BadRequestError('Unknown middlewareId');
-    }
-
-    const row = await bindingsDao.create(pool, {
-        scope: 'model',
-        targetId: params.tierId,
-        middlewareKey,
-        sortOrder: body.sortOrder ?? 100,
-        enabled: body.enabled ?? true,
-        settings: body.settings ?? {},
-    });
-
-    requestRuntimeRefresh(appCtx, {
-        snapshot: true,
-        reason: 'middleware.tier.create',
-    });
-    sendJson(res, 201, { assignment: shapeAssignmentRow(row) });
-}
-
-export async function handleUpdateTierMiddleware(ctx) {
-    return handleUpdateAssignment(ctx);
-}
-
-export async function handleDeleteTierMiddleware(ctx) {
-    return handleDeleteAssignment(ctx);
-}
-
-export async function handleReorderTierMiddlewares(ctx) {
-    const { req, res, params, appCtx } = ctx;
-    const { pool } = appCtx;
-    const body = await readJsonBody(req);
-    if (!body || !Array.isArray(body.assignments)) {
-        throw new BadRequestError('Expected assignments array');
-    }
-    await bindingsDao.reorder(pool, body.assignments);
-    const rows = await bindingsDao.listByTarget(pool, 'model', params.tierId);
-    requestRuntimeRefresh(appCtx, {
-        snapshot: true,
-        reason: 'middleware.tier.reorder',
-    });
-    sendJson(res, 200, { data: rows.map(shapeAssignmentRow) });
 }
 
 // ── Model-scoped middleware routes ─────────────────────────────────

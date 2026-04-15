@@ -1,0 +1,18 @@
+{
+    "name": "soul-gateway",
+    "version": "2.0.0",
+    "type": "module",
+    "description": "Soul Gateway — LLM request proxy with multi-provider routing, middleware pipeline, and observability",
+    "main": "src/index.mjs",
+    "scripts": {
+        "start": "node src/index.mjs",
+        "dev": "node --watch src/index.mjs",
+        "import:main": "node src/db/import/import-main-branch-data.mjs",
+        "import:main:with-logs": "node src/db/import/import-main-branch-data.mjs --include-call-logs",
+        "test": "node --experimental-test-module-mocks --test 'src/test/**/*.test.mjs'",
+        "test:unit": "node --experimental-test-module-mocks --test 'src/test/unit/*.test.mjs'"
+    },
+    "dependencies": {
+        "pg": "^8.13.1"
+    }
+}

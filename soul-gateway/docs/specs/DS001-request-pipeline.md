@@ -61,12 +61,15 @@ errorBoundary
   identity
   bindSnapshot
   normalizeIngress
+  auditLog
   validateRequest
   resolveModel
   resolveSession
   respond
   gatewayDispatch
 ```
+
+`auditLog` runs after authentication and ingress normalization. It inserts the initial `audit_logs` row only after the route has an authenticated API key, resolved identity headers, and a canonical requested model. It then finalizes the row after downstream completes or throws with status, timing, usage, cost, and routing metadata.
 
 `respond` is placed before `gatewayDispatch` so its post phase runs after dispatch has populated `ctx.response`.
 
@@ -98,7 +101,7 @@ providerBindings   // terminal: resolves providerMiddlewares + backendDispatch
   backendDispatchMiddleware  // terminal: backendCatalog.getTerminal(provider.backendKey)
 ```
 
-`backendDispatchMiddleware` is the absolute terminal: it resolves the precompiled terminal middleware from `backendCatalog.getTerminal(provider.backendKey)` per attempt and invokes it. Backend selection is part of middleware execution, not pre-composition orchestration — each attempt sees the current snapshot/catalog state.
+`backendDispatchMiddleware` is the absolute terminal: it resolves the precompiled terminal middleware from the backend catalog per attempt and invokes it. The dispatch path acquires a backend-catalog generation lease before lookup and holds that lease until the buffered response has been materialized or the response stream has been fully drained, so backend reloads do not shut down a generation that is still serving an in-flight request.
 
 See **DS003** for the full middleware composition contract and the unified backend layer.
 

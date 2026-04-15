@@ -2,6 +2,7 @@
  * DAO for the blacklist_rules table.
  * Pure data-access functions — no business logic.
  */
+import { updateRow } from './helpers/query-builder.mjs';
 
 const TABLE = 'soul_gateway.blacklist_rules';
 
@@ -52,21 +53,18 @@ export async function list(pool, { limit = 500, offset = 0 } = {}) {
     return rows;
 }
 
+const ALLOWED_UPDATE_FIELDS = new Set([
+    'description', 'matchType', 'pattern', 'caseSensitive',
+    'priority', 'enabled', 'metadata',
+]);
+
+const JSON_FIELDS = new Set(['metadata']);
+
 export async function update(pool, id, fields) {
-    const keys = Object.keys(fields);
-    if (keys.length === 0) return null;
-
-    const jsonFields = new Set(['metadata']);
-    const setClauses = keys.map((k, i) => `${toSnake(k)} = $${i + 2}`);
-    const values = keys.map((k) =>
-        jsonFields.has(k) ? JSON.stringify(fields[k]) : fields[k]
-    );
-
-    const { rows } = await pool.query(
-        `UPDATE ${TABLE} SET ${setClauses.join(', ')}, updated_at = now() WHERE id = $1 RETURNING *`,
-        [id, ...values]
-    );
-    return rows[0] || null;
+    return updateRow(pool, TABLE, id, fields, {
+        allowedFields: ALLOWED_UPDATE_FIELDS,
+        jsonFields: JSON_FIELDS,
+    });
 }
 
 export async function del(pool, id) {
@@ -84,8 +82,3 @@ export async function listEnabled(pool) {
     return rows;
 }
 
-// ── helpers ──────────────────────────────────────────────────────────
-
-function toSnake(camel) {
-    return camel.replace(/[A-Z]/g, (ch) => '_' + ch.toLowerCase());
-}

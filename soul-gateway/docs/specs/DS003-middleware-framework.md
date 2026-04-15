@@ -92,9 +92,7 @@ Gateway middlewares run once per incoming request.
 They are resolved from unified `middleware_bindings`:
 
 - `scope='gateway'` -> global request policies
-- `scope='model'` -> policies for the resolved model id
-
-The dashboard Tiers page is a compatibility surface over cascade models, so tier-level middleware editing is implemented as model-scoped bindings whose target is a cascade model.
+- `scope='model'` -> policies for the resolved model id (includes cascade models)
 
 Built-in gateway middlewares export the native module contract:
 
@@ -133,8 +131,12 @@ A backend module is loaded from `src/runtime/backends/builtin/*.backend.mjs` (or
 
 The runtime registers each module in the unified `BackendCatalog`. At register time the catalog wraps the module's `execute()` once via `createBackendTerminal(module)` and stores the resulting kernel terminal middleware. There is no per-request adapter step. Lookups:
 
-- `backendCatalog.getTerminal(key)` — returns the precompiled terminal middleware (used by the request hot path)
+- `backendCatalog.acquireGeneration()` / `releaseGeneration()` — bracket request-time use of one catalog generation
+- `backendCatalog.getTerminalForGeneration(key, generation)` — returns the precompiled terminal middleware from a pinned generation (used by the request hot path)
+- `backendCatalog.getTerminal(key)` — returns the latest precompiled terminal middleware (used by compatibility callers)
 - `backendCatalog.getBackend(key)` — returns the BackendModule (used by lifecycle/admin code)
+
+The request hot path pins one backend-catalog generation before terminal lookup. Buffered responses release that generation as soon as the backend returns. Streaming responses release it only after the canonical stream finishes draining, so background refresh/shutdown can retire old generations without tearing down a backend that is still serving bytes to a client.
 
 There is no separate `ProviderCatalog` / `TransportCatalog` split, no `ProviderPlugin` / `TransportPlugin` interfaces, and no `adaptProviderToTransport` / `adaptProviderPluginToTransport` adapter — those concepts collapsed into the single backend catalog during the middleware-first cleanup pass.
 
@@ -173,7 +175,7 @@ non-streaming: [ bufferingMiddleware, ...providerMiddlewares, backendDispatchMid
 streaming:     [ ...providerMiddlewares, backendDispatchMiddleware ]
 ```
 
-`backendDispatchMiddleware()` is the absolute terminal: it resolves the precompiled terminal from `backendCatalog.getTerminal(provider.backendKey)` and invokes it. Backend selection is part of middleware execution, not pre-composition orchestration — each attempt picks up the current snapshot/catalog state.
+`backendDispatchMiddleware()` is the absolute terminal: it acquires a backend-catalog generation, resolves the precompiled terminal for that generation, and invokes it. Backend selection is part of middleware execution, not pre-composition orchestration — each attempt picks up the current snapshot/catalog state, but once the attempt starts it stays pinned to one backend generation until the buffered result returns or the stream completes.
 
 Ordering rules for provider middleware:
 

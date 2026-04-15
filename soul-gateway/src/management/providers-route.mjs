@@ -46,7 +46,6 @@ import {
 } from './route-response-helpers.mjs';
 import { toAccountView, buildAccountsPayload } from './account-view.mjs';
 import { toProviderView, toProviderList } from './provider-view.mjs';
-import { toDiscoveryList } from './model-discovery-view.mjs';
 
 /**
  * GET /management/providers/templates
@@ -93,30 +92,21 @@ export async function handleCreateProvider(ctx) {
     const { pool } = appCtx;
     const body = await readJsonBody(req);
 
-    const providerKey =
-        body?.providerKey ?? body?.provider_key ?? body?.name ?? null;
-    const displayName = body?.displayName ?? body?.display_name ?? null;
-    const authType = body?.authType ?? body?.auth_type ?? null;
-    const oauthAdapterKey =
-        body?.oauthAdapterKey ?? body?.oauth_adapter_key ?? null;
-    const providerMode =
-        body?.providerMode ?? body?.provider_mode ?? 'external_api';
+    const providerKey = body?.providerKey ?? null;
+    const displayName = body?.displayName ?? null;
+    const authStrategy = body?.authStrategy ?? null;
+    const oauthAdapterKey = body?.oauthAdapterKey ?? null;
+    const providerMode = body?.providerMode ?? 'external_api';
     const adapterKey =
-        body?.adapterKey ??
-        body?.adapter_key ??
-        (providerMode === 'custom' ? providerKey : null);
+        body?.adapterKey ?? (providerMode === 'custom' ? providerKey : null);
     const kind = providerMode === 'custom' ? 'custom' : 'external_api';
-    const inferredAuthStrategy =
-        authType === 'managed'
-            ? 'oauth'
-            : (body?.authStrategy ?? body?.auth_strategy ?? null);
 
     if (
         !body ||
         !providerKey ||
         !displayName ||
         !adapterKey ||
-        !inferredAuthStrategy
+        !authStrategy
     ) {
         throw new BadRequestError(
             'Missing required fields: providerKey, displayName, adapterKey, authStrategy'
@@ -128,17 +118,17 @@ export async function handleCreateProvider(ctx) {
         displayName,
         kind,
         adapterKey,
-        authStrategy: inferredAuthStrategy,
+        authStrategy,
         providerMode,
         oauthAdapterKey,
-        baseUrl: body.baseUrl ?? body.base_url ?? null,
+        baseUrl: body.baseUrl ?? null,
         enabled: body.enabled ?? true,
         settings: body.settings ?? {},
         metadata: body.metadata ?? {},
     });
 
     // If an API key was provided, create an account for it
-    const apiKey = body.api_key ?? body.apiKey ?? null;
+    const apiKey = body.apiKey ?? null;
     await upsertProviderApiKeyAccount({
         appCtx,
         providerId: row.id,
@@ -212,15 +202,10 @@ export async function handleUpdateProvider(ctx) {
 
     const allowed = [
         'displayName',
-        'display_name',
         'adapterKey',
-        'adapter_key',
         'authStrategy',
-        'auth_strategy',
         'providerMode',
-        'provider_mode',
         'oauthAdapterKey',
-        'oauth_adapter_key',
         'baseUrl',
         'enabled',
         'supportsStreaming',
@@ -234,25 +219,20 @@ export async function handleUpdateProvider(ctx) {
     const fields = {};
     for (const k of allowed) {
         if (body[k] !== undefined) {
-            const normalizedKey =
-                {
-                    display_name: 'displayName',
-                    adapter_key: 'adapterKey',
-                    auth_strategy: 'authStrategy',
-                    provider_mode: 'providerMode',
-                    oauth_adapter_key: 'oauthAdapterKey',
-                }[k] || k;
-            fields[normalizedKey] = body[k];
+            fields[k] = body[k];
         }
-    }
-
-    if ((body?.authType ?? body?.auth_type) === 'managed') {
-        fields.authStrategy = 'oauth';
     }
 
     if (fields.providerMode !== undefined) {
         fields.kind =
             fields.providerMode === 'custom' ? 'custom' : 'external_api';
+    }
+
+    const apiKey = body.apiKey ?? null;
+    if (Object.keys(fields).length === 0 && apiKey === null) {
+        throw new BadRequestError(
+            'No supported update fields provided. Use canonical fields such as displayName, adapterKey, authStrategy, providerMode, oauthAdapterKey, baseUrl, enabled, settings, metadata, or apiKey.'
+        );
     }
 
     // Only run the providers DAO update when the PATCH actually carries
@@ -277,7 +257,6 @@ export async function handleUpdateProvider(ctx) {
     }
 
     // If an API key was provided, upsert an account for it
-    const apiKey = body.api_key ?? body.apiKey ?? null;
     await upsertProviderApiKeyAccount({
         appCtx,
         providerId: params.providerId,
@@ -291,7 +270,7 @@ export async function handleUpdateProvider(ctx) {
         reason: 'provider.update',
     });
 
-    sendJson(res, 200, { provider: row });
+    sendJson(res, 200, { provider: toProviderView(row) });
 }
 
 /**
@@ -342,7 +321,7 @@ export async function handleTestConnection(ctx) {
     if (!appCtx.services.backendCatalog) {
         sendJson(res, HTTP_STATUS.OK, {
             ok: false,
-            error: ERROR_MESSAGES.BACKEND_CATALOG_NOT_INITIALIZED,
+            detail: ERROR_MESSAGES.BACKEND_CATALOG_NOT_INITIALIZED,
             latencyMs: 0,
         });
         return;
@@ -358,46 +337,17 @@ export async function handleTestConnection(ctx) {
     } catch (err) {
         sendJson(res, 200, {
             ok: false,
-            error: err.message || 'Test failed',
+            detail: err.message || 'Test failed',
             latencyMs: Date.now() - start,
         });
         return;
     }
 
-    sendJson(res, 200, buildTestConnectionResponse(result, Date.now() - start));
-}
-
-/**
- * Translate a backend module's `{ ok, detail }` contract into the
- * `{ ok, message | error, latencyMs }` shape the dashboard expects.
- *
- * @param {{ ok: boolean, detail?: any }} result
- * @param {number} latencyMs
- * @returns {object}
- */
-function buildTestConnectionResponse(result, latencyMs) {
-    const message = extractDetailString(result?.detail);
-    if (result?.ok) {
-        return { ok: true, message: message || 'Connected', latencyMs };
-    }
-    return { ok: false, error: message || 'Connection failed', latencyMs };
-}
-
-/**
- * Backend modules historically returned `detail` as either a string or an
- * object (e.g. `{ error: '...' }`). Collapse both shapes to a plain
- * string so the dashboard can render it directly.
- *
- * @param {any} detail
- * @returns {string|null}
- */
-function extractDetailString(detail) {
-    if (detail == null) return null;
-    if (typeof detail === 'string') return detail;
-    if (typeof detail === 'object') {
-        return detail.error || detail.message || detail.detail || null;
-    }
-    return String(detail);
+    sendJson(res, 200, {
+        ...result,
+        detail: result?.detail ?? null,
+        latencyMs: Date.now() - start,
+    });
 }
 
 /**
@@ -421,9 +371,7 @@ export async function handleDiscoverModels(ctx) {
                 buildProviderLifecycleOptions(appCtx)
             );
         sendJson(res, 200, {
-            data: toDiscoveryList(discoveries, {
-                providerName: provider.provider_key,
-            }),
+            data: Array.isArray(discoveries) ? discoveries : [],
         });
     } catch (err) {
         sendOperationError(res, {
@@ -610,12 +558,16 @@ export async function handleDeleteAccount(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
 
-    const row = await accountsDao.del(pool, params.accountId);
-    if (!row) {
+    const account = await accountsDao.findById(pool, params.accountId);
+    if (!account) {
         sendNotFound(res, 'Account');
         return;
     }
+    if (String(account.provider_id) !== String(params.providerId)) {
+        throw new BadRequestError('Account does not belong to this provider');
+    }
 
+    await accountsDao.del(pool, params.accountId);
     sendJson(res, 200, { ok: true });
 }
 
@@ -626,16 +578,20 @@ export async function handleResetAccountQuota(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
 
+    const account = await accountsDao.findById(pool, params.accountId);
+    if (!account) {
+        sendNotFound(res, 'Account');
+        return;
+    }
+    if (String(account.provider_id) !== String(params.providerId)) {
+        throw new BadRequestError('Account does not belong to this provider');
+    }
+
     const row = await accountsDao.updateStatus(
         pool,
         params.accountId,
         'active'
     );
-    if (!row) {
-        sendNotFound(res, 'Account');
-        return;
-    }
-
     sendJson(res, 200, { account: row });
 }
 

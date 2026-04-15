@@ -27,7 +27,6 @@ import {
     ProviderServerError,
     ProviderAccountsExhaustedError,
     MiddlewareAbortError,
-    SyntheticResponseAbort,
     ConfigurationError,
     InternalServerError,
     toHttpErrorPayload,
@@ -214,15 +213,6 @@ describe('Error taxonomy', () => {
             false,
         ],
         [
-            SyntheticResponseAbort,
-            ['cache'],
-            200,
-            'synthetic_response',
-            false,
-            false,
-            false,
-        ],
-        [
             ConfigurationError,
             [],
             500,
@@ -271,8 +261,8 @@ describe('Error taxonomy', () => {
         });
     }
 
-    it('covers all 28 error types from the design doc', () => {
-        assert.equal(errorSpecs.length, 28, 'should have 28 error classes');
+    it('covers all 27 error types from the design doc', () => {
+        assert.equal(errorSpecs.length, 27, 'should have 27 error classes');
     });
 });
 

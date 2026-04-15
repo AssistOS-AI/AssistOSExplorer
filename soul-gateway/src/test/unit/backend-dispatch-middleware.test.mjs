@@ -14,7 +14,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { compose, createKernelContext } from '../../runtime/kernel/index.mjs';
+import {
+    compose,
+    createCanonicalStream,
+    createKernelContext,
+} from '../../runtime/kernel/index.mjs';
 import { backendDispatchMiddleware } from '../../runtime/execution/backend-dispatch-middleware.mjs';
 import { ConfigurationError } from '../../core/errors.mjs';
 
@@ -127,5 +131,49 @@ describe('backendDispatchMiddleware', () => {
             compose([backendDispatchMiddleware()])(ctx),
             /ctx\.target\.provider is required/
         );
+    });
+
+    it('holds the backend generation lease until a streamed response is consumed', async () => {
+        const releases = [];
+        let acquiredGeneration = null;
+        const ctx = makeCtx({
+            services: {
+                backendCatalog: {
+                    acquireGeneration() {
+                        acquiredGeneration = 7;
+                        return acquiredGeneration;
+                    },
+                    releaseGeneration(generation) {
+                        releases.push(generation);
+                    },
+                    getTerminalForGeneration(key, generation) {
+                        assert.equal(key, 'stub-backend');
+                        assert.equal(generation, 7);
+                        return async (innerCtx) => {
+                            innerCtx.response = createCanonicalStream(
+                                (async function* () {
+                                    yield {
+                                        type: 'done',
+                                        data: { finish_reason: 'stop' },
+                                    };
+                                })()
+                            );
+                        };
+                    },
+                    getTerminal() {
+                        throw new Error('should use generation-aware lookup');
+                    },
+                },
+            },
+        });
+
+        await compose([backendDispatchMiddleware()])(ctx);
+        assert.deepEqual(releases, []);
+
+        for await (const _event of ctx.response) {
+            // consume the stream to trigger the finally block
+        }
+
+        assert.deepEqual(releases, [acquiredGeneration]);
     });
 });

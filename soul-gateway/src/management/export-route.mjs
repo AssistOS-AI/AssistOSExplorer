@@ -5,8 +5,6 @@
  * GET /management/export/logs.json
  */
 
-import { ExportService } from '../observability/export-service.mjs';
-
 /**
  * GET /management/export/logs.csv
  * Stream CSV export of filtered audit logs.
@@ -14,8 +12,7 @@ import { ExportService } from '../observability/export-service.mjs';
 export async function handleExportCsv(ctx) {
     const { res, query, appCtx } = ctx;
 
-    const svc = new ExportService(appCtx.pool);
-    await svc.exportCsv(res, {
+    await appCtx.services.exportService.exportCsv(res, {
         from: query.from || null,
         to: query.to || null,
         soulId: query.soul_id || null,
@@ -30,8 +27,7 @@ export async function handleExportCsv(ctx) {
 export async function handleExportJson(ctx) {
     const { res, query, appCtx } = ctx;
 
-    const svc = new ExportService(appCtx.pool);
-    await svc.exportJson(res, {
+    await appCtx.services.exportService.exportJson(res, {
         from: query.from || null,
         to: query.to || null,
         soulId: query.soul_id || null,

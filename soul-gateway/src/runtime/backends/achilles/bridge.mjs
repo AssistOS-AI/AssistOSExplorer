@@ -1,3 +1,5 @@
+import { normalizeUsage } from '../normalize-usage.mjs';
+
 export function getCredentialToken(credentialLease) {
     return credentialLease?.secret || credentialLease?.oauth?.accessToken || '';
 }
@@ -22,6 +24,7 @@ export async function* toGatewayNormalizedStream(source, meta = {}) {
     let started = false;
     let usageEmitted = false;
     let sawToolDelta = false;
+    let doneEmitted = false;
 
     const emitMessageStart = async function* () {
         if (started) return;
@@ -123,6 +126,7 @@ export async function* toGatewayNormalizedStream(source, meta = {}) {
                     }
                 }
 
+                doneEmitted = true;
                 yield {
                     type: 'done',
                     data: {
@@ -159,15 +163,14 @@ export async function* toGatewayNormalizedStream(source, meta = {}) {
                 break;
         }
     }
+
+    // If the stream ended without a `done` event, emit a synthetic one.
+    if (!doneEmitted) {
+        yield* emitMessageStart();
+        yield {
+            type: 'done',
+            data: { finish_reason: 'stop', model: meta.model || null },
+        };
+    }
 }
 
-function normalizeUsage(usage) {
-    return {
-        input_tokens: usage.input_tokens || usage.prompt_tokens || 0,
-        output_tokens: usage.output_tokens || usage.completion_tokens || 0,
-        total_tokens:
-            usage.total_tokens ||
-            (usage.input_tokens || usage.prompt_tokens || 0) +
-                (usage.output_tokens || usage.completion_tokens || 0),
-    };
-}

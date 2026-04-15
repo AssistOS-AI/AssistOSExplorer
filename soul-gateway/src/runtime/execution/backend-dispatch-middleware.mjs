@@ -23,6 +23,10 @@
  */
 
 import { ConfigurationError } from '../../core/errors.mjs';
+import {
+    createCanonicalStream,
+    isCanonicalStream,
+} from '../kernel/index.mjs';
 
 /**
  * @returns {(ctx: object) => Promise<void>}
@@ -57,13 +61,75 @@ export function backendDispatchMiddleware() {
             );
         }
 
-        const terminal = backendCatalog.getTerminal(backendKey);
+        const generation =
+            typeof backendCatalog.acquireGeneration === 'function'
+                ? backendCatalog.acquireGeneration()
+                : null;
+        let released = false;
+        const releaseGeneration = () => {
+            if (released || generation == null) return;
+            released = true;
+            backendCatalog.releaseGeneration(generation);
+        };
+
+        const terminal =
+            generation != null &&
+            typeof backendCatalog.getTerminalForGeneration === 'function'
+                ? backendCatalog.getTerminalForGeneration(backendKey, generation)
+                : backendCatalog.getTerminal(backendKey);
         if (!terminal) {
+            releaseGeneration();
             throw new ConfigurationError(
                 `Backend not loaded: ${backendKey}`
             );
         }
 
-        await terminal(ctx);
+        try {
+            await terminal(ctx);
+            ctx.response = wrapResponseWithGenerationLease(
+                ctx.response,
+                releaseGeneration
+            );
+        } catch (err) {
+            releaseGeneration();
+            throw err;
+        }
     };
+}
+
+function wrapResponseWithGenerationLease(response, releaseGeneration) {
+    if (!response) {
+        releaseGeneration();
+        return response;
+    }
+
+    if (isCanonicalStream(response)) {
+        return createCanonicalStream(
+            releaseAfterStream(response, releaseGeneration),
+            response.meta || {}
+        );
+    }
+
+    if (response.stream && isCanonicalStream(response.stream)) {
+        return {
+            ...response,
+            stream: createCanonicalStream(
+                releaseAfterStream(response.stream, releaseGeneration),
+                response.stream.meta || {}
+            ),
+        };
+    }
+
+    releaseGeneration();
+    return response;
+}
+
+async function* releaseAfterStream(stream, releaseGeneration) {
+    try {
+        for await (const event of stream) {
+            yield event;
+        }
+    } finally {
+        releaseGeneration();
+    }
 }

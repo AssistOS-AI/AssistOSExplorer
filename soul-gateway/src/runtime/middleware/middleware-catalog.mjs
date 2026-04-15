@@ -37,14 +37,10 @@ export class MiddlewareCatalog {
     #pool = null;
     #builtinDir = null;
 
-    constructor(gcGraceMs = DEFAULTS.middlewareGenerationGcGraceMs) {
-        this.#gcGraceMs =
-            typeof gcGraceMs === 'number'
-                ? gcGraceMs
-                : (gcGraceMs?.gcGraceMs ??
-                  DEFAULTS.middlewareGenerationGcGraceMs);
-        this.#pool = gcGraceMs?.pool ?? null;
-        this.#builtinDir = gcGraceMs?.builtinDir ?? null;
+    constructor({ gcGraceMs, pool, builtinDir } = {}) {
+        this.#gcGraceMs = gcGraceMs ?? DEFAULTS.middlewareGenerationGcGraceMs;
+        this.#pool = pool ?? null;
+        this.#builtinDir = builtinDir ?? null;
     }
 
     async loadFromDb(pool) {
@@ -68,18 +64,14 @@ export class MiddlewareCatalog {
                 continue;
             }
 
-            try {
-                const version = row.updated_at
-                    ? new Date(row.updated_at).getTime()
-                    : Date.now();
-                const mod = await import(
-                    pathToFileURL(row.module_path).href + `?v=${version}`
-                );
-                if (typeof mod.factory === 'function') {
-                    this.#factories.set(row.middleware_key, mod.factory);
-                }
-            } catch {
-                // Discovery rows may point at missing files during development rescans.
+            const version = row.updated_at
+                ? new Date(row.updated_at).getTime()
+                : Date.now();
+            const mod = await import(
+                pathToFileURL(row.module_path).href + `?v=${version}`
+            );
+            if (typeof mod.factory === 'function') {
+                this.#factories.set(row.middleware_key, mod.factory);
             }
         }
     }
@@ -87,12 +79,7 @@ export class MiddlewareCatalog {
     async loadBuiltins(builtinDir, pool = null) {
         if (builtinDir) this.#builtinDir = builtinDir;
         if (pool) this.#pool = pool;
-        let entries;
-        try {
-            entries = await readdir(builtinDir);
-        } catch {
-            return;
-        }
+        const entries = await readdir(builtinDir);
 
         for (const file of entries.sort()) {
             if (!file.endsWith('.mjs')) continue;
@@ -170,24 +157,20 @@ export class MiddlewareCatalog {
             return;
         }
 
-        try {
-            const persisted = await middlewaresDao.upsertFromDiscovery(
-                dbPool,
-                {
-                    middlewareKey: key,
-                    displayName: definition.displayName,
-                    sourceType: 'custom',
-                    modulePath: definition.modulePath,
-                    version: definition.version,
-                    checksum: checksum || 'extension',
-                    defaultSettings: definition.defaultSettings,
-                    metadata: definition.metadata,
-                }
-            );
-            definition.id = persisted.id;
-        } catch {
-            // DB persistence is best-effort for extension middlewares.
-        }
+        const persisted = await middlewaresDao.upsertFromDiscovery(
+            dbPool,
+            {
+                middlewareKey: key,
+                displayName: definition.displayName,
+                sourceType: 'custom',
+                modulePath: definition.modulePath,
+                version: definition.version,
+                checksum: checksum || 'extension',
+                defaultSettings: definition.defaultSettings,
+                metadata: definition.metadata,
+            }
+        );
+        definition.id = persisted.id;
     }
 
     async rescan(options = {}) {

@@ -57,6 +57,50 @@ export async function* canonicalStreamToSse(
     yield* toOpenAiChatSse(canonicalStream, requestId);
 }
 
+/**
+ * Serialize a terminal stream error using the same route-specific wire
+ * format that the normal streaming path emits for canonical `error`
+ * events.
+ *
+ * @param {'openai_chat'|'anthropic_messages'|'openai_responses'} routeKind
+ * @param {string} requestId
+ * @param {{ message?: string, errorType?: string }} err
+ * @returns {string}
+ */
+export function serializeSseError(routeKind, requestId, err) {
+    if (routeKind === 'anthropic_messages') {
+        return sseEvent('error', {
+            type: 'error',
+            error: {
+                type: err.errorType || 'api_error',
+                message: err.message || 'stream error',
+            },
+        });
+    }
+
+    if (routeKind === 'openai_responses') {
+        return sseEvent('response.failed', {
+            type: 'response.failed',
+            response: {
+                id: requestId,
+                object: 'response',
+                status: 'failed',
+                error: {
+                    message: err.message || 'stream error',
+                    type: err.errorType || 'api_error',
+                },
+            },
+        });
+    }
+
+    return `data: ${JSON.stringify({
+        error: {
+            message: err.message || 'stream error',
+            type: err.errorType || 'stream_error',
+        },
+    })}\n\n`;
+}
+
 // ── OpenAI Chat Completions ────────────────────────────────────────────
 
 async function* toOpenAiChatSse(stream, requestId) {
@@ -160,16 +204,13 @@ async function* toOpenAiChatSse(stream, requestId) {
             }
 
             case 'error': {
-                const payload = {
-                    error: {
-                        message:
-                            event.error?.message ||
-                            event.message ||
-                            'stream error',
-                        type: event.error?.type || event.type || 'stream_error',
-                    },
-                };
-                yield `data: ${JSON.stringify(payload)}\n\n`;
+                yield serializeSseError('openai_chat', requestId, {
+                    message:
+                        event.error?.message ||
+                        event.message ||
+                        'stream error',
+                    errorType: event.error?.type || event.type || 'stream_error',
+                });
                 return;
             }
         }
@@ -287,15 +328,12 @@ async function* toAnthropicSse(stream, requestId) {
             }
 
             case 'error': {
-                yield sseEvent('error', {
-                    type: 'error',
-                    error: {
-                        type: event.error?.type || 'api_error',
-                        message:
-                            event.error?.message ||
-                            event.message ||
-                            'stream error',
-                    },
+                yield serializeSseError('anthropic_messages', requestId, {
+                    message:
+                        event.error?.message ||
+                        event.message ||
+                        'stream error',
+                    errorType: event.error?.type || 'api_error',
                 });
                 return;
             }
@@ -416,20 +454,12 @@ async function* toResponsesSse(stream, requestId) {
             }
 
             case 'error': {
-                yield sseEvent('response.failed', {
-                    type: 'response.failed',
-                    response: {
-                        id: requestId,
-                        object: 'response',
-                        status: 'failed',
-                        error: {
-                            message:
-                                event.error?.message ||
-                                event.message ||
-                                'stream error',
-                            type: event.error?.type || 'api_error',
-                        },
-                    },
+                yield serializeSseError('openai_responses', requestId, {
+                    message:
+                        event.error?.message ||
+                        event.message ||
+                        'stream error',
+                    errorType: event.error?.type || 'api_error',
                 });
                 return;
             }

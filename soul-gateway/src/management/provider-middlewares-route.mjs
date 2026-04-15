@@ -29,13 +29,13 @@ import { sendNotFound } from './route-response-helpers.mjs';
 function shapeProviderBinding(row) {
     return {
         id: row.id,
-        provider_id: row.target_id,
-        middleware_key: row.middleware_key,
-        sort_order: row.sort_order,
+        providerId: row.target_id,
+        middlewareKey: row.middleware_key,
+        sortOrder: row.sort_order,
         enabled: row.enabled,
         settings: row.settings || {},
-        created_at: row.created_at,
-        updated_at: row.updated_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
     };
 }
 
@@ -102,7 +102,7 @@ export async function handleListProviderMiddlewareBindings(ctx) {
     );
     const bindings = rows
         .map(shapeProviderBinding)
-        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
     sendJson(res, 200, { bindings });
 }
 
@@ -123,7 +123,7 @@ export async function handleCreateProviderMiddlewareBinding(ctx) {
         scope: 'provider',
         targetId: params.providerId,
         middlewareKey,
-        sortOrder: body.sortOrder ?? body.sort_order ?? 100,
+        sortOrder: body.sortOrder ?? 100,
         enabled: body.enabled ?? true,
         settings: body.settings || {},
     });
@@ -148,9 +148,13 @@ export async function handleUpdateProviderMiddlewareBinding(ctx) {
 
     const fields = {};
     if (body.sortOrder !== undefined) fields.sortOrder = body.sortOrder;
-    if (body.sort_order !== undefined) fields.sortOrder = body.sort_order;
     if (body.enabled !== undefined) fields.enabled = body.enabled;
     if (body.settings !== undefined) fields.settings = body.settings;
+    if (Object.keys(fields).length === 0) {
+        throw new BadRequestError(
+            'No supported update fields provided. Use sortOrder, enabled, or settings.'
+        );
+    }
 
     const row = await bindingsDao.update(pool, params.bindingId, fields);
     if (!row) {

@@ -10,10 +10,11 @@ const DEFAULT_REFRESH_MS = 21_600_000; // 6 hours
 
 export class PricingDirectory {
     /**
-     * @param {{ refreshIntervalMs?: number }} [opts]
+     * @param {{ refreshIntervalMs?: number, log?: object }} [opts]
      */
     constructor(opts = {}) {
         this._refreshMs = opts.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
+        this._log = opts.log ?? null;
         /** @type {Map<string, { inputPricePerMillion: number, outputPricePerMillion: number }>} */
         this._prices = new Map();
         this._lastFetchedAt = 0;
@@ -30,11 +31,17 @@ export class PricingDirectory {
      *
      * @param {string} url
      */
-    async load(url) {
+    async load(url, log = null) {
         this._url = url;
+        const isInitial = this._prices.size === 0;
         try {
             const res = await fetch(url);
-            if (!res.ok) return;
+            if (!res.ok) {
+                const msg = `pricing directory fetch failed: HTTP ${res.status}`;
+                if (isInitial) throw new Error(msg);
+                if (log) log.warn(msg, { url, status: res.status });
+                return;
+            }
 
             const body = await res.json();
             const models = body.data || body.models || [];
@@ -57,8 +64,14 @@ export class PricingDirectory {
 
             this._prices = newPrices;
             this._lastFetchedAt = Date.now();
-        } catch {
-            // Graceful failure — continue with existing directory
+        } catch (err) {
+            if (isInitial) throw err;
+            if (log) {
+                log.error('pricing directory refresh failed', {
+                    url,
+                    error: err.message,
+                });
+            }
         }
     }
 

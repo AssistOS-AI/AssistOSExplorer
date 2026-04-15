@@ -1,9 +1,9 @@
 /**
  * Management tier routes.
  *
- * A tier is a model with `strategy_kind = 'cascade'`. This route keeps
- * the dashboard's `/management/tiers` surface backed by `models` +
- * `model_children`.
+ * A tier is a dashboard management view over a cascade model stored in
+ * `soul_gateway.models` plus its ordered children in
+ * `soul_gateway.model_children`.
  *
  * URL surface:
  *
@@ -14,8 +14,6 @@
  *   DELETE /management/tiers/:tierId
  *   POST   /management/tiers/:tierId/enable
  *   POST   /management/tiers/:tierId/disable
- *
- * Where `tierId` is the cascade model's UUID.
  */
 
 import { readJsonBody } from '../core/json-body.mjs';
@@ -23,273 +21,349 @@ import { sendJson } from '../core/responses.mjs';
 import { BadRequestError } from '../core/errors.mjs';
 import * as modelsDao from '../db/dao/models-dao.mjs';
 import * as modelChildrenDao from '../db/dao/model-children-dao.mjs';
+import * as modelAliasesDao from '../db/dao/model-aliases-dao.mjs';
 import { requestRuntimeRefresh } from '../runtime/registry/runtime-refresh.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
 
-// ── helpers ────────────────────────────────────────────────────────────
+const DEFAULT_MAX_ATTEMPTS = 5;
 
-/**
- * Load cascade models from the DB in the dashboard tier response shape:
- *   { id, tier_key, display_name, description, max_model_attempts,
- *     enabled, metadata, rate_limit_override, ..., models: [{ ... }] }
- */
-async function loadCascadeRow(pool, id) {
-    const row = await modelsDao.findById(pool, id);
-    if (!row || row.strategy_kind !== 'cascade') return null;
-    const children = await modelChildrenDao.listForParent(pool, id);
-    return reshape(row, children);
+const CREATE_FIELDS = new Set([
+    'tierKey',
+    'displayName',
+    'enabled',
+    'maxAttempts',
+    'childModelIds',
+]);
+
+const UPDATE_FIELDS = new Set([
+    'tierKey',
+    'displayName',
+    'enabled',
+    'maxAttempts',
+    'childModelIds',
+]);
+
+function assertBodyObject(body, operation) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw new BadRequestError(`${operation} body must be a JSON object`);
+    }
 }
 
-function reshape(row, children) {
+function assertAllowedFields(body, allowedFields, operation) {
+    const unsupported = Object.keys(body).filter((key) => !allowedFields.has(key));
+    if (unsupported.length > 0) {
+        throw new BadRequestError(
+            `Unsupported fields for ${operation}: ${unsupported.join(', ')}`
+        );
+    }
+}
+
+function requireNonEmptyString(value, fieldName) {
+    if (typeof value !== 'string') {
+        throw new BadRequestError(`${fieldName} must be a non-empty string`);
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+        throw new BadRequestError(`${fieldName} must be a non-empty string`);
+    }
+    return trimmed;
+}
+
+function normalizeOptionalString(value, fieldName) {
+    if (value === undefined) return undefined;
+    return requireNonEmptyString(value, fieldName);
+}
+
+function normalizeBoolean(value, fieldName, fallback = undefined) {
+    if (value === undefined) return fallback;
+    if (typeof value !== 'boolean') {
+        throw new BadRequestError(`${fieldName} must be a boolean`);
+    }
+    return value;
+}
+
+function normalizeMaxAttempts(value, { fallback } = {}) {
+    if (value === undefined) return fallback;
+    if (!Number.isInteger(value) || value <= 0) {
+        throw new BadRequestError('maxAttempts must be a positive integer');
+    }
+    return value;
+}
+
+function normalizeChildModelIds(value) {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) {
+        throw new BadRequestError('childModelIds must be an array');
+    }
+
+    const normalized = value.map((entry, index) => {
+        if (typeof entry !== 'string') {
+            throw new BadRequestError(
+                `childModelIds[${index}] must be a model id string`
+            );
+        }
+        const trimmed = entry.trim();
+        if (!trimmed) {
+            throw new BadRequestError(
+                `childModelIds[${index}] must be a non-empty model id string`
+            );
+        }
+        return trimmed;
+    });
+
+    if (new Set(normalized).size !== normalized.length) {
+        throw new BadRequestError('childModelIds cannot contain duplicates');
+    }
+
+    return normalized;
+}
+
+async function loadTierRow(pool, tierId) {
+    const row = await modelsDao.findById(pool, tierId);
+    if (!row || row.strategy_kind !== 'cascade') {
+        return null;
+    }
+    return row;
+}
+
+async function validateChildModels(pool, childModelIds, tierId = null) {
+    for (const childModelId of childModelIds) {
+        if (tierId && childModelId === tierId) {
+            throw new BadRequestError('A tier cannot include itself as a child');
+        }
+
+        const child = await modelsDao.findById(pool, childModelId);
+        if (!child) {
+            throw new BadRequestError(`Child model not found: ${childModelId}`);
+        }
+        if (child.strategy_kind !== 'direct') {
+            throw new BadRequestError(
+                `Tier child models must be direct models: ${child.model_key}`
+            );
+        }
+    }
+}
+
+function serializeTier(row, children) {
     return {
         id: row.id,
-        tier_key: row.model_key,
-        display_name: row.display_name,
-        description: row.description ?? null,
-        max_model_attempts: row.max_attempts ?? 5,
+        tierKey: row.model_key,
+        displayName: row.display_name,
         enabled: row.enabled,
-        rate_limit_override: row.rate_limit_override || {},
-        budget_override: row.budget_override || {},
-        loop_override: row.loop_override || {},
-        response_filter_override: row.response_filter_override || {},
-        metadata: row.metadata || {},
-        models: (children || []).map((c) => ({
-            id: c.id,
-            tier_id: c.parent_model_id,
-            model_id: c.child_model_id,
-            model_key: c.child_model_key,
-            model_display_name: c.child_display_name,
-            priority: c.priority,
-            enabled: c.enabled,
-            settings: c.settings,
+        maxAttempts: row.max_attempts ?? DEFAULT_MAX_ATTEMPTS,
+        children: (children || []).map((child) => ({
+            bindingId: child.id,
+            modelId: child.child_model_id,
+            modelKey: child.child_model_key,
+            displayName: child.child_display_name,
+            enabled: child.child_enabled,
+            priority: child.priority,
         })),
     };
 }
 
-// ── routes ─────────────────────────────────────────────────────────────
+async function loadSerializedTier(pool, tierId) {
+    const row = await loadTierRow(pool, tierId);
+    if (!row) return null;
+    const children = await modelChildrenDao.listForParent(pool, tierId);
+    return serializeTier(row, children);
+}
 
-/**
- * GET /management/tiers
- */
 export async function handleListTiers(ctx) {
     const { res, query, appCtx } = ctx;
     const { pool } = appCtx;
 
     const enabled =
         query.enabled !== undefined ? query.enabled === 'true' : null;
-    const models = await modelsDao.list(pool, {
-        enabled,
-        limit: 500,
-        offset: 0,
-    });
+    const rows = await modelsDao.list(pool, { enabled, limit: 500, offset: 0 });
 
-    const data = [];
-    for (const row of models) {
+    const tiers = [];
+    for (const row of rows) {
         if (row.strategy_kind !== 'cascade') continue;
         const children = await modelChildrenDao.listForParent(pool, row.id);
-        data.push(reshape(row, children));
+        tiers.push(serializeTier(row, children));
     }
 
-    sendJson(res, 200, { data });
+    sendJson(res, 200, { data: tiers });
 }
 
-/**
- * POST /management/tiers
- *
- * Creates a cascade model.  Body:
- *   { tierKey, displayName, description?, maxModelAttempts?, enabled?,
- *     metadata?, models?: [{ modelId, priority, settings? }] }
- */
 export async function handleCreateTier(ctx) {
     const { req, res, appCtx } = ctx;
     const { pool } = appCtx;
     const body = await readJsonBody(req);
 
-    if (!body || !body.tierKey || !body.displayName) {
-        throw new BadRequestError(
-            'Missing required fields: tierKey, displayName'
-        );
+    assertBodyObject(body, 'Tier create');
+    assertAllowedFields(body, CREATE_FIELDS, 'tier create');
+
+    const tierKey = requireNonEmptyString(body.tierKey, 'tierKey');
+    const displayName = requireNonEmptyString(body.displayName, 'displayName');
+    const enabled = normalizeBoolean(body.enabled, 'enabled', true);
+    const maxAttempts = normalizeMaxAttempts(body.maxAttempts, {
+        fallback: DEFAULT_MAX_ATTEMPTS,
+    });
+    const childModelIds = normalizeChildModelIds(body.childModelIds) || [];
+
+    const existingByKey = await modelsDao.findByKey(pool, tierKey);
+    if (existingByKey) {
+        throw new BadRequestError(`Tier key already exists: ${tierKey}`);
     }
 
-    // Cascade models have no provider/provider_model_id — those columns
-    // are nullable after the F2 migration. models-dao.create still
-    // requires them, so go through a thin direct insert.
+    await validateChildModels(pool, childModelIds);
+
     const { rows } = await pool.query(
         `INSERT INTO soul_gateway.models
-       (model_key, display_name, strategy_kind, max_attempts,
-        enabled, rate_limit_override, budget_override, loop_override,
-        response_filter_override, metadata)
-     VALUES ($1, $2, 'cascade', $3, $4, $5, $6, $7, $8, $9)
+       (model_key, display_name, enabled, strategy_kind, max_attempts)
+     VALUES ($1, $2, $3, 'cascade', $4)
      RETURNING *`,
-        [
-            body.tierKey,
-            body.displayName,
-            body.maxModelAttempts ?? 5,
-            body.enabled ?? true,
-            JSON.stringify(body.rateLimitOverride || {}),
-            JSON.stringify(body.budgetOverride || {}),
-            JSON.stringify(body.loopOverride || {}),
-            JSON.stringify(body.responseFilterOverride || {}),
-            JSON.stringify({
-                ...(body.metadata || {}),
-                ...(body.description ? { description: body.description } : {}),
-            }),
-        ]
+        [tierKey, displayName, enabled, maxAttempts]
     );
-    const cascade = rows[0];
+    const tier = rows[0];
 
-    if (Array.isArray(body.models)) {
-        for (const m of body.models) {
-            await modelChildrenDao.create(pool, {
-                parentModelId: cascade.id,
-                childModelId: m.modelId,
-                priority: m.priority,
-                settings: m.settings ?? {},
-            });
-        }
-    }
+    await modelChildrenDao.replaceChildren(
+        pool,
+        tier.id,
+        childModelIds.map((childModelId, index) => ({
+            childModelId,
+            priority: index + 1,
+            enabled: true,
+        }))
+    );
 
-    const children = await modelChildrenDao.listForParent(pool, cascade.id);
-
+    const children = await modelChildrenDao.listForParent(pool, tier.id);
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'tier.create' });
-
-    sendJson(res, 201, { tier: reshape(cascade, children) });
+    sendJson(res, 201, { tier: serializeTier(tier, children) });
 }
 
-/**
- * GET /management/tiers/:tierId
- */
 export async function handleGetTier(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
 
-    const tier = await loadCascadeRow(pool, params.tierId);
+    const tier = await loadSerializedTier(pool, params.tierId);
     if (!tier) {
         sendNotFound(res, 'Tier');
         return;
     }
+
     sendJson(res, 200, { tier });
 }
 
-/**
- * PATCH /management/tiers/:tierId
- */
 export async function handleUpdateTier(ctx) {
     const { req, res, params, appCtx } = ctx;
     const { pool } = appCtx;
     const body = await readJsonBody(req);
 
-    if (!body || Object.keys(body).length === 0) {
+    assertBodyObject(body, 'Tier update');
+    if (Object.keys(body).length === 0) {
         throw new BadRequestError('Empty update body');
     }
+    assertAllowedFields(body, UPDATE_FIELDS, 'tier update');
 
-    // Verify it's a cascade model before we touch anything
-    const existing = await modelsDao.findById(pool, params.tierId);
-    if (!existing || existing.strategy_kind !== 'cascade') {
+    const existing = await loadTierRow(pool, params.tierId);
+    if (!existing) {
         sendNotFound(res, 'Tier');
         return;
     }
 
     const fields = {};
-    if (body.displayName !== undefined) fields.displayName = body.displayName;
-    if (body.maxModelAttempts !== undefined)
-        fields.maxAttempts = body.maxModelAttempts;
-    if (body.enabled !== undefined) fields.enabled = body.enabled;
-    if (body.rateLimitOverride !== undefined)
-        fields.rateLimitOverride = body.rateLimitOverride;
-    if (body.budgetOverride !== undefined)
-        fields.budgetOverride = body.budgetOverride;
-    if (body.loopOverride !== undefined)
-        fields.loopOverride = body.loopOverride;
-    if (body.responseFilterOverride !== undefined)
-        fields.responseFilterOverride = body.responseFilterOverride;
-    if (body.metadata !== undefined) fields.metadata = body.metadata;
+
+    const tierKey = normalizeOptionalString(body.tierKey, 'tierKey');
+    if (tierKey !== undefined) {
+        const conflicting = await modelsDao.findByKey(pool, tierKey);
+        if (conflicting && conflicting.id !== params.tierId) {
+            throw new BadRequestError(`Tier key already exists: ${tierKey}`);
+        }
+        fields.modelKey = tierKey;
+    }
+
+    const displayName = normalizeOptionalString(body.displayName, 'displayName');
+    if (displayName !== undefined) {
+        fields.displayName = displayName;
+    }
+
+    const enabled = normalizeBoolean(body.enabled, 'enabled');
+    if (enabled !== undefined) {
+        fields.enabled = enabled;
+    }
+
+    const maxAttempts = normalizeMaxAttempts(body.maxAttempts);
+    if (maxAttempts !== undefined) {
+        fields.maxAttempts = maxAttempts;
+    }
+
+    const childModelIds = normalizeChildModelIds(body.childModelIds);
+    if (childModelIds !== undefined) {
+        await validateChildModels(pool, childModelIds, params.tierId);
+        await modelChildrenDao.replaceChildren(
+            pool,
+            params.tierId,
+            childModelIds.map((childModelId, index) => ({
+                childModelId,
+                priority: index + 1,
+                enabled: true,
+            }))
+        );
+    }
 
     const updated =
         Object.keys(fields).length > 0
             ? await modelsDao.update(pool, params.tierId, fields)
             : existing;
 
-    if (Array.isArray(body.models)) {
-        await modelChildrenDao.replaceChildren(
-            pool,
-            params.tierId,
-            body.models.map((m) => ({
-                childModelId: m.modelId,
-                priority: m.priority,
-                enabled: m.enabled ?? true,
-                settings: m.settings ?? {},
-            }))
-        );
-    }
-
     const children = await modelChildrenDao.listForParent(pool, params.tierId);
-
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'tier.update' });
-
-    sendJson(res, 200, { tier: reshape(updated, children) });
+    sendJson(res, 200, { tier: serializeTier(updated, children) });
 }
 
-/**
- * DELETE /management/tiers/:tierId
- */
 export async function handleDeleteTier(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
 
-    const existing = await modelsDao.findById(pool, params.tierId);
-    if (!existing || existing.strategy_kind !== 'cascade') {
+    const existing = await loadTierRow(pool, params.tierId);
+    if (!existing) {
         sendNotFound(res, 'Tier');
         return;
     }
 
-    // ON DELETE CASCADE on model_children removes the child rows
-    // automatically.  middleware_bindings with target_id = this model's
-    // id are NOT FK-linked, so clean them up explicitly.
     await pool.query(
-        'DELETE FROM soul_gateway.middleware_bindings WHERE scope = $1 AND target_id = $2',
+        `DELETE FROM soul_gateway.middleware_bindings
+     WHERE scope = $1 AND target_id = $2`,
         ['model', params.tierId]
     );
+    await modelAliasesDao.deleteByModel(pool, params.tierId);
     await modelsDao.del(pool, params.tierId);
 
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'tier.delete' });
     sendJson(res, 200, { ok: true });
 }
 
-/**
- * POST /management/tiers/:tierId/enable
- */
 export async function handleEnableTier(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
 
-    const existing = await modelsDao.findById(pool, params.tierId);
-    if (!existing || existing.strategy_kind !== 'cascade') {
+    const existing = await loadTierRow(pool, params.tierId);
+    if (!existing) {
         sendNotFound(res, 'Tier');
         return;
     }
+
     const updated = await modelsDao.enable(pool, params.tierId);
     const children = await modelChildrenDao.listForParent(pool, params.tierId);
-
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'tier.enable' });
-    sendJson(res, 200, { tier: reshape(updated, children) });
+    sendJson(res, 200, { tier: serializeTier(updated, children) });
 }
 
-/**
- * POST /management/tiers/:tierId/disable
- */
 export async function handleDisableTier(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
 
-    const existing = await modelsDao.findById(pool, params.tierId);
-    if (!existing || existing.strategy_kind !== 'cascade') {
+    const existing = await loadTierRow(pool, params.tierId);
+    if (!existing) {
         sendNotFound(res, 'Tier');
         return;
     }
+
     const updated = await modelsDao.disable(pool, params.tierId);
     const children = await modelChildrenDao.listForParent(pool, params.tierId);
-
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'tier.disable' });
-    sendJson(res, 200, { tier: reshape(updated, children) });
+    sendJson(res, 200, { tier: serializeTier(updated, children) });
 }

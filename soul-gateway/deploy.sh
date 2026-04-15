@@ -14,25 +14,25 @@ echo "=== Soul Gateway Deploy ==="
 
 # 1. Clone or pull the proxies repo
 if [ -d "$CODE_DIR/proxies/.git" ]; then
-  echo "Pulling latest proxies..."
-  cd "$CODE_DIR/proxies"
-  git fetch origin main
-  git reset --hard origin/main
+    echo "Pulling latest proxies..."
+    cd "$CODE_DIR/proxies"
+    git fetch origin main
+    git reset --hard origin/main
 else
-  echo "Cloning proxies repo..."
-  mkdir -p "$CODE_DIR"
-  git clone "$PROXIES_REPO" "$CODE_DIR/proxies"
+    echo "Cloning proxies repo..."
+    mkdir -p "$CODE_DIR"
+    git clone "$PROXIES_REPO" "$CODE_DIR/proxies"
 fi
 
 # 2. Clone or pull the basic repo
 if [ -d "$CODE_DIR/basic/.git" ]; then
-  echo "Pulling latest basic..."
-  cd "$CODE_DIR/basic"
-  git fetch origin main
-  git reset --hard origin/main
+    echo "Pulling latest basic..."
+    cd "$CODE_DIR/basic"
+    git fetch origin main
+    git reset --hard origin/main
 else
-  echo "Cloning basic repo..."
-  git clone "$BASIC_REPO" "$CODE_DIR/basic"
+    echo "Cloning basic repo..."
+    git clone "$BASIC_REPO" "$CODE_DIR/basic"
 fi
 
 # 3. Create workspace
@@ -45,7 +45,7 @@ ln -sfn "$CODE_DIR/proxies" "$WORKSPACE/.ploinky/repos/proxies"
 ln -sfn "$CODE_DIR/basic" "$WORKSPACE/.ploinky/repos/basic"
 
 if [ ! -f "$WORKSPACE/.ploinky/enabled_repos.json" ]; then
-  echo '["basic","proxies"]' > "$WORKSPACE/.ploinky/enabled_repos.json"
+    echo '["basic","proxies"]' > "$WORKSPACE/.ploinky/enabled_repos.json"
 fi
 
 # 5. Set ploinky vars for soul-gateway
@@ -60,9 +60,9 @@ $PLOINKY var DEFAULT_PROXY_API_KEY "${DEFAULT_PROXY_API_KEY}"
 
 # 6. Stop existing soul-gateway if running
 if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "soul-gateway.*soulGateway"; then
-  echo "Stopping existing soul-gateway..."
-  $PLOINKY stop soul-gateway 2>&1 || true
-  $PLOINKY clean soul-gateway 2>&1 || true
+    echo "Stopping existing soul-gateway..."
+    $PLOINKY stop soul-gateway 2>&1 || true
+    $PLOINKY clean soul-gateway 2>&1 || true
 fi
 
 # 7. Start soul-gateway
@@ -72,14 +72,14 @@ $PLOINKY start soul-gateway 2>&1
 # 8. Wait for startup and health check
 echo "Waiting for startup..."
 for i in $(seq 1 30); do
-  sleep 2
-  if curl -sf http://localhost:8042/health > /dev/null 2>&1; then
-    echo "Soul Gateway is healthy!"
-    curl -s http://localhost:8042/health
-    echo ""
-    exit 0
-  fi
-  echo "  Attempt $i/30..."
+    sleep 2
+    if curl -sf http://localhost:8042/healthz > /dev/null 2>&1; then
+        echo "Soul Gateway is healthy!"
+        curl -s http://localhost:8042/healthz
+        echo ""
+        exit 0
+    fi
+    echo "  Attempt $i/30..."
 done
 
 echo "ERROR: Soul Gateway failed to start within 60 seconds"

@@ -206,7 +206,10 @@ describe('main-branch importer: fixture verification', () => {
         assert.equal(secondReport.counts.sessions, 3);
 
         const snapshot = buildSnapshotFromImportState(harness.state);
-        assert.deepEqual(normalizeModelName('mode:fast', snapshot), {
+        // After import, cascades are addressable by their bare name (e.g. 'fast')
+        // which resolves via the normalizer's provider-prefix matching.
+        // The legacy 'mode:' prefix is no longer supported in the runtime.
+        assert.deepEqual(normalizeModelName('fast', snapshot), {
             normalized: 'axl/fast',
             kind: 'model',
         });

@@ -43,6 +43,12 @@ If the client requested buffered output, `bufferingMiddleware()` drains the cano
 
 `gatewayDispatch` sets `wantStream` from `ctx.request.stream === true`, so the route layer can preserve the stream end to end.
 
+While route egress drains the response, it also records observability metadata:
+
+- streaming responses update `ctx.metadata.usage` from canonical `usage` events
+- streaming responses set `ctx.metadata.ttfbMs` on the first SSE write
+- buffered responses normalize `ctx.response.usage` onto the same usage shape and set `ttfbMs` to the total buffered duration when no earlier first-byte timing exists
+
 ### SSE wire formats
 
 Route egress supports:
@@ -52,6 +58,12 @@ Route egress supports:
 - OpenAI Responses named events
 
 The response format is selected from `route.kind`.
+
+If a route error is thrown after headers have already been sent, the error boundary emits the same route-specific terminal error shape that the streaming serializer uses for canonical `error` events:
+
+- OpenAI Chat -> unnamed `data: {"error": ...}` frame
+- Anthropic Messages -> `event: error`
+- OpenAI Responses -> `event: response.failed`
 
 ## Client disconnect handling
 

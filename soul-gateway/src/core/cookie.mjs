@@ -9,7 +9,15 @@ export function parseCookies(header) {
         if (idx < 0) continue;
         const key = pair.slice(0, idx).trim();
         const val = pair.slice(idx + 1).trim();
-        cookies[key] = decodeURIComponent(val);
+        try {
+            try {
+            cookies[key] = decodeURIComponent(val);
+        } catch {
+            cookies[key] = val;
+        }
+        } catch {
+            cookies[key] = val;
+        }
     }
     return cookies;
 }

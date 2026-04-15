@@ -12,7 +12,6 @@
 
 import { sendJson } from '../core/responses.mjs';
 import { BadRequestError } from '../core/errors.mjs';
-import { MetricsService } from '../observability/metrics-service.mjs';
 
 /**
  * GET /management/metrics/cost
@@ -23,8 +22,7 @@ export async function handleCostMetrics(ctx) {
     const { from, to } = requireDateRange(query);
     const groupBy = query.groupBy || 'day';
 
-    const svc = new MetricsService(appCtx.pool);
-    const data = await svc.getCostMetrics({ from, to, groupBy });
+    const data = await appCtx.services.metricsService.getCostMetrics({ from, to, groupBy });
     sendJson(res, 200, { data });
 }
 
@@ -37,8 +35,7 @@ export async function handleUsageMetrics(ctx) {
     const { from, to } = requireDateRange(query);
     const groupBy = query.groupBy || 'day';
 
-    const svc = new MetricsService(appCtx.pool);
-    const data = await svc.getUsageMetrics({ from, to, groupBy });
+    const data = await appCtx.services.metricsService.getUsageMetrics({ from, to, groupBy });
     sendJson(res, 200, { data });
 }
 
@@ -50,8 +47,7 @@ export async function handleErrorMetrics(ctx) {
 
     const { from, to } = requireDateRange(query);
 
-    const svc = new MetricsService(appCtx.pool);
-    const data = await svc.getErrorMetrics({ from, to });
+    const data = await appCtx.services.metricsService.getErrorMetrics({ from, to });
     sendJson(res, 200, { data });
 }
 
@@ -64,8 +60,7 @@ export async function handleActivityMetrics(ctx) {
     const { from, to } = requireDateRange(query);
     const bucket = query.bucket || 'minute';
 
-    const svc = new MetricsService(appCtx.pool);
-    const data = await svc.getActivityMetrics({ from, to, bucket });
+    const data = await appCtx.services.metricsService.getActivityMetrics({ from, to, bucket });
     sendJson(res, 200, { data });
 }
 
@@ -78,8 +73,7 @@ export async function handleTokenMetrics(ctx) {
     const { from, to } = requireDateRange(query);
     const groupBy = query.groupBy || 'day';
 
-    const svc = new MetricsService(appCtx.pool);
-    const data = await svc.getTokenMetrics({ from, to, groupBy });
+    const data = await appCtx.services.metricsService.getTokenMetrics({ from, to, groupBy });
     sendJson(res, 200, { data });
 }
 

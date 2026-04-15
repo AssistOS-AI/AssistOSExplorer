@@ -15,7 +15,19 @@ export function createLogger(name = 'soul-gateway') {
             level === 'error' || level === 'fatal'
                 ? process.stderr
                 : process.stdout;
-        out.write(JSON.stringify(entry) + '\n');
+        let line;
+        try {
+            line = JSON.stringify(entry);
+        } catch (serErr) {
+            line = JSON.stringify({
+                ts: entry.ts,
+                level,
+                name,
+                msg,
+                _serializationError: serErr.message,
+            });
+        }
+        out.write(line + '\n');
     }
 
     return {

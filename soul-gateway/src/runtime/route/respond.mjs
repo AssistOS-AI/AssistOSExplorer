@@ -31,9 +31,10 @@
 
 import { sendJson } from '../../core/responses.mjs';
 import { serializeBufferedResponse } from '../../request/format-serializers.mjs';
-import { isCanonicalStream } from '../kernel/canonical-stream.mjs';
+import { isCanonicalStream, tapStream } from '../kernel/index.mjs';
 import { canonicalStreamToSse } from './canonical-stream-to-sse.mjs';
 import { CONTENT_TYPES, HEADER_NAMES } from '../../core/constants.mjs';
+import { InternalServerError } from '../../core/errors.mjs';
 
 /**
  * @returns {(ctx: object, next: () => Promise<void>) => Promise<void>}
@@ -72,14 +73,21 @@ export function respondMiddleware() {
                 : candidate.stream;
             await streamSseResponse(
                 res,
-                canonicalStream,
+                tapStream(canonicalStream, (event) =>
+                    observeStreamEvent(ctx, event)
+                ),
                 routeKind,
-                ctx.requestId
+                ctx.requestId,
+                ctx
             );
             return;
         }
 
         // Buffered branch — ctx.response is a chat completion envelope.
+        if (!ctx.response) {
+            throw new InternalServerError('No response set by gateway dispatch');
+        }
+        captureBufferedResponseMetadata(ctx, totalMs);
         const serialized = serializeBufferedResponse(
             ctx.response,
             routeKind,
@@ -94,7 +102,13 @@ export function respondMiddleware() {
  * the client.  Handles client-disconnect abort by stopping iteration
  * when `res` emits `close` before the stream finishes.
  */
-async function streamSseResponse(res, canonicalStream, routeKind, requestId) {
+async function streamSseResponse(
+    res,
+    canonicalStream,
+    routeKind,
+    requestId,
+    ctx
+) {
     res.writeHead(200, {
         [HEADER_NAMES.CONTENT_TYPE]: CONTENT_TYPES.EVENT_STREAM,
         'Cache-Control': 'no-cache, no-transform',
@@ -116,6 +130,9 @@ async function streamSseResponse(res, canonicalStream, routeKind, requestId) {
         )) {
             if (clientAborted) break;
             if (res.writableEnded) break;
+            if (ctx.metadata.ttfbMs == null) {
+                ctx.metadata.ttfbMs = Date.now() - ctx.startedAt;
+            }
             const ok = res.write(chunk);
             if (ok === false) {
                 // Back-pressure: wait for drain
@@ -126,4 +143,59 @@ async function streamSseResponse(res, canonicalStream, routeKind, requestId) {
         res.off?.('close', onClose);
         if (!res.writableEnded) res.end();
     }
+}
+
+function captureBufferedResponseMetadata(ctx, totalMs) {
+    const usage = normalizeUsage(ctx.response?.usage);
+    if (usage) {
+        ctx.metadata.usage = usage;
+        ctx.usage = {
+            prompt_tokens: usage.inputTokens,
+            completion_tokens: usage.outputTokens,
+            total_tokens: usage.totalTokens,
+        };
+    }
+    if (ctx.metadata.ttfbMs == null) {
+        ctx.metadata.ttfbMs = totalMs;
+    }
+}
+
+function observeStreamEvent(ctx, event) {
+    if (!event || event.type !== 'usage') return;
+
+    const usage = normalizeUsage(event.data || event);
+    if (!usage) return;
+
+    ctx.metadata.usage = usage;
+    ctx.usage = {
+        prompt_tokens: usage.inputTokens,
+        completion_tokens: usage.outputTokens,
+        total_tokens: usage.totalTokens,
+    };
+}
+
+function normalizeUsage(usage) {
+    if (!usage) return null;
+
+    const inputTokens =
+        usage.inputTokens ??
+        usage.input_tokens ??
+        usage.promptTokens ??
+        usage.prompt_tokens ??
+        0;
+    const outputTokens =
+        usage.outputTokens ??
+        usage.output_tokens ??
+        usage.completionTokens ??
+        usage.completion_tokens ??
+        0;
+
+    return {
+        inputTokens,
+        outputTokens,
+        totalTokens:
+            usage.totalTokens ??
+            usage.total_tokens ??
+            inputTokens + outputTokens,
+    };
 }

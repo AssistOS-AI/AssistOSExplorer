@@ -20,7 +20,7 @@ BASE="http://localhost:$PORT"
 
 case "$1" in
     status|health)
-        curl -s "$BASE/health" | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"
+        curl -s "$BASE/healthz" | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"
         ;;
     families)
         curl -s "$BASE/api/v1/soul-families" | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"

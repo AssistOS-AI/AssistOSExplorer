@@ -11,7 +11,10 @@
 import { createRouter } from '../core/path-router.mjs';
 import { sendJson, sendError } from '../core/responses.mjs';
 import { requireAdmin } from '../runtime/security/dashboard-auth.mjs';
+import { verifyRequiredCsrf } from '../runtime/security/csrf.mjs';
 import { GatewayError, AuthenticationRequiredError } from '../core/errors.mjs';
+
+const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 // Auth (no admin required)
 import { handleLogin, handleLogout, handleSession } from './auth-route.mjs';
@@ -44,6 +47,17 @@ import {
     handleListModelTags,
 } from './models-route.mjs';
 
+// Tiers
+import {
+    handleListTiers,
+    handleCreateTier,
+    handleGetTier,
+    handleUpdateTier,
+    handleDeleteTier,
+    handleEnableTier,
+    handleDisableTier,
+} from './tiers-route.mjs';
+
 // Providers
 import {
     handleListTemplates,
@@ -64,17 +78,6 @@ import {
     handleRescan as handleProviderRescan,
 } from './providers-route.mjs';
 
-// Tiers
-import {
-    handleListTiers,
-    handleCreateTier,
-    handleGetTier,
-    handleUpdateTier,
-    handleDeleteTier,
-    handleEnableTier,
-    handleDisableTier,
-} from './tiers-route.mjs';
-
 // Middlewares
 import {
     handleListMiddlewares,
@@ -84,11 +87,6 @@ import {
     handleCreateAssignment,
     handleUpdateAssignment,
     handleDeleteAssignment,
-    handleListTierMiddlewares,
-    handleCreateTierMiddleware,
-    handleUpdateTierMiddleware,
-    handleDeleteTierMiddleware,
-    handleReorderTierMiddlewares,
     handleListModelMiddlewares,
     handleCreateModelMiddleware,
     handleUpdateModelMiddleware,
@@ -172,10 +170,16 @@ export function buildManagementRouter(appCtx) {
     const httpRouter = createRouter();
     const wsRouter = createRouter();
 
-    // ── Helper: wrap handler with admin auth guard ───────────────────
+    // ── Helper: wrap handler with admin auth + CSRF guard ─────────────
     function admin(handler) {
         return async (ctx) => {
-            requireAdmin(ctx.req, appCtx.config.env);
+            const decoded = requireAdmin(ctx.req, appCtx.config.env);
+            if (!CSRF_SAFE_METHODS.has(ctx.req.method)) {
+                verifyRequiredCsrf({
+                    headers: ctx.req.headers,
+                    session: { csrfToken: decoded.csrfToken },
+                });
+            }
             return handler(ctx);
         };
     }
@@ -249,6 +253,31 @@ export function buildManagementRouter(appCtx) {
         'POST',
         '/management/models/:modelId/disable',
         admin(handleDisableModel)
+    );
+
+    // ── Tiers ────────────────────────────────────────────────────────
+    httpRouter.add('GET', '/management/tiers', admin(handleListTiers));
+    httpRouter.add('POST', '/management/tiers', admin(handleCreateTier));
+    httpRouter.add('GET', '/management/tiers/:tierId', admin(handleGetTier));
+    httpRouter.add(
+        'PATCH',
+        '/management/tiers/:tierId',
+        admin(handleUpdateTier)
+    );
+    httpRouter.add(
+        'DELETE',
+        '/management/tiers/:tierId',
+        admin(handleDeleteTier)
+    );
+    httpRouter.add(
+        'POST',
+        '/management/tiers/:tierId/enable',
+        admin(handleEnableTier)
+    );
+    httpRouter.add(
+        'POST',
+        '/management/tiers/:tierId/disable',
+        admin(handleDisableTier)
     );
 
     // ── Providers ────────────────────────────────────────────────────
@@ -361,31 +390,6 @@ export function buildManagementRouter(appCtx) {
         admin(handleDeleteProviderMiddlewareBinding)
     );
 
-    // ── Tiers ────────────────────────────────────────────────────────
-    httpRouter.add('GET', '/management/tiers', admin(handleListTiers));
-    httpRouter.add('POST', '/management/tiers', admin(handleCreateTier));
-    httpRouter.add('GET', '/management/tiers/:tierId', admin(handleGetTier));
-    httpRouter.add(
-        'PATCH',
-        '/management/tiers/:tierId',
-        admin(handleUpdateTier)
-    );
-    httpRouter.add(
-        'DELETE',
-        '/management/tiers/:tierId',
-        admin(handleDeleteTier)
-    );
-    httpRouter.add(
-        'POST',
-        '/management/tiers/:tierId/enable',
-        admin(handleEnableTier)
-    );
-    httpRouter.add(
-        'POST',
-        '/management/tiers/:tierId/disable',
-        admin(handleDisableTier)
-    );
-
     // ── Middlewares (catalog) ────────────────────────────────────────
     httpRouter.add(
         'GET',
@@ -423,33 +427,6 @@ export function buildManagementRouter(appCtx) {
         'DELETE',
         '/management/middlewares/assignments/:assignmentId',
         admin(handleDeleteAssignment)
-    );
-
-    // ── Tier-scoped middlewares ──────────────────────────────────────
-    httpRouter.add(
-        'GET',
-        '/management/tiers/:tierId/middlewares',
-        admin(handleListTierMiddlewares)
-    );
-    httpRouter.add(
-        'POST',
-        '/management/tiers/:tierId/middlewares',
-        admin(handleCreateTierMiddleware)
-    );
-    httpRouter.add(
-        'POST',
-        '/management/tiers/:tierId/middlewares/reorder',
-        admin(handleReorderTierMiddlewares)
-    );
-    httpRouter.add(
-        'PATCH',
-        '/management/tiers/:tierId/middlewares/:assignmentId',
-        admin(handleUpdateTierMiddleware)
-    );
-    httpRouter.add(
-        'DELETE',
-        '/management/tiers/:tierId/middlewares/:assignmentId',
-        admin(handleDeleteTierMiddleware)
     );
 
     // ── Model-scoped middlewares ─────────────────────────────────────

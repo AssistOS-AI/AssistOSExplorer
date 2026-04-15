@@ -8,6 +8,7 @@ import {
     OPCODE_PONG,
     decodeFrame,
 } from '../core/websocket-frame-codec.mjs';
+import { redactLogEntry } from './redaction.mjs';
 
 /**
  * BroadcastHub — real-time log distribution to SSE and WebSocket subscribers.
@@ -18,6 +19,8 @@ import {
  *  3. Normal streams receive redacted payloads
  *  4. Soul-specific streams receive unredacted payloads for their soul only
  */
+const MAX_WS_BUFFER_SIZE = 64 * 1024; // 64KB
+
 export class BroadcastHub {
     constructor(appCtx) {
         this.appCtx = appCtx;
@@ -36,7 +39,10 @@ export class BroadcastHub {
     }
 
     stop() {
-        if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
         // Close all connections
         for (const [id, client] of this.sseClients) {
             client.stream.close();
@@ -77,6 +83,12 @@ export class BroadcastHub {
         let buf = Buffer.alloc(0);
         socket.on('data', (data) => {
             buf = Buffer.concat([buf, data]);
+            if (buf.length > MAX_WS_BUFFER_SIZE) {
+                sendCloseFrame(socket, 1009, 'message too big');
+                socket.destroy();
+                this.wsClients.delete(id);
+                return;
+            }
             while (true) {
                 const frame = decodeFrame(buf);
                 if (!frame) break;
@@ -196,8 +208,3 @@ function matchesFilters(logRow, filters, soulSpecific) {
     return true;
 }
 
-function redactLogEntry(logRow) {
-    const { request_payload, response_payload, request_headers, ...safe } =
-        logRow;
-    return safe;
-}

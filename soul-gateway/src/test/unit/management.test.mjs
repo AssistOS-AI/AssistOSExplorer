@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { createHmac, randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
+import { MetricsService } from '../../observability/metrics-service.mjs';
+import { ExportService } from '../../observability/export-service.mjs';
+import { AuthenticationRequiredError } from '../../core/errors.mjs';
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -16,8 +19,8 @@ function makeSigningKey() {
     return 'test-signing-key-' + randomBytes(8).toString('hex');
 }
 
-function signAdminToken(expiresAt, signingKey) {
-    const payload = String(expiresAt);
+function signAdminToken(expiresAt, signingKey, csrfToken = null) {
+    const payload = csrfToken ? `${expiresAt}.${csrfToken}` : String(expiresAt);
     const sig = createHmac('sha256', signingKey).update(payload).digest('hex');
     return `${payload}.${sig}`;
 }
@@ -93,7 +96,10 @@ function createMockAppCtx(overrides = {}) {
         },
         pool: overrides.pool || createMockPool(),
         log: { info() {}, warn() {}, error() {}, debug() {} },
-        services,
+        services: Object.assign(services, {
+            metricsService: services.metricsService || new MetricsService(overrides.pool || createMockPool()),
+            exportService: services.exportService || new ExportService(overrides.pool || createMockPool()),
+        }),
         draining: false,
         snapshotGeneration: 1,
         startedAt: Date.now(),
@@ -154,8 +160,16 @@ function parseJsonResponse(res) {
     return JSON.parse(res.body);
 }
 
-function addAdminAuth(req, appCtx) {
-    const token = signAdminToken(Date.now() + 3_600_000, appCtx._signingKey);
+function compactSql(sql) {
+    return sql.replace(/\s+/g, ' ').trim();
+}
+
+function addAdminAuth(req, appCtx, { csrfToken = null } = {}) {
+    const token = signAdminToken(
+        Date.now() + 3_600_000,
+        appCtx._signingKey,
+        csrfToken
+    );
     req.headers.authorization = `Bearer ${token}`;
     return token;
 }
@@ -217,7 +231,7 @@ describe('management/auth-route', () => {
     it('handleSession returns authenticated: true for valid session', async () => {
         const appCtx = createMockAppCtx();
         const req = createMockReq();
-        addAdminAuth(req, appCtx);
+        addAdminAuth(req, appCtx, { csrfToken: 'csrf-valid' });
         const res = createMockRes();
 
         await handleSession({ req, res, params: {}, query: {}, appCtx });
@@ -239,16 +253,43 @@ describe('management/auth-route', () => {
         assert.equal(body.authenticated, false);
     });
 
-    it('handleLogout clears the session cookie', async () => {
+    it('handleLogout clears the session cookie when CSRF token matches', async () => {
         const appCtx = createMockAppCtx();
-        const req = createMockReq();
-        addAdminAuth(req, appCtx);
+        const req = createMockReq({
+            method: 'POST',
+            headers: { 'x-csrf-token': 'csrf-1' },
+        });
+        addAdminAuth(req, appCtx, { csrfToken: 'csrf-1' });
         const res = createMockRes();
 
         await handleLogout({ req, res, params: {}, query: {}, appCtx });
 
         assert.equal(res.statusCode, 200);
         assert.ok(res.headers['Set-Cookie'].includes('Max-Age=0'));
+    });
+
+    it('handleLogout rejects tokens without CSRF component', async () => {
+        const appCtx = createMockAppCtx();
+        const req = createMockReq({ method: 'POST' });
+        addAdminAuth(req, appCtx); // token without csrfToken is now rejected
+        const res = createMockRes();
+
+        await assert.rejects(
+            () => handleLogout({ req, res, params: {}, query: {}, appCtx }),
+            (err) => err instanceof AuthenticationRequiredError
+        );
+    });
+
+    it('handleLogout rejects a missing CSRF token header for valid sessions', async () => {
+        const appCtx = createMockAppCtx();
+        const req = createMockReq({ method: 'POST' });
+        addAdminAuth(req, appCtx, { csrfToken: 'csrf-1' });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () => handleLogout({ req, res, params: {}, query: {}, appCtx }),
+            (err) => err.httpStatus === 400
+        );
     });
 });
 
@@ -446,6 +487,311 @@ describe('management/models-route', () => {
     });
 });
 
+// ── Tiers route tests ───────────────────────────────────────────────
+
+describe('management/tiers-route', () => {
+    let handleListTiers,
+        handleCreateTier,
+        handleUpdateTier;
+
+    beforeEach(async () => {
+        ({
+            handleListTiers,
+            handleCreateTier,
+            handleUpdateTier,
+        } = await import('../../management/tiers-route.mjs'));
+    });
+
+    it('handleListTiers returns only cascade models with child models', async () => {
+        const pool = createMockPool(async (sql) => {
+            const normalized = compactSql(sql);
+
+            if (
+                normalized.includes('FROM soul_gateway.models m') &&
+                normalized.includes('LEFT JOIN soul_gateway.providers p')
+            ) {
+                return {
+                    rows: [
+                        {
+                            id: 'tier-1',
+                            model_key: 'axl/fast',
+                            display_name: 'Fast Tier',
+                            enabled: true,
+                            strategy_kind: 'cascade',
+                            max_attempts: 4,
+                        },
+                        {
+                            id: 'model-1',
+                            model_key: 'openai/gpt-4.1',
+                            display_name: 'GPT-4.1',
+                            enabled: true,
+                            strategy_kind: 'direct',
+                        },
+                    ],
+                };
+            }
+
+            if (normalized.includes('FROM soul_gateway.model_children mc')) {
+                return {
+                    rows: [
+                        {
+                            id: 'binding-1',
+                            parent_model_id: 'tier-1',
+                            child_model_id: 'model-1',
+                            child_model_key: 'openai/gpt-4.1',
+                            child_display_name: 'GPT-4.1',
+                            child_enabled: true,
+                            priority: 1,
+                        },
+                    ],
+                };
+            }
+
+            throw new Error(`Unexpected query: ${normalized}`);
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListTiers({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.data.length, 1);
+        assert.equal(body.data[0].tierKey, 'axl/fast');
+        assert.equal(body.data[0].children.length, 1);
+        assert.equal(body.data[0].children[0].modelKey, 'openai/gpt-4.1');
+    });
+
+    it('handleCreateTier rejects unsupported request fields', async () => {
+        const appCtx = createMockAppCtx();
+        const req = createMockReq({
+            method: 'POST',
+            body: {
+                name: 'axl/fast',
+                displayName: 'Fast Tier',
+            },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () =>
+                handleCreateTier({ req, res, params: {}, query: {}, appCtx }),
+            (err) =>
+                err.httpStatus === 400 &&
+                err.message.includes('Unsupported fields')
+        );
+    });
+
+    it('handleCreateTier creates a cascade tier from ordered direct child ids', async () => {
+        let snapshotReloads = 0;
+        const pool = createMockPool(async (sql, params) => {
+            const normalized = compactSql(sql);
+
+            if (
+                normalized ===
+                'SELECT * FROM soul_gateway.models WHERE model_key = $1'
+            ) {
+                return { rows: [] };
+            }
+
+            if (
+                normalized === 'SELECT * FROM soul_gateway.models WHERE id = $1'
+            ) {
+                if (params[0] === 'model-1') {
+                    return {
+                        rows: [
+                            {
+                                id: 'model-1',
+                                model_key: 'openai/gpt-4.1',
+                                strategy_kind: 'direct',
+                            },
+                        ],
+                    };
+                }
+                if (params[0] === 'model-2') {
+                    return {
+                        rows: [
+                            {
+                                id: 'model-2',
+                                model_key: 'anthropic/claude-sonnet-4',
+                                strategy_kind: 'direct',
+                            },
+                        ],
+                    };
+                }
+            }
+
+            if (
+                normalized.startsWith('INSERT INTO soul_gateway.models')
+            ) {
+                return {
+                    rows: [
+                        {
+                            id: 'tier-1',
+                            model_key: params[0],
+                            display_name: params[1],
+                            enabled: params[2],
+                            strategy_kind: 'cascade',
+                            max_attempts: params[3],
+                        },
+                    ],
+                };
+            }
+
+            if (
+                normalized === 'BEGIN' ||
+                normalized === 'COMMIT' ||
+                normalized === 'ROLLBACK'
+            ) {
+                return { rows: [], rowCount: 0 };
+            }
+
+            if (
+                normalized ===
+                'DELETE FROM soul_gateway.model_children WHERE parent_model_id = $1'
+            ) {
+                return { rows: [], rowCount: 0 };
+            }
+
+            if (
+                normalized.startsWith('INSERT INTO soul_gateway.model_children')
+            ) {
+                return { rows: [], rowCount: 1 };
+            }
+
+            if (normalized.includes('FROM soul_gateway.model_children mc')) {
+                return {
+                    rows: [
+                        {
+                            id: 'binding-1',
+                            parent_model_id: 'tier-1',
+                            child_model_id: 'model-1',
+                            child_model_key: 'openai/gpt-4.1',
+                            child_display_name: 'GPT-4.1',
+                            child_enabled: true,
+                            priority: 1,
+                        },
+                        {
+                            id: 'binding-2',
+                            parent_model_id: 'tier-1',
+                            child_model_id: 'model-2',
+                            child_model_key: 'anthropic/claude-sonnet-4',
+                            child_display_name: 'Claude Sonnet 4',
+                            child_enabled: true,
+                            priority: 2,
+                        },
+                    ],
+                };
+            }
+
+            throw new Error(`Unexpected query: ${normalized}`);
+        });
+        const appCtx = createMockAppCtx({
+            pool,
+            services: {
+                reloadRuntimeSnapshot: async () => {
+                    snapshotReloads += 1;
+                    return { generation: 2 };
+                },
+            },
+        });
+        const req = createMockReq({
+            method: 'POST',
+            body: {
+                tierKey: 'axl/fast',
+                displayName: 'Fast Tier',
+                maxAttempts: 6,
+                childModelIds: ['model-1', 'model-2'],
+            },
+        });
+        const res = createMockRes();
+
+        await handleCreateTier({
+            req,
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 201);
+        assert.equal(snapshotReloads, 1);
+        const body = parseJsonResponse(res);
+        assert.equal(body.tier.tierKey, 'axl/fast');
+        assert.equal(body.tier.maxAttempts, 6);
+        assert.deepEqual(
+            body.tier.children.map((child) => child.modelId),
+            ['model-1', 'model-2']
+        );
+    });
+
+    it('handleUpdateTier rejects cascade child tiers in childModelIds', async () => {
+        const pool = createMockPool(async (sql, params) => {
+            const normalized = compactSql(sql);
+            if (
+                normalized === 'SELECT * FROM soul_gateway.models WHERE id = $1'
+            ) {
+                if (params[0] === 'tier-1') {
+                    return {
+                        rows: [
+                            {
+                                id: 'tier-1',
+                                model_key: 'axl/fast',
+                                display_name: 'Fast Tier',
+                                strategy_kind: 'cascade',
+                                enabled: true,
+                                max_attempts: 5,
+                            },
+                        ],
+                    };
+                }
+                if (params[0] === 'tier-2') {
+                    return {
+                        rows: [
+                            {
+                                id: 'tier-2',
+                                model_key: 'axl/slow',
+                                display_name: 'Slow Tier',
+                                strategy_kind: 'cascade',
+                                enabled: true,
+                                max_attempts: 5,
+                            },
+                        ],
+                    };
+                }
+            }
+
+            throw new Error(`Unexpected query: ${normalized}`);
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const req = createMockReq({
+            method: 'PATCH',
+            body: { childModelIds: ['tier-2'] },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () =>
+                handleUpdateTier({
+                    req,
+                    res,
+                    params: { tierId: 'tier-1' },
+                    query: {},
+                    appCtx,
+                }),
+            (err) =>
+                err.httpStatus === 400 &&
+                err.message.includes('direct models')
+        );
+    });
+});
+
 // ── Providers route tests ───────────────────────────────────────────
 
 describe('management/providers-route', () => {
@@ -457,6 +803,7 @@ describe('management/providers-route', () => {
     let handleAuthCallback;
     let handleListAccounts;
     let handleTestConnection;
+    let handleDiscoverModels;
 
     beforeEach(async () => {
         ({
@@ -468,6 +815,7 @@ describe('management/providers-route', () => {
             handleAuthCallback,
             handleListAccounts,
             handleTestConnection,
+            handleDiscoverModels,
         } = await import('../../management/providers-route.mjs'));
     });
 
@@ -515,7 +863,26 @@ describe('management/providers-route', () => {
         );
     });
 
-    it('handleCreateProvider derives kind from provider_mode and infers oauth strategy from managed auth type', async () => {
+    it('handleCreateProvider requires canonical camelCase payload fields', async () => {
+        const appCtx = createMockAppCtx();
+        const req = createMockReq({
+            method: 'POST',
+            body: {
+                name: 'gemini-oauth',
+                display_name: 'Google Gemini (OAuth)',
+                adapter_key: 'gemini-openai',
+                auth_type: 'managed',
+            },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () => handleCreateProvider({ req, res, params: {}, query: {}, appCtx }),
+            (err) => err.httpStatus === 400
+        );
+    });
+
+    it('handleCreateProvider derives kind from providerMode and preserves oauth authStrategy', async () => {
         const pool = createMockPool(async (_sql, params) => ({
             rows: [
                 {
@@ -535,13 +902,13 @@ describe('management/providers-route', () => {
         const req = createMockReq({
             method: 'POST',
             body: {
-                name: 'gemini-oauth',
-                display_name: 'Google Gemini (OAuth)',
-                adapter_key: 'gemini-openai',
-                auth_type: 'managed',
-                provider_mode: 'custom',
-                oauth_adapter_key: 'google-gemini',
-                base_url:
+                providerKey: 'gemini-oauth',
+                displayName: 'Google Gemini (OAuth)',
+                adapterKey: 'gemini-openai',
+                authStrategy: 'oauth',
+                providerMode: 'custom',
+                oauthAdapterKey: 'google-gemini',
+                baseUrl:
                     'https://generativelanguage.googleapis.com/v1beta/openai',
             },
         });
@@ -559,15 +926,7 @@ describe('management/providers-route', () => {
         assert.equal(body.provider.oauth_adapter_key, 'google-gemini');
     });
 
-    it('handleUpdateProvider accepts an api_key only PATCH and creates a provider_accounts row', async () => {
-        // Regression: an earlier version of the handler returned "Provider
-        // not found" when the PATCH body carried only `api_key`. The
-        // `allowed` field list excluded api_key, so the DAO was called with
-        // an empty fields object, returned null, and the handler mapped
-        // that null to a 404 — even though the provider clearly existed.
-        // The fix loads the provider first (so 404 is honest), only calls
-        // the DAO when there is something to update, and always runs the
-        // api-key upsert separately.
+    it('handleUpdateProvider accepts an apiKey-only PATCH and creates a provider_accounts row', async () => {
         const providerRow = {
             id: 'p-nv',
             provider_key: 'nvidia',
@@ -610,10 +969,10 @@ describe('management/providers-route', () => {
                 };
             }
             // Defensive: any UPDATE on the providers table is a regression — the
-            // handler must NOT touch the providers row when only api_key is sent.
+            // handler must NOT touch the providers row when only apiKey is sent.
             if (sql.includes('UPDATE soul_gateway.providers')) {
                 throw new Error(
-                    'Unexpected UPDATE on providers table for api_key-only PATCH'
+                    'Unexpected UPDATE on providers table for apiKey-only PATCH'
                 );
             }
             return { rows: [], rowCount: 0 };
@@ -625,7 +984,7 @@ describe('management/providers-route', () => {
         });
         const req = createMockReq({
             method: 'PATCH',
-            body: { api_key: 'sk-test-12345' },
+            body: { apiKey: 'sk-test-12345' },
         });
         const res = createMockRes();
 
@@ -640,7 +999,7 @@ describe('management/providers-route', () => {
         assert.equal(
             res.statusCode,
             200,
-            'PATCH should succeed even when only api_key is sent'
+            'PATCH should succeed even when only apiKey is sent'
         );
         const body = parseJsonResponse(res);
         assert.equal(body.provider.id, 'p-nv');
@@ -651,14 +1010,11 @@ describe('management/providers-route', () => {
         );
         assert.ok(
             inserted,
-            'expected an INSERT into provider_accounts to back the api_key upsert'
+            'expected an INSERT into provider_accounts to back the apiKey upsert'
         );
     });
 
     it('handleUpdateProvider returns 404 when the provider id does not exist', async () => {
-        // The honest 404: we now look up the provider before deciding
-        // anything else, so a missing id surfaces a real not-found error
-        // instead of the previous "fields object is empty" false negative.
         const pool = createMockPool(async (sql) => {
             if (
                 sql.includes('FROM soul_gateway.providers') &&
@@ -671,7 +1027,7 @@ describe('management/providers-route', () => {
         const appCtx = createMockAppCtx({ pool });
         const req = createMockReq({
             method: 'PATCH',
-            body: { display_name: 'Anything' },
+            body: { displayName: 'Anything' },
         });
         const res = createMockRes();
 
@@ -684,6 +1040,50 @@ describe('management/providers-route', () => {
         });
 
         assert.equal(res.statusCode, 404);
+    });
+
+    it('handleUpdateProvider rejects legacy snake_case PATCH fields', async () => {
+        const providerRow = {
+            id: 'p-nv',
+            provider_key: 'nvidia',
+            display_name: 'NVIDIA',
+            kind: 'external_api',
+            adapter_key: 'openai-api',
+            auth_strategy: 'api_key',
+            base_url: 'https://integrate.api.nvidia.com/v1',
+            enabled: true,
+            settings: {},
+            metadata: {},
+        };
+        const pool = createMockPool(async (sql) => {
+            if (
+                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('WHERE id')
+            ) {
+                return { rows: [providerRow] };
+            }
+            return { rows: [], rowCount: 0 };
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const req = createMockReq({
+            method: 'PATCH',
+            body: { api_key: 'sk-test-12345' },
+        });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () =>
+                handleUpdateProvider({
+                    req,
+                    res,
+                    params: { providerId: 'p-nv' },
+                    query: {},
+                    appCtx,
+                }),
+            (err) =>
+                err.httpStatus === 400 &&
+                err.message.includes('No supported update fields provided')
+        );
     });
 
     it('handleUpdateProvider rejects an empty PATCH body with 400', async () => {
@@ -801,7 +1201,7 @@ describe('management/providers-route', () => {
             };
         }
 
-        it('translates a successful backend result to { ok:true, message }', async () => {
+        it('returns the backend result detail unchanged on success', async () => {
             const catalog = createBackendCatalogMock(async () => ({
                 ok: true,
                 detail: 'Codex OAuth credentials present',
@@ -820,13 +1220,13 @@ describe('management/providers-route', () => {
             assert.equal(ctx.res.statusCode, 200);
             const body = parseJsonResponse(ctx.res);
             assert.equal(body.ok, true);
-            assert.equal(body.message, 'Codex OAuth credentials present');
+            assert.equal(body.detail, 'Codex OAuth credentials present');
             assert.equal(typeof body.latencyMs, 'number');
-            assert.equal(body.detail, undefined);
+            assert.equal(body.message, undefined);
             assert.equal(body.error, undefined);
         });
 
-        it('translates a failed backend result to { ok:false, error }', async () => {
+        it('returns the backend result detail unchanged on failure', async () => {
             const catalog = createBackendCatalogMock(async () => ({
                 ok: false,
                 detail: 'HTTP 403',
@@ -840,11 +1240,12 @@ describe('management/providers-route', () => {
 
             const body = parseJsonResponse(ctx.res);
             assert.equal(body.ok, false);
-            assert.equal(body.error, 'HTTP 403');
+            assert.equal(body.detail, 'HTTP 403');
             assert.equal(body.message, undefined);
+            assert.equal(body.error, undefined);
         });
 
-        it('supplies a default error when the backend returns no detail string', async () => {
+        it('normalizes missing detail to null when the backend omits it', async () => {
             const catalog = createBackendCatalogMock(async () => ({
                 ok: false,
             }));
@@ -853,22 +1254,10 @@ describe('management/providers-route', () => {
             await handleTestConnection(ctx);
             const body = parseJsonResponse(ctx.res);
             assert.equal(body.ok, false);
-            assert.equal(body.error, 'Connection failed');
+            assert.equal(body.detail, null);
         });
 
-        it('supplies a default message when the backend returns ok without a detail string', async () => {
-            const catalog = createBackendCatalogMock(async () => ({
-                ok: true,
-            }));
-            const ctx = buildCtx({ providerRow: { id: 'p1' }, catalog });
-
-            await handleTestConnection(ctx);
-            const body = parseJsonResponse(ctx.res);
-            assert.equal(body.ok, true);
-            assert.equal(body.message, 'Connected');
-        });
-
-        it('flattens an object-shaped detail into a string', async () => {
+        it('preserves object-shaped detail payloads', async () => {
             const catalog = createBackendCatalogMock(async () => ({
                 ok: false,
                 detail: { error: 'credentials missing' },
@@ -878,10 +1267,10 @@ describe('management/providers-route', () => {
             await handleTestConnection(ctx);
             const body = parseJsonResponse(ctx.res);
             assert.equal(body.ok, false);
-            assert.equal(body.error, 'credentials missing');
+            assert.deepEqual(body.detail, { error: 'credentials missing' });
         });
 
-        it('returns { ok:false, error } when the backend throws', async () => {
+        it('returns the thrown error message in detail when the backend throws', async () => {
             const catalog = createBackendCatalogMock(async () => {
                 throw new Error('backend blew up');
             });
@@ -890,12 +1279,12 @@ describe('management/providers-route', () => {
             await handleTestConnection(ctx);
             const body = parseJsonResponse(ctx.res);
             assert.equal(body.ok, false);
-            assert.equal(body.error, 'backend blew up');
+            assert.equal(body.detail, 'backend blew up');
         });
 
-        it('responds with a helpful error when the backend catalog is not installed', async () => {
+        it('returns a structured detail when the backend catalog is not installed', async () => {
             const pool = createMockPool(async () => ({ rows: [{ id: 'p1' }] }));
-            const appCtx = createMockAppCtx({ pool }); // no backendCatalog in services
+            const appCtx = createMockAppCtx({ pool });
             const res = createMockRes();
 
             await handleTestConnection({
@@ -908,48 +1297,68 @@ describe('management/providers-route', () => {
 
             const body = parseJsonResponse(res);
             assert.equal(body.ok, false);
-            assert.ok(body.error, 'error field should be populated');
+            assert.equal(typeof body.detail, 'string');
             assert.equal(body.message, undefined);
+            assert.equal(body.error, undefined);
         });
     });
-});
 
-// ── Tiers route tests ───────────────────────────────────────────────
+    describe('handleDiscoverModels', () => {
+        it('returns raw backend discovery descriptors unchanged', async () => {
+            const providerRow = { id: 'p1', provider_key: 'codex' };
+            const pool = createMockPool(async () => ({ rows: [providerRow] }));
+            const appCtx = createMockAppCtx({
+                pool,
+                services: {
+                    backendCatalog: {
+                        async discoverModels() {
+                            return [
+                                {
+                                    modelId: 'gpt-5.4',
+                                    displayName: 'GPT-5.4',
+                                    contextWindow: 400000,
+                                    supportsTools: true,
+                                    supportsStreaming: true,
+                                    supportsVision: false,
+                                    pricing: {
+                                        mode: 'token',
+                                        inputPricePerMillion: 1.25,
+                                        outputPricePerMillion: 10,
+                                    },
+                                },
+                            ];
+                        },
+                    },
+                },
+            });
+            const res = createMockRes();
 
-describe('management/tiers-route', () => {
-    let handleListTiers, handleCreateTier, handleGetTier;
+            await handleDiscoverModels({
+                req: createMockReq({ method: 'POST' }),
+                res,
+                params: { providerId: 'p1' },
+                query: {},
+                appCtx,
+            });
 
-    beforeEach(async () => {
-        ({ handleListTiers, handleCreateTier, handleGetTier } = await import(
-            '../../management/tiers-route.mjs'
-        ));
-    });
-
-    it('handleCreateTier rejects missing required fields', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq({ method: 'POST', body: {} });
-        const res = createMockRes();
-
-        await assert.rejects(
-            () => handleCreateTier({ req, res, params: {}, query: {}, appCtx }),
-            (err) => err.httpStatus === 400
-        );
-    });
-
-    it('handleGetTier returns 404 for missing tier', async () => {
-        const pool = createMockPool(async () => ({ rows: [] }));
-        const appCtx = createMockAppCtx({ pool });
-        const res = createMockRes();
-
-        await handleGetTier({
-            req: createMockReq(),
-            res,
-            params: { tierId: 'x' },
-            query: {},
-            appCtx,
+            assert.equal(res.statusCode, 200);
+            const body = parseJsonResponse(res);
+            assert.deepEqual(body.data, [
+                {
+                    modelId: 'gpt-5.4',
+                    displayName: 'GPT-5.4',
+                    contextWindow: 400000,
+                    supportsTools: true,
+                    supportsStreaming: true,
+                    supportsVision: false,
+                    pricing: {
+                        mode: 'token',
+                        inputPricePerMillion: 1.25,
+                        outputPricePerMillion: 10,
+                    },
+                },
+            ]);
         });
-
-        assert.equal(res.statusCode, 404);
     });
 });
 
@@ -1344,11 +1753,11 @@ describe('management/middlewares-route', () => {
         );
     });
 
-    it('handleCreateAssignment rejects tier assignment without tierId', async () => {
+    it('handleCreateAssignment rejects unknown targetType', async () => {
         const appCtx = createMockAppCtx();
         const req = createMockReq({
             method: 'POST',
-            body: { middlewareId: 'mw1', targetType: 'tier' },
+            body: { middlewareId: 'mw1', targetType: 'unknown' },
         });
         const res = createMockRes();
 
@@ -1361,7 +1770,7 @@ describe('management/middlewares-route', () => {
                     query: {},
                     appCtx,
                 }),
-            (err) => err.httpStatus === 400 && err.message.includes('tierId')
+            (err) => err.httpStatus === 400 && err.message.includes('Unknown targetType')
         );
     });
 
@@ -1386,9 +1795,9 @@ describe('management/middlewares-route', () => {
             rows: [
                 {
                     id: 'a1',
-                    middleware_id: 'mw1',
-                    target_type: 'tier',
-                    tier_id: 't1',
+                    middleware_key: 'mw1',
+                    scope: 'model',
+                    target_id: 'm1',
                 },
             ],
             rowCount: 1,
@@ -1405,7 +1814,7 @@ describe('management/middlewares-route', () => {
         });
         const req = createMockReq({
             method: 'POST',
-            body: { middlewareId: 'mw1', targetType: 'tier', tierId: 't1' },
+            body: { middlewareId: 'mw1', targetType: 'model', modelId: 'm1' },
         });
         const res = createMockRes();
 
@@ -1482,6 +1891,48 @@ describe('management/router', () => {
         assert.ok(typeof match.handler === 'function');
     });
 
+    it('rejects tokens without CSRF component on all admin routes', async () => {
+        const appCtx = createMockAppCtx();
+        const { httpRouter } = buildManagementRouter(appCtx);
+        const match = httpRouter.match('POST', '/management/keys');
+        const req = createMockReq({ method: 'POST' });
+        const res = createMockRes();
+
+        addAdminAuth(req, appCtx); // token without csrfToken is now rejected
+
+        await assert.rejects(
+            () =>
+                match.handler({
+                    req,
+                    res,
+                    params: match.params,
+                    query: {},
+                    appCtx,
+                }),
+            (err) => err instanceof AuthenticationRequiredError
+        );
+    });
+
+    it('accepts valid CSRF tokens on read-only admin routes', async () => {
+        const appCtx = createMockAppCtx();
+        const { httpRouter } = buildManagementRouter(appCtx);
+        const match = httpRouter.match('GET', '/management/keys');
+        const req = createMockReq({ method: 'GET' });
+        const res = createMockRes();
+
+        addAdminAuth(req, appCtx, { csrfToken: 'csrf-token-123' });
+
+        await match.handler({
+            req,
+            res,
+            params: match.params,
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+    });
+
     it('matches key management routes', () => {
         const appCtx = createMockAppCtx();
         const { httpRouter } = buildManagementRouter(appCtx);
@@ -1505,6 +1956,19 @@ describe('management/router', () => {
         assert.ok(httpRouter.match('DELETE', '/management/models/m1'));
         assert.ok(httpRouter.match('POST', '/management/models/m1/enable'));
         assert.ok(httpRouter.match('POST', '/management/models/m1/disable'));
+    });
+
+    it('matches tier management routes', () => {
+        const appCtx = createMockAppCtx();
+        const { httpRouter } = buildManagementRouter(appCtx);
+
+        assert.ok(httpRouter.match('GET', '/management/tiers'));
+        assert.ok(httpRouter.match('POST', '/management/tiers'));
+        assert.ok(httpRouter.match('GET', '/management/tiers/t1'));
+        assert.ok(httpRouter.match('PATCH', '/management/tiers/t1'));
+        assert.ok(httpRouter.match('DELETE', '/management/tiers/t1'));
+        assert.ok(httpRouter.match('POST', '/management/tiers/t1/enable'));
+        assert.ok(httpRouter.match('POST', '/management/tiers/t1/disable'));
     });
 
     it('matches provider management routes', () => {
@@ -1549,19 +2013,6 @@ describe('management/router', () => {
         assert.ok(httpRouter.match('POST', '/management/providers/rescan'));
     });
 
-    it('matches tier management routes', () => {
-        const appCtx = createMockAppCtx();
-        const { httpRouter } = buildManagementRouter(appCtx);
-
-        assert.ok(httpRouter.match('GET', '/management/tiers'));
-        assert.ok(httpRouter.match('POST', '/management/tiers'));
-        assert.ok(httpRouter.match('GET', '/management/tiers/t1'));
-        assert.ok(httpRouter.match('PATCH', '/management/tiers/t1'));
-        assert.ok(httpRouter.match('DELETE', '/management/tiers/t1'));
-        assert.ok(httpRouter.match('POST', '/management/tiers/t1/enable'));
-        assert.ok(httpRouter.match('POST', '/management/tiers/t1/disable'));
-    });
-
     it('matches middleware routes', () => {
         const appCtx = createMockAppCtx();
         const { httpRouter } = buildManagementRouter(appCtx);
@@ -1578,23 +2029,6 @@ describe('management/router', () => {
         );
         assert.ok(
             httpRouter.match('DELETE', '/management/middlewares/assignments/a1')
-        );
-    });
-
-    it('matches tier-scoped middleware routes', () => {
-        const appCtx = createMockAppCtx();
-        const { httpRouter } = buildManagementRouter(appCtx);
-
-        assert.ok(httpRouter.match('GET', '/management/tiers/t1/middlewares'));
-        assert.ok(httpRouter.match('POST', '/management/tiers/t1/middlewares'));
-        assert.ok(
-            httpRouter.match('POST', '/management/tiers/t1/middlewares/reorder')
-        );
-        assert.ok(
-            httpRouter.match('PATCH', '/management/tiers/t1/middlewares/a1')
-        );
-        assert.ok(
-            httpRouter.match('DELETE', '/management/tiers/t1/middlewares/a1')
         );
     });
 

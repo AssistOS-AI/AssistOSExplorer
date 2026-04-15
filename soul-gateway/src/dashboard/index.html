@@ -2176,7 +2176,7 @@
                                     :class="testResult?.ok ? 'alert-success' : 'alert-error'"
                                 >
                                     <span
-                                        x-text="testResult?.ok ? (testResult.message || 'Connected — ' + testResult.model_count + ' models available') : 'Connection failed: ' + (testResult?.error || 'Unknown error')"
+                                        x-text="formatTestDetail(testResult)"
                                     ></span>
                                     <button
                                         class="btn btn-ghost btn-xs"
@@ -2209,11 +2209,11 @@
                                                     :key="p.id"
                                                 >
                                                     <tr
-                                                        :class="{'opacity-40': !(p.enabled ?? p.is_enabled)}"
+                                                        :class="{'opacity-40': !p.enabled}"
                                                     >
                                                         <td
                                                             class="font-mono font-bold"
-                                                            x-text="p.name"
+                                                            x-text="p.provider_key"
                                                         ></td>
                                                         <td
                                                             x-text="p.display_name || '-'"
@@ -2221,7 +2221,7 @@
                                                         <td>
                                                             <span
                                                                 class="badge badge-ghost badge-sm"
-                                                                x-text="p.adapter_key || p.protocol"
+                                                                x-text="p.adapter_key"
                                                             ></span>
                                                         </td>
                                                         <td>
@@ -2241,16 +2241,16 @@
                                                             x-text="p.key_hint || '-'"
                                                         ></td>
                                                         <td>
-                                                            <input
-                                                                type="checkbox"
-                                                                class="toggle toggle-sm"
-                                                                :checked="p.enabled ?? p.is_enabled"
-                                                                disabled
-                                                            />
+                                                                <input
+                                                                    type="checkbox"
+                                                                    class="toggle toggle-sm"
+                                                                    :checked="p.enabled"
+                                                                    disabled
+                                                                />
                                                         </td>
                                                         <td>
                                                             <template
-                                                                x-if="(p.auth_strategy || p.auth_type) === 'oauth' || p.auth_type === 'managed'"
+                                                                x-if="p.auth_strategy === 'oauth'"
                                                             >
                                                                 <button
                                                                     class="btn btn-xs btn-outline"
@@ -2260,7 +2260,7 @@
                                                                 </button>
                                                             </template>
                                                             <template
-                                                                x-if="(p.auth_strategy || p.auth_type) !== 'oauth' && p.auth_type !== 'managed'"
+                                                                x-if="p.auth_strategy !== 'oauth'"
                                                             >
                                                                 <span
                                                                     class="badge badge-xs badge-ghost"
@@ -2375,7 +2375,7 @@
                                             <input
                                                 type="text"
                                                 class="input input-bordered"
-                                                x-model="form.name"
+                                                x-model="form.providerKey"
                                                 placeholder="e.g. nvidia"
                                             />
                                         </div>
@@ -2388,7 +2388,7 @@
                                             <input
                                                 type="text"
                                                 class="input input-bordered"
-                                                x-model="form.display_name"
+                                                x-model="form.displayName"
                                                 placeholder="e.g. NVIDIA"
                                             />
                                         </div>
@@ -2400,7 +2400,7 @@
                                             >
                                             <select
                                                 class="select select-bordered"
-                                                x-model="form.provider_mode"
+                                                x-model="form.providerMode"
                                             >
                                                 <option value="external_api">
                                                     External API
@@ -2411,7 +2411,7 @@
                                             </select>
                                             <label
                                                 class="label py-0"
-                                                x-show="form.provider_mode === 'custom'"
+                                                x-show="form.providerMode === 'custom'"
                                             >
                                                 <span
                                                     class="label-text-alt text-info"
@@ -2435,7 +2435,7 @@
                                                     >
                                                     <select
                                                         class="select select-bordered"
-                                                        x-model="form.adapter_key"
+                                                        x-model="form.adapterKey"
                                                     >
                                                         <template
                                                             x-for="opt in adapterOptions"
@@ -2457,7 +2457,7 @@
                                                     >
                                                     <select
                                                         class="select select-bordered"
-                                                        x-model="form.auth_strategy"
+                                                        x-model="form.authStrategy"
                                                     >
                                                         <option value="api_key">
                                                             API Key
@@ -2475,7 +2475,7 @@
                                             </div>
                                             <div
                                                 class="form-control"
-                                                x-show="form.auth_strategy === 'oauth'"
+                                                x-show="form.authStrategy === 'oauth'"
                                             >
                                                 <label class="label"
                                                     ><span class="label-text"
@@ -2484,7 +2484,7 @@
                                                 >
                                                 <select
                                                     class="select select-bordered select-sm"
-                                                    x-model="form.oauth_adapter_key"
+                                                    x-model="form.oauthAdapterKey"
                                                 >
                                                     <option value="">
                                                         Select...
@@ -2501,30 +2501,9 @@
                                                 </select>
                                             </div>
                                         </div>
-                                        <div
-                                            class="form-control"
-                                            x-show="form.template === 'custom'"
-                                        >
-                                            <label class="label"
-                                                ><span class="label-text"
-                                                    >Auth Type</span
-                                                ></label
-                                            >
-                                            <select
-                                                class="select select-bordered"
-                                                x-model="form.auth_type"
-                                            >
-                                                <option value="api_key">
-                                                    API Key (static key)
-                                                </option>
-                                                <option value="managed">
-                                                    OAuth (managed credentials)
-                                                </option>
-                                            </select>
-                                        </div>
                                         <label
                                             class="label py-0"
-                                            x-show="form.auth_type === 'managed'"
+                                            x-show="form.authStrategy === 'oauth'"
                                         >
                                             <span
                                                 class="label-text-alt text-info"
@@ -2535,7 +2514,7 @@
                                         </label>
                                         <div
                                             class="form-control"
-                                            x-show="form.auth_type !== 'internal' && form.auth_strategy !== 'search'"
+                                            x-show="form.authStrategy !== 'search'"
                                         >
                                             <label class="label"
                                                 ><span class="label-text"
@@ -2545,13 +2524,13 @@
                                             <input
                                                 type="text"
                                                 class="input input-bordered font-mono text-sm"
-                                                x-model="form.base_url"
+                                                x-model="form.baseUrl"
                                                 placeholder="https://api.example.com/v1/chat/completions"
                                             />
                                         </div>
                                         <div
                                             class="form-control"
-                                            x-show="form.auth_type !== 'managed' && form.auth_type !== 'internal'"
+                                            x-show="form.authStrategy !== 'oauth'"
                                         >
                                             <label class="label"
                                                 ><span class="label-text"
@@ -2561,7 +2540,7 @@
                                             <input
                                                 type="password"
                                                 class="input input-bordered font-mono text-sm"
-                                                x-model="form.api_key"
+                                                x-model="form.apiKey"
                                                 placeholder="sk-..."
                                             />
                                         </div>
@@ -2604,7 +2583,7 @@
                                             <input
                                                 type="text"
                                                 class="input input-bordered"
-                                                x-model="editForm.display_name"
+                                                x-model="editForm.displayName"
                                             />
                                         </div>
                                         <div class="form-control">
@@ -2615,7 +2594,7 @@
                                             >
                                             <select
                                                 class="select select-bordered"
-                                                x-model="editForm.adapter_key"
+                                                x-model="editForm.adapterKey"
                                             >
                                                 <option value="openai">
                                                     OpenAI
@@ -2637,7 +2616,7 @@
                                             <input
                                                 type="text"
                                                 class="input input-bordered font-mono text-sm"
-                                                x-model="editForm.base_url"
+                                                x-model="editForm.baseUrl"
                                             />
                                         </div>
                                         <div class="form-control">
@@ -2650,7 +2629,7 @@
                                             <input
                                                 type="password"
                                                 class="input input-bordered font-mono text-sm"
-                                                x-model="editForm.api_key"
+                                                x-model="editForm.apiKey"
                                                 placeholder="Leave empty to keep current key"
                                             />
                                         </div>
@@ -2662,7 +2641,7 @@
                                             >
                                             <select
                                                 class="select select-bordered"
-                                                x-model="editForm.auth_strategy"
+                                                x-model="editForm.authStrategy"
                                             >
                                                 <option value="api_key">
                                                     API Key
@@ -2717,7 +2696,7 @@
                                         <h3 class="font-bold text-lg mb-4">
                                             Models from
                                             <span
-                                                x-text="discoverProvider?.display_name || discoverProvider?.name || ''"
+                                                x-text="discoverProvider?.display_name || discoverProvider?.provider_key || ''"
                                             ></span>
                                         </h3>
                                         <div
@@ -2752,13 +2731,9 @@
                                                 >
                                                     <tr>
                                                         <th>Model ID</th>
-                                                        <th class="text-right">
-                                                            Input $/1M
-                                                        </th>
-                                                        <th class="text-right">
-                                                            Output $/1M
-                                                        </th>
-                                                        <th>Owned By</th>
+                                                        <th>Display Name</th>
+                                                        <th>Context</th>
+                                                        <th>Capabilities</th>
                                                         <th></th>
                                                     </tr>
                                                 </thead>
@@ -2770,20 +2745,35 @@
                                                         <tr>
                                                             <td
                                                                 class="font-mono text-xs"
-                                                                x-text="m.id"
-                                                            ></td>
-                                                            <td
-                                                                class="text-right text-xs"
-                                                                x-text="m.input_price || 0"
-                                                            ></td>
-                                                            <td
-                                                                class="text-right text-xs"
-                                                                x-text="m.output_price || 0"
+                                                                x-text="m.modelId"
                                                             ></td>
                                                             <td
                                                                 class="text-xs"
-                                                                x-text="m.owned_by || '-'"
+                                                                x-text="m.displayName || m.modelId"
                                                             ></td>
+                                                            <td
+                                                                class="text-xs"
+                                                                x-text="m.contextWindow || '-'"
+                                                            ></td>
+                                                            <td class="text-xs">
+                                                                <div class="flex gap-1 flex-wrap">
+                                                                    <span
+                                                                        class="badge badge-ghost badge-xs"
+                                                                        x-show="m.supportsTools"
+                                                                        >tools</span
+                                                                    >
+                                                                    <span
+                                                                        class="badge badge-ghost badge-xs"
+                                                                        x-show="m.supportsStreaming"
+                                                                        >stream</span
+                                                                    >
+                                                                    <span
+                                                                        class="badge badge-ghost badge-xs"
+                                                                        x-show="m.supportsVision"
+                                                                        >vision</span
+                                                                    >
+                                                                </div>
+                                                            </td>
                                                             <td>
                                                                 <button
                                                                     class="btn btn-primary btn-xs"
@@ -2820,7 +2810,7 @@
                                     <div class="modal-box max-w-lg">
                                         <h3
                                             class="font-bold text-lg"
-                                            x-text="'Auth: ' + (authProvider?.display_name || authProvider?.name || '')"
+                                            x-text="'Auth: ' + (authProvider?.display_name || authProvider?.provider_key || '')"
                                         ></h3>
 
                                         <!-- Status -->
@@ -3145,7 +3135,7 @@
                                             Pipeline Composer
                                             <span
                                                 class="text-sm font-normal opacity-60"
-                                                x-text="composerProvider?.display_name || composerProvider?.name || ''"
+                                                x-text="composerProvider?.display_name || composerProvider?.provider_key || ''"
                                             ></span>
                                         </h3>
 
@@ -3446,7 +3436,7 @@
                                                     <th>Billing</th>
                                                     <th>Tags</th>
                                                     <th>Pricing</th>
-                                                    <th>Context</th>
+                                                    <th>Context Window</th>
                                                     <th>Enabled</th>
                                                 </tr>
                                             </thead>
@@ -3456,42 +3446,20 @@
                                                     :key="m.id"
                                                 >
                                                     <tr
-                                                        :class="{'opacity-40': !(m.enabled ?? m.is_enabled), 'hover cursor-pointer': true}"
+                                                        :class="{'opacity-40': !m.enabled, 'hover cursor-pointer': true}"
                                                         @click="editModel(m)"
                                                     >
                                                         <td
                                                             class="font-mono text-sm"
-                                                            x-text="m.model_key || m.name"
-                                                            :title="m.model_key || m.name"
+                                                            x-text="m.model_key"
+                                                            :title="m.model_key"
                                                         ></td>
                                                         <td class="text-xs">
-                                                            <template
-                                                                x-if="m.billing_types"
-                                                            >
-                                                                <div
-                                                                    class="flex flex-wrap gap-0.5"
-                                                                >
-                                                                    <template
-                                                                        x-for="bt in m.billing_types"
-                                                                        :key="bt"
-                                                                    >
-                                                                        <span
-                                                                            class="badge badge-xs"
-                                                                            :class="sgAuthBadge({ auth_strategy: bt, is_free: bt === 'free' }).classes"
-                                                                            x-text="sgAuthBadge({ auth_strategy: bt, is_free: bt === 'free' }).label"
-                                                                        ></span>
-                                                                    </template>
-                                                                </div>
-                                                            </template>
-                                                            <template
-                                                                x-if="!m.billing_types"
-                                                            >
-                                                                <span
-                                                                    class="badge badge-xs"
-                                                                    :class="sgAuthBadge(m).classes"
-                                                                    x-text="sgAuthBadge(m).label"
-                                                                ></span>
-                                                            </template>
+                                                            <span
+                                                                class="badge badge-xs"
+                                                                :class="sgAuthBadge(m).classes"
+                                                                x-text="sgAuthBadge(m).label"
+                                                            ></span>
                                                         </td>
                                                         <td class="text-xs">
                                                             <div
@@ -3513,25 +3481,38 @@
                                                         </td>
                                                         <td class="text-xs">
                                                             <span
-                                                                x-show="m.pricing_type === 'request'"
+                                                                x-show="m.pricing_mode === 'request'"
                                                                 class="badge badge-info badge-xs"
-                                                                x-text="'$' + (Number(m.request_cost) || 0).toFixed(3) + '/req'"
+                                                                x-text="'$' + (Number(m.request_price_usd) || 0).toFixed(3) + '/req'"
                                                             ></span
                                                             ><span
-                                                                x-show="m.pricing_type !== 'request'"
+                                                                x-show="m.pricing_mode === 'token'"
                                                                 class="text-xs opacity-50"
-                                                                x-text="'$' + (Number(m.input_price) || 0) + '/' + (Number(m.output_price) || 0)"
+                                                                x-text="'$' + (Number(m.input_price_per_million) || 0) + '/' + (Number(m.output_price_per_million) || 0)"
+                                                            ></span
+                                                            ><span
+                                                                x-show="m.pricing_mode === 'external_directory'"
+                                                                class="badge badge-ghost badge-xs"
+                                                                >directory</span
+                                                            ><span
+                                                                x-show="m.pricing_mode === 'free'"
+                                                                class="badge badge-success badge-xs"
+                                                                >free</span
+                                                            ><span
+                                                                x-show="!['request', 'token', 'external_directory', 'free'].includes(m.pricing_mode)"
+                                                                class="badge badge-ghost badge-xs"
+                                                                x-text="m.pricing_mode || 'unknown'"
                                                             ></span>
                                                         </td>
                                                         <td
                                                             class="text-xs"
-                                                            x-text="m.context_window || '-'"
+                                                            x-text="formatModelContextWindow(m)"
                                                         ></td>
                                                         <td @click.stop>
                                                             <input
                                                                 type="checkbox"
                                                                 class="toggle toggle-xs"
-                                                                :checked="m.enabled ?? m.is_enabled"
+                                                                :checked="m.enabled"
                                                                 @change="toggleModel(m)"
                                                             />
                                                         </td>
@@ -3581,11 +3562,11 @@
                                                 </option>
                                                 <template
                                                     x-for="p in providers"
-                                                    :key="p.key"
+                                                    :key="p.provider_key"
                                                 >
                                                     <option
-                                                        :value="p.key"
-                                                        x-text="p.key"
+                                                        :value="p.provider_key"
+                                                        x-text="p.provider_key"
                                                     ></option>
                                                 </template>
                                             </select>
@@ -3617,11 +3598,11 @@
                                                     <optgroup :label="source">
                                                         <template
                                                             x-for="m in mods"
-                                                            :key="m.id"
+                                                            :key="m.provider_model_id"
                                                         >
                                                             <option
-                                                                :value="m.id"
-                                                                x-text="m.id + (m.input_price ? ' ($' + m.input_price + '/' + m.output_price + ')' : '')"
+                                                                :value="m.provider_model_id"
+                                                                x-text="(m.display_name || m.provider_model_id) + (m.input_price_per_million ? ' ($' + m.input_price_per_million + '/' + m.output_price_per_million + ')' : '')"
                                                             ></option>
                                                         </template>
                                                     </optgroup>
@@ -3696,7 +3677,7 @@
                                                 <input
                                                     type="text"
                                                     class="input input-bordered input-sm"
-                                                    x-model="modelForm.model_key"
+                                                    x-model="modelForm.modelKey"
                                                 />
                                             </div>
                                             <div
@@ -3711,7 +3692,7 @@
                                                 <input
                                                     type="text"
                                                     class="input input-bordered input-sm"
-                                                    x-model="modelForm.display_name"
+                                                    x-model="modelForm.displayName"
                                                     placeholder="Optional"
                                                 />
                                             </div>
@@ -3724,16 +3705,16 @@
                                                 >
                                                 <select
                                                     class="select select-bordered select-sm"
-                                                    x-model="modelForm.provider_key"
+                                                    x-model="modelForm.providerKey"
                                                     @change="onProviderChange()"
                                                 >
                                                     <template
                                                         x-for="p in providers"
-                                                        :key="p.key"
+                                                        :key="p.provider_key"
                                                     >
                                                         <option
-                                                            :value="p.key"
-                                                            x-text="p.key"
+                                                            :value="p.provider_key"
+                                                            x-text="p.provider_key"
                                                         ></option>
                                                     </template>
                                                 </select>
@@ -3748,12 +3729,12 @@
                                                 <input
                                                     type="text"
                                                     class="input input-bordered input-sm"
-                                                    x-model="modelForm.provider_model_id"
+                                                    x-model="modelForm.providerModelId"
                                                 />
                                             </div>
                                             <div
                                                 class="form-control"
-                                                x-show="modelForm.pricing_mode === 'token' || modelForm.pricing_mode === 'external_directory'"
+                                                x-show="modelForm.pricingMode === 'token'"
                                             >
                                                 <label class="label py-1"
                                                     ><span
@@ -3766,12 +3747,12 @@
                                                     type="number"
                                                     step="0.01"
                                                     class="input input-bordered input-sm"
-                                                    x-model.number="modelForm.input_price"
+                                                    x-model.number="modelForm.inputPricePerMillion"
                                                 />
                                             </div>
                                             <div
                                                 class="form-control"
-                                                x-show="modelForm.pricing_mode === 'token' || modelForm.pricing_mode === 'external_directory'"
+                                                x-show="modelForm.pricingMode === 'token'"
                                             >
                                                 <label class="label py-1"
                                                     ><span
@@ -3784,7 +3765,7 @@
                                                     type="number"
                                                     step="0.01"
                                                     class="input input-bordered input-sm"
-                                                    x-model.number="modelForm.output_price"
+                                                    x-model.number="modelForm.outputPricePerMillion"
                                                 />
                                             </div>
                                             <div class="form-control">
@@ -3796,7 +3777,7 @@
                                                 >
                                                 <select
                                                     class="select select-bordered select-sm"
-                                                    x-model="modelForm.pricing_mode"
+                                                    x-model="modelForm.pricingMode"
                                                 >
                                                     <option
                                                         value="external_directory"
@@ -3818,7 +3799,7 @@
                                             </div>
                                             <div
                                                 class="form-control"
-                                                x-show="modelForm.pricing_mode === 'request'"
+                                                x-show="modelForm.pricingMode === 'request'"
                                             >
                                                 <label class="label py-1"
                                                     ><span
@@ -3830,21 +3811,7 @@
                                                     type="number"
                                                     step="0.001"
                                                     class="input input-bordered input-sm"
-                                                    x-model.number="modelForm.request_cost"
-                                                />
-                                            </div>
-                                            <div class="form-control">
-                                                <label class="label py-1"
-                                                    ><span
-                                                        class="label-text text-xs"
-                                                        >Context Window</span
-                                                    ></label
-                                                >
-                                                <input
-                                                    type="text"
-                                                    class="input input-bordered input-sm"
-                                                    x-model="modelForm.context_window"
-                                                    placeholder="e.g. 200k"
+                                                    x-model.number="modelForm.requestPriceUsd"
                                                 />
                                             </div>
                                             <div class="form-control">
@@ -3857,20 +3824,35 @@
                                                 <input
                                                     type="number"
                                                     class="input input-bordered input-sm"
-                                                    x-model.number="modelForm.max_concurrency"
+                                                    x-model.number="modelForm.concurrencyLimit"
                                                 />
                                             </div>
                                             <div class="form-control">
                                                 <label class="label py-1"
                                                     ><span
                                                         class="label-text text-xs"
-                                                        >Sort Order</span
+                                                        >Queue Timeout
+                                                        (ms)</span
                                                     ></label
                                                 >
                                                 <input
                                                     type="number"
                                                     class="input input-bordered input-sm"
-                                                    x-model.number="modelForm.sort_order"
+                                                    x-model.number="modelForm.queueTimeoutMs"
+                                                />
+                                            </div>
+                                            <div class="form-control">
+                                                <label class="label py-1"
+                                                    ><span
+                                                        class="label-text text-xs"
+                                                        >Request Timeout
+                                                        (ms)</span
+                                                    ></label
+                                                >
+                                                <input
+                                                    type="number"
+                                                    class="input input-bordered input-sm"
+                                                    x-model.number="modelForm.requestTimeoutMs"
                                                 />
                                             </div>
                                         </div>
@@ -3884,7 +3866,7 @@
                                                 <input
                                                     type="checkbox"
                                                     class="toggle toggle-sm toggle-success"
-                                                    x-model="modelForm.is_free"
+                                                    x-model="modelForm.isFree"
                                                 />
                                             </label>
                                         </div>
@@ -4001,332 +3983,87 @@
                                 @page-change.window="$event.detail === 'tiers' && init()"
                             >
                                 <div
-                                    class="flex justify-between items-center mb-4"
+                                    class="flex flex-wrap justify-between items-center gap-3 mb-4"
                                 >
-                                    <h2 class="text-lg font-bold">
-                                        Model Tiers
-                                    </h2>
+                                    <div>
+                                        <h2 class="text-lg font-bold">
+                                            Tiers
+                                        </h2>
+                                        <p
+                                            class="text-sm opacity-60 mt-1"
+                                        >
+                                            Dashboard editor for cascade models
+                                            and their ordered child models.
+                                        </p>
+                                    </div>
                                     <button
                                         class="btn btn-primary btn-sm"
-                                        @click="showTierCreate = true; editingTier = null; tierForm = { name: '', display_name: '', models: [], fallback_tier_id: '' };"
+                                        @click="openCreate()"
                                     >
                                         Add Tier
                                     </button>
                                 </div>
 
-                                <!-- Tier Create/Edit Modal -->
-                                <dialog
-                                    class="modal"
-                                    :class="{'modal-open': showTierCreate}"
-                                >
-                                    <div class="modal-box max-w-lg">
-                                        <h3
-                                            class="font-bold text-lg"
-                                            x-text="editingTier ? 'Edit Tier' : 'Add Tier'"
-                                        ></h3>
-                                        <div class="form-control">
-                                            <label class="label">Name</label
-                                            ><input
-                                                type="text"
-                                                class="input input-bordered"
-                                                x-model="tierForm.name"
-                                                :disabled="!!editingTier"
-                                            />
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"
-                                                >Display Name</label
-                                            ><input
-                                                type="text"
-                                                class="input input-bordered"
-                                                x-model="tierForm.display_name"
-                                            />
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"
-                                                >Fallback Tier</label
-                                            >
-                                            <select
-                                                class="select select-bordered"
-                                                x-model="tierForm.fallback_tier_id"
-                                            >
-                                                <option value="">None</option>
-                                                <template
-                                                    x-for="t in tiers.filter(t => !editingTier || t.id !== editingTier.id)"
-                                                    :key="t.id"
-                                                >
-                                                    <option
-                                                        :value="t.id"
-                                                        x-text="t.name"
-                                                    ></option>
-                                                </template>
-                                            </select>
-                                        </div>
-                                        <div class="form-control mt-2">
-                                            <label class="label font-semibold"
-                                                >Models</label
-                                            >
-                                            <button
-                                                class="btn btn-sm btn-outline w-fit"
-                                                @click="openModelPicker()"
-                                            >
-                                                Add Models...
-                                            </button>
-                                        </div>
-                                        <div class="form-control mt-2">
-                                            <label class="label font-semibold"
-                                                >Models (in priority
-                                                order)</label
-                                            >
-                                            <div class="space-y-1">
-                                                <template
-                                                    x-for="(model, idx) in tierForm.models"
-                                                    :key="model"
-                                                >
-                                                    <div
-                                                        class="flex items-center gap-2 bg-base-200 rounded px-2 py-1 transition-opacity"
-                                                        draggable="true"
-                                                        @dragstart="onDragStart(idx)"
-                                                        @dragover.prevent="onDragOver($event, idx)"
-                                                        @drop="onDrop(idx)"
-                                                        @dragend="onDragEnd()"
-                                                        :class="{ 'opacity-30': dragIdx === idx, 'border-t-2 border-primary': dropIdx === idx && dragIdx !== idx }"
-                                                    >
-                                                        <span
-                                                            class="cursor-grab active:cursor-grabbing select-none text-base-content/40 text-lg"
-                                                            title="Drag to reorder"
-                                                            >&#8801;</span
-                                                        >
-                                                        <span
-                                                            class="badge badge-sm"
-                                                            x-text="idx + 1"
-                                                        ></span>
-                                                        <span
-                                                            class="font-mono text-sm flex-1"
-                                                            x-text="_displayName(model)"
-                                                            :title="model"
-                                                        ></span>
-                                                        <button
-                                                            class="btn btn-ghost btn-xs text-error"
-                                                            @click="tierForm.models.splice(idx, 1)"
-                                                        >
-                                                            &#10005;
-                                                        </button>
-                                                    </div>
-                                                </template>
-                                                <div
-                                                    x-show="tierForm.models.length === 0"
-                                                    class="text-sm opacity-50 py-2"
-                                                >
-                                                    No models added yet
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="modal-action">
-                                            <button
-                                                class="btn btn-ghost"
-                                                @click="showTierCreate = false; editingTier = null"
-                                            >
-                                                Cancel
-                                            </button>
-                                            <button
-                                                class="btn btn-primary"
-                                                @click="saveTier()"
-                                                x-text="editingTier ? 'Save' : 'Create'"
-                                            ></button>
-                                        </div>
-                                    </div>
-                                    <div
-                                        class="modal-backdrop"
-                                        @click="showTierCreate = false; editingTier = null"
-                                    ></div>
-                                </dialog>
-
-                                <!-- Model Picker Modal -->
-                                <dialog
-                                    class="modal"
-                                    :class="{'modal-open': showModelPicker}"
-                                >
-                                    <div class="modal-box max-w-2xl">
-                                        <h3 class="font-bold text-lg mb-3">
-                                            Add Models to Tier
-                                        </h3>
-                                        <!-- Search -->
-                                        <input
-                                            type="text"
-                                            class="input input-bordered input-sm w-full mb-2"
-                                            placeholder="Search models, tags, providers..."
-                                            x-model="pickerSearch"
-                                        />
-                                        <!-- Billing filter chips -->
-                                        <div class="flex gap-1 mb-3">
-                                            <button
-                                                class="badge badge-sm cursor-pointer"
-                                                :class="pickerBilling === '' ? 'badge-primary' : 'badge-ghost'"
-                                                @click="pickerBilling = ''"
-                                            >
-                                                All
-                                            </button>
-                                            <button
-                                                class="badge badge-sm cursor-pointer"
-                                                :class="pickerBilling === 'subscription' ? 'badge-secondary' : 'badge-ghost'"
-                                                @click="pickerBilling = pickerBilling === 'subscription' ? '' : 'subscription'"
-                                            >
-                                                Subscription
-                                            </button>
-                                            <button
-                                                class="badge badge-sm cursor-pointer"
-                                                :class="pickerBilling === 'api_key' ? 'badge-info badge-outline' : 'badge-ghost'"
-                                                @click="pickerBilling = pickerBilling === 'api_key' ? '' : 'api_key'"
-                                            >
-                                                API Key
-                                            </button>
-                                            <button
-                                                class="badge badge-sm cursor-pointer"
-                                                :class="pickerBilling === 'free' ? 'badge-success' : 'badge-ghost'"
-                                                @click="pickerBilling = pickerBilling === 'free' ? '' : 'free'"
-                                            >
-                                                Free
-                                            </button>
-                                        </div>
-                                        <!-- Model list -->
-                                        <div
-                                            class="max-h-80 overflow-y-auto border rounded-lg"
-                                        >
-                                            <template
-                                                x-for="m in filteredPickerModels"
-                                                :key="m.id"
-                                            >
-                                                <label
-                                                    class="flex items-center gap-2 px-3 py-2 hover:bg-base-200 cursor-pointer border-b border-base-200 last:border-0"
-                                                >
-                                                    <input
-                                                        type="checkbox"
-                                                        class="checkbox checkbox-sm"
-                                                        :checked="pickerSelected.includes(m.model_key || m.name)"
-                                                        @change="togglePickerModel(m.model_key || m.name)"
-                                                    />
-                                                    <span
-                                                        class="font-mono text-sm flex-1 truncate"
-                                                        x-text="_displayName(m.model_key || m.name)"
-                                                        :title="m.model_key || m.name"
-                                                    ></span>
-                                                    <span
-                                                        class="badge badge-ghost badge-xs"
-                                                        x-text="m.provider_key"
-                                                    ></span>
-                                                    <span
-                                                        class="badge badge-xs"
-                                                        :class="sgAuthBadge(m, { short: true }).classes"
-                                                        x-text="sgAuthBadge(m, { short: true }).label"
-                                                    ></span>
-                                                    <div class="flex gap-0.5">
-                                                        <template
-                                                            x-for="tag in (m.tags || []).slice(0, 3)"
-                                                            :key="tag"
-                                                            ><span
-                                                                class="badge badge-outline badge-xs"
-                                                                x-text="tag"
-                                                            ></span
-                                                        ></template>
-                                                    </div>
-                                                </label>
-                                            </template>
-                                            <div
-                                                x-show="filteredPickerModels.length === 0"
-                                                class="text-sm opacity-50 text-center py-6"
-                                            >
-                                                No matching models
-                                            </div>
-                                        </div>
-                                        <!-- Footer -->
-                                        <div class="modal-action">
-                                            <span
-                                                class="text-sm opacity-50 mr-auto self-center"
-                                                x-text="pickerSelected.length + ' selected'"
-                                            ></span>
-                                            <button
-                                                class="btn btn-ghost btn-sm"
-                                                @click="showModelPicker = false"
-                                            >
-                                                Cancel
-                                            </button>
-                                            <button
-                                                class="btn btn-primary btn-sm"
-                                                @click="addPickerModels()"
-                                                :disabled="pickerSelected.length === 0"
-                                                x-text="'Add ' + pickerSelected.length + ' Model' + (pickerSelected.length !== 1 ? 's' : '')"
-                                            ></button>
-                                        </div>
-                                    </div>
-                                    <div
-                                        class="modal-backdrop"
-                                        @click="showModelPicker = false"
-                                    ></div>
-                                </dialog>
-
-                                <!-- Tiers table -->
                                 <div class="card bg-base-100 shadow">
                                     <div class="card-body p-0">
                                         <table class="table table-sm">
                                             <thead>
                                                 <tr>
-                                                    <th>Name</th>
+                                                    <th>Tier Key</th>
                                                     <th>Display Name</th>
                                                     <th>Models</th>
-                                                    <th>Fallback</th>
+                                                    <th>Max Attempts</th>
                                                     <th>Enabled</th>
                                                     <th>Actions</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 <template
-                                                    x-for="t in tiers"
-                                                    :key="t.id"
+                                                    x-for="tier in tiers"
+                                                    :key="tier.id"
                                                 >
                                                     <tr
-                                                        :class="{'opacity-40': !(t.enabled ?? t.is_enabled)}"
+                                                        :class="{'opacity-40': !tier.enabled}"
                                                     >
                                                         <td
-                                                            x-text="_displayName(t.name)"
-                                                            class="font-mono font-bold"
+                                                            class="font-mono text-sm font-semibold"
+                                                            x-text="tier.tierKey"
                                                         ></td>
                                                         <td
-                                                            x-text="t.display_name || '-'"
+                                                            x-text="tier.displayName"
                                                         ></td>
-                                                        <td class="max-w-xs">
+                                                        <td class="max-w-md">
                                                             <div
                                                                 class="flex flex-wrap gap-1"
                                                             >
                                                                 <template
-                                                                    x-for="(m, i) in (t.models || t.model_refs || [])"
-                                                                    :key="i"
+                                                                    x-for="child in tier.children"
+                                                                    :key="child.bindingId"
                                                                 >
                                                                     <span
                                                                         class="badge badge-ghost badge-sm font-mono"
-                                                                        x-text="_displayName(m)"
-                                                                        :title="m"
+                                                                        :class="{'opacity-40': !child.enabled}"
+                                                                        :title="child.displayName || child.modelKey"
+                                                                        x-text="child.modelKey"
                                                                     ></span>
                                                                 </template>
                                                                 <span
-                                                                    x-show="!(t.models || t.model_refs || []).length"
-                                                                    class="text-xs opacity-50"
-                                                                    >empty</span
+                                                                    x-show="tier.children.length === 0"
+                                                                    class="text-xs opacity-40"
                                                                 >
+                                                                    empty
+                                                                </span>
                                                             </div>
                                                         </td>
-                                                        <td>
-                                                            <span
-                                                                x-text="t.fallback_tier_id ? _displayName(t.fallback_tier_id) : (t.fallback_model ? _displayName(t.fallback_model) : '-')"
-                                                                class="font-mono text-xs"
-                                                            ></span>
-                                                        </td>
-                                                        <td>
+                                                        <td
+                                                            x-text="tier.maxAttempts"
+                                                        ></td>
+                                                        <td @click.stop>
                                                             <input
                                                                 type="checkbox"
                                                                 class="toggle toggle-sm"
-                                                                :checked="t.enabled ?? t.is_enabled"
-                                                                @change="toggleTier(t)"
+                                                                :checked="tier.enabled"
+                                                                @change="toggleTier(tier)"
                                                             />
                                                         </td>
                                                         <td>
@@ -4335,13 +4072,13 @@
                                                             >
                                                                 <button
                                                                     class="btn btn-ghost btn-xs"
-                                                                    @click="editTier(t)"
+                                                                    @click="editTier(tier)"
                                                                 >
                                                                     Edit
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-error btn-xs"
-                                                                    @click="removeTier(t)"
+                                                                    @click="removeTier(tier)"
                                                                 >
                                                                     Delete
                                                                 </button>
@@ -4349,10 +4086,302 @@
                                                         </td>
                                                     </tr>
                                                 </template>
+                                                <tr
+                                                    x-show="tiers.length === 0"
+                                                >
+                                                    <td
+                                                        colspan="6"
+                                                        class="text-center text-sm opacity-50 py-8"
+                                                    >
+                                                        No tiers configured
+                                                    </td>
+                                                </tr>
                                             </tbody>
                                         </table>
                                     </div>
                                 </div>
+
+                                <dialog
+                                    class="modal"
+                                    :class="{'modal-open': showTierModal}"
+                                >
+                                    <div class="modal-box max-w-3xl">
+                                        <h3
+                                            class="font-bold text-lg"
+                                            x-text="editingTier ? 'Edit Tier' : 'Add Tier'"
+                                        ></h3>
+                                        <div
+                                            class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4"
+                                        >
+                                            <div class="form-control">
+                                                <label class="label py-1">
+                                                    <span
+                                                        class="label-text text-xs"
+                                                    >
+                                                        Tier Key
+                                                    </span>
+                                                </label>
+                                                <input
+                                                    type="text"
+                                                    class="input input-bordered input-sm font-mono"
+                                                    x-model="tierForm.tierKey"
+                                                />
+                                            </div>
+                                            <div class="form-control">
+                                                <label class="label py-1">
+                                                    <span
+                                                        class="label-text text-xs"
+                                                    >
+                                                        Display Name
+                                                    </span>
+                                                </label>
+                                                <input
+                                                    type="text"
+                                                    class="input input-bordered input-sm"
+                                                    x-model="tierForm.displayName"
+                                                />
+                                            </div>
+                                            <div class="form-control">
+                                                <label class="label py-1">
+                                                    <span
+                                                        class="label-text text-xs"
+                                                    >
+                                                        Max Attempts
+                                                    </span>
+                                                </label>
+                                                <input
+                                                    type="number"
+                                                    min="1"
+                                                    class="input input-bordered input-sm"
+                                                    x-model.number="tierForm.maxAttempts"
+                                                />
+                                            </div>
+                                            <div class="form-control">
+                                                <label
+                                                    class="label cursor-pointer justify-start gap-3 pt-7"
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        class="toggle toggle-sm"
+                                                        x-model="tierForm.enabled"
+                                                    />
+                                                    <span
+                                                        class="label-text text-sm"
+                                                    >
+                                                        Tier enabled
+                                                    </span>
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        <div class="mt-5">
+                                            <div
+                                                class="flex justify-between items-center mb-2"
+                                            >
+                                                <div>
+                                                    <h4
+                                                        class="font-semibold text-sm"
+                                                    >
+                                                        Child Models
+                                                    </h4>
+                                                    <p
+                                                        class="text-xs opacity-60"
+                                                    >
+                                                        Drag to set cascade
+                                                        order.
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    class="btn btn-outline btn-sm"
+                                                    @click="openModelPicker()"
+                                                    type="button"
+                                                >
+                                                    Add Models
+                                                </button>
+                                            </div>
+                                            <div class="space-y-2">
+                                                <template
+                                                    x-for="(childModelId, idx) in tierForm.childModelIds"
+                                                    :key="childModelId"
+                                                >
+                                                    <div
+                                                        class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-200 px-3 py-2 transition-opacity"
+                                                        draggable="true"
+                                                        @dragstart="onDragStart(idx)"
+                                                        @dragover.prevent="onDragOver($event, idx)"
+                                                        @drop="onDrop(idx)"
+                                                        @dragend="onDragEnd()"
+                                                        :class="{ 'opacity-30': dragIdx === idx, 'border-primary': dropIdx === idx && dragIdx !== idx }"
+                                                    >
+                                                        <span
+                                                            class="cursor-grab active:cursor-grabbing select-none text-base-content/40 text-lg"
+                                                            title="Drag to reorder"
+                                                        >
+                                                            &#8801;
+                                                        </span>
+                                                        <span
+                                                            class="badge badge-sm"
+                                                            x-text="idx + 1"
+                                                        ></span>
+                                                        <div
+                                                            class="flex-1 min-w-0"
+                                                        >
+                                                            <div
+                                                                class="font-mono text-sm truncate"
+                                                                x-text="childModelLabel(childModelId)"
+                                                            ></div>
+                                                            <div
+                                                                class="text-xs opacity-60 truncate"
+                                                                x-text="childModelDisplayName(childModelId) || 'No display name'"
+                                                            ></div>
+                                                        </div>
+                                                        <span
+                                                            class="badge badge-xs"
+                                                            :class="childModelEnabled(childModelId) ? 'badge-success' : 'badge-ghost'"
+                                                            x-text="childModelEnabled(childModelId) ? 'enabled' : 'disabled'"
+                                                        ></span>
+                                                        <button
+                                                            class="btn btn-ghost btn-xs text-error"
+                                                            @click="removeChildModel(childModelId)"
+                                                            type="button"
+                                                        >
+                                                            Remove
+                                                        </button>
+                                                    </div>
+                                                </template>
+                                                <div
+                                                    x-show="tierForm.childModelIds.length === 0"
+                                                    class="rounded-lg border border-dashed border-base-300 px-4 py-6 text-center text-sm opacity-50"
+                                                >
+                                                    No child models selected
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="modal-action">
+                                            <button
+                                                class="btn btn-sm"
+                                                @click="showTierModal = false; editingTier = null; resetForm()"
+                                                type="button"
+                                            >
+                                                Cancel
+                                            </button>
+                                            <button
+                                                class="btn btn-primary btn-sm"
+                                                @click="saveTier()"
+                                                type="button"
+                                            >
+                                                Save
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <form
+                                        method="dialog"
+                                        class="modal-backdrop"
+                                        @click="showTierModal = false; editingTier = null; resetForm()"
+                                    >
+                                        <button>close</button>
+                                    </form>
+                                </dialog>
+
+                                <dialog
+                                    class="modal"
+                                    :class="{'modal-open': showModelPicker}"
+                                >
+                                    <div class="modal-box max-w-3xl">
+                                        <div
+                                            class="flex justify-between items-center gap-3"
+                                        >
+                                            <h3 class="font-bold text-lg">
+                                                Add Child Models
+                                            </h3>
+                                            <input
+                                                type="text"
+                                                class="input input-bordered input-sm w-full max-w-xs"
+                                                placeholder="Search models..."
+                                                x-model="pickerSearch"
+                                            />
+                                        </div>
+                                        <div
+                                            class="mt-4 max-h-[28rem] overflow-y-auto rounded-lg border border-base-300"
+                                        >
+                                            <template
+                                                x-for="model in filteredPickerModels"
+                                                :key="model.id"
+                                            >
+                                                <label
+                                                    class="flex items-center gap-3 px-3 py-2 hover:bg-base-200 cursor-pointer border-b border-base-200 last:border-0"
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        class="checkbox checkbox-sm"
+                                                        :checked="pickerSelected.includes(model.id)"
+                                                        @change="togglePickerModel(model.id)"
+                                                    />
+                                                    <div
+                                                        class="flex-1 min-w-0"
+                                                    >
+                                                        <div
+                                                            class="font-mono text-sm truncate"
+                                                            x-text="model.model_key"
+                                                        ></div>
+                                                        <div
+                                                            class="text-xs opacity-60 truncate"
+                                                            x-text="model.display_name || 'No display name'"
+                                                        ></div>
+                                                    </div>
+                                                    <span
+                                                        class="badge badge-ghost badge-xs"
+                                                        x-text="model.provider_key || 'providerless'"
+                                                    ></span>
+                                                    <span
+                                                        class="badge badge-xs"
+                                                        :class="sgAuthBadge(model, { short: true }).classes"
+                                                        x-text="sgAuthBadge(model, { short: true }).label"
+                                                    ></span>
+                                                    <span
+                                                        class="text-xs opacity-50"
+                                                        x-text="formatModelContextWindow(model)"
+                                                    ></span>
+                                                </label>
+                                            </template>
+                                            <div
+                                                x-show="filteredPickerModels.length === 0"
+                                                class="px-4 py-8 text-center text-sm opacity-50"
+                                            >
+                                                No matching models
+                                            </div>
+                                        </div>
+                                        <div class="modal-action">
+                                            <span
+                                                class="text-sm opacity-50 mr-auto self-center"
+                                                x-text="pickerSelected.length + ' selected'"
+                                            ></span>
+                                            <button
+                                                class="btn btn-sm"
+                                                @click="showModelPicker = false; pickerSelected = []"
+                                                type="button"
+                                            >
+                                                Cancel
+                                            </button>
+                                            <button
+                                                class="btn btn-primary btn-sm"
+                                                @click="addPickerModels()"
+                                                :disabled="pickerSelected.length === 0"
+                                                type="button"
+                                            >
+                                                Add Selected
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <form
+                                        method="dialog"
+                                        class="modal-backdrop"
+                                        @click="showModelPicker = false; pickerSelected = []"
+                                    >
+                                        <button>close</button>
+                                    </form>
+                                </dialog>
                             </div>
                         </div>
 
@@ -4762,7 +4791,7 @@
                                                             <input
                                                                 type="checkbox"
                                                                 class="toggle toggle-sm"
-                                                                :checked="r.enabled ?? r.is_enabled"
+                                                                :checked="r.enabled"
                                                                 @change="toggleEnabled(r)"
                                                             />
                                                         </td>
@@ -4978,12 +5007,12 @@
                                                                         <td>
                                                                             <span
                                                                                 class="font-mono text-xs"
-                                                                                x-text="a.model.display_name || a.model.model_key || a.model.name"
+                                                                                x-text="a.model.display_name || a.model.model_key"
                                                                             ></span>
                                                                             <span
                                                                                 class="badge badge-xs ml-1"
-                                                                                :class="(a.model.enabled ?? a.model.is_enabled) ? 'badge-success' : 'badge-ghost'"
-                                                                                x-text="(a.model.enabled ?? a.model.is_enabled) ? 'on' : 'off'"
+                                                                                :class="a.model.enabled ? 'badge-success' : 'badge-ghost'"
+                                                                                x-text="a.model.enabled ? 'on' : 'off'"
                                                                             ></span>
                                                                         </td>
                                                                         <td>
@@ -5007,9 +5036,9 @@
                                                                             <input
                                                                                 type="number"
                                                                                 class="input input-bordered input-xs w-16"
-                                                                                :value="a.sort_order"
+                                                                                :value="a.sortOrder"
                                                                                 :disabled="!a.assigned"
-                                                                                @change="a.sort_order = $event.target.value; updateModelSortOrder(a)"
+                                                                                @change="a.sortOrder = $event.target.value; updateModelSortOrder(a)"
                                                                             />
                                                                         </td>
                                                                         <td>
@@ -5326,20 +5355,20 @@
                                                         >
                                                             <tr
                                                                 class="hover cursor-pointer"
-                                                                :class="{'bg-primary/10': isSelected(m.model_key || m.name)}"
-                                                                @click="toggleModel(m.model_key || m.name)"
+                                                                :class="{'bg-primary/10': isSelected(m.model_key)}"
+                                                                @click="toggleModel(m.model_key)"
                                                             >
                                                                 <td @click.stop>
                                                                     <input
                                                                         type="checkbox"
                                                                         class="checkbox checkbox-xs checkbox-primary"
-                                                                        :checked="isSelected(m.model_key || m.name)"
-                                                                        @change="toggleModel(m.model_key || m.name)"
+                                                                        :checked="isSelected(m.model_key)"
+                                                                        @change="toggleModel(m.model_key)"
                                                                     />
                                                                 </td>
                                                                 <td
                                                                     class="font-mono text-xs"
-                                                                    x-text="m.model_key || m.name"
+                                                                    x-text="m.model_key"
                                                                 ></td>
                                                                 <td
                                                                     class="text-xs"

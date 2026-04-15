@@ -7,11 +7,29 @@ function _buildModelName(providerKey, providerModel) {
     return `${_providerSlug(providerKey)}/${providerModel}`;
 }
 function _displayName(name) {
-    if (name && typeof name === 'object')
-        name = name.model_key || name.name || name.tier_key || '';
+    if (name && typeof name === 'object') name = name.model_key || '';
     return typeof name === 'string' && name.startsWith('axl/')
         ? name.slice(4)
         : name || '';
+}
+
+function getModelContextWindow(model) {
+    return (
+        model?.capabilities?.contextWindow ??
+        model?.capabilities?.limits?.max_prompt_tokens ??
+        null
+    );
+}
+
+function formatModelContextWindow(model) {
+    const contextWindow = getModelContextWindow(model);
+    if (contextWindow == null || contextWindow === '') return '-';
+
+    const numeric = Number(contextWindow);
+    if (!Number.isFinite(numeric)) return String(contextWindow);
+    if (numeric >= 1_000_000) return `${(numeric / 1_000_000).toFixed(1)}M`;
+    if (numeric >= 1_000) return `${(numeric / 1_000).toFixed(0)}k`;
+    return String(Math.trunc(numeric));
 }
 
 // ---- Auth / billing badge helper ----
@@ -28,9 +46,8 @@ function _displayName(name) {
 //   oauth/managed → badge-warning badge-outline (yellow outline)
 //   api_key / ?   → badge-info badge-outline    (blue outline)
 //
-// Input object can be a provider row (auth_strategy / auth_type) or a
-// model row (auth_strategy joined from its provider, or a legacy
-// billing_type). `is_free` overrides everything else.
+// Input object can be a provider row or a model row. `is_free`
+// overrides everything else.
 //
 // @param {object} obj
 // @param {object} [opts]
@@ -39,15 +56,14 @@ function _displayName(name) {
 function sgAuthBadge(obj, { short = false } = {}) {
     if (!obj) return { label: short ? '?' : 'unknown', classes: 'badge-ghost' };
     if (obj.is_free) return { label: 'free', classes: 'badge-success' };
-    const strategy =
-        obj.auth_strategy || obj.billing_type || obj.auth_type || null;
+    const strategy = obj.auth_strategy || null;
     if (strategy === 'subscription') {
         return {
             label: short ? 'sub' : 'subscription',
             classes: 'badge-secondary',
         };
     }
-    if (strategy === 'oauth' || strategy === 'managed') {
+    if (strategy === 'oauth') {
         return { label: 'oauth', classes: 'badge-warning badge-outline' };
     }
     // api_key or unknown → default "api key" styling
@@ -60,6 +76,7 @@ function sgAuthBadge(obj, { short = false } = {}) {
 // scope and its ancestors; to make sgAuthBadge available everywhere
 // without importing it into every component, expose it on `window`.
 window.sgAuthBadge = sgAuthBadge;
+window.formatModelContextWindow = formatModelContextWindow;
 
 // ---- Auth token management ----
 function getAuthToken() {
@@ -156,7 +173,7 @@ function normalizeProviderMiddlewareBindings(payload) {
           ? data.bindings
           : [];
     return [...list].sort(
-        (left, right) => (left?.sort_order || 0) - (right?.sort_order || 0)
+        (left, right) => (left?.sortOrder ?? 0) - (right?.sortOrder ?? 0)
     );
 }
 
@@ -303,7 +320,7 @@ function app() {
             this.page = p;
             window.location.hash = p;
             // Notify per-tab Alpine components so they can re-fetch their
-            // data. Every data-tab wrapper (providers / models / tiers /
+            // data. Every data-tab wrapper (providers / models /
             // keys / blacklist / middlewares) binds
             // @page-change.window="..." to its own init() — without this
             // dispatch the tab stays stuck on whatever state it had on
@@ -412,22 +429,21 @@ function providersPage() {
 
         form: {
             template: 'custom',
-            name: '',
-            display_name: '',
-            adapter_key: 'openai',
-            base_url: '',
-            api_key: '',
-            auth_strategy: 'api_key',
-            auth_type: 'api_key',
-            oauth_adapter_key: '',
-            provider_mode: 'external_api',
+            providerKey: '',
+            displayName: '',
+            adapterKey: 'openai',
+            baseUrl: '',
+            apiKey: '',
+            authStrategy: 'api_key',
+            oauthAdapterKey: '',
+            providerMode: 'external_api',
         },
         editForm: {
-            display_name: '',
-            adapter_key: '',
-            base_url: '',
-            api_key: '',
-            auth_strategy: 'api_key',
+            displayName: '',
+            adapterKey: '',
+            baseUrl: '',
+            apiKey: '',
+            authStrategy: 'api_key',
             enabled: true,
         },
 
@@ -498,43 +514,46 @@ function providersPage() {
             this.templates = unwrapObject(templates);
         },
 
+        formatTestDetail(result) {
+            if (typeof result?.detail === 'string') return result.detail;
+            if (result?.detail == null) {
+                return result?.ok ? 'Connected' : 'Connection failed';
+            }
+            return JSON.stringify(result.detail);
+        },
+
         onTemplateChange() {
             const t = this.templates[this.form.template];
             if (!t) return;
 
             // Set scalar fields immediately
-            this.form.display_name = t.display_name || '';
-            this.form.base_url = t.base_url || '';
-            this.form.auth_strategy =
-                t.auth_strategy || t.billing_type || 'api_key';
-            this.form.auth_type =
-                t.auth_type ||
-                (t.auth_strategy === 'oauth' ? 'managed' : 'api_key');
+            this.form.displayName = t.display_name || '';
+            this.form.baseUrl = t.base_url || '';
+            this.form.authStrategy = t.auth_strategy || 'api_key';
             if (this.form.template !== 'custom') {
-                this.form.name = this.form.template;
+                this.form.providerKey = this.form.template;
             }
 
             // Defer dropdown-bound fields to next tick so x-for options render first
             const adapterKey = t.adapter_key || t.protocol || 'openai';
             const oauthKey = t.oauth_adapter_key || '';
             this.$nextTick(() => {
-                this.form.adapter_key = adapterKey;
-                this.form.oauth_adapter_key = oauthKey;
+                this.form.adapterKey = adapterKey;
+                this.form.oauthAdapterKey = oauthKey;
             });
         },
 
         openCreate() {
             this.form = {
                 template: 'custom',
-                name: '',
-                display_name: '',
-                adapter_key: 'openai',
-                base_url: '',
-                api_key: '',
-                auth_strategy: 'api_key',
-                auth_type: 'api_key',
-                oauth_adapter_key: '',
-                provider_mode: 'external_api',
+                providerKey: '',
+                displayName: '',
+                adapterKey: 'openai',
+                baseUrl: '',
+                apiKey: '',
+                authStrategy: 'api_key',
+                oauthAdapterKey: '',
+                providerMode: 'external_api',
             };
             this.showCreate = true;
         },
@@ -542,22 +561,17 @@ function providersPage() {
         async create() {
             const payload = { ...this.form };
             delete payload.template;
-            if (!payload.oauth_adapter_key) delete payload.oauth_adapter_key;
-            const isCustomPipeline = payload.provider_mode === 'custom';
-            payload.kind = isCustomPipeline ? 'custom' : 'external_api';
-            if (!payload.name) {
-                alert('Name is required');
+            if (!payload.oauthAdapterKey) delete payload.oauthAdapterKey;
+            const isCustomPipeline = payload.providerMode === 'custom';
+            if (!payload.providerKey) {
+                alert('Provider key is required');
                 return;
             }
-            if (!isCustomPipeline && !payload.base_url) {
+            if (!isCustomPipeline && !payload.baseUrl) {
                 alert('Base URL is required for External API providers');
                 return;
             }
-            if (
-                !isCustomPipeline &&
-                payload.auth_type !== 'managed' &&
-                !payload.api_key
-            ) {
+            if (!isCustomPipeline && payload.authStrategy !== 'oauth' && !payload.apiKey) {
                 alert('API Key is required for non-OAuth providers');
                 return;
             }
@@ -575,19 +589,19 @@ function providersPage() {
         edit(p) {
             this.editing = p;
             this.editForm = {
-                display_name: p.display_name || '',
-                adapter_key: p.adapter_key || p.protocol || 'openai',
-                base_url: p.base_url || '',
-                api_key: '',
-                auth_strategy: p.auth_strategy || p.billing_type || 'api_key',
-                enabled: p.enabled ?? p.is_enabled ?? true,
+                displayName: p.display_name || '',
+                adapterKey: p.adapter_key || 'openai',
+                baseUrl: p.base_url || '',
+                apiKey: '',
+                authStrategy: p.auth_strategy || 'api_key',
+                enabled: p.enabled ?? true,
             };
             this.showEdit = true;
         },
 
         async saveEdit() {
             const payload = { ...this.editForm };
-            if (!payload.api_key) delete payload.api_key;
+            if (!payload.apiKey) delete payload.apiKey;
             await api.patch(
                 `/management/providers/${this.editing.id}`,
                 payload
@@ -602,7 +616,7 @@ function providersPage() {
         async remove(p) {
             if (
                 !confirm(
-                    `Delete provider "${p.name}"? Models using this provider will lose their provider configuration.`
+                    `Delete provider "${p.provider_key}"? Models using this provider will lose their provider configuration.`
                 )
             )
                 return;
@@ -621,7 +635,7 @@ function providersPage() {
                     {}
                 );
             } catch (e) {
-                this.testResult = { ok: false, error: e.message };
+                this.testResult = { ok: false, detail: e.message };
             }
             this.testing = null;
         },
@@ -637,25 +651,30 @@ function providersPage() {
                         {}
                     )
                 );
-            } catch {
+            } catch (e) {
                 this.discoveredModels = [];
+                alert(e.message || 'Failed to discover models');
             }
         },
 
         async addDiscoveredModel(model) {
             if (!this.discoverProvider) return;
-            const slug = _providerSlug(this.discoverProvider.name);
-            // handleCreateModel requires camelCase fields (modelKey,
-            // displayName, providerId, providerModelId) — sending the
-            // snake_case shape from older code paths trips a 400 with
-            // "Missing required fields".
+            const slug = _providerSlug(this.discoverProvider.provider_key);
+            const providerModelId = model.modelId;
+            if (!providerModelId) return;
             await api.post('/management/models', {
-                modelKey: `${slug}/${model.id}`,
-                displayName: model.display_name || model.id,
+                modelKey: `${slug}/${providerModelId}`,
+                displayName: model.displayName || providerModelId,
                 providerId: this.discoverProvider.id,
-                providerModelId: model.id,
-                inputPricePerMillion: model.input_price || 0,
-                outputPricePerMillion: model.output_price || 0,
+                providerModelId,
+                pricingMode:
+                    model.pricing?.mode ||
+                    (model.pricing ? 'token' : 'external_directory'),
+                inputPricePerMillion:
+                    model.pricing?.inputPricePerMillion ?? null,
+                outputPricePerMillion:
+                    model.pricing?.outputPricePerMillion ?? null,
+                requestPriceUsd: model.pricing?.requestPriceUsd ?? null,
             });
             model._added = true;
         },
@@ -829,10 +848,7 @@ function providersPage() {
                 : unwrapArray(middlewaresRes);
             this.composerPipeline = normalizeProviderMiddlewareBindings(
                 bindingsRes
-            ).map((binding) => ({
-                ...binding,
-                middlewareKey: binding.middleware_key || binding.middlewareKey,
-            }));
+            );
 
             this.showComposer = true;
         },
@@ -843,7 +859,7 @@ function providersPage() {
 
             // 1. Update provider backend selection (adapter_key)
             await api.patch(`/management/providers/${pid}`, {
-                adapter_key: this.composerBackendKey || null,
+                adapterKey: this.composerBackendKey || null,
             });
 
             // 2. Sync provider middleware bindings: delete removed, upsert kept
@@ -1614,21 +1630,20 @@ function modelsPage() {
         showModelEdit: false,
         editingModel: null,
         modelForm: {
-            model_key: '',
-            display_name: '',
-            provider_key: '',
-            provider_model_id: '',
-            provider_id: '',
-            input_price: 0,
-            output_price: 0,
-            pricing_type: 'token',
-            request_cost: 0,
-            is_free: false,
-            max_concurrency: 3,
-            sort_order: 100,
-            context_window: '',
+            modelKey: '',
+            displayName: '',
+            providerKey: '',
+            providerModelId: '',
+            providerId: '',
+            inputPricePerMillion: 0,
+            outputPricePerMillion: 0,
+            requestPriceUsd: 0,
+            pricingMode: 'external_directory',
+            isFree: false,
+            concurrencyLimit: 3,
+            queueTimeoutMs: 60000,
+            requestTimeoutMs: 120000,
             tags: [],
-            pricing_mode: 'external_directory',
         },
         customTagInput: '',
         // Model create state
@@ -1646,9 +1661,15 @@ function modelsPage() {
                 api.get('/management/models/providers'),
                 api.get('/management/models/tags'),
             ]);
-            this.models = unwrapArray(models);
+            this.models = this.normalizeModels(models);
             this.providers = unwrapArray(providers);
             this.predefinedTags = unwrapArray(predefinedTags);
+        },
+
+        normalizeModels(payload) {
+            return unwrapArray(payload).filter(
+                (model) => model.strategy_kind !== 'cascade'
+            );
         },
 
         get allTags() {
@@ -1662,14 +1683,11 @@ function modelsPage() {
         get filteredModels() {
             let list = this.models;
             if (!Array.isArray(list)) return [];
-            if (this.modelEnabledOnly)
-                list = list.filter((m) => m.enabled ?? m.is_enabled);
+            if (this.modelEnabledOnly) list = list.filter((m) => m.enabled);
             if (this.freeOnly) list = list.filter((m) => m.is_free);
             if (this.billingFilter)
                 list = list.filter(
-                    (m) =>
-                        (m.auth_strategy || m.billing_type || 'api_key') ===
-                        this.billingFilter
+                    (m) => (m.auth_strategy || 'api_key') === this.billingFilter
                 );
             if (this.tagFilter)
                 list = list.filter((m) =>
@@ -1679,29 +1697,31 @@ function modelsPage() {
             if (q)
                 list = list.filter(
                     (m) =>
-                        (m.model_key || m.name || '')
-                            .toLowerCase()
-                            .includes(q) ||
+                        (m.model_key || '').toLowerCase().includes(q) ||
                         (m.provider_key || '').toLowerCase().includes(q)
                 );
             return list;
         },
 
         async toggleModel(m) {
-            const isEnabled = m.enabled ?? m.is_enabled;
+            const isEnabled = m.enabled;
             if (isEnabled) {
                 await api.post(`/management/models/${m.id}/disable`, {});
             } else {
                 await api.post(`/management/models/${m.id}/enable`, {});
             }
-            this.models = unwrapArray(await api.get('/management/models'));
+            this.models = this.normalizeModels(
+                await api.get('/management/models')
+            );
         },
 
         async toggleFree(m) {
             await api.patch(`/management/models/${m.id}`, {
-                is_free: !m.is_free,
+                isFree: !m.is_free,
             });
-            this.models = unwrapArray(await api.get('/management/models'));
+            this.models = this.normalizeModels(
+                await api.get('/management/models')
+            );
         },
 
         // ---- Create model flow ----
@@ -1726,19 +1746,14 @@ function modelsPage() {
             this.createModel = '';
             this.createName = '';
             try {
-                const models = unwrapArray(
+                this.createProviderModels = unwrapArray(
                     await api.get(
                         `/management/models/providers/${encodeURIComponent(key)}/models`
                     )
                 );
-                if (models.length > 0) {
-                    this.createProviderModels = models;
-                } else if (models?.error) {
-                    this.createModelsError =
-                        models.error.message || 'Failed to load models';
-                }
-            } catch {
-                this.createModelsError = 'Failed to fetch models';
+            } catch (e) {
+                this.createModelsError =
+                    e.message || 'Failed to fetch models';
             }
             this.loadingCreateModels = false;
         },
@@ -1753,71 +1768,66 @@ function modelsPage() {
         },
 
         get groupedCreateModels() {
-            const groups = {};
-            for (const m of this.createProviderModels) {
-                const key = m.owned_by || 'other';
-                (groups[key] ||= []).push(m);
-            }
-            return Object.entries(groups).sort(([a], [b]) =>
-                a.localeCompare(b)
-            );
+            return [['Registered Models', this.createProviderModels]];
         },
 
         async createNewModel() {
             if (!this.createProvider || !this.createModel) return;
             const name = this.createName || this.createModel;
             const selected = this.createProviderModels.find(
-                (m) => m.id === this.createModel
+                (m) => m.provider_model_id === this.createModel
             );
             const providerInfo = this.providers.find(
-                (p) => p.key === this.createProvider
+                (p) => p.provider_key === this.createProvider
             );
-            const payload = {
-                model_key: name,
-                provider_key: this.createProvider,
-                provider_model_id: this.createModel,
-                upstream_source: selected?.owned_by || '',
-                input_price: selected?.input_price || 0,
-                output_price: selected?.output_price || 0,
-            };
-            if (providerInfo?.source === 'database') {
-                payload.provider_id = providerInfo.id;
+            if (!providerInfo?.provider_id) {
+                alert('Selected provider is missing provider_id');
+                return;
             }
+            const payload = {
+                modelKey: name,
+                displayName: selected?.display_name || this.createModel,
+                providerId: providerInfo.provider_id,
+                providerModelId: this.createModel,
+                pricingMode: selected?.pricing_mode || 'external_directory',
+                inputPricePerMillion:
+                    selected?.input_price_per_million ?? null,
+                outputPricePerMillion:
+                    selected?.output_price_per_million ?? null,
+                requestPriceUsd: selected?.request_price_usd ?? null,
+                isFree: selected?.is_free ?? false,
+            };
             const result = await api.post('/management/models', payload);
             if (result?.error) {
                 alert(result.error.message || result.error);
                 return;
             }
             this.showModelCreate = false;
-            this.models = unwrapArray(await api.get('/management/models'));
+            this.models = this.normalizeModels(
+                await api.get('/management/models')
+            );
         },
 
         // ---- Edit model flow ----
         editModel(m) {
             this.editingModel = m;
             this.modelForm = {
-                model_key: m.model_key || m.name || '',
-                display_name: m.display_name || '',
-                provider_key: m.provider_key || '',
-                provider_model_id:
-                    m.provider_model_id || m.provider_model || '',
-                provider_id: m.provider_id || m.provider_config_id || '',
-                input_price: parseFloat(m.input_price) || 0,
-                output_price: parseFloat(m.output_price) || 0,
-                pricing_type: m.pricing_type || 'token',
-                request_cost: parseFloat(m.request_cost) || 0,
-                is_free: !!m.is_free,
-                max_concurrency: m.max_concurrency ?? 3,
-                sort_order: m.sort_order ?? 100,
-                context_window: m.context_window || '',
+                modelKey: m.model_key || '',
+                displayName: m.display_name || '',
+                providerKey: m.provider_key || '',
+                providerModelId: m.provider_model_id || '',
+                providerId: m.provider_id || '',
+                inputPricePerMillion:
+                    Number.parseFloat(m.input_price_per_million) || 0,
+                outputPricePerMillion:
+                    Number.parseFloat(m.output_price_per_million) || 0,
+                requestPriceUsd: Number.parseFloat(m.request_price_usd) || 0,
+                isFree: !!m.is_free,
+                concurrencyLimit: m.concurrency_limit ?? 3,
+                queueTimeoutMs: m.queue_timeout_ms ?? 60000,
+                requestTimeoutMs: m.request_timeout_ms ?? 120000,
                 tags: [...(m.tags || [])],
-                pricing_mode:
-                    m.pricing_mode ||
-                    (m.pricing_type === 'request'
-                        ? 'request'
-                        : m.is_free
-                          ? 'free'
-                          : 'external_directory'),
+                pricingMode: m.pricing_mode || 'external_directory',
             };
             this.customTagInput = '';
             this.showModelEdit = true;
@@ -1842,29 +1852,41 @@ function modelsPage() {
 
         onProviderChange() {
             const p = this.providers.find(
-                (pr) => pr.key === this.modelForm.provider_key
+                (pr) => pr.provider_key === this.modelForm.providerKey
             );
-            if (p?.source === 'database') {
-                this.modelForm.provider_id = p.id;
-            } else {
-                this.modelForm.provider_id = '';
-            }
+            this.modelForm.providerId = p?.provider_id || '';
         },
 
         async saveModel() {
             if (!this.editingModel) return;
-            const payload = { ...this.modelForm };
-            if (!payload.provider_id) payload.provider_id = null;
-            // Map pricing_mode back to legacy fields
-            if (payload.pricing_mode === 'free') {
-                payload.is_free = true;
-                payload.pricing_type = 'token';
-            } else if (payload.pricing_mode === 'request') {
-                payload.pricing_type = 'request';
-            } else if (payload.pricing_mode === 'token') {
-                payload.pricing_type = 'token';
+            const payload = {
+                modelKey: this.modelForm.modelKey,
+                displayName: this.modelForm.displayName,
+                providerId: this.modelForm.providerId || null,
+                providerModelId: this.modelForm.providerModelId,
+                concurrencyLimit: this.modelForm.concurrencyLimit,
+                queueTimeoutMs: this.modelForm.queueTimeoutMs,
+                requestTimeoutMs: this.modelForm.requestTimeoutMs,
+                pricingMode: this.modelForm.pricingMode,
+                inputPricePerMillion: null,
+                outputPricePerMillion: null,
+                requestPriceUsd: null,
+                isFree: this.modelForm.isFree,
+                tags: [...this.modelForm.tags],
+            };
+            if (payload.pricingMode === 'free') {
+                payload.isFree = true;
+            } else if (payload.pricingMode === 'request') {
+                payload.isFree = false;
+                payload.requestPriceUsd = this.modelForm.requestPriceUsd || 0;
+            } else if (payload.pricingMode === 'token') {
+                payload.isFree = false;
+                payload.inputPricePerMillion =
+                    this.modelForm.inputPricePerMillion || 0;
+                payload.outputPricePerMillion =
+                    this.modelForm.outputPricePerMillion || 0;
             } else {
-                payload.pricing_type = 'token';
+                payload.isFree = false;
             }
             await api.patch(
                 `/management/models/${this.editingModel.id}`,
@@ -1872,15 +1894,19 @@ function modelsPage() {
             );
             this.showModelEdit = false;
             this.editingModel = null;
-            this.models = unwrapArray(await api.get('/management/models'));
+            this.models = this.normalizeModels(
+                await api.get('/management/models')
+            );
         },
 
         async deleteModel(m) {
-            if (!confirm(`Delete model "${m.model_key || m.name}"?`)) return;
+            if (!confirm(`Delete model "${m.model_key}"?`)) return;
             await api.del(`/management/models/${m.id}`);
             this.showModelEdit = false;
             this.editingModel = null;
-            this.models = unwrapArray(await api.get('/management/models'));
+            this.models = this.normalizeModels(
+                await api.get('/management/models')
+            );
         },
     };
 }
@@ -1890,148 +1916,217 @@ function tiersPage() {
     return {
         tiers: [],
         models: [],
-        showTierCreate: false,
+        showTierModal: false,
+        showModelPicker: false,
         editingTier: null,
-        tierForm: {
-            name: '',
-            display_name: '',
-            models: [],
-            fallback_tier_id: '',
-        },
-
-        // Drag reorder state
+        pickerSearch: '',
+        pickerSelected: [],
         dragIdx: null,
         dropIdx: null,
-
-        onDragStart(idx) {
-            this.dragIdx = idx;
-        },
-        onDragOver(evt, idx) {
-            evt.preventDefault();
-            this.dropIdx = idx;
-        },
-        onDrop(idx) {
-            if (this.dragIdx === null || this.dragIdx === idx) return;
-            const item = this.tierForm.models.splice(this.dragIdx, 1)[0];
-            this.tierForm.models.splice(idx, 0, item);
-            this.dragIdx = null;
-            this.dropIdx = null;
-        },
-        onDragEnd() {
-            this.dragIdx = null;
-            this.dropIdx = null;
-        },
-
-        // Model picker state
-        showModelPicker: false,
-        pickerSearch: '',
-        pickerBilling: '',
-        pickerSelected: [],
-
-        get filteredPickerModels() {
-            let list = this.models.filter(
-                (m) => !this.tierForm.models.includes(m.model_key || m.name)
-            );
-            const q = this.pickerSearch.trim().toLowerCase();
-            if (q) {
-                list = list.filter(
-                    (m) =>
-                        (m.model_key || m.name || '')
-                            .toLowerCase()
-                            .includes(q) ||
-                        (m.provider_key || '').toLowerCase().includes(q) ||
-                        (m.tags || []).some((t) => t.toLowerCase().includes(q))
-                );
-            }
-            if (this.pickerBilling === 'free') {
-                list = list.filter((m) => m.is_free);
-            } else if (this.pickerBilling === 'subscription') {
-                list = list.filter(
-                    (m) =>
-                        (m.auth_strategy || m.billing_type) === 'subscription'
-                );
-            } else if (this.pickerBilling === 'api_key') {
-                list = list.filter(
-                    (m) =>
-                        !m.is_free &&
-                        (m.auth_strategy || m.billing_type) !== 'subscription'
-                );
-            }
-            return list;
-        },
-
-        openModelPicker() {
-            this.pickerSearch = '';
-            this.pickerBilling = '';
-            this.pickerSelected = [];
-            this.showModelPicker = true;
-        },
-
-        togglePickerModel(name) {
-            const idx = this.pickerSelected.indexOf(name);
-            if (idx >= 0) this.pickerSelected.splice(idx, 1);
-            else this.pickerSelected.push(name);
-        },
-
-        addPickerModels() {
-            for (const name of this.pickerSelected) {
-                if (!this.tierForm.models.includes(name)) {
-                    this.tierForm.models.push(name);
-                }
-            }
-            this.showModelPicker = false;
+        tierForm: {
+            tierKey: '',
+            displayName: '',
+            enabled: true,
+            maxAttempts: 5,
+            childModelIds: [],
         },
 
         async init() {
+            await this.reload();
+        },
+
+        async reload() {
             const [tiers, models] = await Promise.all([
                 api.get('/management/tiers'),
                 api.get('/management/models'),
             ]);
             this.tiers = unwrapArray(tiers);
-            this.models = unwrapArray(models);
+            this.models = unwrapArray(models).filter(
+                (model) => model.strategy_kind !== 'cascade'
+            );
         },
 
-        editTier(t) {
-            this.editingTier = t;
+        resetForm() {
             this.tierForm = {
-                name: t.name,
-                display_name: t.display_name || '',
-                models: [...(t.models || t.model_refs || [])],
-                fallback_tier_id: t.fallback_tier_id || t.fallback_model || '',
+                tierKey: '',
+                displayName: '',
+                enabled: true,
+                maxAttempts: 5,
+                childModelIds: [],
             };
-            this.showTierCreate = true;
+            this.pickerSearch = '';
+            this.pickerSelected = [];
+            this.dragIdx = null;
+            this.dropIdx = null;
+        },
+
+        openCreate() {
+            this.editingTier = null;
+            this.resetForm();
+            this.showTierModal = true;
+        },
+
+        editTier(tier) {
+            this.editingTier = tier;
+            this.tierForm = {
+                tierKey: tier.tierKey || '',
+                displayName: tier.displayName || '',
+                enabled: !!tier.enabled,
+                maxAttempts: tier.maxAttempts ?? 5,
+                childModelIds: (tier.children || []).map(
+                    (child) => child.modelId
+                ),
+            };
+            this.pickerSearch = '';
+            this.pickerSelected = [];
+            this.dragIdx = null;
+            this.dropIdx = null;
+            this.showTierModal = true;
+        },
+
+        childModel(modelId) {
+            return this.models.find((model) => model.id === modelId) || null;
+        },
+
+        childModelLabel(modelId) {
+            const model = this.childModel(modelId);
+            return model?.model_key || modelId;
+        },
+
+        childModelDisplayName(modelId) {
+            const model = this.childModel(modelId);
+            return model?.display_name || '';
+        },
+
+        childModelEnabled(modelId) {
+            const model = this.childModel(modelId);
+            return model?.enabled ?? false;
+        },
+
+        get filteredPickerModels() {
+            let list = this.models.filter(
+                (model) => !this.tierForm.childModelIds.includes(model.id)
+            );
+
+            const query = this.pickerSearch.trim().toLowerCase();
+            if (!query) return list;
+
+            return list.filter((model) => {
+                const fields = [
+                    model.model_key,
+                    model.display_name,
+                    model.provider_key,
+                    ...(model.tags || []),
+                ];
+                return fields.some((value) =>
+                    String(value || '')
+                        .toLowerCase()
+                        .includes(query)
+                );
+            });
+        },
+
+        openModelPicker() {
+            this.pickerSearch = '';
+            this.pickerSelected = [];
+            this.showModelPicker = true;
+        },
+
+        togglePickerModel(modelId) {
+            const index = this.pickerSelected.indexOf(modelId);
+            if (index >= 0) {
+                this.pickerSelected.splice(index, 1);
+                return;
+            }
+            this.pickerSelected.push(modelId);
+        },
+
+        addPickerModels() {
+            for (const modelId of this.pickerSelected) {
+                if (!this.tierForm.childModelIds.includes(modelId)) {
+                    this.tierForm.childModelIds.push(modelId);
+                }
+            }
+            this.showModelPicker = false;
+            this.pickerSelected = [];
+        },
+
+        removeChildModel(modelId) {
+            this.tierForm.childModelIds = this.tierForm.childModelIds.filter(
+                (childModelId) => childModelId !== modelId
+            );
+        },
+
+        onDragStart(idx) {
+            this.dragIdx = idx;
+        },
+
+        onDragOver(evt, idx) {
+            evt.preventDefault();
+            this.dropIdx = idx;
+        },
+
+        onDrop(idx) {
+            if (this.dragIdx === null || this.dragIdx === idx) return;
+            const item = this.tierForm.childModelIds.splice(this.dragIdx, 1)[0];
+            this.tierForm.childModelIds.splice(idx, 0, item);
+            this.dragIdx = null;
+            this.dropIdx = null;
+        },
+
+        onDragEnd() {
+            this.dragIdx = null;
+            this.dropIdx = null;
         },
 
         async saveTier() {
-            const payload = { ...this.tierForm };
-            if (!payload.fallback_tier_id) payload.fallback_tier_id = null;
-            if (this.editingTier) {
-                await api.patch(
-                    `/management/tiers/${this.editingTier.id}`,
-                    payload
-                );
-            } else {
-                await api.post('/management/tiers', payload);
+            const payload = {
+                tierKey: this.tierForm.tierKey.trim(),
+                displayName: this.tierForm.displayName.trim(),
+                enabled: !!this.tierForm.enabled,
+                maxAttempts: Number(this.tierForm.maxAttempts),
+                childModelIds: [...this.tierForm.childModelIds],
+            };
+
+            const result = this.editingTier
+                ? await api.patch(
+                      `/management/tiers/${this.editingTier.id}`,
+                      payload
+                  )
+                : await api.post('/management/tiers', payload);
+
+            if (result?.error) {
+                alert(result.error.message || result.error);
+                return;
             }
-            this.showTierCreate = false;
+
+            this.showTierModal = false;
             this.editingTier = null;
-            this.tiers = unwrapArray(await api.get('/management/tiers'));
+            this.resetForm();
+            await this.reload();
         },
 
-        async removeTier(t) {
-            if (!confirm(`Delete tier "${t.name}"?`)) return;
-            await api.del(`/management/tiers/${t.id}`);
-            this.tiers = unwrapArray(await api.get('/management/tiers'));
-        },
-
-        async toggleTier(t) {
-            const isEnabled = t.enabled ?? t.is_enabled;
-            if (isEnabled) {
-                await api.post(`/management/tiers/${t.id}/disable`, {});
-            } else {
-                await api.post(`/management/tiers/${t.id}/enable`, {});
+        async removeTier(tier) {
+            if (!confirm(`Delete tier "${tier.tierKey}"?`)) return;
+            const result = await api.del(`/management/tiers/${tier.id}`);
+            if (result?.error) {
+                alert(result.error.message || result.error);
+                return;
             }
-            this.tiers = unwrapArray(await api.get('/management/tiers'));
+            await this.reload();
+        },
+
+        async toggleTier(tier) {
+            const action = tier.enabled ? 'disable' : 'enable';
+            const result = await api.post(
+                `/management/tiers/${tier.id}/${action}`,
+                {}
+            );
+            if (result?.error) {
+                alert(result.error.message || result.error);
+                return;
+            }
+            await this.reload();
         },
     };
 }
@@ -2196,7 +2291,7 @@ function blacklistPage() {
 
         async toggleEnabled(r) {
             await api.patch(`/management/blacklist/rules/${r.id}`, {
-                enabled: !(r.enabled ?? r.is_enabled),
+                enabled: !r.enabled,
             });
             this.rules = unwrapArray(
                 await api.get('/management/blacklist/rules')
@@ -2250,15 +2345,18 @@ function middlewaresPage() {
                     await api.get(`/management/models/${model.id}/middlewares`)
                 );
                 const match = modelMws.find(
-                    (mm) => mm.middleware_id === this.selectedMw.id
+                    (mm) =>
+                        (mm.middlewareKey || mm.middleware_key) ===
+                        (this.selectedMw.middleware_key ||
+                            this.selectedMw.middlewareKey)
                 );
                 modelAssignments.push({
                     model,
                     assigned: !!match,
-                    enabled: match?.enabled ?? match?.is_enabled ?? false,
-                    sort_order: match?.sort_order ?? 100,
+                    enabled: match?.enabled ?? false,
+                    sortOrder: match?.sortOrder ?? 100,
                     settings: match?.settings || {},
-                    assignment_id: match?.id,
+                    assignmentId: match?.id,
                 });
             }
             this.modelAssignments = modelAssignments;
@@ -2267,13 +2365,13 @@ function middlewaresPage() {
         async toggleModelAssignment(a) {
             if (a.assigned) {
                 await api.del(
-                    `/management/models/${a.model.id}/middlewares/${a.assignment_id}`
+                    `/management/models/${a.model.id}/middlewares/${a.assignmentId}`
                 );
             } else {
                 await api.post(`/management/models/${a.model.id}/middlewares`, {
-                    middleware_id: this.selectedMw.id,
+                    middlewareId: this.selectedMw.id,
                     enabled: true,
-                    sort_order: 100,
+                    sortOrder: 100,
                     settings: {},
                 });
             }
@@ -2281,9 +2379,9 @@ function middlewaresPage() {
         },
 
         async toggleModelEnabled(a) {
-            if (!a.assignment_id) return;
+            if (!a.assignmentId) return;
             await api.patch(
-                `/management/models/${a.model.id}/middlewares/${a.assignment_id}`,
+                `/management/models/${a.model.id}/middlewares/${a.assignmentId}`,
                 {
                     enabled: !a.enabled,
                 }
@@ -2292,11 +2390,11 @@ function middlewaresPage() {
         },
 
         async updateModelSortOrder(a) {
-            if (!a.assignment_id) return;
+            if (!a.assignmentId) return;
             await api.patch(
-                `/management/models/${a.model.id}/middlewares/${a.assignment_id}`,
+                `/management/models/${a.model.id}/middlewares/${a.assignmentId}`,
                 {
-                    sort_order: parseInt(a.sort_order) || 100,
+                    sortOrder: parseInt(a.sortOrder) || 100,
                 }
             );
         },
@@ -2317,7 +2415,7 @@ function middlewaresPage() {
                 const parsed = JSON.parse(this.settingsJson);
                 this.settingsError = '';
                 await api.patch(
-                    `/management/models/${this.editingAssignment.model.id}/middlewares/${this.editingAssignment.assignment_id}`,
+                    `/management/models/${this.editingAssignment.model.id}/middlewares/${this.editingAssignment.assignmentId}`,
                     { settings: parsed }
                 );
                 this.showSettings = false;
@@ -2385,14 +2483,11 @@ function exportPage() {
         get filteredModels() {
             let list = this.models;
             if (!Array.isArray(list)) return [];
-            if (this.enabledOnly)
-                list = list.filter((m) => m.enabled ?? m.is_enabled);
+            if (this.enabledOnly) list = list.filter((m) => m.enabled);
             if (this.freeOnly) list = list.filter((m) => m.is_free);
             if (this.billingFilter)
                 list = list.filter(
-                    (m) =>
-                        (m.auth_strategy || m.billing_type || 'api_key') ===
-                        this.billingFilter
+                    (m) => (m.auth_strategy || 'api_key') === this.billingFilter
                 );
             if (this.tagFilter)
                 list = list.filter((m) =>
@@ -2402,9 +2497,7 @@ function exportPage() {
             if (q)
                 list = list.filter(
                     (m) =>
-                        (m.model_key || m.name || '')
-                            .toLowerCase()
-                            .includes(q) ||
+                        (m.model_key || '').toLowerCase().includes(q) ||
                         (m.provider_key || '').toLowerCase().includes(q) ||
                         (m.tags || []).some((t) => t.toLowerCase().includes(q))
                 );
@@ -2433,7 +2526,7 @@ function exportPage() {
 
         selectAllVisible() {
             for (const m of this.filteredModels) {
-                const key = m.model_key || m.name;
+                const key = m.model_key;
                 if (!this.selectedModels.includes(key))
                     this.selectedModels.push(key);
             }
@@ -2458,9 +2551,7 @@ function exportPage() {
 
         _getSelectedModelObjects() {
             return this.selectedModels
-                .map((name) =>
-                    this.models.find((m) => (m.model_key || m.name) === name)
-                )
+                .map((name) => this.models.find((m) => m.model_key === name))
                 .filter(Boolean);
         },
 
@@ -2479,7 +2570,7 @@ function exportPage() {
         },
 
         _modelName(m) {
-            return m.model_key || m.name;
+            return m.model_key;
         },
 
         _genOpenCode() {
@@ -2489,7 +2580,7 @@ function exportPage() {
                 models[key] = {
                     name: m.display_name || key,
                     limit: {
-                        context: this._parseContext(m.context_window),
+                        context: this._parseContext(getModelContextWindow(m)),
                         output: 32768,
                     },
                 };

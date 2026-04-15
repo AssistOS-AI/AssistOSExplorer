@@ -22,25 +22,26 @@ export class AuditLogWriter {
 
     async start(entry) {
         try {
-            await auditDao.insertStart(this.pool, entry);
+            return await auditDao.insertStart(this.pool, entry);
         } catch (err) {
             this.log.error('audit start write failed', {
-                requestId: entry.request_id,
+                requestId: entry.requestId,
                 error: err.message,
             });
+            return null;
         }
     }
 
-    async finalize(entry) {
+    async finalize(startedAt, logId, fields) {
         try {
-            const row = await auditDao.finalize(this.pool, entry);
+            const row = await auditDao.finalize(this.pool, startedAt, logId, fields);
             if (row && this.broadcastHub) {
                 this.broadcastHub.publish(row);
             }
             return row;
         } catch (err) {
             this.log.error('audit finalize write failed', {
-                requestId: entry.request_id,
+                logId,
                 error: err.message,
             });
             return null;

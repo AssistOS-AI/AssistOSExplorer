@@ -2,6 +2,7 @@
  * DAO for the audit_logs partitioned table.
  * Pure data-access functions — no business logic.
  */
+import { toSnake } from './helpers/case-convert.mjs';
 
 const TABLE = 'soul_gateway.audit_logs';
 
@@ -55,8 +56,20 @@ export async function insertStart(
  * Finalize an audit log row after the request completes or fails.
  * Uses the composite PK (started_at, log_id) for the update.
  */
+const ALLOWED_FINALIZE_FIELDS = new Set([
+    'status', 'httpStatus', 'errorType', 'errorMessage',
+    'latencyMs', 'ttfbMs', 'inputTokens', 'outputTokens', 'totalTokens',
+    'inputCostUsd', 'outputCostUsd', 'totalCostUsd', 'budgetExempt',
+    'cacheHit', 'blocked', 'cascaded', 'streaming', 'queueWaitMs',
+    'resolvedModelId', 'resolvedProviderId', 'providerAccountId',
+    'completedAt',
+    'responseExcerpt', 'retryTrace', 'middlewareTrace',
+    'responsePayload', 'flags', 'metadata',
+    'apiKeyId', 'soulId', 'agentName', 'sessionId', 'requestedModel',
+]);
+
 export async function finalize(pool, startedAt, logId, fields) {
-    const keys = Object.keys(fields);
+    const keys = Object.keys(fields).filter((k) => ALLOWED_FINALIZE_FIELDS.has(k));
     if (keys.length === 0) return null;
 
     const jsonFields = new Set([
@@ -253,8 +266,4 @@ function buildFilterClauses(filters) {
     }
 
     return { conditions, params, idx };
-}
-
-function toSnake(camel) {
-    return camel.replace(/[A-Z]/g, (ch) => '_' + ch.toLowerCase());
 }

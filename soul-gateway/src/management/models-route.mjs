@@ -110,7 +110,9 @@ export async function handleUpdateModel(ctx) {
     }
 
     const allowed = [
+        'modelKey',
         'displayName',
+        'providerId',
         'providerModelId',
         'enabled',
         'concurrencyLimit',

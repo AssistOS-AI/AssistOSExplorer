@@ -19,14 +19,66 @@ export async function shutdown(appCtx, server, reason = 'SIGTERM') {
 
     log.info('shutdown starting', { reason, graceMs });
 
-    // 1. Stop accepting connections
+    // 1-2. Stop accepting connections
     appCtx.draining = true;
 
     await new Promise((resolve) => {
         server.close(() => resolve());
-        // If server.close doesn't finish in grace period, proceed anyway
         setTimeout(resolve, graceMs);
     });
+
+    // 3. Stop background jobs
+    if (appCtx.services.jobScheduler) {
+        try {
+            appCtx.services.jobScheduler.stop();
+            log.info('background jobs stopped');
+        } catch (err) {
+            log.error('error stopping background jobs', { error: err.message });
+        }
+    }
+
+    // 4. Close SSE/WS subscribers
+    if (appCtx.services.broadcastHub) {
+        try {
+            appCtx.services.broadcastHub.stop();
+            log.info('broadcast hub closed');
+        } catch (err) {
+            log.error('error closing broadcast hub', { error: err.message });
+        }
+    }
+
+    // 5-6. Wait for in-flight requests (best-effort poll)
+    if (typeof appCtx.activeRequestCount === 'number' && appCtx.activeRequestCount > 0) {
+        const deadline = Date.now() + graceMs;
+        while (appCtx.activeRequestCount > 0 && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (appCtx.activeRequestCount > 0) {
+            log.warn('shutdown draining timed out', {
+                remaining: appCtx.activeRequestCount,
+            });
+        }
+    }
+
+    // 7. Flush pending audit writes
+    if (appCtx.services.auditLogWriter && typeof appCtx.services.auditLogWriter.flush === 'function') {
+        try {
+            await appCtx.services.auditLogWriter.flush();
+            log.info('audit log writer flushed');
+        } catch (err) {
+            log.error('error flushing audit log writer', { error: err.message });
+        }
+    }
+
+    // 8. Shutdown backend catalog
+    if (appCtx.services.backendCatalog) {
+        try {
+            await appCtx.services.backendCatalog.shutdownAll();
+            log.info('backend catalog shut down');
+        } catch (err) {
+            log.error('error shutting down backend catalog', { error: err.message });
+        }
+    }
 
     // 9. Close database pool
     if (appCtx.pool) {

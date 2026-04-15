@@ -1,3 +1,4 @@
+import { sendJson } from './core/responses.mjs';
 import { readEnv } from './config/env.mjs';
 import { buildConfig } from './config/app-config.mjs';
 import { createLogger } from './core/logger.mjs';
@@ -83,21 +84,16 @@ export async function bootstrap() {
     registerCoreRoutes(httpRouter, appCtx);
 
     // 9b. Register public API routes
-    try {
+    {
         const { registerPublicApiRoutes } = await import(
             './public-api/register-routes.mjs'
         );
         registerPublicApiRoutes(httpRouter, appCtx);
         log.info('public API routes registered');
-    } catch (err) {
-        log.error('public API routes failed', {
-            error: err.message,
-            stack: err.stack,
-        });
     }
 
     // 9c. Register management routes
-    try {
+    {
         const { buildManagementRouter } = await import(
             './management/build-routes.mjs'
         );
@@ -106,11 +102,6 @@ export async function bootstrap() {
         appCtx.services.managementHttpRouter = mgmtHttp;
         appCtx.services.managementWsRouter = mgmtWs;
         log.info('management routes registered');
-    } catch (err) {
-        log.error('management routes failed', {
-            error: err.message,
-            stack: err.stack,
-        });
     }
 
     // 10. HTTP server
@@ -122,52 +113,38 @@ export async function bootstrap() {
 /**
  * Register routes that are always available (health, compatibility aliases).
  */
-function registerCoreRoutes(router, appCtx) {
-    // Health — implemented in Phase 1.2
-    router.add('GET', '/healthz', async (ctx) => {
-        const { sendJson } = await import('./core/responses.mjs');
-        const uptime = (Date.now() - ctx.appCtx.startedAt) / 1000;
-        let dbOk = false;
-        try {
-            if (ctx.appCtx.pool && ctx.appCtx.config.env.DATABASE_URL) {
-                await ctx.appCtx.pool.query('SELECT 1');
-                dbOk = true;
-            }
-        } catch {
-            /* db check failed */
+async function handleHealthFull(ctx) {
+    const uptime = (Date.now() - ctx.appCtx.startedAt) / 1000;
+    let dbOk = false;
+    try {
+        if (ctx.appCtx.pool && ctx.appCtx.config.env.DATABASE_URL) {
+            await ctx.appCtx.pool.query('SELECT 1');
+            dbOk = true;
         }
-        sendJson(ctx.res, 200, {
-            ok: true,
-            db: dbOk,
-            snapshotGeneration: ctx.appCtx.snapshotGeneration,
-            uptimeSeconds: Math.round(uptime),
-        });
+    } catch {
+        /* db check failed */
+    }
+    sendJson(ctx.res, 200, {
+        ok: true,
+        db: dbOk,
+        snapshotGeneration: ctx.appCtx.snapshotGeneration,
+        uptimeSeconds: Math.round(uptime),
     });
+}
 
-    // System metrics — canonical
-    router.add('GET', '/management/metrics/system', async (ctx) => {
-        const { sendJson } = await import('./core/responses.mjs');
-        const metrics = ctx.appCtx.services.systemMetrics.collect();
-        sendJson(ctx.res, 200, metrics);
-    });
+function handleSystemMetrics(ctx) {
+    const metrics = ctx.appCtx.services.systemMetrics.collect();
+    sendJson(ctx.res, 200, metrics);
+}
 
-    // Redirect root to dashboard
+function registerCoreRoutes(router, appCtx) {
+    router.add('GET', '/healthz', handleHealthFull);
+
+    router.add('GET', '/management/metrics/system', handleSystemMetrics);
+
     router.add('GET', '/', async (ctx) => {
         ctx.res.writeHead(302, { Location: '/management' });
         ctx.res.end();
-    });
-
-    // ── Compatibility aliases (EXECUTION-BACKLOG §0.1) ──────────────
-    router.add('GET', '/health', async (ctx) => {
-        const { sendJson } = await import('./core/responses.mjs');
-        const uptime = (Date.now() - ctx.appCtx.startedAt) / 1000;
-        sendJson(ctx.res, 200, { status: 'ok', uptime: Math.round(uptime) });
-    });
-
-    router.add('GET', '/metrics', async (ctx) => {
-        const { sendJson } = await import('./core/responses.mjs');
-        const metrics = ctx.appCtx.services.systemMetrics.collect();
-        sendJson(ctx.res, 200, metrics);
     });
 
     // Favicon — return 204 to stop browsers from 404-ing

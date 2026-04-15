@@ -307,18 +307,6 @@ export class MiddlewareAbortError extends GatewayError {
     }
 }
 
-export class SyntheticResponseAbort extends GatewayError {
-    constructor(middlewareName) {
-        super(ERROR_MESSAGES.SYNTHETIC_RESPONSE_FROM_MIDDLEWARE, {
-            httpStatus: HTTP_STATUS.OK,
-            errorType: ERROR_TYPES.SYNTHETIC_RESPONSE,
-            detail: { middleware: middlewareName },
-        });
-        /** Attached by the middleware that aborts with a cached/synthetic response. */
-        this.syntheticResponse = null;
-    }
-}
-
 // ── configuration / internal ─────────────────────────────────────────
 
 export class ConfigurationError extends GatewayError {

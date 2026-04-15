@@ -320,9 +320,10 @@ describe('admin session sign/verify (loginAdmin + requireAdmin)', () => {
     });
 
     it('requireAdmin throws for expired token', () => {
-        // Craft a token that already expired
+        // Craft a token that already expired (using current format: {exp}.{csrfToken}.{hmac})
         const exp = Date.now() - 1000;
-        const payload = String(exp);
+        const csrfToken = randomBytes(32).toString('hex');
+        const payload = `${exp}.${csrfToken}`;
         const sig = createHmac('sha256', signingKey)
             .update(payload)
             .digest('hex');
@@ -334,6 +335,26 @@ describe('admin session sign/verify (loginAdmin + requireAdmin)', () => {
             (err) => {
                 assert(err instanceof AuthenticationRequiredError);
                 assert.match(err.message, /expired/i);
+                return true;
+            }
+        );
+    });
+
+    it('requireAdmin rejects tokens without CSRF component', () => {
+        // Legacy format: {exp}.{hmac} — no longer accepted
+        const exp = Date.now() + 60_000;
+        const payload = String(exp);
+        const sig = createHmac('sha256', signingKey)
+            .update(payload)
+            .digest('hex');
+        const legacyToken = `${payload}.${sig}`;
+
+        const req = { headers: { authorization: `Bearer ${legacyToken}` } };
+        assert.throws(
+            () => requireAdmin(req, config),
+            (err) => {
+                assert(err instanceof AuthenticationRequiredError);
+                assert.match(err.message, /Invalid admin session/i);
                 return true;
             }
         );

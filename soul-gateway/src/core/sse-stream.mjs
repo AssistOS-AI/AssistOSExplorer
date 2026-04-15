@@ -16,28 +16,35 @@ export function createSseStream(res) {
     });
 
     const cleanupFns = [];
+    let closed = false;
+
+    function runCleanup() {
+        if (closed) return;
+        closed = true;
+        for (const fn of cleanupFns) fn();
+    }
 
     return {
         send(event, data) {
-            if (res.destroyed) return;
+            if (res.destroyed || closed) return;
             const serialized =
                 typeof data === 'string' ? data : JSON.stringify(data);
             res.write(`event: ${event}\ndata: ${serialized}\n\n`);
         },
 
         comment(text) {
-            if (res.destroyed) return;
+            if (res.destroyed || closed) return;
             res.write(`: ${text}\n\n`);
         },
 
         close() {
             if (!res.destroyed) res.end();
-            for (const fn of cleanupFns) fn();
+            runCleanup();
         },
 
         onClose(fn) {
             cleanupFns.push(fn);
-            res.on('close', fn);
+            res.on('close', runCleanup);
         },
     };
 }

@@ -12,7 +12,7 @@ Soul Gateway runs on one middleware kernel in `src/runtime/kernel/`.
 - Gateway policy runs as gateway middlewares compiled from `middleware_bindings`.
 - Provider-specific shaping runs as provider middlewares resolved from `providerMiddlewareRegistry`.
 - The upstream call is a terminal **backend** middleware. Backend modules live in `src/runtime/backends/builtin/*.backend.mjs`. The unified `BackendCatalog` registers each module once and stores both the module (for lifecycle/admin calls) and a precompiled kernel terminal middleware (for the request hot path). There is no separate provider-execution or transport-execution subsystem.
-- Every addressable target is a model. The dashboard `Tiers` page is backed by cascade models stored in `models` + `model_children`.
+- Every addressable target is a model. Cascade models live in `models` + `model_children`; the dashboard exposes a separate `Tiers` page and `/management/tiers` API family as a management view over those cascade model records.
 
 The only intentionally retained historical bridge is the `main`-branch data import flow under `src/db/import/`.
 
@@ -38,14 +38,14 @@ In buffered mode the provider chain drains the canonical stream into a buffered 
 | [DS001](DS001-request-pipeline.md) | Request pipeline | End-to-end request lifecycle for all three public ingress formats, including auth, identity, model resolution, gateway dispatch, and route egress. |
 | [DS002](DS002-provider-auth.md) | Provider authentication | Static API keys, managed OAuth flows, account pooling, provider templates, and provider-side auth behavior. |
 | [DS003](DS003-middleware-framework.md) | Middleware, backends, and extensions | Kernel contract, runtime context, gateway/provider/backend scopes, the unified backend catalog, and extension discovery. |
-| [DS004](DS004-model-routing.md) | Model routing | Direct vs cascade models, name normalization, cascade fallback, cooldowns, concurrency, pricing, and tier management. |
+| [DS004](DS004-model-routing.md) | Model routing | Direct vs cascade models, name normalization, cascade fallback, cooldowns, concurrency, and pricing. |
 | [DS005](DS005-streaming.md) | Streaming | Canonical event streams, provider stream wrapping, route-level SSE egress, buffering rules, and real-time log streaming. |
 | [DS006](DS006-database-schema.md) | Database schema | Capability-level schema overview for providers, provider accounts, models, model children, middleware bindings, API keys, logs, and sessions. |
 | [DS007](DS007-rate-limiting-budgets.md) | Rate limiting, budgets, and API keys | Per-key RPM/TPM limits, daily/monthly budgets, spend caching, pricing, and API-key lifecycle. |
 | [DS008](DS008-content-filtering.md) | Content filtering | Blacklist rules, response filtering, where those policies run, and how overrides are applied. |
 | [DS009](DS009-error-handling.md) | Error handling | Error classification, retry policy, cascade triggers, cooldown triggers, and shared error envelopes. |
 | [DS010](DS010-agent-loop-detector.md) | Agent loop detector | Loop-detection heuristics, session-scoped state, response modes, and middleware settings. |
-| [DS012](DS012-api-reference.md) | Management API & dashboard | Dashboard auth, provider/model/tier management, middleware binding APIs, and observability endpoints. |
+| [DS012](DS012-api-reference.md) | Management API & dashboard | Dashboard auth, provider/model management, middleware binding APIs, and observability endpoints. |
 | [DS013](DS013-configuration-deployment.md) | Configuration & deployment | Environment variables, initialization, importer/DDL split, health checks, and shutdown behavior. |
 | [DS014](DS014-built-in-middlewares.md) | Built-in middlewares | Current built-in gateway middleware catalog and how those modules are assigned and ordered. |
 | [DS015](DS015-observability.md) | Observability | Audit logging, live log streaming, metrics dashboards, session grouping, and exports. |
@@ -53,6 +53,6 @@ In buffered mode the provider chain drains the canonical stream into a buffered 
 ## Cross-reference notes
 
 - DS001 describes where the layers run; DS003 describes the middleware contract those layers use.
-- DS004 is the source of truth for cascade models and tier management behavior.
+- DS004 is the source of truth for cascade model routing behavior.
 - DS005 covers client-visible streaming; DS015 covers dashboard log streaming.
 - DS012 documents the active management and dashboard endpoints.

@@ -47,16 +47,11 @@ export class ExportService {
 
         let offset = 0;
         while (true) {
-            const { rows } = await auditDao.query(this.pool, {
-                from,
-                to,
-                soul_id: soulId,
-                model,
-                limit: this.batchSize,
-                offset,
-                sort: 'started_at',
-                order: 'asc',
-            });
+            const rows = await auditDao.query(
+                this.pool,
+                { from, to, soulId, model },
+                { limit: this.batchSize, offset, sort: 'started_at', order: 'asc' }
+            );
 
             for (const row of rows) {
                 res.write(
@@ -89,16 +84,11 @@ export class ExportService {
         let offset = 0;
         let first = true;
         while (true) {
-            const { rows } = await auditDao.query(this.pool, {
-                from,
-                to,
-                soul_id: soulId,
-                model,
-                limit: this.batchSize,
-                offset,
-                sort: 'started_at',
-                order: 'asc',
-            });
+            const rows = await auditDao.query(
+                this.pool,
+                { from, to, soulId, model },
+                { limit: this.batchSize, offset, sort: 'started_at', order: 'asc' }
+            );
 
             for (const row of rows) {
                 if (!first) res.write(',\n');

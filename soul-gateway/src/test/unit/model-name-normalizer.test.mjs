@@ -5,11 +5,10 @@ import { normalizeModelName } from '../../runtime/registry/model-name-normalizer
 /**
  * Build a minimal mock snapshot for normalizer tests.
  *
- * Phase 7b: every addressable target lives in `snapshot.models`, both
- * direct models and the synthesized cascade models that the snapshot
- * loader builds from the legacy tiers table.  These mocks model the
- * post-loader shape directly — `axl/fast` and `axl/deep` are entries
- * in `models`, not in a separate `tiers` map.
+ * Every addressable target lives in `snapshot.models`, both direct
+ * models and cascade models. These mocks model the post-loader shape
+ * directly — `axl/fast` and `axl/deep` are entries in `models`, not
+ * in a separate `tiers` map.
  */
 function createMockSnapshot() {
     const models = new Map();
@@ -75,26 +74,6 @@ describe('normalizeModelName', () => {
         assert.equal(result.kind, 'model');
     });
 
-    // ── legacy mode: prefix → cascade model ───────────────────────────
-
-    it('normalizes mode:fast -> axl/fast (cascade model)', () => {
-        const result = normalizeModelName('mode:fast', snapshot);
-        assert.equal(result.normalized, 'axl/fast');
-        assert.equal(result.kind, 'model');
-    });
-
-    it('normalizes mode:deep -> axl/deep (cascade model)', () => {
-        const result = normalizeModelName('mode:deep', snapshot);
-        assert.equal(result.normalized, 'axl/deep');
-        assert.equal(result.kind, 'model');
-    });
-
-    it('normalizes mode:axl/deep -> axl/deep (already prefixed)', () => {
-        const result = normalizeModelName('mode:axl/deep', snapshot);
-        assert.equal(result.normalized, 'axl/deep');
-        assert.equal(result.kind, 'model');
-    });
-
     // ── bare names ────────────────────────────────────────────────────
 
     it('resolves bare model name to first matching provider-prefixed key', () => {
@@ -103,10 +82,10 @@ describe('normalizeModelName', () => {
         assert.equal(result.kind, 'model');
     });
 
-    it('resolves bare cascade name with axl/ prefix', () => {
+    it('does not resolve bare cascade shorthand without the axl/ prefix', () => {
         const result = normalizeModelName('fast', snapshot);
-        assert.equal(result.normalized, 'axl/fast');
-        assert.equal(result.kind, 'model');
+        assert.equal(result.normalized, 'fast');
+        assert.equal(result.kind, 'unknown');
     });
 
     // ── case-insensitive ──────────────────────────────────────────────

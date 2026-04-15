@@ -9,12 +9,10 @@
  *
  *   1. Exact match in `snapshot.models`
  *   2. Alias match in `snapshot.aliases` → re-lookup in `snapshot.models`
- *   3. `mode:` prefix (`mode:fast` → strip, retry, then try `axl/fast`)
- *   4. Bare model name → try every `<provider>/<name>` combination
+ *   3. Bare model name → try every `<provider>/<name>` combination
  *      already in the models map
- *   5. Bare model name → try `axl/<name>` against the models map
- *   6. Case-insensitive search across models and aliases
- *   7. Return the input unchanged
+ *   4. Case-insensitive search across models and aliases
+ *   5. Return the input unchanged
  *
  * Returns `{ normalized: string, kind: 'model' | 'unknown' }`.  The
  * `kind` field is always either `'model'` or `'unknown'` — there is
@@ -45,23 +43,10 @@ export function normalizeModelName(input, snapshot) {
         return { normalized: aliasTarget, kind: 'model' };
     }
 
-    // 3. "mode:" prefix. Strip it and retry the lookup against
-    //    the unified models map.  Try the raw stripped value first, then
-    //    the conventional `axl/<name>` form.
-    if (trimmed.startsWith('mode:')) {
-        const modeValue = trimmed.slice(5).trim();
-        if (snapshot.models.has(modeValue)) {
-            return { normalized: modeValue, kind: 'model' };
-        }
-        const axlPrefixed = `axl/${modeValue}`;
-        if (snapshot.models.has(axlPrefixed)) {
-            return { normalized: axlPrefixed, kind: 'model' };
-        }
-    }
-
-    // 4. Bare model name → try known provider prefixes
+    // 3. Bare model name → try known provider prefixes
     if (!trimmed.includes('/')) {
-        for (const [modelKey] of snapshot.models) {
+        for (const [modelKey, modelRecord] of snapshot.models) {
+            if (modelRecord?.strategyKind === 'cascade') continue;
             const slashIdx = modelKey.indexOf('/');
             if (slashIdx !== -1 && modelKey.slice(slashIdx + 1) === trimmed) {
                 return { normalized: modelKey, kind: 'model' };
@@ -75,15 +60,9 @@ export function normalizeModelName(input, snapshot) {
                 return { normalized: target, kind: 'model' };
             }
         }
-
-        // 5. Bare name → try `axl/<name>` for tier-style cascade keys
-        const axlPrefixed = `axl/${trimmed}`;
-        if (snapshot.models.has(axlPrefixed)) {
-            return { normalized: axlPrefixed, kind: 'model' };
-        }
     }
 
-    // 6. Case-insensitive search
+    // 4. Case-insensitive search
     const lower = trimmed.toLowerCase();
 
     for (const [modelKey] of snapshot.models) {
@@ -98,6 +77,6 @@ export function normalizeModelName(input, snapshot) {
         }
     }
 
-    // 7. Unresolvable
+    // 5. Unresolvable
     return { normalized: trimmed, kind: 'unknown' };
 }

@@ -6,17 +6,14 @@
  * whether to block.
  */
 
-const WINDOW_SECONDS = 60;
+import { SlidingWindow } from './sliding-window.mjs';
 
-export class TpmTracker {
+export class TpmTracker extends SlidingWindow {
     /**
      * @param {{ nowSeconds?: () => number }} [opts]
      */
     constructor(opts = {}) {
-        /** @type {Map<string, { slots: Float64Array, head: number, headTime: number }>} */
-        this._keys = new Map();
-        this._nowSeconds =
-            opts.nowSeconds || (() => Math.floor(Date.now() / 1000));
+        super({ ...opts, ArrayType: Float64Array });
     }
 
     /**
@@ -49,41 +46,5 @@ export class TpmTracker {
 
         const current = this._sum(entry);
         return { current, limit, exceeded: current >= limit };
-    }
-
-    // ── internals ───────────────────────────────────────────────────────
-
-    _getOrCreate(keyId, now) {
-        let entry = this._keys.get(keyId);
-        if (!entry) {
-            entry = {
-                slots: new Float64Array(WINDOW_SECONDS),
-                head: 0,
-                headTime: now,
-            };
-            this._keys.set(keyId, entry);
-        }
-        return entry;
-    }
-
-    _advance(entry, now) {
-        const elapsed = now - entry.headTime;
-        if (elapsed <= 0) return;
-
-        const steps = Math.min(elapsed, WINDOW_SECONDS);
-        for (let i = 1; i <= steps; i++) {
-            const idx = (entry.head + i) % WINDOW_SECONDS;
-            entry.slots[idx] = 0;
-        }
-        entry.head = (entry.head + steps) % WINDOW_SECONDS;
-        entry.headTime = now;
-    }
-
-    _sum(entry) {
-        let total = 0;
-        for (let i = 0; i < WINDOW_SECONDS; i++) {
-            total += entry.slots[i];
-        }
-        return total;
     }
 }

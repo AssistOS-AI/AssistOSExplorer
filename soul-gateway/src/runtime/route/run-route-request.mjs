@@ -15,6 +15,7 @@
  *     identity
  *     bindSnapshot
  *     normalizeIngress
+ *     auditLog
  *     validateRequest
  *     resolveModel
  *     resolveSession
@@ -35,6 +36,7 @@ import { compose, createKernelContext } from '../kernel/index.mjs';
 import { createRequestId } from '../../core/request-id.mjs';
 
 import { errorBoundaryMiddleware } from './error-boundary.mjs';
+import { auditLogMiddleware } from './audit-log.mjs';
 import { parseBodyMiddleware } from './parse-body.mjs';
 import { authenticateMiddleware } from './authenticate.mjs';
 import { identityMiddleware } from './identity.mjs';
@@ -64,6 +66,7 @@ export function buildRouteChain() {
         identityMiddleware(),
         bindSnapshotMiddleware(),
         normalizeIngressMiddleware(),
+        auditLogMiddleware(),
         validateRequestMiddleware(),
         resolveModelMiddleware(),
         resolveSessionMiddleware(),
@@ -109,6 +112,7 @@ export async function runRouteRequest({ req, res, appCtx, routeKind }) {
 
 export {
     errorBoundaryMiddleware,
+    auditLogMiddleware,
     parseBodyMiddleware,
     authenticateMiddleware,
     identityMiddleware,

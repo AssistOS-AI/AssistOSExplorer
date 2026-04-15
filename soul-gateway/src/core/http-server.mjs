@@ -55,6 +55,10 @@ export function createHttpServer(appCtx, httpRouter, wsRouter) {
                 appCtx,
             });
         } catch (err) {
+            if (res.headersSent) {
+                res.destroy();
+                return;
+            }
             if (err instanceof GatewayError) {
                 sendError(res, err);
             } else {

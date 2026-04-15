@@ -63,18 +63,18 @@ describe('provider-middlewares-route', () => {
         const body = JSON.parse(res.body);
         assert.deepEqual(Object.keys(body), ['bindings']);
         assert.equal(body.bindings.length, 2);
-        // Sorted by sort_order ascending
+        // Sorted by sortOrder ascending
         assert.equal(body.bindings[0].id, 'binding-1');
         assert.equal(body.bindings[1].id, 'binding-2');
         assert.deepEqual(body.bindings[0], {
             id: 'binding-1',
-            provider_id: 'provider-1',
-            middleware_key: 'provider-prompt-injector',
-            sort_order: 10,
+            providerId: 'provider-1',
+            middlewareKey: 'provider-prompt-injector',
+            sortOrder: 10,
             enabled: true,
             settings: { content: 'hello' },
-            created_at: '2026-04-08T10:00:00.000Z',
-            updated_at: '2026-04-08T10:00:00.000Z',
+            createdAt: '2026-04-08T10:00:00.000Z',
+            updatedAt: '2026-04-08T10:00:00.000Z',
         });
     });
 });

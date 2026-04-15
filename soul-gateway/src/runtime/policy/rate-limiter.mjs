@@ -5,17 +5,14 @@
  * No database writes on the hot path — purely in-memory.
  */
 
-const WINDOW_SECONDS = 60;
+import { SlidingWindow, WINDOW_SECONDS } from './sliding-window.mjs';
 
-export class SlidingWindowLimiter {
+export class SlidingWindowLimiter extends SlidingWindow {
     /**
      * @param {{ nowSeconds?: () => number }} [opts]
      */
     constructor(opts = {}) {
-        /** @type {Map<string, { slots: Int32Array, head: number, headTime: number }>} */
-        this._keys = new Map();
-        this._nowSeconds =
-            opts.nowSeconds || (() => Math.floor(Date.now() / 1000));
+        super({ ...opts, ArrayType: Int32Array });
     }
 
     /**
@@ -52,46 +49,6 @@ export class SlidingWindowLimiter {
         const entry = this._getOrCreate(keyId, now);
         this._advance(entry, now);
         entry.slots[entry.head]++;
-    }
-
-    // ── internals ───────────────────────────────────────────────────────
-
-    _getOrCreate(keyId, now) {
-        let entry = this._keys.get(keyId);
-        if (!entry) {
-            entry = {
-                slots: new Int32Array(WINDOW_SECONDS),
-                head: 0,
-                headTime: now,
-            };
-            this._keys.set(keyId, entry);
-        }
-        return entry;
-    }
-
-    /**
-     * Advance the head pointer to the current second, zeroing out any
-     * slots that have been passed since the last update.
-     */
-    _advance(entry, now) {
-        const elapsed = now - entry.headTime;
-        if (elapsed <= 0) return;
-
-        const steps = Math.min(elapsed, WINDOW_SECONDS);
-        for (let i = 1; i <= steps; i++) {
-            const idx = (entry.head + i) % WINDOW_SECONDS;
-            entry.slots[idx] = 0;
-        }
-        entry.head = (entry.head + steps) % WINDOW_SECONDS;
-        entry.headTime = now;
-    }
-
-    _sum(entry) {
-        let total = 0;
-        for (let i = 0; i < WINDOW_SECONDS; i++) {
-            total += entry.slots[i];
-        }
-        return total;
     }
 
     /**

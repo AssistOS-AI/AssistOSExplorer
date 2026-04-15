@@ -52,7 +52,7 @@ Built-in gateway middlewares can be bound at:
 - direct-model scope
 - cascade-model scope
 
-The dashboard still exposes tier endpoints, but those write model-scoped bindings targeting cascade models.
+The dashboard exposes tier endpoints as a management/editor surface over cascade models, and those routes still write model-scoped bindings targeting cascade models.
 
 Execution order is:
 

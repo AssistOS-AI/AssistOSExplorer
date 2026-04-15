@@ -31,6 +31,7 @@ export class BackendCatalog {
     constructor({ log }) {
         this._log = log;
         this._generation = 0;
+        this._inflightCount = 0;
 
         /** @type {Map<string, { module: object, terminal: Function }>} */
         this._entries = new Map();
@@ -66,9 +67,11 @@ export class BackendCatalog {
         if (this._entries.size > 0) {
             this._oldGenerations.set(this._generation, {
                 entries: this._entries,
-                inflightCount: 0,
+                inflightCount: this._inflightCount,
             });
         }
+
+        this._inflightCount = 0;
 
         this._entries = newEntries;
         this._generation = newGen;
@@ -115,6 +118,22 @@ export class BackendCatalog {
     }
 
     /**
+     * Get the precompiled kernel terminal middleware for a specific
+     * catalog generation. Used by the request path to pin an in-flight
+     * request to the generation it started on while reloads happen.
+     *
+     * @param {string} key
+     * @param {number} generation
+     * @returns {Function|null}
+     */
+    getTerminalForGeneration(key, generation) {
+        if (generation === this._generation) {
+            return this._entries.get(key)?.terminal || null;
+        }
+        return this._oldGenerations.get(generation)?.entries.get(key)?.terminal || null;
+    }
+
+    /**
      * Get the BackendModule for the given key.  Used by lifecycle/admin
      * operations and template rendering.
      *
@@ -152,11 +171,15 @@ export class BackendCatalog {
     }
 
     acquireGeneration() {
+        this._inflightCount++;
         return this._generation;
     }
 
     releaseGeneration(generation) {
-        if (generation === this._generation) return;
+        if (generation === this._generation) {
+            this._inflightCount = Math.max(0, this._inflightCount - 1);
+            return;
+        }
 
         const old = this._oldGenerations.get(generation);
         if (!old) return;
@@ -319,10 +342,15 @@ export class BackendCatalog {
         this._entries.clear();
 
         for (const [, old] of this._oldGenerations) {
-            for (const [, entry] of old.entries) {
+            for (const [key, entry] of old.entries) {
                 const shutdown = entry.module.shutdown;
                 if (typeof shutdown === 'function') {
-                    await shutdown.call(entry.module).catch(() => {});
+                    await shutdown.call(entry.module).catch((err) => {
+                        this._log.error('old_backend_shutdown_failed', {
+                            key,
+                            error: err.message,
+                        });
+                    });
                 }
             }
         }

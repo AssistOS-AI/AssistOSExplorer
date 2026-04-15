@@ -9,7 +9,9 @@ Each model has a `strategyKind`:
 - `direct` — dispatch one provider/model pair
 - `cascade` — walk an ordered list of child models until one succeeds
 
-The runtime no longer has a separate tier execution path. A tier is a cascade model plus the dashboard-facing `/management/tiers` surface.
+The runtime no longer has a separate tier execution path. A tier is just a cascade model stored in the unified model tables.
+
+The dashboard still exposes a dedicated `Tiers` page and `/management/tiers` management surface, but that UI edits the same cascade model records in `models` + `model_children`; it is not a separate runtime subsystem.
 
 ## Model registry
 
@@ -30,17 +32,15 @@ The snapshot loader reads models from the unified schema:
 
 1. exact `snapshot.models` match
 2. alias match
-3. `mode:<name>` lookup
-4. bare-name lookup across `<provider>/<name>`
-5. bare-name lookup against `axl/<name>`
-6. case-insensitive retry
+3. bare-name lookup across direct-model `<provider>/<name>` keys only
+4. case-insensitive retry
 
-The normalizer now returns only:
+Bare cascade shorthand such as `fast -> axl/fast` is no longer supported. Cascade models must be addressed by their full model key (for example `axl/fast`).
+
+The normalizer returns:
 
 - `kind: 'model'`
 - `kind: 'unknown'`
-
-There is no separate runtime `kind: 'tier'`.
 
 ## Direct models
 
@@ -77,15 +77,6 @@ For each attempt the cascade middleware:
 
 If every child fails or is unavailable, the runtime throws `TierExhaustedError`.
 
-## Tier compatibility surfaces
-
-Tier terminology still exists in the management API, but it is a view over cascade models:
-
-- `/management/tiers` reads and writes cascade models through `models` + `model_children`
-- tier middleware routes write `middleware_bindings(scope='model', target_id=<cascade-model-id>)`
-
-The dashboard can keep a Tiers page without requiring a separate tier runtime abstraction.
-
 ## Cooldowns
 
 When a model fails with a classified cooldown-triggering error, the runtime records a cooldown entry and future cascades skip that model until the cooldown expires or is cleared.
@@ -116,4 +107,4 @@ Cost is calculated from the model record after each request and feeds budget enf
 - **DS003** — middleware scopes and provider execution
 - **DS007** — budget/rate-limit policies that run around model dispatch
 - **DS009** — retry and error classification semantics
-- **DS012** — public and management compatibility surfaces for tiers
+- **DS012** — model and middleware management surfaces

@@ -13,6 +13,18 @@
 
 import { sendError } from '../../core/responses.mjs';
 import { GatewayError, InternalServerError } from '../../core/errors.mjs';
+import { serializeSseError } from './canonical-stream-to-sse.mjs';
+
+/**
+ * Write a terminal SSE error event and end the response.
+ *
+ * Used when headers have already been sent (streaming in progress)
+ * so we cannot use `sendError()` which sets status/headers.
+ */
+function emitSseError(res, routeKind, requestId, err) {
+    res.write(serializeSseError(routeKind, requestId, err));
+    res.end();
+}
 
 /**
  * @returns {(ctx: object, next: () => Promise<void>) => Promise<void>}
@@ -34,8 +46,17 @@ export function errorBoundaryMiddleware() {
                     message: err.message,
                     durationMs: totalMs,
                 });
-                if (res && !res.writableEnded && !res.headersSent) {
-                    sendError(res, err);
+                if (res && !res.writableEnded) {
+                    if (res.headersSent) {
+                        emitSseError(
+                            res,
+                            ctx.route?.kind || 'openai_chat',
+                            ctx.requestId,
+                            err
+                        );
+                    } else {
+                        sendError(res, err);
+                    }
                 }
                 return;
             }
@@ -46,8 +67,17 @@ export function errorBoundaryMiddleware() {
                 stack: err.stack,
                 durationMs: totalMs,
             });
-            if (res && !res.writableEnded && !res.headersSent) {
-                sendError(res, new InternalServerError());
+            if (res && !res.writableEnded) {
+                if (res.headersSent) {
+                    emitSseError(
+                        res,
+                        ctx.route?.kind || 'openai_chat',
+                        ctx.requestId,
+                        new InternalServerError()
+                    );
+                } else {
+                    sendError(res, new InternalServerError());
+                }
             }
         }
     };

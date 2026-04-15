@@ -1,7 +1,7 @@
 /**
  * System metrics store — collects live runtime health indicators.
  *
- * Exposed via GET /management/metrics/system (and compat GET /metrics).
+ * Exposed via GET /management/metrics/system.
  */
 export class SystemMetricsStore {
     constructor(appCtx) {
@@ -16,7 +16,10 @@ export class SystemMetricsStore {
     }
 
     stop() {
-        if (this._timer) clearInterval(this._timer);
+        if (this._timer) {
+            clearInterval(this._timer);
+            this._timer = null;
+        }
     }
 
     _sample() {

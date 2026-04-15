@@ -37,16 +37,18 @@ export function evaluateLoopSignal(sessionState, response, settings) {
         mode = 'log',
     } = settings || {};
 
-    // Ensure the fingerprint array exists
+    // Ensure the fingerprint array exists.  Each entry is
+    // { hash: string, tokens: number }.
     if (!Array.isArray(sessionState.recent_fingerprints)) {
         sessionState.recent_fingerprints = [];
     }
 
-    // Compute fingerprint for this response
+    // Compute fingerprint + token estimate for this response
     const fingerprint = hashResponse(response);
+    const responseTokens = estimateResponseTokens(response);
 
     // Add to rolling window
-    sessionState.recent_fingerprints.push(fingerprint);
+    sessionState.recent_fingerprints.push({ hash: fingerprint, tokens: responseTokens });
 
     // Trim to window size
     while (sessionState.recent_fingerprints.length > windowSize) {
@@ -64,7 +66,7 @@ export function evaluateLoopSignal(sessionState, response, settings) {
     // Count how many of the recent fingerprints are identical to the current one
     let identicalCount = 0;
     for (const fp of fps) {
-        if (fp === fingerprint) identicalCount++;
+        if (fp.hash === fingerprint) identicalCount++;
     }
 
     if (identicalCount >= similarityThreshold) {
@@ -72,8 +74,8 @@ export function evaluateLoopSignal(sessionState, response, settings) {
     }
 
     // ── Growth check ──────────────────────────────────────────────────
-    // Estimate total token volume in the window
-    const totalTokens = estimateResponseTokens(response) * fps.length;
+    // Sum actual token estimates across the window.
+    const totalTokens = fps.reduce((sum, fp) => sum + fp.tokens, 0);
 
     if (totalTokens > growthThresholdTokens) {
         const repetitiveRatio = identicalCount / fps.length;

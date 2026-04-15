@@ -461,6 +461,28 @@ describe('errorBoundaryMiddleware', () => {
         assert.equal(body.error.type, 'internal_error');
     });
 
+    it('writes a route-kind-specific SSE error frame when headers were already sent', async () => {
+        const res = makeFakeRes();
+        res.headersSent = true;
+        const ctx = makeKernelCtx({
+            req: makeFakeReq({}),
+            res,
+            appCtx: makeAppCtx(),
+            routeKind: 'openai_responses',
+        });
+
+        const chain = compose([
+            errorBoundaryMiddleware(),
+            async () => {
+                throw new Error('boom');
+            },
+        ]);
+
+        await chain(ctx);
+        assert.match(res.captured.body, /event: response\.failed/);
+        assert.match(res.captured.body, /"status":"failed"/);
+    });
+
     it('lets a successful chain pass through unchanged', async () => {
         const res = makeFakeRes();
         const ctx = makeKernelCtx({
@@ -609,6 +631,108 @@ describe('full route chain integration', () => {
         assert.equal(body.choices[0].message.content, 'hello from stub');
         assert.equal(body.usage.total_tokens, 4);
         assert.equal(ctx.metadata.totalMs >= 0, true);
+    });
+
+    it('starts and finalizes audit logging after auth and request normalization', async () => {
+        async function* events() {
+            yield {
+                type: 'message_start',
+                data: { id: 'm1', model: 'stub-model', role: 'assistant' },
+            };
+            yield { type: 'text_delta', data: { text: 'audited response' } };
+            yield {
+                type: 'usage',
+                data: { input_tokens: 2, output_tokens: 5, total_tokens: 7 },
+            };
+            yield {
+                type: 'done',
+                data: { finish_reason: 'stop', model: 'stub-model' },
+            };
+        }
+
+        const stubBackend = {
+            manifest: {
+                key: 'stub-backend',
+                kind: 'external_api',
+                authStrategy: 'api_key',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
+            async execute() {
+                return {
+                    accountId: 'acct-1',
+                    stream: events(),
+                    abort: async () => {},
+                };
+            },
+            classifyError(e) {
+                return e;
+            },
+        };
+
+        const model = Object.freeze({
+            id: 'model-1',
+            modelKey: 'stub-model',
+            providerId: 'provider-1',
+            providerKey: 'stub-provider',
+            providerModelId: 'stub-model',
+            requestTimeoutMs: 1000,
+            queueTimeoutMs: 1000,
+            concurrencyLimit: 1,
+            pricingMode: 'token',
+            inputPricePerMillion: 1000,
+            outputPricePerMillion: 2000,
+            retryPolicy: {},
+        });
+
+        const calls = { start: null, finalize: null };
+        const auditLogWriter = {
+            async start(entry) {
+                calls.start = entry;
+                return { log_id: 'log-1' };
+            },
+            async finalize(startedAt, logId, fields) {
+                calls.finalize = { startedAt, logId, fields };
+                return { log_id: logId };
+            },
+        };
+
+        const snapshot = buildSnapshot(model);
+        const backendCatalog = buildBackendCatalog(stubBackend);
+        const appCtx = makeAppCtx({
+            snapshot,
+            services: { auditLogWriter, backendCatalog },
+        });
+
+        const req = makeFakeReq(
+            {
+                model: 'stub-model',
+                messages: [{ role: 'user', content: 'hi' }],
+            },
+            {
+                headers: {
+                    'x-session-id': '11111111-1111-1111-1111-111111111111',
+                    'x-soul-id': 'soul-1',
+                    'x-agent-name': 'agent-1',
+                },
+            }
+        );
+        const res = makeFakeRes();
+
+        await buildRouteChain()(makeKernelCtx({ req, res, appCtx }));
+
+        assert.equal(calls.start.apiKeyId, 'permissive-stub');
+        assert.equal(calls.start.requestedModel, 'stub-model');
+        assert.equal(calls.start.sessionId, null);
+        assert.equal(calls.finalize.logId, 'log-1');
+        assert.equal(
+            calls.finalize.fields.sessionId,
+            '11111111-1111-1111-1111-111111111111'
+        );
+        assert.equal(calls.finalize.fields.totalTokens, 7);
+        assert.equal(calls.finalize.fields.totalCostUsd, 0.012);
+        assert.equal(calls.finalize.fields.status, 'succeeded');
     });
 
     it('returns a typed error body when the requested model is unknown', async () => {

@@ -41,3 +41,14 @@ export function verifyCsrf(reqCtx) {
 
     return true;
 }
+
+/**
+ * Enforce CSRF validation for a state-changing admin request.
+ *
+ * @param {{ headers: Record<string,string>, session?: { csrfToken?: string } }} reqCtx
+ * @returns {boolean}
+ * @throws {BadRequestError} when the submitted header is missing/mismatched
+ */
+export function verifyRequiredCsrf(reqCtx) {
+    return verifyCsrf(reqCtx);
+}

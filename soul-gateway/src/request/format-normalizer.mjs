@@ -84,9 +84,15 @@ function normalizeAnthropicMessages(body) {
         }
     }
 
-    // Convert each Anthropic message
+    // Convert each Anthropic message. Tool result messages may expand
+    // to an array of OpenAI tool messages (one per tool_result block).
     for (const msg of anthropicMessages) {
-        messages.push(convertAnthropicMessage(msg));
+        const converted = convertAnthropicMessage(msg);
+        if (Array.isArray(converted)) {
+            messages.push(...converted);
+        } else {
+            messages.push(converted);
+        }
     }
 
     const normalized = { messages, model, stream: Boolean(stream) };
@@ -155,18 +161,15 @@ function convertAnthropicMessage(msg) {
 
         if (toolResultBlocks.length > 0 && role === 'user') {
             // Anthropic sends tool results as user messages with tool_result content blocks.
-            // Convert each to an OpenAI tool message.
-            // If there are also non-tool-result blocks, we return only the first tool result
-            // as a tool message (the pipeline handles arrays from the caller).
-            const block = toolResultBlocks[0];
-            return {
+            // Each block maps to a separate OpenAI tool message.
+            return toolResultBlocks.map((block) => ({
                 role: 'tool',
                 tool_call_id: block.tool_use_id,
                 content:
                     typeof block.content === 'string'
                         ? block.content
                         : JSON.stringify(block.content),
-            };
+            }));
         }
 
         // Generic content array: convert to OpenAI multipart content
@@ -352,7 +355,8 @@ function convertResponsesContentPart(part) {
             return {
                 type: 'image_url',
                 image_url: {
-                    url: part.image_url || (part.detail ? part.image_url : ''),
+                    url: part.image_url || part.url || '',
+                    ...(part.detail ? { detail: part.detail } : {}),
                 },
             };
         case 'input_audio':

@@ -2,6 +2,7 @@
  * DAO for the api_keys table.
  * Pure data-access functions — no business logic.
  */
+import { updateRow } from './helpers/query-builder.mjs';
 
 const TABLE = 'soul_gateway.api_keys';
 
@@ -80,20 +81,18 @@ export async function list(
     return rows;
 }
 
+const ALLOWED_UPDATE_FIELDS = new Set([
+    'label', 'rpmLimit', 'tpmLimit', 'dailyBudgetUsd', 'monthlyBudgetUsd',
+    'expiresAt', 'status', 'metadata',
+]);
+
+const JSON_FIELDS = new Set(['metadata']);
+
 export async function update(pool, id, fields) {
-    const keys = Object.keys(fields);
-    if (keys.length === 0) return null;
-
-    const setClauses = keys.map((k, i) => `${toSnake(k)} = $${i + 2}`);
-    const values = keys.map((k) =>
-        k === 'metadata' ? JSON.stringify(fields[k]) : fields[k]
-    );
-
-    const { rows } = await pool.query(
-        `UPDATE ${TABLE} SET ${setClauses.join(', ')}, updated_at = now() WHERE id = $1 RETURNING *`,
-        [id, ...values]
-    );
-    return rows[0] || null;
+    return updateRow(pool, TABLE, id, fields, {
+        allowedFields: ALLOWED_UPDATE_FIELDS,
+        jsonFields: JSON_FIELDS,
+    });
 }
 
 export async function revoke(pool, id) {
@@ -113,8 +112,3 @@ export async function updateLastUsed(pool, id) {
     ]);
 }
 
-// ── helpers ──────────────────────────────────────────────────────────
-
-function toSnake(camel) {
-    return camel.replace(/[A-Z]/g, (ch) => '_' + ch.toLowerCase());
-}

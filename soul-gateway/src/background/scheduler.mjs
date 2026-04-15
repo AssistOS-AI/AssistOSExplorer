@@ -8,13 +8,21 @@ export function startBackgroundJobs(appCtx) {
     const env = config.env;
 
     function schedule(name, intervalMs, fn) {
+        let running = false;
         const timer = setInterval(async () => {
+            if (running) {
+                log.warn(`skipping overlapping ${name}`);
+                return;
+            }
+            running = true;
             try {
                 await fn();
             } catch (err) {
                 log.error(`background job failed: ${name}`, {
                     error: err.message,
                 });
+            } finally {
+                running = false;
             }
         }, intervalMs);
         timer.unref();
@@ -44,7 +52,9 @@ export function startBackgroundJobs(appCtx) {
                 date.setUTCDate(date.getUTCDate() + d);
                 await ensurePartition(appCtx.pool, date);
             }
-            await dropExpiredPartitions(appCtx.pool, env.LOG_RETENTION_DAYS);
+            const cutoff = new Date();
+            cutoff.setUTCDate(cutoff.getUTCDate() - env.LOG_RETENTION_DAYS);
+            await dropExpiredPartitions(appCtx.pool, cutoff);
         }
     );
 
@@ -114,11 +124,6 @@ export function startBackgroundJobs(appCtx) {
             appCtx.services.spendCache.cleanup();
         }
     });
-
-    // System metrics sampling
-    if (appCtx.services.systemMetrics) {
-        // Already started in bootstrap — no need to duplicate
-    }
 
     return {
         stop() {

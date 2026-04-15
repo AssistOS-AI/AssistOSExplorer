@@ -14,19 +14,22 @@ Environment variables cover:
 
 | Surface | Examples |
 |---|---|
-| Server | `PORT`, `HOST`, `BIND_ADDRESS` |
-| Database | `DATABASE_URL`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGSSL` |
-| Encryption | `ENCRYPTION_KEY` (base64 32 bytes) |
-| Dashboard | `DASHBOARD_PASSWORD`, `ADMIN_SESSION_SIGNING_KEY`, `DASHBOARD_STATIC_DIR` |
-| Directories | `DATA_DIR`, `CREDENTIAL_STORE_PATH`, `EXTENSIONS_DIR` |
-| Provider API keys | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `HUGGINGFACE_API_KEY`, etc. |
-| Search API keys | `TAVILY_API_KEY`, `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `GEMINI_API_KEY`, `JINA_API_KEY` |
+| Server | `PORT`, `HOST` |
+| Database | `DATABASE_URL`, `PG_POOL_MAX`, `PG_POOL_MIN`, `PG_IDLE_TIMEOUT_MS`, `PG_CONNECT_TIMEOUT_MS`, `PG_MAX_USES` |
+| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `ADMIN_SESSION_SIGNING_KEY`, `DASHBOARD_PASSWORD` |
+| Directories | `DATA_DIR`, `CREDENTIALS_DIR`, `EXTENSIONS_DIR`, `DASHBOARD_STATIC_DIR` |
+| Observability | `LOG_RETENTION_DAYS`, `STREAM_HEARTBEAT_MS`, `WS_PING_INTERVAL_MS`, `PARTITION_AHEAD_DAYS`, `PARTITION_JOB_INTERVAL_MS`, `RETENTION_JOB_CRON_UTC_MINUTE` |
 | Cooldown | `COOLDOWN_DURATION_MS` |
+| Routing defaults | `DEFAULT_MODEL_ATTEMPTS`, `DEFAULT_MODEL_CONCURRENCY`, `DEFAULT_QUEUE_TIMEOUT_MS`, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | HTTP retry | `HTTP_RETRY_MAX_ATTEMPTS`, `HTTP_RETRY_BASE_DELAY_MS`, `HTTP_RETRY_MULTIPLIER`, `HTTP_RETRY_MAX_DELAY_MS`, `HTTP_RETRY_JITTER_PCT` |
-| Timeouts | `DEFAULT_REQUEST_TIMEOUT_MS`, `DEFAULT_QUEUE_TIMEOUT_MS` |
-| Achilles bridge | `SOUL_GATEWAY_API_KEY`, `SOUL_GATEWAY_URL`, `SOUL_GATEWAY_BASE_URL` (for discovery mode) |
+| Rate limiting & budgets | `DEFAULT_RPM_LIMIT`, `DEFAULT_TPM_LIMIT`, `DEFAULT_DAILY_BUDGET_USD` |
+| Sessions/auth | `SESSION_TIMEOUT_MINUTES`, `TOKEN_REFRESH_INTERVAL_MS`, `QUOTA_RESET_SWEEP_MS`, `ALLOW_UNAUTHENTICATED` |
+| Pricing/export/shutdown | `PRICING_DIRECTORY_URL`, `PRICING_REFRESH_INTERVAL_MS`, `EXPORT_BATCH_SIZE`, `SHUTDOWN_GRACE_MS`, `BODY_LIMIT_BYTES` |
+| Loop detection | `LOOP_MIN_RESPONSES`, `LOOP_WINDOW_SIZE`, `LOOP_SIMILARITY_THRESHOLD`, `LOOP_GROWTH_THRESHOLD_TOKENS`, `LOOP_REPETITIVE_RATIO_THRESHOLD`, `LOOP_INTERVENTION_MESSAGE` |
+| Built-in search backends | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
+| Deep research | `DEEP_RESEARCH_PROVIDERS`, `DEEP_RESEARCH_MAX_RESULTS` |
 
-All are optional except `DATABASE_URL` (or the individual `PG*` variables). `ENCRYPTION_KEY` is auto-generated on first run if not provided and persisted to the data directory.
+The gateway reads database connectivity from `DATABASE_URL`; the old `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` inputs are not consumed by the current pool implementation. `ENCRYPTION_KEY` is optional because the runtime auto-generates and persists `DATA_DIR/encryption.key` on first run if needed.
 
 ### Application defaults
 
@@ -94,24 +97,43 @@ This is the production mode for everything that sits behind Soul Gateway. The co
 
 Driven by canonical provider credentials: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `HUGGINGFACE_API_KEY`, `COPILOT_TOKEN`, `KIRO_ACCESS_TOKEN`, etc. When `SOUL_GATEWAY_API_KEY` is absent, `achillesAgentLib` falls back to direct-provider mode and speaks to each upstream using its canonical credentials. Used for local development, testing the achilles layer in isolation, and operating the gateway itself (which uses direct-provider mode internally to avoid bootstrapping through itself).
 
+Those provider/search credential env vars belong to the bundled Achilles dependency path, not to `src/config/env.mjs`. They are not surfaced through the gateway's own env reader.
+
 ## Health check
 
 A health check endpoint reports whether the system is operational:
 
-- `GET /healthz` — returns 200 with a short status payload when the gateway can serve requests. Returns 503 when critical dependencies (database, encryption key) are unavailable.
+- `GET /healthz` — returns HTTP 200 with `{ ok, db, snapshotGeneration, uptimeSeconds }`
+
+Current implementation detail:
+
+- if `DATABASE_URL` is configured, the handler probes `SELECT 1`
+- a failed database probe sets `db: false`
+- the handler still returns HTTP 200 even when `db` is false
+- the old `/health` compatibility alias is gone
 
 The health check is unauthenticated and has minimal overhead so it can be polled frequently by a load balancer or orchestrator.
+
+## Dashboard authentication
+
+Dashboard sessions use HMAC-signed stateless tokens. The signing key is resolved from `ADMIN_SESSION_SIGNING_KEY` or, if absent, from `ENCRYPTION_KEY`. If neither is set, the gateway throws `ConfigurationError` at the point of use — there is no hardcoded fallback key.
+
+Session tokens embed a CSRF token in the format `{exp}.{csrfToken}.{hmac}`. Every mutating management request must include an `X-CSRF-Token` header matching the embedded value — enforcement is unconditional.
+
+Login attempts are rate-limited to 5 per minute per source IP.
 
 ## Graceful shutdown
 
 On `SIGTERM` / `SIGINT` the runtime shuts down gracefully:
 
-1. The HTTP server stops accepting new connections but keeps existing connections open.
-2. Background jobs (token refresh, cleanup tasks, partition maintenance) are paused.
-3. In-flight requests are allowed to complete, up to a configurable grace period (default 30 seconds).
-4. The credential manager releases any active leases and wipes the in-memory secrets.
-5. The Postgres connection pool drains.
-6. The process exits with code 0.
+1. The HTTP server stops accepting new connections and `appCtx.draining` is set to `true`.
+2. Background jobs (token refresh, cleanup tasks, partition maintenance, quota reset sweep) are stopped.
+3. SSE and WebSocket subscriber connections are closed via the broadcast hub.
+4. In-flight requests are allowed to complete, up to a configurable grace period (`SHUTDOWN_GRACE_MS`, default 30 seconds).
+5. Pending audit log writes are flushed.
+6. The backend catalog shuts down all loaded backends.
+7. The Postgres connection pool drains.
+8. The process exits with code 0.
 
 If the grace period expires with requests still in flight, the remaining connections are terminated and the process exits anyway — a slow shutdown should never block container orchestration indefinitely.
 

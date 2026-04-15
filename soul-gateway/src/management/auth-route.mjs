@@ -8,14 +8,38 @@
 
 import { readJsonBody } from '../core/json-body.mjs';
 import { sendJson } from '../core/responses.mjs';
-import { BadRequestError } from '../core/errors.mjs';
+import { BadRequestError, RateLimitExceededError } from '../core/errors.mjs';
 import {
     loginAdmin,
     requireAdmin,
     createAdminSessionCookie,
 } from '../runtime/security/dashboard-auth.mjs';
-import { generateCsrfToken } from '../runtime/security/csrf.mjs';
+import { verifyRequiredCsrf } from '../runtime/security/csrf.mjs';
 import { DEFAULTS } from '../config/defaults.mjs';
+
+// ── Login rate limiting ─────────────────────────────────────────────
+const LOGIN_WINDOW_MS = 60_000;
+const LOGIN_MAX_ATTEMPTS = 5;
+
+/** @type {Map<string, number[]>} IP -> sorted array of timestamps */
+const _loginAttempts = new Map();
+
+function checkLoginRateLimit(ip) {
+    const now = Date.now();
+    const cutoff = now - LOGIN_WINDOW_MS;
+    let timestamps = _loginAttempts.get(ip);
+    if (timestamps) {
+        timestamps = timestamps.filter((t) => t > cutoff);
+    } else {
+        timestamps = [];
+    }
+    if (timestamps.length >= LOGIN_MAX_ATTEMPTS) {
+        _loginAttempts.set(ip, timestamps);
+        throw new RateLimitExceededError('login', 60);
+    }
+    timestamps.push(now);
+    _loginAttempts.set(ip, timestamps);
+}
 
 /**
  * POST /management/auth/login
@@ -24,6 +48,12 @@ import { DEFAULTS } from '../config/defaults.mjs';
  */
 export async function handleLogin(ctx) {
     const { req, res, appCtx } = ctx;
+
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+        || req.socket?.remoteAddress
+        || 'unknown';
+    checkLoginRateLimit(ip);
+
     const body = await readJsonBody(req);
 
     if (!body || typeof body.password !== 'string') {
@@ -31,8 +61,7 @@ export async function handleLogin(ctx) {
     }
 
     const config = appCtx.config.env;
-    const { token, expiresAt } = await loginAdmin(body.password, config);
-    const csrfToken = generateCsrfToken();
+    const { token, expiresAt, csrfToken } = await loginAdmin(body.password, config);
 
     const cookie = createAdminSessionCookie(token, DEFAULTS.adminSessionTtlMs);
     res.setHeader('Set-Cookie', cookie);
@@ -52,7 +81,11 @@ export async function handleLogin(ctx) {
 export async function handleLogout(ctx) {
     const { req, res, appCtx } = ctx;
 
-    requireAdmin(req, appCtx.config.env);
+    const decoded = requireAdmin(req, appCtx.config.env);
+    verifyRequiredCsrf({
+        headers: req.headers,
+        session: { csrfToken: decoded.csrfToken },
+    });
 
     // Clear cookie by setting Max-Age=0
     res.setHeader(

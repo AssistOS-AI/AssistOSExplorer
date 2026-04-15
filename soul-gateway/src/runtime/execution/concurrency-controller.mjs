@@ -1,4 +1,4 @@
-import { ModelQueueTimeoutError } from '../../core/errors.mjs';
+import { ModelQueueTimeoutError, ConfigurationError } from '../../core/errors.mjs';
 
 /**
  * Per-model concurrency controller using semaphores with queueing.
@@ -36,10 +36,11 @@ export class ConcurrencyController {
      * Returns a release function that MUST be called when done.
      */
     async acquire(modelKey, timeoutMs) {
-        let state = this._models.get(modelKey);
+        const state = this._models.get(modelKey);
         if (!state) {
-            state = { max: 3, active: 0, queue: [] };
-            this._models.set(modelKey, state);
+            throw new ConfigurationError(
+                `No concurrency configuration for model: ${modelKey}`
+            );
         }
 
         if (state.active < state.max) {

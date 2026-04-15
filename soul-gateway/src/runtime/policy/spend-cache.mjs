@@ -151,6 +151,8 @@ export class SpendCache {
      */
     clearForKey(keyId) {
         this.resetDaily(keyId);
+        const entry = this._getEntry(keyId);
+        if (entry) entry.monthly = 0;
     }
 
     /**
