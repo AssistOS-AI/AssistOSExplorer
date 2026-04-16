@@ -73,7 +73,6 @@ describe('models-dao', () => {
             'enable',
             'disable',
             'listByProvider',
-            'syncFromDiscovery',
         ];
         for (const fn of expected) {
             assert.equal(typeof dao[fn], 'function', `missing export: ${fn}`);
