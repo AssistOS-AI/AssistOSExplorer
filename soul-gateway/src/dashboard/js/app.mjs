@@ -2046,16 +2046,6 @@ function tiersPage() {
             return model?.model_key || modelId;
         },
 
-        childModelDisplayName(modelId) {
-            const model = this.childModel(modelId);
-            return model?.display_name || '';
-        },
-
-        childModelEnabled(modelId) {
-            const model = this.childModel(modelId);
-            return model?.enabled ?? false;
-        },
-
         get filteredPickerModels() {
             let list = this.models.filter(
                 (model) => !this.tierForm.childModelIds.includes(model.id)

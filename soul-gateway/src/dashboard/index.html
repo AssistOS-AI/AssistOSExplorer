@@ -4086,113 +4086,53 @@
                                     class="modal"
                                     :class="{'modal-open': showTierModal}"
                                 >
-                                    <div class="modal-box max-w-3xl">
+                                    <div class="modal-box max-w-lg">
                                         <h3
                                             class="font-bold text-lg"
                                             x-text="editingTier ? 'Edit Tier' : 'Add Tier'"
                                         ></h3>
-                                        <div
-                                            class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4"
-                                        >
-                                            <div class="form-control">
-                                                <label class="label py-1">
-                                                    <span
-                                                        class="label-text text-xs"
-                                                    >
-                                                        Tier Key
-                                                    </span>
-                                                </label>
-                                                <input
-                                                    type="text"
-                                                    class="input input-bordered input-sm font-mono"
-                                                    x-model="tierForm.tierKey"
-                                                />
-                                            </div>
-                                            <div class="form-control">
-                                                <label class="label py-1">
-                                                    <span
-                                                        class="label-text text-xs"
-                                                    >
-                                                        Display Name
-                                                    </span>
-                                                </label>
-                                                <input
-                                                    type="text"
-                                                    class="input input-bordered input-sm"
-                                                    x-model="tierForm.displayName"
-                                                />
-                                            </div>
-                                            <div class="form-control">
-                                                <label class="label py-1">
-                                                    <span
-                                                        class="label-text text-xs"
-                                                    >
-                                                        Max Attempts
-                                                    </span>
-                                                </label>
-                                                <input
-                                                    type="number"
-                                                    min="1"
-                                                    class="input input-bordered input-sm"
-                                                    x-model.number="tierForm.maxAttempts"
-                                                />
-                                            </div>
-                                            <div class="form-control">
-                                                <label
-                                                    class="label cursor-pointer justify-start gap-3 pt-7"
-                                                >
-                                                    <input
-                                                        type="checkbox"
-                                                        class="toggle toggle-sm"
-                                                        x-model="tierForm.enabled"
-                                                    />
-                                                    <span
-                                                        class="label-text text-sm"
-                                                    >
-                                                        Tier enabled
-                                                    </span>
-                                                </label>
-                                            </div>
+                                        <div class="form-control mt-4">
+                                            <label class="label"><span class="label-text">Name</span></label>
+                                            <input
+                                                type="text"
+                                                class="input input-bordered"
+                                                x-model="tierForm.tierKey"
+                                                :disabled="!!editingTier"
+                                            />
                                         </div>
-
-                                        <div class="mt-5">
-                                            <div
-                                                class="flex justify-between items-center mb-2"
+                                        <div class="form-control">
+                                            <label class="label"><span class="label-text">Display Name</span></label>
+                                            <input
+                                                type="text"
+                                                class="input input-bordered"
+                                                x-model="tierForm.displayName"
+                                            />
+                                        </div>
+                                        <div class="form-control mt-2">
+                                            <label class="label font-semibold">Models</label>
+                                            <button
+                                                class="btn btn-sm btn-outline w-fit"
+                                                @click="openModelPicker()"
+                                                type="button"
                                             >
-                                                <div>
-                                                    <h4
-                                                        class="font-semibold text-sm"
-                                                    >
-                                                        Child Models
-                                                    </h4>
-                                                    <p
-                                                        class="text-xs opacity-60"
-                                                    >
-                                                        Drag to set cascade
-                                                        order.
-                                                    </p>
-                                                </div>
-                                                <button
-                                                    class="btn btn-outline btn-sm"
-                                                    @click="openModelPicker()"
-                                                    type="button"
-                                                >
-                                                    Add Models
-                                                </button>
-                                            </div>
-                                            <div class="space-y-2">
+                                                Add Models...
+                                            </button>
+                                        </div>
+                                        <div class="form-control mt-2">
+                                            <label class="label font-semibold">Models (in priority order)</label>
+                                            <div class="space-y-1">
                                                 <template
                                                     x-for="(childModelId, idx) in tierForm.childModelIds"
                                                     :key="childModelId"
                                                 >
                                                     <div
-                                                        class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-200 px-3 py-2 transition-opacity"
+                                                        class="flex items-center gap-2 bg-base-200 rounded px-2 py-1 transition-opacity"
                                                         draggable="true"
                                                         @dragstart="onDragStart(idx)"
                                                         @dragover.prevent="onDragOver($event, idx)"
                                                         @drop="onDrop(idx)"
                                                         @dragend="onDragEnd()"
-                                                        :class="{ 'opacity-30': dragIdx === idx, 'border-primary': dropIdx === idx && dragIdx !== idx }"
+                                                        :class="{ 'opacity-30': dragIdx === idx, 'border-t-2 border-primary': dropIdx === idx && dragIdx !== idx }"
                                                     >
                                                         <span
                                                             class="cursor-grab active:cursor-grabbing select-none text-base-content/40 text-lg"
@@ -4204,55 +4144,43 @@
                                                             class="badge badge-sm"
                                                             x-text="idx + 1"
                                                         ></span>
-                                                        <div
-                                                            class="flex-1 min-w-0"
-                                                        >
-                                                            <div
-                                                                class="font-mono text-sm truncate"
-                                                                x-text="childModelLabel(childModelId)"
-                                                            ></div>
-                                                            <div
-                                                                class="text-xs opacity-60 truncate"
-                                                                x-text="childModelDisplayName(childModelId) || 'No display name'"
-                                                            ></div>
-                                                        </div>
                                                         <span
-                                                            class="badge badge-xs"
-                                                            :class="childModelEnabled(childModelId) ? 'badge-success' : 'badge-ghost'"
-                                                            x-text="childModelEnabled(childModelId) ? 'enabled' : 'disabled'"
+                                                            class="font-mono text-sm flex-1"
+                                                            x-text="childModelLabel(childModelId)"
+                                                            :title="childModelId"
                                                         ></span>
                                                         <button
                                                             class="btn btn-ghost btn-xs text-error"
                                                             @click="removeChildModel(childModelId)"
                                                             type="button"
                                                         >
-                                                            Remove
+                                                            &#10005;
                                                         </button>
                                                     </div>
                                                 </template>
                                                 <div
                                                     x-show="tierForm.childModelIds.length === 0"
-                                                    class="rounded-lg border border-dashed border-base-300 px-4 py-6 text-center text-sm opacity-50"
+                                                    class="text-sm opacity-50 py-2"
                                                 >
-                                                    No child models selected
+                                                    No models added yet
                                                 </div>
                                             </div>
                                         </div>
 
                                         <div class="modal-action">
                                             <button
-                                                class="btn btn-sm"
+                                                class="btn btn-ghost"
                                                 @click="showTierModal = false; editingTier = null; resetForm()"
                                                 type="button"
                                             >
                                                 Cancel
                                             </button>
                                             <button
-                                                class="btn btn-primary btn-sm"
+                                                class="btn btn-primary"
                                                 @click="saveTier()"
                                                 type="button"
+                                                x-text="editingTier ? 'Save' : 'Create'"
                                             >
-                                                Save
                                             </button>
                                         </div>
                                     </div>
@@ -4274,7 +4202,7 @@
                                             class="flex justify-between items-center gap-3"
                                         >
                                             <h3 class="font-bold text-lg">
-                                                Add Child Models
+                                                Add Models to Tier
                                             </h3>
                                             <input
                                                 type="text"
