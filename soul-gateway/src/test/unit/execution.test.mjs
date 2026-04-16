@@ -638,6 +638,9 @@ describe('modelExecutionMiddleware (direct model)', () => {
             },
         };
         const providerMiddlewareRegistry = {
+            get(key) {
+                return key === 'answer-polisher' ? polisher : null;
+            },
             build(key, settings) {
                 if (key === 'answer-polisher')
                     return polisher.factory(settings);

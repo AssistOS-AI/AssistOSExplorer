@@ -451,7 +451,10 @@ describe('route chain: end-to-end streaming', () => {
                     getBackend: (k) =>
                         k === backendModule.manifest.key ? backendModule : null,
                 },
-                providerMiddlewareRegistry: null,
+                providerMiddlewareRegistry: {
+                    build: () => null,
+                    get: () => null,
+                },
                 credentialManager: null,
                 concurrencyController: null,
                 extensionServices: Object.freeze({}),

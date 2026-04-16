@@ -109,7 +109,10 @@ function makeAppCtx({
             middlewareCatalog,
             backendCatalog: services.backendCatalog ?? null,
             providerMiddlewareRegistry:
-                services.providerMiddlewareRegistry ?? null,
+                services.providerMiddlewareRegistry ?? {
+                    build: () => null,
+                    get: () => null,
+                },
             credentialManager: null,
             concurrencyController: null,
             extensionServices: Object.freeze({}),
