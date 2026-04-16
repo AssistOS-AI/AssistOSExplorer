@@ -3481,27 +3481,8 @@
                                                         </td>
                                                         <td class="text-xs">
                                                             <span
-                                                                x-show="m.pricing_mode === 'request'"
-                                                                class="badge badge-info badge-xs"
-                                                                x-text="'$' + (Number(m.request_price_usd) || 0).toFixed(3) + '/req'"
-                                                            ></span
-                                                            ><span
-                                                                x-show="m.pricing_mode === 'token'"
-                                                                class="text-xs opacity-50"
-                                                                x-text="'$' + (Number(m.input_price_per_million) || 0) + '/' + (Number(m.output_price_per_million) || 0)"
-                                                            ></span
-                                                            ><span
-                                                                x-show="m.pricing_mode === 'external_directory'"
-                                                                class="badge badge-ghost badge-xs"
-                                                                >directory</span
-                                                            ><span
-                                                                x-show="m.pricing_mode === 'free'"
-                                                                class="badge badge-success badge-xs"
-                                                                >free</span
-                                                            ><span
-                                                                x-show="!['request', 'token', 'external_directory', 'free'].includes(m.pricing_mode)"
-                                                                class="badge badge-ghost badge-xs"
-                                                                x-text="m.pricing_mode || 'unknown'"
+                                                                :class="getModelPricingView(m).classes"
+                                                                x-text="getModelPricingView(m).text"
                                                             ></span>
                                                         </td>
                                                         <td

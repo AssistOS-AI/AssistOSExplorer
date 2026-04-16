@@ -13,6 +13,14 @@ function _displayName(name) {
         : name || '';
 }
 
+function parseNumeric(value) {
+    if (value === undefined || value === null || value === '') {
+        return null;
+    }
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+}
+
 function getModelContextWindow(model) {
     return (
         model?.capabilities?.contextWindow ??
@@ -30,6 +38,37 @@ function formatModelContextWindow(model) {
     if (numeric >= 1_000_000) return `${(numeric / 1_000_000).toFixed(1)}M`;
     if (numeric >= 1_000) return `${(numeric / 1_000).toFixed(0)}k`;
     return String(Math.trunc(numeric));
+}
+
+function getModelPricingView(model) {
+    const requestPriceUsd = parseNumeric(model?.request_price_usd);
+    if (requestPriceUsd !== null) {
+        return {
+            classes: 'badge badge-info badge-xs',
+            text: `$${requestPriceUsd.toFixed(3)}/req`,
+        };
+    }
+
+    const inputPricePerMillion = parseNumeric(model?.input_price_per_million);
+    const outputPricePerMillion = parseNumeric(model?.output_price_per_million);
+    if (inputPricePerMillion !== null || outputPricePerMillion !== null) {
+        return {
+            classes: 'text-xs opacity-50',
+            text: `$${inputPricePerMillion ?? 0}/${outputPricePerMillion ?? 0}`,
+        };
+    }
+
+    if (model?.is_free === true || model?.pricing_mode === 'free') {
+        return {
+            classes: 'text-xs opacity-50',
+            text: '$0/0',
+        };
+    }
+
+    return {
+        classes: 'opacity-30',
+        text: '-',
+    };
 }
 
 // ---- Auth / billing badge helper ----
@@ -77,6 +116,7 @@ function sgAuthBadge(obj, { short = false } = {}) {
 // without importing it into every component, expose it on `window`.
 window.sgAuthBadge = sgAuthBadge;
 window.formatModelContextWindow = formatModelContextWindow;
+window.getModelPricingView = getModelPricingView;
 
 // ---- Auth token management ----
 function getAuthToken() {
@@ -2695,3 +2735,25 @@ function exportPage() {
         },
     };
 }
+
+Object.assign(window, {
+    app,
+    loginForm,
+    providersPage,
+    logsPage,
+    costsPage,
+    activityPage,
+    errorsPage,
+    modelsPage,
+    tiersPage,
+    keysPage,
+    blacklistPage,
+    middlewaresPage,
+    exportPage,
+    formatTime,
+    formatDate,
+    renderContent,
+    sgAuthBadge,
+    formatModelContextWindow,
+    getModelPricingView,
+});

@@ -885,7 +885,7 @@ describe('management/models-route', () => {
         assert.equal(row.pricing_mode, 'token');
         assert.equal(row.input_price_per_million, 0.27);
         assert.equal(row.output_price_per_million, 0.4);
-        assert.equal(row.is_free, false);
+        assert.equal(row.is_free, true);
         // Provider explicitly reported supportsVision=false; directory
         // says true, but provider-supplied capability wins.
         assert.deepEqual(row.capabilities, {

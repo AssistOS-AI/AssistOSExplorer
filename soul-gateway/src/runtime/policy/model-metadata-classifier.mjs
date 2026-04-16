@@ -12,7 +12,11 @@
  *      capability tags when it exists).
  *   2. Pricing directory (fills missing pricing/context/capability
  *      tags and attaches `metadata.openrouter` provenance).
- *   3. Classifier (adds curated family tags plus provider-based
+ *   3. Curated static overrides (fills exact-model gaps and applies
+ *      gateway billing semantics such as `isFree:true` for known
+ *      free-provider catalogs; never overwrites provider/directory
+ *      price or context values that already exist).
+ *   4. Classifier (adds curated family tags plus provider-based
  *      tool-calling augmentation; never overwrites capability tags
  *      and never infers `free`).
  *
@@ -109,6 +113,8 @@ export const NO_TOOL_CALLING_MODEL_KEYS = Object.freeze([
  * provider/directory data. A family match for `llava` adds `multimodal`
  * but not `vision`; `vision` has to come from a real modality signal.
  */
+import { lookupCuratedModelMetadata } from './curated-model-metadata.mjs';
+
 const FAMILY_RULES = Object.freeze([
     // Search models ---------------------------------------------------
     { match: /(^|\/)search\//, tags: ['search'] },
@@ -347,13 +353,30 @@ export function classifyModelMetadata(envelope) {
     };
 }
 
-function setIfMissing(target, key, value) {
-    if (
-        target[key] === undefined ||
-        target[key] === null
-    ) {
-        target[key] = value;
+function mergeCapabilityTags(existingTags, candidateTags, envelope) {
+    const mergedTags = new Set(Array.isArray(existingTags) ? existingTags : []);
+    const supportsTools =
+        envelope?.supportsTools ?? envelope?.capabilities?.supportsTools ?? null;
+    const supportsVision =
+        envelope?.supportsVision ?? envelope?.capabilities?.supportsVision ?? null;
+
+    for (const tag of candidateTags || []) {
+        if (mergedTags.has(tag)) {
+            continue;
+        }
+        if (tag === 'tool-calling' && supportsTools === false) {
+            continue;
+        }
+        if (tag === 'vision' && supportsVision === false) {
+            continue;
+        }
+        if (tag === 'free' && envelope?.isFree !== true) {
+            continue;
+        }
+        mergedTags.add(tag);
     }
+
+    return [...mergedTags].sort();
 }
 
 function mergeDirectoryProvenance(existingMetadata, entry) {
@@ -432,29 +455,88 @@ function applyDirectoryEntry(envelope, entry) {
         next.supportsVision = entry.supportsVision;
     }
 
-    const existingTags = Array.isArray(envelope.tags) ? envelope.tags : [];
     if (Array.isArray(entry.tags) && entry.tags.length > 0) {
-        const mergedTags = new Set(existingTags);
-        const supportsTools =
-            next.supportsTools ?? next.capabilities?.supportsTools ?? null;
-        const supportsVision =
-            next.supportsVision ?? next.capabilities?.supportsVision ?? null;
-        for (const tag of entry.tags) {
-            if (mergedTags.has(tag)) {
-                continue;
-            }
-            if (tag === 'tool-calling' && supportsTools === false) {
-                continue;
-            }
-            if (tag === 'vision' && supportsVision === false) {
-                continue;
-            }
-            if (tag === 'free' && next.isFree !== true) {
-                continue;
-            }
-            mergedTags.add(tag);
+        next.tags = mergeCapabilityTags(envelope.tags, entry.tags, next);
+    }
+
+    return next;
+}
+
+function detectCuratedPricingMode(entry) {
+    const hasRequestPricing = entry?.requestPriceUsd != null;
+    const hasTokenPricing =
+        entry?.inputPricePerMillion != null ||
+        entry?.outputPricePerMillion != null;
+
+    if (hasRequestPricing) {
+        return 'request';
+    }
+    if (hasTokenPricing) {
+        return 'token';
+    }
+    return null;
+}
+
+function mergeCuratedProvenance(existingMetadata, provenance) {
+    const metadata = { ...(existingMetadata || {}) };
+    metadata.curated = {
+        ...(metadata.curated || {}),
+        ...(provenance || {}),
+    };
+    return metadata;
+}
+
+function applyCuratedEntry(envelope, entry) {
+    const next = {
+        ...envelope,
+        capabilities: { ...(envelope.capabilities || {}) },
+        metadata: mergeCuratedProvenance(
+            envelope.metadata || {},
+            entry?.provenance || null
+        ),
+    };
+
+    if (entry?.isFree === true) {
+        next.isFree = true;
+    }
+
+    const hasPricing =
+        (envelope.pricingMode != null &&
+            envelope.pricingMode !== 'external_directory') ||
+        envelope.inputPricePerMillion != null ||
+        envelope.outputPricePerMillion != null ||
+        envelope.requestPriceUsd != null;
+    if (!hasPricing) {
+        if (entry?.inputPricePerMillion != null) {
+            next.inputPricePerMillion = entry.inputPricePerMillion;
         }
-        next.tags = [...mergedTags].sort();
+        if (entry?.outputPricePerMillion != null) {
+            next.outputPricePerMillion = entry.outputPricePerMillion;
+        }
+        if (entry?.requestPriceUsd != null) {
+            next.requestPriceUsd = entry.requestPriceUsd;
+        }
+        const curatedPricingMode = detectCuratedPricingMode(entry);
+        if (
+            curatedPricingMode &&
+            (next.pricingMode == null || next.pricingMode === 'external_directory')
+        ) {
+            next.pricingMode = curatedPricingMode;
+        }
+    }
+
+    if (
+        next.capabilities.contextWindow == null &&
+        entry?.contextWindow != null
+    ) {
+        next.capabilities.contextWindow = entry.contextWindow;
+    }
+    if (next.contextWindow == null && entry?.contextWindow != null) {
+        next.contextWindow = entry.contextWindow;
+    }
+
+    if (Array.isArray(entry?.tags) && entry.tags.length > 0) {
+        next.tags = mergeCapabilityTags(envelope.tags, entry.tags, next);
     }
 
     return next;
@@ -501,7 +583,10 @@ function applyClassifierTags(envelope) {
  *   2. `pricingDirectory.lookupModel(...)` fills remaining gaps
  *      (pricing, context, capabilities, tags) and attaches
  *      `metadata.openrouter` provenance.
- *   3. Classifier adds curated family tags and the provider
+ *   3. `lookupCuratedModelMetadata(...)` applies exact static gateway
+ *      overrides (billing semantics plus a small number of price/context
+ *      fills) and attaches `metadata.curated` provenance.
+ *   4. Classifier adds curated family tags and the provider
  *      tool-calling augmentation. It never overwrites capability tags
  *      and never infers `free`.
  *
@@ -538,6 +623,11 @@ export function enrichModelMetadata(envelope, deps = {}) {
         if (entry) {
             result = applyDirectoryEntry(result, entry);
         }
+    }
+
+    const curatedEntry = lookupCuratedModelMetadata(result);
+    if (curatedEntry) {
+        result = applyCuratedEntry(result, curatedEntry);
     }
 
     if (enableClassifier) {

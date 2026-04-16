@@ -8,6 +8,9 @@ import {
     classifyModelMetadata,
     enrichModelMetadata,
 } from '../../runtime/policy/model-metadata-classifier.mjs';
+import {
+    CURATED_FREE_PROVIDER_KEYS,
+} from '../../runtime/policy/curated-model-metadata.mjs';
 
 function makeEnvelope(overrides = {}) {
     return {
@@ -472,5 +475,88 @@ describe('enrichModelMetadata — precedence', () => {
             'model-metadata-classifier'
         );
         assert.ok(Array.isArray(enriched.metadata.classifier.tagsAdded));
+    });
+
+    it('applies curated free-provider rules even when the directory reports token pricing', () => {
+        for (const providerKey of CURATED_FREE_PROVIDER_KEYS) {
+            const envelope = makeEnvelope({
+                providerKey,
+                providerModelId: 'google/gemma-3-12b-it',
+                modelKey: `${providerKey}/google/gemma-3-12b-it`,
+            });
+            const directory = {
+                lookupModel() {
+                    return {
+                        id: 'google/gemma-3-12b-it',
+                        canonicalSlug: 'google/gemma-3-12b-it',
+                        matchedBy: 'alias',
+                        pricingMode: 'token',
+                        inputPricePerMillion: 0.04,
+                        outputPricePerMillion: 0.13,
+                        requestPriceUsd: null,
+                        isFree: false,
+                        contextWindow: 131_072,
+                        maxOutputTokens: 8192,
+                        supportsTools: true,
+                        supportsVision: false,
+                        tags: ['tool-calling'],
+                    };
+                },
+            };
+
+            const enriched = enrichModelMetadata(envelope, {
+                pricingDirectory: directory,
+            });
+
+            assert.equal(enriched.isFree, true);
+            assert.equal(enriched.inputPricePerMillion, 0.04);
+            assert.equal(enriched.outputPricePerMillion, 0.13);
+            assert.equal(
+                enriched.metadata.curated.source,
+                'curated-model-metadata'
+            );
+            assert.ok(
+                enriched.metadata.curated.appliedRules.includes(
+                    `provider:${providerKey}`
+                )
+            );
+        }
+    });
+
+    it('fills exact curated model price/context overrides when the directory misses', () => {
+        const envelope = makeEnvelope({
+            providerKey: 'copilot',
+            providerModelId: 'gpt-4o',
+            modelKey: 'copilot/gpt-4o',
+        });
+
+        const enriched = enrichModelMetadata(envelope);
+
+        assert.equal(enriched.isFree, true);
+        assert.equal(enriched.contextWindow, 128_000);
+        assert.equal(enriched.capabilities.contextWindow, 128_000);
+        assert.equal(enriched.metadata.curated.matchedBy, 'exact_model');
+        assert.ok(
+            enriched.metadata.curated.appliedRules.includes(
+                'model:copilot/gpt-4o'
+            )
+        );
+    });
+
+    it('does not let curated overrides replace provider-supplied token prices', () => {
+        const envelope = makeEnvelope({
+            providerKey: 'mistral',
+            providerModelId: 'codestral-latest',
+            modelKey: 'mistral/codestral-latest',
+            pricingMode: 'token',
+            inputPricePerMillion: 9,
+            outputPricePerMillion: 10,
+        });
+
+        const enriched = enrichModelMetadata(envelope);
+
+        assert.equal(enriched.inputPricePerMillion, 9);
+        assert.equal(enriched.outputPricePerMillion, 10);
+        assert.equal(enriched.isFree, true);
     });
 });

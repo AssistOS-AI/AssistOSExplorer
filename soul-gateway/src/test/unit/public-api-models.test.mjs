@@ -210,7 +210,7 @@ describe('Public /v1/models — additive gateway fields', () => {
             'tool-calling',
             'vision',
         ]);
-        assert.equal(model._is_free, false);
+        assert.equal(model._is_free, true);
     });
 
     it('derives _billing_types and _is_free for cascade models from their children', async () => {
