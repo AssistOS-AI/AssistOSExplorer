@@ -33,6 +33,7 @@ Public and management HTTP APIs emit a consistent JSON error envelope:
 - The `type` field is stable and machine-readable. Clients can switch on `error.type` for programmatic handling.
 - The same `type` values are reused across routes — a 429 from a management endpoint uses the same type as a 429 from `/v1/chat/completions`.
 - Common transport failures (socket timeouts, connection refusal, DNS failures) are normalized into the shared `provider_timeout` / `provider_unavailable` taxonomy before retry or cascade decisions are made.
+- The same backend classifier runs for late stream failures. If a backend stream throws while draining, or yields a canonical `error` event, the backend terminal converts that failure into the backend's typed `GatewayError` before buffering or route serialization sees it.
 
 ## HTTP-level retry
 
@@ -89,6 +90,8 @@ When an error occurs after HTTP headers have already been sent (i.e. during stre
 - OpenAI Responses — `event: response.failed`
 
 The response is then ended. This ensures streaming clients receive a machine-readable terminal error instead of a silently truncated stream.
+
+Because the backend terminal reclassifies late stream failures before they escape the provider chain, these SSE error frames preserve the backend's typed gateway error (`provider_model_not_found`, `provider_timeout`, `provider_rate_limited`, etc.) instead of collapsing to a generic `internal_error`.
 
 If headers have not been sent, the normal JSON error envelope is used (see "Error envelope" above).
 

@@ -146,6 +146,8 @@ The runtime registers each module in the unified `BackendCatalog`. At register t
 
 The request hot path pins one backend-catalog generation before terminal lookup. Buffered responses release that generation as soon as the backend returns. Streaming responses release it only after the canonical stream finishes draining, so background refresh/shutdown can retire old generations without tearing down a backend that is still serving bytes to a client.
 
+The backend terminal classifies late stream failures through the same backend `classifyError()` hook as execute-time failures. If a backend stream throws while draining, or yields a canonical `{ type: 'error' }` event, the terminal converts that failure into the backend's typed `GatewayError` before the buffering middleware or route error boundary sees it.
+
 There is no separate `ProviderCatalog` / `TransportCatalog` split, no `ProviderPlugin` / `TransportPlugin` interfaces, and no `adaptProviderToTransport` / `adaptProviderPluginToTransport` adapter — those concepts collapsed into the single backend catalog during the middleware-first cleanup pass.
 
 ## Model execution chain

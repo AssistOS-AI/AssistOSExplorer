@@ -23,7 +23,10 @@ import {
     bufferingMiddleware,
 } from '../../runtime/kernel/index.mjs';
 import { createBackendTerminal } from '../../runtime/backends/backend-terminal.mjs';
-import { ProviderRateLimitError } from '../../core/errors.mjs';
+import {
+    ProviderModelNotFoundError,
+    ProviderRateLimitError,
+} from '../../core/errors.mjs';
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -182,6 +185,57 @@ describe('createBackendTerminal: terminal contract', () => {
         };
         const terminal = createBackendTerminal(mod);
         await assert.rejects(compose([terminal])(makeCtx()), /upstream-died/);
+    });
+
+    it('classifies stream error events via module.classifyError', async () => {
+        async function* failingStream() {
+            yield {
+                type: 'message_start',
+                data: { id: 'm1', model: 'm', role: 'assistant' },
+            };
+            const err = new Error('upstream 429');
+            err.status = 429;
+            yield { type: 'error', error: err };
+        }
+
+        const mod = makeStubModule({ stream: failingStream() });
+        const terminal = createBackendTerminal(mod);
+        const ctx = makeCtx();
+
+        await assert.rejects(
+            compose([bufferingMiddleware(), terminal])(ctx),
+            (err) => err instanceof ProviderRateLimitError
+        );
+    });
+
+    it('classifies exceptions thrown while draining a backend stream', async () => {
+        async function* failingStream() {
+            yield {
+                type: 'message_start',
+                data: { id: 'm1', model: 'm', role: 'assistant' },
+            };
+            const err = new Error('missing model');
+            err.status = 404;
+            err.body = { error: { param: 'model', message: 'm' } };
+            throw err;
+        }
+
+        const mod = {
+            ...makeStubModule({ stream: failingStream() }),
+            classifyError(err) {
+                if (err?.status === 404) {
+                    return new ProviderModelNotFoundError('stub', 'm');
+                }
+                return err;
+            },
+        };
+        const terminal = createBackendTerminal(mod);
+        const ctx = makeCtx();
+
+        await assert.rejects(
+            compose([bufferingMiddleware(), terminal])(ctx),
+            (err) => err instanceof ProviderModelNotFoundError
+        );
     });
 
     it('passes a non-iterable handle through unchanged so callers can decide', async () => {

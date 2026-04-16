@@ -25,6 +25,7 @@ import {
     createCanonicalStream,
     isCanonicalStream,
 } from '../kernel/canonical-stream.mjs';
+import { GatewayError } from '../../core/errors.mjs';
 import { createBackendExecutionContext } from './backend-context.mjs';
 
 /**
@@ -84,12 +85,18 @@ export function createBackendTerminal(backendModule) {
             rawStream &&
             typeof rawStream[Symbol.asyncIterator] === 'function'
         ) {
-            ctx.response = isCanonicalStream(rawStream)
-                ? rawStream
-                : createCanonicalStream(rawStream, {
+            const wrappedStream = classifyBackendStream(
+                rawStream,
+                backendModule,
+                executionCtx
+            );
+            const streamMeta = isCanonicalStream(rawStream)
+                ? rawStream.meta || {}
+                : {
                       model: target.model.modelKey || null,
                       backend: backendKey,
-                  });
+                  };
+            ctx.response = createCanonicalStream(wrappedStream, streamMeta);
             return;
         }
 
@@ -101,7 +108,29 @@ export function createBackendTerminal(backendModule) {
     };
 }
 
+async function* classifyBackendStream(source, backendModule, executionCtx) {
+    try {
+        for await (const event of source) {
+            if (event?.type === 'error') {
+                const streamError =
+                    event.error ||
+                    event.data?.error ||
+                    new Error(
+                        event.message ||
+                            event.data?.message ||
+                            'Provider stream error'
+                    );
+                throw streamError;
+            }
+            yield event;
+        }
+    } catch (error) {
+        throw classifyBackendError(backendModule, error, executionCtx);
+    }
+}
+
 function classifyBackendError(backendModule, error, executionCtx) {
+    if (error instanceof GatewayError) return error;
     if (typeof backendModule.classifyError !== 'function') return error;
     try {
         return backendModule.classifyError(error, executionCtx);
