@@ -48,6 +48,11 @@ const manifest = {
     hidden: true,
 };
 
+const STREAM_OPTIONS_DISABLED_PROVIDER_KEYS = new Set(['nvidia']);
+const STREAM_OPTIONS_DISABLED_BASE_URL_PREFIXES = [
+    'https://integrate.api.nvidia.com/',
+];
+
 function parseOptionalNumber(value) {
     if (value === undefined || value === null || value === '') {
         return null;
@@ -173,6 +178,38 @@ function normalizeDiscoveredModel(model) {
         isFree: pricing?.mode === 'free',
         tags: buildDiscoveredTags(model, pricing?.mode || null),
     };
+}
+
+export function providerSupportsOpenAiStreamOptions(providerRecord) {
+    const settings = providerRecord?.settings || {};
+
+    if (typeof settings.supports_stream_options === 'boolean') {
+        return settings.supports_stream_options;
+    }
+    if (typeof settings.supportsStreamOptions === 'boolean') {
+        return settings.supportsStreamOptions;
+    }
+
+    const providerKey = String(providerRecord?.providerKey || '').trim();
+    if (providerKey && STREAM_OPTIONS_DISABLED_PROVIDER_KEYS.has(providerKey)) {
+        return false;
+    }
+
+    const baseUrl = String(providerRecord?.baseUrl || '').trim();
+    if (!baseUrl) {
+        return true;
+    }
+
+    const normalizedBaseUrl = baseUrl.endsWith('/')
+        ? baseUrl
+        : `${baseUrl}/`;
+    for (const prefix of STREAM_OPTIONS_DISABLED_BASE_URL_PREFIXES) {
+        if (normalizedBaseUrl.startsWith(prefix)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 // ── Backend module ──────────────────────────────────────────────────
@@ -328,8 +365,10 @@ export const backendModule = {
         const settings = providerRecord.settings || {};
         const params = {
             stream: true,
-            stream_options: { include_usage: true },
         };
+        if (providerSupportsOpenAiStreamOptions(providerRecord)) {
+            params.stream_options = { include_usage: true };
+        }
 
         if (normalizedReq.max_tokens != null)
             params.max_tokens = normalizedReq.max_tokens;

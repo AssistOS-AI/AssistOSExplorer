@@ -220,7 +220,7 @@ A provider record in the runtime is now visibly a composition concept:
 
 Lifecycle/admin operations (`testConnection`, `discoverModels`) also resolve providers strictly through `provider.backendKey`; they do not fall back to `provider_key` or display name.
 
-Adding a same-family vendor (e.g. NVIDIA, Groq, Fireworks for OpenAI-compatible) is a configuration change: a new entry in `provider-presets.mjs` pointing at the existing `openai-api` backend module. No new code.
+Adding a same-family vendor (e.g. NVIDIA, Groq, Fireworks for OpenAI-compatible) is a configuration change: a new entry in `provider-presets.mjs` pointing at the existing `openai-api` backend module. Vendor-specific request-shape quirks still stay within that shared backend. For example, the OpenAI-compatible backend omits upstream `stream_options` for NVIDIA by default, and any OpenAI-compatible provider can override that behavior explicitly with `provider.settings.supports_stream_options` / `provider.settings.supportsStreamOptions`.
 
 Adding a vendor that genuinely speaks a custom protocol means writing one backend module under `runtime/backends/builtin/` (or shipping it as a backend extension under `extensions/backends/`). Everything else remains middleware bindings + config.
 

@@ -229,7 +229,10 @@ describe('Provider context', () => {
 
 // ── Error classification: OpenAI ────────────────────────────────────
 
-import { backendModule as openaiPlugin } from '../../runtime/backends/builtin/openai-api.backend.mjs';
+import {
+    backendModule as openaiPlugin,
+    providerSupportsOpenAiStreamOptions,
+} from '../../runtime/backends/builtin/openai-api.backend.mjs';
 
 describe('OpenAI error classification', () => {
     it('classifies 401 as ProviderAuthError', () => {
@@ -291,6 +294,49 @@ describe('OpenAI error classification', () => {
         assert.equal(openaiPlugin.manifest.authStrategy, 'api_key');
         assert.equal(openaiPlugin.manifest.supportsStreaming, true);
         assert.equal(openaiPlugin.manifest.supportsTools, true);
+    });
+});
+
+describe('OpenAI stream_options capability detection', () => {
+    it('disables stream_options for NVIDIA providers by default', () => {
+        assert.equal(
+            providerSupportsOpenAiStreamOptions({
+                providerKey: 'nvidia',
+                baseUrl: 'https://integrate.api.nvidia.com/v1',
+                settings: {},
+            }),
+            false
+        );
+    });
+
+    it('respects explicit provider settings overrides', () => {
+        assert.equal(
+            providerSupportsOpenAiStreamOptions({
+                providerKey: 'nvidia',
+                baseUrl: 'https://integrate.api.nvidia.com/v1',
+                settings: { supports_stream_options: true },
+            }),
+            true
+        );
+        assert.equal(
+            providerSupportsOpenAiStreamOptions({
+                providerKey: 'openrouter',
+                baseUrl: 'https://openrouter.ai/api/v1',
+                settings: { supportsStreamOptions: false },
+            }),
+            false
+        );
+    });
+
+    it('keeps stream_options enabled for compatible providers by default', () => {
+        assert.equal(
+            providerSupportsOpenAiStreamOptions({
+                providerKey: 'openrouter',
+                baseUrl: 'https://openrouter.ai/api/v1',
+                settings: {},
+            }),
+            true
+        );
     });
 });
 
