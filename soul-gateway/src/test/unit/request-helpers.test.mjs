@@ -836,12 +836,11 @@ describe('validateNormalizedRequest', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// Request Context
+// Scope
 // ═══════════════════════════════════════════════════════════════════════
 
-// `createRequestContext` was retired in Phase 6 along with the
-// hand-rolled stage machine.  Its replacement, `createKernelContext`,
-// is covered exhaustively in `kernel.test.mjs`.  The rest of this file
-// continues to test the standalone request modules (format normalizer,
-// serializer, identity, validator) — those are now consumed by the
-// route middleware modules in `runtime/route/`.
+// This file covers the pure request-helper modules under `src/request/`
+// (format normalizer, serializers, identity resolver, validator).  These
+// helpers are consumed by the route middleware modules in
+// `src/runtime/route/`.  Kernel context construction is covered in
+// `kernel.test.mjs`.
