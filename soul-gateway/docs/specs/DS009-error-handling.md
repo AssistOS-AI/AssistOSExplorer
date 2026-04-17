@@ -51,7 +51,7 @@ If all HTTP retries for a single model fail with a retryable error, the loop exi
 
 When a model fails after exhausting its HTTP retries, the cascade logic kicks in (implemented as the outer retry loop in the request pipeline):
 
-- **Cooldown trigger** — errors classified as `rate_limit_error` or `payment_required` place the model in cooldown (default 1 hour) and the system re-resolves the tier to find the next available model. See DS004 for cooldown details.
+- **Cooldown trigger** — errors classified as `rate_limit_error` or `payment_required` are thrown with `err.cooldown === true`. The cascade middleware invokes `ctx.metadata.onCooldown(modelKey, err)`, which is installed by `gatewayDispatchMiddleware` as a persistent writer: it calls `cooldownsDao.create()` with `modelId`, `reasonType`, `reasonMessage`, `requestId`, and `expiresAt = now + cooldownMs`. The cooldown duration resolves from `err.cooldownMs`, then `model.retryPolicy.cooldownMs`, then `COOLDOWN_DURATION_MS` (default 1 hour). The write is fire-and-forget; on success an async snapshot refresh is requested so the next snapshot generation carries the entry. The current request continues with the next candidate in the same cascade via the in-request `failedModels` set. See DS004 for the read side and cleanup.
 - **Immediate cascade** — any other classified error (authentication failure, connection error, server error after retries, etc.) cascades to the next model in the tier without placing the current one in cooldown.
 - **Unclassified error** — if the error doesn't match any known type, the request fails immediately without cascading. Unclassified errors are rare and usually indicate a gateway bug rather than an upstream issue.
 

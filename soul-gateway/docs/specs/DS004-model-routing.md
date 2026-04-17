@@ -79,9 +79,32 @@ If every child fails or is unavailable, the runtime throws `TierExhaustedError`.
 
 ## Cooldowns
 
-When a model fails with a classified cooldown-triggering error, the runtime records a cooldown entry and future cascades skip that model until the cooldown expires or is cleared.
+When a model fails with a classified cooldown-triggering error, the runtime records a cooldown entry and future cascades skip that model until the cooldown expires or is cleared. The loop has a read side bound to the snapshot and a write side bound to the cascade attempt that just failed.
 
-The snapshot exposes cooldowns through `snapshot.cooldowns`.
+### Read side — snapshot
+
+`snapshot.cooldowns` is a `Set<modelKey>` built at snapshot load time from `soul_gateway.model_cooldowns` rows where `cleared_at IS NULL AND expires_at > now()`. The cascade adapter in `src/runtime/execution/model-execution.mjs` filters out any child whose `modelKey` is in that set before computing the next candidate, so a request bound to a fresh snapshot never attempts a cooled-down model.
+
+### Write side — cascade hook
+
+`gatewayDispatchMiddleware` installs `ctx.metadata.onCooldown(modelKey, err)` on every request. The cascade middleware invokes it when a child attempt throws an error with `err.cooldown === true`. The hook calls `cooldownsDao.create()` with:
+
+- `modelId` resolved from `snapshot.models.get(modelKey).id`
+- `reasonType` and `reasonMessage` from the triggering `GatewayError`
+- `requestId` from the current ctx
+- `expiresAt = now + cooldownMs`
+
+Cooldown duration precedence:
+
+1. `err.cooldownMs` if the backend error attaches one (future `Retry-After` parsing)
+2. `model.retryPolicy.cooldownMs` per-model override
+3. `appCtx.config.env.COOLDOWN_DURATION_MS` global default (1 hour)
+
+The write is fire-and-forget: cascade semantics must not wait for persistence to advance to the next child. On successful write the hook calls `requestRuntimeRefresh(appCtx, { snapshot: true })` so the next snapshot generation carries the new entry. Write or refresh failures log at `warn` level and are swallowed — the in-flight request has already moved on.
+
+### Cleanup
+
+`src/background/scheduler.mjs` runs `cooldownsDao.deleteExpired()` every 60 seconds to drop rows whose `expires_at` has passed. Admin-initiated clears live in `src/management/cooldowns-route.mjs` (`DELETE /management/cooldowns[/:modelId]`), which call `clearAll` / `clearByModel` and then trigger the same async snapshot refresh.
 
 ## Concurrency
 

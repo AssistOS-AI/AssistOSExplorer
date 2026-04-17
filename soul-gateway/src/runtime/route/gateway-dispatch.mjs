@@ -19,6 +19,8 @@
 
 import { compose } from '../kernel/index.mjs';
 import { modelExecutionMiddleware } from '../execution/model-execution.mjs';
+import { requestRuntimeRefresh } from '../registry/runtime-refresh.mjs';
+import * as cooldownsDao from '../../db/dao/cooldowns-dao.mjs';
 
 /**
  * @returns {(ctx: object) => Promise<void>}
@@ -56,6 +58,7 @@ export function gatewayDispatchMiddleware() {
                 modelKey,
                 errorType: error.errorType,
             });
+            persistCooldown(appCtx, ctx, modelKey, error);
         };
 
         // 3. Compose the gateway middleware chain over the model execution
@@ -69,4 +72,65 @@ export function gatewayDispatchMiddleware() {
         await chain(ctx);
         ctx.metadata.dispatchMs = Date.now() - dispatchStart;
     };
+}
+
+/**
+ * Persist a cascade-child cooldown to the database and trigger an
+ * async snapshot refresh so subsequent requests see the new cooldown
+ * in `snapshot.cooldowns`.
+ *
+ * Fire-and-forget: cascade flow must not wait for the DB write.  Any
+ * failure is logged at warn level — the in-flight request has already
+ * moved on to the next child by the time this runs.
+ *
+ * Cooldown duration precedence:
+ *   1. `error.cooldownMs` if the backend error attaches one
+ *   2. `model.retryPolicy.cooldownMs` per-model override
+ *   3. `appCtx.config.env.COOLDOWN_DURATION_MS` global default
+ */
+export function persistCooldown(appCtx, ctx, modelKey, error) {
+    const pool = appCtx?.pool;
+    if (!pool) return;
+
+    const model = ctx.snapshot?.models?.get?.(modelKey);
+    if (!model?.id) {
+        appCtx?.log?.warn?.('cooldown write skipped: model not in snapshot', {
+            modelKey,
+        });
+        return;
+    }
+
+    const cooldownMs =
+        (Number.isFinite(error?.cooldownMs) && error.cooldownMs) ||
+        (Number.isFinite(model.retryPolicy?.cooldownMs) &&
+            model.retryPolicy.cooldownMs) ||
+        appCtx?.config?.env?.COOLDOWN_DURATION_MS ||
+        3_600_000;
+
+    const expiresAt = new Date(Date.now() + cooldownMs);
+    const reasonType = error?.errorType || 'unknown';
+    const reasonMessage = error?.message || null;
+
+    cooldownsDao
+        .create(pool, {
+            modelId: model.id,
+            sourceAccountId: ctx.metadata?.sourceAccountId || null,
+            requestId: ctx.requestId || null,
+            reasonType,
+            reasonMessage,
+            expiresAt,
+            metadata: { cooldownMs, modelKey },
+        })
+        .then(() =>
+            requestRuntimeRefresh(appCtx, {
+                snapshot: true,
+                reason: `cooldown.${modelKey}`,
+            })
+        )
+        .catch((err) => {
+            appCtx?.log?.warn?.('cooldown write failed', {
+                modelKey,
+                error: err.message,
+            });
+        });
 }
