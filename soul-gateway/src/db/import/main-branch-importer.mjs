@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import * as auditLogsDao from '../dao/audit-logs-dao.mjs';
 import * as middlewaresDao from '../dao/middlewares-dao.mjs';
 import { encrypt } from '../../runtime/security/encryption.mjs';
 import { hashApiKey } from '../../runtime/security/api-key-auth.mjs';
 import { PROVIDER_PRESETS } from '../../runtime/providers/provider-presets.mjs';
-import { decryptLegacyBlob } from './main-branch-crypto.mjs';
+import { OAuthCredentialStore } from '../../runtime/providers/oauth/credential-store.mjs';
+import { decryptLegacyBlobWithKeys } from './main-branch-crypto.mjs';
 
 const PRESETS_BY_KEY = new Map(
     PROVIDER_PRESETS.map((preset) => [preset.key, preset])
@@ -118,6 +121,10 @@ const ADAPTER_CAPABILITIES = Object.freeze({
 });
 
 const SPECIAL_PROVIDER_SPECS = Object.freeze({
+    anthropic: Object.freeze({
+        adapterKey: 'claudeai-api',
+        baseUrl: 'https://api.anthropic.com',
+    }),
     codex: Object.freeze({
         adapterKey: 'codex-api',
         baseUrl: 'https://chatgpt.com/backend-api/codex',
@@ -150,12 +157,12 @@ const MIDDLEWARE_KEY_ALIASES = Object.freeze({
 
 const HISTORICAL_SOURCE = 'main.call_logs';
 const RESPONSE_EXCERPT_CHARS = 240;
+const OAUTH_REFRESH_MARGIN_SECONDS = 300;
 
-/**
- * Read the source `main` branch tables from a database that still uses
- * the old `soul-gateway/app/` schema.
- */
-export async function readMainBranchSourceSnapshot(sourcePool) {
+export async function readMainBranchSourceSnapshot(
+    sourcePool,
+    { sourceCredentialsDir = null } = {}
+) {
     const [providers, apiKeys, models, middlewares, modelMiddlewares] =
         await Promise.all([
             sourcePool.query(`
@@ -186,13 +193,136 @@ export async function readMainBranchSourceSnapshot(sourcePool) {
     `),
         ]);
 
+    const sourceProviders = cloneSourceRows(providers.rows);
+    await attachLegacyManagedProviderData(sourceProviders, {
+        sourceCredentialsDir,
+    });
+
     return {
-        providers: providers.rows,
+        providers: sourceProviders,
         apiKeys: apiKeys.rows,
         models: models.rows,
         middlewares: middlewares.rows,
         modelMiddlewares: modelMiddlewares.rows,
     };
+}
+
+async function attachLegacyManagedProviderData(
+    providerRows,
+    { sourceCredentialsDir = null } = {}
+) {
+    for (const row of providerRows || []) {
+        if (normalizeText(row?.auth_type) !== 'managed') {
+            continue;
+        }
+
+        const { accounts, state, error } =
+            await readLegacyManagedProviderFiles({
+                sourceCredentialsDir,
+                providerKey: row.name,
+            });
+
+        row.legacy_managed_accounts = accounts;
+        row.legacy_managed_state = state;
+        row.legacy_managed_accounts_error = error;
+    }
+}
+
+async function readLegacyManagedProviderFiles({
+    sourceCredentialsDir,
+    providerKey,
+}) {
+    if (!sourceCredentialsDir) {
+        return {
+            accounts: [],
+            state: null,
+            error:
+                'SOURCE_CREDENTIALS_DIR is required to migrate managed provider accounts',
+        };
+    }
+
+    const providerDir = join(sourceCredentialsDir, providerKey);
+    const accountsDir = join(providerDir, 'accounts');
+    const statePath = join(providerDir, 'state.json');
+
+    let state = null;
+    try {
+        state = JSON.parse(await readFile(statePath, 'utf8'));
+    } catch (err) {
+        if (err?.code !== 'ENOENT') {
+            return {
+                accounts: [],
+                state: null,
+                error: `Failed reading managed provider state for "${providerKey}": ${err.message}`,
+            };
+        }
+    }
+
+    let files;
+    try {
+        files = (await readdir(accountsDir))
+            .filter(
+                (file) =>
+                    file.startsWith('account-') && file.endsWith('.json')
+            )
+            .sort();
+    } catch (err) {
+        if (err?.code === 'ENOENT') {
+            return {
+                accounts: [],
+                state,
+                error: `Managed provider "${providerKey}" has no readable accounts directory at ${accountsDir}`,
+            };
+        }
+        return {
+            accounts: [],
+            state,
+            error: `Failed reading managed provider account list for "${providerKey}": ${err.message}`,
+        };
+    }
+
+    const accounts = [];
+    for (const file of files) {
+        const filePath = join(accountsDir, file);
+        try {
+            const raw = JSON.parse(await readFile(filePath, 'utf8'));
+            const index = parseLegacyAccountIndex(file);
+            accounts.push({
+                ...raw,
+                _index:
+                    raw?._index != null && Number.isFinite(Number(raw._index))
+                        ? Number(raw._index)
+                        : index,
+                _file_name: file,
+                _file_path: filePath,
+            });
+        } catch (err) {
+            return {
+                accounts: [],
+                state,
+                error: `Failed parsing managed provider account file "${filePath}": ${err.message}`,
+            };
+        }
+    }
+
+    if (accounts.length === 0) {
+        return {
+            accounts,
+            state,
+            error: `Managed provider "${providerKey}" has no account-*.json files under ${accountsDir}`,
+        };
+    }
+
+    return { accounts, state, error: null };
+}
+
+function parseLegacyAccountIndex(fileName) {
+    const match = /^account-(\d+)\.json$/i.exec(fileName || '');
+    return match ? Number.parseInt(match[1], 10) : 0;
+}
+
+function cloneSourceRows(rows) {
+    return (rows || []).map((row) => ({ ...row }));
 }
 
 export async function countMainBranchCallLogs(sourcePool) {
@@ -244,6 +374,7 @@ export function buildMainBranchImportPlan({
     sourceEncryptionKey = null,
     targetEncryptionKey,
     targetApiKeyPepper,
+    targetCredentialsDir = null,
 }) {
     const report = createImportReport(source);
     const middlewareKeyMap =
@@ -253,6 +384,7 @@ export function buildMainBranchImportPlan({
     const cascadeModelPlans = [];
     const apiKeyPlans = [];
     const modelBindingPlans = [];
+    const modelAliasPlans = [];
 
     const providerPlansBySourceId = new Map();
     const providerPlansByKey = new Map();
@@ -260,12 +392,36 @@ export function buildMainBranchImportPlan({
         const plan = buildProviderPlan(providerRow, {
             sourceEncryptionKey,
             targetEncryptionKey,
+            targetCredentialsDir,
             report,
         });
         if (!plan) continue;
         providerPlans.push(plan);
         providerPlansBySourceId.set(providerRow.id, plan);
         providerPlansByKey.set(providerRow.name, plan);
+    }
+
+    for (const modelRow of source.models) {
+        if (modelRow.type === 'tier') continue;
+        const providerKey = normalizeText(modelRow.provider_key);
+        if (!providerKey || providerPlansByKey.has(providerKey)) {
+            continue;
+        }
+
+        const plan = buildProviderPlan(
+            buildImplicitSourceProvider(modelRow),
+            {
+                sourceEncryptionKey,
+                targetEncryptionKey,
+                targetCredentialsDir,
+                report,
+            }
+        );
+        if (!plan) continue;
+
+        providerPlans.push(plan);
+        providerPlansBySourceId.set(plan.sourceId, plan);
+        providerPlansByKey.set(plan.sourceName, plan);
     }
 
     const modelPlansBySourceId = new Map();
@@ -384,6 +540,42 @@ export function buildMainBranchImportPlan({
         report.counts.middlewareBindings += 1;
     }
 
+    const aliasOwners = new Map();
+    const existingModelKeys = new Set(modelPlansByKey.keys());
+
+    for (const modelRow of source.models) {
+        const modelPlan = modelPlansBySourceId.get(modelRow.id);
+        if (!modelPlan) continue;
+
+        const aliases = deriveHistoricalModelAliasCandidates(modelRow);
+        for (const alias of aliases) {
+            if (!alias || alias === modelPlan.target.modelKey) continue;
+            if (existingModelKeys.has(alias)) continue;
+            if (!aliasOwners.has(alias)) aliasOwners.set(alias, []);
+            aliasOwners.get(alias).push(modelPlan);
+        }
+    }
+
+    for (const [alias, owners] of aliasOwners) {
+        const modelPlan = resolveHistoricalAliasOwner(alias, owners);
+        if (!modelPlan) {
+            addWarning(
+                report,
+                'model_alias_collision',
+                `Skipping historical alias "${alias}" because it maps to multiple source models`,
+                { alias }
+            );
+            continue;
+        }
+
+        modelAliasPlans.push({
+            alias,
+            targetModelKey: modelPlan.target.modelKey,
+            targetModelSourceId: modelPlan.sourceId,
+        });
+        report.counts.modelAliases += 1;
+    }
+
     return {
         report,
         providerPlans,
@@ -391,6 +583,38 @@ export function buildMainBranchImportPlan({
         directModelPlans,
         cascadeModelPlans,
         modelBindingPlans,
+        modelAliasPlans,
+    };
+}
+
+function buildImplicitSourceProvider(sourceModel) {
+    const providerKey = normalizeText(sourceModel?.provider_key) || 'unknown';
+    const isSearchProvider = SEARCH_PROVIDER_KEYS.has(providerKey);
+    const isManagedProvider =
+        !isSearchProvider && !!SPECIAL_PROVIDER_SPECS[providerKey];
+
+    return {
+        id: `implicit-provider:${providerKey}`,
+        name: providerKey,
+        display_name: providerKey,
+        protocol: providerKey === 'anthropic' ? 'anthropic' : 'openai',
+        base_url: isSearchProvider
+            ? ''
+            : SPECIAL_PROVIDER_SPECS[providerKey]?.baseUrl || '',
+        encrypted_api_key: null,
+        key_hint: null,
+        billing_type: isSearchProvider
+            ? 'search'
+            : isManagedProvider
+              ? 'subscription'
+              : 'api_key',
+        auth_type: isSearchProvider
+            ? 'internal'
+            : isManagedProvider
+              ? 'managed'
+              : 'api_key',
+        is_enabled: true,
+        legacy_implicit_provider: true,
     };
 }
 
@@ -624,6 +848,8 @@ export async function importMainBranchData({
     sourceEncryptionKey = null,
     targetEncryptionKey,
     targetApiKeyPepper,
+    sourceCredentialsDir = null,
+    targetCredentialsDir = null,
     strict = false,
     dryRun = false,
     includeAuditLogs = false,
@@ -632,7 +858,9 @@ export async function importMainBranchData({
 }) {
     await assertTargetSchemaReady(targetPool);
 
-    const source = await readMainBranchSourceSnapshot(sourcePool);
+    const source = await readMainBranchSourceSnapshot(sourcePool, {
+        sourceCredentialsDir,
+    });
     const targetMiddlewares = await middlewaresDao.list(targetPool, {
         limit: 5000,
     });
@@ -642,6 +870,7 @@ export async function importMainBranchData({
         sourceEncryptionKey,
         targetEncryptionKey,
         targetApiKeyPepper,
+        targetCredentialsDir,
     });
 
     plan.report.strict = strict;
@@ -671,6 +900,16 @@ export async function importMainBranchData({
     const modelIdByKey = new Map();
     const providerIdByModelKey = new Map();
     const apiKeyIdBySourceId = new Map();
+    const oauthCredentialStore =
+        plan.providerPlans.some((plan) =>
+            (plan.accounts || []).some((account) => account.authType === 'oauth')
+        ) && targetCredentialsDir
+            ? new OAuthCredentialStore({
+                  baseDir: targetCredentialsDir,
+                  encryptionKey: targetEncryptionKey,
+                  log: console,
+              })
+            : null;
 
     const client = targetPool.connect ? await targetPool.connect() : targetPool;
     try {
@@ -682,12 +921,17 @@ export async function importMainBranchData({
                 providerPlan.target
             );
             providerIdBySourceId.set(providerPlan.sourceId, providerRow.id);
-            if (providerPlan.account) {
-                await upsertProviderAccount(
-                    client,
-                    providerRow.id,
-                    providerPlan.account
-                );
+            for (const accountPlan of providerPlan.accounts || []) {
+                if (accountPlan.authType === 'oauth') {
+                    await upsertOAuthProviderAccount(
+                        client,
+                        providerRow.id,
+                        accountPlan,
+                        oauthCredentialStore
+                    );
+                    continue;
+                }
+                await upsertProviderAccount(client, providerRow.id, accountPlan);
             }
         }
 
@@ -754,6 +998,31 @@ export async function importMainBranchData({
             await replaceModelChildren(client, parentModelId, children);
         }
 
+        for (const aliasPlan of plan.modelAliasPlans || []) {
+            const modelId = modelIdBySourceId.get(aliasPlan.targetModelSourceId);
+            if (!modelId) {
+                addWarning(
+                    plan.report,
+                    'model_alias_model_write_unresolved',
+                    `Skipping historical alias "${aliasPlan.alias}" because its model was not written`,
+                    {
+                        alias: aliasPlan.alias,
+                        model: aliasPlan.targetModelKey,
+                    }
+                );
+                continue;
+            }
+            await upsertModelAlias(client, {
+                alias: aliasPlan.alias,
+                modelId,
+            });
+            modelIdByKey.set(aliasPlan.alias, modelId);
+            providerIdByModelKey.set(
+                aliasPlan.alias,
+                providerIdByModelKey.get(aliasPlan.targetModelKey) || null
+            );
+        }
+
         for (const apiKeyPlan of plan.apiKeyPlans) {
             const row = await upsertApiKey(client, apiKeyPlan.target);
             apiKeyIdBySourceId.set(apiKeyPlan.sourceId, row.id);
@@ -801,6 +1070,8 @@ export async function importMainBranchData({
             apiKeyIdBySourceId,
             modelIdByKey,
             providerIdByModelKey,
+            targetEncryptionKey,
+            targetApiKeyPepper,
             batchSize: callLogBatchSize,
             sessionTimeoutMinutes,
         });
@@ -811,7 +1082,7 @@ export async function importMainBranchData({
 
 function buildProviderPlan(
     sourceProvider,
-    { sourceEncryptionKey, targetEncryptionKey, report }
+    { sourceEncryptionKey, targetEncryptionKey, targetCredentialsDir, report }
 ) {
     const spec = resolveProviderImportSpec(sourceProvider);
     if (spec.warning) {
@@ -850,19 +1121,29 @@ function buildProviderPlan(
 
     report.counts.providers += 1;
 
-    let account = null;
-    if (sourceProvider.encrypted_api_key) {
-        if (!sourceEncryptionKey) {
+    const accounts = [];
+    if (normalizeText(sourceProvider?.auth_type) === 'managed') {
+        const managedPlans = buildManagedProviderAccountPlans(sourceProvider, {
+            targetCredentialsDir,
+            report,
+        });
+        accounts.push(...managedPlans);
+        report.counts.providerAccounts += managedPlans.length;
+    } else if (sourceProvider.encrypted_api_key) {
+        if (!hasSourceEncryptionKeys(sourceEncryptionKey)) {
             throw new Error(
-                `SOURCE_ENCRYPTION_KEY is required to import provider "${sourceProvider.name}"`
+                `SOURCE_ENCRYPTION_KEY or SOURCE_ENCRYPTION_KEYS is required to import provider "${sourceProvider.name}"`
             );
         }
-        const plaintext = decryptLegacyBlob(
+        const plaintext = decryptLegacyBlobWithKeys(
             sourceProvider.encrypted_api_key,
-            sourceEncryptionKey
+            sourceEncryptionKey,
+            {
+                label: `Provider "${sourceProvider.name}" API key`,
+            }
         );
         const encrypted = encrypt(plaintext, targetEncryptionKey);
-        account = {
+        const account = {
             accountLabel: `${target.displayName} API Key`,
             authType: 'api_key',
             status: 'active',
@@ -875,6 +1156,7 @@ function buildProviderPlan(
                 sourceProviderId: sourceProvider.id,
             }),
         };
+        accounts.push(account);
         report.counts.providerAccounts += 1;
     }
 
@@ -882,23 +1164,367 @@ function buildProviderPlan(
         sourceId: sourceProvider.id,
         sourceName: sourceProvider.name,
         target,
-        account,
+        accounts,
     };
+}
+
+function buildManagedProviderAccountPlans(
+    sourceProvider,
+    { targetCredentialsDir, report }
+) {
+    if (!targetCredentialsDir) {
+        addWarning(
+            report,
+            'target_credentials_dir_missing',
+            `TARGET_CREDENTIALS_DIR or CREDENTIALS_DIR is required to migrate managed provider "${sourceProvider.name}"`,
+            {
+                provider: sourceProvider.name,
+            }
+        );
+        return [];
+    }
+
+    if (sourceProvider.legacy_managed_accounts_error) {
+        addWarning(
+            report,
+            'provider_managed_credentials_missing',
+            sourceProvider.legacy_managed_accounts_error,
+            {
+                provider: sourceProvider.name,
+            }
+        );
+        return [];
+    }
+
+    const legacyAccounts = Array.isArray(sourceProvider.legacy_managed_accounts)
+        ? sourceProvider.legacy_managed_accounts
+        : [];
+
+    if (legacyAccounts.length === 0) {
+        addWarning(
+            report,
+            'provider_managed_credentials_missing',
+            `Managed provider "${sourceProvider.name}" has no source account files to import`,
+            {
+                provider: sourceProvider.name,
+            }
+        );
+        return [];
+    }
+
+    const activeIndex =
+        sourceProvider.legacy_managed_state?.activeIndex != null
+            ? Number(sourceProvider.legacy_managed_state.activeIndex)
+            : null;
+
+    return legacyAccounts.map((account, position) =>
+        buildManagedProviderAccountPlan(sourceProvider, account, {
+            activeIndex,
+            position,
+        })
+    );
+}
+
+function buildManagedProviderAccountPlan(
+    sourceProvider,
+    account,
+    { activeIndex = null, position = 0 } = {}
+) {
+    const index =
+        account?._index != null && Number.isFinite(Number(account._index))
+            ? Number(account._index)
+            : position;
+    const externalAccountId =
+        normalizeText(account?.email) ||
+        normalizeText(account?.profileArn) ||
+        `legacy-account-${index}`;
+    const accessTokenExpiresAt = normalizeLegacyAccountExpiry(account?.expiresAt);
+    const quotaResetsAt = normalizeLegacyQuotaReset(account?.quotaResetAt);
+    const accountLabelSource =
+        normalizeText(account?.email) ||
+        normalizeText(account?.profileArn) ||
+        `Account ${index}`;
+
+    return {
+        accountLabel: `${sourceProvider.display_name || sourceProvider.name} ${accountLabelSource}`.trim(),
+        authType: 'oauth',
+        status: account?.quotaExhausted ? 'quota_exhausted' : 'active',
+        externalAccountId,
+        credentialsPayload: {
+            accessToken: account?.accessToken || null,
+            refreshToken: account?.refreshToken || null,
+            accessTokenExpiresAt,
+            refreshTokenExpiresAt: null,
+            scope: null,
+            tokenType: 'Bearer',
+            externalAccountId,
+            label: accountLabelSource,
+            metadata: compactObject({
+                email: account?.email || null,
+                profileArn: account?.profileArn || null,
+                needsReauth: account?.needsReauth ?? false,
+                noRefreshToken: !!account?.noRefreshToken,
+                expiryWarning: !!account?.expiryWarning,
+                legacyIndex: index,
+                legacyFileName: account?._file_name || null,
+                legacyWasActive: activeIndex != null ? index === activeIndex : null,
+            }),
+        },
+        accessTokenExpiresAt,
+        refreshTokenExpiresAt: null,
+        refreshMarginSeconds: OAUTH_REFRESH_MARGIN_SECONDS,
+        quotaResetsAt,
+        metadata: compactObject({
+            email: account?.email || null,
+            profileArn: account?.profileArn || null,
+            legacyIndex: index,
+            legacyNeedsReauth: account?.needsReauth ?? false,
+            legacyNoRefreshToken: !!account?.noRefreshToken,
+            legacyExpiryWarning: !!account?.expiryWarning,
+            legacyQuotaExhausted: !!account?.quotaExhausted,
+            legacyWasActive: activeIndex != null ? index === activeIndex : null,
+            sourceProviderId: sourceProvider.id,
+        }),
+    };
+}
+
+function normalizeLegacyAccountExpiry(value) {
+    if (value == null || value === '') return null;
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber) && asNumber > 0) {
+        return new Date(asNumber).toISOString();
+    }
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeLegacyQuotaReset(value) {
+    if (value == null || value === '') return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function deriveHistoricalModelAliasCandidates(sourceModel) {
+    const aliases = new Set();
+    const modelKey = normalizeText(sourceModel?.name);
+    if (!modelKey) return aliases;
+
+    if (sourceModel?.type === 'tier') {
+        if (modelKey.startsWith('axl/')) {
+            aliases.add(modelKey.slice('axl/'.length));
+        }
+        return aliases;
+    }
+
+    const bareName = extractBareModelName(modelKey);
+    if (bareName) {
+        aliases.add(bareName);
+    }
+    if (!modelKey.startsWith('axl/')) {
+        aliases.add(`axl/${modelKey}`);
+    }
+
+    const providerModelId = normalizeText(
+        sourceModel?.provider_model || sourceModel?.upstream_model || bareName
+    );
+    if (providerModelId) {
+        aliases.add(providerModelId);
+    }
+
+    const providerKey = normalizeText(sourceModel?.provider_key);
+    if (providerKey === 'copilot' && providerModelId) {
+        aliases.add(`copilot-${providerModelId}`);
+        if (bareName && bareName !== providerModelId) {
+            aliases.add(`copilot-${bareName}`);
+        }
+    }
+    if (providerKey === 'axiologic_kiro') {
+        if (providerModelId === 'auto-kiro' || bareName === 'auto') {
+            aliases.add('auto-kiro');
+        } else {
+            if (providerModelId) {
+                aliases.add(`kiro-${providerModelId}`);
+            }
+            if (bareName && bareName !== providerModelId) {
+                aliases.add(`kiro-${bareName}`);
+            }
+        }
+    }
+    if (providerKey === 'codex' && bareName && bareName !== providerModelId) {
+        aliases.add(`codex-${bareName}`);
+    }
+
+    aliases.delete(modelKey);
+    return aliases;
+}
+
+function resolveHistoricalAliasOwner(alias, owners) {
+    if (!Array.isArray(owners) || owners.length === 0) return null;
+    if (owners.length === 1) return owners[0];
+
+    const scored = owners
+        .map((owner) => ({
+            owner,
+            score: scoreHistoricalAliasOwner(alias, {
+                modelKey: owner?.target?.modelKey || null,
+                providerKey:
+                    owner?.target?.metadata?.legacyProviderKey || null,
+                providerModel:
+                    owner?.target?.providerModelId || null,
+            }),
+        }))
+        .sort(
+            (left, right) =>
+                left.score - right.score ||
+                String(left.owner?.target?.modelKey || '').localeCompare(
+                    String(right.owner?.target?.modelKey || '')
+                )
+        );
+
+    if (scored.length === 1 || scored[0].score < scored[1].score) {
+        return scored[0].owner;
+    }
+    return null;
+}
+
+function scoreHistoricalAliasOwner(alias, { modelKey, providerKey, providerModel }) {
+    const normalizedModelKey = normalizeText(modelKey) || '';
+    const normalizedProviderKey = normalizeText(providerKey) || '';
+    const normalizedProviderModel = normalizeText(providerModel) || '';
+
+    let score = normalizedModelKey.split('/').filter(Boolean).length * 10;
+    if (normalizedModelKey.startsWith('axl/')) {
+        score += 100;
+    }
+
+    const prefixedAlias = parseProviderPrefixedAlias(alias);
+    const providerAlias = providerKeyToAliasPrefix(normalizedProviderKey);
+    if (
+        prefixedAlias &&
+        providerAlias &&
+        prefixedAlias.providerAlias === providerAlias
+    ) {
+        if (
+            normalizedModelKey ===
+            `${providerAlias}/${prefixedAlias.modelPart}`
+        ) {
+            score -= 80;
+        } else if (normalizedProviderModel === prefixedAlias.modelPart) {
+            score -= 20;
+        }
+    }
+
+    if (normalizedProviderModel && alias === normalizedProviderModel) {
+        score -= 10;
+    }
+
+    return score;
+}
+
+function parseProviderPrefixedAlias(alias) {
+    const normalized = normalizeText(alias);
+    if (!normalized) return null;
+    const separatorIdx = normalized.indexOf('-');
+    if (separatorIdx <= 0 || separatorIdx === normalized.length - 1) {
+        return null;
+    }
+    return {
+        providerAlias: normalized.slice(0, separatorIdx),
+        modelPart: normalized.slice(separatorIdx + 1),
+    };
+}
+
+function providerKeyToAliasPrefix(providerKey) {
+    if (providerKey === 'axiologic_kiro') return 'kiro';
+    return providerKey || null;
+}
+
+function extractBareModelName(modelKey) {
+    const slashIdx = modelKey.indexOf('/');
+    if (slashIdx === -1) return modelKey;
+    return modelKey.slice(slashIdx + 1);
+}
+
+function buildHistoricalSourceModelKeyMap(sourceModels) {
+    const map = new Map();
+    const aliasOwners = new Map();
+
+    for (const row of sourceModels || []) {
+        if (row?.name) {
+            map.set(row.name, row);
+        }
+        for (const alias of deriveHistoricalModelAliasCandidates(row)) {
+            if (!alias || map.has(alias)) continue;
+            if (!aliasOwners.has(alias)) aliasOwners.set(alias, []);
+            aliasOwners.get(alias).push(row);
+        }
+    }
+
+    for (const [alias, owners] of aliasOwners) {
+        const owner = resolveHistoricalSourceAliasOwner(alias, owners);
+        if (owner && !map.has(alias)) {
+            map.set(alias, owner);
+        }
+    }
+
+    return map;
+}
+
+function resolveHistoricalSourceAliasOwner(alias, owners) {
+    if (!Array.isArray(owners) || owners.length === 0) return null;
+    if (owners.length === 1) return owners[0];
+
+    const scored = owners
+        .map((owner) => ({
+            owner,
+            score: scoreHistoricalAliasOwner(alias, {
+                modelKey: owner?.name || null,
+                providerKey: owner?.provider_key || null,
+                providerModel:
+                    normalizeText(owner?.provider_model) ||
+                    normalizeText(owner?.upstream_model) ||
+                    null,
+            }),
+        }))
+        .sort(
+            (left, right) =>
+                left.score - right.score ||
+                String(left.owner?.name || '').localeCompare(
+                    String(right.owner?.name || '')
+                )
+        );
+
+    if (scored.length === 1 || scored[0].score < scored[1].score) {
+        return scored[0].owner;
+    }
+    return null;
+}
+
+function resolveHistoricalModelKey(value, modelIdByKey) {
+    const candidate = normalizeText(value);
+    if (!candidate) return null;
+    if (modelIdByKey.has(candidate)) {
+        return candidate;
+    }
+    return candidate;
 }
 
 function buildApiKeyPlan(
     sourceApiKey,
     { sourceEncryptionKey, targetEncryptionKey, targetApiKeyPepper }
 ) {
-    if (!sourceEncryptionKey) {
+    if (!hasSourceEncryptionKeys(sourceEncryptionKey)) {
         throw new Error(
-            `SOURCE_ENCRYPTION_KEY is required to import API key "${sourceApiKey.id}"`
+            `SOURCE_ENCRYPTION_KEY or SOURCE_ENCRYPTION_KEYS is required to import API key "${sourceApiKey.id}"`
         );
     }
 
-    const plaintext = decryptLegacyBlob(
+    const plaintext = decryptLegacyBlobWithKeys(
         sourceApiKey.encrypted_key,
-        sourceEncryptionKey
+        sourceEncryptionKey,
+        {
+            label: `API key "${sourceApiKey.id}"`,
+        }
     );
     const encrypted = encrypt(plaintext, targetEncryptionKey);
 
@@ -1067,6 +1693,8 @@ async function importMainBranchAuditLogs({
     apiKeyIdBySourceId,
     modelIdByKey,
     providerIdByModelKey,
+    targetEncryptionKey,
+    targetApiKeyPepper,
     batchSize = 500,
     sessionTimeoutMinutes = 30,
 }) {
@@ -1078,14 +1706,11 @@ async function importMainBranchAuditLogs({
         return;
     }
 
-    const sourceModelByKey = new Map(
-        (sourceModels || []).map((row) => [row.name, row])
-    );
+    const sourceModelByKey = buildHistoricalSourceModelKeyMap(sourceModels);
     const sourceProviderById = new Map(
         (sourceProviders || []).map((row) => [row.id, row])
     );
     const ensuredPartitions = new Set();
-    const warnedMissingApiKeys = new Set();
     const sessionPlanner = createHistoricalSessionPlanner({
         sessionTimeoutMinutes,
     });
@@ -1104,21 +1729,18 @@ async function importMainBranchAuditLogs({
             if (rows.length === 0) break;
 
             for (const row of rows) {
-                const targetApiKeyId = apiKeyIdBySourceId.get(row.api_key_id);
+                let targetApiKeyId = apiKeyIdBySourceId.get(row.api_key_id);
                 if (!targetApiKeyId) {
-                    report.counts.skippedAuditLogs += 1;
-                    if (!warnedMissingApiKeys.has(row.api_key_id)) {
-                        warnedMissingApiKeys.add(row.api_key_id);
-                        addWarning(
+                    targetApiKeyId = await ensureHistoricalPlaceholderApiKey(
+                        client,
+                        {
+                            sourceApiKeyId: row.api_key_id || null,
+                            apiKeyIdBySourceId,
                             report,
-                            'audit_log_api_key_unresolved',
-                            `Skipping historical call logs for source API key "${row.api_key_id}" because that key was not imported`,
-                            {
-                                sourceApiKeyId: row.api_key_id || null,
-                            }
-                        );
-                    }
-                    continue;
+                            targetEncryptionKey,
+                            targetApiKeyPepper,
+                        }
+                    );
                 }
 
                 const sessionId = sessionPlanner.observeLog({
@@ -1327,6 +1949,42 @@ function mergeHistoricalSessionStats(
     if (!session.agentName && agentName) session.agentName = agentName;
 }
 
+async function ensureHistoricalPlaceholderApiKey(
+    client,
+    {
+        sourceApiKeyId,
+        apiKeyIdBySourceId,
+        report,
+        targetEncryptionKey,
+        targetApiKeyPepper,
+    }
+) {
+    if (apiKeyIdBySourceId.has(sourceApiKeyId)) {
+        return apiKeyIdBySourceId.get(sourceApiKeyId);
+    }
+
+    const placeholder = buildHistoricalPlaceholderApiKey(sourceApiKeyId, {
+        targetEncryptionKey,
+        targetApiKeyPepper,
+    });
+    const row = await upsertApiKey(client, placeholder);
+
+    apiKeyIdBySourceId.set(sourceApiKeyId, row.id);
+    report.counts.apiKeys += 1;
+    addWarning(
+        report,
+        'audit_log_api_key_placeholder_created',
+        sourceApiKeyId
+            ? `Historical call logs referencing missing source API key "${sourceApiKeyId}" were attached to a revoked placeholder API key`
+            : 'Historical call logs without a source API key were attached to a revoked placeholder API key',
+        {
+            sourceApiKeyId,
+            placeholderApiKeyId: row.id,
+        }
+    );
+    return row.id;
+}
+
 function buildHistoricalAuditLog({
     sourceLog,
     targetApiKeyId,
@@ -1336,9 +1994,15 @@ function buildHistoricalAuditLog({
     modelIdByKey,
     providerIdByModelKey,
 }) {
-    const resolvedModelKey = sourceLog.resolved_model || null;
+    const resolvedModelKey = resolveHistoricalModelKey(
+        sourceLog.resolved_model,
+        modelIdByKey
+    );
     const requestedModelKey =
-        sourceLog.requested_model || resolvedModelKey || 'unknown';
+        resolveHistoricalModelKey(sourceLog.requested_model, modelIdByKey) ||
+        resolvedModelKey ||
+        sourceLog.requested_model ||
+        'unknown';
     const sourceModel =
         sourceModelByKey.get(resolvedModelKey) ||
         sourceModelByKey.get(requestedModelKey) ||
@@ -1420,10 +2084,49 @@ function buildHistoricalAuditLog({
             importSource: HISTORICAL_SOURCE,
             sourceLogId: sourceLog.id,
             sourceApiKeyId: sourceLog.api_key_id || null,
+            sourceRequestedModel: sourceLog.requested_model || null,
+            sourceResolvedModel: sourceLog.resolved_model || null,
             legacyMode: sourceLog.mode || null,
             requestSizeBytes: sourceLog.request_size_bytes ?? null,
             responseSizeBytes: sourceLog.response_size_bytes ?? null,
             blacklistRuleId: sourceLog.blacklist_rule_id || null,
+        }),
+    };
+}
+
+function buildHistoricalPlaceholderApiKey(
+    sourceApiKeyId,
+    { targetEncryptionKey, targetApiKeyPepper }
+) {
+    const sourceToken = sourceApiKeyId == null ? 'null' : String(sourceApiKeyId);
+    const digest = createHash('sha256')
+        .update(`main-import-missing-api-key:${sourceToken}`)
+        .digest('hex');
+    const plaintext = `sk-soul-imported-missing-${digest}`;
+    const encrypted = encrypt(plaintext, targetEncryptionKey);
+
+    return {
+        label:
+            sourceApiKeyId == null
+                ? 'Imported Missing Legacy API Key'
+                : `Imported Missing Legacy API Key ${sourceApiKeyId}`,
+        keyHash: hashApiKey(plaintext, targetApiKeyPepper),
+        keyCiphertext: encrypted.ciphertext,
+        keyIv: encrypted.iv,
+        keyAuthTag: encrypted.authTag,
+        keyHint: buildApiKeyHint(plaintext),
+        rpmLimit: 1,
+        tpmLimit: 1,
+        dailyBudgetUsd: 0,
+        monthlyBudgetUsd: 0,
+        expiresAt: null,
+        status: 'revoked',
+        lastUsedAt: null,
+        revokedAt: null,
+        metadata: compactObject({
+            importedHistoricalPlaceholder: true,
+            importSource: HISTORICAL_SOURCE,
+            sourceApiKeyId,
         }),
     };
 }
@@ -1754,6 +2457,12 @@ function buildApiKeyHint(secret) {
     return secret.slice(0, 8) + '...' + secret.slice(-4);
 }
 
+function hasSourceEncryptionKeys(sourceEncryptionKey) {
+    return Array.isArray(sourceEncryptionKey)
+        ? sourceEncryptionKey.length > 0
+        : !!sourceEncryptionKey;
+}
+
 function resolvePricingMode(sourceModel) {
     if (sourceModel.is_free) return 'free';
     if (sourceModel.pricing_type === 'request') return 'request';
@@ -1838,6 +2547,7 @@ function createImportReport(source) {
             apiKeys: source.apiKeys.length,
             directModels: 0,
             cascadeModels: 0,
+            modelAliases: 0,
             middlewareBindings: 0,
             auditLogs: 0,
             skippedAuditLogs: 0,
@@ -1965,6 +2675,114 @@ async function upsertProviderAccount(client, providerId, account) {
             account.secretAuthTag,
             account.secretHint,
             JSON.stringify(account.metadata || {}),
+        ]
+    );
+    return rows[0];
+}
+
+async function upsertOAuthProviderAccount(
+    client,
+    providerId,
+    account,
+    oauthCredentialStore
+) {
+    if (!oauthCredentialStore) {
+        throw new Error(
+            `OAuth credential store is required to import managed provider "${providerId}"`
+        );
+    }
+
+    const { rows: existingRows } = await client.query(
+        `
+    SELECT *
+    FROM soul_gateway.provider_accounts
+    WHERE provider_id = $1
+      AND auth_type = 'oauth'
+      AND deleted_at IS NULL
+      AND (
+        external_account_id = $2
+        OR credentials_path = $3
+      )
+    ORDER BY created_at ASC
+    LIMIT 1
+  `,
+        [providerId, account.externalAccountId, null]
+    );
+
+    const existing = existingRows[0] || null;
+    const credentialsPath =
+        existing?.credentials_path ||
+        (await oauthCredentialStore.allocatePath(
+            providerId,
+            account.externalAccountId || null,
+            account.accountLabel
+        ));
+
+    await oauthCredentialStore.write(credentialsPath, account.credentialsPayload);
+
+    const metadata = {
+        access_token: account.credentialsPayload?.accessToken || null,
+        refresh_token: account.credentialsPayload?.refreshToken || null,
+        token_type: account.credentialsPayload?.tokenType || 'Bearer',
+        scope: account.credentialsPayload?.scope || null,
+        ...(account.metadata || {}),
+    };
+
+    if (existing) {
+        const { rows } = await client.query(
+            `
+      UPDATE soul_gateway.provider_accounts
+      SET account_label = $2,
+          status = $3,
+          external_account_id = $4,
+          credentials_path = $5,
+          access_token_expires_at = $6,
+          refresh_token_expires_at = $7,
+          refresh_margin_seconds = $8,
+          quota_resets_at = $9,
+          metadata = $10,
+          updated_at = now()
+      WHERE id = $1
+      RETURNING *
+    `,
+            [
+                existing.id,
+                account.accountLabel,
+                account.status,
+                account.externalAccountId,
+                credentialsPath,
+                account.accessTokenExpiresAt,
+                account.refreshTokenExpiresAt,
+                account.refreshMarginSeconds ?? OAUTH_REFRESH_MARGIN_SECONDS,
+                account.quotaResetsAt,
+                JSON.stringify(metadata),
+            ]
+        );
+        return rows[0];
+    }
+
+    const { rows } = await client.query(
+        `
+    INSERT INTO soul_gateway.provider_accounts
+      (provider_id, account_label, auth_type, status,
+       external_account_id, credentials_path,
+       access_token_expires_at, refresh_token_expires_at,
+       refresh_margin_seconds, quota_resets_at, metadata)
+    VALUES
+      ($1,$2,'oauth',$3,$4,$5,$6,$7,$8,$9,$10)
+    RETURNING *
+  `,
+        [
+            providerId,
+            account.accountLabel,
+            account.status,
+            account.externalAccountId,
+            credentialsPath,
+            account.accessTokenExpiresAt,
+            account.refreshTokenExpiresAt,
+            account.refreshMarginSeconds ?? OAUTH_REFRESH_MARGIN_SECONDS,
+            account.quotaResetsAt,
+            JSON.stringify(metadata),
         ]
     );
     return rows[0];
@@ -2106,6 +2924,20 @@ async function replaceModelChildren(client, parentModelId, children) {
             ]
         );
     }
+}
+
+async function upsertModelAlias(client, { alias, modelId }) {
+    const { rows } = await client.query(
+        `
+    INSERT INTO soul_gateway.model_aliases (alias, model_id)
+    VALUES ($1, $2)
+    ON CONFLICT (alias) DO UPDATE SET
+      model_id = EXCLUDED.model_id
+    RETURNING *
+  `,
+        [alias, modelId]
+    );
+    return rows[0];
 }
 
 async function upsertModelMiddlewareBinding(client, binding) {

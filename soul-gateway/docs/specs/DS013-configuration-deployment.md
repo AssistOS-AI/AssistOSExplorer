@@ -80,7 +80,7 @@ For that cutover, operators run the dedicated importer:
 - `npm run import:main`
 - `npm run import:main:with-logs`
 
-The importer reads `SOURCE_DATABASE_URL` for the old app database, writes into `TARGET_DATABASE_URL` (or `DATABASE_URL`) using the current schema, decrypts old AES-GCM blobs with `SOURCE_ENCRYPTION_KEY` / `SOURCE_ENCRYPTION_KEY_HEX`, re-encrypts into the current split ciphertext/IV/auth-tag format using `TARGET_ENCRYPTION_KEY` / `ENCRYPTION_KEY`, and re-hashes client API keys with `TARGET_API_KEY_HASH_PEPPER` / `API_KEY_HASH_PEPPER`.
+The importer reads `SOURCE_DATABASE_URL` for the old app database, writes into `TARGET_DATABASE_URL` (or `DATABASE_URL`) using the current schema, decrypts old AES-GCM blobs with `SOURCE_ENCRYPTION_KEY`, `SOURCE_ENCRYPTION_KEY_HEX`, or the multi-key `SOURCE_ENCRYPTION_KEYS` input, re-encrypts into the current split ciphertext/IV/auth-tag format using `TARGET_ENCRYPTION_KEY` / `ENCRYPTION_KEY`, and re-hashes client API keys with `TARGET_API_KEY_HASH_PEPPER` / `API_KEY_HASH_PEPPER`.
 
 Optional importer flags:
 
