@@ -38,6 +38,33 @@ export function decodeEncryptionKey(raw, { label = 'encryption key' } = {}) {
     return key;
 }
 
+export function decodeEncryptionKeys(raw, { label = 'encryption key' } = {}) {
+    const values = [];
+
+    for (const value of Array.isArray(raw) ? raw : [raw]) {
+        if (value == null || value === '') continue;
+        if (typeof value === 'string') {
+            for (const part of value.split(/[\n,;]/)) {
+                const trimmed = part.trim();
+                if (trimmed) values.push(trimmed);
+            }
+            continue;
+        }
+        values.push(value);
+    }
+
+    const keys = [];
+    const seen = new Set();
+    for (const value of values) {
+        const key = decodeEncryptionKey(value, { label });
+        const fingerprint = key.toString('hex');
+        if (seen.has(fingerprint)) continue;
+        seen.add(fingerprint);
+        keys.push(key);
+    }
+    return keys;
+}
+
 /**
  * Decrypt the legacy `main` branch AES-GCM blob format:
  *   iv (12 bytes) + auth tag (16 bytes) + ciphertext
@@ -78,9 +105,44 @@ export function decryptLegacyBlob(blob, key) {
     ]).toString('utf8');
 }
 
+export function decryptLegacyBlobWithKeys(
+    blob,
+    keys,
+    { label = 'legacy encrypted value' } = {}
+) {
+    const candidates = decodeEncryptionKeys(keys, {
+        label: 'SOURCE_ENCRYPTION_KEY',
+    });
+    if (candidates.length === 0) {
+        throw new Error('SOURCE_ENCRYPTION_KEY or SOURCE_ENCRYPTION_KEYS is required');
+    }
+
+    let lastError = null;
+    for (const key of candidates) {
+        try {
+            return decryptLegacyBlob(blob, key);
+        } catch (err) {
+            lastError = err;
+        }
+    }
+
+    throw new Error(
+        `${label} could not be decrypted with any configured SOURCE_ENCRYPTION_KEY`,
+        { cause: lastError || undefined }
+    );
+}
+
 export function resolveSourceEncryptionKey(env = process.env) {
-    return decodeEncryptionKey(
-        env.SOURCE_ENCRYPTION_KEY_HEX || env.SOURCE_ENCRYPTION_KEY || null,
+    return resolveSourceEncryptionKeys(env)[0] || null;
+}
+
+export function resolveSourceEncryptionKeys(env = process.env) {
+    return decodeEncryptionKeys(
+        [
+            env.SOURCE_ENCRYPTION_KEYS || null,
+            env.SOURCE_ENCRYPTION_KEY_HEX || null,
+            env.SOURCE_ENCRYPTION_KEY || null,
+        ],
         { label: 'SOURCE_ENCRYPTION_KEY' }
     );
 }

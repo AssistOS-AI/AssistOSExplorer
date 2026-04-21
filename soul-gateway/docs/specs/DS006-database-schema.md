@@ -51,9 +51,9 @@ All encrypted columns across the schema (`api_keys.key_ciphertext/iv/auth_tag` a
 
 ## Historical import
 
-When migrating from the older `main`-branch Soul Gateway app database, the runtime does not rely on SQL migration files alone. The dedicated importer at `soul-gateway/src/db/import/import-main-branch-data.mjs` reads the old tables (`provider_configs`, `model_configs`, `model_middlewares`, old `api_keys`) and writes them into the current schema (`providers`, `provider_accounts`, `models`, `model_children`, `middleware_bindings`, current `api_keys`).
+When migrating from the older `main`-branch Soul Gateway app database, the runtime does not rely on SQL migration files alone. The dedicated importer at `soul-gateway/src/db/import/import-main-branch-data.mjs` reads the old tables (`provider_configs`, `model_configs`, `model_middlewares`, old `api_keys`) plus any legacy managed-provider credential files under the source credentials directory and writes them into the current schema (`providers`, `provider_accounts`, `models`, `model_aliases`, `model_children`, `middleware_bindings`, current `api_keys`). Managed OAuth/subscription providers are imported as current `provider_accounts` rows with encrypted credential files written into the target credentials directory. When legacy model rows reference a provider key but no matching provider row exists, the importer synthesizes an implicit provider row so those model configs still migrate.
 
-When run with `--include-call-logs`, the same importer also reads historical `call_logs`, writes them into `audit_logs`, and derives closed `sessions` rows from the imported `main`-branch log stream so imported history remains browsable in the current dashboard/session APIs.
+When run with `--include-call-logs`, the same importer also reads historical `call_logs`, writes them into `audit_logs`, derives closed `sessions` rows from the imported `main`-branch log stream, and uses imported `model_aliases` to reconnect historical model names to the canonical v2 model rows so imported history remains browsable in the current dashboard/session APIs. Logs whose old `api_key_id` is missing are attached to a revoked placeholder API key, and when a historical resolved-model name is too ambiguous to map safely, the raw source model names are preserved in `audit_logs.metadata`.
 
 ## Related specs
 

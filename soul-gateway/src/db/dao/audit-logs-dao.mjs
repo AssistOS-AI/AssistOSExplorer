@@ -124,6 +124,7 @@ export async function query(
         'latency_ms',
         'total_cost_usd',
         'total_tokens',
+        'requested_model',
     ]);
     const sortCol = allowedSorts.has(sort) ? sort : 'started_at';
     const sortDir = order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
@@ -154,6 +155,38 @@ export async function countByFilters(pool, filters = {}) {
         params
     );
     return rows[0].total;
+}
+
+export async function summarizeByApiKey(pool, filters = {}) {
+    const { conditions, params } = buildFilterClauses(filters);
+    const where =
+        conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const { rows } = await pool.query(
+        `SELECT
+           logs.api_key_id,
+           COALESCE(
+             keys.label,
+             CASE
+               WHEN logs.api_key_id IS NULL THEN 'Unknown key'
+               ELSE 'Missing key'
+             END
+           ) AS key_label,
+           COALESCE(keys.key_hint, '') AS key_hint,
+           COALESCE(keys.status, 'unknown') AS key_status,
+           COUNT(*)::int AS request_count,
+           COUNT(*) FILTER (WHERE logs.status <> 'succeeded')::int AS error_count,
+           COALESCE(SUM(logs.total_cost_usd), 0)::float AS total_cost,
+           MAX(logs.started_at) AS last_activity
+         FROM ${TABLE} logs
+         LEFT JOIN soul_gateway.api_keys keys
+           ON keys.id = logs.api_key_id
+         ${where}
+         GROUP BY logs.api_key_id, keys.label, keys.key_hint, keys.status
+         ORDER BY request_count DESC, last_activity DESC NULLS LAST, key_label ASC`,
+        params
+    );
+    return rows;
 }
 
 /**

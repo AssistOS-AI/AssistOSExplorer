@@ -2,12 +2,23 @@
  * Management log routes.
  *
  * GET /management/logs
+ * GET /management/logs/keys
  * GET /management/logs/:logId
  */
 
 import { sendJson } from '../core/responses.mjs';
 import * as auditDao from '../db/dao/audit-logs-dao.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
+
+function hasValue(value) {
+    return (
+        value !== undefined &&
+        value !== null &&
+        value !== '' &&
+        value !== 'undefined' &&
+        value !== 'null'
+    );
+}
 
 /**
  * GET /management/logs
@@ -21,16 +32,16 @@ export async function handleListLogs(ctx) {
     const { pool } = appCtx;
 
     const filters = {};
-    if (query.soul_id) filters.soulId = query.soul_id;
-    if (query.model) filters.model = query.model;
-    if (query.from) filters.from = query.from;
-    if (query.to) filters.to = query.to;
-    if (query.status) filters.status = query.status;
-    if (query.error_type) filters.errorType = query.error_type;
-    if (query.keyword) filters.keyword = query.keyword;
-    if (query.session_id) filters.sessionId = query.session_id;
-    if (query.agent_name) filters.agentName = query.agent_name;
-    if (query.api_key_id) filters.apiKeyId = query.api_key_id;
+    if (hasValue(query.soul_id)) filters.soulId = query.soul_id;
+    if (hasValue(query.model)) filters.model = query.model;
+    if (hasValue(query.from)) filters.from = query.from;
+    if (hasValue(query.to)) filters.to = query.to;
+    if (hasValue(query.status)) filters.status = query.status;
+    if (hasValue(query.error_type)) filters.errorType = query.error_type;
+    if (hasValue(query.keyword)) filters.keyword = query.keyword;
+    if (hasValue(query.session_id)) filters.sessionId = query.session_id;
+    if (hasValue(query.agent_name)) filters.agentName = query.agent_name;
+    if (hasValue(query.api_key_id)) filters.apiKeyId = query.api_key_id;
 
     const limit = Math.min(parseInt(query.limit, 10) || 50, 500);
     const offset = parseInt(query.offset, 10) || 0;
@@ -46,6 +57,29 @@ export async function handleListLogs(ctx) {
     const total = await auditDao.countByFilters(pool, filters);
 
     sendJson(res, 200, { data: rows, total, limit, offset });
+}
+
+/**
+ * GET /management/logs/keys
+ * Summarize logs by API key for the selected time window.
+ */
+export async function handleListLogKeys(ctx) {
+    const { res, query, appCtx } = ctx;
+    const { pool } = appCtx;
+
+    const filters = {};
+    if (hasValue(query.soul_id)) filters.soulId = query.soul_id;
+    if (hasValue(query.model)) filters.model = query.model;
+    if (hasValue(query.from)) filters.from = query.from;
+    if (hasValue(query.to)) filters.to = query.to;
+    if (hasValue(query.status)) filters.status = query.status;
+    if (hasValue(query.error_type)) filters.errorType = query.error_type;
+    if (hasValue(query.keyword)) filters.keyword = query.keyword;
+    if (hasValue(query.session_id)) filters.sessionId = query.session_id;
+    if (hasValue(query.agent_name)) filters.agentName = query.agent_name;
+
+    const rows = await auditDao.summarizeByApiKey(pool, filters);
+    sendJson(res, 200, { data: rows });
 }
 
 /**

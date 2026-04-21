@@ -45,6 +45,11 @@ describe('main-branch importer: fixture verification', () => {
         assert.ok(
             report.warnings.some((w) => w.code === 'middleware_key_unresolved')
         );
+        assert.ok(
+            report.warnings.some(
+                (w) => w.code === 'target_credentials_dir_missing'
+            )
+        );
         assert.equal(harness.state.providers.length, 0);
         assert.equal(harness.state.models.length, 0);
         assert.equal(harness.state.middlewareBindings.length, 0);
@@ -60,7 +65,7 @@ describe('main-branch importer: fixture verification', () => {
                 targetApiKeyPepper: 'fixture-pepper',
                 strict: true,
             }),
-            /Import plan contains 1 warning/
+            /Import plan contains 2 warning/
         );
     });
 
@@ -82,7 +87,11 @@ describe('main-branch importer: fixture verification', () => {
             includeAuditLogs: true,
         });
 
-        assert.equal(firstReport.warnings.length, 0);
+        assert.equal(firstReport.warnings.length, 1);
+        assert.equal(
+            firstReport.warnings[0]?.code,
+            'target_credentials_dir_missing'
+        );
         assert.equal(harness.state.providers.length, 2);
         assert.equal(harness.state.providerAccounts.length, 1);
         assert.equal(harness.state.apiKeys.length, 2);
@@ -180,6 +189,14 @@ describe('main-branch importer: fixture verification', () => {
         );
         assert.equal(responsesLog.request_format, 'openai_responses');
         assert.equal(responsesLog.session_id, importedExplicitSession.id);
+        assert.equal(
+            responsesLog.metadata.sourceRequestedModel,
+            'openai/codex-mini'
+        );
+        assert.equal(
+            responsesLog.metadata.sourceResolvedModel,
+            'openai/codex-mini'
+        );
         assert.equal(failedImplicitLog.status, 'failed');
         assert.equal(failedImplicitLog.retryable, true);
         assert.equal(failedImplicitLog.session_id, implicitSessions[1].id);
@@ -193,7 +210,11 @@ describe('main-branch importer: fixture verification', () => {
             includeAuditLogs: true,
         });
 
-        assert.equal(secondReport.warnings.length, 0);
+        assert.equal(secondReport.warnings.length, 1);
+        assert.equal(
+            secondReport.warnings[0]?.code,
+            'target_credentials_dir_missing'
+        );
         assert.equal(harness.state.providers.length, 2);
         assert.equal(harness.state.providerAccounts.length, 1);
         assert.equal(harness.state.apiKeys.length, 2);
@@ -206,10 +227,12 @@ describe('main-branch importer: fixture verification', () => {
         assert.equal(secondReport.counts.sessions, 3);
 
         const snapshot = buildSnapshotFromImportState(harness.state);
-        // Imported cascades are addressable by their fully-qualified key
-        // (e.g. 'axl/fast'). Bare cascade shorthand ('fast') is not resolved
-        // by the normalizer — callers must use the 'axl/' prefix explicitly.
+        // Historical aliases are imported alongside the canonical model rows.
         assert.deepEqual(normalizeModelName('axl/fast', snapshot), {
+            normalized: 'axl/fast',
+            kind: 'model',
+        });
+        assert.deepEqual(normalizeModelName('fast', snapshot), {
             normalized: 'axl/fast',
             kind: 'model',
         });
@@ -801,6 +824,7 @@ function createImportHarness(source, targetMiddlewareRows) {
         providerAccounts: [],
         apiKeys: [],
         models: [],
+        modelAliases: [],
         modelChildren: [],
         middlewareBindings: [],
         sessions: [],
@@ -811,6 +835,7 @@ function createImportHarness(source, targetMiddlewareRows) {
             providerAccount: 1,
             apiKey: 1,
             model: 1,
+            modelAlias: 1,
             modelChild: 1,
             middlewareBinding: 1,
         },
@@ -1086,6 +1111,25 @@ function createImportHarness(source, targetMiddlewareRows) {
                         return { rows: [cloneRow(row)] };
                     }
 
+                    if (sql.includes('INSERT INTO soul_gateway.model_aliases')) {
+                        const row = upsertBy(
+                            state.modelAliases,
+                            'alias',
+                            {
+                                id: null,
+                                alias: params[0],
+                                model_id: params[1],
+                            },
+                            () =>
+                                nextId(
+                                    state.seq,
+                                    'modelAlias',
+                                    'model-alias'
+                                )
+                        );
+                        return { rows: [cloneRow(row)], rowCount: 1 };
+                    }
+
                     if (
                         sql.includes(
                             'CREATE TABLE IF NOT EXISTS soul_gateway.audit_logs_'
@@ -1316,9 +1360,16 @@ function buildSnapshotFromImportState(state) {
         byModel.set(key, Object.freeze(rows));
     }
 
+    const aliases = new Map();
+    for (const row of state.modelAliases) {
+        const model = state.models.find((entry) => entry.id === row.model_id);
+        if (!model?.model_key) continue;
+        aliases.set(row.alias, model.model_key);
+    }
+
     return Object.freeze({
         models,
-        aliases: new Map(),
+        aliases,
         providers,
         cooldowns: new Set(),
         middlewareBindings: Object.freeze({

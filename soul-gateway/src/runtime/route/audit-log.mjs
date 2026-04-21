@@ -43,8 +43,8 @@ export function auditLogMiddleware() {
                 sessionId: ctx.session?.id || null,
                 requestedModel: getRequestedModel(ctx),
                 streaming: !!ctx.request?.stream,
-                requestHeaders: {},
-                requestPayload: {},
+                requestHeaders: buildStoredRequestHeaders(ctx),
+                requestPayload: buildStoredRequestPayload(ctx),
             });
         } catch (err) {
             ctx.log?.error?.('audit start failed', { error: err.message });
@@ -133,6 +133,85 @@ export function auditLogMiddleware() {
 
 function getRequestedModel(ctx) {
     return ctx.request?.model ?? ctx.body?.model ?? '(missing)';
+}
+
+const SENSITIVE_REQUEST_HEADERS = new Set([
+    'authorization',
+    'proxy-authorization',
+    'cookie',
+    'set-cookie',
+    'x-api-key',
+    'x-csrf-token',
+    'cf-access-jwt-assertion',
+]);
+
+function buildStoredRequestHeaders(ctx) {
+    const headers = ctx.http?.req?.headers;
+    if (!headers || typeof headers !== 'object') {
+        return {};
+    }
+
+    const filtered = {};
+    for (const [name, value] of Object.entries(headers)) {
+        if (value == null || SENSITIVE_REQUEST_HEADERS.has(name)) {
+            continue;
+        }
+
+        if (Array.isArray(value)) {
+            const compact = value.filter((entry) => entry != null);
+            if (compact.length > 0) {
+                filtered[name] = compact.map(String);
+            }
+            continue;
+        }
+
+        filtered[name] = String(value);
+    }
+
+    return filtered;
+}
+
+function buildStoredRequestPayload(ctx) {
+    const rawBody = cloneJsonValue(ctx.body);
+    const normalizedRequest = cloneJsonValue(ctx.request);
+
+    if (rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)) {
+        if (
+            !Object.prototype.hasOwnProperty.call(rawBody, 'model') &&
+            normalizedRequest?.model != null
+        ) {
+            rawBody.model = normalizedRequest.model;
+        }
+        if (
+            !Object.prototype.hasOwnProperty.call(rawBody, 'stream') &&
+            normalizedRequest?.stream != null
+        ) {
+            rawBody.stream = normalizedRequest.stream;
+        }
+        return rawBody;
+    }
+
+    if (
+        normalizedRequest &&
+        typeof normalizedRequest === 'object' &&
+        !Array.isArray(normalizedRequest)
+    ) {
+        return normalizedRequest;
+    }
+
+    return {};
+}
+
+function cloneJsonValue(value) {
+    if (value == null) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch {
+        return null;
+    }
 }
 
 function getCompletedUsage(ctx) {

@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { importMainBranchData } from './main-branch-importer.mjs';
 import {
-    resolveSourceEncryptionKey,
+    resolveSourceEncryptionKeys,
     resolveTargetApiKeyPepper,
     resolveTargetEncryptionKey,
 } from './main-branch-crypto.mjs';
@@ -33,6 +33,12 @@ export async function main() {
     const sourceUrl = process.env.SOURCE_DATABASE_URL;
     const targetUrl =
         process.env.TARGET_DATABASE_URL || process.env.DATABASE_URL;
+    const sourceCredentialsDir =
+        process.env.SOURCE_CREDENTIALS_DIR || null;
+    const targetCredentialsDir =
+        process.env.TARGET_CREDENTIALS_DIR ||
+        process.env.CREDENTIALS_DIR ||
+        null;
 
     if (!sourceUrl) {
         throw new Error('SOURCE_DATABASE_URL is required');
@@ -54,9 +60,11 @@ export async function main() {
         const report = await importMainBranchData({
             sourcePool,
             targetPool,
-            sourceEncryptionKey: resolveSourceEncryptionKey(process.env),
+            sourceEncryptionKey: resolveSourceEncryptionKeys(process.env),
             targetEncryptionKey: resolveTargetEncryptionKey(process.env),
             targetApiKeyPepper: resolveTargetApiKeyPepper(process.env),
+            sourceCredentialsDir,
+            targetCredentialsDir,
             dryRun,
             strict,
             includeAuditLogs,

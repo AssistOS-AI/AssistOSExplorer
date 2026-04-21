@@ -205,6 +205,249 @@ function unwrapObject(payload, fallback = {}) {
         : fallback;
 }
 
+function toLogSortColumn(sortCol) {
+    if (sortCol === 'total_cost') return 'total_cost_usd';
+    if (sortCol === 'resolved_model') return 'requested_model';
+    return sortCol;
+}
+
+function stringifyLogResponseContent(log) {
+    if (typeof log?.response_content === 'string' && log.response_content) {
+        return log.response_content;
+    }
+    if (typeof log?.response_excerpt === 'string' && log.response_excerpt) {
+        return log.response_excerpt;
+    }
+    if (typeof log?.response_payload === 'string' && log.response_payload) {
+        return log.response_payload;
+    }
+    if (log?.response_payload != null) {
+        try {
+            return JSON.stringify(log.response_payload, null, 2);
+        } catch {
+            return String(log.response_payload);
+        }
+    }
+    return '';
+}
+
+function stringifyLogRequestContent(log, requestPayload) {
+    if (typeof log?.request_content === 'string' && log.request_content) {
+        return log.request_content;
+    }
+    if (typeof log?.request_payload === 'string' && log.request_payload) {
+        return log.request_payload;
+    }
+    if (requestPayload && Object.keys(requestPayload).length > 0) {
+        try {
+            return JSON.stringify(requestPayload, null, 2);
+        } catch {
+            return String(requestPayload);
+        }
+    }
+    if (Array.isArray(log?.request_messages)) {
+        try {
+            return JSON.stringify(log.request_messages, null, 2);
+        } catch {
+            return String(log.request_messages);
+        }
+    }
+    return '';
+}
+
+function normalizeAuditRequestMessages(requestPayload, requestMessages) {
+    if (Array.isArray(requestMessages)) {
+        return requestMessages;
+    }
+
+    if (!requestPayload || typeof requestPayload !== 'object') {
+        return [];
+    }
+
+    if (Array.isArray(requestPayload.messages)) {
+        return requestPayload.messages;
+    }
+
+    const normalized = [];
+
+    appendRequestMessage(normalized, 'system', requestPayload.instructions);
+    appendRequestMessage(normalized, 'system', requestPayload.system);
+    appendRequestMessage(normalized, 'user', requestPayload.prompt);
+
+    if (typeof requestPayload.input === 'string') {
+        appendRequestMessage(normalized, 'user', requestPayload.input);
+    } else if (Array.isArray(requestPayload.input)) {
+        for (const item of requestPayload.input) {
+            appendRequestInputItem(normalized, item);
+        }
+    }
+
+    return normalized;
+}
+
+function appendRequestInputItem(target, item) {
+    if (typeof item === 'string') {
+        appendRequestMessage(target, 'user', item);
+        return;
+    }
+
+    if (!item || typeof item !== 'object') {
+        appendRequestMessage(target, 'user', item);
+        return;
+    }
+
+    if (item.type === 'message') {
+        appendRequestMessage(
+            target,
+            item.role || 'user',
+            normalizeRequestMessageContent(item.content)
+        );
+        return;
+    }
+
+    if (item.type === 'item_reference') {
+        appendRequestMessage(target, 'user', item.text || item.id || item);
+        return;
+    }
+
+    appendRequestMessage(
+        target,
+        item.role || 'user',
+        normalizeRequestMessageContent(item.content ?? item.text ?? item)
+    );
+}
+
+function appendRequestMessage(target, role, content) {
+    if (content == null) {
+        return;
+    }
+
+    if (typeof content === 'string' && content.length === 0) {
+        return;
+    }
+
+    target.push({ role, content });
+}
+
+function normalizeRequestMessageContent(content) {
+    if (typeof content === 'string' || content == null) {
+        return content;
+    }
+
+    if (Array.isArray(content)) {
+        return content.map((part) => normalizeRequestContentPart(part));
+    }
+
+    return content;
+}
+
+function normalizeRequestContentPart(part) {
+    if (typeof part === 'string' || part == null) {
+        return part;
+    }
+
+    if (typeof part !== 'object') {
+        return String(part);
+    }
+
+    switch (part.type) {
+        case 'input_text':
+            return { type: 'text', text: part.text || '' };
+        case 'input_image':
+            return {
+                type: 'image_url',
+                image_url: {
+                    url: part.image_url || part.url || '',
+                    ...(part.detail ? { detail: part.detail } : {}),
+                },
+            };
+        default:
+            return part;
+    }
+}
+
+function normalizeAuditLog(log) {
+    if (!log || typeof log !== 'object') return null;
+
+    const requestPayload =
+        log.request_payload && typeof log.request_payload === 'object'
+            ? log.request_payload
+            : {};
+    const metadata =
+        log.metadata && typeof log.metadata === 'object' ? log.metadata : {};
+    const responsePayload =
+        log.response_payload && typeof log.response_payload === 'object'
+            ? log.response_payload
+            : null;
+    const requestMessages = normalizeAuditRequestMessages(
+        requestPayload,
+        log.request_messages
+    );
+    const finishReason =
+        metadata.finishReason ??
+        responsePayload?.choices?.[0]?.finish_reason ??
+        responsePayload?.stop_reason ??
+        null;
+
+    return {
+        ...log,
+        id: log.id || log.request_id || log.log_id,
+        resolved_model:
+            log.resolved_model ||
+            metadata.sourceResolvedModel ||
+            log.requested_model ||
+            null,
+        total_cost:
+            log.total_cost ??
+            log.total_cost_usd ??
+            metadata.totalCostUsd ??
+            0,
+        status_code:
+            log.status_code ??
+            log.http_status ??
+            (log.status === 'success' ? 200 : null),
+        prompt_tokens: log.prompt_tokens ?? log.input_tokens ?? 0,
+        completion_tokens: log.completion_tokens ?? log.output_tokens ?? 0,
+        retry_count:
+            log.retry_count ??
+            Math.max(0, Number(log.attempt_count || 0) - 1),
+        request_messages: requestMessages,
+        request_content: stringifyLogRequestContent(log, requestPayload),
+        response_content: stringifyLogResponseContent(log),
+        stop_reason: log.stop_reason ?? finishReason,
+    };
+}
+
+function normalizeAuditLogs(payload) {
+    return unwrapArray(payload)
+        .map((log) => normalizeAuditLog(log))
+        .filter(Boolean);
+}
+
+function normalizeAuditLogDetail(payload) {
+    const raw =
+        payload &&
+        typeof payload === 'object' &&
+        payload.log &&
+        typeof payload.log === 'object'
+            ? payload.log
+            : payload;
+    return normalizeAuditLog(raw);
+}
+
+function normalizeLogKeySummaries(payload) {
+    return unwrapArray(payload).map((entry) => ({
+        ...entry,
+        list_id: entry?.api_key_id || '__unknown__',
+        key_label:
+            entry?.key_label || entry?.label || entry?.key_hint || 'Unknown key',
+        key_hint: entry?.key_hint || '',
+        request_count: Number(entry?.request_count || 0),
+        error_count: Number(entry?.error_count || 0),
+        total_cost: Number(entry?.total_cost || 0),
+    }));
+}
+
 function normalizeProviderMiddlewareBindings(payload) {
     const data = unwrapData(payload);
     const list = Array.isArray(data)
@@ -244,7 +487,9 @@ function formatMessages(messages) {
         const raw =
             typeof m.content === 'string'
                 ? m.content
-                : JSON.stringify(m.content, null, 2);
+                : m.content == null
+                  ? ''
+                  : JSON.stringify(m.content, null, 2);
         return {
             role: m.role || 'unknown',
             raw,
@@ -1060,29 +1305,53 @@ function logsPage() {
         _resizing: null,
 
         async init() {
-            await this.loadTree();
+            await this.loadKeys();
+            if (this.keys.length > 0) {
+                await this.selectKey(this.keys[0]);
+            } else {
+                await this.loadLogs();
+            }
 
             window.addEventListener('soul-log', (e) => {
-                if (this.selectedKey && this.selectedLogs.length > 0) {
-                    const log = e.detail;
-                    if (log.api_key_id === this.selectedKey.api_key_id) {
-                        this.selectedLogs.unshift(log);
-                        if (this.selectedLogs.length > this.logsLimit)
-                            this.selectedLogs.pop();
-                        this.logsTotal++;
-                    }
+                const log = normalizeAuditLog(e.detail);
+                if (!log) {
+                    return;
                 }
+                const keyId = log.api_key_id || '__unknown__';
+                const summary = this.keys.find((entry) => entry.list_id === keyId);
+                if (summary) {
+                    summary.request_count += 1;
+                    summary.last_activity = log.started_at || new Date().toISOString();
+                    if (log.status && log.status !== 'succeeded') {
+                        summary.error_count += 1;
+                    }
+                    summary.total_cost += Number(log.total_cost || 0);
+                }
+                if (!this.selectedKey || this.selectedKey.list_id !== keyId) {
+                    return;
+                }
+                this.selectedLogs.unshift(log);
+                if (this.selectedLogs.length > this.logsLimit)
+                    this.selectedLogs.pop();
+                this.logsTotal++;
             });
         },
 
-        async loadTree() {
+        async loadKeys() {
             const tp = timeRangeToParams(
                 this.timeRange,
                 this.customFrom,
                 this.customTo
             );
             const params = new URLSearchParams(tp);
-            this.keys = await api.get(`/management/agents/tree?${params}`);
+            const previousKeyId = this.selectedKey?.list_id || null;
+            this.keys = normalizeLogKeySummaries(
+                await api.get(`/management/logs/keys?${params}`)
+            );
+            this.selectedKey =
+                this.keys.find((key) => key.list_id === previousKeyId) ||
+                this.keys[0] ||
+                null;
         },
 
         filteredKeys() {
@@ -1090,7 +1359,7 @@ function logsPage() {
         },
 
         async onTimeChange() {
-            await this.loadTree();
+            await this.loadKeys();
             this.logsOffset = 0;
             await this.loadLogs();
         },
@@ -1157,11 +1426,11 @@ function logsPage() {
             const p = {
                 limit: this.logsLimit,
                 offset: this.logsOffset,
-                sort: this.sortCol,
+                sort: toLogSortColumn(this.sortCol),
                 order: this.sortDir,
                 ...tp,
             };
-            if (this.selectedKey) p.api_key_id = this.selectedKey.api_key_id;
+            if (this.selectedKey?.api_key_id) p.api_key_id = this.selectedKey.api_key_id;
             if (this.keyword) p.keyword = this.keyword;
             // Apply cell filters
             if (this.filters.agent_name) p.agent_name = this.filters.agent_name;
@@ -1169,7 +1438,7 @@ function logsPage() {
             // cache_hit filter needs backend support -- filter client-side for now
             const params = new URLSearchParams(p);
             const result = await api.get(`/management/logs?${params}`);
-            let rows = result.rows || [];
+            let rows = normalizeAuditLogs(result);
             // Client-side cache filter
             if (this.filters.cache_hit !== undefined) {
                 rows = rows.filter(
@@ -1186,7 +1455,11 @@ function logsPage() {
                 return;
             }
             if (!log._detail) {
-                log._detail = await api.get(`/management/logs/${log.id}`);
+                log._detail = normalizeAuditLogDetail(
+                    await api.get(
+                        `/management/logs/${encodeURIComponent(log.request_id || log.id)}`
+                    )
+                );
             }
             this.expandedDetail = log.id;
         },
@@ -1482,11 +1755,11 @@ function activityPage() {
                 api_key_id: this.expandedKey,
                 limit: this.keyLogsLimit,
                 offset: this.keyLogsOffset,
-                sort: this.sortCol,
+                sort: toLogSortColumn(this.sortCol),
                 order: this.sortDir,
             });
             const result = await api.get(`/management/logs?${params}`);
-            this.keyLogs = result.rows || [];
+            this.keyLogs = normalizeAuditLogs(result);
             this.keyLogsTotal = result.total || 0;
         },
 
@@ -1496,7 +1769,11 @@ function activityPage() {
                 return;
             }
             if (!log._detail) {
-                log._detail = await api.get(`/management/logs/${log.id}`);
+                log._detail = normalizeAuditLogDetail(
+                    await api.get(
+                        `/management/logs/${encodeURIComponent(log.request_id || log.id)}`
+                    )
+                );
             }
             this.expandedDetail = log.id;
         },
@@ -1568,7 +1845,7 @@ function errorsPage() {
             if (this.filterType) params.set('error_type', this.filterType);
             if (this.filterModel) params.set('model', this.filterModel);
             const result = await api.get(`/management/logs?${params}`);
-            this.errorLogs = result.rows || [];
+            this.errorLogs = normalizeAuditLogs(result);
             this.logsTotal = result.total || 0;
         },
 
@@ -1594,7 +1871,11 @@ function errorsPage() {
                 return;
             }
             if (!log._detail) {
-                log._detail = await api.get(`/management/logs/${log.id}`);
+                log._detail = normalizeAuditLogDetail(
+                    await api.get(
+                        `/management/logs/${encodeURIComponent(log.request_id || log.id)}`
+                    )
+                );
             }
             this.expandedDetail = log.id;
         },

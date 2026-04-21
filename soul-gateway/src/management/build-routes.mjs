@@ -113,7 +113,11 @@ import {
 } from './cooldowns-route.mjs';
 
 // Logs
-import { handleListLogs, handleGetLog } from './logs-route.mjs';
+import {
+    handleListLogs,
+    handleListLogKeys,
+    handleGetLog,
+} from './logs-route.mjs';
 
 // Metrics
 import {
@@ -504,6 +508,7 @@ export function buildManagementRouter(appCtx) {
 
     // ── Logs ─────────────────────────────────────────────────────────
     httpRouter.add('GET', '/management/logs', admin(handleListLogs));
+    httpRouter.add('GET', '/management/logs/keys', admin(handleListLogKeys));
     httpRouter.add('GET', '/management/logs/:logId', admin(handleGetLog));
 
     // ── Metrics ──────────────────────────────────────────────────────

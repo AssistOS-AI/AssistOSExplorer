@@ -2534,10 +2534,10 @@ describe('management/cooldowns-route', () => {
 // ── Logs route tests ────────────────────────────────────────────────
 
 describe('management/logs-route', () => {
-    let handleListLogs, handleGetLog;
+    let handleListLogs, handleListLogKeys, handleGetLog;
 
     beforeEach(async () => {
-        ({ handleListLogs, handleGetLog } = await import(
+        ({ handleListLogs, handleListLogKeys, handleGetLog } = await import(
             '../../management/logs-route.mjs'
         ));
     });
@@ -2565,6 +2565,31 @@ describe('management/logs-route', () => {
         const body = parseJsonResponse(res);
         assert.equal(body.data.length, 1);
         assert.equal(body.total, 1);
+    });
+
+    it('handleListLogKeys returns grouped key summaries', async () => {
+        const mockRow = {
+            api_key_id: 'k1',
+            key_label: 'Primary key',
+            key_hint: 'sk-prim...1234',
+            request_count: 3,
+        };
+        const pool = createMockPool(async () => ({ rows: [mockRow] }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListLogKeys({
+            req: createMockReq(),
+            res,
+            params: {},
+            appCtx,
+            query: { from: '2026-01-01T00:00:00.000Z' },
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.data.length, 1);
+        assert.equal(body.data[0].api_key_id, 'k1');
     });
 
     it('handleGetLog returns 404 for missing log', async () => {
@@ -3098,6 +3123,7 @@ describe('management/router', () => {
         const { httpRouter } = buildManagementRouter(appCtx);
 
         assert.ok(httpRouter.match('GET', '/management/logs'));
+        assert.ok(httpRouter.match('GET', '/management/logs/keys'));
         assert.ok(httpRouter.match('GET', '/management/logs/some-request-id'));
     });
 
