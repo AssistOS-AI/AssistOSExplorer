@@ -166,12 +166,12 @@
                                         >
                                             <div class="p-2 text-sm">
                                                 <template
-                                                    x-for="key in filteredKeys()"
-                                                    :key="key.api_key_id"
+                                                    x-for="key in keys"
+                                                    :key="key.list_id"
                                                 >
                                                     <div
-                                                        class="flex items-center gap-2 cursor-pointer hover:bg-base-200 px-2 py-1.5 rounded"
-                                                        :class="{'bg-primary/20': selectedKey?.api_key_id === key.api_key_id}"
+                                                        class="flex items-center gap-2 cursor-pointer px-2 py-1.5 rounded transition-colors"
+                                                        :class="selectedKey?.list_id === key.list_id ? 'bg-primary/20 hover:bg-primary/20' : 'hover:bg-base-200'"
                                                         @click="selectKey(key)"
                                                     >
                                                         <div
@@ -193,7 +193,7 @@
                                                     </div>
                                                 </template>
                                                 <div
-                                                    x-show="filteredKeys().length === 0"
+                                                    x-show="keys.length === 0"
                                                     class="text-center opacity-50 py-4"
                                                 >
                                                     No data
@@ -226,6 +226,10 @@
                                                     <span
                                                         class="text-xs opacity-50"
                                                         x-text="logsTotal + ' requests'"
+                                                    ></span>
+                                                    <span
+                                                        x-show="logsLoading"
+                                                        class="loading loading-spinner loading-xs opacity-60"
                                                     ></span>
                                                     <div class="flex-1"></div>
                                                     <!-- Time range -->
@@ -569,56 +573,67 @@
                                                                                             class="font-bold mb-2 text-xs"
                                                                                         >
                                                                                             Request
-                                                                                            Messages
                                                                                         </h4>
-                                                                                        <div
-                                                                                            class="flex flex-col gap-2 max-h-96 overflow-auto"
+                                                                                        <template
+                                                                                            x-if="(log._detail.request_messages || []).length > 0"
                                                                                         >
-                                                                                            <template
-                                                                                                x-for="(msg, mi) in formatMessages(log._detail.request_messages)"
-                                                                                                :key="mi"
+                                                                                            <div
+                                                                                                class="flex flex-col gap-2 max-h-96 overflow-auto"
                                                                                             >
-                                                                                                <div
-                                                                                                    class="rounded-lg border border-base-300 bg-base-100 p-3"
+                                                                                                <template
+                                                                                                    x-for="(msg, mi) in formatMessages(log._detail.request_messages)"
+                                                                                                    :key="mi"
                                                                                                 >
                                                                                                     <div
-                                                                                                        class="mb-1"
+                                                                                                        class="rounded-lg border border-base-300 bg-base-100 p-3"
                                                                                                     >
-                                                                                                        <span
-                                                                                                            class="badge badge-sm"
-                                                                                                            :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'"
-                                                                                                            x-text="msg.role"
-                                                                                                        ></span>
-                                                                                                    </div>
-                                                                                                    <template
-                                                                                                        x-if="!msg.isLong"
-                                                                                                        ><div
-                                                                                                            class="sg-md text-xs"
-                                                                                                            x-html="msg.html"
-                                                                                                        ></div
-                                                                                                    ></template>
-                                                                                                    <template
-                                                                                                        x-if="msg.isLong"
-                                                                                                        ><div>
-                                                                                                            <div
-                                                                                                                x-show="!msg._expanded"
-                                                                                                                class="text-xs opacity-70"
-                                                                                                                x-text="msg.raw.slice(0, 200) + '...'"
-                                                                                                            ></div>
-                                                                                                            <div
-                                                                                                                x-show="msg._expanded"
+                                                                                                        <div
+                                                                                                            class="mb-1"
+                                                                                                        >
+                                                                                                            <span
+                                                                                                                class="badge badge-sm"
+                                                                                                                :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'"
+                                                                                                                x-text="msg.role"
+                                                                                                            ></span>
+                                                                                                        </div>
+                                                                                                        <template
+                                                                                                            x-if="!msg.isLong"
+                                                                                                            ><div
                                                                                                                 class="sg-md text-xs"
                                                                                                                 x-html="msg.html"
-                                                                                                            ></div>
-                                                                                                            <button
-                                                                                                                class="btn btn-ghost btn-xs mt-1"
-                                                                                                                @click.stop="msg._expanded = !msg._expanded"
-                                                                                                                x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"
-                                                                                                            ></button></div
-                                                                                                    ></template>
-                                                                                                </div>
-                                                                                            </template>
-                                                                                        </div>
+                                                                                                            ></div
+                                                                                                        ></template>
+                                                                                                        <template
+                                                                                                            x-if="msg.isLong"
+                                                                                                            ><div>
+                                                                                                                <div
+                                                                                                                    x-show="!msg._expanded"
+                                                                                                                    class="text-xs opacity-70"
+                                                                                                                    x-text="msg.raw.slice(0, 200) + '...'"
+                                                                                                                ></div>
+                                                                                                                <div
+                                                                                                                    x-show="msg._expanded"
+                                                                                                                    class="sg-md text-xs"
+                                                                                                                    x-html="msg.html"
+                                                                                                                ></div>
+                                                                                                                <button
+                                                                                                                    class="btn btn-ghost btn-xs mt-1"
+                                                                                                                    @click.stop="msg._expanded = !msg._expanded"
+                                                                                                                    x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"
+                                                                                                                ></button></div
+                                                                                                        ></template>
+                                                                                                    </div>
+                                                                                                </template>
+                                                                                            </div>
+                                                                                        </template>
+                                                                                        <template
+                                                                                            x-if="(log._detail.request_messages || []).length === 0"
+                                                                                        >
+                                                                                            <div
+                                                                                                class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3"
+                                                                                                x-html="renderContent(log._detail.request_content) || '(empty)'"
+                                                                                            ></div>
+                                                                                        </template>
                                                                                     </div>
                                                                                     <div>
                                                                                         <h4
@@ -1138,59 +1153,70 @@
                                                                                                     class="font-bold mb-2 text-xs"
                                                                                                 >
                                                                                                     Request
-                                                                                                    Messages
                                                                                                 </h4>
-                                                                                                <div
-                                                                                                    class="flex flex-col gap-2 max-h-96 overflow-auto"
+                                                                                                <template
+                                                                                                    x-if="(log._detail.request_messages || []).length > 0"
                                                                                                 >
-                                                                                                    <template
-                                                                                                        x-for="(msg, mi) in formatMessages(log._detail.request_messages)"
-                                                                                                        :key="mi"
+                                                                                                    <div
+                                                                                                        class="flex flex-col gap-2 max-h-96 overflow-auto"
                                                                                                     >
-                                                                                                        <div
-                                                                                                            class="rounded-lg border border-base-300 bg-base-100 p-3"
+                                                                                                        <template
+                                                                                                            x-for="(msg, mi) in formatMessages(log._detail.request_messages)"
+                                                                                                            :key="mi"
                                                                                                         >
                                                                                                             <div
-                                                                                                                class="mb-1"
-                                                                                                            >
-                                                                                                                <span
-                                                                                                                    class="badge badge-sm"
-                                                                                                                    :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'"
-                                                                                                                    x-text="msg.role"
-                                                                                                                ></span>
-                                                                                                            </div>
-                                                                                                            <template
-                                                                                                                x-if="!msg.isLong"
+                                                                                                                class="rounded-lg border border-base-300 bg-base-100 p-3"
                                                                                                             >
                                                                                                                 <div
-                                                                                                                    class="sg-md text-xs"
-                                                                                                                    x-html="msg.html"
-                                                                                                                ></div>
-                                                                                                            </template>
-                                                                                                            <template
-                                                                                                                x-if="msg.isLong"
-                                                                                                            >
-                                                                                                                <div>
+                                                                                                                    class="mb-1"
+                                                                                                                >
+                                                                                                                    <span
+                                                                                                                        class="badge badge-sm"
+                                                                                                                        :class="msg.role === 'system' ? 'badge-ghost' : msg.role === 'user' ? 'badge-info' : msg.role === 'assistant' ? 'badge-success' : 'badge-secondary'"
+                                                                                                                        x-text="msg.role"
+                                                                                                                    ></span>
+                                                                                                                </div>
+                                                                                                                <template
+                                                                                                                    x-if="!msg.isLong"
+                                                                                                                >
                                                                                                                     <div
-                                                                                                                        x-show="!msg._expanded"
-                                                                                                                        class="text-xs opacity-70"
-                                                                                                                        x-text="msg.raw.slice(0, 200) + '...'"
-                                                                                                                    ></div>
-                                                                                                                    <div
-                                                                                                                        x-show="msg._expanded"
                                                                                                                         class="sg-md text-xs"
                                                                                                                         x-html="msg.html"
                                                                                                                     ></div>
-                                                                                                                    <button
-                                                                                                                        class="btn btn-ghost btn-xs mt-1"
-                                                                                                                        @click.stop="msg._expanded = !msg._expanded"
-                                                                                                                        x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"
-                                                                                                                    ></button>
-                                                                                                                </div>
-                                                                                                            </template>
-                                                                                                        </div>
-                                                                                                    </template>
-                                                                                                </div>
+                                                                                                                </template>
+                                                                                                                <template
+                                                                                                                    x-if="msg.isLong"
+                                                                                                                >
+                                                                                                                    <div>
+                                                                                                                        <div
+                                                                                                                            x-show="!msg._expanded"
+                                                                                                                            class="text-xs opacity-70"
+                                                                                                                            x-text="msg.raw.slice(0, 200) + '...'"
+                                                                                                                        ></div>
+                                                                                                                        <div
+                                                                                                                            x-show="msg._expanded"
+                                                                                                                            class="sg-md text-xs"
+                                                                                                                            x-html="msg.html"
+                                                                                                                        ></div>
+                                                                                                                        <button
+                                                                                                                            class="btn btn-ghost btn-xs mt-1"
+                                                                                                                            @click.stop="msg._expanded = !msg._expanded"
+                                                                                                                            x-text="msg._expanded ? 'Collapse' : 'Expand (' + msg.raw.length + ' chars)'"
+                                                                                                                        ></button>
+                                                                                                                    </div>
+                                                                                                                </template>
+                                                                                                            </div>
+                                                                                                        </template>
+                                                                                                    </div>
+                                                                                                </template>
+                                                                                                <template
+                                                                                                    x-if="(log._detail.request_messages || []).length === 0"
+                                                                                                >
+                                                                                                    <div
+                                                                                                        class="sg-md text-xs max-h-72 overflow-auto rounded-lg border border-base-300 bg-base-100 p-3"
+                                                                                                        x-html="renderContent(log._detail.request_content) || '(empty)'"
+                                                                                                    ></div>
+                                                                                                </template>
                                                                                             </div>
                                                                                             <div>
                                                                                                 <h4
@@ -2039,12 +2065,11 @@
                                                                                         class="font-bold mb-1 text-xs"
                                                                                     >
                                                                                         Request
-                                                                                        Messages
                                                                                     </h4>
                                                                                     <div
                                                                                         class="mockup-code text-xs max-h-48 overflow-auto"
                                                                                     >
-                                                                                        <pre><code x-text="JSON.stringify(log._detail.request_messages, null, 2)"></code></pre>
+                                                                                        <pre><code x-text="log._detail.request_content || '(empty)'"></code></pre>
                                                                                     </div>
                                                                                 </div>
                                                                                 <div>

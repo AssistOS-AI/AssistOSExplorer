@@ -715,6 +715,8 @@ describe('full route chain integration', () => {
             },
             {
                 headers: {
+                    authorization: 'Bearer sk-test-123',
+                    cookie: 'session=secret',
                     'x-session-id': '11111111-1111-1111-1111-111111111111',
                     'x-soul-id': 'soul-1',
                     'x-agent-name': 'agent-1',
@@ -728,6 +730,16 @@ describe('full route chain integration', () => {
         assert.equal(calls.start.apiKeyId, 'permissive-stub');
         assert.equal(calls.start.requestedModel, 'stub-model');
         assert.equal(calls.start.sessionId, null);
+        assert.deepEqual(calls.start.requestPayload, {
+            model: 'stub-model',
+            messages: [{ role: 'user', content: 'hi' }],
+        });
+        assert.deepEqual(calls.start.requestHeaders, {
+            'content-type': 'application/json',
+            'x-session-id': '11111111-1111-1111-1111-111111111111',
+            'x-soul-id': 'soul-1',
+            'x-agent-name': 'agent-1',
+        });
         assert.equal(calls.finalize.logId, 'log-1');
         assert.equal(
             calls.finalize.fields.sessionId,
