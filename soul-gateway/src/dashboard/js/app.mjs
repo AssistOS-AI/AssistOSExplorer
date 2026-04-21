@@ -448,6 +448,32 @@ function normalizeLogKeySummaries(payload) {
     }));
 }
 
+function compareLogKeySummaries(left, right) {
+    const leftLastActivity = left?.last_activity
+        ? new Date(left.last_activity).getTime()
+        : Number.NEGATIVE_INFINITY;
+    const rightLastActivity = right?.last_activity
+        ? new Date(right.last_activity).getTime()
+        : Number.NEGATIVE_INFINITY;
+    if (leftLastActivity !== rightLastActivity) {
+        return rightLastActivity - leftLastActivity;
+    }
+
+    const requestCountDiff =
+        Number(right?.request_count || 0) - Number(left?.request_count || 0);
+    if (requestCountDiff !== 0) {
+        return requestCountDiff;
+    }
+
+    return String(left?.key_label || '').localeCompare(
+        String(right?.key_label || '')
+    );
+}
+
+function sortLogKeySummaries(list) {
+    return [...list].sort(compareLogKeySummaries);
+}
+
 function normalizeProviderMiddlewareBindings(payload) {
     const data = unwrapData(payload);
     const list = Array.isArray(data)
@@ -1277,6 +1303,7 @@ function logsPage() {
         keys: [],
         selectedKey: null,
         selectedLogs: [],
+        logsLoading: false,
         logsTotal: 0,
         logsOffset: 0,
         logsLimit: 50,
@@ -1303,6 +1330,7 @@ function logsPage() {
             status: 64,
         },
         _resizing: null,
+        _logsLoadSeq: 0,
 
         async init() {
             await this.loadKeys();
@@ -1326,6 +1354,7 @@ function logsPage() {
                         summary.error_count += 1;
                     }
                     summary.total_cost += Number(log.total_cost || 0);
+                    this.keys = sortLogKeySummaries(this.keys);
                 }
                 if (!this.selectedKey || this.selectedKey.list_id !== keyId) {
                     return;
@@ -1345,17 +1374,15 @@ function logsPage() {
             );
             const params = new URLSearchParams(tp);
             const previousKeyId = this.selectedKey?.list_id || null;
-            this.keys = normalizeLogKeySummaries(
+            this.keys = sortLogKeySummaries(
+                normalizeLogKeySummaries(
                 await api.get(`/management/logs/keys?${params}`)
+                )
             );
             this.selectedKey =
                 this.keys.find((key) => key.list_id === previousKeyId) ||
                 this.keys[0] ||
                 null;
-        },
-
-        filteredKeys() {
-            return this.keys;
         },
 
         async onTimeChange() {
@@ -1405,7 +1432,13 @@ function logsPage() {
             });
         },
 
-        async selectKey(key) {
+        selectKey(key) {
+            if (!key) {
+                return;
+            }
+            if (this.selectedKey?.list_id === key.list_id) {
+                return;
+            }
             this.selectedKey = key;
             this.logsOffset = 0;
             this.expandedDetail = null;
@@ -1413,11 +1446,16 @@ function logsPage() {
             this.keyword = '';
             this.sortCol = 'started_at';
             this.sortDir = 'desc';
-            await this.loadLogs();
+            this.selectedLogs = [];
+            this.logsTotal = Number(key.request_count || 0);
+            this.loadLogs();
         },
 
         async loadLogs() {
             this.expandedDetail = null;
+            const loadSeq = ++this._logsLoadSeq;
+            const selectedKeyId = this.selectedKey?.list_id || null;
+            this.logsLoading = true;
             const tp = timeRangeToParams(
                 this.timeRange,
                 this.customFrom,
@@ -1437,16 +1475,28 @@ function logsPage() {
             if (this.filters.session_id) p.session_id = this.filters.session_id;
             // cache_hit filter needs backend support -- filter client-side for now
             const params = new URLSearchParams(p);
-            const result = await api.get(`/management/logs?${params}`);
-            let rows = normalizeAuditLogs(result);
-            // Client-side cache filter
-            if (this.filters.cache_hit !== undefined) {
-                rows = rows.filter(
-                    (r) => !!r.cache_hit === this.filters.cache_hit
-                );
+            try {
+                const result = await api.get(`/management/logs?${params}`);
+                if (
+                    loadSeq !== this._logsLoadSeq ||
+                    selectedKeyId !== (this.selectedKey?.list_id || null)
+                ) {
+                    return;
+                }
+                let rows = normalizeAuditLogs(result);
+                // Client-side cache filter
+                if (this.filters.cache_hit !== undefined) {
+                    rows = rows.filter(
+                        (r) => !!r.cache_hit === this.filters.cache_hit
+                    );
+                }
+                this.selectedLogs = rows;
+                this.logsTotal = result.total || 0;
+            } finally {
+                if (loadSeq === this._logsLoadSeq) {
+                    this.logsLoading = false;
+                }
             }
-            this.selectedLogs = rows;
-            this.logsTotal = result.total || 0;
         },
 
         async toggleDetail(log) {

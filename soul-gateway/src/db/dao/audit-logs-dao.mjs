@@ -128,6 +128,11 @@ export async function query(
     ]);
     const sortCol = allowedSorts.has(sort) ? sort : 'started_at';
     const sortDir = order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const orderBy = [`${sortCol} ${sortDir}`];
+    if (sortCol !== 'started_at') {
+        orderBy.push(`started_at ${sortDir}`);
+    }
+    orderBy.push(`log_id ${sortDir}`);
 
     const where =
         conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -135,7 +140,7 @@ export async function query(
 
     const { rows } = await pool.query(
         `SELECT * FROM ${TABLE} ${where}
-     ORDER BY ${sortCol} ${sortDir}
+     ORDER BY ${orderBy.join(', ')}
      LIMIT $${idx} OFFSET $${idx + 1}`,
         params
     );
@@ -183,7 +188,7 @@ export async function summarizeByApiKey(pool, filters = {}) {
            ON keys.id = logs.api_key_id
          ${where}
          GROUP BY logs.api_key_id, keys.label, keys.key_hint, keys.status
-         ORDER BY request_count DESC, last_activity DESC NULLS LAST, key_label ASC`,
+         ORDER BY last_activity DESC NULLS LAST, request_count DESC, key_label ASC`,
         params
     );
     return rows;

@@ -405,11 +405,48 @@ describe('audit-logs-dao', () => {
             'findByRequestId',
             'query',
             'countByFilters',
+            'summarizeByApiKey',
             'ensurePartition',
             'dropExpiredPartitions',
         ];
         for (const fn of expected) {
             assert.equal(typeof dao[fn], 'function', `missing export: ${fn}`);
         }
+    });
+
+    it('orders log queries deterministically with tie breakers', async () => {
+        const dao = await import('../../db/dao/audit-logs-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return { rows: [] };
+            },
+        };
+
+        await dao.query(pool, {}, { sort: 'requested_model', order: 'DESC' });
+
+        assert.match(
+            calls[0].sql,
+            /ORDER BY requested_model DESC, started_at DESC, log_id DESC/
+        );
+    });
+
+    it('orders key summaries by last activity before request count', async () => {
+        const dao = await import('../../db/dao/audit-logs-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return { rows: [] };
+            },
+        };
+
+        await dao.summarizeByApiKey(pool, {});
+
+        assert.match(
+            calls[0].sql,
+            /ORDER BY last_activity DESC NULLS LAST, request_count DESC, key_label ASC/
+        );
     });
 });

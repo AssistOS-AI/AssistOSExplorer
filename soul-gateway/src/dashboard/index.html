@@ -166,12 +166,12 @@
                                         >
                                             <div class="p-2 text-sm">
                                                 <template
-                                                    x-for="key in filteredKeys()"
+                                                    x-for="key in keys"
                                                     :key="key.list_id"
                                                 >
                                                     <div
-                                                        class="flex items-center gap-2 cursor-pointer hover:bg-base-200 px-2 py-1.5 rounded"
-                                                        :class="{'bg-primary/20': selectedKey?.list_id === key.list_id}"
+                                                        class="flex items-center gap-2 cursor-pointer px-2 py-1.5 rounded transition-colors"
+                                                        :class="selectedKey?.list_id === key.list_id ? 'bg-primary/20 hover:bg-primary/20' : 'hover:bg-base-200'"
                                                         @click="selectKey(key)"
                                                     >
                                                         <div
@@ -193,7 +193,7 @@
                                                     </div>
                                                 </template>
                                                 <div
-                                                    x-show="filteredKeys().length === 0"
+                                                    x-show="keys.length === 0"
                                                     class="text-center opacity-50 py-4"
                                                 >
                                                     No data
@@ -226,6 +226,10 @@
                                                     <span
                                                         class="text-xs opacity-50"
                                                         x-text="logsTotal + ' requests'"
+                                                    ></span>
+                                                    <span
+                                                        x-show="logsLoading"
+                                                        class="loading loading-spinner loading-xs opacity-60"
                                                     ></span>
                                                     <div class="flex-1"></div>
                                                     <!-- Time range -->

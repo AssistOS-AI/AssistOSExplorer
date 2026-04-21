@@ -48,13 +48,15 @@ export async function handleListLogs(ctx) {
     const sort = query.sort || 'started_at';
     const order = query.order || 'DESC';
 
-    const rows = await auditDao.query(pool, filters, {
-        limit,
-        offset,
-        sort,
-        order,
-    });
-    const total = await auditDao.countByFilters(pool, filters);
+    const [rows, total] = await Promise.all([
+        auditDao.query(pool, filters, {
+            limit,
+            offset,
+            sort,
+            order,
+        }),
+        auditDao.countByFilters(pool, filters),
+    ]);
 
     sendJson(res, 200, { data: rows, total, limit, offset });
 }
