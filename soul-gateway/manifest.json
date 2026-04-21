@@ -4,6 +4,9 @@
     "cli": "bash /code/cli.sh",
     "about": "Soul Gateway — LLM proxy with Soul Family policies, full content logging, and operations dashboard",
     "enable": ["postgres"],
+    "readiness": {
+        "protocol": "tcp"
+    },
     "profiles": {
         "default": {
             "env": {
