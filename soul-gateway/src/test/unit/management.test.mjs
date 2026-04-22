@@ -2611,6 +2611,63 @@ describe('management/logs-route', () => {
 
 // ── Metrics route tests ─────────────────────────────────────────────
 
+describe('observability/metrics-service', () => {
+    it('getErrorMetrics returns structured aggregates', async () => {
+        const summaryRow = {
+            total_requests: '12',
+            error_count: '3',
+            blocked_count: '1',
+            rate_limited_count: '2',
+            truncated_count: '4',
+            slow_count: '5',
+        };
+        const breakdownRows = [
+            { error_type: 'rate_limit_error', count: '2' },
+            { error_type: 'mid_stream_error', count: '1' },
+        ];
+        const modelRows = [
+            { requested_model: 'openai/gpt-4.1-mini', error_count: '2' },
+            { requested_model: 'anthropic/claude-3.7-sonnet', error_count: '1' },
+        ];
+        const rateRows = [
+            {
+                period: '2026-04-01T10:00:00.000Z',
+                resolved_model: 'openai/gpt-4.1-mini',
+                error_count: '2',
+            },
+        ];
+        const seenParams = [];
+        const responses = [
+            { rows: [summaryRow] },
+            { rows: breakdownRows },
+            { rows: modelRows },
+            { rows: rateRows },
+        ];
+        const pool = createMockPool(async (_sql, params) => {
+            seenParams.push(params);
+            return responses.shift() || { rows: [] };
+        });
+        const service = new MetricsService(pool);
+
+        const data = await service.getErrorMetrics({
+            from: '2026-04-01',
+            to: '2026-04-02',
+        });
+
+        assert.equal(seenParams.length, 4);
+        assert.deepEqual(data.summary, summaryRow);
+        assert.deepEqual(data.breakdown, breakdownRows);
+        assert.deepEqual(data.models, [
+            'openai/gpt-4.1-mini',
+            'anthropic/claude-3.7-sonnet',
+        ]);
+        assert.deepEqual(data.rates, rateRows);
+        for (const params of seenParams) {
+            assert.deepEqual(params, ['2026-04-01', '2026-04-02']);
+        }
+    });
+});
+
 describe('management/metrics-route', () => {
     let handleCostMetrics, handleUsageMetrics, handleErrorMetrics;
 
@@ -2657,6 +2714,52 @@ describe('management/metrics-route', () => {
         assert.equal(res.statusCode, 200);
         const body = parseJsonResponse(res);
         assert.equal(body.data.length, 1);
+    });
+
+    it('handleErrorMetrics returns structured data for valid date range', async () => {
+        const expected = {
+            summary: {
+                total_requests: '12',
+                error_count: '3',
+                blocked_count: '1',
+                rate_limited_count: '2',
+                truncated_count: '4',
+                slow_count: '5',
+            },
+            breakdown: [{ error_type: 'rate_limit_error', count: '2' }],
+            models: ['openai/gpt-4.1-mini'],
+            rates: [
+                {
+                    period: '2026-04-01T10:00:00.000Z',
+                    resolved_model: 'openai/gpt-4.1-mini',
+                    error_count: '2',
+                },
+            ],
+        };
+        const appCtx = createMockAppCtx({
+            services: {
+                metricsService: {
+                    getErrorMetrics: async ({ from, to }) => {
+                        assert.equal(from, '2026-04-01');
+                        assert.equal(to, '2026-04-02');
+                        return expected;
+                    },
+                },
+            },
+        });
+        const res = createMockRes();
+
+        await handleErrorMetrics({
+            req: createMockReq(),
+            res,
+            params: {},
+            appCtx,
+            query: { from: '2026-04-01', to: '2026-04-02' },
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.deepEqual(body.data, expected);
     });
 });
 

@@ -1872,7 +1872,9 @@ function errorsPage() {
                 this.customTo
             );
             const params = new URLSearchParams(tp);
-            const data = await api.get(`/management/metrics/errors?${params}`);
+            const data = unwrapObject(
+                await api.get(`/management/metrics/errors?${params}`)
+            );
             this.summary = data.summary || {};
             this.breakdown = data.breakdown || [];
             this.errorModels = data.models || [];
@@ -1887,7 +1889,7 @@ function errorsPage() {
                 this.customTo
             );
             const params = new URLSearchParams({
-                status: 'error',
+                status: 'failed',
                 limit: this.logsLimit,
                 offset: this.logsOffset,
                 ...tp,
