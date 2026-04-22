@@ -400,6 +400,7 @@ describe('audit-logs-dao', () => {
     it('exports all expected functions', async () => {
         const dao = await import('../../db/dao/audit-logs-dao.mjs');
         const expected = [
+            'insertCompleted',
             'insertStart',
             'finalize',
             'findByRequestId',

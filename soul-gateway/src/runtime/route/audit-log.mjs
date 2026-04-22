@@ -1,16 +1,12 @@
 /**
  * Route middleware: durable audit logging.
  *
- * Wraps the route chain to persist an audit_logs row per request:
- *   - Before `next()`: calls `auditLogWriter.start()` to insert the
- *     initial "in_progress" row.
- *   - After `next()` (or on catch): calls `auditLogWriter.finalize()`
- *     to update the row with outcome, latency, tokens, cost, etc.
+ * Wraps the route chain to persist one completed audit_logs row per
+ * request after the downstream outcome is known.
  *
  * Positioned after auth + ingress normalization so the durable row has
  * the authenticated key and requested model before validation / model
- * resolution run, while still capturing downstream success and error
- * outcomes.
+ * resolution run, while still capturing downstream success and error outcomes.
  *
  * @module runtime/route/audit-log
  */
@@ -29,29 +25,20 @@ export function auditLogMiddleware() {
         }
 
         const startedAt = new Date(ctx.startedAt);
-        let startRow = null;
-
-        try {
-            startRow = await writer.start({
-                startedAt,
-                requestId: ctx.requestId,
-                requestFormat: ctx.route?.format || ctx.route?.kind || 'unknown',
-                apiKeyId: ctx.auth?.keyId || null,
-                soulId: ctx.identity?.soulId || null,
-                agentName: ctx.identity?.agentName || null,
-                userAgent: ctx.http?.req?.headers?.['user-agent'] || null,
-                sessionId: ctx.session?.id || null,
-                requestedModel: getRequestedModel(ctx),
-                streaming: !!ctx.request?.stream,
-                requestHeaders: buildStoredRequestHeaders(ctx),
-                requestPayload: buildStoredRequestPayload(ctx),
-            });
-        } catch (err) {
-            ctx.log?.error?.('audit start failed', { error: err.message });
-        }
-
-        ctx.state.set('audit.startedAt', startedAt);
-        ctx.state.set('audit.logId', startRow?.log_id || null);
+        const requestFields = {
+            startedAt,
+            requestId: ctx.requestId,
+            requestFormat: ctx.route?.format || ctx.route?.kind || 'unknown',
+            apiKeyId: ctx.auth?.keyId || null,
+            soulId: ctx.identity?.soulId || null,
+            agentName: ctx.identity?.agentName || null,
+            userAgent: ctx.http?.req?.headers?.['user-agent'] || null,
+            sessionId: ctx.session?.id || null,
+            requestedModel: getRequestedModel(ctx),
+            streaming: !!ctx.request?.stream,
+            requestHeaders: buildStoredRequestHeaders(ctx),
+            requestPayload: buildStoredRequestPayload(ctx),
+        };
 
         let caughtError = null;
         try {
@@ -60,72 +47,54 @@ export function auditLogMiddleware() {
             caughtError = err;
         }
 
-        const logId = ctx.state.get('audit.logId');
-        if (logId) {
-            const latencyMs = Date.now() - ctx.startedAt;
-            const failed = !!caughtError;
-            const usage = getCompletedUsage(ctx);
-            const cost = calculateCompletedCost(ctx, usage);
-            const resolvedModel = getResolvedExecutionModel(ctx);
-            const resolvedProviderId =
-                ctx.target?.provider?.id ||
-                resolvedModel?.providerId ||
-                resolvedModel?.provider_id ||
-                null;
-            const providerAccountId =
-                ctx.metadata?.cascadeAccountId ??
-                ctx.metadata?.backendAccountId ??
-                null;
-            const queueWaitMs =
-                ctx.metadata?.cascadeQueueWaitMs ??
-                ctx.metadata?.queueWaitMs ??
-                null;
-            const retryTrace =
-                ctx.metadata?.cascadeRetryTrace ||
-                ctx.metadata?.retryTrace ||
-                [];
-            const responseExcerpt = extractResponseExcerpt(ctx.response);
+        const latencyMs = Date.now() - ctx.startedAt;
+        const failed = !!caughtError;
+        const usage = getCompletedUsage(ctx);
+        const cost = calculateCompletedCost(ctx, usage);
+        const resolvedModel = getResolvedExecutionModel(ctx);
+        const resolvedProviderId =
+            ctx.target?.provider?.id ||
+            resolvedModel?.providerId ||
+            resolvedModel?.provider_id ||
+            null;
+        const providerAccountId =
+            ctx.metadata?.cascadeAccountId ?? ctx.metadata?.backendAccountId ?? null;
+        const queueWaitMs =
+            ctx.metadata?.cascadeQueueWaitMs ?? ctx.metadata?.queueWaitMs ?? null;
+        const retryTrace =
+            ctx.metadata?.cascadeRetryTrace || ctx.metadata?.retryTrace || [];
+        const responseExcerpt = extractResponseExcerpt(ctx.response);
 
-            try {
-                await writer.finalize(startedAt, logId, {
-                    status: failed ? 'failed' : 'succeeded',
-                    httpStatus: failed
-                        ? (caughtError.httpStatus || 500)
-                        : (ctx.metadata?.httpStatus || 200),
-                    errorType: failed ? (caughtError.errorType || 'internal_error') : null,
-                    errorMessage: failed ? caughtError.message : null,
-                    apiKeyId: ctx.auth?.keyId || null,
-                    soulId: ctx.identity?.soulId || null,
-                    agentName: ctx.identity?.agentName || null,
-                    sessionId: ctx.session?.id || null,
-                    requestedModel: getRequestedModel(ctx),
-                    resolvedModelId:
-                        resolvedModel?.id || resolvedModel?.modelId || null,
-                    resolvedProviderId,
-                    providerAccountId,
-                    queueWaitMs,
-                    latencyMs,
-                    ttfbMs: ctx.metadata?.ttfbMs || null,
-                    inputTokens: usage?.inputTokens ?? null,
-                    outputTokens: usage?.outputTokens ?? null,
-                    totalTokens: usage?.totalTokens ?? null,
-                    inputCostUsd: cost.inputCostUsd,
-                    outputCostUsd: cost.outputCostUsd,
-                    totalCostUsd: cost.totalCostUsd,
-                    budgetExempt: cost.budgetExempt,
-                    retryTrace,
-                    responseExcerpt,
-                    cascaded: Array.isArray(ctx.metadata?.cascadeTrace) &&
-                        ctx.metadata.cascadeTrace.length > 0,
-                    cacheHit: !!ctx.metadata?.cacheHit,
-                    blocked: !!ctx.metadata?.blocked,
-                    streaming: !!ctx.request?.stream,
-                    completedAt: new Date(),
-                });
-            } catch (err) {
-                ctx.log?.error?.('audit finalize failed', { error: err.message });
-            }
-        }
+        await writer.write({
+            ...requestFields,
+            sessionId: ctx.session?.id || requestFields.sessionId,
+            status: failed ? 'failed' : 'succeeded',
+            httpStatus: failed
+                ? (caughtError.httpStatus || 500)
+                : (ctx.metadata?.httpStatus || 200),
+            errorType: failed ? (caughtError.errorType || 'internal_error') : null,
+            errorMessage: failed ? caughtError.message : null,
+            resolvedModelId: resolvedModel?.id || resolvedModel?.modelId || null,
+            resolvedProviderId,
+            providerAccountId,
+            queueWaitMs,
+            latencyMs,
+            ttfbMs: ctx.metadata?.ttfbMs || null,
+            inputTokens: usage?.inputTokens ?? null,
+            outputTokens: usage?.outputTokens ?? null,
+            totalTokens: usage?.totalTokens ?? null,
+            inputCostUsd: cost.inputCostUsd,
+            outputCostUsd: cost.outputCostUsd,
+            totalCostUsd: cost.totalCostUsd,
+            budgetExempt: cost.budgetExempt,
+            retryTrace,
+            responseExcerpt,
+            cascaded: Array.isArray(ctx.metadata?.cascadeTrace) &&
+                ctx.metadata.cascadeTrace.length > 0,
+            cacheHit: !!ctx.metadata?.cacheHit,
+            blocked: !!ctx.metadata?.blocked,
+            completedAt: new Date(),
+        });
 
         if (caughtError) throw caughtError;
     };

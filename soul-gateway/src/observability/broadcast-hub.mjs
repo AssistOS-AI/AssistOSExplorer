@@ -14,7 +14,7 @@ import { redactLogEntry } from './redaction.mjs';
  * BroadcastHub — real-time log distribution to SSE and WebSocket subscribers.
  *
  * Publishing flow:
- *  1. AuditLogWriter.finalize() calls hub.publish(logRow)
+ *  1. AuditLogWriter.write() calls hub.publish(logRow)
  *  2. Hub tests each subscriber's filters
  *  3. Normal streams receive redacted payloads
  *  4. Soul-specific streams receive unredacted payloads for their soul only
@@ -207,4 +207,3 @@ function matchesFilters(logRow, filters, soulSpecific) {
     if (filters.status && logRow.status !== filters.status) return false;
     return true;
 }
-

@@ -6,6 +6,75 @@ import { toSnake } from './helpers/case-convert.mjs';
 
 const TABLE = 'soul_gateway.audit_logs';
 
+const INSERTABLE_FIELDS = [
+    'startedAt',
+    'requestId',
+    'requestFormat',
+    'status',
+    'apiKeyId',
+    'soulId',
+    'agentName',
+    'userAgent',
+    'sessionId',
+    'requestedModel',
+    'resolvedModelId',
+    'resolvedProviderId',
+    'tierId',
+    'providerAccountId',
+    'httpStatus',
+    'errorType',
+    'errorMessage',
+    'retryable',
+    'cascaded',
+    'cacheHit',
+    'blocked',
+    'loopDetected',
+    'truncated',
+    'slow',
+    'oversized',
+    'streaming',
+    'queueWaitMs',
+    'latencyMs',
+    'ttfbMs',
+    'completedAt',
+    'attemptCount',
+    'retryTrace',
+    'middlewareTrace',
+    'requestHeaders',
+    'requestPayload',
+    'responsePayload',
+    'responseExcerpt',
+    'responseFingerprint',
+    'inputTokens',
+    'outputTokens',
+    'totalTokens',
+    'inputCostUsd',
+    'outputCostUsd',
+    'totalCostUsd',
+    'budgetExempt',
+    'flags',
+    'metadata',
+];
+
+const JSON_FIELDS = new Set([
+    'retryTrace',
+    'middlewareTrace',
+    'requestHeaders',
+    'requestPayload',
+    'responsePayload',
+    'flags',
+    'metadata',
+]);
+
+const REQUIRED_COMPLETED_FIELDS = [
+    'startedAt',
+    'requestId',
+    'requestFormat',
+    'status',
+    'apiKeyId',
+    'requestedModel',
+];
+
 /**
  * Insert the initial "in_progress" audit log row when a request starts.
  */
@@ -53,6 +122,39 @@ export async function insertStart(
 }
 
 /**
+ * Insert one completed audit log row after the request finishes or fails.
+ */
+export async function insertCompleted(pool, fields) {
+    for (const key of REQUIRED_COMPLETED_FIELDS) {
+        if (fields[key] == null) {
+            throw new Error(`insertCompleted missing required field: ${key}`);
+        }
+    }
+
+    const keys = INSERTABLE_FIELDS.filter(
+        (key) => Object.hasOwn(fields, key) && fields[key] !== undefined
+    );
+    const columns = [];
+    const placeholders = [];
+    const values = [];
+
+    for (const key of keys) {
+        columns.push(toSnake(key));
+        placeholders.push(`$${values.length + 1}`);
+        values.push(JSON_FIELDS.has(key) ? JSON.stringify(fields[key]) : fields[key]);
+    }
+
+    const { rows } = await pool.query(
+        `INSERT INTO ${TABLE}
+       (${columns.join(', ')})
+     VALUES (${placeholders.join(', ')})
+     RETURNING *`,
+        values
+    );
+    return rows[0];
+}
+
+/**
  * Finalize an audit log row after the request completes or fails.
  * Uses the composite PK (started_at, log_id) for the update.
  */
@@ -72,21 +174,13 @@ export async function finalize(pool, startedAt, logId, fields) {
     const keys = Object.keys(fields).filter((k) => ALLOWED_FINALIZE_FIELDS.has(k));
     if (keys.length === 0) return null;
 
-    const jsonFields = new Set([
-        'retryTrace',
-        'middlewareTrace',
-        'responsePayload',
-        'flags',
-        'metadata',
-    ]);
-
     const setClauses = [];
     const values = [startedAt, logId];
     let idx = 3;
 
     for (const k of keys) {
         setClauses.push(`${toSnake(k)} = $${idx++}`);
-        values.push(jsonFields.has(k) ? JSON.stringify(fields[k]) : fields[k]);
+        values.push(JSON_FIELDS.has(k) ? JSON.stringify(fields[k]) : fields[k]);
     }
 
     const { rows } = await pool.query(
