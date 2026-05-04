@@ -4,6 +4,8 @@ Soul Gateway is a multi-provider LLM proxy under `soul-gateway/src/`. It accepts
 
 This directory documents the current behavior of the code on this branch. Forward-looking refactor notes and migration plans live outside `docs/specs/`.
 
+Project invariant: All upstream LLM provider protocol calls must go through `achillesAgentLib`. Search providers are normal OpenAI-compatible models; Soul Gateway backends own vendor-specific search execution behind the standard model interface. External consumers call search models through `achillesAgentLib` the same way they call LLM models. Soul Gateway owns gateway policy, credential leasing, routing, and canonical stream normalization.
+
 ## Runtime model
 
 Soul Gateway runs on one middleware kernel in `src/runtime/kernel/`.
@@ -53,6 +55,8 @@ In buffered mode the provider chain drains the canonical stream into a buffered 
 ## Cross-reference notes
 
 - DS001 describes where the layers run; DS003 describes the middleware contract those layers use.
+- DS002 documents provider authentication and the `achillesAgentLib` provider-transport ownership invariant.
 - DS004 is the source of truth for cascade model routing behavior.
 - DS005 covers client-visible streaming; DS015 covers dashboard log streaming.
 - DS012 documents the active management and dashboard endpoints.
+- DS013 documents runtime configuration, Achilles configuration modes, and production deployment details for `soul.axiologic.dev`.

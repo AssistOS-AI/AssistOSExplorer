@@ -26,7 +26,7 @@ Environment variables cover:
 | Sessions/auth | `SESSION_TIMEOUT_MINUTES`, `TOKEN_REFRESH_INTERVAL_MS`, `QUOTA_RESET_SWEEP_MS`, `ALLOW_UNAUTHENTICATED` |
 | Pricing/export/shutdown | `PRICING_DIRECTORY_URL`, `PRICING_REFRESH_INTERVAL_MS`, `EXPORT_BATCH_SIZE`, `SHUTDOWN_GRACE_MS`, `BODY_LIMIT_BYTES` |
 | Loop detection | `LOOP_MIN_RESPONSES`, `LOOP_WINDOW_SIZE`, `LOOP_SIMILARITY_THRESHOLD`, `LOOP_GROWTH_THRESHOLD_TOKENS`, `LOOP_REPETITIVE_RATIO_THRESHOLD`, `LOOP_INTERVENTION_MESSAGE` |
-| Built-in search backends | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
+| Search bootstrap / legacy inputs | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
 | Deep research | `DEEP_RESEARCH_PROVIDERS`, `DEEP_RESEARCH_MAX_RESULTS` |
 
 The gateway reads database connectivity from `DATABASE_URL`; the old `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` inputs are not consumed by the current pool implementation. `ENCRYPTION_KEY` is optional because the runtime auto-generates and persists `DATA_DIR/encryption.key` on first run if needed.
@@ -92,6 +92,8 @@ Optional importer flags:
 
 The src-based runtime package includes `achillesAgentLib` as an installed deployment dependency, so built-in backend modules and any backend / provider-middleware extensions may depend on it without requiring per-deployment manual installation.
 
+All upstream LLM provider protocol calls must go through `achillesAgentLib`. Soul Gateway may use Achilles in direct-provider mode while serving a request, passing the credential leased from the gateway account store and the provider settings resolved from the runtime snapshot. LLM backend modules must not add vendor-specific HTTP transports — those belong in Achilles. Search providers are normal OpenAI-compatible models; Soul Gateway search backends own their vendor-specific execution (HTTP search APIs, browser automation) behind the standard model interface. External callers use `achillesAgentLib.callSearch()` to call search models through the auto-configured `soul_gateway` provider.
+
 The shared Achilles LLM layer supports two configuration modes:
 
 ### Soul Gateway discovery mode
@@ -104,7 +106,35 @@ This is the production mode for everything that sits behind Soul Gateway. The co
 
 Driven by canonical provider credentials: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `HUGGINGFACE_API_KEY`, `COPILOT_TOKEN`, `KIRO_ACCESS_TOKEN`, etc. When `SOUL_GATEWAY_API_KEY` is absent, `achillesAgentLib` falls back to direct-provider mode and speaks to each upstream using its canonical credentials. Used for local development, testing the achilles layer in isolation, and operating the gateway itself (which uses direct-provider mode internally to avoid bootstrapping through itself).
 
-Those provider/search credential env vars belong to the bundled Achilles dependency path, not to `src/config/env.mjs`. They are not surfaced through the gateway's own env reader.
+Request-time provider credentials still come from the gateway credential lease. Provider/search credential environment variables are bootstrap or Achilles direct-provider inputs; gateway backend modules must not use them as ad hoc request-time credential lookups.
+
+## Production deployment
+
+The production Soul Gateway service runs at `https://soul.axiologic.dev` and exposes `GET /healthz` for public health verification. The remote host is `admin@45.136.70.141`; use `ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141` for read-only status/debug checks unless the user explicitly asks for a state-changing remote operation.
+
+Operational paths on the remote host:
+
+- Workspace: `~/soulGateway`
+- Source checkout: `~/code/proxies`
+- Soul Gateway service: `soul-gateway` Ploinky agent
+- Expected production database: `soul_gateway_v2`
+- Local health check from the host: `curl -s http://localhost:8042/healthz`
+
+Useful read-only checks:
+
+```bash
+ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'cd ~/soulGateway && ploinky status'
+ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'curl -s http://localhost:8042/healthz'
+ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'podman ps --format "table {{.Names}}\t{{.Status}}"'
+```
+
+Deployment and admin workflows are defined in the repository-level GitHub Actions files:
+
+- `../.github/workflows/deploy-soul-gateway.yml` — `Deploy Soul Gateway`, with `deploy`, `restart`, `stop`, and `status` actions
+- `../.github/workflows/destroy-soul-gateway.yml` — `Destroy Soul Gateway`
+- `../.github/workflows/soul-gateway-admin.yml` — `Soul Gateway Admin`
+
+Prefer the workflows for deploy, restart, stop, destroy, and admin tasks. After any deploy or restart, verify both the public `https://soul.axiologic.dev/healthz` endpoint and the host-local `http://localhost:8042/healthz` endpoint, then confirm the running container still uses `PGDATABASE=soul_gateway_v2`.
 
 ## Health check
 

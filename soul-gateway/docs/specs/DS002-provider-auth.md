@@ -2,7 +2,7 @@
 
 ## Summary
 
-This spec describes how Soul Gateway authenticates with upstream LLM providers. It covers the two auth strategies (static API keys and managed OAuth), the five supported OAuth flows, multi-account credential pooling with quota rotation, automatic token refresh, auto-provisioning on provider creation, format converters for non-OpenAI protocols, and custom search providers as an extension of the same provider model.
+This spec describes how Soul Gateway authenticates with upstream providers. It covers the two auth strategies (static API keys and managed OAuth), the five supported OAuth flows, multi-account credential pooling with quota rotation, automatic token refresh, auto-provisioning on provider creation, format converters for non-OpenAI protocols, and search providers as an extension of the same provider model.
 
 ## Auth strategies
 
@@ -58,6 +58,16 @@ For providers that share a protocol family, configuration is primarily the provi
 
 All converters produce a uniform typed chunk stream: text deltas, tool-call deltas, completion signals, and errors. This abstraction lets new providers plug into the request pipeline without changing the pipeline itself.
 
+## Provider transport ownership invariant
+
+All upstream LLM provider protocol calls must go through `achillesAgentLib`. Soul Gateway owns routing, provider/account selection, credential leasing, middleware policy, quota/budget enforcement, observability, and conversion from Achilles output into gateway canonical streams. It must not own vendor-specific HTTP transports for LLM protocol families (OpenAI, Anthropic, Gemini, Copilot, Kiro, etc.).
+
+Search providers are normal OpenAI-compatible models exposed by Soul Gateway. External callers use `achillesAgentLib.callSearch()` to call search models the same way they call LLM models — the helper resolves a model name and delegates to the standard LLM call path (typically through the auto-configured `soul_gateway` provider). Soul Gateway search backends own vendor-specific search execution (HTTP APIs, browser automation) as an implementation detail behind the standard model interface. Headless-search is not an exception; it is a normal backend.
+
+The canonical Achilles source for this workspace is `/Users/danielsava/work/file-parser/ploinky/node_modules/achillesAgentLib`.
+
+When operating Soul Gateway itself, Achilles must be used in direct-provider mode with the leased upstream credential for LLM calls. Search backends execute their vendor calls directly and must not call back into Soul Gateway discovery mode, because that can create a self-routing loop.
+
 ## Provider template catalog
 
 The provider template catalog exposed by the management API merges two sources:
@@ -81,15 +91,15 @@ Model discovery is stricter than connectivity testing:
 - OpenAI-compatible discovery still tolerates the "listing unsupported but API reachable" case by returning zero models after the fallback `/chat/completions` probe succeeds
 - auth failures, wrong base URLs, and transport errors are surfaced as discovery errors instead of being silently converted into an empty list
 
-## Custom search providers
+## Search providers
 
-The system supports registering custom search provider implementations that execute web searches and return results formatted as LLM-compatible responses. A custom search provider is a unit of code that lives inside the gateway. When a model backed by a search provider receives a request, the system invokes the custom code instead of calling an external LLM API.
+The system supports search-backed models that execute web searches and return results formatted as LLM-compatible responses. Search providers are normal Soul Gateway providers — middleware chain plus backend — that expose OpenAI-compatible model endpoints. Soul Gateway search backends own vendor-specific execution (HTTP search APIs, browser automation) behind the standard model interface.
 
-The system ships with built-in search providers for Tavily, Brave Search, Exa, Serper, Google Gemini (grounding), DuckDuckGo, SearXNG, and Jina. Each returns results formatted as a chat-style response. A `deep-research` meta-engine queries multiple search providers in parallel, deduplicates by URL, ranks by score, and produces a synthesized response.
+The system ships with built-in API search providers for Tavily, Brave Search, Exa, Serper, Google Gemini (grounding), DuckDuckGo, SearXNG, and Jina via the `search-builtin` backend, plus a headless browser search provider for Google AI Mode via the `headless-search` backend. Each returns results formatted as a chat-style response. A `deep-research` meta-engine queries multiple API search providers in parallel, deduplicates by URL, ranks by score, and produces a synthesized response.
 
-Custom search providers participate in the same model registry, tier system, middleware pipeline, rate limiting, cost tracking, and observability as any other model — from the client's perspective, a search-backed model looks identical to an LLM-backed model. An example of a truly custom search provider would be one that launches a headless browser, navigates to google.com, activates Google's AI Mode feature, extracts the AI-generated response, and formats the result as a standard chat completion response.
+Search providers participate in the same model registry, tier system, middleware pipeline, rate limiting, cost tracking, and observability as any other model — from the client's perspective, a search-backed model looks identical to an LLM-backed model.
 
-Custom search providers receive a curated gateway service surface for sub-model invocation, credential leasing, token estimation, and optional browser automation. They do not receive direct access to the gateway's internal service container.
+Custom gateway-side search adapters receive a curated gateway service surface for sub-model invocation, credential leasing, token estimation, and optional browser automation. They do not receive direct access to the gateway's internal service container.
 
 ## Credential storage
 

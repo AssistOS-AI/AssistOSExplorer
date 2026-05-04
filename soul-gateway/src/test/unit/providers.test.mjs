@@ -649,6 +649,62 @@ describe('search-builtin testConnection engine resolution', () => {
     });
 });
 
+// ── search provider invariant ───────────────────────────────────────
+
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+describe('search provider invariant', () => {
+    const backendPath = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../runtime/backends/builtin/search-builtin.backend.mjs'
+    );
+    const backendSource = readFileSync(backendPath, 'utf8');
+
+    it('search-builtin does not import from Achilles SearchProviders', () => {
+        assert.doesNotMatch(
+            backendSource,
+            /from\s+['"]achillesAgentLib\/utils\/SearchProviders/
+        );
+    });
+
+    it('search-builtin owns API search dispatch (has SEARCH_PROVIDERS table)', () => {
+        assert.match(backendSource, /\bSEARCH_PROVIDERS\b/);
+    });
+
+    it('search-builtin owns vendor HTTP transport (doSearchRequest)', () => {
+        assert.match(backendSource, /\bdoSearchRequest\b/);
+    });
+
+    it('Achilles search helper has no vendor HTTP code', () => {
+        const achillesPath = path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '../../../node_modules/achillesAgentLib/utils/SearchProviders/search.mjs'
+        );
+        const achillesSource = readFileSync(achillesPath, 'utf8');
+        assert.doesNotMatch(achillesSource, /api\.tavily\.com/);
+        assert.doesNotMatch(achillesSource, /api\.search\.brave\.com/);
+        assert.doesNotMatch(achillesSource, /\bfetch\s*\(/);
+        assert.match(achillesSource, /from\s+['"]\.\.\/LLMClient\.mjs['"]/);
+    });
+
+    it('headless-search is a valid kind: "search" backend', async () => {
+        const { backendModule: headless } = await import(
+            '../../runtime/backends/builtin/headless-search.backend.mjs'
+        );
+        assert.equal(headless.manifest.kind, 'search');
+        assert.deepEqual(headless.manifest.supportedFormats, ['openai_chat']);
+    });
+
+    it('search-builtin and headless-search share the same output format', () => {
+        assert.deepEqual(
+            searchPlugin.manifest.supportedFormats,
+            ['openai_chat']
+        );
+    });
+});
+
 // ── Anthropic converter ─────────────────────────────────────────────
 
 import * as anthropicConverter from '../../runtime/backends/converters/anthropic-converter.mjs';
