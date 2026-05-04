@@ -110,7 +110,7 @@ export async function handleCreateProvider(ctx) {
     const providerMode = body?.providerMode ?? 'external_api';
     const adapterKey =
         body?.adapterKey ?? (providerMode === 'custom' ? providerKey : null);
-    const kind = providerMode === 'custom' ? 'custom' : 'external_api';
+    const kind = body?.kind || (providerMode === 'custom' ? 'custom' : 'external_api');
 
     if (
         !body ||
@@ -257,8 +257,9 @@ export async function handleUpdateProvider(ctx) {
     }
 
     if (fields.providerMode !== undefined) {
-        fields.kind =
-            fields.providerMode === 'custom' ? 'custom' : 'external_api';
+        fields.kind = fields.providerMode === 'custom'
+            ? 'custom'
+            : (existing.kind === 'search' ? 'search' : 'external_api');
     }
 
     const apiKey = body.apiKey ?? null;

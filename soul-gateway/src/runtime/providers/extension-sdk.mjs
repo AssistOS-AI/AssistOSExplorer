@@ -143,17 +143,21 @@ export function createExtensionContext(appCtx) {
 
         /**
          * Browser pool for headless browser automation (e.g., Google AI Mode search).
-         * This is a placeholder — real implementation would use puppeteer/playwright.
+         * Delegates to the bootstrap-installed BrowserPool service when available.
          */
         browserPool: Object.freeze({
-            async acquire() {
-                throw new ConfigurationError(
-                    'browserPool.acquire() requires a browser runtime (puppeteer/playwright). ' +
-                        'Install one and configure BROWSER_POOL_SIZE to enable headless browser extensions.'
-                );
+            async acquire(signal) {
+                const pool = appCtx.services?.browserPool;
+                if (!pool) {
+                    throw new ConfigurationError(
+                        'browserPool.acquire() requires BROWSER_POOL_SIZE > 0 and puppeteer-core installed.'
+                    );
+                }
+                return pool.acquire(signal);
             },
-            async release(_browser) {
-                // no-op
+            async release(handle) {
+                const pool = appCtx.services?.browserPool;
+                if (pool) return pool.release(handle);
             },
         }),
     });

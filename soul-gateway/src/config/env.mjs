@@ -142,6 +142,13 @@ export function readEnv(processEnv = process.env) {
             processEnv.DEEP_RESEARCH_MAX_RESULTS,
             20
         ),
+
+        // Browser pool (headless search)
+        BROWSER_POOL_SIZE: int(processEnv.BROWSER_POOL_SIZE, 0),
+        BROWSER_EXECUTABLE_PATH: str(processEnv.BROWSER_EXECUTABLE_PATH, null),
+        BROWSER_HEADLESS_MODE: str(processEnv.BROWSER_HEADLESS_MODE, 'new'),
+        BROWSER_PROXY_URL: str(processEnv.BROWSER_PROXY_URL, null),
+        BROWSER_USER_DATA_DIR: str(processEnv.BROWSER_USER_DATA_DIR, null),
     };
 
     return Object.freeze(env);

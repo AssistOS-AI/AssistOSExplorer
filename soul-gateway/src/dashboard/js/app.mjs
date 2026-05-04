@@ -878,11 +878,11 @@ function providersPage() {
                 alert('Provider key is required');
                 return;
             }
-            if (!isCustomPipeline && !payload.baseUrl) {
+            if (!isCustomPipeline && payload.authStrategy !== 'none' && !payload.baseUrl) {
                 alert('Base URL is required for External API providers');
                 return;
             }
-            if (!isCustomPipeline && payload.authStrategy !== 'oauth' && !payload.apiKey) {
+            if (!isCustomPipeline && payload.authStrategy !== 'oauth' && payload.authStrategy !== 'none' && !payload.apiKey) {
                 alert('API Key is required for non-OAuth providers');
                 return;
             }

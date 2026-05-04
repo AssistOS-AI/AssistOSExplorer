@@ -51,6 +51,17 @@ const OPENAI_COMPAT_DEFAULTS = Object.freeze({
     supported_formats: ['openai_chat'],
 });
 
+const HEADLESS_SEARCH_DEFAULTS = Object.freeze({
+    adapter_key: 'headless-search',
+    kind: 'search',
+    auth_strategy: 'none',
+    auth_type: 'none',
+    oauth_adapter_key: null,
+    supports_streaming: false,
+    supports_tools: false,
+    supported_formats: ['openai_chat'],
+});
+
 const SEARCH_DEFAULTS = Object.freeze({
     adapter_key: 'search-builtin',
     kind: 'search',
@@ -225,6 +236,14 @@ export const PROVIDER_PRESETS = Object.freeze([
         display_name: 'Gemini Search (grounding)',
         base_url: 'https://generativelanguage.googleapis.com/v1beta/models/',
         ...SEARCH_DEFAULTS,
+    }),
+
+    // ── Headless browser search (uses the `headless-search` backend) ──
+    Object.freeze({
+        key: 'google-ai-mode',
+        display_name: 'Google AI Mode (headless)',
+        base_url: 'https://www.google.com',
+        ...HEADLESS_SEARCH_DEFAULTS,
     }),
 ]);
 

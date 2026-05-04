@@ -2495,6 +2495,9 @@
                                                         >
                                                             Subscription
                                                         </option>
+                                                        <option value="none">
+                                                            None (no auth)
+                                                        </option>
                                                     </select>
                                                 </div>
                                             </div>
@@ -2555,7 +2558,7 @@
                                         </div>
                                         <div
                                             class="form-control"
-                                            x-show="form.authStrategy !== 'oauth'"
+                                            x-show="form.authStrategy !== 'oauth' && form.authStrategy !== 'none'"
                                         >
                                             <label class="label"
                                                 ><span class="label-text"

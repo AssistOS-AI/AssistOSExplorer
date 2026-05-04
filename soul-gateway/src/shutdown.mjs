@@ -70,7 +70,17 @@ export async function shutdown(appCtx, server, reason = 'SIGTERM') {
         }
     }
 
-    // 8. Shutdown backend catalog
+    // 8a. Close browser pool
+    if (appCtx.services.browserPool) {
+        try {
+            await appCtx.services.browserPool.closeAll();
+            log.info('browser pool closed');
+        } catch (err) {
+            log.error('error closing browser pool', { error: err.message });
+        }
+    }
+
+    // 8b. Shutdown backend catalog
     if (appCtx.services.backendCatalog) {
         try {
             await appCtx.services.backendCatalog.shutdownAll();

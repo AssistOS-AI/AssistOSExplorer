@@ -10,6 +10,7 @@ import { runMigrations } from './db/migrator.mjs';
 import { startBackgroundJobs } from './background/scheduler.mjs';
 import {
     installBackendCatalogServices,
+    installBrowserPoolService,
     installExecutionServices,
     installExtensionSdkServices,
     installMiddlewareServices,
@@ -66,6 +67,7 @@ export async function bootstrap() {
     await installProviderAuthServices(appCtx);
     await installMiddlewareServices(appCtx);
     await installBackendCatalogServices(appCtx);
+    await installBrowserPoolService(appCtx);
     await installOAuthAdapters(appCtx);
     await reconcileProvidersOnStartup(appCtx);
     await installSnapshotServices(appCtx);
