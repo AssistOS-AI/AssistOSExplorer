@@ -122,6 +122,7 @@ export const backendModule = {
                 waitUntil: 'networkidle2',
                 timeout: timeoutMs,
             });
+            await dismissGoogleConsent(handle.page);
 
             if (settings.debug_screenshots) {
                 try {
@@ -180,6 +181,39 @@ export const backendModule = {
         return classifyTransportOrServerError('headless-search', error);
     },
 };
+
+async function dismissGoogleConsent(page) {
+    const clicked = await page.evaluate(() => {
+        const candidates = Array.from(
+            document.querySelectorAll('button, input[type="submit"], div[role="button"]')
+        );
+        const patterns = [
+            /accept all/i,
+            /i agree/i,
+            /^accept$/i,
+            /accept[ée]r alle/i,
+            /accepter alle/i,
+            /aceptar todo/i,
+            /tout accepter/i,
+            /alle akzeptieren/i,
+        ];
+        const target = candidates.find((el) => {
+            const text = (el.innerText || el.value || el.textContent || '').trim();
+            return patterns.some((pattern) => pattern.test(text));
+        });
+        if (!target) return false;
+        target.click();
+        return true;
+    });
+
+    if (!clicked) return;
+
+    await Promise.race([
+        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10_000 }).catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, 4_000)),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+}
 
 function extractSearchQuery(normalizedReq) {
     const messages = normalizedReq.messages || [];

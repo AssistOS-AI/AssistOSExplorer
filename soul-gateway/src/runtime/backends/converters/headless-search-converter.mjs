@@ -8,7 +8,7 @@
  */
 
 const SELECTORS = Object.freeze({
-    aiAnswerContainer: '[data-ai-answer], .XDKMoc, div[jsname="WbKHeb"]',
+    aiAnswerContainer: '[data-ai-answer], .XDKMoc, div[jsname="WbKHeb"], div[jsname="H7tCnf"], .QGG6Id.YNk70c, .bzXtMb',
     aiAnswerParagraphs: 'p, span.hgKElc, div > span',
     citationLinks: 'a[href][data-ved], a.KEVENd, a.cz3goc',
     captchaIndicator: '#captcha-form, form[action*="/sorry"]',
@@ -138,10 +138,11 @@ export function formatAiModeResponse(answer, citations, query) {
         return `No results found for: "${query}"`;
     }
 
+    const displayAnswer = stripLeadingQuery(answer, query);
     const lines = [`**Google AI Mode answer for:** "${query}"\n`];
 
-    if (answer) {
-        lines.push(answer);
+    if (displayAnswer) {
+        lines.push(displayAnswer);
         lines.push('');
     }
 
@@ -155,6 +156,18 @@ export function formatAiModeResponse(answer, citations, query) {
     }
 
     return lines.join('\n');
+}
+
+function stripLeadingQuery(answer, query) {
+    if (!answer || !query) return answer;
+    const lines = answer.split('\n');
+    while (lines.length > 0 && !lines[0].trim()) {
+        lines.shift();
+    }
+    if (lines.length > 0 && lines[0].trim().toLowerCase() === query.trim().toLowerCase()) {
+        lines.shift();
+    }
+    return lines.join('\n').trim();
 }
 
 /**
