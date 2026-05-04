@@ -10,6 +10,39 @@ echo "=== Soul Gateway v2: Starting ==="
 # Ensure directories exist
 mkdir -p "$SHARED_DIR/config" "$SHARED_DIR/data" "$APP_DIR"
 
+ensure_browser_runtime() {
+    case "${BROWSER_POOL_SIZE:-0}" in
+        ""|0) return ;;
+    esac
+
+    if [ -z "${BROWSER_EXECUTABLE_PATH:-}" ]; then
+        if command -v chromium >/dev/null 2>&1; then
+            export BROWSER_EXECUTABLE_PATH="$(command -v chromium)"
+        elif command -v chromium-browser >/dev/null 2>&1; then
+            export BROWSER_EXECUTABLE_PATH="$(command -v chromium-browser)"
+        elif command -v google-chrome >/dev/null 2>&1; then
+            export BROWSER_EXECUTABLE_PATH="$(command -v google-chrome)"
+        fi
+    fi
+
+    if [ -n "${BROWSER_EXECUTABLE_PATH:-}" ] && [ -x "$BROWSER_EXECUTABLE_PATH" ]; then
+        return
+    fi
+
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Installing Chromium runtime for headless browser search"
+        apt-get update
+        apt-get install -y --no-install-recommends chromium ca-certificates fonts-liberation
+        rm -rf /var/lib/apt/lists/*
+
+        if [ -z "${BROWSER_EXECUTABLE_PATH:-}" ] && command -v chromium >/dev/null 2>&1; then
+            export BROWSER_EXECUTABLE_PATH="$(command -v chromium)"
+        fi
+    else
+        echo "WARNING: BROWSER_POOL_SIZE is set but apt-get is unavailable; install Chromium manually"
+    fi
+}
+
 prepare_runtime_dependencies() {
     for candidate in /code/node_modules /Agent/node_modules; do
         if [ -d "$candidate/pg" ]; then
@@ -57,6 +90,7 @@ fi
 
 # Install runtime deps and let npm failures stop container startup.
 prepare_runtime_dependencies
+ensure_browser_runtime
 
 # Sync achillesAgentLib from ploinky workspace (same mechanism as ploinky syncCoreDependencies)
 AGENTLIB_SRC=""

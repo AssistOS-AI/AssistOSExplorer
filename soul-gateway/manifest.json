@@ -102,6 +102,31 @@
                     "required": false,
                     "default": "",
                     "description": "API key for Jina web search (optional)"
+                },
+                "BROWSER_POOL_SIZE": {
+                    "required": false,
+                    "default": "0",
+                    "description": "Number of Chromium browser instances for headless search"
+                },
+                "BROWSER_EXECUTABLE_PATH": {
+                    "required": false,
+                    "default": "",
+                    "description": "Path to Chrome/Chromium inside the container"
+                },
+                "BROWSER_HEADLESS_MODE": {
+                    "required": false,
+                    "default": "new",
+                    "description": "Puppeteer headless mode for browser search"
+                },
+                "BROWSER_PROXY_URL": {
+                    "required": false,
+                    "default": "",
+                    "description": "Optional proxy server for browser search"
+                },
+                "BROWSER_USER_DATA_DIR": {
+                    "required": false,
+                    "default": "",
+                    "description": "Optional persistent Chromium user data directory"
                 }
             },
             "ports": ["0.0.0.0:8042:8042"],

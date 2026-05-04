@@ -138,6 +138,8 @@ export class BrowserPool {
         const args = [
             '--disable-blink-features=AutomationControlled',
             '--disable-dev-shm-usage',
+            '--disable-setuid-sandbox',
+            '--no-sandbox',
             '--no-first-run',
             '--no-default-browser-check',
         ];
