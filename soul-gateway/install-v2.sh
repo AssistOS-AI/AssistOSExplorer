@@ -10,16 +10,25 @@ echo "=== Soul Gateway v2: Install ==="
 # Create persistent storage
 mkdir -p "$SHARED_DIR/config" "$SHARED_DIR/data/credentials" "$APP_DIR"
 
-install_runtime_dependencies() {
+prepare_runtime_dependencies() {
+    for candidate in /code/node_modules /Agent/node_modules; do
+        if [ -d "$candidate/pg" ]; then
+            echo "Using prepared runtime dependencies from $candidate"
+            rm -rf "$APP_DIR/node_modules"
+            ln -s "$candidate" "$APP_DIR/node_modules"
+            return
+        fi
+    done
+
     if [ ! -f "$APP_DIR/package.json" ]; then
         return
     fi
 
     cd "$APP_DIR"
     if [ -f "$APP_DIR/package-lock.json" ]; then
-        npm ci --omit=dev
+        env NODE_OPTIONS= npm ci --omit=dev
     else
-        npm install --omit=dev --no-package-lock
+        env NODE_OPTIONS= npm install --omit=dev --no-package-lock
     fi
 }
 
@@ -38,7 +47,7 @@ fi
 
 # Install runtime dependencies, including achillesAgentLib for provider/wrapper
 # plugins that depend on it in src-based deployments.
-install_runtime_dependencies
+prepare_runtime_dependencies
 
 # Generate encryption key if not present
 if [ ! -f "$SHARED_DIR/config/encryption.key" ]; then

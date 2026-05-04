@@ -10,16 +10,25 @@ echo "=== Soul Gateway v2: Starting ==="
 # Ensure directories exist
 mkdir -p "$SHARED_DIR/config" "$SHARED_DIR/data" "$APP_DIR"
 
-install_runtime_dependencies() {
+prepare_runtime_dependencies() {
+    for candidate in /code/node_modules /Agent/node_modules; do
+        if [ -d "$candidate/pg" ]; then
+            echo "Using prepared runtime dependencies from $candidate"
+            rm -rf "$APP_DIR/node_modules"
+            ln -s "$candidate" "$APP_DIR/node_modules"
+            return
+        fi
+    done
+
     if [ ! -f "$APP_DIR/package.json" ]; then
         return
     fi
 
     cd "$APP_DIR"
     if [ -f "$APP_DIR/package-lock.json" ]; then
-        npm ci --omit=dev
+        env NODE_OPTIONS= npm ci --omit=dev
     else
-        npm install --omit=dev --no-package-lock
+        env NODE_OPTIONS= npm install --omit=dev --no-package-lock
     fi
 }
 
@@ -47,11 +56,13 @@ elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/so
 fi
 
 # Install runtime deps and let npm failures stop container startup.
-install_runtime_dependencies
+prepare_runtime_dependencies
 
 # Sync achillesAgentLib from ploinky workspace (same mechanism as ploinky syncCoreDependencies)
 AGENTLIB_SRC=""
-if [ -d "/Agent/node_modules/achillesAgentLib" ]; then
+if [ -e "$APP_DIR/node_modules/achillesAgentLib" ]; then
+    echo "achillesAgentLib available in runtime dependencies"
+elif [ -d "/Agent/node_modules/achillesAgentLib" ]; then
     AGENTLIB_SRC="/Agent/node_modules/achillesAgentLib"
 elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/node_modules/achillesAgentLib" ]; then
     AGENTLIB_SRC="$WORKSPACE_PATH/.ploinky/node_modules/achillesAgentLib"
@@ -63,7 +74,7 @@ if [ -n "$AGENTLIB_SRC" ]; then
     echo "Syncing achillesAgentLib from $AGENTLIB_SRC"
     mkdir -p "$APP_DIR/node_modules/achillesAgentLib"
     cp -r "$AGENTLIB_SRC/"* "$APP_DIR/node_modules/achillesAgentLib/"
-else
+elif [ ! -e "$APP_DIR/node_modules/achillesAgentLib" ]; then
     echo "WARNING: achillesAgentLib not found — provider transport will not work"
 fi
 
