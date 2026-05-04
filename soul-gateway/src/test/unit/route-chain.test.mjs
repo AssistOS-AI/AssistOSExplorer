@@ -38,6 +38,7 @@ import {
 import { _resetPermissiveWarning as _resetAuthLatch } from '../../runtime/route/authenticate.mjs';
 import { compose, createKernelContext } from '../../runtime/kernel/index.mjs';
 import * as backendTerminalModule from '../../runtime/backends/backend-terminal.mjs';
+import * as responseCache from '../../runtime/middleware/builtin/response-cache.mjs';
 import { ModelNotFoundError, ValidationError } from '../../core/errors.mjs';
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -743,6 +744,112 @@ describe('full route chain integration', () => {
         assert.equal(calls.write.totalTokens, 7);
         assert.equal(calls.write.totalCostUsd, 0.012);
         assert.equal(calls.write.status, 'succeeded');
+    });
+
+    it('records cache hits in audit logs and avoids a second backend call', async () => {
+        responseCache._resetCache();
+
+        let executeCalls = 0;
+        async function* events(text) {
+            yield {
+                type: 'message_start',
+                data: { id: 'm1', model: 'stub-model', role: 'assistant' },
+            };
+            yield { type: 'text_delta', data: { text } };
+            yield {
+                type: 'usage',
+                data: { input_tokens: 2, output_tokens: 5, total_tokens: 7 },
+            };
+            yield {
+                type: 'done',
+                data: { finish_reason: 'stop', model: 'stub-model' },
+            };
+        }
+
+        const stubBackend = {
+            manifest: {
+                key: 'stub-backend',
+                kind: 'external_api',
+                authStrategy: 'api_key',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
+            async execute() {
+                executeCalls++;
+                return {
+                    accountId: 'acct-1',
+                    stream: events(`cached response ${executeCalls}`),
+                    abort: async () => {},
+                };
+            },
+            classifyError(e) {
+                return e;
+            },
+        };
+
+        const model = Object.freeze({
+            id: 'model-1',
+            modelKey: 'stub-model',
+            providerId: 'provider-1',
+            providerKey: 'stub-provider',
+            providerModelId: 'stub-model',
+            requestTimeoutMs: 1000,
+            queueTimeoutMs: 1000,
+            concurrencyLimit: 1,
+            retryPolicy: {},
+        });
+
+        const auditEntries = [];
+        const auditLogWriter = {
+            async write(entry) {
+                auditEntries.push(entry);
+                return { log_id: `log-${auditEntries.length}` };
+            },
+        };
+        const cacheMiddleware = responseCache.factory(
+            responseCache.meta.defaultSettings
+        );
+        const middlewareCatalog = {
+            resolveGatewayChain() {
+                return [cacheMiddleware];
+            },
+        };
+
+        const snapshot = buildSnapshot(model);
+        const backendCatalog = buildBackendCatalog(stubBackend);
+        const appCtx = makeAppCtx({
+            snapshot,
+            middlewareCatalog,
+            services: { auditLogWriter, backendCatalog },
+        });
+        const body = {
+            model: 'stub-model',
+            messages: [{ role: 'user', content: 'hi' }],
+        };
+
+        const res1 = makeFakeRes();
+        await buildRouteChain()(
+            makeKernelCtx({ req: makeFakeReq(body), res: res1, appCtx })
+        );
+        assert.equal(
+            JSON.parse(res1.captured.body).choices[0].message.content,
+            'cached response 1'
+        );
+
+        const res2 = makeFakeRes();
+        await buildRouteChain()(
+            makeKernelCtx({ req: makeFakeReq(body), res: res2, appCtx })
+        );
+        assert.equal(
+            JSON.parse(res2.captured.body).choices[0].message.content,
+            'cached response 1'
+        );
+
+        assert.equal(executeCalls, 1);
+        assert.equal(auditEntries.length, 2);
+        assert.equal(auditEntries[0].cacheHit, false);
+        assert.equal(auditEntries[1].cacheHit, true);
     });
 
     it('returns a typed error body when the requested model is unknown', async () => {

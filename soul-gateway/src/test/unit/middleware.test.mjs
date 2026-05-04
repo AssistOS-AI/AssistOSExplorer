@@ -1,7 +1,12 @@
 import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { compose, createKernelContext } from '../../runtime/kernel/index.mjs';
+import {
+    bufferCanonicalStream,
+    compose,
+    createCanonicalStream,
+    createKernelContext,
+} from '../../runtime/kernel/index.mjs';
 import { mergeMiddlewareSettings } from '../../runtime/middleware/settings-merge.mjs';
 import { MiddlewareCatalog } from '../../runtime/middleware/middleware-catalog.mjs';
 import * as responseCache from '../../runtime/middleware/builtin/response-cache.mjs';
@@ -192,6 +197,7 @@ describe('builtin: response-cache', () => {
             innerCtx.response = makeResponse('cached');
         });
         assert.equal(ctx1.response.choices[0].message.content, 'cached');
+        assert.equal(ctx1.metadata.cacheHit, false);
 
         let terminalCalls = 0;
         const ctx2 = makeCtx();
@@ -201,8 +207,64 @@ describe('builtin: response-cache', () => {
 
         assert.equal(terminalCalls, 0);
         assert.equal(ctx2.response.choices[0].message.content, 'cached');
+        assert.equal(ctx2.metadata.cacheHit, true);
+    });
+
+    it('keeps streaming and buffered requests in separate cache entries', async () => {
+        const bufferedCtx = makeCtx({ request: { stream: false } });
+        await runBuiltin(responseCache, bufferedCtx, {}, async (innerCtx) => {
+            innerCtx.response = makeResponse('buffered');
+        });
+
+        let terminalCalls = 0;
+        const streamingCtx = makeCtx({ request: { stream: true } });
+        await runBuiltin(responseCache, streamingCtx, {}, async (innerCtx) => {
+            terminalCalls++;
+            innerCtx.response = createCanonicalStream(sampleEvents('streamed'));
+        });
+
+        assert.equal(terminalCalls, 1);
+        assert.equal(streamingCtx.metadata.cacheHit, false);
+        const buffered = await bufferCanonicalStream(streamingCtx.response);
+        assert.equal(buffered.message.content, 'streamed');
+    });
+
+    it('replays cached streaming responses without reusing the one-shot source stream', async () => {
+        let terminalCalls = 0;
+
+        const ctx1 = makeCtx({ request: { stream: true } });
+        await runBuiltin(responseCache, ctx1, {}, async (innerCtx) => {
+            terminalCalls++;
+            innerCtx.response = createCanonicalStream(sampleEvents('stream-1'));
+        });
+        const first = await bufferCanonicalStream(ctx1.response);
+        assert.equal(first.message.content, 'stream-1');
+        assert.equal(ctx1.metadata.cacheHit, false);
+
+        const ctx2 = makeCtx({ request: { stream: true } });
+        await runBuiltin(responseCache, ctx2, {}, async () => {
+            terminalCalls++;
+        });
+        const second = await bufferCanonicalStream(ctx2.response);
+
+        assert.equal(terminalCalls, 1);
+        assert.equal(second.message.content, 'stream-1');
+        assert.equal(ctx2.metadata.cacheHit, true);
     });
 });
+
+async function* sampleEvents(text = 'Hello world') {
+    yield {
+        type: 'message_start',
+        data: { id: 'm1', model: 'gpt-test', role: 'assistant' },
+    };
+    yield { type: 'text_delta', data: { text } };
+    yield {
+        type: 'usage',
+        data: { input_tokens: 5, output_tokens: 4, total_tokens: 9 },
+    };
+    yield { type: 'done', data: { finish_reason: 'stop', model: 'gpt-test' } };
+}
 
 describe('builtin: rate-limiter', () => {
     beforeEach(() => {

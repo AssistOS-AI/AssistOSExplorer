@@ -490,4 +490,40 @@ describe('streaming + buffering + gateway middleware', () => {
         );
         assert.equal(ctx2.response.choices[0].message.content, 'gen-1');
     });
+
+    it('response-cache hits replay streaming events with a fresh iterable', async () => {
+        responseCache._resetCache();
+
+        const cache = responseCache.factory(
+            mergeMiddlewareSettings(responseCache.meta.defaultSettings, {
+                ttlMs: 60_000,
+            })
+        );
+
+        let dispatchCount = 0;
+        const dispatch = compose([
+            cache,
+            async (ctx) => {
+                dispatchCount++;
+                ctx.response = createCanonicalStream(
+                    sampleEvents(`stream-${dispatchCount}`)
+                );
+            },
+        ]);
+
+        const ctx1 = makeCtx();
+        ctx1.request.stream = true;
+        await dispatch(ctx1);
+        const first = await bufferCanonicalStream(ctx1.response);
+        assert.equal(first.message.content, 'stream-1');
+
+        const ctx2 = makeCtx();
+        ctx2.request.stream = true;
+        await dispatch(ctx2);
+        const second = await bufferCanonicalStream(ctx2.response);
+
+        assert.equal(dispatchCount, 1);
+        assert.equal(second.message.content, 'stream-1');
+        assert.equal(ctx2.metadata.cacheHit, true);
+    });
 });

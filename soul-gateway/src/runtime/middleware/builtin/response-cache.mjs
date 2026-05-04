@@ -6,6 +6,10 @@
 
 import { createHash } from 'node:crypto';
 import { abortSuccess } from '../../kernel/abort.mjs';
+import {
+    createCanonicalStream,
+    isCanonicalStream,
+} from '../../kernel/canonical-stream.mjs';
 
 class LruCache {
     #map = new Map();
@@ -50,6 +54,7 @@ class LruCache {
 }
 
 let _cache = null;
+let _cacheConfig = null;
 
 export const meta = Object.freeze({
     key: 'response-cache',
@@ -72,7 +77,8 @@ export function factory(settings = {}) {
     return async function responseCache(ctx, next) {
         const key = buildCacheKey(
             ctx.request || {},
-            merged.hashAlgorithm || 'sha256'
+            merged.hashAlgorithm || 'sha256',
+            ctx.route?.kind || ctx.route?.format || 'openai_chat'
         );
 
         if (ctx.state?.set) {
@@ -81,46 +87,154 @@ export function factory(settings = {}) {
 
         const cached = cache.get(key);
         if (cached) {
+            ctx.metadata.cacheHit = true;
             ctx.log.debug('Response cache hit', { cacheKey: key.slice(0, 12) });
-            abortSuccess(ctx, cached);
+            abortSuccess(ctx, materializeCacheEntry(cached));
         }
 
+        ctx.metadata.cacheHit = false;
         await next();
 
         if (!ctx.response) {
             return;
         }
 
-        cache.set(key, ctx.response);
-        ctx.log.debug('Response cached', { cacheKey: key.slice(0, 12) });
+        const streamed = wrapStreamingResponse(ctx.response, cache, key, ctx.log);
+        if (streamed) {
+            ctx.response = streamed;
+            return;
+        }
+
+        const response = cloneForCache(ctx.response);
+        if (response) {
+            cache.set(key, { kind: 'buffered', response });
+            ctx.log.debug('Response cached', { cacheKey: key.slice(0, 12) });
+        }
     };
 }
 
 function getCache(settings) {
-    if (!_cache) {
-        _cache = new LruCache(
-            settings.maxEntries || 10_000,
-            settings.ttlMs || 300_000
-        );
+    const maxEntries = settings.maxEntries || 10_000;
+    const ttlMs = settings.ttlMs || 300_000;
+    if (
+        !_cache ||
+        !_cacheConfig ||
+        _cacheConfig.maxEntries !== maxEntries ||
+        _cacheConfig.ttlMs !== ttlMs
+    ) {
+        _cache = new LruCache(maxEntries, ttlMs);
+        _cacheConfig = { maxEntries, ttlMs };
     }
     return _cache;
 }
 
-function buildCacheKey(request, algorithm) {
+function buildCacheKey(request, algorithm, routeKind) {
     const hash = createHash(algorithm);
-    hash.update(request.model || '');
-    const messages = request.messages || [];
-    for (const message of messages) {
-        hash.update(message.role || '');
-        hash.update(
-            typeof message.content === 'string'
-                ? message.content
-                : JSON.stringify(message.content || '')
+    hash.update(stableStringify({ routeKind, request }));
+    return hash.digest('hex');
+}
+
+function wrapStreamingResponse(response, cache, key, log) {
+    if (isCanonicalStream(response)) {
+        return createCanonicalStream(
+            cacheStreamEvents(response, cache, key, log, {
+                kind: 'stream',
+                meta: cloneForCache(response.meta || {}),
+            }),
+            response.meta || {}
         );
     }
-    if (request.temperature != null) hash.update(String(request.temperature));
-    if (request.top_p != null) hash.update(String(request.top_p));
-    return hash.digest('hex');
+
+    if (response?.stream && isCanonicalStream(response.stream)) {
+        const envelope = cloneForCache({ ...response, stream: null });
+        return {
+            ...response,
+            stream: createCanonicalStream(
+                cacheStreamEvents(response.stream, cache, key, log, {
+                    kind: 'stream-envelope',
+                    meta: cloneForCache(response.stream.meta || {}),
+                    envelope,
+                }),
+                response.stream.meta || {}
+            ),
+        };
+    }
+
+    return null;
+}
+
+async function* cacheStreamEvents(stream, cache, key, log, entryBase) {
+    const events = [];
+    let completed = false;
+    try {
+        for await (const event of stream) {
+            const snapshot = cloneForCache(event);
+            if (snapshot) {
+                events.push(snapshot);
+            }
+            yield event;
+        }
+        completed = true;
+    } finally {
+        if (completed) {
+            cache.set(key, { ...entryBase, events });
+            log?.debug?.('Response stream cached', {
+                cacheKey: key.slice(0, 12),
+                events: events.length,
+            });
+        }
+    }
+}
+
+function materializeCacheEntry(entry) {
+    if (!entry || typeof entry !== 'object') {
+        return cloneForCache(entry);
+    }
+
+    if (entry.kind === 'buffered') {
+        return cloneForCache(entry.response);
+    }
+
+    if (entry.kind === 'stream') {
+        return createCanonicalStream(replayEvents(entry.events), entry.meta || {});
+    }
+
+    if (entry.kind === 'stream-envelope') {
+        return {
+            ...(cloneForCache(entry.envelope) || {}),
+            stream: createCanonicalStream(replayEvents(entry.events), entry.meta || {}),
+        };
+    }
+
+    return cloneForCache(entry);
+}
+
+async function* replayEvents(events = []) {
+    for (const event of events) {
+        yield cloneForCache(event);
+    }
+}
+
+function cloneForCache(value) {
+    if (value == null) return value;
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch {
+        return null;
+    }
+}
+
+function stableStringify(value) {
+    if (value === null || typeof value !== 'object') {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map(stableStringify).join(',')}]`;
+    }
+    const keys = Object.keys(value).sort();
+    return `{${keys
+        .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+        .join(',')}}`;
 }
 
 export function _resetCache() {
@@ -128,6 +242,7 @@ export function _resetCache() {
         _cache.clear();
     }
     _cache = null;
+    _cacheConfig = null;
 }
 
 export function _getCacheInstance() {
