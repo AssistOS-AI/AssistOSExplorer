@@ -705,6 +705,98 @@ describe('search provider invariant', () => {
     });
 });
 
+// ── LLM provider inference invariant ────────────────────────────────
+
+const LLM_BACKEND_EXECUTION_CONTRACTS = [
+    {
+        fileName: 'openai-api.backend.mjs',
+        achillesBinding: 'achillesOpenAI',
+    },
+    {
+        fileName: 'anthropic-api.backend.mjs',
+        achillesBinding: 'achillesAnthropic',
+    },
+    {
+        fileName: 'copilot-api.backend.mjs',
+        achillesBinding: 'achillesCopilot',
+    },
+    {
+        fileName: 'kiro-api.backend.mjs',
+        achillesBinding: 'achillesKiro',
+    },
+    {
+        fileName: 'codex-api.backend.mjs',
+        achillesBinding: 'achillesResponses',
+    },
+];
+
+function readBuiltinBackendSource(fileName) {
+    return readFileSync(
+        path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '../../runtime/backends/builtin',
+            fileName
+        ),
+        'utf8'
+    );
+}
+
+function extractExecuteBody(source, fileName) {
+    const marker = 'async execute(ctx)';
+    const start = source.indexOf(marker);
+    assert.notEqual(start, -1, `${fileName} must define async execute(ctx)`);
+
+    const braceStart = source.indexOf('{', start);
+    assert.notEqual(braceStart, -1, `${fileName} execute(ctx) must have a body`);
+
+    let depth = 0;
+    for (let i = braceStart; i < source.length; i++) {
+        const char = source[i];
+        if (char === '{') depth += 1;
+        if (char === '}') depth -= 1;
+        if (depth === 0) {
+            return source.slice(braceStart + 1, i);
+        }
+    }
+
+    assert.fail(`${fileName} execute(ctx) body was not balanced`);
+}
+
+describe('LLM provider inference invariant', () => {
+    it('request-time LLM execute paths delegate to Achilles transport handles', () => {
+        for (const { fileName, achillesBinding } of LLM_BACKEND_EXECUTION_CONTRACTS) {
+            const source = readBuiltinBackendSource(fileName);
+            const executeBody = extractExecuteBody(source, fileName);
+
+            assert.match(
+                source,
+                /from\s+['"]achillesAgentLib\/utils\/LLMProviders\/providers\//,
+                `${fileName} must import its request-time transport from Achilles`
+            );
+            assert.match(
+                executeBody,
+                new RegExp(
+                    `createAchillesExecutionHandle\\(ctx,\\s*${achillesBinding}\\b`
+                ),
+                `${fileName} execute(ctx) must dispatch through Achilles`
+            );
+        }
+    });
+
+    it('request-time LLM execute paths do not perform local upstream HTTP', () => {
+        for (const { fileName } of LLM_BACKEND_EXECUTION_CONTRACTS) {
+            const source = readBuiltinBackendSource(fileName);
+            const executeBody = extractExecuteBody(source, fileName);
+
+            assert.doesNotMatch(
+                executeBody,
+                /\b(fetch|httpGet|httpProbeStatus|doRequest|httpRequest|httpsRequest)\s*\(/,
+                `${fileName} execute(ctx) must not implement a local inference transport`
+            );
+        }
+    });
+});
+
 // ── Anthropic converter ─────────────────────────────────────────────
 
 import * as anthropicConverter from '../../runtime/backends/converters/anthropic-converter.mjs';

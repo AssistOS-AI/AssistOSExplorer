@@ -4,7 +4,7 @@ Soul Gateway is a multi-provider LLM proxy under `soul-gateway/src/`. It accepts
 
 This directory documents the current behavior of the code on this branch. Forward-looking refactor notes and migration plans live outside `docs/specs/`.
 
-Project invariant: All upstream LLM provider protocol calls must go through `achillesAgentLib`. Search providers are normal OpenAI-compatible models; Soul Gateway backends own vendor-specific search execution behind the standard model interface. External consumers call search models through `achillesAgentLib` the same way they call LLM models. Soul Gateway owns gateway policy, credential leasing, routing, and canonical stream normalization.
+Project invariant: request-time LLM inference must go through `achillesAgentLib`. Lifecycle probes and model discovery may use direct vendor HTTP only for provider validation and catalog sync. Search providers are normal OpenAI-compatible models; Soul Gateway backends own vendor-specific search execution behind the standard model interface. External consumers call search models through `achillesAgentLib` the same way they call LLM models. Soul Gateway owns gateway policy, credential leasing, routing, and canonical stream normalization.
 
 ## Runtime model
 

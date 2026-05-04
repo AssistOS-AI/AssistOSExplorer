@@ -60,13 +60,15 @@ All converters produce a uniform typed chunk stream: text deltas, tool-call delt
 
 ## Provider transport ownership invariant
 
-All upstream LLM provider protocol calls must go through `achillesAgentLib`. Soul Gateway owns routing, provider/account selection, credential leasing, middleware policy, quota/budget enforcement, observability, and conversion from Achilles output into gateway canonical streams. It must not own vendor-specific HTTP transports for LLM protocol families (OpenAI, Anthropic, Gemini, Copilot, Kiro, etc.).
+Request-time LLM inference must go through `achillesAgentLib`. Soul Gateway owns routing, provider/account selection, credential leasing, middleware policy, quota/budget enforcement, observability, and conversion from Achilles output into gateway canonical streams. It must not own vendor-specific completion/generation transports for LLM protocol families (OpenAI, Anthropic, Gemini, Copilot, Kiro, etc.).
 
 Search providers are normal OpenAI-compatible models exposed by Soul Gateway. External callers use `achillesAgentLib.callSearch()` to call search models the same way they call LLM models — the helper resolves a model name and delegates to the standard LLM call path (typically through the auto-configured `soul_gateway` provider). Soul Gateway search backends own vendor-specific search execution (HTTP APIs, browser automation) as an implementation detail behind the standard model interface. Headless-search is not an exception; it is a normal backend.
 
 The canonical Achilles source for this workspace is `/Users/danielsava/work/file-parser/ploinky/node_modules/achillesAgentLib`.
 
-When operating Soul Gateway itself, Achilles must be used in direct-provider mode with the leased upstream credential for LLM calls. Search backends execute their vendor calls directly and must not call back into Soul Gateway discovery mode, because that can create a self-routing loop.
+Lifecycle probes and model discovery are outside the request-time inference path. They may use direct vendor HTTP when they are validating provider connectivity or syncing catalog metadata, provided they use the credential lease for the target provider and do not implement an alternate completion/generation path. Prefer Achilles helpers for lifecycle calls when the relevant provider module exposes them.
+
+When operating Soul Gateway itself, Achilles must be used in direct-provider mode with the leased upstream credential for request-time LLM inference. Search backends execute their vendor calls directly and must not call back into Soul Gateway discovery mode, because that can create a self-routing loop.
 
 ## Provider template catalog
 

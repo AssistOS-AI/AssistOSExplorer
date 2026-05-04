@@ -92,7 +92,9 @@ Optional importer flags:
 
 The src-based runtime package includes `achillesAgentLib` as an installed deployment dependency, so built-in backend modules and any backend / provider-middleware extensions may depend on it without requiring per-deployment manual installation.
 
-All upstream LLM provider protocol calls must go through `achillesAgentLib`. Soul Gateway may use Achilles in direct-provider mode while serving a request, passing the credential leased from the gateway account store and the provider settings resolved from the runtime snapshot. LLM backend modules must not add vendor-specific HTTP transports — those belong in Achilles. Search providers are normal OpenAI-compatible models; Soul Gateway search backends own their vendor-specific execution (HTTP search APIs, browser automation) behind the standard model interface. External callers use `achillesAgentLib.callSearch()` to call search models through the auto-configured `soul_gateway` provider.
+Request-time LLM inference must go through `achillesAgentLib`. Soul Gateway may use Achilles in direct-provider mode while serving a request, passing the credential leased from the gateway account store and the provider settings resolved from the runtime snapshot. LLM backend `execute()` paths must not add vendor-specific completion/generation transports; those belong in Achilles. Search providers are normal OpenAI-compatible models; Soul Gateway search backends own their vendor-specific execution (HTTP search APIs, browser automation) behind the standard model interface. External callers use `achillesAgentLib.callSearch()` to call search models through the auto-configured `soul_gateway` provider.
+
+Lifecycle probes and model discovery may use direct vendor HTTP when they are only validating provider connectivity or syncing catalog metadata. They must use leased credentials and must not become an alternate request-time LLM completion path. Prefer Achilles lifecycle helpers when the relevant provider module exposes them.
 
 The shared Achilles LLM layer supports two configuration modes:
 
