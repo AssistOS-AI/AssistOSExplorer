@@ -9,7 +9,7 @@
 
 const SELECTORS = Object.freeze({
     aiAnswerContainer: '[data-ai-answer], .XDKMoc, div[jsname="WbKHeb"], div[jsname="H7tCnf"], .QGG6Id.YNk70c, .bzXtMb',
-    aiAnswerParagraphs: 'p, span.hgKElc, div > span',
+    aiAnswerParagraphs: '.n6owBd.awi2gc, span.T286Pc, p, span.hgKElc, div > span',
     citationLinks: 'a[href][data-ved], a.KEVENd, a.cz3goc',
     captchaIndicator: '#captcha-form, form[action*="/sorry"]',
     organicResults: 'div.g, div.tF2Cxc',
@@ -60,11 +60,30 @@ export async function extractGoogleAiModeResults(page, settings = {}) {
     }
 
     const answer = await aiContainer.evaluate((el, pSelector) => {
+        const isUiText = (text) =>
+            [
+                /vil du slette/i,
+                /tidsbesparende/i,
+                /din feedback/i,
+                /google anvender/i,
+                /opretter et offentligt link/i,
+                /tak, fordi/i,
+                /du er logget ud/i,
+                /historik for ai/i,
+                /this response uses data provided/i,
+            ].some((pattern) => pattern.test(text));
         const paragraphs = el.querySelectorAll(pSelector);
         if (paragraphs.length > 0) {
             return Array.from(paragraphs)
+                .filter((p) => {
+                    if (p.closest('script, style, [role="dialog"], #fbproxy3')) return false;
+                    const aria = p.getAttribute('aria-label') || '';
+                    if (/feedback|historik|history/i.test(aria)) return false;
+                    return true;
+                })
                 .map((p) => p.textContent.trim())
                 .filter(Boolean)
+                .filter((text) => !isUiText(text))
                 .join('\n\n');
         }
         return el.textContent.trim();
