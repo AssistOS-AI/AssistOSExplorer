@@ -50,6 +50,9 @@ export class BrowserPool {
 
     async acquire(signal) {
         if (this._closed) throw new Error('Browser pool is closed');
+        if (signal?.aborted) {
+            throw signal.reason || new Error('Aborted');
+        }
 
         const slot = this._slots.find((s) => !s.busy && s.browser?.isConnected());
         if (slot) return this._checkout(slot, signal);
@@ -63,17 +66,26 @@ export class BrowserPool {
         return this._enqueue(signal);
     }
 
-    release(handle) {
-        if (!handle?._slot) return;
+    async release(handle) {
+        if (!handle?._slot || handle._released) return;
+        handle._released = true;
         const slot = handle._slot;
 
+        if (handle._signal && handle._abortListener) {
+            handle._signal.removeEventListener('abort', handle._abortListener);
+        }
+
         if (handle._context) {
-            handle._context.close().catch(() => {});
+            await handle._context.close().catch(() => {});
         }
 
         slot.busy = false;
         slot.lastUsed = Date.now();
+        this._drainNext(slot);
+    }
 
+    _drainNext(slot) {
+        if (this._closed || slot.busy) return;
         const waiter = this._waitQueue.shift();
         if (waiter) {
             this._checkout(slot, waiter.signal)
@@ -147,53 +159,102 @@ export class BrowserPool {
     }
 
     async _checkout(slot, signal) {
+        if (signal?.aborted) {
+            throw signal.reason || new Error('Aborted');
+        }
+
         if (!slot.browser?.isConnected()) {
             slot.browser = await this._launchBrowser();
         }
 
         slot.busy = true;
+        let context = null;
+        let abortListener = null;
 
-        const ua = USER_AGENTS[this._uaIndex % USER_AGENTS.length];
-        this._uaIndex++;
+        try {
+            const ua = USER_AGENTS[this._uaIndex % USER_AGENTS.length];
+            this._uaIndex++;
 
-        const context = await slot.browser.createBrowserContext();
-        const page = await context.newPage();
-        await page.setUserAgent(ua);
-        await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        });
+            context = await slot.browser.createBrowserContext();
+            const page = await context.newPage();
+            await page.setUserAgent(ua);
+            await page.evaluateOnNewDocument(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            });
 
-        if (signal) {
-            signal.addEventListener('abort', () => {
-                context.close().catch(() => {});
-                slot.busy = false;
-            }, { once: true });
+            if (signal) {
+                abortListener = () => {
+                    context.close().catch(() => {});
+                };
+                signal.addEventListener('abort', abortListener, { once: true });
+            }
+
+            return {
+                browser: slot.browser,
+                context,
+                page,
+                _slot: slot,
+                _context: context,
+                _signal: signal || null,
+                _abortListener: abortListener,
+                _released: false,
+            };
+        } catch (err) {
+            if (signal && abortListener) {
+                signal.removeEventListener('abort', abortListener);
+            }
+            if (context) {
+                await context.close().catch(() => {});
+            }
+            slot.busy = false;
+            slot.lastUsed = Date.now();
+            this._drainNext(slot);
+            throw err;
         }
-
-        return { browser: slot.browser, context, page, _slot: slot, _context: context };
     }
 
     _enqueue(signal) {
+        if (signal?.aborted) {
+            return Promise.reject(signal.reason || new Error('Aborted'));
+        }
+
         return new Promise((resolve, reject) => {
-            const entry = { resolve, reject, signal };
+            let timer = null;
+            let abortListener = null;
+
+            const cleanup = () => {
+                if (timer) clearTimeout(timer);
+                if (signal && abortListener) {
+                    signal.removeEventListener('abort', abortListener);
+                }
+            };
+            const entry = {
+                signal,
+                resolve(value) {
+                    cleanup();
+                    resolve(value);
+                },
+                reject(err) {
+                    cleanup();
+                    reject(err);
+                },
+            };
             this._waitQueue.push(entry);
 
-            const timer = setTimeout(() => {
+            timer = setTimeout(() => {
                 const idx = this._waitQueue.indexOf(entry);
                 if (idx !== -1) this._waitQueue.splice(idx, 1);
-                reject(new Error('Browser pool acquire timeout'));
+                entry.reject(new Error('Browser pool acquire timeout'));
             }, ACQUIRE_TIMEOUT_MS);
 
             if (signal) {
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
+                abortListener = () => {
                     const idx = this._waitQueue.indexOf(entry);
                     if (idx !== -1) this._waitQueue.splice(idx, 1);
-                    reject(signal.reason || new Error('Aborted'));
-                }, { once: true });
+                    entry.reject(signal.reason || new Error('Aborted'));
+                };
+                signal.addEventListener('abort', abortListener, { once: true });
             }
-
-            entry._timer = timer;
         });
     }
 

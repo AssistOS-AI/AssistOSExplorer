@@ -150,7 +150,8 @@ export function createExtensionContext(appCtx) {
                 const pool = appCtx.services?.browserPool;
                 if (!pool) {
                     throw new ConfigurationError(
-                        'browserPool.acquire() requires BROWSER_POOL_SIZE > 0 and puppeteer-core installed.'
+                        'browserPool.acquire() requires a browser runtime. ' +
+                            'Set BROWSER_POOL_SIZE > 0 and install puppeteer-core.'
                     );
                 }
                 return pool.acquire(signal);
@@ -158,6 +159,13 @@ export function createExtensionContext(appCtx) {
             async release(handle) {
                 const pool = appCtx.services?.browserPool;
                 if (pool) return pool.release(handle);
+            },
+            status() {
+                const pool = appCtx.services?.browserPool;
+                if (pool && typeof pool.status === 'function') {
+                    return pool.status();
+                }
+                return { total: 0, available: 0, busy: 0 };
             },
         }),
     });

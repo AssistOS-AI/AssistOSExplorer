@@ -105,6 +105,12 @@ function sgAuthBadge(obj, { short = false } = {}) {
     if (strategy === 'oauth') {
         return { label: 'oauth', classes: 'badge-warning badge-outline' };
     }
+    if (strategy === 'none') {
+        return {
+            label: short ? 'none' : 'no auth',
+            classes: 'badge-success badge-outline',
+        };
+    }
     // api_key or unknown → default "api key" styling
     return {
         label: short ? 'api' : 'api key',
@@ -748,6 +754,7 @@ function providersPage() {
             authStrategy: 'api_key',
             oauthAdapterKey: '',
             providerMode: 'external_api',
+            kind: 'external_api',
         },
         editForm: {
             displayName: '',
@@ -841,6 +848,7 @@ function providersPage() {
             this.form.displayName = t.display_name || '';
             this.form.baseUrl = t.base_url || '';
             this.form.authStrategy = t.auth_strategy || 'api_key';
+            this.form.kind = t.kind || 'external_api';
             if (this.form.template !== 'custom') {
                 this.form.providerKey = this.form.template;
             }
@@ -865,6 +873,7 @@ function providersPage() {
                 authStrategy: 'api_key',
                 oauthAdapterKey: '',
                 providerMode: 'external_api',
+                kind: 'external_api',
             };
             this.showCreate = true;
         },
@@ -874,6 +883,9 @@ function providersPage() {
             delete payload.template;
             if (!payload.oauthAdapterKey) delete payload.oauthAdapterKey;
             const isCustomPipeline = payload.providerMode === 'custom';
+            payload.kind = isCustomPipeline
+                ? 'custom'
+                : (payload.kind || 'external_api');
             if (!payload.providerKey) {
                 alert('Provider key is required');
                 return;

@@ -9,6 +9,7 @@ import { validateBackendManifest } from '../../runtime/backends/backend-interfac
 import { backendModule } from '../../runtime/backends/builtin/headless-search.backend.mjs';
 import * as converter from '../../runtime/backends/converters/headless-search-converter.mjs';
 import { BrowserPool } from '../../runtime/backends/browser-pool.mjs';
+import { createExtensionContext } from '../../runtime/providers/extension-sdk.mjs';
 
 // ── Manifest validation ────────────────────────────────────────────
 
@@ -58,6 +59,7 @@ describe('headless-search backend module', () => {
     it('discoverModels returns the expected model', async () => {
         const models = await backendModule.discoverModels();
         assert.equal(models.length, 1);
+        assert.equal(models[0].modelKey, 'headless-google-ai-mode');
         assert.equal(models[0].modelId, 'headless-google-ai-mode');
         assert.equal(models[0].supportsTools, false);
         assert.equal(models[0].supportsStreaming, false);
@@ -90,6 +92,22 @@ describe('headless-search testConnection', () => {
         });
         assert.equal(result.ok, true);
         assert.match(result.detail, /1\/2 available/);
+    });
+
+    it('works through the extension SDK browserPool delegate', async () => {
+        const services = createExtensionContext({
+            services: {
+                browserPool: {
+                    status() {
+                        return { total: 1, available: 1, busy: 0 };
+                    },
+                },
+            },
+        }).services;
+
+        const result = await backendModule.testConnection({ services });
+        assert.equal(result.ok, true);
+        assert.match(result.detail, /1\/1 available/);
     });
 
     it('returns ok=false when pool has zero total', async () => {
@@ -291,5 +309,73 @@ describe('BrowserPool', () => {
         await pool.closeAll();
         assert.equal(pool._slots.length, 0);
         assert.equal(pool._closed, true);
+    });
+
+    it('resets slot busy state when checkout setup fails', async () => {
+        const pool = new BrowserPool({
+            poolSize: 1,
+            executablePath: '/usr/bin/chromium',
+            headlessMode: 'new',
+            proxyUrl: null,
+            userDataDir: null,
+            log: silentLog(),
+        });
+        const slot = {
+            busy: false,
+            lastUsed: 0,
+            browser: {
+                isConnected() {
+                    return true;
+                },
+                async createBrowserContext() {
+                    throw new Error('context failed');
+                },
+            },
+        };
+        pool._slots = [slot];
+
+        await assert.rejects(() => pool.acquire(), /context failed/);
+        assert.equal(slot.busy, false);
+    });
+
+    it('removes abort listener on release before slot reuse', async () => {
+        const pool = new BrowserPool({
+            poolSize: 1,
+            executablePath: '/usr/bin/chromium',
+            headlessMode: 'new',
+            proxyUrl: null,
+            userDataDir: null,
+            log: silentLog(),
+        });
+        const context = {
+            async newPage() {
+                return {
+                    async setUserAgent() {},
+                    async evaluateOnNewDocument() {},
+                };
+            },
+            async close() {},
+        };
+        const slot = {
+            busy: false,
+            lastUsed: 0,
+            browser: {
+                isConnected() {
+                    return true;
+                },
+                async createBrowserContext() {
+                    return context;
+                },
+            },
+        };
+        pool._slots = [slot];
+        const controller = new AbortController();
+
+        const handle = await pool.acquire(controller.signal);
+        await pool.release(handle);
+        slot.busy = true;
+        controller.abort(new Error('late abort'));
+
+        assert.equal(slot.busy, true);
     });
 });

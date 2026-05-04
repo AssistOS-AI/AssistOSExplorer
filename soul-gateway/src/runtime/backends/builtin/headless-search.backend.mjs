@@ -44,6 +44,7 @@ export const backendModule = {
     async discoverModels() {
         return [
             {
+                modelKey: 'headless-google-ai-mode',
                 modelId: 'headless-google-ai-mode',
                 displayName: 'Google AI Mode (headless)',
                 contextWindow: null,
@@ -64,9 +65,22 @@ export const backendModule = {
             };
         }
 
+        if (typeof pool.status !== 'function') {
+            return {
+                ok: false,
+                detail: 'Browser pool status is unavailable',
+            };
+        }
+
         const poolStatus = pool.status();
+        if (!poolStatus.total) {
+            return {
+                ok: false,
+                detail: 'Browser pool not configured (BROWSER_POOL_SIZE=0 or puppeteer-core not installed)',
+            };
+        }
         return {
-            ok: poolStatus.total > 0,
+            ok: true,
             detail: `Browser pool: ${poolStatus.available}/${poolStatus.total} available, ${poolStatus.busy} busy`,
         };
     },
@@ -136,7 +150,7 @@ export const backendModule = {
             const stream = arrayToAsyncGenerator(chunks);
             return { accountId: null, stream, abort: async () => {} };
         } finally {
-            if (handle) pool.release(handle);
+            if (handle) await pool.release(handle);
         }
     },
 

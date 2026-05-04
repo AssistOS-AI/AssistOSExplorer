@@ -110,7 +110,8 @@ export async function handleCreateProvider(ctx) {
     const providerMode = body?.providerMode ?? 'external_api';
     const adapterKey =
         body?.adapterKey ?? (providerMode === 'custom' ? providerKey : null);
-    const kind = body?.kind || (providerMode === 'custom' ? 'custom' : 'external_api');
+    const kind =
+        providerMode === 'custom' ? 'custom' : (body?.kind || 'external_api');
 
     if (
         !body ||
@@ -166,11 +167,11 @@ export async function handleCreateProvider(ctx) {
         reason: 'provider.create',
     });
 
-    // Auto-provision models from the provider's /models endpoint when
-    // we already have a usable credential. For OAuth providers we skip
-    // this and defer to the post-OAuth path in oauth-manager — no
-    // credentials exist yet at create time.
-    if (apiKey) {
+    // Auto-provision models when discovery can run immediately. API-key
+    // providers need the just-created account; auth-free providers do not
+    // need an account at all. OAuth providers defer to the post-OAuth path
+    // in oauth-manager because credentials do not exist yet at create time.
+    if (apiKey || authStrategy === 'none') {
         try {
             const { autoProvisionModels } = await import(
                 '../runtime/providers/auto-provisioner.mjs'
@@ -245,6 +246,7 @@ export async function handleUpdateProvider(ctx) {
         'supportsTools',
         'supportsMessagesApi',
         'supportsResponsesApi',
+        'kind',
         'settings',
         'metadata',
     ];
@@ -259,7 +261,7 @@ export async function handleUpdateProvider(ctx) {
     if (fields.providerMode !== undefined) {
         fields.kind = fields.providerMode === 'custom'
             ? 'custom'
-            : (existing.kind === 'search' ? 'search' : 'external_api');
+            : (body.kind ?? (existing.kind === 'search' ? 'search' : 'external_api'));
     }
 
     const apiKey = body.apiKey ?? null;
