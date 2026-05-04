@@ -105,7 +105,7 @@
                 }
             },
             "ports": ["0.0.0.0:8042:8042"],
-            "install": "bash /code/install.sh"
+            "install": "bash /code/install-v2.sh"
         }
     }
 }

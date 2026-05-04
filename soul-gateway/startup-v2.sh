@@ -10,24 +10,44 @@ echo "=== Soul Gateway v2: Starting ==="
 # Ensure directories exist
 mkdir -p "$SHARED_DIR/config" "$SHARED_DIR/data" "$APP_DIR"
 
+install_runtime_dependencies() {
+    if [ ! -f "$APP_DIR/package.json" ]; then
+        return
+    fi
+
+    cd "$APP_DIR"
+    if [ -f "$APP_DIR/package-lock.json" ]; then
+        npm ci --omit=dev
+    else
+        npm install --omit=dev --no-package-lock
+    fi
+}
+
 # Copy new src/ and package.json from code mount (always fresh copy)
 if [ -d "$CODE_DIR/src" ]; then
     echo "Copying v2 source from /code/src/"
     rm -rf "$APP_DIR/src"
     cp -r "$CODE_DIR/src" "$APP_DIR/src"
     cp -f "$CODE_DIR/package.json" "$APP_DIR/package.json"
+    if [ -f "$CODE_DIR/package-lock.json" ]; then
+        cp -f "$CODE_DIR/package-lock.json" "$APP_DIR/package-lock.json"
+    else
+        rm -f "$APP_DIR/package-lock.json"
+    fi
 elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/src" ]; then
     echo "Copying v2 source from workspace repos"
     rm -rf "$APP_DIR/src"
     cp -r "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/src" "$APP_DIR/src"
     cp -f "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/package.json" "$APP_DIR/package.json"
+    if [ -f "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/package-lock.json" ]; then
+        cp -f "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/package-lock.json" "$APP_DIR/package-lock.json"
+    else
+        rm -f "$APP_DIR/package-lock.json"
+    fi
 fi
 
-# Install runtime deps (pg)
-if [ -f "$APP_DIR/package.json" ]; then
-    cd "$APP_DIR"
-    npm install --production --no-package-lock 2>&1 | tail -3
-fi
+# Install runtime deps and let npm failures stop container startup.
+install_runtime_dependencies
 
 # Sync achillesAgentLib from ploinky workspace (same mechanism as ploinky syncCoreDependencies)
 AGENTLIB_SRC=""
