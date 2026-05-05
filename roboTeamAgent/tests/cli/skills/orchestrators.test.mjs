@@ -11,25 +11,25 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SKILLS_BASE = path.join(__dirname, '../../src/skills');
+const SKILLS_BASE = path.join(__dirname, '../../achilles-cli/src/skills');
+const PROMPTS_BASE = path.join(__dirname, '../../achilles-cli/src/prompts');
 
 // ============================================================================
-// achilles-cli Orchestrator Tests
+// Main orchestrator prompt tests
 // ============================================================================
 
-describe('skills-orchestrator', () => {
-    it('should have valid oskill.md definition', async () => {
-        const skillPath = path.join(SKILLS_BASE, 'skills-orchestrator', 'oskill.md');
-        assert.ok(fs.existsSync(skillPath), 'skills-orchestrator oskill.md should exist');
+describe('main orchestrator prompt', () => {
+    it('should have orchestrator prompt module', async () => {
+        const promptPath = path.join(PROMPTS_BASE, 'orchestrator-prompt.mjs');
+        assert.ok(fs.existsSync(promptPath), 'orchestrator-prompt.mjs should exist');
 
-        const content = fs.readFileSync(skillPath, 'utf8');
-        assert.ok(content.includes('## Instructions'), 'Should have Instructions section');
-        assert.ok(content.includes('## Allowed-Skills'), 'Should have Allowed-Skills section');
+        const content = fs.readFileSync(promptPath, 'utf8');
+        assert.ok(content.includes('buildOrchestratorSystemPrompt'), 'Should export prompt builder');
     });
 
-    it('should list all expected allowed skills', async () => {
-        const skillPath = path.join(SKILLS_BASE, 'skills-orchestrator', 'oskill.md');
-        const content = fs.readFileSync(skillPath, 'utf8');
+    it('should mention core management skills in prompt guidance', async () => {
+        const promptPath = path.join(PROMPTS_BASE, 'orchestrator-prompt.mjs');
+        const content = fs.readFileSync(promptPath, 'utf8');
 
         const expectedSkills = [
             'list-skills',
@@ -38,8 +38,6 @@ describe('skills-orchestrator', () => {
             'update-section',
             'delete-skill',
             'validate-skill',
-            'get-template',
-            'preview-changes',
             'generate-code',
             'test-code',
             'skill-refiner',
@@ -47,25 +45,8 @@ describe('skills-orchestrator', () => {
         ];
 
         for (const skill of expectedSkills) {
-            assert.ok(content.includes(skill), `Should include ${skill} in allowed skills`);
+            assert.ok(content.includes(skill), `Should include ${skill} in prompt guidance`);
         }
-    });
-
-    it('should have intent definitions', async () => {
-        const skillPath = path.join(SKILLS_BASE, 'skills-orchestrator', 'oskill.md');
-        const content = fs.readFileSync(skillPath, 'utf8');
-
-        assert.ok(content.includes('## Intents'), 'Should have Intents section');
-        assert.ok(content.includes('list') || content.includes('List'), 'Should have list intent');
-        assert.ok(content.includes('read') || content.includes('Read'), 'Should have read intent');
-        assert.ok(content.includes('create') || content.includes('Create'), 'Should have create intent');
-    });
-
-    it('should have example usage in instructions', async () => {
-        const skillPath = path.join(SKILLS_BASE, 'skills-orchestrator', 'oskill.md');
-        const content = fs.readFileSync(skillPath, 'utf8');
-
-        assert.ok(content.includes('Example') || content.includes('example'), 'Should include examples');
     });
 });
 

@@ -13,19 +13,15 @@ import os from 'node:os';
 // ============================================================================
 
 describe('REPLSession', () => {
-    it('should instantiate with a RecursiveSkilledAgent instance', async () => {
-        const { REPLSession } = await import('../src/repl/REPLSession.mjs');
-        const { RecursiveSkilledAgent } = await import('achillesAgentLib/RecursiveSkilledAgents');
-        const { LLMAgent } = await import('achillesAgentLib/LLMAgents');
-        const { builtInSkillsDir } = await import('../src/index.mjs');
+    it('should instantiate with a MainAgent instance', async () => {
+        const { REPLSession } = await import('../achilles-cli/src/repl/REPLSession.mjs');
+        const { MainAgent } = await import('../achilles-cli/node_modules/achillesAgentLib/MainAgent/index.mjs');
 
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repl-test-'));
         try {
-            const llmAgent = new LLMAgent({ name: 'test' });
-            const agent = new RecursiveSkilledAgent({
+            const agent = new MainAgent({
                 startDir: tempDir,
-                additionalSkillRoots: [builtInSkillsDir],
-                llmAgent,
+                logger: { debug() {}, info() {}, log() {}, warn() {}, error() {} },
             });
 
             const session = new REPLSession(agent, { workingDir: tempDir });
@@ -38,18 +34,14 @@ describe('REPLSession', () => {
     });
 
     it('should have start method', async () => {
-        const { REPLSession } = await import('../src/repl/REPLSession.mjs');
-        const { RecursiveSkilledAgent } = await import('achillesAgentLib/RecursiveSkilledAgents');
-        const { LLMAgent } = await import('achillesAgentLib/LLMAgents');
-        const { builtInSkillsDir } = await import('../src/index.mjs');
+        const { REPLSession } = await import('../achilles-cli/src/repl/REPLSession.mjs');
+        const { MainAgent } = await import('../achilles-cli/node_modules/achillesAgentLib/MainAgent/index.mjs');
 
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'repl-test-'));
         try {
-            const llmAgent = new LLMAgent({ name: 'test' });
-            const agent = new RecursiveSkilledAgent({
+            const agent = new MainAgent({
                 startDir: tempDir,
-                additionalSkillRoots: [builtInSkillsDir],
-                llmAgent,
+                logger: { debug() {}, info() {}, log() {}, warn() {}, error() {} },
             });
 
             const session = new REPLSession(agent, { workingDir: tempDir });

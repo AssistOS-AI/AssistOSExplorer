@@ -15,7 +15,7 @@ describe('InteractivePrompt', () => {
     let InteractivePrompt;
 
     beforeEach(async () => {
-        const module = await import('../src/repl/InteractivePrompt.mjs');
+        const module = await import('../achilles-cli/src/repl/InteractivePrompt.mjs');
         InteractivePrompt = module.InteractivePrompt;
     });
 

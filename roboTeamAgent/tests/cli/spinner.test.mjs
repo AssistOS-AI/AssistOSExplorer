@@ -33,7 +33,7 @@ describe('Spinner', () => {
     let Spinner, createSpinner;
 
     beforeEach(async () => {
-        const module = await import('../src/ui/spinner.mjs');
+        const module = await import('../achilles-cli/src/ui/spinner.mjs');
         Spinner = module.Spinner;
         createSpinner = module.createSpinner;
     });
@@ -371,7 +371,7 @@ describe('StatusLine', () => {
     let StatusLine;
 
     beforeEach(async () => {
-        const module = await import('../src/ui/spinner.mjs');
+        const module = await import('../achilles-cli/src/ui/spinner.mjs');
         StatusLine = module.StatusLine;
     });
 
@@ -478,7 +478,7 @@ describe('Spinner Styles', () => {
     let Spinner;
 
     beforeEach(async () => {
-        const module = await import('../src/ui/spinner.mjs');
+        const module = await import('../achilles-cli/src/ui/spinner.mjs');
         Spinner = module.Spinner;
     });
 
@@ -510,7 +510,7 @@ describe('Spinner Colors', () => {
     let Spinner;
 
     beforeEach(async () => {
-        const module = await import('../src/ui/spinner.mjs');
+        const module = await import('../achilles-cli/src/ui/spinner.mjs');
         Spinner = module.Spinner;
     });
 

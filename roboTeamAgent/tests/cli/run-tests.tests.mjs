@@ -18,7 +18,7 @@ import {
     discoverSkillTest,
     runTestFile,
     runTestSuite,
-} from '../src/lib/testDiscovery.mjs';
+} from '../achilles-cli/src/lib/testDiscovery.mjs';
 
 import {
     formatDuration,
@@ -26,7 +26,7 @@ import {
     formatSuiteResults,
     formatCompactResult,
     formatTestList,
-} from '../src/ui/TestResultFormatter.mjs';
+} from '../achilles-cli/src/ui/TestResultFormatter.mjs';
 
 // Test utilities
 function assertEqual(actual, expected, message = '') {

@@ -17,7 +17,7 @@ describe('HistoryManager', () => {
     let HistoryManager;
 
     beforeEach(async () => {
-        const module = await import('../src/repl/HistoryManager.mjs');
+        const module = await import('../achilles-cli/src/repl/HistoryManager.mjs');
         HistoryManager = module.HistoryManager;
     });
 
@@ -161,7 +161,7 @@ describe('HistoryManager - Comprehensive', () => {
 
     beforeEach(async () => {
         tempDir = createTempDir('history-test-');
-        const module = await import('../src/repl/HistoryManager.mjs');
+        const module = await import('../achilles-cli/src/repl/HistoryManager.mjs');
         HistoryManager = module.HistoryManager;
     });
 

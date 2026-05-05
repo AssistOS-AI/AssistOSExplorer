@@ -12,7 +12,7 @@ describe('skillSchemas.mjs - Schema Utilities', () => {
     let SKILL_TYPES, SKILL_TEMPLATES;
 
     before(async () => {
-        const schemas = await import('../../src/skillSchemas.mjs');
+        const schemas = await import('../../achilles-cli/src/skillSchemas.mjs');
         detectSkillType = schemas.detectSkillType;
         validateSkillContent = schemas.validateSkillContent;
         parseSkillSections = schemas.parseSkillSections;

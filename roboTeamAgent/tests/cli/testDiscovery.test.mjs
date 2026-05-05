@@ -19,7 +19,7 @@ describe('testDiscovery', () => {
     let tempDir;
 
     beforeEach(async () => {
-        testDiscovery = await import('../src/lib/testDiscovery.mjs');
+        testDiscovery = await import('../achilles-cli/src/lib/testDiscovery.mjs');
         tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'test-discovery-'));
     });
 
@@ -489,7 +489,7 @@ describe('testDiscovery - Result Structures', () => {
 
 describe('testDiscovery - Default Export', () => {
     it('should export all functions via default', async () => {
-        const testDiscovery = await import('../src/lib/testDiscovery.mjs');
+        const testDiscovery = await import('../achilles-cli/src/lib/testDiscovery.mjs');
 
         assert.ok(testDiscovery.default);
         assert.strictEqual(typeof testDiscovery.default.discoverSkillTests, 'function');

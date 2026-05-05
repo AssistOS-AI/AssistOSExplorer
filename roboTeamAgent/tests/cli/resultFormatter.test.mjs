@@ -7,14 +7,14 @@ import assert from 'node:assert';
 
 describe('ResultFormatter', () => {
     it('should format string results', async () => {
-        const { formatSlashResult } = await import('../src/ui/ResultFormatter.mjs');
+        const { formatSlashResult } = await import('../achilles-cli/src/ui/ResultFormatter.mjs');
 
         const result = formatSlashResult('test result');
         assert.strictEqual(result, 'test result');
     });
 
     it('should format object results as JSON', async () => {
-        const { formatSlashResult } = await import('../src/ui/ResultFormatter.mjs');
+        const { formatSlashResult } = await import('../achilles-cli/src/ui/ResultFormatter.mjs');
 
         const result = formatSlashResult({ key: 'value' });
         assert.ok(result.includes('key'));
@@ -22,7 +22,7 @@ describe('ResultFormatter', () => {
     });
 
     it('should summarize orchestrator results', async () => {
-        const { summarizeResult } = await import('../src/ui/ResultFormatter.mjs');
+        const { summarizeResult } = await import('../achilles-cli/src/ui/ResultFormatter.mjs');
 
         const orchestratorResult = {
             type: 'orchestrator',

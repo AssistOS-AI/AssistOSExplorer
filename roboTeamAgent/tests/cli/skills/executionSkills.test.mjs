@@ -1,7 +1,7 @@
 /**
  * Tests for execution skill modules: execute-skill, generate-code, test-code
  *
- * Action signature convention: action(recursiveSkilledAgent, prompt)
+ * Action signature convention: action(mainAgent, prompt)
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -22,7 +22,7 @@ describe('execute-skill module - Extended', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/skills/execute-skill/execute-skill.mjs');
+        const module = await import('../../achilles-cli/src/skills/execute-skill/execute-skill.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_execute_ext_' + Date.now());
@@ -72,13 +72,12 @@ describe('execute-skill module - Extended', () => {
     });
 
     it('should reject built-in skills', async () => {
-        const builtInDir = '/builtin/skills';
         const mockAgent = {
-            additionalSkillRoots: [builtInDir],
             skillCatalog: new Map(),
             getSkillRecord: () => ({
                 name: 'list-skills',
-                skillDir: `${builtInDir}/list-skills`,
+                skillDir: '/builtin/skills/list-skills',
+                isInternal: true,
             }),
         };
 
@@ -87,11 +86,13 @@ describe('execute-skill module - Extended', () => {
     });
 
     it('should list available user skills when skill not found', async () => {
+        const userSkills = [
+            { name: 'user-skill', shortName: 'UserSkill', skillDir: '/user' },
+        ];
         const mockAgent = {
-            skillCatalog: new Map([
-                ['user-skill', { name: 'user-skill', shortName: 'UserSkill', skillDir: '/user' }],
-            ]),
+            skillCatalog: new Map([['user-skill', userSkills[0]]]),
             getSkillRecord: () => null,
+            getSkills: () => userSkills,
         };
 
         const result = await action(mockAgent, 'nonexistent');
@@ -105,7 +106,7 @@ describe('execute-skill module - Extended', () => {
                 name: 'test-skill',
                 skillDir: '/user/test-skill',
             }),
-            executeWithReviewMode: async () => ({
+            executeSkill: async () => ({
                 result: 'Execution result',
             }),
         };
@@ -121,7 +122,7 @@ describe('execute-skill module - Extended', () => {
                 name: 'error-skill',
                 skillDir: '/user/error-skill',
             }),
-            executeWithReviewMode: async () => {
+            executeSkill: async () => {
                 throw new Error('Execution failed');
             },
         };
@@ -141,7 +142,7 @@ describe('generate-code module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/skills/generate-code/generate-code.mjs');
+        const module = await import('../../achilles-cli/src/skills/generate-code/generate-code.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_gencode_ext_' + Date.now());
@@ -178,14 +179,17 @@ describe('generate-code module - Extended Tests', () => {
     it('should clean markdown code fences from LLM response', async () => {
         const skillDir = path.join(tempSkillsDir, 'FenceSkill');
         fs.mkdirSync(skillDir);
-        fs.writeFileSync(path.join(skillDir, 'tskill.md'), '# Fence\n\n## Table Purpose\nTest\n\n## Fields\n\n### id');
+        const filePath = path.join(skillDir, 'tskill.md');
+        fs.writeFileSync(filePath, '# Fence\n\n## Table Purpose\nTest\n\n## Fields\n\n### id');
 
         const mockAgent = {
             startDir: tempDir,
             llmAgent: {
                 executePrompt: async () => '```javascript\nexport const x = 1;\n```',
             },
-            getSkillRecord: () => null,
+            getSkillRecord: (name) => name === 'FenceSkill'
+                ? { name: 'FenceSkill', skillDir, filePath }
+                : null,
         };
 
         const result = await action(mockAgent, 'FenceSkill');
@@ -206,7 +210,7 @@ describe('test-code module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/skills/test-code/test-code.mjs');
+        const module = await import('../../achilles-cli/src/skills/test-code/test-code.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_testcode_ext_' + Date.now());

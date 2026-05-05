@@ -15,7 +15,7 @@ describe('QuickCommands', () => {
     let QuickCommands;
 
     beforeEach(async () => {
-        const module = await import('../src/repl/QuickCommands.mjs');
+        const module = await import('../achilles-cli/src/repl/QuickCommands.mjs');
         QuickCommands = module.QuickCommands;
     });
 

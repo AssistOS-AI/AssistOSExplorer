@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SKILLS_BASE = path.join(__dirname, '../../src/skills');
+const SKILLS_BASE = path.join(__dirname, '../../achilles-cli/src/skills');
 
 // ============================================================================
 // Directory Structure Tests
@@ -30,7 +30,6 @@ describe('Skills Directory Structure', () => {
         'generate-code',
         'test-code',
         'skill-refiner',
-        'skills-orchestrator',
         'execute-skill',
     ];
 

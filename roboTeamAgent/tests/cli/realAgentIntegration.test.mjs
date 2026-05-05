@@ -1,8 +1,5 @@
 /**
- * Integration tests using real RecursiveSkilledAgent.
- *
- * These tests verify that skill discovery works correctly
- * with the actual agent, not mocks.
+ * Integration tests using real MainAgent.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -10,69 +7,59 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { MainAgent, discoverSkillsFromRoot } from '../achilles-cli/node_modules/achillesAgentLib/MainAgent/index.mjs';
+import { OrchestratorSkillsSubsystem } from '../achilles-cli/node_modules/achillesAgentLib/OrchestratorSkillsSubsystem/index.mjs';
 
-// ============================================================================
-// Real Agent Integration Tests
-// ============================================================================
+function logger() {
+    return {
+        debug() {},
+        info() {},
+        log() {},
+        warn() {},
+        error() {},
+    };
+}
 
-describe('Real RecursiveSkilledAgent Integration', () => {
-    let RecursiveSkilledAgent;
+function registerSkillRoot(agent, skillRoot, isInternal = false) {
+    const discovered = discoverSkillsFromRoot(skillRoot, { logger: logger() });
+    for (const skillRecord of discovered) {
+        skillRecord.isInternal = isInternal;
+        agent._registerSkill(skillRecord);
+    }
+}
+
+describe('Real MainAgent Integration', () => {
     let tempDir;
     let workingDir;
     let externalRepoDir;
 
-    beforeEach(async () => {
-        // Import real modules
-        const agentModule = await import('../achilles-cli/node_modules/achillesAgentLib/RecursiveSkilledAgents/index.mjs');
-        RecursiveSkilledAgent = agentModule.RecursiveSkilledAgent;
-
-        // Create temp directories
+    beforeEach(() => {
         tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'real-agent-test-'));
         workingDir = path.join(tempDir, 'project');
         externalRepoDir = path.join(tempDir, 'external-repo');
 
         fs.mkdirSync(workingDir, { recursive: true });
 
-        // Create local skill in working directory
         const localSkillDir = path.join(workingDir, 'skills', 'local-skill');
         fs.mkdirSync(localSkillDir, { recursive: true });
         fs.writeFileSync(path.join(localSkillDir, 'cskill.md'), `# local-skill
 
-A local skill in the project.
-
 ## Summary
+Local skill.
 
-This is a local skill for testing.
-
-## Instructions
-
+## Prompt
 Return a greeting.
-
-## Examples
-
-Input: "hello"
-Output: "Hello from local skill!"
 `);
 
-        // Create external repo with a skill
         const externalSkillDir = path.join(externalRepoDir, 'skills', 'external-skill');
         fs.mkdirSync(externalSkillDir, { recursive: true });
         fs.writeFileSync(path.join(externalSkillDir, 'cskill.md'), `# external-skill
 
-An external skill from a repository.
-
 ## Summary
+External skill.
 
-This is an external skill for testing repository features.
-
-## Instructions
-
+## Prompt
 Return a farewell.
-
-## Examples
-
-Input: "bye"
-Output: "Goodbye from external skill!"
 `);
     });
 
@@ -82,108 +69,92 @@ Output: "Goodbye from external skill!"
         }
     });
 
-    it('should discover local skills on agent initialization', async () => {
-        const agent = new RecursiveSkilledAgent({
+    it('should discover local skills on initialization', () => {
+        const agent = new MainAgent({
             startDir: workingDir,
-            additionalSkillRoots: [],
+            logger: logger(),
         });
 
-        const skills = agent.getSkills();
-        const skillNames = skills.map(s => s.shortName || s.name);
-
-        assert.ok(skillNames.includes('local-skill'), 'Should discover local-skill');
+        const names = agent.getSkills().map((s) => s.shortName || s.name);
+        assert.ok(names.includes('local-skill'));
     });
 
-    it('should discover external skills when added to additionalSkillRoots at init', async () => {
+    it('should discover external skills when external root is registered', () => {
         const externalSkillsPath = path.join(externalRepoDir, 'skills');
-
-        const agent = new RecursiveSkilledAgent({
+        const agent = new MainAgent({
             startDir: workingDir,
-            additionalSkillRoots: [externalSkillsPath],
+            logger: logger(),
         });
 
-        const skills = agent.getSkills();
-        const skillNames = skills.map(s => s.shortName || s.name);
+        registerSkillRoot(agent, externalSkillsPath, false);
 
-        assert.ok(skillNames.includes('local-skill'), 'Should discover local-skill');
-        assert.ok(skillNames.includes('external-skill'), 'Should discover external-skill');
+        const names = agent.getSkills().map((s) => s.shortName || s.name);
+        assert.ok(names.includes('local-skill'));
+        assert.ok(names.includes('external-skill'));
     });
-
 });
 
-// ============================================================================
-// Wildcard Allowed-Skills Integration Tests
-// ============================================================================
-
-describe('Orchestrator Wildcard Allowed-Skills Integration', () => {
-    let RecursiveSkilledAgent;
-    let OrchestratorSkillsSubsystem;
+describe('Orchestrator allowlist resolution', () => {
     let tempDir;
     let workingDir;
     let externalRepoDir;
 
-    beforeEach(async () => {
-        // Import real modules
-        const agentModule = await import('../achilles-cli/node_modules/achillesAgentLib/RecursiveSkilledAgents/index.mjs');
-        RecursiveSkilledAgent = agentModule.RecursiveSkilledAgent;
-
-        const orchestratorModule = await import('../achilles-cli/node_modules/achillesAgentLib/OrchestratorSkillsSubsystem/OrchestratorSkillsSubsystem.mjs');
-        OrchestratorSkillsSubsystem = orchestratorModule.OrchestratorSkillsSubsystem;
-
-        // Create temp directories
-        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wildcard-test-'));
+    beforeEach(() => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrator-test-'));
         workingDir = path.join(tempDir, 'project');
         externalRepoDir = path.join(tempDir, 'external-repo');
 
         fs.mkdirSync(workingDir, { recursive: true });
 
-        // Create a local cgskill (simple skill)
         const localSkillDir = path.join(workingDir, 'skills', 'greeter');
         fs.mkdirSync(localSkillDir, { recursive: true });
-        fs.writeFileSync(path.join(localSkillDir, 'cgskill.md'), `# Greeter
+        fs.writeFileSync(path.join(localSkillDir, 'cskill.md'), `# Greeter
 
 ## Summary
-A simple greeting skill.
+Greeting skill.
 
 ## Prompt
-Say hello to the user.
-
-## LLM-Mode
-fast
+Say hello.
 `);
 
-        // Create an orchestrator WITH wildcard in Allowed-Skills
         const orchestratorDir = path.join(workingDir, 'skills', 'test-orchestrator');
         fs.mkdirSync(orchestratorDir, { recursive: true });
         fs.writeFileSync(path.join(orchestratorDir, 'oskill.md'), `# Test Orchestrator
 
 ## Summary
-An orchestrator that can use all skills via wildcard.
+Routes requests.
 
 ## Instructions
-Route user requests to appropriate skills.
+Route user requests.
 
 ## Allowed-Skills
 - greeter
-- *
-
-## Intents
-- greet: Say hello
+- calculator
 `);
 
-        // Create external repo with a skill
-        const externalSkillDir = path.join(externalRepoDir, 'skills', 'calculator');
-        fs.mkdirSync(externalSkillDir, { recursive: true });
-        fs.writeFileSync(path.join(externalSkillDir, 'cgskill.md'), `# Calculator
+        const restrictedDir = path.join(workingDir, 'skills', 'restricted-orchestrator');
+        fs.mkdirSync(restrictedDir, { recursive: true });
+        fs.writeFileSync(path.join(restrictedDir, 'oskill.md'), `# Restricted Orchestrator
 
 ## Summary
-Performs math calculations.
+Restricted routing.
+
+## Instructions
+Route requests.
+
+## Allowed-Skills
+- greeter
+`);
+
+        const externalSkillDir = path.join(externalRepoDir, 'skills', 'calculator');
+        fs.mkdirSync(externalSkillDir, { recursive: true });
+        fs.writeFileSync(path.join(externalSkillDir, 'cskill.md'), `# Calculator
+
+## Summary
+Math skill.
 
 ## Prompt
-Perform the requested calculation.
-
-## LLM-Mode
-fast
+Calculate expressions.
 `);
     });
 
@@ -193,163 +164,45 @@ fast
         }
     });
 
-    it('should preserve * wildcard in orchestrator allowedSkills metadata', async () => {
-        const agent = new RecursiveSkilledAgent({
+    it('should resolve explicit allowlisted local and external skills', () => {
+        const externalSkillsPath = path.join(externalRepoDir, 'skills');
+        const agent = new MainAgent({
             startDir: workingDir,
-            additionalSkillRoots: [],
+            logger: logger(),
         });
+        registerSkillRoot(agent, externalSkillsPath, false);
 
-        const skills = agent.getSkills();
-        const orchestrator = skills.find(s => s.shortName === 'test-orchestrator' || s.name?.includes('test-orchestrator'));
+        const orchestrator = agent.getSkillRecord('test-orchestrator');
+        assert.ok(orchestrator);
+        assert.ok(Array.isArray(orchestrator.preparedConfig?.allowedSkills));
+        assert.ok(orchestrator.preparedConfig.allowedSkills.includes('greeter'));
+        assert.ok(orchestrator.preparedConfig.allowedSkills.includes('calculator'));
 
-        assert.ok(orchestrator, 'Should find test-orchestrator skill');
-        assert.ok(orchestrator.metadata, 'Orchestrator should have metadata');
-        assert.ok(Array.isArray(orchestrator.metadata.allowedSkills), 'Should have allowedSkills array');
-        assert.ok(orchestrator.metadata.allowedSkills.includes('*'), 'Should include * wildcard in allowedSkills');
+        const subsystem = new OrchestratorSkillsSubsystem({ mainAgent: agent });
+        const resolved = subsystem.resolveAllowedSkills(orchestrator, agent);
+        const names = resolved.map((s) => s.shortName || s.name);
+
+        assert.ok(names.some((n) => n.includes('greeter')));
+        assert.ok(names.some((n) => n.includes('calculator')));
+        assert.ok(!names.some((n) => n.includes('test-orchestrator')));
     });
 
-    it('should resolve all skills when * wildcard is present', async () => {
+    it('should not include non-allowlisted external skills', () => {
         const externalSkillsPath = path.join(externalRepoDir, 'skills');
-
-        const agent = new RecursiveSkilledAgent({
+        const agent = new MainAgent({
             startDir: workingDir,
-            additionalSkillRoots: [externalSkillsPath],
+            logger: logger(),
         });
+        registerSkillRoot(agent, externalSkillsPath, false);
 
-        const skills = agent.getSkills();
-        const orchestrator = skills.find(s => s.shortName === 'test-orchestrator' || s.name?.includes('test-orchestrator'));
+        const orchestrator = agent.getSkillRecord('restricted-orchestrator');
+        assert.ok(orchestrator);
 
-        assert.ok(orchestrator, 'Should find test-orchestrator skill');
+        const subsystem = new OrchestratorSkillsSubsystem({ mainAgent: agent });
+        const resolved = subsystem.resolveAllowedSkills(orchestrator, agent);
+        const names = resolved.map((s) => s.shortName || s.name);
 
-        // Create subsystem and resolve allowed skills
-        const subsystem = new OrchestratorSkillsSubsystem({ llmAgent: null });
-        const resolvedSkills = subsystem.resolveAllowedSkills(orchestrator, agent);
-
-        const resolvedNames = resolvedSkills.map(s => s.shortName || s.name);
-
-        // Should include the local greeter skill
-        assert.ok(resolvedNames.some(n => n.includes('greeter')), 'Should include greeter skill');
-
-        // Should include the external calculator skill
-        assert.ok(resolvedNames.some(n => n.includes('calculator')), 'Should include external calculator skill');
-
-        // Should NOT include self (the orchestrator)
-        assert.ok(!resolvedNames.some(n => n.includes('test-orchestrator')), 'Should NOT include self');
-    });
-
-    it('should include external skills when * wildcard is present after adding repo', async () => {
-        // Start WITHOUT external repo
-        const agent = new RecursiveSkilledAgent({
-            startDir: workingDir,
-            additionalSkillRoots: [],
-        });
-
-        const skills = agent.getSkills();
-        const orchestrator = skills.find(s => s.shortName === 'test-orchestrator' || s.name?.includes('test-orchestrator'));
-
-        // Initially resolve - should NOT include calculator
-        const subsystem = new OrchestratorSkillsSubsystem({ llmAgent: null });
-        let resolvedSkills = subsystem.resolveAllowedSkills(orchestrator, agent);
-        let resolvedNames = resolvedSkills.map(s => s.shortName || s.name);
-
-        assert.ok(!resolvedNames.some(n => n.includes('calculator')), 'Should NOT include calculator initially');
-
-        // Now add external repo to agent's skill roots
-        const externalSkillsPath = path.join(externalRepoDir, 'skills');
-        const agentRoots = agent.getAdditionalSkillRoots();
-        agentRoots.push(externalSkillsPath);
-        agent.reloadSkills();
-
-        // Re-fetch orchestrator after reload
-        const reloadedSkills = agent.getSkills();
-        const reloadedOrchestrator = reloadedSkills.find(s => s.shortName === 'test-orchestrator' || s.name?.includes('test-orchestrator'));
-
-        // Now resolve - should include calculator
-        resolvedSkills = subsystem.resolveAllowedSkills(reloadedOrchestrator, agent);
-        resolvedNames = resolvedSkills.map(s => s.shortName || s.name);
-
-        assert.ok(resolvedNames.some(n => n.includes('calculator')), 'Should include calculator after adding repo');
-    });
-
-    it('should still respect explicit allowed skills alongside wildcard', async () => {
-        // Create an orchestrator with explicit skill + wildcard
-        const orchestratorDir = path.join(workingDir, 'skills', 'mixed-orchestrator');
-        fs.mkdirSync(orchestratorDir, { recursive: true });
-        fs.writeFileSync(path.join(orchestratorDir, 'oskill.md'), `# Mixed Orchestrator
-
-## Summary
-Orchestrator with explicit + wildcard skills.
-
-## Instructions
-Route requests.
-
-## Allowed-Skills
-- greeter
-- *
-`);
-
-        const externalSkillsPath = path.join(externalRepoDir, 'skills');
-
-        const agent = new RecursiveSkilledAgent({
-            startDir: workingDir,
-            additionalSkillRoots: [externalSkillsPath],
-        });
-
-        const skills = agent.getSkills();
-        const orchestrator = skills.find(s => s.shortName === 'mixed-orchestrator' || s.name?.includes('mixed-orchestrator'));
-
-        assert.ok(orchestrator, 'Should find mixed-orchestrator');
-
-        // Should have both explicit 'greeter' and '*' in allowedSkills
-        assert.ok(orchestrator.metadata.allowedSkills.includes('greeter'), 'Should have explicit greeter');
-        assert.ok(orchestrator.metadata.allowedSkills.includes('*'), 'Should have wildcard');
-
-        // Resolve should include all skills
-        const subsystem = new OrchestratorSkillsSubsystem({ llmAgent: null });
-        const resolvedSkills = subsystem.resolveAllowedSkills(orchestrator, agent);
-        const resolvedNames = resolvedSkills.map(s => s.shortName || s.name);
-
-        assert.ok(resolvedNames.some(n => n.includes('greeter')), 'Should include greeter');
-        assert.ok(resolvedNames.some(n => n.includes('calculator')), 'Should include calculator via wildcard');
-    });
-
-    it('should NOT use wildcard when not present in allowed skills', async () => {
-        // Create an orchestrator WITHOUT wildcard
-        const restrictedDir = path.join(workingDir, 'skills', 'restricted-orchestrator');
-        fs.mkdirSync(restrictedDir, { recursive: true });
-        fs.writeFileSync(path.join(restrictedDir, 'oskill.md'), `# Restricted Orchestrator
-
-## Summary
-Orchestrator with only explicit skills, no wildcard.
-
-## Instructions
-Route requests.
-
-## Allowed-Skills
-- greeter
-`);
-
-        const externalSkillsPath = path.join(externalRepoDir, 'skills');
-
-        const agent = new RecursiveSkilledAgent({
-            startDir: workingDir,
-            additionalSkillRoots: [externalSkillsPath],
-        });
-
-        const skills = agent.getSkills();
-        const orchestrator = skills.find(s => s.shortName === 'restricted-orchestrator' || s.name?.includes('restricted-orchestrator'));
-
-        assert.ok(orchestrator, 'Should find restricted-orchestrator');
-
-        // Should NOT have wildcard
-        assert.ok(!orchestrator.metadata.allowedSkills.includes('*'), 'Should NOT have wildcard');
-
-        // Resolve should only include greeter, not calculator
-        const subsystem = new OrchestratorSkillsSubsystem({ llmAgent: null });
-        const resolvedSkills = subsystem.resolveAllowedSkills(orchestrator, agent);
-        const resolvedNames = resolvedSkills.map(s => s.shortName || s.name);
-
-        assert.ok(resolvedNames.some(n => n.includes('greeter')), 'Should include greeter');
-        assert.ok(!resolvedNames.some(n => n.includes('calculator')), 'Should NOT include calculator (no wildcard)');
+        assert.ok(names.some((n) => n.includes('greeter')));
+        assert.ok(!names.some((n) => n.includes('calculator')));
     });
 });

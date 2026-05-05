@@ -15,7 +15,7 @@ describe('NaturalLanguageProcessor', () => {
     let NaturalLanguageProcessor;
 
     beforeEach(async () => {
-        const module = await import('../src/repl/NaturalLanguageProcessor.mjs');
+        const module = await import('../achilles-cli/src/repl/NaturalLanguageProcessor.mjs');
         NaturalLanguageProcessor = module.NaturalLanguageProcessor;
     });
 

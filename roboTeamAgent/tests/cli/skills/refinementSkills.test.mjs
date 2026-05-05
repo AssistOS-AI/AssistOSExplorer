@@ -22,7 +22,7 @@ describe('skill-refiner module - Extended', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/skills/skill-refiner/skill-refiner.mjs');
+        const module = await import('../../achilles-cli/src/skills/skill-refiner/skill-refiner.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_refiner_ext_' + Date.now());

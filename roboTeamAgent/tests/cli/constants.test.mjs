@@ -45,7 +45,6 @@ describe('constants', () => {
                 'READ_SPECS',
                 'WRITE_SPECS',
                 'WRITE_TESTS',
-                'ORCHESTRATOR',
             ];
 
             for (const skill of expectedSkills) {
@@ -66,7 +65,6 @@ describe('constants', () => {
             assert.strictEqual(BUILT_IN_SKILLS.LIST, 'list-skills');
             assert.strictEqual(BUILT_IN_SKILLS.READ, 'read-skill');
             assert.strictEqual(BUILT_IN_SKILLS.WRITE, 'write-skill');
-            assert.strictEqual(BUILT_IN_SKILLS.ORCHESTRATOR, 'skills-orchestrator');
         });
 
         it('should have unique skill names', async () => {

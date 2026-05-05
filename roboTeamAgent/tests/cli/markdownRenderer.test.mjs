@@ -15,7 +15,7 @@ describe('MarkdownRenderer', () => {
     let renderMarkdown;
 
     beforeEach(async () => {
-        const module = await import('../src/ui/MarkdownRenderer.mjs');
+        const module = await import('../achilles-cli/src/ui/MarkdownRenderer.mjs');
         renderMarkdown = module.renderMarkdown;
     });
 
@@ -350,7 +350,7 @@ describe('MarkdownRenderer - ANSI Codes', () => {
     let renderMarkdown;
 
     beforeEach(async () => {
-        const module = await import('../src/ui/MarkdownRenderer.mjs');
+        const module = await import('../achilles-cli/src/ui/MarkdownRenderer.mjs');
         renderMarkdown = module.renderMarkdown;
     });
 

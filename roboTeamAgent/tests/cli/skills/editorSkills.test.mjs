@@ -22,7 +22,7 @@ describe('update-section module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/skills/update-section/update-section.mjs');
+        const module = await import('../../achilles-cli/src/skills/update-section/update-section.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_updatesec_ext_' + Date.now());
@@ -175,7 +175,7 @@ describe('preview-changes module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../src/skills/preview-changes/preview-changes.mjs');
+        const module = await import('../../achilles-cli/src/skills/preview-changes/preview-changes.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_preview_ext_' + Date.now());

@@ -26,19 +26,19 @@ describe('Skills Integration - Complete Workflow', () => {
         tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
-        const listModule = await import('../../src/skills/list-skills/list-skills.mjs');
+        const listModule = await import('../../achilles-cli/src/skills/list-skills/list-skills.mjs');
         listAction = listModule.action;
 
-        const readModule = await import('../../src/skills/read-skill/read-skill.mjs');
+        const readModule = await import('../../achilles-cli/src/skills/read-skill/read-skill.mjs');
         readAction = readModule.action;
 
-        const writeModule = await import('../../src/skills/write-skill/write-skill.mjs');
+        const writeModule = await import('../../achilles-cli/src/skills/write-skill/write-skill.mjs');
         writeAction = writeModule.action;
 
-        const validateModule = await import('../../src/skills/validate-skill/validate-skill.mjs');
+        const validateModule = await import('../../achilles-cli/src/skills/validate-skill/validate-skill.mjs');
         validateAction = validateModule.action;
 
-        const deleteModule = await import('../../src/skills/delete-skill/delete-skill.mjs');
+        const deleteModule = await import('../../achilles-cli/src/skills/delete-skill/delete-skill.mjs');
         deleteAction = deleteModule.action;
     });
 
