@@ -13,6 +13,7 @@ describe('SlashCommandHandler', () => {
         assert.ok(SlashCommandHandler.COMMANDS.ls, 'Should have ls command');
         assert.ok(SlashCommandHandler.COMMANDS.read, 'Should have read command');
         assert.ok(SlashCommandHandler.COMMANDS.exec, 'Should have exec command');
+        assert.ok(SlashCommandHandler.COMMANDS.build, 'Should have build command');
     });
 
     it('should parse slash commands correctly', async () => {
@@ -153,5 +154,22 @@ describe('SlashCommandHandler', () => {
         const [completions] = handler.getCompletions('/model ');
         // Should at least include 'clear' option
         assert.ok(completions.some(c => c.includes('clear')), 'Model completions should include clear');
+    });
+
+    it('should handle /build by calling buildSkills callback', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        let called = 0;
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            buildSkills: async () => { called += 1; },
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const result = await handler.executeSlashCommand('build', '');
+        assert.strictEqual(result.handled, true);
+        assert.strictEqual(called, 1);
+        assert.ok(typeof result.result === 'string' && result.result.includes('complete'));
     });
 });
