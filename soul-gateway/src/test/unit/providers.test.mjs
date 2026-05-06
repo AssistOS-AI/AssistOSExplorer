@@ -499,7 +499,7 @@ describe('Search error classification', () => {
 
     it('manifest is search kind', () => {
         assert.equal(searchPlugin.manifest.kind, 'search');
-        assert.equal(searchPlugin.manifest.supportsStreaming, false);
+        assert.equal(searchPlugin.manifest.supportsStreaming, true);
     });
 });
 
@@ -701,6 +701,25 @@ describe('search provider invariant', () => {
         assert.deepEqual(
             searchPlugin.manifest.supportedFormats,
             ['openai_chat']
+        );
+    });
+
+    it('built-in search backends advertise streaming support', async () => {
+        const { backendModule: headless } = await import(
+            '../../runtime/backends/builtin/headless-search.backend.mjs'
+        );
+        assert.equal(searchPlugin.manifest.supportsStreaming, true);
+        assert.equal(headless.manifest.supportsStreaming, true);
+
+        const [searchModels, headlessModels] = await Promise.all([
+            searchPlugin.discoverModels(),
+            headless.discoverModels(),
+        ]);
+        assert.ok(
+            searchModels.every((model) => model.supportsStreaming === true)
+        );
+        assert.ok(
+            headlessModels.every((model) => model.supportsStreaming === true)
         );
     });
 });
@@ -2104,7 +2123,7 @@ describe('BackendCatalog', () => {
                 key: 'search-builtin',
                 kind: 'search',
                 authStrategy: 'api_key',
-                supportsStreaming: false,
+                supportsStreaming: true,
                 supportsTools: false,
                 supportedFormats: ['openai_chat'],
                 displayName: 'Web Search (Built-in)',
@@ -2198,6 +2217,7 @@ describe('BackendCatalog', () => {
                 assert.ok(templates[key], `missing search preset: ${key}`);
                 assert.equal(templates[key].adapter_key, 'search-builtin');
                 assert.equal(templates[key].kind, 'search');
+                assert.equal(templates[key].supports_streaming, true);
             }
             // SearXNG ships with an empty base_url (self-hosted) — user fills it in.
             assert.equal(templates['searxng'].base_url, '');

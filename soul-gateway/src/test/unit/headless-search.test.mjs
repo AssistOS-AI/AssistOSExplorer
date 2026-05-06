@@ -34,8 +34,8 @@ describe('headless-search backend manifest', () => {
         assert.equal(backendModule.manifest.hidden, true);
     });
 
-    it('does not support streaming', () => {
-        assert.equal(backendModule.manifest.supportsStreaming, false);
+    it('supports streaming through the OpenAI-compatible route surface', () => {
+        assert.equal(backendModule.manifest.supportsStreaming, true);
     });
 });
 
@@ -62,7 +62,7 @@ describe('headless-search backend module', () => {
         assert.equal(models[0].modelKey, 'headless-google-ai-mode');
         assert.equal(models[0].modelId, 'headless-google-ai-mode');
         assert.equal(models[0].supportsTools, false);
-        assert.equal(models[0].supportsStreaming, false);
+        assert.equal(models[0].supportsStreaming, true);
     });
 });
 

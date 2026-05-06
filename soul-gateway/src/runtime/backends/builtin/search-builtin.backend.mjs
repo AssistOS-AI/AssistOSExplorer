@@ -28,7 +28,7 @@ const manifest = {
     key: 'search-builtin',
     kind: 'search',
     authStrategy: 'api_key',
-    supportsStreaming: false,
+    supportsStreaming: true,
     supportsTools: false,
     supportedFormats: ['openai_chat'],
     // Dispatcher backend: routes to one of 8 search engines (Tavily,
@@ -211,7 +211,7 @@ export const backendModule = {
             contextWindow: null,
             maxOutputTokens: null,
             supportsTools: false,
-            supportsStreaming: false,
+            supportsStreaming: true,
             supportsVision: false,
         }));
         // Add deep-research meta-engine
@@ -221,7 +221,7 @@ export const backendModule = {
             contextWindow: null,
             maxOutputTokens: null,
             supportsTools: false,
-            supportsStreaming: false,
+            supportsStreaming: true,
             supportsVision: false,
         });
         return models;

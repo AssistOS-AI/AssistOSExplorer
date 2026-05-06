@@ -24,7 +24,7 @@ const manifest = {
     key: 'headless-search',
     kind: 'search',
     authStrategy: 'none',
-    supportsStreaming: false,
+    supportsStreaming: true,
     supportsTools: false,
     supportedFormats: ['openai_chat'],
     hidden: true,
@@ -50,7 +50,7 @@ export const backendModule = {
                 contextWindow: null,
                 maxOutputTokens: null,
                 supportsTools: false,
-                supportsStreaming: false,
+                supportsStreaming: true,
                 supportsVision: false,
             },
         ];

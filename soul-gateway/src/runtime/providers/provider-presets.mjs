@@ -57,7 +57,7 @@ const HEADLESS_SEARCH_DEFAULTS = Object.freeze({
     auth_strategy: 'none',
     auth_type: 'none',
     oauth_adapter_key: null,
-    supports_streaming: false,
+    supports_streaming: true,
     supports_tools: false,
     supported_formats: ['openai_chat'],
 });
@@ -68,7 +68,7 @@ const SEARCH_DEFAULTS = Object.freeze({
     auth_strategy: 'api_key',
     auth_type: 'api_key',
     oauth_adapter_key: null,
-    supports_streaming: false,
+    supports_streaming: true,
     supports_tools: false,
     supported_formats: ['openai_chat'],
 });

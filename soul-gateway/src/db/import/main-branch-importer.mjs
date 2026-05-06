@@ -112,7 +112,7 @@ const ADAPTER_CAPABILITIES = Object.freeze({
         kind: 'search',
         authStrategy: 'api_key',
         oauthAdapterKey: null,
-        supportsStreaming: false,
+        supportsStreaming: true,
         supportsTools: false,
         supportsMessagesApi: false,
         supportsResponsesApi: false,

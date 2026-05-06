@@ -394,6 +394,12 @@ describe('buildMainBranchImportPlan', () => {
             plan.providerPlans.map((entry) => entry.target.providerKey).sort(),
             ['openai', 'search']
         );
+        assert.equal(
+            plan.providerPlans.find(
+                (entry) => entry.target.providerKey === 'search'
+            )?.target.supportsStreaming,
+            true
+        );
     });
 
     it('prefers canonical provider/model keys when historical aliases collide with shortened variants', () => {
