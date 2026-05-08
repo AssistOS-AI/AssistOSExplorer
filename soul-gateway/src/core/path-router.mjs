@@ -62,7 +62,7 @@ function matchSegments(routeSegs, reqSegs) {
     for (let i = 0; i < checkLen; i++) {
         const seg = routeSegs[i];
         if (seg.startsWith(':')) {
-            params[seg.slice(1)] = decodeURIComponent(reqSegs[i]);
+            params[seg.slice(1)] = safeDecodeURIComponent(reqSegs[i]);
         } else if (seg !== reqSegs[i]) {
             return null;
         }
@@ -90,13 +90,24 @@ export function parseUrl(req) {
         for (const pair of search.split('&')) {
             const eqIdx = pair.indexOf('=');
             if (eqIdx < 0) {
-                query[decodeURIComponent(pair)] = '';
+                query[safeDecodeURIComponent(pair)] = '';
             } else {
-                query[decodeURIComponent(pair.slice(0, eqIdx))] =
-                    decodeURIComponent(pair.slice(eqIdx + 1));
+                query[safeDecodeURIComponent(pair.slice(0, eqIdx))] =
+                    safeDecodeURIComponent(pair.slice(eqIdx + 1));
             }
         }
     }
 
     return { pathname, query };
+}
+
+function safeDecodeURIComponent(value) {
+    try {
+        return decodeURIComponent(value);
+    } catch (err) {
+        if (err instanceof URIError) {
+            return value;
+        }
+        throw err;
+    }
 }
