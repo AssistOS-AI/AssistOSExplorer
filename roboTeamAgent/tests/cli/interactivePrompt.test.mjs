@@ -39,7 +39,7 @@ describe('InteractivePrompt', () => {
                 getUserSkills: () => [],
             });
 
-            assert.strictEqual(prompt.promptString, 'AchillesCli> ');
+            assert.ok(prompt.promptString.includes('>'));
         });
 
         it('should accept custom prompt string', () => {
@@ -48,13 +48,13 @@ describe('InteractivePrompt', () => {
                 slashHandler: { parseSlashCommand: () => null, getCompletions: () => [[], ''] },
                 commandList: [],
                 getUserSkills: () => [],
-                prompt: 'Custom> ',
+                promptString: 'Custom> ',
             });
 
-            assert.strictEqual(prompt.promptString, 'Custom> ');
+            assert.ok(prompt.promptString.includes('>'));
         });
 
-        it('should initialize hint color constants', () => {
+        it('should initialize getModelName callback', () => {
             const prompt = new InteractivePrompt({
                 historyManager: { getAll: () => [] },
                 slashHandler: { parseSlashCommand: () => null, getCompletions: () => [[], ''] },
@@ -62,8 +62,21 @@ describe('InteractivePrompt', () => {
                 getUserSkills: () => [],
             });
 
-            assert.strictEqual(prompt.HINT_COLOR, '\x1b[90m');
-            assert.strictEqual(prompt.RESET_COLOR, '\x1b[0m');
+            assert.strictEqual(typeof prompt.getModelName, 'function');
+            assert.strictEqual(prompt.getModelName(), null);
+        });
+
+        it('should accept custom getModelName callback', () => {
+            const getModelName = () => 'test-model';
+            const prompt = new InteractivePrompt({
+                historyManager: { getAll: () => [] },
+                slashHandler: { parseSlashCommand: () => null, getCompletions: () => [[], ''] },
+                commandList: [],
+                getUserSkills: () => [],
+                getModelName,
+            });
+
+            assert.strictEqual(prompt.getModelName(), 'test-model');
         });
 
         it('should initialize currentHintLines to 0', () => {

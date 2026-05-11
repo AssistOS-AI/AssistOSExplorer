@@ -228,7 +228,8 @@ describe('NaturalLanguageProcessor - Behavior Patterns', () => {
             const abortController = new AbortController();
 
             const handleKeypress = (key) => {
-                if (key === '\x1b' || key === '\u001b') {
+                const keyStr = key?.toString?.() || '';
+                if (keyStr === '\x1b' || keyStr === '\u001b') {
                     wasInterrupted = true;
                     abortController.abort();
                 }
@@ -240,6 +241,52 @@ describe('NaturalLanguageProcessor - Behavior Patterns', () => {
 
             assert.strictEqual(wasInterrupted, false);
             assert.strictEqual(abortController.signal.aborted, false);
+        });
+
+        it('should call cancelCurrentSession when ESC is pressed', () => {
+            let wasInterrupted = false;
+            const abortController = new AbortController();
+            let cancelledReason = null;
+            const mockAgent = {
+                cancelCurrentSession: (reason) => {
+                    cancelledReason = reason;
+                },
+            };
+
+            const handleKeypress = (key) => {
+                const keyStr = key?.toString?.() || '';
+                if (keyStr === '\x1b' || keyStr === '\u001b') {
+                    wasInterrupted = true;
+                    abortController.abort('esc');
+                    if (typeof mockAgent.cancelCurrentSession === 'function') {
+                        mockAgent.cancelCurrentSession('esc');
+                    }
+                }
+            };
+
+            handleKeypress('\x1b');
+
+            assert.strictEqual(wasInterrupted, true);
+            assert.strictEqual(abortController.signal.aborted, true);
+            assert.strictEqual(cancelledReason, 'esc');
+        });
+
+        it('should detect ESC when key event is a Buffer', () => {
+            let wasInterrupted = false;
+            const abortController = new AbortController();
+
+            const handleKeypress = (key) => {
+                const keyStr = key?.toString?.() || '';
+                if (keyStr === '\x1b' || keyStr === '\u001b') {
+                    wasInterrupted = true;
+                    abortController.abort('esc');
+                }
+            };
+
+            handleKeypress(Buffer.from('\x1b'));
+
+            assert.strictEqual(wasInterrupted, true);
+            assert.strictEqual(abortController.signal.aborted, true);
         });
     });
 
