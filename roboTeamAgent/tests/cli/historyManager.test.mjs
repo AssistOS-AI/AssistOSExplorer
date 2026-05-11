@@ -318,7 +318,7 @@ describe('HistoryManager - Comprehensive', () => {
         it('should persist history to file', () => {
             const manager = new HistoryManager({ workingDir: tempDir });
             manager.add('persistent command');
-            const historyFile = path.join(tempDir, '.achilles-cli-history');
+            const historyFile = path.join(tempDir, '.achilles-cli', 'history');
             assert.ok(fs.existsSync(historyFile), 'History file should exist');
         });
 
@@ -360,7 +360,7 @@ describe('HistoryManager - Comprehensive', () => {
             const manager = new HistoryManager({ workingDir: tempDir });
             manager.add('command1');
             manager.clear();
-            const historyFile = path.join(tempDir, '.achilles-cli-history');
+            const historyFile = path.join(tempDir, '.achilles-cli', 'history');
             const content = fs.readFileSync(historyFile, 'utf-8');
             assert.strictEqual(content.trim(), '');
         });

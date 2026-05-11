@@ -1,5 +1,5 @@
 /**
- * Tests for SlashCommandHandler.
+ * Tests for SlashCommandHandler with hierarchical command structure.
  */
 
 import { describe, it } from 'node:test';
@@ -7,13 +7,43 @@ import assert from 'node:assert';
 
 describe('SlashCommandHandler', () => {
     it('should have static COMMANDS property', async () => {
-        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+        const { SlashCommandHandler, COMMAND_DEFINITIONS } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         assert.ok(SlashCommandHandler.COMMANDS, 'Should have COMMANDS property');
-        assert.ok(SlashCommandHandler.COMMANDS.ls, 'Should have ls command');
-        assert.ok(SlashCommandHandler.COMMANDS.read, 'Should have read command');
-        assert.ok(SlashCommandHandler.COMMANDS.exec, 'Should have exec command');
-        assert.ok(SlashCommandHandler.COMMANDS.build, 'Should have build command');
+        assert.strictEqual(SlashCommandHandler.COMMANDS, COMMAND_DEFINITIONS, 'COMMANDS should alias COMMAND_DEFINITIONS');
+        assert.ok(COMMAND_DEFINITIONS.read, 'Should have read command');
+        assert.ok(COMMAND_DEFINITIONS.exec, 'Should have exec command');
+        assert.ok(COMMAND_DEFINITIONS.build, 'Should have build command');
+    });
+
+    it('should define hierarchical commands with subOptions', async () => {
+        const { COMMAND_DEFINITIONS } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        assert.ok(Array.isArray(COMMAND_DEFINITIONS.list.subOptions), 'list should have subOptions');
+        assert.ok(COMMAND_DEFINITIONS.list.subOptions.includes('skills'), 'list should have skills sub-option');
+        assert.ok(COMMAND_DEFINITIONS.list.subOptions.includes('repos'), 'list should have repos sub-option');
+
+        assert.ok(Array.isArray(COMMAND_DEFINITIONS.add.subOptions), 'add should have subOptions');
+        assert.ok(COMMAND_DEFINITIONS.add.subOptions.includes('repo'), 'add should have repo sub-option');
+
+        assert.ok(Array.isArray(COMMAND_DEFINITIONS.remove.subOptions), 'remove should have subOptions');
+        assert.ok(COMMAND_DEFINITIONS.remove.subOptions.includes('repo'), 'remove should have repo sub-option');
+        assert.ok(COMMAND_DEFINITIONS.remove.subOptions.includes('skill'), 'remove should have skill sub-option');
+    });
+
+    it('should define SUB_OPTIONS for hierarchical commands', async () => {
+        const { SUB_OPTIONS } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        assert.ok(SUB_OPTIONS.list, 'Should have list sub-options');
+        assert.ok(SUB_OPTIONS.list.skills, 'Should have list.skills');
+        assert.ok(SUB_OPTIONS.list.repos, 'Should have list.repos');
+
+        assert.ok(SUB_OPTIONS.add, 'Should have add sub-options');
+        assert.ok(SUB_OPTIONS.add.repo, 'Should have add.repo');
+
+        assert.ok(SUB_OPTIONS.remove, 'Should have remove sub-options');
+        assert.ok(SUB_OPTIONS.remove.repo, 'Should have remove.repo');
+        assert.ok(SUB_OPTIONS.remove.skill, 'Should have remove.skill');
     });
 
     it('should parse slash commands correctly', async () => {
@@ -27,7 +57,28 @@ describe('SlashCommandHandler', () => {
 
         const parsed = handler.parseSlashCommand('/read my-skill');
         assert.strictEqual(parsed.command, 'read');
+        assert.strictEqual(parsed.subOption, null);
         assert.strictEqual(parsed.args, 'my-skill');
+    });
+
+    it('should parse hierarchical commands with sub-options', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const parsed = handler.parseSlashCommand('/list repos');
+        assert.strictEqual(parsed.command, 'list');
+        assert.strictEqual(parsed.subOption, 'repos');
+        assert.strictEqual(parsed.args, '');
+
+        const parsed2 = handler.parseSlashCommand('/add repo https://github.com/foo/bar.git my-repo');
+        assert.strictEqual(parsed2.command, 'add');
+        assert.strictEqual(parsed2.subOption, 'repo');
+        assert.strictEqual(parsed2.args, 'https://github.com/foo/bar.git my-repo');
     });
 
     it('should identify slash commands', async () => {
@@ -44,6 +95,24 @@ describe('SlashCommandHandler', () => {
         assert.strictEqual(handler.isSlashCommand('/'), true);
     });
 
+    it('should get sub-options for hierarchical commands', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const listSubs = handler.getSubOptions('list');
+        assert.ok(Array.isArray(listSubs), 'Should return array for list');
+        assert.ok(listSubs.includes('skills'), 'list sub-options should include skills');
+        assert.ok(listSubs.includes('repos'), 'list sub-options should include repos');
+
+        const readSubs = handler.getSubOptions('read');
+        assert.strictEqual(readSubs, null, 'read should have no sub-options');
+    });
+
     it('should handle /tier with args returning tierChange', async () => {
         const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
@@ -53,8 +122,6 @@ describe('SlashCommandHandler', () => {
             getSkills: () => [],
         });
 
-        // /tier with a valid tier name — depends on achillesAgentLib being available
-        // At minimum, verify it returns a handled result
         const result = await handler.executeSlashCommand('tier', 'fast');
         assert.strictEqual(result.handled, true);
     });
@@ -70,7 +137,6 @@ describe('SlashCommandHandler', () => {
 
         const result = await handler.executeSlashCommand('tier', '');
         assert.strictEqual(result.handled, true);
-        // Either shows picker or errors (if achillesAgentLib not available)
         assert.ok(result.showTierPicker === true || result.error, 'Should show picker or error');
     });
 
@@ -83,12 +149,10 @@ describe('SlashCommandHandler', () => {
             getSkills: () => [],
         });
 
-        // /model with no args
         const noArgs = await handler.executeSlashCommand('model', '');
         assert.strictEqual(noArgs.handled, true);
         assert.ok(noArgs.showModelPicker === true || noArgs.error, 'Should show picker or error');
 
-        // /model clear
         const clear = await handler.executeSlashCommand('model', 'clear');
         assert.strictEqual(clear.handled, true);
         if (!clear.error) {
@@ -96,7 +160,7 @@ describe('SlashCommandHandler', () => {
         }
     });
 
-    it('should include /model in completions', async () => {
+    it('should include commands in completions', async () => {
         const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
@@ -108,9 +172,12 @@ describe('SlashCommandHandler', () => {
         const [completions] = handler.getCompletions('/');
         assert.ok(completions.includes('/model'), 'Completions should include /model');
         assert.ok(completions.includes('/tier'), 'Completions should include /tier');
+        assert.ok(completions.includes('/list'), 'Completions should include /list');
+        assert.ok(completions.includes('/add'), 'Completions should include /add');
+        assert.ok(completions.includes('/remove'), 'Completions should include /remove');
     });
 
-    it('should provide input hint for /model', async () => {
+    it('should provide input hint for commands', async () => {
         const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
@@ -126,6 +193,20 @@ describe('SlashCommandHandler', () => {
         const clearHint = handler.getInputHint('/model clear');
         assert.ok(clearHint, 'Should return a hint for /model clear');
         assert.ok(clearHint.toLowerCase().includes('clear'), 'Hint should mention clear');
+    });
+
+    it('should provide sub-option hint for hierarchical commands', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const hint = handler.getInputHint('/list ');
+        assert.ok(hint, 'Should return a hint for /list ');
+        assert.ok(hint.includes('skills') || hint.includes('repos'), 'Hint should mention sub-options');
     });
 
     it('should have getAvailableModels method', async () => {
@@ -152,8 +233,47 @@ describe('SlashCommandHandler', () => {
         });
 
         const [completions] = handler.getCompletions('/model ');
-        // Should at least include 'clear' option
         assert.ok(completions.some(c => c.includes('clear')), 'Model completions should include clear');
+    });
+
+    it('should route /list skills to list-skills skill', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const calls = [];
+        const handler = new SlashCommandHandler({
+            executeSkill: async (skillName, input) => {
+                calls.push({ skillName, input });
+                return { ok: true };
+            },
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const result = await handler.executeSlashCommand('list', 'skills');
+        assert.strictEqual(result.handled, true);
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].skillName, 'list-skills');
+        assert.strictEqual(calls[0].input, 'list');
+    });
+
+    it('should route /remove skill to delete-skill skill', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const calls = [];
+        const handler = new SlashCommandHandler({
+            executeSkill: async (skillName, input) => {
+                calls.push({ skillName, input });
+                return { ok: true };
+            },
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const result = await handler.executeSlashCommand('remove', 'skill my-skill');
+        assert.strictEqual(result.handled, true);
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].skillName, 'delete-skill');
+        assert.strictEqual(calls[0].input, 'my-skill');
     });
 
     it('should handle /build by calling buildSkills callback', async () => {
@@ -171,5 +291,93 @@ describe('SlashCommandHandler', () => {
         assert.strictEqual(result.handled, true);
         assert.strictEqual(called, 1);
         assert.ok(typeof result.result === 'string' && result.result.includes('complete'));
+    });
+
+    it('should handle /reload command', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const result = await handler.executeSlashCommand('reload', '');
+        assert.strictEqual(result.handled, true);
+        assert.ok(result.reloadSkills === true, 'Should signal reloadSkills');
+    });
+
+    it('should handle /history command', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const mockHistoryManager = {
+            clear: () => {},
+            getRecent: () => [],
+            search: () => [],
+        };
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+            historyManager: mockHistoryManager,
+        });
+
+        const noArgs = await handler.executeSlashCommand('history', '');
+        assert.strictEqual(noArgs.handled, true);
+        assert.ok(noArgs.showHistory === true, 'Should signal showHistory');
+
+        const clear = await handler.executeSlashCommand('history', 'clear');
+        assert.strictEqual(clear.handled, true);
+        assert.ok(clear.result.includes('cleared'), 'Should confirm history cleared');
+    });
+
+    it('should handle /exit and /quit commands', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const exitResult = await handler.executeSlashCommand('exit', '');
+        assert.strictEqual(exitResult.handled, true);
+        assert.ok(exitResult.exitRepl === true, 'Should signal exitRepl');
+
+        const quitResult = await handler.executeSlashCommand('quit', '');
+        assert.strictEqual(quitResult.handled, true);
+        assert.ok(quitResult.exitRepl === true, 'Should signal exitRepl');
+    });
+
+    it('should return error for unknown commands', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const result = await handler.executeSlashCommand('unknown-cmd', '');
+        assert.strictEqual(result.handled, false);
+        assert.ok(result.error, 'Should return error for unknown command');
+    });
+
+    it('should complete sub-options for hierarchical commands', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const [completions] = handler.getCompletions('/list ');
+        assert.ok(completions.some(c => c.includes('skills')), 'Should complete skills');
+        assert.ok(completions.some(c => c.includes('repos')), 'Should complete repos');
+
+        const [addCompletions] = handler.getCompletions('/add ');
+        assert.ok(addCompletions.some(c => c.includes('repo')), 'Should complete repo');
     });
 });
