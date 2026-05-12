@@ -46,6 +46,23 @@ describe('SlashCommandHandler', () => {
         assert.ok(SUB_OPTIONS.remove.skill, 'Should have remove.skill');
     });
 
+    it('should expose a structured slash command catalog', async () => {
+        const { buildSlashCommandCatalog, SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const catalog = buildSlashCommandCatalog();
+        assert.ok(Array.isArray(catalog), 'Catalog should be an array');
+        assert.ok(catalog.length > 0, 'Catalog should not be empty');
+
+        const listEntry = catalog.find((entry) => entry.name === '/list');
+        assert.ok(listEntry, 'Catalog should include /list');
+        assert.ok(Array.isArray(listEntry.subCommands), '/list should expose subCommands');
+        assert.ok(listEntry.subCommands.some((entry) => entry.name === 'skills'), '/list should include skills sub-command');
+        assert.ok(listEntry.subCommands.some((entry) => entry.name === 'repos'), '/list should include repos sub-command');
+
+        const staticCatalog = SlashCommandHandler.getCommandCatalog();
+        assert.deepStrictEqual(staticCatalog, catalog, 'Static catalog helper should match the exported catalog builder');
+    });
+
     it('should parse slash commands correctly', async () => {
         const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
