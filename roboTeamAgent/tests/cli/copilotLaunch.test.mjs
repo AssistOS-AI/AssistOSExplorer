@@ -42,7 +42,7 @@ describe('Copilot launch extensions', () => {
                     'forward-envelope': '1',
                     'tag-relay-agent': 'researchRelay',
                     'tag-relay-submit-tool': 'research_task_submit',
-                    'tag-relay-tags': 'open-interpreter,oi'
+                    'tag-relay-tags': 'open-interpreter'
                 },
                 workspaceDirParam: 'workspace-dir'
             }
@@ -59,7 +59,7 @@ describe('Copilot launch extensions', () => {
         assert.equal(params.get('forward-envelope'), '1');
         assert.equal(params.get('tag-relay-agent'), 'researchRelay');
         assert.equal(params.get('tag-relay-submit-tool'), 'research_task_submit');
-        assert.equal(params.get('tag-relay-tags'), 'open-interpreter,oi');
+        assert.equal(params.get('tag-relay-tags'), 'open-interpreter');
         assert.equal(params.get('workspace-dir'), 'docs');
         assert.equal(params.has('dir'), false);
     });

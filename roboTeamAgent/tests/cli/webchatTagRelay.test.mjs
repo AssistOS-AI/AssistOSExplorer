@@ -59,8 +59,8 @@ describe('webchat tag relay', () => {
             tag: 'open-interpreter',
             prompt: 'summarize notes',
         });
-        assert.deepEqual(parseTagRelayMention('please ask @oi now'), {
-            tag: 'oi',
+        assert.deepEqual(parseTagRelayMention('please ask @open-interpreter now'), {
+            tag: 'open-interpreter',
             prompt: 'please ask now',
         });
         assert.equal(parseTagRelayMention('plain chat'), null);
@@ -77,7 +77,7 @@ describe('webchat tag relay', () => {
                         result: {
                             content: [{
                                 type: 'text',
-                                text: JSON.stringify({ backends: [{ id: 'open-interpreter', tags: ['open-interpreter', 'oi'] }] }),
+                                text: JSON.stringify({ backends: [{ id: 'open-interpreter', tags: ['open-interpreter'] }] }),
                             }],
                         },
                     },
@@ -147,11 +147,11 @@ describe('webchat tag relay', () => {
                 agent: 'researchRelay',
                 submitTool: 'research_task_submit',
                 listTool: 'research_relay_list_backends',
-                tags: 'open-interpreter,oi',
+                tags: 'open-interpreter',
             });
             const result = await relay.handle({
-                rawText: '@oi Give status.',
-                text: '@oi Give status.',
+                rawText: '@open-interpreter Give status.',
+                text: '@open-interpreter Give status.',
                 attachments: [],
                 invocationToken: 'caller-token',
             }, {
@@ -161,7 +161,7 @@ describe('webchat tag relay', () => {
             assert.equal(result.output, 'Submitted through explicit tags.');
             assert.equal(calls.length, 1);
             assert.equal(calls[0].body.params.name, 'research_task_submit');
-            assert.equal(calls[0].body.params.arguments.backend, 'oi');
+            assert.equal(calls[0].body.params.arguments.backend, 'open-interpreter');
         } finally {
             await new Promise((resolve) => server.close(resolve));
         }
