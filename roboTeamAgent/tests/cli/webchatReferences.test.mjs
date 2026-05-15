@@ -7,6 +7,7 @@ import path from 'node:path';
 
 import {
     createWebchatTagRelay,
+    materializeTagRelayAttachments,
     materializeWorkspaceReferences,
     normalizeWebchatMessage,
     normalizeWebchatReferences
@@ -103,6 +104,59 @@ describe('webchat references', () => {
         }
     });
 
+    it('materializeTagRelayAttachments accepts cwd-relative WebChat session uploads', () => {
+        const root = makeWorkingDir('upload-attachment');
+        try {
+            const uploadDir = path.join(root, 'uploads', 'sessionA');
+            fs.mkdirSync(uploadDir, { recursive: true });
+            fs.writeFileSync(path.join(uploadDir, 'notes.md'), 'uploaded note');
+            const { resources, warnings } = materializeTagRelayAttachments([
+                {
+                    filename: 'notes.md',
+                    mime: 'text/markdown',
+                    localPath: 'uploads/sessionA/notes.md',
+                    downloadUrl: '/webchat/uploads?path=notes.md'
+                }
+            ], { workingDir: root, sharedRoot: path.join(root, 'shared') });
+            assert.deepEqual(warnings, []);
+            assert.equal(resources.length, 1);
+            assert.equal(resources[0].name, 'notes.md');
+            assert.equal(resources[0].mime, 'text/markdown');
+            assert.equal(resources[0].content, 'uploaded note');
+            assert.equal(resources[0].localPath, 'uploads/sessionA/notes.md');
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('materializeTagRelayAttachments rejects upload symlink escapes', () => {
+        const root = makeWorkingDir('upload-escape');
+        const outside = makeWorkingDir('upload-outside');
+        try {
+            const uploadDir = path.join(root, 'uploads', 'sessionA');
+            fs.mkdirSync(uploadDir, { recursive: true });
+            fs.writeFileSync(path.join(outside, 'secret.txt'), 'secret');
+            try {
+                fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(uploadDir, 'leak.txt'));
+            } catch (error) {
+                if (error.code === 'EPERM' || error.code === 'EACCES') return;
+                throw error;
+            }
+            const { resources, warnings } = materializeTagRelayAttachments([
+                {
+                    filename: 'leak.txt',
+                    mime: 'text/plain',
+                    localPath: 'uploads/sessionA/leak.txt'
+                }
+            ], { workingDir: root, sharedRoot: path.join(root, 'shared') });
+            assert.equal(resources.length, 0);
+            assert.ok(warnings.some((entry) => entry.includes('leak.txt') && entry.includes('not in supported')));
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+            fs.rmSync(outside, { recursive: true, force: true });
+        }
+    });
+
     it('tag relay forwards materialized references through configured MCP tool', async () => {
         const root = makeWorkingDir('relay');
         const { server, port, calls } = await startStubRouter(({ body }) => ({
@@ -119,6 +173,8 @@ describe('webchat references', () => {
         }));
         try {
             fs.writeFileSync(path.join(root, 'notes.md'), 'reference body');
+            fs.mkdirSync(path.join(root, 'uploads', 'sessionA'), { recursive: true });
+            fs.writeFileSync(path.join(root, 'uploads', 'sessionA', 'attachment.txt'), 'attachment body');
             const relay = createWebchatTagRelay({
                 enabled: true,
                 agent: 'researchRelay',
@@ -129,7 +185,13 @@ describe('webchat references', () => {
             const result = await relay.handle({
                 rawText: '@open-interpreter inspect',
                 text: '@open-interpreter inspect',
-                attachments: [],
+                attachments: [
+                    {
+                        filename: 'attachment.txt',
+                        mime: 'text/plain',
+                        localPath: 'uploads/sessionA/attachment.txt'
+                    }
+                ],
                 references: [
                     { kind: 'workspace-path', path: 'notes.md', type: 'file', label: 'Notes' },
                     { kind: 'workspace-path', path: '../outside' }
@@ -146,8 +208,9 @@ describe('webchat references', () => {
             assert.equal(submitArguments.backend, 'open-interpreter');
             assert.match(submitArguments.prompt, /inspect/);
             assert.match(submitArguments.prompt, /Reference forwarding notes:/);
-            assert.equal(submitArguments.resources.length, 1);
-            assert.equal(submitArguments.resources[0].workspacePath, 'notes.md');
+            assert.equal(submitArguments.resources.length, 2);
+            assert.equal(submitArguments.resources[0].localPath, 'uploads/sessionA/attachment.txt');
+            assert.equal(submitArguments.resources[1].workspacePath, 'notes.md');
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
             await new Promise((resolve) => server.close(resolve));
