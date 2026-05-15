@@ -59,6 +59,10 @@ describe('SlashCommandHandler', () => {
         assert.ok(listEntry.subCommands.some((entry) => entry.name === 'skills'), '/list should include skills sub-command');
         assert.ok(listEntry.subCommands.some((entry) => entry.name === 'repos'), '/list should include repos sub-command');
 
+        const updateEntry = catalog.find((entry) => entry.name === '/update');
+        assert.ok(updateEntry, 'Catalog should include /update');
+        assert.ok(updateEntry.subCommands.some((entry) => entry.name === 'repos'), '/update should include repos sub-command');
+
         const staticCatalog = SlashCommandHandler.getCommandCatalog();
         assert.deepStrictEqual(staticCatalog, catalog, 'Static catalog helper should match the exported catalog builder');
     });
@@ -96,6 +100,16 @@ describe('SlashCommandHandler', () => {
         assert.strictEqual(parsed2.command, 'add');
         assert.strictEqual(parsed2.subOption, 'repo');
         assert.strictEqual(parsed2.args, 'https://github.com/foo/bar.git my-repo');
+
+        const parsed3 = handler.parseSlashCommand('/update repos');
+        assert.strictEqual(parsed3.command, 'update');
+        assert.strictEqual(parsed3.subOption, 'repos');
+        assert.strictEqual(parsed3.args, '');
+
+        const parsed4 = handler.parseSlashCommand('/update my-skill Description');
+        assert.strictEqual(parsed4.command, 'update');
+        assert.strictEqual(parsed4.subOption, null);
+        assert.strictEqual(parsed4.args, 'my-skill Description');
     });
 
     it('should identify slash commands', async () => {
