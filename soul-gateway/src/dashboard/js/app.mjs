@@ -1347,7 +1347,7 @@ function logsPage() {
         async init() {
             await this.loadKeys();
             if (this.keys.length > 0) {
-                await this.selectKey(this.keys[0]);
+                await this.selectKey(this.keys[0], { force: true });
             } else {
                 await this.loadLogs();
             }
@@ -1444,11 +1444,11 @@ function logsPage() {
             });
         },
 
-        selectKey(key) {
+        async selectKey(key, { force = false } = {}) {
             if (!key) {
                 return;
             }
-            if (this.selectedKey?.list_id === key.list_id) {
+            if (!force && this.selectedKey?.list_id === key.list_id) {
                 return;
             }
             this.selectedKey = key;
@@ -1460,7 +1460,7 @@ function logsPage() {
             this.sortDir = 'desc';
             this.selectedLogs = [];
             this.logsTotal = Number(key.request_count || 0);
-            this.loadLogs();
+            await this.loadLogs();
         },
 
         async loadLogs() {
