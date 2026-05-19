@@ -9,6 +9,7 @@ import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
@@ -17,16 +18,28 @@ import {
     SKILL_DEFINITIONS,
 } from './helpers/testHelpers.mjs';
 
-// Import the DBTableSkillsSubsystem components
-const achillesLibPath = path.resolve(
-    import.meta.dirname,
-    '../../coral-agent/node_modules/achillesAgentLib/DBTableSkillsSubsystem'
-);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '..');
+const achillesLibCandidates = [
+    path.join(repoRoot, 'achilles-cli/node_modules/achillesAgentLib/DBTableSkillsSubsystem'),
+    path.join(repoRoot, 'node_modules/achillesAgentLib/DBTableSkillsSubsystem'),
+    path.join(repoRoot, '../../..', 'ploinky/node_modules/achillesAgentLib/DBTableSkillsSubsystem'),
+];
+
+function findAchillesLibPath() {
+    return achillesLibCandidates.find(candidate => fs.existsSync(candidate)) || achillesLibCandidates[0];
+}
+
+let importCounter = 0;
+
+function cacheBusted(filePath) {
+    importCounter += 1;
+    return `${filePath}?t=${Date.now()}-${importCounter}`;
+}
 
 describe('Timestamp-based Regeneration', () => {
     let tempDir;
     let skillsDir;
-    let DBTableSkillsSubsystem;
     let serializeFunctions;
 
     before(async () => {
@@ -37,13 +50,14 @@ describe('Timestamp-based Regeneration', () => {
 
         // Import the modules
         try {
-            const subsystemModule = await import(path.join(achillesLibPath, 'DBTableSkillsSubsystem.mjs'));
-            DBTableSkillsSubsystem = subsystemModule.DBTableSkillsSubsystem || subsystemModule.default;
-
-            const generatorModule = await import(path.join(achillesLibPath, 'FunctionGenerator.mjs'));
-            serializeFunctions = generatorModule.serializeFunctions;
+            const achillesLibPath = findAchillesLibPath();
+            const generatorPath = path.join(achillesLibPath, 'FunctionGenerator.mjs');
+            if (fs.existsSync(generatorPath)) {
+                const generatorModule = await import(generatorPath);
+                serializeFunctions = generatorModule.serializeFunctions;
+            }
         } catch (e) {
-            console.log('Note: Could not import DBTableSkillsSubsystem directly:', e.message);
+            console.log('Note: Could not import optional FunctionGenerator:', e.message);
         }
     });
 
@@ -268,7 +282,7 @@ export const functions = {
             // Should be valid syntax
             let syntaxError = null;
             try {
-                await import(generatedPath + '?t=' + Date.now());
+                await import(cacheBusted(generatedPath));
             } catch (e) {
                 syntaxError = e;
             }
@@ -298,7 +312,7 @@ export const functions = {
 
             fs.writeFileSync(generatedPath, validGenerated);
 
-            const imported = await import(generatedPath + '?t=' + Date.now());
+            const imported = await import(cacheBusted(generatedPath));
 
             assert.ok(imported.functions, 'Should export functions object');
             assert.ok(imported.functions.validators, 'Should have validators category');

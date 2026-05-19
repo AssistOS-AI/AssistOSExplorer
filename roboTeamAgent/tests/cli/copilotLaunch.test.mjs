@@ -1,10 +1,19 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import {
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const copilotLaunchPath = path.join(
+    __dirname,
+    '../achilles-cli/IDE-plugins/achilles-cli-tool-button/copilot-launch.js'
+);
+const copilotLaunchSource = fs.readFileSync(copilotLaunchPath, 'utf8');
+const {
     buildCopilotUrl,
-    getCopilotLaunchExtensions
-} from '../achilles-cli/IDE-plugins/achilles-cli-tool-button/copilot-launch.js';
+    getCopilotLaunchExtensions,
+} = await import(`data:text/javascript,${encodeURIComponent(copilotLaunchSource)}`);
 
 const originalWindow = globalThis.window;
 
