@@ -156,8 +156,8 @@ describe('CommandSelector - Full Suite', () => {
             const selector = new CommandSelector(testCommands, { maxVisible: 3 });
             for (let i = 0; i < 5; i++) selector.moveDown();
             const lines = selector.render();
-            const hasMoreAbove = lines.some(l => l.includes('more above'));
-            const hasMoreBelow = lines.some(l => l.includes('more below'));
+            const hasMoreAbove = lines.some(l => l.includes('↑') && l.includes('more'));
+            const hasMoreBelow = lines.some(l => l.includes('↓') && l.includes('more'));
             assert.ok(hasMoreAbove || hasMoreBelow, 'Should show scroll indicator');
         });
 

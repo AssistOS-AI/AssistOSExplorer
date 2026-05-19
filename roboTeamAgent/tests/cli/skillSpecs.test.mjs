@@ -1,6 +1,6 @@
 /**
- * Skill Specifications (.specs.md) Tests
- * Tests for loading and using .specs.md files in skill operations
+ * Skill Specifications (specs/) Tests
+ * Tests for loading and using specs/ files in skill operations
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -16,7 +16,7 @@ import {
     SKILL_DEFINITIONS,
 } from './helpers/testHelpers.mjs';
 
-describe('Skill Specifications (.specs.md) Support', () => {
+describe('Skill Specifications (specs/) Support', () => {
     let tempDir;
     let skillsDir;
 
@@ -45,11 +45,11 @@ describe('Skill Specifications (.specs.md) Support', () => {
             assert.strictEqual(result, null);
         });
 
-        it('should load specs content when .specs.md exists', () => {
+        it('should load specs content when specs directory exists', () => {
             const skillDir = path.join(skillsDir, 'WithSpecsSkill');
-            fs.mkdirSync(skillDir);
+            fs.mkdirSync(path.join(skillDir, 'specs'), { recursive: true });
             fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Test\n## Summary\nTest skill');
-            fs.writeFileSync(path.join(skillDir, '.specs.md'), '# Specifications\n\n- Must return JSON\n- Max 100 chars');
+            fs.writeFileSync(path.join(skillDir, 'specs', 'index.mjs.md'), '# Specifications\n\n- Must return JSON\n- Max 100 chars');
 
             const result = loadSpecsContent(skillDir);
             assert.ok(result !== null, 'Should return specs content');
@@ -95,21 +95,21 @@ describe('Skill Specifications (.specs.md) Support', () => {
     });
 
     describe('Code Generation with Specs', () => {
-        it('should include specs content in LLM prompt when .specs.md exists', async () => {
-            const generateModule = await import('../achilles-cli/src/skills/generate-code/generate-code.mjs');
+        it('should include specs content in LLM prompt when specs directory exists', async () => {
+            const generateModule = await import('../achilles-cli/src/skills/generate-code/src/index.mjs');
             const generateCodeAction = generateModule.action;
 
             const skillDir = path.join(skillsDir, 'SpecsCodeGenSkill');
-            fs.mkdirSync(skillDir);
+            fs.mkdirSync(path.join(skillDir, 'specs'), { recursive: true });
             fs.writeFileSync(path.join(skillDir, 'cskill.md'), SKILL_DEFINITIONS.cskill);
-            fs.writeFileSync(path.join(skillDir, '.specs.md'), '# Code Generation Specs\n\n- Generated code must use arrow functions\n- All exports must be named exports');
+            fs.writeFileSync(path.join(skillDir, 'specs', 'index.mjs.md'), '# Code Generation Specs\n\n- Generated code must use arrow functions\n- All exports must be named exports');
 
             let capturedPrompt = null;
             const mockLlmAgent = {
                 executePrompt: async (prompt) => {
                     capturedPrompt = prompt;
                     return `export const specs = { name: 'test' };
-export const action = async (input) => 'result';
+export const action = async (invocation = {}) => 'result';
 export default { specs, action };`;
                 },
             };
@@ -127,7 +127,7 @@ export default { specs, action };`;
                 ]),
             });
 
-            await generateCodeAction(mockAgent, 'SpecsCodeGenSkill');
+            await generateCodeAction({ mainAgent: mockAgent, promptText: 'SpecsCodeGenSkill' });
 
             assert.ok(capturedPrompt !== null, 'LLM should have been called');
             assert.ok(capturedPrompt.includes('Skill Specifications'), 'Prompt should include specs section');
@@ -135,8 +135,8 @@ export default { specs, action };`;
             assert.ok(capturedPrompt.includes('named exports'), 'Prompt should include all specs');
         });
 
-        it('should work normally when no .specs.md exists', async () => {
-            const generateModule = await import('../achilles-cli/src/skills/generate-code/generate-code.mjs');
+        it('should work normally when no specs directory exists', async () => {
+            const generateModule = await import('../achilles-cli/src/skills/generate-code/src/index.mjs');
             const generateCodeAction = generateModule.action;
 
             const skillDir = path.join(skillsDir, 'NoSpecsCodeGenSkill');
@@ -148,7 +148,7 @@ export default { specs, action };`;
                 executePrompt: async (prompt) => {
                     capturedPrompt = prompt;
                     return `export const specs = { name: 'test' };
-export const action = async (input) => 'result';
+export const action = async (invocation = {}) => 'result';
 export default { specs, action };`;
                 },
             };
@@ -166,7 +166,7 @@ export default { specs, action };`;
                 ]),
             });
 
-            const result = await generateCodeAction(mockAgent, 'NoSpecsCodeGenSkill');
+            const result = await generateCodeAction({ mainAgent: mockAgent, promptText: 'NoSpecsCodeGenSkill' });
 
             assert.ok(result.includes('Generated'), 'Should generate code successfully');
             assert.ok(capturedPrompt !== null, 'LLM should have been called');
@@ -175,14 +175,14 @@ export default { specs, action };`;
     });
 
     describe('read-skill with Specs', () => {
-        it('should display .specs.md content when reading a skill', async () => {
-            const readModule = await import('../achilles-cli/src/skills/read-skill/read-skill.mjs');
-            const readSkillAction = readModule.action;
+        it('should display specs/ content when reading specs', async () => {
+            const readModule = await import('../achilles-cli/src/skills/read-specs/src/index.mjs');
+            const readSpecsAction = readModule.action;
 
             const skillDir = path.join(skillsDir, 'ReadableSpecsSkill');
-            fs.mkdirSync(skillDir);
+            fs.mkdirSync(path.join(skillDir, 'specs'), { recursive: true });
             fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Readable Skill\n\n## Summary\nA test skill');
-            fs.writeFileSync(path.join(skillDir, '.specs.md'), '# Specs for Readable Skill\n\n- Must handle errors gracefully');
+            fs.writeFileSync(path.join(skillDir, 'specs', 'index.mjs.md'), '# Specs for Readable Skill\n\n- Must handle errors gracefully');
 
             const mockAgent = createMockAgent({
                 startDir: tempDir,
@@ -196,16 +196,15 @@ export default { specs, action };`;
                 ]),
             });
 
-            const result = await readSkillAction(mockAgent, 'ReadableSpecsSkill');
+            const result = await readSpecsAction({ mainAgent: mockAgent, promptText: 'ReadableSpecsSkill' });
 
-            assert.ok(result.includes('Readable Skill'), 'Should include skill content');
-            assert.ok(result.includes('.specs.md'), 'Should indicate specs file');
+            assert.ok(result.includes('specs/index.mjs.md'), 'Should indicate specs file');
             assert.ok(result.includes('Must handle errors gracefully'), 'Should include specs content');
         });
 
-        it('should work normally when no .specs.md exists for read-skill', async () => {
-            const readModule = await import('../achilles-cli/src/skills/read-skill/read-skill.mjs');
-            const readSkillAction = readModule.action;
+        it('should work normally when no specs directory exists for read-specs', async () => {
+            const readModule = await import('../achilles-cli/src/skills/read-specs/src/index.mjs');
+            const readSpecsAction = readModule.action;
 
             const skillDir = path.join(skillsDir, 'NoSpecsReadableSkill');
             fs.mkdirSync(skillDir);
@@ -223,10 +222,9 @@ export default { specs, action };`;
                 ]),
             });
 
-            const result = await readSkillAction(mockAgent, 'NoSpecsReadableSkill');
+            const result = await readSpecsAction({ mainAgent: mockAgent, promptText: 'NoSpecsReadableSkill' });
 
-            assert.ok(result.includes('No Specs Skill'), 'Should include skill content');
-            assert.ok(!result.includes('.specs.md'), 'Should not mention specs file');
+            assert.ok(result.includes('No specs/ directory found'), 'Should explain missing specs directory');
         });
     });
 });

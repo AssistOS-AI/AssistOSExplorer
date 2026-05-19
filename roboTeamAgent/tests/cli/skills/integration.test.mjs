@@ -1,7 +1,7 @@
 /**
  * Integration tests for skills - complete workflow testing
  *
- * Action signature convention: action(recursiveSkilledAgent, prompt)
+ * Action signature convention: action({ mainAgent, promptText })
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -26,19 +26,19 @@ describe('Skills Integration - Complete Workflow', () => {
         tempSkillsDir = path.join(tempDir, 'skills');
         fs.mkdirSync(tempSkillsDir, { recursive: true });
 
-        const listModule = await import('../../achilles-cli/src/skills/list-skills/list-skills.mjs');
+        const listModule = await import('../../achilles-cli/src/skills/list-skills/src/index.mjs');
         listAction = listModule.action;
 
-        const readModule = await import('../../achilles-cli/src/skills/read-skill/read-skill.mjs');
+        const readModule = await import('../../achilles-cli/src/skills/read-skill/src/index.mjs');
         readAction = readModule.action;
 
-        const writeModule = await import('../../achilles-cli/src/skills/write-skill/write-skill.mjs');
+        const writeModule = await import('../../achilles-cli/src/skills/write-skill/src/index.mjs');
         writeAction = writeModule.action;
 
-        const validateModule = await import('../../achilles-cli/src/skills/validate-skill/validate-skill.mjs');
+        const validateModule = await import('../../achilles-cli/src/skills/validate-skill/src/index.mjs');
         validateAction = validateModule.action;
 
-        const deleteModule = await import('../../achilles-cli/src/skills/delete-skill/delete-skill.mjs');
+        const deleteModule = await import('../../achilles-cli/src/skills/delete-skill/src/index.mjs');
         deleteAction = deleteModule.action;
     });
 
@@ -55,41 +55,45 @@ describe('Skills Integration - Complete Workflow', () => {
             getSkillRecord: () => ({
                 skillDir: path.join(tempSkillsDir, 'WorkflowTestSkill'),
                 filePath: path.join(tempSkillsDir, 'WorkflowTestSkill', 'cskill.md'),
+                type: 'cskill',
             }),
+            getSkills() {
+                return Array.from(this.skillCatalog.values());
+            },
         };
 
         // 1. Create skill
-        const createResult = await writeAction(mockAgent, JSON.stringify({
+        const createResult = await writeAction({ mainAgent: mockAgent, promptText: JSON.stringify({
             skillName: 'WorkflowTestSkill',
             fileName: 'cskill.md',
-            content: '# Workflow Test\n\n## Summary\nTest skill for workflow\n\n## Prompt\nDo something\n\n## LLM Mode\nfast',
-        }));
+            content: '# Workflow Test\n\n## Summary\nTest skill for workflow\n\n## Input Format\nWorkflow request text.\n\n## Output Format\nWorkflow result text.',
+        }) });
         assert.ok(createResult.includes('Created'), 'Should create skill');
 
         // 2. List skills (update catalog)
         mockAgent.skillCatalog = new Map([
             ['workflow-test-skill', {
                 name: 'workflow-test-skill',
-                type: 'code',
+                type: 'cskill',
                 shortName: 'WorkflowTestSkill',
                 descriptor: { summary: 'Test skill for workflow' },
                 skillDir: path.join(tempSkillsDir, 'WorkflowTestSkill'),
             }],
         ]);
 
-        const listResult = await listAction(mockAgent, '');
+        const listResult = await listAction({ mainAgent: mockAgent, promptText: '' });
         assert.ok(listResult.includes('WorkflowTestSkill') || listResult.includes('workflow-test-skill'));
 
         // 3. Read skill
-        const readResult = await readAction(mockAgent, 'WorkflowTestSkill');
+        const readResult = await readAction({ mainAgent: mockAgent, promptText: 'WorkflowTestSkill' });
         assert.ok(readResult.includes('Workflow Test'));
 
         // 4. Validate skill
-        const validateResult = await validateAction(mockAgent, 'WorkflowTestSkill');
+        const validateResult = await validateAction({ mainAgent: mockAgent, promptText: 'WorkflowTestSkill' });
         assert.ok(validateResult.includes('VALID') || validateResult.includes('Validation'));
 
         // 5. Delete skill
-        const deleteResult = await deleteAction(mockAgent, 'WorkflowTestSkill');
+        const deleteResult = await deleteAction({ mainAgent: mockAgent, promptText: 'WorkflowTestSkill' });
         assert.ok(deleteResult.includes('Deleted'));
         assert.ok(!fs.existsSync(path.join(tempSkillsDir, 'WorkflowTestSkill')));
     });

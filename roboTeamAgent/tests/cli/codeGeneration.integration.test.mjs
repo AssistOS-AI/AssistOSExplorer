@@ -1,6 +1,6 @@
 /**
  * Code Generation Integration Tests
- * Tests the full generate → test flow for all skill types
+ * Tests the full generate -> test flow for generated runtime skill types
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -22,10 +22,10 @@ describe('Code Generation Integration Tests', () => {
     let testCodeAction;
 
     before(async () => {
-        const generateModule = await import('../achilles-cli/src/skills/generate-code/generate-code.mjs');
+        const generateModule = await import('../achilles-cli/src/skills/generate-code/src/index.mjs');
         generateCodeAction = generateModule.action;
 
-        const testModule = await import('../achilles-cli/src/skills/test-code/test-code.mjs');
+        const testModule = await import('../achilles-cli/src/skills/test-code/src/index.mjs');
         testCodeAction = testModule.action;
 
         const dirs = createTempDir('temp_integration');
@@ -73,60 +73,15 @@ export default { validator_product_id, validateRecord };`;
         });
 
         // Generate
-        const genResult = await generateCodeAction(mockAgent, 'IntegrationTskill');
+        const genResult = await generateCodeAction({ mainAgent: mockAgent, promptText: 'IntegrationTskill' });
         assert.ok(genResult.includes('Generated'), 'Should generate code');
 
-        // Test
-        const testResult = await testCodeAction(mockAgent, 'IntegrationTskill');
+        const testResult = await testCodeAction({ mainAgent: mockAgent, promptText: 'IntegrationTskill' });
         assert.ok(testResult.includes('Module loaded'), 'Should load generated module');
         assert.ok(testResult.includes('validator_product_id'), 'Should have validator');
     });
 
-    it('should generate and test code in sequence for iskill', async () => {
-        const skillDir = path.join(skillsDir, 'IntegrationIskill');
-        fs.mkdirSync(skillDir);
-        fs.writeFileSync(
-            path.join(skillDir, 'iskill.md'),
-            SKILL_DEFINITIONS.iskill
-        );
-
-        const mockLlmAgent = {
-            executePrompt: async () => {
-                return `export const specs = {
-    name: 'IntegrationIskill',
-    description: 'Test',
-    arguments: { name: { type: 'string', required: true } },
-};
-export async function action(args) {
-    return 'Hello ' + (args.name || 'World');
-}
-export default { specs, action };`;
-            },
-        };
-
-        const mockAgent = createMockAgent({
-            startDir: tempDir,
-            llmAgent: mockLlmAgent,
-            skillCatalog: new Map([
-                ['IntegrationIskill', {
-                    name: 'IntegrationIskill',
-                    skillDir,
-                    filePath: path.join(skillDir, 'iskill.md'),
-                    type: 'iskill',
-                }],
-            ]),
-        });
-
-        const genResult = await generateCodeAction(mockAgent, 'IntegrationIskill');
-        assert.ok(genResult.includes('Generated'), 'Should generate code');
-
-        const testResult = await testCodeAction(mockAgent, 'IntegrationIskill');
-        assert.ok(testResult.includes('Module loaded'), 'Should load generated module');
-        assert.ok(testResult.includes('specs'), 'Should have specs');
-        assert.ok(testResult.includes('action'), 'Should have action');
-    });
-
-    it('should generate and test code in sequence for oskill', async () => {
+    it('should reject code generation for oskill descriptors', async () => {
         const skillDir = path.join(skillsDir, 'IntegrationOskill');
         fs.mkdirSync(skillDir);
         fs.writeFileSync(
@@ -162,11 +117,8 @@ export default { specs, action };`;
             ]),
         });
 
-        const genResult = await generateCodeAction(mockAgent, 'IntegrationOskill');
-        assert.ok(genResult.includes('Generated'), 'Should generate code');
-
-        const testResult = await testCodeAction(mockAgent, 'IntegrationOskill');
-        assert.ok(testResult.includes('Module loaded'), 'Should load generated module');
+        const genResult = await generateCodeAction({ mainAgent: mockAgent, promptText: 'IntegrationOskill' });
+        assert.ok(genResult.includes('Error'), 'Should reject unsupported type');
     });
 
     it('should generate and test code in sequence for cskill', async () => {
@@ -181,12 +133,10 @@ export default { specs, action };`;
             executePrompt: async () => {
                 return `export const specs = {
     name: 'IntegrationCskill',
-    type: 'code',
-    llmMode: 'fast',
-    arguments: { text: { type: 'string', required: true } },
+    description: 'Test cskill',
 };
-export async function action(input) {
-    return 'Summarized: ' + input;
+export async function action(invocation = {}) {
+    return 'Summarized: ' + (invocation.promptText || '');
 }
 export default { specs, action };`;
             },
@@ -205,10 +155,10 @@ export default { specs, action };`;
             ]),
         });
 
-        const genResult = await generateCodeAction(mockAgent, 'IntegrationCskill');
+        const genResult = await generateCodeAction({ mainAgent: mockAgent, promptText: 'IntegrationCskill' });
         assert.ok(genResult.includes('Generated'), 'Should generate code');
 
-        const testResult = await testCodeAction(mockAgent, 'IntegrationCskill');
+        const testResult = await testCodeAction({ mainAgent: mockAgent, promptText: 'IntegrationCskill' });
         assert.ok(testResult.includes('Module loaded'), 'Should load generated module');
     });
 });

@@ -1,8 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { REPLSession } from '../achilles-cli/src/repl/REPLSession.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.dirname(__dirname);
 
 function createMockAgent(executeSkillImpl) {
     return {
@@ -20,7 +24,7 @@ function createMockAgent(executeSkillImpl) {
 
 describe('REPLSession', () => {
     it('falls back to built-in module when skill registry misses built-in skill', async () => {
-        const builtInSkillsDir = path.join(process.cwd(), 'achilles-cli', 'src', 'skills');
+        const builtInSkillsDir = path.join(repoRoot, 'achilles-cli', 'src', 'skills');
         const agent = createMockAgent(async () => {
             throw new Error('Skill "list-skills" not found.');
         });
@@ -44,7 +48,7 @@ describe('REPLSession', () => {
         const session = new REPLSession(agent, {
             workingDir: process.cwd(),
             skillsDir: path.join(process.cwd(), 'skills'),
-            builtInSkillsDir: path.join(process.cwd(), 'achilles-cli', 'src', 'skills'),
+            builtInSkillsDir: path.join(repoRoot, 'achilles-cli', 'src', 'skills'),
         });
 
         await assert.rejects(

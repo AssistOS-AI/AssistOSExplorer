@@ -1,6 +1,6 @@
 /**
  * Generate Code Tests
- * Tests the generate-code action for all skill types: tskill, iskill, oskill, cskill
+ * Tests the generate-code action for generated runtime skill types: tskill and cskill
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -23,7 +23,7 @@ describe('generate-code Action Tests', () => {
 
     before(async () => {
         // Import action function
-        const generateModule = await import('../achilles-cli/src/skills/generate-code/generate-code.mjs');
+        const generateModule = await import('../achilles-cli/src/skills/generate-code/src/index.mjs');
         generateCodeAction = generateModule.action;
 
         // Setup temp directory
@@ -47,20 +47,20 @@ describe('generate-code Action Tests', () => {
     describe('Error Handling', () => {
         it('should return error when skillName not provided', async () => {
             const mockAgent = createMockAgent({ startDir: tempDir });
-            const result = await generateCodeAction(mockAgent, '');
+            const result = await generateCodeAction({ mainAgent: mockAgent, promptText: '' });
             assert.ok(result.includes('Error'), 'Should return error');
             assert.ok(result.includes('skillName'), 'Should mention skillName');
         });
 
         it('should return error when skill not found', async () => {
             const mockAgent = createMockAgent({ startDir: tempDir });
-            const result = await generateCodeAction(mockAgent, 'NonExistentSkill');
+            const result = await generateCodeAction({ mainAgent: mockAgent, promptText: 'NonExistentSkill' });
             assert.ok(result.includes('Error') || result.includes('not found'), 'Should return error');
         });
 
         it('should return error when llmAgent not provided', async () => {
             const mockAgent = createMockAgent({ startDir: tempDir });
-            const result = await generateCodeAction(mockAgent, 'TestTskillSkill');
+            const result = await generateCodeAction({ mainAgent: mockAgent, promptText: 'TestTskillSkill' });
             assert.ok(result.includes('Error'), 'Should return error');
             assert.ok(result.includes('LLM') || result.includes('not found'), 'Should mention LLM or not found');
         });
@@ -86,49 +86,19 @@ describe('generate-code Action Tests', () => {
                 ]),
             });
 
-            const result = await generateCodeAction(mockAgent, 'TestTskillSkill');
+            const result = await generateCodeAction({ mainAgent: mockAgent, promptText: 'TestTskillSkill' });
 
             assert.ok(result.includes('Generated'), 'Should indicate generation');
             assert.ok(result.includes('tskill.generated.mjs'), 'Should use tskill.generated.mjs filename');
 
             // Verify file was created
-            const generatedPath = path.join(skillsDir, 'TestTskillSkill', 'tskill.generated.mjs');
-            assert.ok(fs.existsSync(generatedPath), 'Generated file should exist');
-        });
-    });
-
-    describe('iskill Code Generation', () => {
-        it('should generate code for iskill', async () => {
-            const skillDir = path.join(skillsDir, 'TestIskillSkill');
-            const mockLlmAgent = {
-                executePrompt: async () => MOCK_GENERATED_CODE.iskill,
-            };
-
-            const mockAgent = createMockAgent({
-                startDir: tempDir,
-                llmAgent: mockLlmAgent,
-                skillCatalog: new Map([
-                    ['TestIskillSkill', {
-                        name: 'TestIskillSkill',
-                        skillDir,
-                        filePath: path.join(skillDir, 'iskill.md'),
-                        type: 'iskill',
-                    }],
-                ]),
-            });
-
-            const result = await generateCodeAction(mockAgent, 'TestIskillSkill');
-
-            assert.ok(result.includes('Generated'), 'Should indicate generation');
-            assert.ok(result.includes('TestIskillSkill.generated.mjs'), 'Should use skillName.generated.mjs filename');
-
-            const generatedPath = path.join(skillsDir, 'TestIskillSkill', 'TestIskillSkill.generated.mjs');
+            const generatedPath = path.join(skillsDir, 'TestTskillSkill', 'src', 'tskill.generated.mjs');
             assert.ok(fs.existsSync(generatedPath), 'Generated file should exist');
         });
     });
 
     describe('oskill Code Generation', () => {
-        it('should generate code for oskill', async () => {
+        it('should reject code generation for oskill', async () => {
             const skillDir = path.join(skillsDir, 'TestOskillSkill');
             const mockLlmAgent = {
                 executePrompt: async () => MOCK_GENERATED_CODE.oskill,
@@ -147,13 +117,10 @@ describe('generate-code Action Tests', () => {
                 ]),
             });
 
-            const result = await generateCodeAction(mockAgent, 'TestOskillSkill');
+            const result = await generateCodeAction({ mainAgent: mockAgent, promptText: 'TestOskillSkill' });
 
-            assert.ok(result.includes('Generated'), 'Should indicate generation');
-            assert.ok(result.includes('TestOskillSkill.generated.mjs'), 'Should use skillName.generated.mjs filename');
-
-            const generatedPath = path.join(skillsDir, 'TestOskillSkill', 'TestOskillSkill.generated.mjs');
-            assert.ok(fs.existsSync(generatedPath), 'Generated file should exist');
+            assert.ok(result.includes('Error'), 'Should reject unsupported type');
+            assert.ok(result.includes('tskill, cskill'), 'Should list supported types');
         });
     });
 
@@ -177,12 +144,12 @@ describe('generate-code Action Tests', () => {
                 ]),
             });
 
-            const result = await generateCodeAction(mockAgent, 'TestCskillSkill');
+            const result = await generateCodeAction({ mainAgent: mockAgent, promptText: 'TestCskillSkill' });
 
             assert.ok(result.includes('Generated'), 'Should indicate generation');
-            assert.ok(result.includes('TestCskillSkill.generated.mjs'), 'Should use skillName.generated.mjs filename');
+            assert.ok(result.includes('src/index.mjs'), 'Should use src/index.mjs filename');
 
-            const generatedPath = path.join(skillsDir, 'TestCskillSkill', 'TestCskillSkill.generated.mjs');
+            const generatedPath = path.join(skillsDir, 'TestCskillSkill', 'src', 'index.mjs');
             assert.ok(fs.existsSync(generatedPath), 'Generated file should exist');
         });
     });

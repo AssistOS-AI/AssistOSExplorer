@@ -12,7 +12,7 @@ describe('skillSchemas.mjs - Schema Utilities', () => {
     let SKILL_TYPES, SKILL_TEMPLATES;
 
     before(async () => {
-        const schemas = await import('../../achilles-cli/src/skillSchemas.mjs');
+        const schemas = await import('../../achilles-cli/src/schemas/skillSchemas.mjs');
         detectSkillType = schemas.detectSkillType;
         validateSkillContent = schemas.validateSkillContent;
         parseSkillSections = schemas.parseSkillSections;
@@ -28,7 +28,7 @@ describe('skillSchemas.mjs - Schema Utilities', () => {
         });
 
         it('should detect cskill from content', () => {
-            const content = `# MyCode\n\n## Summary\nDoes something\n\n## Prompt\nYou are an assistant`;
+            const content = `# MyCode\n\n## Description\nDoes something\n\n## Input Format\n- input`;
             assert.equal(detectSkillType(content), 'cskill');
         });
 
@@ -37,13 +37,13 @@ describe('skillSchemas.mjs - Schema Utilities', () => {
             assert.equal(detectSkillType(content), 'oskill');
         });
 
-        it('should detect iskill from content', () => {
-            const content = `# MyInteractive\n\n## Summary\nInteractive\n\n## Required Arguments\n- arg1`;
-            assert.equal(detectSkillType(content), 'iskill');
+        it('should detect dcgskill from content', () => {
+            const content = `# MyDynamicSkill\n\n## Prompt\nYou are an assistant`;
+            assert.equal(detectSkillType(content), 'dcgskill');
         });
 
         it('should detect mskill from content', () => {
-            const content = `# MyMCP\n\n## Summary\nMCP skill\n\n## MCP Tools\n\n### tool1`;
+            const content = `# MyMCP\n\n## Description\nMCP skill\n\n## Allowed-Tools\n- tool1`;
             assert.equal(detectSkillType(content), 'mskill');
         });
 
@@ -86,17 +86,24 @@ describe('skillSchemas.mjs - Schema Utilities', () => {
             assert.ok(result.errors.some(e => e.includes('should start with')));
         });
 
-        it('should warn about missing optional sections', () => {
+        it('should not warn about missing optional sections', () => {
             const content = `# MyTable\n\n## Table Purpose\nStores data\n\n## Fields\n\n### id`;
             const result = validateSkillContent(content, 'tskill');
-            assert.ok(result.warnings.some(w => w.includes('Business Rules')));
+            assert.equal(result.warnings.length, 0);
         });
 
-        it('should validate cskill with LLM Mode warning', () => {
-            const content = `# MyCode\n\n## Summary\nDoes something\n\n## Prompt\nYou are an assistant`;
+        it('should validate dcgskill with default prompt warning', () => {
+            const content = `# MyDynamicSkill\n\n## Argument\nPrimary input`;
+            const result = validateSkillContent(content, 'dcgskill');
+            assert.ok(result.valid);
+            assert.ok(result.warnings.some(w => w.includes('default decision prompt')));
+        });
+
+        it('should validate cskill with recommended section warnings only', () => {
+            const content = `# MyCode\n\n## Input Format\n- input`;
             const result = validateSkillContent(content, 'cskill');
             assert.ok(result.valid);
-            assert.ok(result.warnings.some(w => w.includes('LLM Mode')));
+            assert.ok(result.warnings.some(w => w.includes('Description')));
         });
     });
 
@@ -157,7 +164,7 @@ describe('skillSchemas.mjs - Schema Utilities', () => {
         it('should have templates for all skill types', () => {
             assert.ok(SKILL_TEMPLATES.tskill, 'Should have tskill template');
             assert.ok(SKILL_TEMPLATES.cskill, 'Should have cskill template');
-            assert.ok(SKILL_TEMPLATES.iskill, 'Should have iskill template');
+            assert.ok(SKILL_TEMPLATES.dcgskill, 'Should have dcgskill template');
             assert.ok(SKILL_TEMPLATES.oskill, 'Should have oskill template');
             assert.ok(SKILL_TEMPLATES.mskill, 'Should have mskill template');
         });

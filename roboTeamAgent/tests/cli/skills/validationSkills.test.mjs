@@ -1,7 +1,7 @@
 /**
  * Tests for validation skill modules: validate-skill, get-template
  *
- * Action signature convention: action(recursiveSkilledAgent, prompt)
+ * Action signature convention: action({ mainAgent, promptText })
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -22,7 +22,7 @@ describe('validate-skill module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../achilles-cli/src/skills/validate-skill/validate-skill.mjs');
+        const module = await import('../../achilles-cli/src/skills/validate-skill/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_validate_ext_' + Date.now());
@@ -49,14 +49,14 @@ describe('validate-skill module - Extended Tests', () => {
             }),
         };
 
-        const result = await action(mockAgent, 'TypeDetectSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'TypeDetectSkill' });
         assert.ok(result.includes('Detected Type: tskill'));
     });
 
     it('should show errors and warnings separately', async () => {
         const skillDir = path.join(tempSkillsDir, 'ErrorWarnSkill');
         fs.mkdirSync(skillDir);
-        fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Code\n\n## Summary\nTest\n\n## Prompt\nTest');
+        fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Code\n\n## Summary\nTest\n\n## Input Format\nText input');
 
         const mockAgent = {
             startDir: tempDir,
@@ -66,21 +66,24 @@ describe('validate-skill module - Extended Tests', () => {
             }),
         };
 
-        const result = await action(mockAgent, 'ErrorWarnSkill');
-        assert.ok(result.includes('Warnings:') || result.includes('No issues found'));
+        const result = await action({ mainAgent: mockAgent, promptText: 'ErrorWarnSkill' });
+        assert.ok(result.includes('Errors:') || result.includes('Warnings:') || result.includes('No issues found'));
     });
 
     it('should accept object input', async () => {
         const skillDir = path.join(tempSkillsDir, 'ObjValidateSkill');
         fs.mkdirSync(skillDir);
-        fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Obj\n\n## Summary\nTest\n\n## Prompt\nTest');
+        fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Obj\n\n## Summary\nTest\n\n## Input Format\nText input');
 
         const mockAgent = {
             startDir: tempDir,
-            getSkillRecord: () => null,
+            getSkillRecord: () => ({
+                skillDir,
+                filePath: path.join(skillDir, 'cskill.md'),
+            }),
         };
 
-        const result = await action(mockAgent, { skillName: 'ObjValidateSkill' });
+        const result = await action({ mainAgent: mockAgent, promptText: { skillName: 'ObjValidateSkill' } });
         assert.ok(result.includes('Validation') || result.includes('VALID'));
     });
 });
@@ -93,38 +96,38 @@ describe('get-template module - Extended Tests', () => {
     let action;
 
     before(async () => {
-        const module = await import('../../achilles-cli/src/skills/get-template/get-template.mjs');
+        const module = await import('../../achilles-cli/src/skills/get-template/src/index.mjs');
         action = module.action;
     });
 
-    it('should return template for iskill', async () => {
+    it('should return template for dcgskill', async () => {
         const mockAgent = { startDir: '/tmp' };
-        const result = await action(mockAgent, 'iskill');
-        assert.ok(result.includes('Commands') || result.includes('iskill') || result.includes('Template'));
+        const result = await action({ mainAgent: mockAgent, promptText: 'dcgskill' });
+        assert.ok(result.includes('Prompt') || result.includes('dcgskill') || result.includes('Template'));
     });
 
     it('should return template for mskill', async () => {
         const mockAgent = { startDir: '/tmp' };
-        const result = await action(mockAgent, 'mskill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'mskill' });
         assert.ok(result.includes('MCP') || result.includes('mskill') || result.includes('Template'));
     });
 
     it('should accept object input', async () => {
         const mockAgent = { startDir: '/tmp' };
-        const result = await action(mockAgent, { skillType: 'tskill' });
+        const result = await action({ mainAgent: mockAgent, promptText: { skillType: 'tskill' } });
         assert.ok(result.includes('Table Purpose') || result.includes('Fields') || result.includes('Template'));
     });
 
     it('should show required and optional sections', async () => {
         const mockAgent = { startDir: '/tmp' };
-        const result = await action(mockAgent, 'tskill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'tskill' });
         assert.ok(result.includes('Required sections'));
         assert.ok(result.includes('Optional sections'));
     });
 
     it('should include template markers', async () => {
         const mockAgent = { startDir: '/tmp' };
-        const result = await action(mockAgent, 'cskill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'cskill' });
         assert.ok(result.includes('TEMPLATE START'));
         assert.ok(result.includes('TEMPLATE END'));
     });

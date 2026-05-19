@@ -41,14 +41,14 @@ describe('MainAgent Integration Tests', () => {
         fs.mkdirSync(mathSkillDir);
         fs.writeFileSync(
             path.join(mathSkillDir, 'cskill.md'),
-            '# Simple Math\n\n## Summary\nA skill for simple calculations.\n\n## Prompt\nSolve math expressions.\n\n## LLM Mode\nfast\n'
+            '# Simple Math\n\n## Summary\nA skill for simple calculations.\n\n## Input Format\nMath expression text.\n\n## Output Format\nCalculation result.\n'
         );
 
         const greeterSkillDir = path.join(skillsDir, 'Greeter');
         fs.mkdirSync(greeterSkillDir);
         fs.writeFileSync(
             path.join(greeterSkillDir, 'cskill.md'),
-            '# Greeter\n\n## Summary\nA skill for greetings.\n\n## Prompt\nGenerate a short greeting.\n\n## LLM Mode\nfast\n'
+            '# Greeter\n\n## Summary\nA skill for greetings.\n\n## Input Format\nName and greeting style.\n\n## Output Format\nShort greeting text.\n'
         );
 
         agent = new MainAgent({
@@ -74,8 +74,8 @@ describe('MainAgent Integration Tests', () => {
     });
 
     it('should execute list-skills action directly', async () => {
-        const { action } = await import('../achilles-cli/src/skills/list-skills/list-skills.mjs');
-        const result = await action(agent, '');
+        const { action } = await import('../achilles-cli/src/skills/list-skills/src/index.mjs');
+        const result = await action({ mainAgent: agent, promptText: '' });
 
         assert.ok(result);
         assert.equal(typeof result, 'string');
@@ -83,8 +83,8 @@ describe('MainAgent Integration Tests', () => {
     });
 
     it('should execute get-template action directly', async () => {
-        const { action } = await import('../achilles-cli/src/skills/get-template/get-template.mjs');
-        const result = await action(agent, 'cskill');
+        const { action } = await import('../achilles-cli/src/skills/get-template/src/index.mjs');
+        const result = await action({ mainAgent: agent, promptText: 'cskill' });
 
         assert.ok(result);
         assert.equal(typeof result, 'string');

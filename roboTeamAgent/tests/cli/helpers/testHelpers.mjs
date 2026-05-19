@@ -57,11 +57,12 @@ export function createMockAgent(options = {}) {
             }
             // Fallback to filesystem
             const skillDir = path.join(skillsDir, skillName);
-            const fileTypes = ['cskill.md', 'tskill.md', 'iskill.md', 'oskill.md', 'pskill.md'];
+            const fileTypes = ['cskill.md', 'tskill.md', 'dcgskill.md', 'oskill.md', 'mskill.md', 'SKILL.md'];
             for (const filename of fileTypes) {
                 const filePath = path.join(skillDir, filename);
                 if (fs.existsSync(filePath)) {
-                    return { filePath, type: filename.replace('.md', ''), record: { skillDir } };
+                    const type = filename === 'SKILL.md' ? 'anthropic' : filename.replace('.md', '');
+                    return { filePath, type, record: { skillDir } };
                 }
             }
             // Final fallback: just return skillDir if it exists
@@ -162,18 +163,21 @@ Formats as currency (e.g., $12.99)
 - Calculation: status === "active"
 `,
 
-    iskill: `# Test Greeter
+    dcgskill: `# Test Greeter
 
-## Summary
-A simple greeting skill that generates personalized greetings.
-
-## Required Arguments
-- name: The name of the person to greet
-- style: The greeting style (formal, casual, friendly)
+## Description
+Generates personalized greetings.
 
 ## Prompt
 You are a friendly greeter. Generate a greeting for the given name in the requested style.
 Keep it brief - one sentence only.
+
+## Argument
+- name: The name of the person to greet
+- style: The greeting style
+
+## LLM Model
+fast
 `,
 
     oskill: `# Test Router
@@ -208,16 +212,12 @@ If intent is unclear, ask for clarification.
 ## Summary
 Summarizes text content using LLM.
 
-## Prompt
-You are a text summarizer. Given input text, produce a concise summary that captures the key points.
-Keep the summary to 2-3 sentences maximum.
-
-## Arguments
+## Input Format
 - text: The text content to summarize
 - maxLength: Optional maximum length for the summary
 
-## LLM-Mode
-fast
+## Output Format
+- summary: Concise 2-3 sentence summary
 `,
 };
 
@@ -294,41 +294,17 @@ export default {
     validateRecord,
 };`,
 
-    iskill: `/**
- * TestIskillSkill - Interactive Skill
+    cskill: `/**
+ * TestCskillSkill - Code Skill
  */
 
 export const specs = {
-    name: 'TestIskillSkill',
-    description: 'A simple greeting skill that generates personalized greetings.',
-    arguments: {
-        name: {
-            description: 'The name of the person to greet',
-            type: 'string',
-            required: true,
-        },
-        style: {
-            description: 'The greeting style (formal, casual, friendly)',
-            type: 'string',
-            required: true,
-        },
-    },
+    name: 'TestCskillSkill',
+    description: 'A simple summarizer skill.',
 };
 
-export async function action(args, context) {
-    const { llmAgent } = context;
-    const { name, style } = args;
-
-    if (!name) return 'Error: name is required';
-    if (!style) return 'Error: style is required';
-
-    const prompt = \`Generate a \${style} greeting for \${name}. Keep it to one sentence.\`;
-
-    if (llmAgent) {
-        return await llmAgent.executePrompt(prompt, { mode: 'fast' });
-    }
-
-    return \`Hello, \${name}!\`;
+export async function action(invocation = {}) {
+    return \`Summary: \${invocation.promptText || ''}\`;
 }
 
 export default { specs, action };`,
@@ -381,57 +357,6 @@ Return JSON: {"intent": "greet|calculate|help", "skill": "greeter|calculator|hel
     } catch (error) {
         return \`Routing error: \${error.message}\`;
     }
-}
-
-export default { specs, action };`,
-
-    cskill: `/**
- * TestCskillSkill - Code Skill
- */
-
-export const specs = {
-    name: 'TestCskillSkill',
-    description: 'Summarizes text content using LLM.',
-    type: 'code',
-    llmMode: 'fast',
-    arguments: {
-        text: {
-            description: 'The text content to summarize',
-            type: 'string',
-            required: true,
-        },
-        maxLength: {
-            description: 'Optional maximum length for the summary',
-            type: 'number',
-            required: false,
-        },
-    },
-};
-
-export async function action(input, context) {
-    const { llmAgent } = context;
-
-    if (!llmAgent) {
-        throw new Error('LLM agent required for code skill execution');
-    }
-
-    const text = typeof input === 'string' ? input : input?.text;
-    if (!text) {
-        return 'Error: text is required';
-    }
-
-    const systemPrompt = \`You are a text summarizer. Given input text, produce a concise summary that captures the key points.
-Keep the summary to 2-3 sentences maximum.\`;
-
-    const fullPrompt = \`\${systemPrompt}
-
-Text to summarize: \${text}\`;
-
-    const result = await llmAgent.executePrompt(fullPrompt, {
-        mode: specs.llmMode,
-    });
-
-    return result;
 }
 
 export default { specs, action };`,

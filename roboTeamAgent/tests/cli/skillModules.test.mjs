@@ -56,11 +56,12 @@ function createMockAgent(options = {}) {
             }
             // Fallback to filesystem
             const skillDir = path.join(skillsDir, skillName);
-            const fileTypes = ['cskill.md', 'tskill.md', 'iskill.md', 'oskill.md', 'pskill.md'];
+            const fileTypes = ['cskill.md', 'tskill.md', 'dcgskill.md', 'oskill.md', 'mskill.md', 'SKILL.md'];
             for (const filename of fileTypes) {
                 const filePath = path.join(skillDir, filename);
                 if (fs.existsSync(filePath)) {
-                    return { filePath, type: filename.replace('.md', ''), record: null };
+                    const type = filename === 'SKILL.md' ? 'anthropic' : filename.replace('.md', '');
+                    return { filePath, type, record: null };
                 }
             }
             return null;
@@ -86,7 +87,7 @@ describe('list-skills module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/list-skills/list-skills.mjs');
+        const module = await import('../achilles-cli/src/skills/list-skills/src/index.mjs');
         action = module.action;
 
         // Create temp directory with skills
@@ -121,7 +122,7 @@ describe('list-skills module', () => {
             ]),
         });
 
-        const result = await action(mockAgent, '');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
         assert.ok(result.includes('test-skill') || result.includes('TestSkill'), 'Should include skill name');
     });
 
@@ -131,8 +132,8 @@ describe('list-skills module', () => {
             skillCatalog: new Map(),
         });
 
-        const result = await action(mockAgent, '');
-        assert.ok(result.includes('No skills'), 'Should indicate no skills');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
+        assert.ok(result.includes('No user skills') || result.includes('No skills'), 'Should indicate no skills');
     });
 });
 
@@ -142,7 +143,7 @@ describe('read-skill module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/read-skill/read-skill.mjs');
+        const module = await import('../achilles-cli/src/skills/read-skill/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_read_' + Date.now());
@@ -169,7 +170,7 @@ describe('read-skill module', () => {
 
     it('should return error when skillName not provided', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action(mockAgent, '');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
@@ -186,7 +187,7 @@ describe('read-skill module', () => {
             ]),
         });
 
-        const result = await action(mockAgent, 'ReadTestSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'ReadTestSkill' });
         assert.ok(result.includes('Read Test Skill'), 'Should include skill content');
     });
 
@@ -196,7 +197,7 @@ describe('read-skill module', () => {
             skillCatalog: new Map(),
         });
 
-        const result = await action(mockAgent, 'NonExistent');
+        const result = await action({ mainAgent: mockAgent, promptText: 'NonExistent' });
         assert.ok(result.includes('not found') || result.includes('Error'), 'Should indicate not found');
     });
 });
@@ -207,7 +208,7 @@ describe('write-skill module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/write-skill/write-skill.mjs');
+        const module = await import('../achilles-cli/src/skills/write-skill/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_write_' + Date.now());
@@ -233,7 +234,7 @@ describe('write-skill module', () => {
             content: '# New Write Skill\n\n## Summary\nWritten skill.',
         });
 
-        const result = await action(mockAgent, input);
+        const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Written') || result.includes('Created'), 'Should indicate success');
 
         const filePath = path.join(tempSkillsDir, 'NewWriteSkill', 'cskill.md');
@@ -242,14 +243,14 @@ describe('write-skill module', () => {
 
     it('should return error for invalid JSON', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action(mockAgent, 'not json');
+        const result = await action({ mainAgent: mockAgent, promptText: 'not json' });
         assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
     });
 
     it('should return error when required fields missing', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
         const input = JSON.stringify({ skillName: 'Test' });
-        const result = await action(mockAgent, input);
+        const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate missing fields');
     });
 });
@@ -260,7 +261,7 @@ describe('delete-skill module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/delete-skill/delete-skill.mjs');
+        const module = await import('../achilles-cli/src/skills/delete-skill/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_delete_' + Date.now());
@@ -285,7 +286,7 @@ describe('delete-skill module', () => {
 
     it('should return error when skillName not provided', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action(mockAgent, '');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
@@ -294,14 +295,14 @@ describe('delete-skill module', () => {
         const skillDir = path.join(tempSkillsDir, 'SkillToDelete');
         assert.ok(fs.existsSync(skillDir), 'Skill should exist before delete');
 
-        const result = await action(mockAgent, 'SkillToDelete');
+        const result = await action({ mainAgent: mockAgent, promptText: 'SkillToDelete' });
         assert.ok(result.includes('Deleted') || result.includes('deleted'), 'Should indicate deleted');
         assert.ok(!fs.existsSync(skillDir), 'Skill should not exist after delete');
     });
 
     it('should return error for non-existent skill', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action(mockAgent, 'NonExistentSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'NonExistentSkill' });
         assert.ok(result.includes('not found') || result.includes('Error'), 'Should indicate not found');
     });
 });
@@ -312,7 +313,7 @@ describe('validate-skill module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/validate-skill/validate-skill.mjs');
+        const module = await import('../achilles-cli/src/skills/validate-skill/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_validate_' + Date.now());
@@ -348,7 +349,7 @@ describe('validate-skill module', () => {
 
     it('should return error when skillName not provided', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action(mockAgent, '');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
@@ -365,7 +366,7 @@ describe('validate-skill module', () => {
             ]),
         });
 
-        const result = await action(mockAgent, 'ValidSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'ValidSkill' });
         assert.ok(result.includes('Validation') || result.includes('Valid'), 'Should show validation result');
     });
 });
@@ -374,7 +375,7 @@ describe('get-template module', () => {
     let action;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/get-template/get-template.mjs');
+        const module = await import('../achilles-cli/src/skills/get-template/src/index.mjs');
         action = module.action;
     });
 
@@ -384,31 +385,31 @@ describe('get-template module', () => {
 
     it('should return error when skillType not provided', async () => {
         const mockAgent = createMockAgent({ startDir: '/tmp' });
-        const result = await action(mockAgent, '');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
         assert.ok(result.includes('Error') || result.includes('required') || result.includes('Available'), 'Should indicate error or list types');
     });
 
     it('should return template for tskill', async () => {
         const mockAgent = createMockAgent({ startDir: '/tmp' });
-        const result = await action(mockAgent, 'tskill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'tskill' });
         assert.ok(result.includes('# ') || result.includes('Template'), 'Should include template');
     });
 
     it('should return template for cskill', async () => {
         const mockAgent = createMockAgent({ startDir: '/tmp' });
-        const result = await action(mockAgent, 'cskill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'cskill' });
         assert.ok(result.includes('# ') || result.includes('Template'), 'Should include template');
     });
 
     it('should return template for oskill', async () => {
         const mockAgent = createMockAgent({ startDir: '/tmp' });
-        const result = await action(mockAgent, 'oskill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'oskill' });
         assert.ok(result.includes('# ') || result.includes('Template'), 'Should include template');
     });
 
     it('should return error for unknown type', async () => {
         const mockAgent = createMockAgent({ startDir: '/tmp' });
-        const result = await action(mockAgent, 'unknowntype');
+        const result = await action({ mainAgent: mockAgent, promptText: 'unknowntype' });
         assert.ok(result.includes('Error') || result.includes('Unknown') || result.includes('Available'), 'Should indicate unknown type');
     });
 });
@@ -419,7 +420,7 @@ describe('update-section module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/update-section/update-section.mjs');
+        const module = await import('../achilles-cli/src/skills/update-section/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_update_' + Date.now());
@@ -446,7 +447,7 @@ describe('update-section module', () => {
 
     it('should return error for invalid JSON', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action(mockAgent, 'not json');
+        const result = await action({ mainAgent: mockAgent, promptText: 'not json' });
         assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
     });
 
@@ -469,7 +470,7 @@ describe('update-section module', () => {
             content: 'Updated summary content.',
         });
 
-        const result = await action(mockAgent, input);
+        const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Updated') || result.includes('updated'), 'Should indicate updated');
 
         const content = fs.readFileSync(path.join(tempSkillsDir, 'UpdateSkill', 'cskill.md'), 'utf8');
@@ -483,7 +484,7 @@ describe('preview-changes module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/preview-changes/preview-changes.mjs');
+        const module = await import('../achilles-cli/src/skills/preview-changes/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_preview_' + Date.now());
@@ -510,7 +511,7 @@ describe('preview-changes module', () => {
 
     it('should return error for invalid JSON', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action(mockAgent, 'not json');
+        const result = await action({ mainAgent: mockAgent, promptText: 'not json' });
         assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
     });
 
@@ -522,7 +523,7 @@ describe('preview-changes module', () => {
             newContent: '# Preview Skill\n\n## Summary\nNew content.',
         });
 
-        const result = await action(mockAgent, input);
+        const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('DIFF') || result.includes('-') || result.includes('+'), 'Should show diff');
     });
 
@@ -534,7 +535,7 @@ describe('preview-changes module', () => {
             newContent: '# New File Content',
         });
 
-        const result = await action(mockAgent, input);
+        const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('NEW FILE') || result.includes('New File Content'), 'Should show new file');
     });
 });
@@ -545,7 +546,7 @@ describe('test-code module', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../achilles-cli/src/skills/test-code/test-code.mjs');
+        const module = await import('../achilles-cli/src/skills/test-code/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_testcode_' + Date.now());
@@ -554,9 +555,9 @@ describe('test-code module', () => {
 
         // Create skill with generated code
         const codeSkillDir = path.join(tempSkillsDir, 'TestCodeSkill');
-        fs.mkdirSync(codeSkillDir);
+        fs.mkdirSync(path.join(codeSkillDir, 'src'), { recursive: true });
         fs.writeFileSync(
-            path.join(codeSkillDir, 'tskill.generated.mjs'),
+            path.join(codeSkillDir, 'src', 'tskill.generated.mjs'),
             `export function testFunc(input) { return 'Hello ' + input; }
 export default { testFunc };`
         );
@@ -574,7 +575,7 @@ export default { testFunc };`
 
     it('should return error when skillName not provided', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action(mockAgent, '');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
@@ -591,7 +592,7 @@ export default { testFunc };`
             ]),
         });
 
-        const result = await action(mockAgent, 'TestCodeSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'TestCodeSkill' });
         assert.ok(result.includes('Module loaded') || result.includes('Exports') || result.includes('testFunc'), 'Should show module info');
     });
 
@@ -613,7 +614,7 @@ export default { testFunc };`
             ]),
         });
 
-        const result = await action(mockAgent, 'NoCodeSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'NoCodeSkill' });
         assert.ok(result.includes('No generated code') || result.includes('Error'), 'Should indicate no generated code');
     });
 });
@@ -632,13 +633,13 @@ describe('skill-refiner module', () => {
 
     it('should return error when skillName not provided', async () => {
         const mockAgent = createMockAgent({ startDir: '/tmp' });
-        const result = await action(mockAgent, '');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate error');
     });
 
     it('should return error when llmAgent not provided', async () => {
         const mockAgent = createMockAgent({ startDir: '/tmp' });
-        const result = await action(mockAgent, 'someSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'someSkill' });
         assert.ok(result.includes('Error') || result.includes('LLM'), 'Should indicate LLM required');
     });
 });

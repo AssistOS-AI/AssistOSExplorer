@@ -282,7 +282,7 @@ export default async function runTests() {
                 ['run-tests-code', {
                     skillDir: path.join(workingDir, 'src/skills/run-tests'),
                     shortName: 'run-tests',
-                    type: 'code',
+                    type: 'cskill',
                 }],
             ]),
             context: { workingDir },
@@ -291,7 +291,7 @@ export default async function runTests() {
         assertEqual(tests.length, 1);
         assertEqual(tests[0].skillName, 'run-tests-code');
         assertEqual(tests[0].shortName, 'run-tests');
-        assertEqual(tests[0].skillType, 'code');
+        assertEqual(tests[0].skillType, 'cskill');
         assertContains(tests[0].testFile, 'run-tests.tests.mjs');
     });
 
@@ -325,7 +325,7 @@ export default async function runTests() {
                         record: {
                             skillDir: path.join(workingDir, 'src/skills/run-tests'),
                             shortName: 'run-tests',
-                            type: 'code',
+                            type: 'cskill',
                         },
                     };
                 }

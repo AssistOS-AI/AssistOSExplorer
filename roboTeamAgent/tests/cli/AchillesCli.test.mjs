@@ -87,7 +87,7 @@ describe('MainAgent - Skill Discovery', () => {
         registerSkillRoot(agent, builtInSkillsDir, true);
 
         assert.ok(agent.getSkillRecord('skill-refiner-orchestrator'));
-        assert.equal(agent.getSkillRecord('skills-orchestrator'), null);
+        assert.ok(agent.getSkillRecord('skills-orchestrator'));
     });
 
     it('should discover user code skills from working directory', () => {

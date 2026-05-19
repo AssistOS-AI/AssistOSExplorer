@@ -1,7 +1,7 @@
 /**
  * Tests for CRUD skill modules: list-skills, read-skill, write-skill, delete-skill
  *
- * Action signature convention: action(recursiveSkilledAgent, prompt)
+ * Action signature convention: action({ mainAgent, promptText })
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -20,7 +20,7 @@ describe('list-skills module - Extended Tests', () => {
     let action;
 
     before(async () => {
-        const module = await import('../../achilles-cli/src/skills/list-skills/list-skills.mjs');
+        const module = await import('../../achilles-cli/src/skills/list-skills/src/index.mjs');
         action = module.action;
     });
 
@@ -28,13 +28,16 @@ describe('list-skills module - Extended Tests', () => {
         const mockAgent = {
             startDir: '/tmp',
             skillCatalog: new Map([
-                ['code-skill', { name: 'code-skill', type: 'code', shortName: 'CodeSkill', descriptor: { summary: 'Code' }, skillDir: '/test' }],
+                ['code-skill', { name: 'code-skill', type: 'cskill', shortName: 'CodeSkill', descriptor: { summary: 'Code' }, skillDir: '/test' }],
                 ['orch-skill', { name: 'orch-skill', type: 'orchestrator', shortName: 'OrchSkill', descriptor: { summary: 'Orch' }, skillDir: '/test' }],
                 ['db-skill', { name: 'db-skill', type: 'dbtable', shortName: 'DbSkill', descriptor: { summary: 'DB' }, skillDir: '/test' }],
             ]),
+            getSkills() {
+                return Array.from(this.skillCatalog.values());
+            },
         };
 
-        const result = await action(mockAgent, 'code');
+        const result = await action({ mainAgent: mockAgent, promptText: 'cskill' });
         assert.ok(result.includes('code-skill') || result.includes('CodeSkill'), 'Should include code skill');
         assert.ok(!result.includes('orch-skill'), 'Should not include orchestrator skill');
     });
@@ -43,11 +46,14 @@ describe('list-skills module - Extended Tests', () => {
         const mockAgent = {
             startDir: '/tmp',
             skillCatalog: new Map([
-                ['code-skill', { name: 'code-skill', type: 'code', shortName: 'CodeSkill', descriptor: { summary: 'Code' }, skillDir: '/test' }],
+                ['code-skill', { name: 'code-skill', type: 'cskill', shortName: 'CodeSkill', descriptor: { summary: 'Code' }, skillDir: '/test' }],
             ]),
+            getSkills() {
+                return Array.from(this.skillCatalog.values());
+            },
         };
 
-        const result = await action(mockAgent, 'nonexistent');
+        const result = await action({ mainAgent: mockAgent, promptText: 'nonexistent' });
         assert.ok(result.includes('No skills found matching'));
     });
 
@@ -55,11 +61,14 @@ describe('list-skills module - Extended Tests', () => {
         const mockAgent = {
             startDir: '/tmp',
             skillCatalog: new Map([
-                ['skill1', { name: 'skill1', type: 'code', shortName: 'Skill1', descriptor: { summary: 'S1' }, skillDir: '/test' }],
+                ['skill1', { name: 'skill1', type: 'cskill', shortName: 'Skill1', descriptor: { summary: 'S1' }, skillDir: '/test' }],
             ]),
+            getSkills() {
+                return Array.from(this.skillCatalog.values());
+            },
         };
 
-        const result = await action(mockAgent, { filter: 'code' });
+        const result = await action({ mainAgent: mockAgent, promptText: { filter: 'cskill' } });
         assert.ok(result.includes('skill1') || result.includes('Skill1'));
     });
 
@@ -67,11 +76,14 @@ describe('list-skills module - Extended Tests', () => {
         const mockAgent = {
             startDir: '/tmp',
             skillCatalog: new Map([
-                ['skill1', { name: 'skill1', type: 'code', shortName: 'Skill1', descriptor: { summary: 'S1' }, skillDir: '/path/to/skill' }],
+                ['skill1', { name: 'skill1', type: 'cskill', shortName: 'Skill1', descriptor: { summary: 'S1' }, skillDir: '/path/to/skill' }],
             ]),
+            getSkills() {
+                return Array.from(this.skillCatalog.values());
+            },
         };
 
-        const result = await action(mockAgent, '');
+        const result = await action({ mainAgent: mockAgent, promptText: '' });
         assert.ok(result.includes('Path:'), 'Should show path');
     });
 });
@@ -86,7 +98,7 @@ describe('read-skill module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../achilles-cli/src/skills/read-skill/read-skill.mjs');
+        const module = await import('../../achilles-cli/src/skills/read-skill/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_read_ext_' + Date.now());
@@ -110,11 +122,11 @@ describe('read-skill module - Extended Tests', () => {
             getSkillRecord: () => ({
                 skillDir,
                 filePath: path.join(skillDir, 'cskill.md'),
-                type: 'code',
+                type: 'cskill',
             }),
         };
 
-        const result = await action(mockAgent, { skillName: 'ObjectInputSkill' });
+        const result = await action({ mainAgent: mockAgent, promptText: { skillName: 'ObjectInputSkill' } });
         assert.ok(result.includes('Object Input'));
     });
 
@@ -126,14 +138,15 @@ describe('read-skill module - Extended Tests', () => {
         const mockAgent = {
             startDir: tempDir,
             getSkillRecord: () => null,
+            getSkills: () => [],
         };
 
-        const result = await action(mockAgent, 'NotFound');
+        const result = await action({ mainAgent: mockAgent, promptText: 'NotFound' });
         assert.ok(result.includes('Available skills') || result.includes('not found'));
     });
 
     it('should handle all skill file types', async () => {
-        const TYPES = ['skill.md', 'cskill.md', 'iskill.md', 'oskill.md', 'mskill.md', 'tskill.md'];
+        const TYPES = ['SKILL.md', 'cskill.md', 'dcgskill.md', 'oskill.md', 'mskill.md', 'tskill.md'];
 
         for (const fileName of TYPES) {
             const skillName = `Test${fileName.replace('.md', '')}Ext`;
@@ -143,9 +156,13 @@ describe('read-skill module - Extended Tests', () => {
 
             const mockAgent = {
                 startDir: tempDir,
-                getSkillRecord: () => null,
+                getSkillRecord: () => ({
+                    skillDir,
+                    filePath: path.join(skillDir, fileName),
+                    type: fileName === 'SKILL.md' ? 'anthropic' : fileName.replace('.md', ''),
+                }),
             };
-            const result = await action(mockAgent, skillName);
+            const result = await action({ mainAgent: mockAgent, promptText: skillName });
             assert.ok(result.includes(skillName), `Should read ${fileName}`);
         }
     });
@@ -161,7 +178,7 @@ describe('write-skill module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../achilles-cli/src/skills/write-skill/write-skill.mjs');
+        const module = await import('../../achilles-cli/src/skills/write-skill/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_write_ext_' + Date.now());
@@ -177,7 +194,7 @@ describe('write-skill module - Extended Tests', () => {
 
     it('should handle skillsDir not configured', async () => {
         const mockAgent = { startDir: null };
-        const result = await action(mockAgent, '{}');
+        const result = await action({ mainAgent: mockAgent, promptText: '{}' });
         assert.ok(result.includes('Error'));
     });
 
@@ -189,7 +206,7 @@ describe('write-skill module - Extended Tests', () => {
             content: 'content',
         });
 
-        const result = await action(mockAgent, input);
+        const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Warning') || result.includes('not a standard'));
     });
 
@@ -201,7 +218,7 @@ describe('write-skill module - Extended Tests', () => {
             content: 'export const test = 1;',
         });
 
-        const result = await action(mockAgent, input);
+        const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(!result.includes('Warning'), 'Should not warn for .mjs files');
         assert.ok(fs.existsSync(path.join(tempSkillsDir, 'MjsSkill', 'MjsSkill.mjs')));
     });
@@ -218,7 +235,7 @@ describe('write-skill module - Extended Tests', () => {
             content: 'Updated',
         });
 
-        const result = await action(mockAgent, input);
+        const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Updated'), 'Should indicate update');
 
         const content = fs.readFileSync(path.join(skillDir, 'cskill.md'), 'utf8');
@@ -227,11 +244,11 @@ describe('write-skill module - Extended Tests', () => {
 
     it('should accept object input directly', async () => {
         const mockAgent = { startDir: tempDir };
-        const result = await action(mockAgent, {
+        const result = await action({ mainAgent: mockAgent, promptText: {
             skillName: 'DirectObjSkill',
             fileName: 'cskill.md',
             content: '# Direct Object',
-        });
+        } });
 
         assert.ok(result.includes('Created') || result.includes('Written'));
     });
@@ -247,7 +264,7 @@ describe('delete-skill module - Extended Tests', () => {
     let tempSkillsDir;
 
     before(async () => {
-        const module = await import('../../achilles-cli/src/skills/delete-skill/delete-skill.mjs');
+        const module = await import('../../achilles-cli/src/skills/delete-skill/src/index.mjs');
         action = module.action;
 
         tempDir = path.join(__dirname, 'temp_delete_ext_' + Date.now());
@@ -263,7 +280,7 @@ describe('delete-skill module - Extended Tests', () => {
 
     it('should handle skillsDir not configured', async () => {
         const mockAgent = { startDir: null };
-        const result = await action(mockAgent, 'SomeSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'SomeSkill' });
         assert.ok(result.includes('Error'));
     });
 
@@ -273,7 +290,7 @@ describe('delete-skill module - Extended Tests', () => {
         fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Delete Me');
 
         const mockAgent = { startDir: tempDir };
-        const result = await action(mockAgent, { skillName: 'ObjDeleteSkill' });
+        const result = await action({ mainAgent: mockAgent, promptText: { skillName: 'ObjDeleteSkill' } });
         assert.ok(result.includes('Deleted'));
         assert.ok(!fs.existsSync(skillDir));
     });
@@ -285,7 +302,7 @@ describe('delete-skill module - Extended Tests', () => {
         fs.writeFileSync(path.join(skillDir, 'helper.mjs'), 'export const x = 1;');
 
         const mockAgent = { startDir: tempDir };
-        const result = await action(mockAgent, 'MultiFileSkill');
+        const result = await action({ mainAgent: mockAgent, promptText: 'MultiFileSkill' });
         assert.ok(result.includes('2 file(s)'));
     });
 });

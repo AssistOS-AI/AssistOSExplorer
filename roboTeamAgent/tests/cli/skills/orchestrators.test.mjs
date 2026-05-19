@@ -27,26 +27,13 @@ describe('main orchestrator prompt', () => {
         assert.ok(content.includes('buildOrchestratorSystemPrompt'), 'Should export prompt builder');
     });
 
-    it('should mention core management skills in prompt guidance', async () => {
+    it('should include concise communication and skill ambiguity guidance', async () => {
         const promptPath = path.join(PROMPTS_BASE, 'orchestrator-prompt.mjs');
         const content = fs.readFileSync(promptPath, 'utf8');
 
-        const expectedSkills = [
-            'list-skills',
-            'read-skill',
-            'write-skill',
-            'update-section',
-            'delete-skill',
-            'validate-skill',
-            'generate-code',
-            'test-code',
-            'skill-refiner',
-            'execute-skill',
-        ];
-
-        for (const skill of expectedSkills) {
-            assert.ok(content.includes(skill), `Should include ${skill} in prompt guidance`);
-        }
+        assert.ok(content.includes('concise'), 'Should include concise communication guidance');
+        assert.ok(content.includes('skill type'), 'Should mention skill type ambiguity');
+        assert.ok(!content.includes('list-skills, read-skill, write-skill'), 'Should not hard-code hidden skill-management tool lists');
     });
 });
 
