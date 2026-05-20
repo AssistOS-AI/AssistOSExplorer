@@ -80,7 +80,7 @@ function installDeterministicCopilotLoop(agent, loopCalls) {
         assert.ok(tools['launch-open-interpreter'], 'copilot-router should expose launch-open-interpreter');
         assert.ok(tools['launch-web-search'], 'copilot-router should expose launch-web-search');
         assert.match(options.systemPrompt, /Use `launch-open-interpreter`/);
-        assert.match(options.systemPrompt, /Use `launch-web-search`/);
+        assert.match(options.systemPrompt, /always call `launch-web-search`/);
 
         let selectedTool = null;
         if (isWebSearchPrompt(promptText)) {
