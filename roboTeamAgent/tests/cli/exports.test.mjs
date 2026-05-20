@@ -4,6 +4,12 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.join(__dirname, '..');
 
 describe('index.mjs exports', () => {
     it('should export MainAgent', async () => {
@@ -55,5 +61,14 @@ describe('index.mjs exports', () => {
         const { builtInSkillsDir } = await import('../achilles-cli/src/index.mjs');
         assert.ok(builtInSkillsDir, 'builtInSkillsDir should be exported');
         assert.ok(typeof builtInSkillsDir === 'string', 'builtInSkillsDir should be a string path');
+    });
+
+    it('can be imported from stdin module contexts', () => {
+        const output = execFileSync(process.execPath, ['--input-type=module'], {
+            cwd: repoRoot,
+            input: "import { collectPloinkyRepoSkillRoots } from './achilles-cli/src/index.mjs'; console.log(typeof collectPloinkyRepoSkillRoots);",
+            encoding: 'utf8',
+        });
+        assert.equal(output.trim(), 'function');
     });
 });
