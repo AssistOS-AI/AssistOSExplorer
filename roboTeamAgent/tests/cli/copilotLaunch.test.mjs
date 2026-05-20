@@ -47,11 +47,7 @@ describe('Copilot launch extensions', () => {
         setRuntimePlugins([{
             copilotLaunch: {
                 query: {
-                    'research-tags': '1',
-                    'forward-envelope': '1',
-                    'tag-relay-agent': 'researchRelay',
-                    'tag-relay-submit-tool': 'research_task_submit',
-                    'tag-relay-tags': 'open-interpreter'
+                    'forward-envelope': '1'
                 },
                 workspaceDirParam: 'workspace-dir'
             }
@@ -64,11 +60,11 @@ describe('Copilot launch extensions', () => {
         });
         const params = new URLSearchParams(url.slice('/webchat?'.length));
         assert.equal(params.get('agent'), 'achilles-cli');
-        assert.equal(params.get('research-tags'), '1');
         assert.equal(params.get('forward-envelope'), '1');
-        assert.equal(params.get('tag-relay-agent'), 'researchRelay');
-        assert.equal(params.get('tag-relay-submit-tool'), 'research_task_submit');
-        assert.equal(params.get('tag-relay-tags'), 'open-interpreter');
+        assert.equal(params.has('research-tags'), false);
+        assert.equal(params.has('tag-relay-agent'), false);
+        assert.equal(params.has('tag-relay-submit-tool'), false);
+        assert.equal(params.has('tag-relay-tags'), false);
         assert.equal(params.get('workspace-dir'), 'docs');
         assert.equal(params.has('dir'), false);
     });
@@ -76,7 +72,7 @@ describe('Copilot launch extensions', () => {
     it('falls back to dir when an extension asks for a relative directory outside the workspace', () => {
         setRuntimePlugins([{
             copilotLaunch: {
-                query: { 'research-tags': '1' },
+                query: { 'forward-envelope': '1' },
                 workspaceDirParam: 'workspace-dir'
             }
         }]);
@@ -86,7 +82,7 @@ describe('Copilot launch extensions', () => {
             workspaceRoot: '/workspace/project'
         });
         const params = new URLSearchParams(url.slice('/webchat?'.length));
-        assert.equal(params.get('research-tags'), '1');
+        assert.equal(params.get('forward-envelope'), '1');
         assert.equal(params.get('dir'), '/other/project');
         assert.equal(params.has('workspace-dir'), false);
     });

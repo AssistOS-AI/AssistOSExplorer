@@ -1,47 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
 import {
-    createWebchatTagRelay,
-    materializeTagRelayAttachments,
-    materializeWorkspaceReferences,
     normalizeWebchatMessage,
     normalizeWebchatReferences
-} from '../achilles-cli/src/lib/webchatTagRelay.mjs';
-
-function startStubRouter(handler) {
-    const calls = [];
-    const server = http.createServer((req, res) => {
-        const chunks = [];
-        req.on('data', (chunk) => chunks.push(chunk));
-        req.on('end', () => {
-            let body = {};
-            try {
-                body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-            } catch {
-                body = {};
-            }
-            calls.push({
-                method: req.method,
-                url: req.url,
-                jwt: req.headers['x-ploinky-caller-jwt'] || '',
-                body,
-            });
-            const response = handler({ body });
-            res.writeHead(response.status || 200, { 'content-type': 'application/json' });
-            res.end(JSON.stringify(response.body || {}));
-        });
-    });
-    return new Promise((resolve) => {
-        server.listen(0, '127.0.0.1', () => {
-            resolve({ server, port: server.address().port, calls });
-        });
-    });
-}
+} from '../achilles-cli/src/lib/webchatEnvelope.mjs';
+import {
+    materializeWebchatAttachments,
+    materializeWebchatContext,
+    materializeWorkspaceReferences
+} from '../achilles-cli/src/lib/webchatResources.mjs';
 
 function makeWorkingDir(prefix) {
     return fs.mkdtempSync(path.join(os.tmpdir(), `achilles-references-${prefix}-`));
@@ -104,13 +75,13 @@ describe('webchat references', () => {
         }
     });
 
-    it('materializeTagRelayAttachments accepts cwd-relative WebChat session uploads', () => {
+    it('materializeWebchatAttachments accepts cwd-relative WebChat session uploads', () => {
         const root = makeWorkingDir('upload-attachment');
         try {
             const uploadDir = path.join(root, 'uploads', 'sessionA');
             fs.mkdirSync(uploadDir, { recursive: true });
             fs.writeFileSync(path.join(uploadDir, 'notes.md'), 'uploaded note');
-            const { resources, warnings } = materializeTagRelayAttachments([
+            const { resources, warnings } = materializeWebchatAttachments([
                 {
                     filename: 'notes.md',
                     mime: 'text/markdown',
@@ -129,7 +100,7 @@ describe('webchat references', () => {
         }
     });
 
-    it('materializeTagRelayAttachments rejects upload symlink escapes', () => {
+    it('materializeWebchatAttachments rejects upload symlink escapes', () => {
         const root = makeWorkingDir('upload-escape');
         const outside = makeWorkingDir('upload-outside');
         try {
@@ -142,7 +113,7 @@ describe('webchat references', () => {
                 if (error.code === 'EPERM' || error.code === 'EACCES') return;
                 throw error;
             }
-            const { resources, warnings } = materializeTagRelayAttachments([
+            const { resources, warnings } = materializeWebchatAttachments([
                 {
                     filename: 'leak.txt',
                     mime: 'text/plain',
@@ -157,34 +128,14 @@ describe('webchat references', () => {
         }
     });
 
-    it('tag relay forwards materialized references through configured MCP tool', async () => {
-        const root = makeWorkingDir('relay');
-        const { server, port, calls } = await startStubRouter(({ body }) => ({
-            body: {
-                jsonrpc: '2.0',
-                id: body.id,
-                result: {
-                    content: [{
-                        type: 'text',
-                        text: JSON.stringify({ final_answer: 'received references' }),
-                    }]
-                }
-            }
-        }));
+    it('materializeWebchatContext combines attachments, references, paths, and warnings', () => {
+        const root = makeWorkingDir('context');
         try {
             fs.writeFileSync(path.join(root, 'notes.md'), 'reference body');
             fs.mkdirSync(path.join(root, 'uploads', 'sessionA'), { recursive: true });
             fs.writeFileSync(path.join(root, 'uploads', 'sessionA', 'attachment.txt'), 'attachment body');
-            const relay = createWebchatTagRelay({
-                enabled: true,
-                agent: 'researchRelay',
-                submitTool: 'research_task_submit',
-                listTool: 'research_relay_list_backends',
-                tags: 'open-interpreter',
-            });
-            const result = await relay.handle({
-                rawText: '@open-interpreter inspect',
-                text: '@open-interpreter inspect',
+            fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+            const result = materializeWebchatContext({
                 attachments: [
                     {
                         filename: 'attachment.txt',
@@ -194,26 +145,17 @@ describe('webchat references', () => {
                 ],
                 references: [
                     { kind: 'workspace-path', path: 'notes.md', type: 'file', label: 'Notes' },
+                    { kind: 'workspace-path', path: 'docs', type: 'directory', label: 'Docs' },
                     { kind: 'workspace-path', path: '../outside' }
                 ],
-                invocationToken: 'caller-token'
-            }, {
-                workingDir: root,
-                env: { PLOINKY_ROUTER_URL: `http://127.0.0.1:${port}` }
-            });
-            assert.equal(result.handled, true);
-            assert.equal(result.output, 'received references');
-            assert.equal(calls.length, 1);
-            const submitArguments = calls[0].body.params.arguments;
-            assert.equal(submitArguments.backend, 'open-interpreter');
-            assert.match(submitArguments.prompt, /inspect/);
-            assert.match(submitArguments.prompt, /Reference forwarding notes:/);
-            assert.equal(submitArguments.resources.length, 2);
-            assert.equal(submitArguments.resources[0].localPath, 'uploads/sessionA/attachment.txt');
-            assert.equal(submitArguments.resources[1].workspacePath, 'notes.md');
+            }, { workingDir: root });
+            assert.equal(result.resources.length, 2);
+            assert.equal(result.resources[0].localPath, 'uploads/sessionA/attachment.txt');
+            assert.equal(result.resources[1].workspacePath, 'notes.md');
+            assert.deepEqual(result.paths, [{ path: 'docs', type: 'directory', label: 'Docs' }]);
+            assert.ok(result.warnings.some((entry) => entry.includes('../outside') && entry.includes('not a safe')));
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
-            await new Promise((resolve) => server.close(resolve));
         }
     });
 });

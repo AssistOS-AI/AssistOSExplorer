@@ -8,6 +8,10 @@ import { fileURLToPath } from 'node:url';
 
 import { AgenticKnowledgeUnits } from '../../../ploinky/node_modules/achillesAgentLib/AgenticKnowledgeUnits/index.mjs';
 import { AkuMemoryAdapter } from '../achilles-cli/src/lib/akuMemory/AkuMemoryAdapter.mjs';
+import {
+    lookupCachedProviderResultForPrompt,
+    persistProviderLauncherResults,
+} from '../achilles-cli/src/index.mjs';
 import { analyzeAKUMemoryIntent } from '../achilles-cli/src/lib/akuMemory/akuIntentAnalyzer.mjs';
 import { buildAKUPlanningPacket } from '../achilles-cli/src/lib/akuMemory/akuPlanningPacket.mjs';
 import { getAKUTypePolicy } from '../achilles-cli/src/lib/akuMemory/akuTypePolicies.mjs';
@@ -219,6 +223,149 @@ describe('AKU preflight', () => {
 });
 
 describe('AKU type policies and actions', () => {
+    it('skips provider-result persistence when launcher marks output non-cacheable', async () => {
+        const rootDir = await makeRoot();
+        const adapter = new AkuMemoryAdapter({ rootDir, AgenticKnowledgeUnitsClass: AgenticKnowledgeUnits });
+        const result = await adapter.persistAgentResult({
+            prompt: 'run a script',
+            backend: 'open-interpreter',
+            resultText: 'execution output',
+            workingDir: rootDir,
+            cacheable: false,
+        });
+
+        assert.deepEqual(result, { ok: true, skipped: true, reason: 'not_cacheable' });
+    });
+
+    it('caches pure-information provider results by prompt hash and honors TTL', async () => {
+        const rootDir = await makeRoot();
+        const adapter = new AkuMemoryAdapter({ rootDir, AgenticKnowledgeUnitsClass: AgenticKnowledgeUnits });
+        await adapter.initializeAKU();
+
+        const miss = await adapter.lookupCachedAgentResult({
+            prompt: 'What is the release name?',
+            backend: 'web-search',
+            workingDir: rootDir,
+        });
+        assert.equal(miss.hit, false);
+        assert.equal(miss.reason, 'miss');
+
+        const persisted = await adapter.persistAgentResult({
+            prompt: 'What is the release name?',
+            backend: 'web-search',
+            resultText: 'The release is named Aurora.',
+            workingDir: rootDir,
+            cacheable: true,
+            ttlHintSeconds: 1,
+            originPaths: ['docs/release.md'],
+        });
+        assert.equal(persisted.ok, true);
+        assert.equal(persisted.ku.ku_type, 'agent.result.web-search');
+
+        const hit = await adapter.lookupCachedAgentResult({
+            prompt: '  what is   the release NAME? ',
+            backend: '@web-search',
+            workingDir: rootDir,
+        });
+        assert.equal(hit.hit, true);
+        assert.equal(hit.resultText, 'The release is named Aurora.');
+
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+        const expired = await adapter.lookupCachedAgentResult({
+            prompt: 'What is the release name?',
+            backend: 'web-search',
+            workingDir: rootDir,
+        });
+        assert.equal(expired.hit, false);
+        assert.equal(expired.reason, 'miss');
+    });
+
+    it('serves similar pure-information prompts from AKU search without exact prompt hash', async () => {
+        const rootDir = await makeRoot();
+        const adapter = new AkuMemoryAdapter({ rootDir, AgenticKnowledgeUnitsClass: AgenticKnowledgeUnits });
+        await adapter.initializeAKU();
+
+        await adapter.persistAgentResult({
+            prompt: 'What is the release name?',
+            backend: 'web-search',
+            resultText: 'The release is named Aurora.',
+            workingDir: rootDir,
+            cacheable: true,
+            ttlHintSeconds: 3600,
+        });
+
+        const hit = await adapter.lookupCachedAgentResult({
+            prompt: 'Tell me the release name',
+            workingDir: rootDir,
+        });
+
+        assert.equal(hit.hit, true);
+        assert.equal(hit.backend, 'web-search');
+        assert.equal(hit.provenance, 'aku-agent-result-cache-search');
+        assert.equal(hit.resultText, 'The release is named Aurora.');
+    });
+
+    it('webchat postflight persists only cacheable launcher results for future lookup', async () => {
+        const rootDir = await makeRoot();
+        const adapter = new AkuMemoryAdapter({ rootDir, AgenticKnowledgeUnitsClass: AgenticKnowledgeUnits });
+        await adapter.initializeAKU();
+        const context = {
+            akuMemoryAdapter: adapter,
+            webchatPaths: [{ path: 'docs/release.md', type: 'file' }],
+            providerLauncherResults: [
+                {
+                    launcher: 'launch-web-search',
+                    backend: 'web-search',
+                    prompt: 'What is the release name?',
+                    result: {
+                        ok: true,
+                        backend: 'web-search',
+                        cacheable: true,
+                        result_text: 'The release is named Aurora.',
+                        persistence_hint: { ttl_hint_seconds: 3600 },
+                        diagnostics: { providerAvailability: 'active' },
+                    },
+                },
+                {
+                    launcher: 'launch-open-interpreter',
+                    backend: 'open-interpreter',
+                    prompt: 'Run the smoke test',
+                    result: {
+                        ok: true,
+                        backend: 'open-interpreter',
+                        cacheable: false,
+                        result_text: 'Smoke test passed.',
+                        persistence_hint: { ttl_hint_seconds: null },
+                        diagnostics: { providerAvailability: 'active' },
+                    },
+                },
+            ],
+        };
+
+        const persisted = await persistProviderLauncherResults(context, {
+            prompt: 'What is the release name?',
+            workingDir: rootDir,
+        });
+        assert.equal(persisted.length, 2);
+        assert.equal(persisted[0].ok, true);
+        assert.deepEqual(persisted[1], { ok: true, skipped: true, reason: 'not_cacheable' });
+
+        const cached = await lookupCachedProviderResultForPrompt(context, {
+            prompt: 'Tell me the release name',
+            workingDir: rootDir,
+        });
+        assert.equal(cached.hit, true);
+        assert.equal(cached.backend, 'web-search');
+        assert.equal(cached.resultText, 'The release is named Aurora.');
+
+        const openInterpreterMiss = await adapter.lookupCachedAgentResult({
+            prompt: 'Run the smoke test',
+            backend: 'open-interpreter',
+            workingDir: rootDir,
+        });
+        assert.equal(openInterpreterMiss.hit, false);
+    });
+
     it('accepts and preserves open-string ku_type values', async () => {
         const rootDir = await makeRoot();
         const adapter = new AkuMemoryAdapter({ rootDir, AgenticKnowledgeUnitsClass: AgenticKnowledgeUnits });
