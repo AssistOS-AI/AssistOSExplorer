@@ -20,12 +20,12 @@ function jsonResponse(payload) {
 }
 
 describe('launch-open-interpreter cskill', () => {
-    it('uses researchRelay as the canonical dispatcher', () => {
+    it('uses copilotProviderRelay as the canonical dispatcher', () => {
         assert.equal(BACKEND, 'open-interpreter');
-        assert.equal(RELAY_AGENT, 'researchRelay');
+        assert.equal(RELAY_AGENT, 'copilotProviderRelay');
         assert.equal(PROVIDER_AGENT, 'openInterpreterAgent');
-        assert.equal(LIST_TOOL, 'research_relay_list_backends');
-        assert.equal(SUBMIT_TOOL, 'research_task_submit');
+        assert.equal(LIST_TOOL, 'copilot_provider_list_backends');
+        assert.equal(SUBMIT_TOOL, 'copilot_provider_task_submit');
         assert.equal(PROVIDER_STATUS_TOOL, 'oi_status');
     });
 
@@ -60,7 +60,7 @@ describe('launch-open-interpreter cskill', () => {
         assert.equal(calls.length, 0);
     });
 
-    it('submits execution through research_task_submit with context resources', async () => {
+    it('submits execution through copilot_provider_task_submit with context resources', async () => {
         const calls = [];
         const result = await action({
             prompt: 'run the smoke test',
@@ -79,7 +79,7 @@ describe('launch-open-interpreter cskill', () => {
                 calls.push(args);
                 const [, toolName] = args;
                 if (toolName === LIST_TOOL) {
-                    return jsonResponse({ backends: [{ id: BACKEND, tags: [BACKEND], provider: { agent: PROVIDER_AGENT } }] });
+                    return jsonResponse({ backends: [{ id: BACKEND, provider: { agent: PROVIDER_AGENT } }] });
                 }
                 if (toolName === PROVIDER_STATUS_TOOL) {
                     return jsonResponse({ agent: PROVIDER_AGENT, status: 'ok' });
@@ -140,7 +140,7 @@ describe('launch-open-interpreter cskill', () => {
         ]);
     });
 
-    it('reports missing relay backend without enable-command guidance', async () => {
+    it('reports missing provider relay backend without enable-command guidance', async () => {
         const calls = [];
         const result = await action({
             prompt: 'run the smoke test',

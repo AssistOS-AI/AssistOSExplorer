@@ -135,7 +135,7 @@ function writeDeployedWebSearchLauncher(workspaceRoot) {
     fs.writeFileSync(path.join(skillDir, 'cskill.md'), `# Launch Web Search
 
 Dispatch current-information Copilot prompts to the deployed web search provider
-through the Research Relay.
+through the Copilot Provider Relay.
 
 ## Backend
 web-search
@@ -167,11 +167,11 @@ export async function action(args = {}) {
     const context = args.context && typeof args.context === 'object' ? args.context : {};
     const callAgentTool = args.callAgentTool || context.callAgentTool;
     const invocationToken = args.invocationToken || context.invocationToken;
-    const catalog = extractJson(await callAgentTool('researchRelay', 'research_relay_list_backends', {}, { invocationToken }));
+    const catalog = extractJson(await callAgentTool('copilotProviderRelay', 'copilot_provider_list_backends', {}, { invocationToken }));
     const backend = (catalog.backends || []).find((entry) => entry.id === 'web-search');
     const providerAgent = backend?.provider?.agent || 'webSearchAgent';
     await callAgentTool(providerAgent, 'web_search_status', {}, { invocationToken });
-    const payload = extractJson(await callAgentTool('researchRelay', 'research_task_submit', {
+    const payload = extractJson(await callAgentTool('copilotProviderRelay', 'copilot_provider_task_submit', {
         backend: 'web-search',
         prompt,
     }, { invocationToken }));
@@ -229,7 +229,7 @@ describe('copilot-router launcher integration', () => {
         }
     });
 
-    it('routes execution prompts to the Open Interpreter launcher and submits through Research Relay', async () => {
+    it('routes execution prompts to the Open Interpreter launcher and submits through Copilot Provider Relay', async () => {
         const { agent, loopCalls, tempDir } = createRouterAgent();
         tempDirs.push(tempDir);
         const mcpCalls = [];
@@ -241,7 +241,6 @@ describe('copilot-router launcher integration', () => {
                     return jsonResponse({
                         backends: [{
                             id: OPEN_INTERPRETER_BACKEND,
-                            tags: [OPEN_INTERPRETER_BACKEND],
                             provider: { agent: PROVIDER_AGENT },
                         }],
                     });
@@ -290,7 +289,7 @@ describe('copilot-router launcher integration', () => {
         assert.equal(launcherResult.result.diagnostics.providerAvailability, 'active');
     });
 
-    it('routes online/current prompts to a deployed Web Search launcher and submits through Research Relay', async () => {
+    it('routes online/current prompts to a deployed Web Search launcher and submits through Copilot Provider Relay', async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-router-integration-'));
         writeDeployedWebSearchLauncher(tempDir);
         const { agent, loopCalls } = createRouterAgent({
@@ -307,7 +306,6 @@ describe('copilot-router launcher integration', () => {
                     return jsonResponse({
                         backends: [{
                             id: WEB_SEARCH_BACKEND,
-                            tags: [WEB_SEARCH_BACKEND],
                             provider: { agent: WEB_SEARCH_PROVIDER_AGENT },
                         }],
                     });
