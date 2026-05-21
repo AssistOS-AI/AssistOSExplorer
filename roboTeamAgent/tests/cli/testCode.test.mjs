@@ -112,7 +112,10 @@ export default { validator_name, presenter_name, validateRecord };`
                     ['TskillTest', { name: 'TskillTest', skillDir: path.join(skillsDir, 'TskillTest'), type: 'tskill' }],
                 ]),
             });
-            const result = await testCodeAction({ mainAgent: mockAgent, promptText: JSON.stringify({ skillName: 'TskillTest', testInput: { name: 'test' } }) });
+            const result = await testCodeAction({
+                mainAgent: mockAgent,
+                promptText: 'TskillTest --begin-input--\n{"name":"test"}\n--end-input--',
+            });
 
             assert.ok(result.includes('Module loaded'), 'Should load module');
         });

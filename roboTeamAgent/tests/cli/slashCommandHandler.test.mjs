@@ -82,6 +82,21 @@ describe('SlashCommandHandler', () => {
         assert.strictEqual(parsed.args, 'my-skill');
     });
 
+    it('should parse multiline slash command args', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const handler = new SlashCommandHandler({
+            executeSkill: async () => {},
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const input = '/exec write-skill demo cskill.md --begin-content--\n# Demo\n--end-content--';
+        const parsed = handler.parseSlashCommand(input);
+        assert.strictEqual(parsed.command, 'exec');
+        assert.strictEqual(parsed.args, 'write-skill demo cskill.md --begin-content--\n# Demo\n--end-content--');
+    });
+
     it('should parse hierarchical commands with sub-options', async () => {
         const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
@@ -285,6 +300,27 @@ describe('SlashCommandHandler', () => {
         assert.strictEqual(calls.length, 1);
         assert.strictEqual(calls[0].skillName, 'list-skills');
         assert.strictEqual(calls[0].input, 'list');
+    });
+
+    it('should route /exec preserving multiline skill input', async () => {
+        const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
+
+        const calls = [];
+        const handler = new SlashCommandHandler({
+            executeSkill: async (skillName, input) => {
+                calls.push({ skillName, input });
+                return { ok: true };
+            },
+            getUserSkills: () => [],
+            getSkills: () => [],
+        });
+
+        const input = 'write-skill demo cskill.md --begin-content--\n# Demo\n--end-content--';
+        const result = await handler.executeSlashCommand('exec', input);
+        assert.strictEqual(result.handled, true);
+        assert.strictEqual(calls.length, 1);
+        assert.strictEqual(calls[0].skillName, 'write-skill');
+        assert.strictEqual(calls[0].input, 'demo cskill.md --begin-content--\n# Demo\n--end-content--');
     });
 
     it('should route /remove skill to delete-skill skill', async () => {
