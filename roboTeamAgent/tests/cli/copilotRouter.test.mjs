@@ -16,6 +16,7 @@ describe('copilot-router oskill contract', () => {
         assert.match(source, /## Session Type\s*\nloop/);
         assert.match(source, /launch-open-interpreter/);
         assert.match(source, /launch-web-search/);
+        assert.match(source, /launch-browser-use/);
         assert.match(source, /@open-interpreter list primes/);
         assert.match(source, /ordinary chat text/);
         assert.match(source, /false-positive/i);
@@ -23,7 +24,9 @@ describe('copilot-router oskill contract', () => {
 
     it('keeps web search unavailable until a launcher declares a cacheable provider', () => {
         const source = fs.readFileSync(routerSkillPath, 'utf8');
-        assert.match(source, /Do not invent web search availability/);
+        assert.match(source, /Do not invent web search\s+availability/);
         assert.match(source, /launch-web-search/);
+        assert.match(source, /Browser-use takes precedence over web search/);
+        assert.match(source, /Use Gemini in the browser to search for the latest OpenAI model news/);
     });
 });

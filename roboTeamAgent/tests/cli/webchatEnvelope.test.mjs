@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     normalizeWebchatMessage,
+    normalizeWebchatOrigin,
     normalizeWebchatReferences
 } from '../achilles-cli/src/lib/webchatEnvelope.mjs';
 
@@ -13,12 +14,14 @@ describe('webchat envelope helpers', () => {
             version: 1,
             text: '@open-interpreter summarize',
             attachments: [{ filename: 'notes.md', mime: 'text/markdown', localPath: 'shared/blob-1' }],
+            origin: { publicBaseUrl: 'http://127.0.0.1:8080/webchat?agent=achilles-cli' },
             invocation: { token: 'caller-token' },
         }));
         assert.equal(message.rawText, '@open-interpreter summarize');
         assert.match(message.text, /Attachments:/);
         assert.equal(message.attachments.length, 1);
         assert.equal(message.invocationToken, 'caller-token');
+        assert.deepEqual(message.origin, { publicBaseUrl: 'http://127.0.0.1:8080' });
     });
 
     it('preserves @open-interpreter as ordinary message text', () => {
@@ -42,5 +45,15 @@ describe('webchat envelope helpers', () => {
             type: 'file',
             label: 'Notes',
         }]);
+    });
+
+    it('normalizes only http or https WebChat public origins', () => {
+        assert.deepEqual(normalizeWebchatOrigin({
+            publicBaseUrl: 'https://workspace.example.test/webchat?agent=achilles-cli'
+        }), { publicBaseUrl: 'https://workspace.example.test' });
+        assert.deepEqual(normalizeWebchatOrigin({
+            publicBaseUrl: 'javascript:alert(1)',
+            origin: 'ftp://example.test',
+        }), {});
     });
 });
