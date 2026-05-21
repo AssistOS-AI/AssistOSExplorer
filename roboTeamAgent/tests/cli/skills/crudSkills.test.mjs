@@ -12,6 +12,10 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function writeSkillInput(skillName, fileName, content) {
+    return `${skillName} ${fileName} --begin-content--\n${content}\n--end-content--`;
+}
+
 // ============================================================================
 // list-skills Tests
 // ============================================================================
@@ -57,7 +61,7 @@ describe('list-skills module - Extended Tests', () => {
         assert.ok(result.includes('No skills found matching'));
     });
 
-    it('should accept object input with filter', async () => {
+    it('should reject object input with filter', async () => {
         const mockAgent = {
             startDir: '/tmp',
             skillCatalog: new Map([
@@ -69,7 +73,7 @@ describe('list-skills module - Extended Tests', () => {
         };
 
         const result = await action({ mainAgent: mockAgent, promptText: { filter: 'cskill' } });
-        assert.ok(result.includes('skill1') || result.includes('Skill1'));
+        assert.ok(result.includes('object input is no longer supported'));
     });
 
     it('should include skill paths in output', async () => {
@@ -112,7 +116,7 @@ describe('read-skill module - Extended Tests', () => {
         }
     });
 
-    it('should accept object input', async () => {
+    it('should reject object input', async () => {
         const skillDir = path.join(tempSkillsDir, 'ObjectInputSkill');
         fs.mkdirSync(skillDir);
         fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Object Input\n\n## Summary\nTest');
@@ -127,7 +131,7 @@ describe('read-skill module - Extended Tests', () => {
         };
 
         const result = await action({ mainAgent: mockAgent, promptText: { skillName: 'ObjectInputSkill' } });
-        assert.ok(result.includes('Object Input'));
+        assert.ok(result.includes('object input is no longer supported'));
     });
 
     it('should list available skills when skill not found', async () => {
@@ -200,11 +204,7 @@ describe('write-skill module - Extended Tests', () => {
 
     it('should warn for non-standard file names', async () => {
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({
-            skillName: 'WarnSkill',
-            fileName: 'random.txt',
-            content: 'content',
-        });
+        const input = writeSkillInput('WarnSkill', 'random.txt', 'content');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Warning') || result.includes('not a standard'));
@@ -212,11 +212,7 @@ describe('write-skill module - Extended Tests', () => {
 
     it('should allow .mjs files', async () => {
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({
-            skillName: 'MjsSkill',
-            fileName: 'MjsSkill.mjs',
-            content: 'export const test = 1;',
-        });
+        const input = writeSkillInput('MjsSkill', 'MjsSkill.mjs', 'export const test = 1;');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(!result.includes('Warning'), 'Should not warn for .mjs files');
@@ -229,11 +225,7 @@ describe('write-skill module - Extended Tests', () => {
         fs.writeFileSync(path.join(skillDir, 'cskill.md'), 'Original');
 
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({
-            skillName: 'UpdateSkillExt',
-            fileName: 'cskill.md',
-            content: 'Updated',
-        });
+        const input = writeSkillInput('UpdateSkillExt', 'cskill.md', 'Updated');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Updated'), 'Should indicate update');
@@ -242,7 +234,7 @@ describe('write-skill module - Extended Tests', () => {
         assert.equal(content, 'Updated');
     });
 
-    it('should accept object input directly', async () => {
+    it('should reject object input directly', async () => {
         const mockAgent = { startDir: tempDir };
         const result = await action({ mainAgent: mockAgent, promptText: {
             skillName: 'DirectObjSkill',
@@ -250,7 +242,7 @@ describe('write-skill module - Extended Tests', () => {
             content: '# Direct Object',
         } });
 
-        assert.ok(result.includes('Created') || result.includes('Written'));
+        assert.ok(result.includes('object input is no longer supported'));
     });
 });
 
@@ -284,15 +276,15 @@ describe('delete-skill module - Extended Tests', () => {
         assert.ok(result.includes('Error'));
     });
 
-    it('should accept object input', async () => {
+    it('should reject object input', async () => {
         const skillDir = path.join(tempSkillsDir, 'ObjDeleteSkill');
         fs.mkdirSync(skillDir);
         fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Delete Me');
 
         const mockAgent = { startDir: tempDir };
         const result = await action({ mainAgent: mockAgent, promptText: { skillName: 'ObjDeleteSkill' } });
-        assert.ok(result.includes('Deleted'));
-        assert.ok(!fs.existsSync(skillDir));
+        assert.ok(result.includes('object input is no longer supported'));
+        assert.ok(fs.existsSync(skillDir));
     });
 
     it('should list deleted files', async () => {

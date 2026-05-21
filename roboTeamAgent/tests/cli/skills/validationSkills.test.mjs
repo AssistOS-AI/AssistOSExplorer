@@ -70,7 +70,7 @@ describe('validate-skill module - Extended Tests', () => {
         assert.ok(result.includes('Errors:') || result.includes('Warnings:') || result.includes('No issues found'));
     });
 
-    it('should accept object input', async () => {
+    it('should reject object input', async () => {
         const skillDir = path.join(tempSkillsDir, 'ObjValidateSkill');
         fs.mkdirSync(skillDir);
         fs.writeFileSync(path.join(skillDir, 'cskill.md'), '# Obj\n\n## Summary\nTest\n\n## Input Format\nText input');
@@ -84,7 +84,7 @@ describe('validate-skill module - Extended Tests', () => {
         };
 
         const result = await action({ mainAgent: mockAgent, promptText: { skillName: 'ObjValidateSkill' } });
-        assert.ok(result.includes('Validation') || result.includes('VALID'));
+        assert.ok(result.includes('object input is no longer supported'));
     });
 });
 
@@ -112,10 +112,10 @@ describe('get-template module - Extended Tests', () => {
         assert.ok(result.includes('MCP') || result.includes('mskill') || result.includes('Template'));
     });
 
-    it('should accept object input', async () => {
+    it('should reject object input', async () => {
         const mockAgent = { startDir: '/tmp' };
         const result = await action({ mainAgent: mockAgent, promptText: { skillType: 'tskill' } });
-        assert.ok(result.includes('Table Purpose') || result.includes('Fields') || result.includes('Template'));
+        assert.ok(result.includes('object input is no longer supported'));
     });
 
     it('should show required and optional sections', async () => {

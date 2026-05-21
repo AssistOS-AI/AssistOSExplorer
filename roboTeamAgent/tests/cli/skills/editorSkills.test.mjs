@@ -12,6 +12,18 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function contentArg(content, token = 'content') {
+    return `--begin-${token}--\n${content}\n--end-${token}--`;
+}
+
+function updateSectionInput(skillName, section, content) {
+    return `${skillName} "${section}" ${contentArg(content)}`;
+}
+
+function previewChangesInput(skillName, fileName, content) {
+    return `${skillName} ${fileName} ${contentArg(content)}`;
+}
+
 // ============================================================================
 // update-section Tests
 // ============================================================================
@@ -38,14 +50,14 @@ describe('update-section module - Extended Tests', () => {
 
     it('should return error when section is missing', async () => {
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({ skillName: 'Test', content: 'New content' });
+        const input = `Test ${contentArg('New content')}`;
         const result = await action({ mainAgent: mockAgent, promptText: input });
-        assert.ok(result.includes('Error') && result.includes('section'));
+        assert.ok(result.includes('Error'));
     });
 
     it('should return error when content is missing', async () => {
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({ skillName: 'Test', section: 'Summary' });
+        const input = 'Test Summary';
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Error') && result.includes('content'));
     });
@@ -65,18 +77,10 @@ describe('update-section module - Extended Tests', () => {
         };
 
         // Update Summary
-        await action({ mainAgent: mockAgent, promptText: JSON.stringify({
-            skillName: 'MultiUpdateSkillExt',
-            section: 'Summary',
-            content: 'New1',
-        }) });
+        await action({ mainAgent: mockAgent, promptText: updateSectionInput('MultiUpdateSkillExt', 'Summary', 'New1') });
 
         // Update Input Format
-        await action({ mainAgent: mockAgent, promptText: JSON.stringify({
-            skillName: 'MultiUpdateSkillExt',
-            section: 'Input Format',
-            content: 'New2',
-        }) });
+        await action({ mainAgent: mockAgent, promptText: updateSectionInput('MultiUpdateSkillExt', 'Input Format', 'New2') });
 
         const content = fs.readFileSync(path.join(skillDir, 'cskill.md'), 'utf8');
         assert.ok(content.includes('New1'));
@@ -97,11 +101,7 @@ describe('update-section module - Extended Tests', () => {
             }),
         };
 
-        await action({ mainAgent: mockAgent, promptText: JSON.stringify({
-            skillName: 'AddSectionSkillExt',
-            section: 'NewSection',
-            content: 'Brand new content',
-        }) });
+        await action({ mainAgent: mockAgent, promptText: updateSectionInput('AddSectionSkillExt', 'NewSection', 'Brand new content') });
 
         const content = fs.readFileSync(path.join(skillDir, 'cskill.md'), 'utf8');
         assert.ok(content.includes('## NewSection'));
@@ -126,11 +126,7 @@ describe('update-section module - Extended Tests', () => {
             }),
         };
 
-        const result = await action({ mainAgent: mockAgent, promptText: JSON.stringify({
-            skillName: 'RegenSkillExt',
-            section: 'Summary',
-            content: 'Updated summary',
-        }) });
+        const result = await action({ mainAgent: mockAgent, promptText: updateSectionInput('RegenSkillExt', 'Summary', 'Updated summary') });
 
         const content = fs.readFileSync(path.join(skillDir, 'cskill.md'), 'utf8');
         assert.ok(content.includes('Updated summary'));
@@ -154,11 +150,7 @@ describe('update-section module - Extended Tests', () => {
             }),
         };
 
-        const result = await action({ mainAgent: mockAgent, promptText: JSON.stringify({
-            skillName: 'NoRegenSkillExt',
-            section: 'Summary',
-            content: 'Updated',
-        }) });
+        const result = await action({ mainAgent: mockAgent, promptText: updateSectionInput('NoRegenSkillExt', 'Summary', 'Updated') });
 
         assert.ok(
             !result.includes('regeneration') && !result.includes('Detected existing generated code'),
@@ -194,23 +186,23 @@ describe('preview-changes module - Extended Tests', () => {
 
     it('should return error when skillName is missing', async () => {
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({ fileName: 'test.md', newContent: 'test' });
+        const input = `test.md ${contentArg('test')}`;
         const result = await action({ mainAgent: mockAgent, promptText: input });
-        assert.ok(result.includes('Error') && result.includes('skillName'));
+        assert.ok(result.includes('Error'));
     });
 
     it('should return error when fileName is missing', async () => {
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({ skillName: 'test', newContent: 'test' });
+        const input = `test ${contentArg('test')}`;
         const result = await action({ mainAgent: mockAgent, promptText: input });
-        assert.ok(result.includes('Error') && result.includes('fileName'));
+        assert.ok(result.includes('Error'));
     });
 
     it('should return error when newContent is missing', async () => {
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({ skillName: 'test', fileName: 'test.md' });
+        const input = 'test test.md';
         const result = await action({ mainAgent: mockAgent, promptText: input });
-        assert.ok(result.includes('Error') && result.includes('newContent'));
+        assert.ok(result.includes('Error') && result.includes('content'));
     });
 
     it('should show no changes when content is identical', async () => {
@@ -219,11 +211,7 @@ describe('preview-changes module - Extended Tests', () => {
         fs.writeFileSync(path.join(skillDir, 'cskill.md'), 'Same content');
 
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({
-            skillName: 'NoChangeSkillExt',
-            fileName: 'cskill.md',
-            newContent: 'Same content',
-        });
+        const input = previewChangesInput('NoChangeSkillExt', 'cskill.md', 'Same content');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('No changes'));
@@ -235,11 +223,7 @@ describe('preview-changes module - Extended Tests', () => {
         fs.writeFileSync(path.join(skillDir, 'cskill.md'), 'Line 1');
 
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({
-            skillName: 'AdditionSkillExt',
-            fileName: 'cskill.md',
-            newContent: 'Line 1\nLine 2',
-        });
+        const input = previewChangesInput('AdditionSkillExt', 'cskill.md', 'Line 1\nLine 2');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('+'), 'Should show addition marker');
@@ -251,11 +235,7 @@ describe('preview-changes module - Extended Tests', () => {
         fs.writeFileSync(path.join(skillDir, 'cskill.md'), 'Line 1\nLine 2');
 
         const mockAgent = { startDir: tempDir };
-        const input = JSON.stringify({
-            skillName: 'RemovalSkillExt',
-            fileName: 'cskill.md',
-            newContent: 'Line 1',
-        });
+        const input = previewChangesInput('RemovalSkillExt', 'cskill.md', 'Line 1');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('-'), 'Should show removal marker');

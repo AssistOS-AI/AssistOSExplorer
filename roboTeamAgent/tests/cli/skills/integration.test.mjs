@@ -12,6 +12,10 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function writeSkillInput(skillName, fileName, content) {
+    return `${skillName} ${fileName} --begin-content--\n${content}\n--end-content--`;
+}
+
 // ============================================================================
 // Integration Tests
 // ============================================================================
@@ -63,11 +67,14 @@ describe('Skills Integration - Complete Workflow', () => {
         };
 
         // 1. Create skill
-        const createResult = await writeAction({ mainAgent: mockAgent, promptText: JSON.stringify({
-            skillName: 'WorkflowTestSkill',
-            fileName: 'cskill.md',
-            content: '# Workflow Test\n\n## Summary\nTest skill for workflow\n\n## Input Format\nWorkflow request text.\n\n## Output Format\nWorkflow result text.',
-        }) });
+        const createResult = await writeAction({
+            mainAgent: mockAgent,
+            promptText: writeSkillInput(
+                'WorkflowTestSkill',
+                'cskill.md',
+                '# Workflow Test\n\n## Summary\nTest skill for workflow\n\n## Input Format\nWorkflow request text.\n\n## Output Format\nWorkflow result text.'
+            ),
+        });
         assert.ok(createResult.includes('Created'), 'Should create skill');
 
         // 2. List skills (update catalog)

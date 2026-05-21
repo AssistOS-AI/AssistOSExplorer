@@ -81,6 +81,22 @@ function createMockAgent(options = {}) {
     };
 }
 
+function contentArg(content, token = 'content') {
+    return `--begin-${token}--\n${content}\n--end-${token}--`;
+}
+
+function writeSkillInput(skillName, fileName, content) {
+    return `${skillName} ${fileName} ${contentArg(content)}`;
+}
+
+function updateSectionInput(skillName, section, content) {
+    return `${skillName} "${section}" ${contentArg(content)}`;
+}
+
+function previewChangesInput(skillName, fileName, content) {
+    return `${skillName} ${fileName} ${contentArg(content)}`;
+}
+
 describe('list-skills module', () => {
     let action;
     let tempDir;
@@ -228,11 +244,7 @@ describe('write-skill module', () => {
 
     it('should create new skill file', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const input = JSON.stringify({
-            skillName: 'NewWriteSkill',
-            fileName: 'cskill.md',
-            content: '# New Write Skill\n\n## Summary\nWritten skill.',
-        });
+        const input = writeSkillInput('NewWriteSkill', 'cskill.md', '# New Write Skill\n\n## Summary\nWritten skill.');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Written') || result.includes('Created'), 'Should indicate success');
@@ -241,17 +253,24 @@ describe('write-skill module', () => {
         assert.ok(fs.existsSync(filePath), 'File should exist');
     });
 
-    it('should return error for invalid JSON', async () => {
+    it('should return error for missing positional arguments', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action({ mainAgent: mockAgent, promptText: 'not json' });
-        assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
+        const result = await action({ mainAgent: mockAgent, promptText: 'not-enough' });
+        assert.ok(result.includes('Error') || result.includes('expected'), 'Should indicate error');
     });
 
     it('should return error when required fields missing', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const input = JSON.stringify({ skillName: 'Test' });
+        const input = 'Test cskill.md';
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Error') || result.includes('required'), 'Should indicate missing fields');
+    });
+
+    it('should reject JSON input', async () => {
+        const mockAgent = createMockAgent({ startDir: tempDir });
+        const input = JSON.stringify({ skillName: 'Test', fileName: 'cskill.md', content: 'x' });
+        const result = await action({ mainAgent: mockAgent, promptText: input });
+        assert.ok(result.includes('JSON input is no longer supported'), 'Should reject JSON');
     });
 });
 
@@ -445,10 +464,10 @@ describe('update-section module', () => {
         assert.equal(typeof action, 'function', 'Should export action function');
     });
 
-    it('should return error for invalid JSON', async () => {
+    it('should return error for missing positional arguments', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action({ mainAgent: mockAgent, promptText: 'not json' });
-        assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
+        const result = await action({ mainAgent: mockAgent, promptText: 'not-enough' });
+        assert.ok(result.includes('Error') || result.includes('expected'), 'Should indicate error');
     });
 
     it('should update section content', async () => {
@@ -464,11 +483,7 @@ describe('update-section module', () => {
             ]),
         });
 
-        const input = JSON.stringify({
-            skillName: 'UpdateSkill',
-            section: 'Summary',
-            content: 'Updated summary content.',
-        });
+        const input = updateSectionInput('UpdateSkill', 'Summary', 'Updated summary content.');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('Updated') || result.includes('updated'), 'Should indicate updated');
@@ -509,19 +524,15 @@ describe('preview-changes module', () => {
         assert.equal(typeof action, 'function', 'Should export action function');
     });
 
-    it('should return error for invalid JSON', async () => {
+    it('should return error for missing positional arguments', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const result = await action({ mainAgent: mockAgent, promptText: 'not json' });
-        assert.ok(result.includes('Error') || result.includes('Invalid'), 'Should indicate error');
+        const result = await action({ mainAgent: mockAgent, promptText: 'not-enough' });
+        assert.ok(result.includes('Error') || result.includes('expected'), 'Should indicate error');
     });
 
     it('should show diff for existing file', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const input = JSON.stringify({
-            skillName: 'PreviewSkill',
-            fileName: 'cskill.md',
-            newContent: '# Preview Skill\n\n## Summary\nNew content.',
-        });
+        const input = previewChangesInput('PreviewSkill', 'cskill.md', '# Preview Skill\n\n## Summary\nNew content.');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('DIFF') || result.includes('-') || result.includes('+'), 'Should show diff');
@@ -529,11 +540,7 @@ describe('preview-changes module', () => {
 
     it('should show new file content for non-existent file', async () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
-        const input = JSON.stringify({
-            skillName: 'PreviewSkill',
-            fileName: 'newfile.md',
-            newContent: '# New File Content',
-        });
+        const input = previewChangesInput('PreviewSkill', 'newfile.md', '# New File Content');
 
         const result = await action({ mainAgent: mockAgent, promptText: input });
         assert.ok(result.includes('NEW FILE') || result.includes('New File Content'), 'Should show new file');

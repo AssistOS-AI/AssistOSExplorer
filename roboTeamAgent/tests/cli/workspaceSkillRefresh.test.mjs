@@ -89,11 +89,7 @@ describe('workspace skill refresh hook', () => {
         try {
             const output = await action({
                 mainAgent: agent,
-                promptText: JSON.stringify({
-                    skillName: 'plain-output',
-                    fileName: 'cskill.md',
-                    content: '# Plain Output',
-                }),
+                promptText: 'plain-output cskill.md --begin-content--\n# Plain Output\n--end-content--',
             });
 
             assert.equal(requested, true);

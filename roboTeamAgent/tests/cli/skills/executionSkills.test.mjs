@@ -170,10 +170,10 @@ describe('generate-code module - Extended Tests', () => {
         assert.ok(result.includes('only supported for') || result.includes('not found'));
     });
 
-    it('should accept object input', async () => {
+    it('should reject object input', async () => {
         const mockAgent = { startDir: tempDir };
         const result = await action({ mainAgent: mockAgent, promptText: { skillName: 'TestSkill' } });
-        assert.ok(result.includes('Error'));
+        assert.ok(result.includes('object input is no longer supported'));
     });
 
     it('should clean markdown code fences from LLM response', async () => {
@@ -269,7 +269,10 @@ export default { greet };
             startDir: tempDir,
             getSkillRecord: () => ({ skillDir }),
         };
-        const result = await action({ mainAgent: mockAgent, promptText: JSON.stringify({ skillName: 'TestInputSkillExt', testInput: 'World' }) });
+        const result = await action({
+            mainAgent: mockAgent,
+            promptText: 'TestInputSkillExt --begin-input--\nWorld\n--end-input--',
+        });
         assert.ok(result.includes('Test Results') || result.includes('Hello World'));
     });
 });
