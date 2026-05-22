@@ -118,6 +118,7 @@ describe('MainAgent - Skill Discovery', () => {
         assert.equal(record.type, 'orchestrator');
         assert.equal(record.isInternal, false);
     });
+
 });
 
 describe('MainAgent - Runtime APIs', () => {
