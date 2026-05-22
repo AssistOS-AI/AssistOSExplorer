@@ -9,6 +9,10 @@ const routerSkillPath = path.join(
     __dirname,
     '../achilles-cli/src/skills/copilot-router/oskill.md'
 );
+const cliIndexPath = path.join(
+    __dirname,
+    '../achilles-cli/src/index.mjs'
+);
 
 describe('copilot-router oskill contract', () => {
     it('is a loop-session router with provider launchers but no @ dispatch', () => {
@@ -28,5 +32,11 @@ describe('copilot-router oskill contract', () => {
         assert.match(source, /launch-web-search/);
         assert.match(source, /Browser-use takes precedence over web search/);
         assert.match(source, /Use Gemini in the browser to search for the latest OpenAI model news/);
+    });
+
+    it('routes WebChat turns through MainAgent executePrompt', () => {
+        const source = fs.readFileSync(cliIndexPath, 'utf8');
+        assert.match(source, /agent\.executePrompt\(akuPrompt\.prompt/);
+        assert.doesNotMatch(source, /agent\.executeSkill\(['"]copilot-router['"]/);
     });
 });
