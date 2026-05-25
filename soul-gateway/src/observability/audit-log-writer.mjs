@@ -19,6 +19,7 @@ export class AuditLogWriter {
 
     async write(entry) {
         try {
+            await this.ensurePartition(entry.startedAt);
             const row = await auditDao.insertCompleted(this.pool, entry);
             if (row && this.broadcastHub) {
                 this.broadcastHub.publish(row);
@@ -36,6 +37,7 @@ export class AuditLogWriter {
     // Legacy helpers kept for callers that still use the two-phase API.
     async start(entry) {
         try {
+            await this.ensurePartition(entry.startedAt);
             return await auditDao.insertStart(this.pool, entry);
         } catch (err) {
             this.log.error('audit start write failed', {
@@ -60,5 +62,13 @@ export class AuditLogWriter {
             });
             return null;
         }
+    }
+
+    async ensurePartition(value) {
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime())) {
+            return;
+        }
+        await auditDao.ensurePartition(this.pool, date);
     }
 }
