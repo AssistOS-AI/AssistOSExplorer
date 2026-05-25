@@ -81,7 +81,11 @@ export async function handleLogin(ctx) {
 export async function handleLogout(ctx) {
     const { req, res, appCtx } = ctx;
 
-    const decoded = requireAdmin(req, appCtx.config.env);
+    const decoded = await requireAdmin(
+        req,
+        appCtx.config.env,
+        appCtx.routerAuth || appCtx
+    );
     verifyRequiredCsrf({
         headers: req.headers,
         session: { csrfToken: decoded.csrfToken },
@@ -103,7 +107,11 @@ export async function handleSession(ctx) {
     const { req, res, appCtx } = ctx;
 
     try {
-        const decoded = requireAdmin(req, appCtx.config.env);
+        const decoded = await requireAdmin(
+            req,
+            appCtx.config.env,
+            appCtx.routerAuth || appCtx
+        );
         sendJson(res, 200, {
             authenticated: true,
             expiresAt: decoded.exp,

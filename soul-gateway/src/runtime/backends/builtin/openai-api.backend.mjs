@@ -139,6 +139,20 @@ function buildDiscoveredTags(model, pricingMode) {
     return [...tags].sort();
 }
 
+function allowsNoAuth(providerRecord) {
+    return String(providerRecord?.authStrategy || '').trim().toLowerCase() === 'none';
+}
+
+function buildOptionalAuthHeaders(token, allowNoAuth) {
+    if (token) {
+        return { Authorization: `Bearer ${token}` };
+    }
+    if (allowNoAuth) {
+        return {};
+    }
+    return null;
+}
+
 function normalizeDiscoveredModel(model) {
     const architecture = model?.architecture || {};
     const inputModalities = Array.isArray(architecture.input_modalities)
@@ -243,16 +257,18 @@ export const backendModule = {
         const token =
             ctx?.credentialLease?.secret ||
             ctx?.credentialLease?.oauth?.accessToken;
-        if (!token) {
+        const authHeaders = buildOptionalAuthHeaders(
+            token,
+            allowsNoAuth(ctx?.providerRecord)
+        );
+        if (!authHeaders) {
             throw new Error(
                 'OpenAI discoverModels requires configured credentials'
             );
         }
 
         try {
-            const body = await httpGet(baseUrl + '/models', {
-                Authorization: `Bearer ${token}`,
-            });
+            const body = await httpGet(baseUrl + '/models', authHeaders);
             const parsed = JSON.parse(body);
             return (parsed.data || [])
                 .filter((model) => Boolean(model?.id))
@@ -265,7 +281,7 @@ export const backendModule = {
             const status = await httpProbeStatus(
                 baseUrl + '/chat/completions',
                 {
-                    Authorization: `Bearer ${token}`,
+                    ...authHeaders,
                     'Content-Type': 'application/json',
                 },
                 '{}'
@@ -291,8 +307,11 @@ export const backendModule = {
         const token =
             ctx.credentialLease?.secret ||
             ctx.credentialLease?.oauth?.accessToken;
-        if (!token) return { ok: false, detail: 'No credentials configured' };
-        const authHeaders = { Authorization: `Bearer ${token}` };
+        const authHeaders = buildOptionalAuthHeaders(
+            token,
+            allowsNoAuth(ctx?.providerRecord)
+        );
+        if (!authHeaders) return { ok: false, detail: 'No credentials configured' };
 
         // Most OpenAI-compatible vendors expose GET /models, so try that
         // first — a 200 is the strongest signal we can get ("auth works,
@@ -396,6 +415,7 @@ export const backendModule = {
         return createAchillesExecutionHandle(ctx, achillesOpenAI, {
             model: modelId,
             apiKey: getCredentialToken(credentialLease),
+            allowNoAuth: allowsNoAuth(providerRecord),
             baseURL: baseUrl,
             signal,
             params,

@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { MetricsService } from '../../observability/metrics-service.mjs';
@@ -23,6 +23,122 @@ function signAdminToken(expiresAt, signingKey, csrfToken = null) {
     const payload = csrfToken ? `${expiresAt}.${csrfToken}` : String(expiresAt);
     const sig = createHmac('sha256', signingKey).update(payload).digest('hex');
     return `${payload}.${sig}`;
+}
+
+const ROUTER_DERIVED_MASTER_KEY = '9'.repeat(64);
+
+function base64url(value) {
+    return Buffer.from(value).toString('base64url');
+}
+
+function base64urlJson(obj) {
+    return base64url(Buffer.from(JSON.stringify(obj), 'utf8'));
+}
+
+function canonicalJson(value) {
+    if (value === null || typeof value !== 'object') {
+        return JSON.stringify(value ?? null);
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map(canonicalJson).join(',')}]`;
+    }
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+}
+
+function bodyHashForRequest(bodyObject) {
+    return createHash('sha256')
+        .update(canonicalJson(bodyObject ?? {}), 'utf8')
+        .digest('base64url');
+}
+
+function signHmacJwt({ payload, secret }) {
+    const header = base64urlJson({ alg: 'HS256', typ: 'JWT' });
+    const body = base64urlJson(payload);
+    const signingInput = `${header}.${body}`;
+    const sig = base64url(createHmac('sha256', secret).update(signingInput).digest());
+    return `${signingInput}.${sig}`;
+}
+
+function base64urlDecode(segment) {
+    const padding = '==='.slice((segment.length + 3) % 4);
+    const base64 = (segment + padding).replace(/-/g, '+').replace(/_/g, '/');
+    return Buffer.from(base64, 'base64');
+}
+
+function createMemoryReplayCache() {
+    const seen = new Set();
+    return {
+        seen(jti) {
+            return seen.has(jti);
+        },
+        remember(jti) {
+            seen.add(jti);
+        },
+    };
+}
+
+function verifyInvocationToken(token, {
+    secret,
+    expectedAudience,
+    expectedTool,
+    bodyObject,
+    replayCache,
+}) {
+    const parts = token.split('.');
+    assert.equal(parts.length, 3);
+    const header = JSON.parse(base64urlDecode(parts[0]).toString('utf8'));
+    const payload = JSON.parse(base64urlDecode(parts[1]).toString('utf8'));
+    const signature = base64urlDecode(parts[2]);
+    const signingInput = `${parts[0]}.${parts[1]}`;
+    const expected = createHmac('sha256', secret).update(signingInput).digest();
+    if (header.alg !== 'HS256') {
+        throw new Error(`jwtVerify: unsupported alg ${header.alg}`);
+    }
+    if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) {
+        throw new Error('jwtVerify: signature invalid');
+    }
+    if (String(payload.aud || '') !== String(expectedAudience)) {
+        throw new Error('jwtVerify: audience mismatch');
+    }
+    if (String(payload.tool || '') !== String(expectedTool)) {
+        throw new Error('jwtVerify: tool mismatch');
+    }
+    if ((payload.bh ?? payload.body_hash) !== bodyHashForRequest(bodyObject ?? {})) {
+        throw new Error('jwtVerify: body hash mismatch');
+    }
+    if (replayCache?.seen(payload.jti)) {
+        throw new Error('jwtVerify: jti has already been consumed');
+    }
+    replayCache?.remember(payload.jti);
+    return { header, payload };
+}
+
+function signRouterInvocation(bodyObject) {
+    const now = Math.floor(Date.now() / 1000);
+    const audience = process.env.PLOINKY_AGENT_PRINCIPAL || 'agent:proxies/soul-gateway';
+    return signHmacJwt({
+        secret: Buffer.from(ROUTER_DERIVED_MASTER_KEY, 'hex'),
+        payload: {
+            typ: 'invocation',
+            iss: 'ploinky-router',
+            aud: audience,
+            sub: 'local:admin',
+            caller: 'router:first-party',
+            tool: '__http_service__',
+            scope: [],
+            bh: bodyHashForRequest(bodyObject),
+            usr: {
+                sub: 'local:admin',
+                id: 'local:admin',
+                email: '',
+                username: 'admin',
+                roles: ['local', 'admin'],
+            },
+            jti: randomBytes(16).toString('base64url'),
+            iat: now,
+            exp: now + 60,
+        },
+    });
 }
 
 function createMockAppCtx(overrides = {}) {
@@ -3062,6 +3178,67 @@ describe('management/router', () => {
         const res = createMockRes();
 
         addAdminAuth(req, appCtx, { csrfToken: 'csrf-token-123' });
+
+        await match.handler({
+            req,
+            res,
+            params: match.params,
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+    });
+
+    it('does not require CSRF on admin writes authenticated by verified router SSO', async () => {
+        const keyId = '11111111-1111-1111-1111-111111111111';
+        const appCtx = createMockAppCtx({
+            pool: createMockPool(async (sql) => {
+                if (/UPDATE soul_gateway\.api_keys/.test(sql)) {
+                    return {
+                        rows: [{
+                            id: keyId,
+                            label: 'workspace-key',
+                            status: 'revoked',
+                        }],
+                    };
+                }
+                return { rows: [], rowCount: 0 };
+            }),
+        });
+        Object.assign(appCtx.config.env, {
+            SOUL_GATEWAY_MODE: 'embedded',
+            TRUST_PLOINKY_ROUTER_AUTH: true,
+            PLOINKY_DERIVED_MASTER_KEY: ROUTER_DERIVED_MASTER_KEY,
+        });
+        appCtx.verifyInvocationToken = verifyInvocationToken;
+        appCtx.replayCache = createMemoryReplayCache();
+        const { httpRouter } = buildManagementRouter(appCtx);
+        const match = httpRouter.match('POST', `/management/keys/${keyId}/revoke`);
+        const invocationBody = {
+            tool: '__http_service__',
+            arguments: {
+                method: 'POST',
+                path: `/services/soul-gateway/management/keys/${keyId}/revoke`,
+                search: '',
+            },
+        };
+        const req = createMockReq({
+            method: 'POST',
+            headers: {
+                'x-ploinky-auth-info': JSON.stringify({
+                    user: {
+                        id: 'local:admin',
+                        username: 'admin',
+                        roles: ['admin'],
+                    },
+                    sessionId: 'session-1',
+                    invocationToken: signRouterInvocation(invocationBody),
+                    invocationBody,
+                }),
+            },
+        });
+        const res = createMockRes();
 
         await match.handler({
             req,

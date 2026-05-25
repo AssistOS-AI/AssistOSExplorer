@@ -21,6 +21,7 @@ import {
     installRuntimeCoordinationServices,
     installSnapshotServices,
 } from './bootstrap/service-installers.mjs';
+import { bootstrapLocalLlmProvider } from './bootstrap/local-llm-bootstrap.mjs';
 
 /**
  * Full boot sequence.
@@ -69,6 +70,7 @@ export async function bootstrap() {
     await installBackendCatalogServices(appCtx);
     await installBrowserPoolService(appCtx);
     await installOAuthAdapters(appCtx);
+    await bootstrapLocalLlmProvider(appCtx);
     await reconcileProvidersOnStartup(appCtx);
     await installSnapshotServices(appCtx);
     try {
@@ -144,6 +146,7 @@ function handleSystemMetrics(ctx) {
 
 function registerCoreRoutes(router, appCtx) {
     router.add('GET', '/healthz', handleHealthFull);
+    router.add('GET', '/healthz/', handleHealthFull);
 
     router.add('GET', '/management/metrics/system', handleSystemMetrics);
 

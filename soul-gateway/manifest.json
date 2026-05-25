@@ -7,6 +7,23 @@
     "readiness": {
         "protocol": "tcp"
     },
+    "httpServices": [
+        {
+            "externalPrefix": "/services/soul-gateway/v1/",
+            "internalPrefix": "/v1/",
+            "auth": "protected"
+        },
+        {
+            "externalPrefix": "/services/soul-gateway/management/",
+            "internalPrefix": "/management/",
+            "auth": "protected"
+        },
+        {
+            "externalPrefix": "/public-services/soul-gateway-health/",
+            "internalPrefix": "/healthz/",
+            "auth": "none"
+        }
+    ],
     "profiles": {
         "default": {
             "env": {
@@ -130,6 +147,83 @@
                 }
             },
             "ports": ["0.0.0.0:8042:8042"],
+            "install": "bash /code/install-v2.sh"
+        },
+        "standalone": {
+            "ports": ["0.0.0.0:8042:8042"]
+        },
+        "embedded": {
+            "env": [
+                {
+                    "name": "PORT",
+                    "required": false,
+                    "default": "7000"
+                },
+                {
+                    "name": "SOUL_GATEWAY_MODE",
+                    "required": false,
+                    "default": "embedded"
+                },
+                {
+                    "name": "TRUST_PLOINKY_ROUTER_AUTH",
+                    "required": false,
+                    "default": "true"
+                },
+                {
+                    "name": "ALLOW_UNAUTHENTICATED",
+                    "required": false,
+                    "default": "false"
+                },
+                {
+                    "name": "LOCAL_LLM_BASE_URL",
+                    "required": false,
+                    "default": "http://host.containers.internal:11434/v1",
+                    "description": "Default OpenAI-compatible endpoint for the local LLM deployment"
+                },
+                {
+                    "name": "LOCAL_LLM_MODEL",
+                    "required": false,
+                    "default": "gemma4:e2b"
+                },
+                {
+                    "name": "ENCRYPTION_KEY",
+                    "required": true,
+                    "derive": "derived-master",
+                    "deriveName": "soul-gateway-encryption-key"
+                },
+                {
+                    "name": "ADMIN_SESSION_SIGNING_KEY",
+                    "required": true,
+                    "derive": "derived-master",
+                    "deriveName": "soul-gateway-admin-session"
+                },
+                {
+                    "name": "SOUL_GATEWAY_API_KEY",
+                    "required": true,
+                    "derive": "derived-master",
+                    "deriveName": "workspace-default-api-key"
+                },
+                {
+                    "name": "DASHBOARD_PASSWORD",
+                    "required": false,
+                    "default": ""
+                },
+                {
+                    "name": "OAUTH_ADAPTERS_ENABLED",
+                    "required": false,
+                    "default": ""
+                },
+                {
+                    "name": "TOKEN_REFRESH_INTERVAL_MS",
+                    "required": false,
+                    "default": "0"
+                },
+                {
+                    "name": "PRICING_REFRESH_INTERVAL_MS",
+                    "required": false,
+                    "default": "0"
+                }
+            ],
             "install": "bash /code/install-v2.sh"
         }
     }

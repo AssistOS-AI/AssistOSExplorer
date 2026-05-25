@@ -128,6 +128,14 @@ export function readEnv(processEnv = process.env) {
         // Auth
         ALLOW_UNAUTHENTICATED: bool(processEnv.ALLOW_UNAUTHENTICATED, false),
 
+        // Embedded mode
+        SOUL_GATEWAY_MODE: str(processEnv.SOUL_GATEWAY_MODE, null),
+        TRUST_PLOINKY_ROUTER_AUTH: bool(processEnv.TRUST_PLOINKY_ROUTER_AUTH, false),
+        SOUL_GATEWAY_API_KEY: str(processEnv.SOUL_GATEWAY_API_KEY, null),
+        LOCAL_LLM_BASE_URL: str(processEnv.LOCAL_LLM_BASE_URL, null),
+        LOCAL_LLM_MODEL: str(processEnv.LOCAL_LLM_MODEL, null),
+        OAUTH_ADAPTERS_ENABLED: str(processEnv.OAUTH_ADAPTERS_ENABLED, null),
+
         // Built-in search provider keys
         SEARCH_TAVILY_API_KEY: str(processEnv.SEARCH_TAVILY_API_KEY, null),
         SEARCH_BRAVE_API_KEY: str(processEnv.SEARCH_BRAVE_API_KEY, null),
@@ -152,6 +160,10 @@ export function readEnv(processEnv = process.env) {
     };
 
     return Object.freeze(env);
+}
+
+export function isEmbeddedMode(env) {
+    return env.SOUL_GATEWAY_MODE === 'embedded';
 }
 
 // ── helpers ──────────────────────────────────────────────────────────

@@ -182,9 +182,33 @@ If the grace period expires with requests still in flight, the remaining connect
 - On subsequent startups, the key is loaded from the env var if set, otherwise from the persisted file.
 - Rotating the encryption key requires re-encrypting all `provider_accounts.secret_*` and `api_keys.key_*` rows, which is not automated. Operators should plan rotations with a maintenance window.
 
+## Deployment profiles
+
+Soul Gateway declares two Ploinky manifest profiles: `standalone` and `embedded`.
+
+### Standalone profile
+
+The default production mode. Soul Gateway binds to `PORT` on `HOST`, uses `DASHBOARD_PASSWORD` for admin login, manages its own API keys in Postgres, and runs background schedulers (token refresh, pricing refresh). This is the mode used at `soul.axiologic.dev`.
+
+### Embedded profile
+
+Used when Soul Gateway runs as a dependency of another Ploinky agent (typically Explorer). Key differences from standalone:
+
+- `SOUL_GATEWAY_MODE=embedded` — activates router SSO auth and synthetic API key handling.
+- `TRUST_PLOINKY_ROUTER_AUTH=true` — the `requireAdmin` middleware accepts Ploinky router identity via `x-ploinky-auth-info` after verifying the invocation JWT.
+- `DASHBOARD_PASSWORD=""` — management access is through router SSO, not password.
+- `TOKEN_REFRESH_INTERVAL_MS=0`, `PRICING_REFRESH_INTERVAL_MS=0` — background schedulers disabled.
+- `ENCRYPTION_KEY` and `ADMIN_SESSION_SIGNING_KEY` are derived from `PLOINKY_MASTER_KEY` via `derive: "derived-master"`.
+- `SOUL_GATEWAY_API_KEY` is derived with `deriveName: "workspace-default-api-key"` so consumer agents can derive the same value using `deriveRepoName`/`deriveAgentName`.
+- `LOCAL_LLM_BASE_URL` defaults to `http://host.containers.internal:11434/v1` for local LLM auto-bootstrap.
+- `OAUTH_ADAPTERS_ENABLED=""` — OAuth adapters disabled by default.
+
+Profile selection is workspace-wide via `ploinky profile <name>`. See DS016 for the full embedded mode contract.
+
 ## Related specs
 
 - **DS001** — the HTTP server that this spec starts.
 - **DS006** — the database schema that the migration step creates.
 - **DS009** — the retry knobs this spec sets defaults for.
 - **DS015** — the background jobs (partition maintenance, log retention purge) that this spec starts.
+- **DS016** — the embedded mode contract (router SSO, synthetic API key, HTTP services, settings plugin).

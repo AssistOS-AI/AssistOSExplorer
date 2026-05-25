@@ -5,14 +5,16 @@
  * looks it up in the database, and validates status / expiry.
  */
 
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import * as apiKeysDao from '../../db/dao/api-keys-dao.mjs';
+import { encrypt, ensureEncryptionKey } from './encryption.mjs';
 import {
     AuthenticationRequiredError,
     InvalidApiKeyError,
     ExpiredApiKeyError,
     RevokedApiKeyError,
 } from '../../core/errors.mjs';
+import { isEmbeddedMode } from '../../config/env.mjs';
 
 /**
  * Authenticate an incoming request by its API key.
@@ -28,6 +30,12 @@ import {
 export async function authenticateApiKey(authHeader, appCtx) {
     // 1. Extract bearer token
     const token = extractBearerToken(authHeader);
+
+    // 1b. Embedded workspace key: auto-persist when a DB is available so
+    // sessions, budgets, and audit rows keep a real FK-compatible key id.
+    if (matchEmbeddedKey(token, appCtx.config.env)) {
+        return ensureEmbeddedApiKeyRecord(token, appCtx);
+    }
 
     // 2. HMAC the token
     const pepper = derivePepper(appCtx.config.env);
@@ -109,4 +117,94 @@ export function derivePepper(config) {
     throw new Error(
         'Neither API_KEY_HASH_PEPPER nor ENCRYPTION_KEY is configured'
     );
+}
+
+function matchEmbeddedKey(token, env) {
+    if (!isEmbeddedMode(env)) return null;
+    const expected = env.SOUL_GATEWAY_API_KEY;
+    if (!expected) return null;
+
+    const a = Buffer.from(token);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
+}
+
+async function ensureEmbeddedApiKeyRecord(token, appCtx) {
+    const env = appCtx.config.env;
+    const hasPersistentDb = appCtx.pool && env.DATABASE_URL;
+    if (!hasPersistentDb) {
+        return buildEmbeddedApiKeyRecord();
+    }
+
+    const pepper = derivePepper(env);
+    const keyHash = hashApiKey(token, pepper);
+    const existing = await apiKeysDao.findByHash(appCtx.pool, keyHash);
+    if (existing) {
+        return normalizeEmbeddedApiKeyRecord(existing);
+    }
+
+    const encryptionKey = appCtx.services?.encryptionKey || ensureEncryptionKey(env);
+    const {
+        ciphertext: keyCiphertext,
+        iv: keyIv,
+        authTag: keyAuthTag,
+    } = encrypt(token, encryptionKey);
+
+    try {
+        const row = await apiKeysDao.create(appCtx.pool, {
+            label: 'workspace-default',
+            keyHash,
+            keyCiphertext,
+            keyIv,
+            keyAuthTag,
+            keyHint: buildKeyHint(token),
+            rpmLimit: null,
+            tpmLimit: null,
+            dailyBudgetUsd: null,
+            monthlyBudgetUsd: null,
+            expiresAt: null,
+            metadata: {
+                embedded: true,
+                synthetic: true,
+                managedBy: 'soul-gateway',
+            },
+        });
+        return normalizeEmbeddedApiKeyRecord(row);
+    } catch (err) {
+        if (err?.code === '23505') {
+            const row = await apiKeysDao.findByHash(appCtx.pool, keyHash);
+            if (row) return normalizeEmbeddedApiKeyRecord(row);
+        }
+        throw err;
+    }
+}
+
+function buildKeyHint(token) {
+    const value = String(token || '');
+    if (value.length <= 12) return value;
+    return `${value.slice(0, 8)}...${value.slice(-4)}`;
+}
+
+function buildEmbeddedApiKeyRecord(fields = {}) {
+    return {
+        id: 'workspace-default',
+        label: 'workspace-default',
+        name: 'workspace-default',
+        status: 'active',
+        expires_at: null,
+        daily_budget_usd: null,
+        monthly_budget_usd: null,
+        rpm_limit: null,
+        tpm_limit: null,
+        synthetic: true,
+        ...fields,
+    };
+}
+
+function normalizeEmbeddedApiKeyRecord(row) {
+    return buildEmbeddedApiKeyRecord({
+        ...row,
+        label: row.label || 'workspace-default',
+        name: row.name || row.label || 'workspace-default',
+    });
 }

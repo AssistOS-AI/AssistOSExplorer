@@ -2741,7 +2741,7 @@ import { backendModule as openaiApiPlugin } from '../../runtime/backends/builtin
 async function spinUpFakeOpenAI(opts = {}) {
     const seen = [];
     const server = createServer((req, res) => {
-        seen.push({ method: req.method, url: req.url });
+        seen.push({ method: req.method, url: req.url, headers: req.headers });
 
         let route = null;
         if (req.method === 'GET' && req.url === '/v1/models')
@@ -2777,6 +2777,13 @@ function makeOpenAITestCtx(baseUrl, secret = 'test-key') {
     return {
         providerRecord: { baseUrl },
         credentialLease: { secret },
+    };
+}
+
+function makeNoAuthOpenAITestCtx(baseUrl) {
+    return {
+        providerRecord: { baseUrl, authStrategy: 'none' },
+        credentialLease: null,
     };
 }
 
@@ -2858,6 +2865,25 @@ describe('openai-api testConnection HTTP behavior', () => {
             // The backend must NOT touch /chat/completions when /models worked.
             assert.equal(fake.seen.length, 1);
             assert.equal(fake.seen[0].url, '/v1/models');
+        } finally {
+            await fake.close();
+        }
+    });
+
+    it('allows no-auth local providers without sending authorization headers', async () => {
+        const fake = await spinUpFakeOpenAI({
+            models: {
+                status: 200,
+                body: JSON.stringify({ data: [{ id: 'local-model' }] }),
+            },
+        });
+        try {
+            const result = await openaiApiPlugin.testConnection(
+                makeNoAuthOpenAITestCtx(fake.baseUrl)
+            );
+            assert.equal(result.ok, true);
+            assert.equal(fake.seen.length, 1);
+            assert.equal(fake.seen[0].headers.authorization, undefined);
         } finally {
             await fake.close();
         }

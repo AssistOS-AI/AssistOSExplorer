@@ -288,7 +288,7 @@ describe('admin session sign/verify (loginAdmin + requireAdmin)', () => {
     it('requireAdmin accepts a valid Bearer token', async () => {
         const { token } = await loginAdmin('s3cret', config);
         const req = { headers: { authorization: `Bearer ${token}` } };
-        const decoded = requireAdmin(req, config);
+        const decoded = await requireAdmin(req, config);
         assert(decoded.exp > Date.now());
     });
 
@@ -297,15 +297,15 @@ describe('admin session sign/verify (loginAdmin + requireAdmin)', () => {
         const req = {
             headers: { cookie: `soul_session=${encodeURIComponent(token)}` },
         };
-        const decoded = requireAdmin(req, config);
+        const decoded = await requireAdmin(req, config);
         assert(decoded.exp > Date.now());
     });
 
-    it('requireAdmin throws for missing token', () => {
+    it('requireAdmin throws for missing token', async () => {
         const req = { headers: {} };
-        assert.throws(
+        await assert.rejects(
             () => requireAdmin(req, config),
-            (err) => err instanceof AuthenticationRequiredError
+            (err) => err instanceof AuthenticationRequiredError,
         );
     });
 
@@ -313,14 +313,13 @@ describe('admin session sign/verify (loginAdmin + requireAdmin)', () => {
         const { token } = await loginAdmin('s3cret', config);
         const tampered = token.slice(0, -4) + 'xxxx';
         const req = { headers: { authorization: `Bearer ${tampered}` } };
-        assert.throws(
+        await assert.rejects(
             () => requireAdmin(req, config),
-            (err) => err instanceof AuthenticationRequiredError
+            (err) => err instanceof AuthenticationRequiredError,
         );
     });
 
-    it('requireAdmin throws for expired token', () => {
-        // Craft a token that already expired (using current format: {exp}.{csrfToken}.{hmac})
+    it('requireAdmin throws for expired token', async () => {
         const exp = Date.now() - 1000;
         const csrfToken = randomBytes(32).toString('hex');
         const payload = `${exp}.${csrfToken}`;
@@ -330,18 +329,17 @@ describe('admin session sign/verify (loginAdmin + requireAdmin)', () => {
         const expiredToken = `${payload}.${sig}`;
 
         const req = { headers: { authorization: `Bearer ${expiredToken}` } };
-        assert.throws(
+        await assert.rejects(
             () => requireAdmin(req, config),
             (err) => {
                 assert(err instanceof AuthenticationRequiredError);
                 assert.match(err.message, /expired/i);
                 return true;
-            }
+            },
         );
     });
 
-    it('requireAdmin rejects tokens without CSRF component', () => {
-        // Legacy format: {exp}.{hmac} — no longer accepted
+    it('requireAdmin rejects tokens without CSRF component', async () => {
         const exp = Date.now() + 60_000;
         const payload = String(exp);
         const sig = createHmac('sha256', signingKey)
@@ -350,13 +348,13 @@ describe('admin session sign/verify (loginAdmin + requireAdmin)', () => {
         const legacyToken = `${payload}.${sig}`;
 
         const req = { headers: { authorization: `Bearer ${legacyToken}` } };
-        assert.throws(
+        await assert.rejects(
             () => requireAdmin(req, config),
             (err) => {
                 assert(err instanceof AuthenticationRequiredError);
                 assert.match(err.message, /Invalid admin session/i);
                 return true;
-            }
+            },
         );
     });
 });

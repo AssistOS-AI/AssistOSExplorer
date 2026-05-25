@@ -177,8 +177,13 @@ export function buildManagementRouter(appCtx) {
     // ── Helper: wrap handler with admin auth + CSRF guard ─────────────
     function admin(handler) {
         return async (ctx) => {
-            const decoded = requireAdmin(ctx.req, appCtx.config.env);
-            if (!CSRF_SAFE_METHODS.has(ctx.req.method)) {
+            const decoded = await requireAdmin(
+                ctx.req,
+                appCtx.config.env,
+                appCtx.routerAuth || appCtx
+            );
+            const routerSso = decoded?.source === 'router-sso';
+            if (!routerSso && !CSRF_SAFE_METHODS.has(ctx.req.method)) {
                 verifyRequiredCsrf({
                     headers: ctx.req.headers,
                     session: { csrfToken: decoded.csrfToken },

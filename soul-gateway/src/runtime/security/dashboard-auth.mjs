@@ -11,6 +11,7 @@ import { compareDashboardPassword } from './password.mjs';
 import { parseCookies } from '../../core/cookie.mjs';
 import { DEFAULTS } from '../../config/defaults.mjs';
 import { AuthenticationRequiredError, ConfigurationError } from '../../core/errors.mjs';
+import { authenticateRouterAdmin } from './router-auth.mjs';
 
 const COOKIE_NAME = 'soul_session';
 
@@ -46,15 +47,28 @@ export async function loginAdmin(password, config) {
 }
 
 /**
- * Middleware-style guard: verify the admin session from either a
- * cookie or an Authorization bearer header.
+ * Middleware-style guard: verify the admin session.
+ *
+ * In embedded mode, tries router SSO first (verified invocation token
+ * from the Ploinky router). Falls back to cookie / bearer session auth.
  *
  * @param {{ headers: Record<string,string> }} req
- * @param {{ ADMIN_SESSION_SIGNING_KEY: string }} config
- * @returns {{ exp: number }} decoded payload
- * @throws {AuthenticationRequiredError} if the session is missing/invalid/expired
+ * @param {{ ADMIN_SESSION_SIGNING_KEY: string }} config  The env object
+ * @param {object} routerAuthOptions Optional verifier / replay-cache injection
+ * @returns {Promise<{ exp: number } | { authenticated: true, source: string, user: object }>}
+ * @throws {AuthenticationRequiredError} if no valid session is found
  */
-export function requireAdmin(req, config) {
+export async function requireAdmin(req, config, routerAuthOptions = {}) {
+    try {
+        const routerResult = await authenticateRouterAdmin(req, {
+            ...routerAuthOptions,
+            env: config,
+        });
+        if (routerResult) return routerResult;
+    } catch {
+        // Router auth rejected — fall through to session auth
+    }
+
     const token = extractToken(req);
     if (!token) {
         throw new AuthenticationRequiredError('Admin session required');
