@@ -170,7 +170,7 @@ Add root-level `httpServices`:
   {
     "externalPrefix": "/services/soul-gateway/v1/",
     "internalPrefix": "/v1/",
-    "auth": "protected",
+    "auth": "none",
     "notFoundMessage": "Soul Gateway route not found."
   },
   {
@@ -188,7 +188,7 @@ Add root-level `httpServices`:
 ]
 ```
 
-Keep the public health route for deployment smoke checks. Add a `/healthz/` alias in Soul Gateway because Ploinky normalizes service prefixes with trailing slashes.
+Keep the `/v1/` route free of router login because sibling agents call it with the derived Soul Gateway API key and may not have a browser-authenticated route context. The route is still authenticated by Soul Gateway's normal bearer-key middleware. Keep the public health route for deployment smoke checks. Add a `/healthz/` alias in Soul Gateway because Ploinky normalizes service prefixes with trailing slashes.
 
 For storage, keep Postgres in embedded mode. Soul Gateway's DAOs and migrations are already Postgres-oriented, and preserving that avoids a large schema-porting effort. SQLite is not part of this plan.
 
@@ -267,7 +267,7 @@ The local LLM URL is non-secret topology. It should have a manifest default and 
 
 ## CORS Plan
 
-No Soul Gateway CORS changes are required for embedded mode. Browser calls go to the Ploinky router origin and are proxied through protected HTTP service routes. Standalone deployments can keep relying on their existing public deployment and proxy configuration.
+No Soul Gateway CORS changes are required for embedded mode. Browser management calls go to the Ploinky router origin and are proxied through protected HTTP service routes. Agent inference calls go to the router's `/services/soul-gateway/v1` route and authenticate with Soul Gateway's bearer key. Standalone deployments can keep relying on their existing public deployment and proxy configuration.
 
 ## Explorer Integration Plan
 

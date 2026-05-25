@@ -6,7 +6,7 @@ Soul Gateway runs in two manifest-selected modes: **standalone** and **embedded*
 
 The active mode is determined by `SOUL_GATEWAY_MODE`:
 
-- `embedded` — started as a dependency of another Ploinky agent (typically Explorer). Reachable through Ploinky HTTP service routes. Auth delegates to the Ploinky router.
+- `embedded` — started as a dependency of another Ploinky agent (typically Explorer). Reachable through Ploinky HTTP service routes. Management auth delegates to the Ploinky router; inference auth remains Soul Gateway API-key based.
 - Any other value or unset — standalone mode. Port-bound, dashboard-password/API-key based, externally reachable.
 
 The Soul Gateway manifest declares `embedded` and `standalone` profiles under `profiles`. Standalone operation may use the workspace's active profile, while Explorer declares Soul Gateway as an `enable` object with `profile: "embedded"` so only the dependency runs with the embedded overlay.
@@ -48,11 +48,11 @@ The manifest declares three `httpServices` entries:
 
 | External Prefix | Internal Prefix | Auth |
 |---|---|---|
-| `/services/soul-gateway/v1/` | `/v1/` | protected |
+| `/services/soul-gateway/v1/` | `/v1/` | none |
 | `/services/soul-gateway/management/` | `/management/` | protected |
 | `/public-services/soul-gateway-health/` | `/healthz/` | none |
 
-Protected routes receive `x-ploinky-auth-info` from the router. The health route is public for deployment smoke checks.
+The `/v1/` route intentionally does not require router login because agent callers authenticate to Soul Gateway with `Authorization: Bearer ${SOUL_GATEWAY_API_KEY}` and may run outside a browser session. The route is still not anonymous at the Soul Gateway layer; public API requests without a valid Soul Gateway key fail before model execution. Protected management routes receive `x-ploinky-auth-info` from the router. The health route is public for deployment smoke checks.
 
 ## URL Resolution
 

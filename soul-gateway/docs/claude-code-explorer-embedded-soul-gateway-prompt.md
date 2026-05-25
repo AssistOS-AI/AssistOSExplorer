@@ -83,7 +83,7 @@ Implement in phases and commit only coherent changes. Prefer small, testable cha
   - `PRICING_REFRESH_INTERVAL_MS=0`
 - Declare `ports: []` for embedded mode so it clears the standalone `8042` binding and uses the router path plus Ploinky's localhost service mapping to container port `7000`.
 - Add root-level `httpServices`:
-  - protected `/services/soul-gateway/v1/` -> `/v1/`
+  - API-key-authenticated `/services/soul-gateway/v1/` -> `/v1/` with router `auth: "none"`
   - protected `/services/soul-gateway/management/` -> `/management/`
   - public `/public-services/soul-gateway-health/` -> `/healthz/`
 - Add a `/healthz/` alias if needed because Ploinky normalizes service prefixes with trailing slashes.

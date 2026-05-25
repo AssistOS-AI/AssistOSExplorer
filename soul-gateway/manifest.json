@@ -11,7 +11,7 @@
         {
             "externalPrefix": "/services/soul-gateway/v1/",
             "internalPrefix": "/v1/",
-            "auth": "protected"
+            "auth": "none"
         },
         {
             "externalPrefix": "/services/soul-gateway/management/",

@@ -200,6 +200,7 @@ Used when Soul Gateway runs as a dependency of another Ploinky agent (typically 
 - `TOKEN_REFRESH_INTERVAL_MS=0`, `PRICING_REFRESH_INTERVAL_MS=0` — background schedulers disabled.
 - `ENCRYPTION_KEY` and `ADMIN_SESSION_SIGNING_KEY` are derived from `PLOINKY_MASTER_KEY` via `derive: "derived-master"`.
 - `SOUL_GATEWAY_API_KEY` is derived with `deriveName: "workspace-default-api-key"` so consumer agents can derive the same value using `deriveRepoName`/`deriveAgentName`.
+- The embedded `/services/soul-gateway/v1/` router service uses router `auth: "none"` because sibling agents authenticate with the derived Soul Gateway API key; management routes remain router-protected.
 - `LOCAL_LLM_BASE_URL` defaults to `https://lmstudio.axiologic.dev/v1` and `LOCAL_LLM_MODEL` defaults to `gemma-3-12b-it` for embedded local LLM bootstrap.
 - `LOCAL_LLM_DISCOVERY_MODE=single` registers only the configured model by default. Use `auto` only when the endpoint can reliably serve every model it advertises.
 - `LOCAL_LLM_API_KEY` is optional and deployment-supplied. When present, it is stored as an encrypted provider account; when absent, the embedded provider uses no-auth local endpoint semantics.
