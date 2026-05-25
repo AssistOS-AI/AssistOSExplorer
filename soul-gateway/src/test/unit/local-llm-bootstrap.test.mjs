@@ -3,10 +3,15 @@ import assert from 'node:assert/strict';
 
 import { bootstrapLocalLlmProvider } from '../../bootstrap/local-llm-bootstrap.mjs';
 
-function makeAppCtx(envOverrides = {}, existingProvider = null) {
+function makeAppCtx(
+    envOverrides = {},
+    existingProvider = null,
+    existingModels = []
+) {
     const providers = existingProvider ? [existingProvider] : [];
     const accounts = [];
-    const models = [];
+    const models = [...existingModels];
+    const aliases = [];
     let nextId = 1;
 
     const env = {
@@ -16,6 +21,7 @@ function makeAppCtx(envOverrides = {}, existingProvider = null) {
         LOCAL_LLM_MODEL: 'gemma-3-12b-it',
         LOCAL_LLM_API_KEY: null,
         LOCAL_LLM_DISCOVERY_MODE: 'single',
+        LOCAL_LLM_ALIASES: 'fast,axl/fast',
         ...envOverrides,
     };
 
@@ -42,9 +48,37 @@ function makeAppCtx(envOverrides = {}, existingProvider = null) {
                     display_name: params[1],
                     provider_id: params[2],
                     provider_model_id: params[3],
+                    enabled: true,
                 };
                 models.push(row);
                 return { rows: [row] };
+            }
+            if (sql.includes('INSERT INTO soul_gateway.model_aliases')) {
+                const row = {
+                    id: nextId++,
+                    alias: params[0],
+                    model_id: params[1],
+                };
+                aliases.push(row);
+                return { rows: [row] };
+            }
+            if (sql.includes('FROM soul_gateway.model_aliases')) {
+                const found = aliases.find((alias) => alias.alias === params[0]);
+                const model = found
+                    ? models.find((entry) => entry.id === found.model_id)
+                    : null;
+                return {
+                    rows: found && model
+                        ? [{ ...found, model_key: model.model_key }]
+                        : [],
+                };
+            }
+            if (sql.includes('FROM soul_gateway.models WHERE provider_id')) {
+                const rows = models.filter((model) => (
+                    model.provider_id === params[0] &&
+                    (params.length < 2 || model.enabled === params[1])
+                ));
+                return { rows };
             }
             if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
                 const row = {
@@ -114,6 +148,7 @@ function makeAppCtx(envOverrides = {}, existingProvider = null) {
         providers,
         accounts,
         models,
+        aliases,
         logs,
     };
 }
@@ -148,6 +183,34 @@ describe('bootstrapLocalLlmProvider', () => {
         assert.ok(logs.some((l) => l.msg.includes('already exists')));
     });
 
+    it('creates local aliases for an existing provider model', async () => {
+        const existingProvider = {
+            id: 99,
+            provider_key: 'local-llm',
+            display_name: 'Local LLM',
+        };
+        const existingModels = [{
+            id: 'model-99',
+            model_key: 'local-llm/gemma-3-12b-it',
+            display_name: 'gemma-3-12b-it',
+            provider_id: 99,
+            enabled: true,
+        }];
+        const { appCtx, providers, models, aliases } = makeAppCtx(
+            {},
+            existingProvider,
+            existingModels,
+        );
+        await bootstrapLocalLlmProvider(appCtx);
+        assert.equal(providers.length, 1);
+        assert.equal(models.length, 1);
+        assert.deepEqual(
+            aliases.map((row) => row.alias),
+            ['fast', 'axl/fast'],
+        );
+        assert.ok(aliases.every((row) => row.model_id === 'model-99'));
+    });
+
     it('skips when LOCAL_LLM_BASE_URL is not set', async () => {
         const { appCtx, providers, logs } = makeAppCtx({
             LOCAL_LLM_BASE_URL: null,
@@ -173,15 +236,32 @@ describe('bootstrapLocalLlmProvider', () => {
     });
 
     it('creates configured fallback model in single discovery mode', async () => {
-        const { appCtx, models, logs } = makeAppCtx();
+        const { appCtx, models, aliases, logs } = makeAppCtx();
         await bootstrapLocalLlmProvider(appCtx);
         assert.equal(models.length, 1);
         assert.equal(models[0].model_key, 'local-llm/gemma-3-12b-it');
         assert.equal(models[0].display_name, 'gemma-3-12b-it');
+        assert.deepEqual(
+            aliases.map((row) => row.alias),
+            ['fast', 'axl/fast'],
+        );
+        assert.ok(aliases.every((row) => row.model_id === models[0].id));
         assert.ok(logs.some((l) => l.msg.includes('fallback model')));
         assert.equal(
             logs.some((l) => l.msg.includes('auto-provision discovery failed')),
             false
+        );
+    });
+
+    it('uses LOCAL_LLM_ALIASES to override compatibility aliases', async () => {
+        const { appCtx, models, aliases } = makeAppCtx({
+            LOCAL_LLM_ALIASES: 'quick, local/default ,,',
+        });
+        await bootstrapLocalLlmProvider(appCtx);
+        assert.equal(models.length, 1);
+        assert.deepEqual(
+            aliases.map((row) => row.alias),
+            ['quick', 'local/default'],
         );
     });
 

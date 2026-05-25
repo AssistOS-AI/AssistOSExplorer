@@ -198,6 +198,12 @@
                     "description": "Use single to register only LOCAL_LLM_MODEL, or auto to probe the endpoint model list"
                 },
                 {
+                    "name": "LOCAL_LLM_ALIASES",
+                    "required": false,
+                    "default": "fast,axl/fast",
+                    "description": "Comma-separated aliases mapped to the embedded local LLM model for legacy agent defaults"
+                },
+                {
                     "name": "ENCRYPTION_KEY",
                     "required": true,
                     "derive": "derived-master",

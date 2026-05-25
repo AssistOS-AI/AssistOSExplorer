@@ -12,6 +12,72 @@ function normalizeDiscoveryMode(value) {
         : DISCOVERY_MODE_SINGLE;
 }
 
+function parseAliases(value) {
+    return String(value || '')
+        .split(',')
+        .map((alias) => alias.trim())
+        .filter(Boolean);
+}
+
+async function findAliasTargetModel(appCtx, provider, createdModel = null) {
+    if (createdModel) return createdModel;
+
+    const { config, pool } = appCtx;
+    const { env } = config;
+    const modelsDao = await import('../db/dao/models-dao.mjs');
+    const models = await modelsDao.listByProvider(pool, provider.id, {
+        enabled: true,
+    });
+
+    const configuredModelKey = env.LOCAL_LLM_MODEL
+        ? `${PROVIDER_KEY}/${env.LOCAL_LLM_MODEL}`
+        : null;
+    const configuredModel = configuredModelKey
+        ? models.find((model) => model.model_key === configuredModelKey)
+        : null;
+
+    return configuredModel || models[0] || null;
+}
+
+async function ensureLocalLlmAliases(appCtx, provider, createdModel = null) {
+    const { config, pool, log } = appCtx;
+    const aliases = parseAliases(config.env.LOCAL_LLM_ALIASES);
+    if (aliases.length === 0) return;
+
+    const targetModel = await findAliasTargetModel(
+        appCtx,
+        provider,
+        createdModel
+    );
+    if (!targetModel) {
+        log.warn('local-llm aliases skipped because no enabled model exists');
+        return;
+    }
+
+    const aliasesDao = await import('../db/dao/model-aliases-dao.mjs');
+    for (const alias of aliases) {
+        const existing = await aliasesDao.findByAlias(pool, alias);
+        if (existing) {
+            if (existing.model_key !== targetModel.model_key) {
+                log.warn('local-llm alias already points to another model', {
+                    alias,
+                    target: existing.model_key,
+                });
+            }
+            continue;
+        }
+
+        await aliasesDao.create(pool, {
+            alias,
+            modelId: targetModel.id,
+        });
+        log.info('local-llm alias created', {
+            alias,
+            model: targetModel.model_key,
+        });
+    }
+}
+
 export async function bootstrapLocalLlmProvider(appCtx) {
     const { config, pool, log } = appCtx;
     const { env } = config;
@@ -22,6 +88,7 @@ export async function bootstrapLocalLlmProvider(appCtx) {
     const providersDao = await import('../db/dao/providers-dao.mjs');
     const existing = await providersDao.findByKey(pool, PROVIDER_KEY);
     if (existing) {
+        await ensureLocalLlmAliases(appCtx, existing);
         log.info('local-llm provider already exists, skipping bootstrap');
         return;
     }
@@ -72,6 +139,7 @@ export async function bootstrapLocalLlmProvider(appCtx) {
         });
 
         if (result.created > 0) {
+            await ensureLocalLlmAliases(appCtx, provider);
             log.info('local-llm models discovered', {
                 created: result.created,
             });
@@ -88,7 +156,7 @@ export async function bootstrapLocalLlmProvider(appCtx) {
     }
 
     const modelsDao = await import('../db/dao/models-dao.mjs');
-    await modelsDao.create(pool, {
+    const model = await modelsDao.create(pool, {
         modelKey: `${PROVIDER_KEY}/${modelName}`,
         displayName: modelName,
         providerId: provider.id,
@@ -98,5 +166,6 @@ export async function bootstrapLocalLlmProvider(appCtx) {
         isFree: true,
     });
 
+    await ensureLocalLlmAliases(appCtx, provider, model);
     log.info('local-llm fallback model created', { model: modelName });
 }
