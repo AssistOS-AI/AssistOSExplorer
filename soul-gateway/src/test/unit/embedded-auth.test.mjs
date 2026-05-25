@@ -432,6 +432,9 @@ describe('synthetic embedded API key', () => {
         assert.equal(result.synthetic, true);
         assert.equal(result.rpm_limit, null);
         assert.equal(result.tpm_limit, null);
+        const insertQuery = queries.find((query) => /INSERT INTO soul_gateway\.api_keys/.test(query.sql));
+        assert.equal(insertQuery.params[6], 60);
+        assert.equal(insertQuery.params[7], 100000);
         assert.equal(queries.some((query) => /INSERT INTO soul_gateway\.api_keys/.test(query.sql)), true);
     });
 });

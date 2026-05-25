@@ -16,6 +16,9 @@ import {
 } from '../../core/errors.mjs';
 import { isEmbeddedMode } from '../../config/env.mjs';
 
+const EMBEDDED_API_KEY_DB_RPM_LIMIT = 60;
+const EMBEDDED_API_KEY_DB_TPM_LIMIT = 100000;
+
 /**
  * Authenticate an incoming request by its API key.
  *
@@ -158,8 +161,8 @@ async function ensureEmbeddedApiKeyRecord(token, appCtx) {
             keyIv,
             keyAuthTag,
             keyHint: buildKeyHint(token),
-            rpmLimit: null,
-            tpmLimit: null,
+            rpmLimit: EMBEDDED_API_KEY_DB_RPM_LIMIT,
+            tpmLimit: EMBEDDED_API_KEY_DB_TPM_LIMIT,
             dailyBudgetUsd: null,
             monthlyBudgetUsd: null,
             expiresAt: null,
@@ -187,9 +190,10 @@ function buildKeyHint(token) {
 
 function buildEmbeddedApiKeyRecord(fields = {}) {
     return {
-        id: 'workspace-default',
-        label: 'workspace-default',
-        name: 'workspace-default',
+        ...fields,
+        id: fields.id || 'workspace-default',
+        label: fields.label || 'workspace-default',
+        name: fields.name || fields.label || 'workspace-default',
         status: 'active',
         expires_at: null,
         daily_budget_usd: null,
@@ -197,7 +201,6 @@ function buildEmbeddedApiKeyRecord(fields = {}) {
         rpm_limit: null,
         tpm_limit: null,
         synthetic: true,
-        ...fields,
     };
 }
 
