@@ -208,3 +208,67 @@ function normalizeEmbeddedApiKeyRecord(row) {
         name: row.name || row.label || 'workspace-default',
     });
 }
+
+export function isEmbeddedWorkspaceKeyRecord(row) {
+    if (!row) return false;
+    const metadata = normalizeMetadata(row.metadata);
+    return (
+        row.id === 'workspace-default' ||
+        row.label === 'workspace-default' ||
+        metadata.embedded === true ||
+        metadata.managedBy === 'soul-gateway'
+    );
+}
+
+export function buildEmbeddedApiKeyManagementRecord(row = {}) {
+    const metadata = {
+        ...normalizeMetadata(row.metadata),
+        embedded: true,
+        synthetic: true,
+        managedBy: 'soul-gateway',
+    };
+
+    return {
+        ...row,
+        id: row.id || 'workspace-default',
+        label: row.label || 'workspace-default',
+        name: row.name || row.label || 'workspace-default',
+        status: 'active',
+        key_hint: null,
+        keyHint: null,
+        rpm_limit: null,
+        rpmLimit: null,
+        tpm_limit: null,
+        tpmLimit: null,
+        daily_budget_usd: null,
+        dailyBudgetUsd: null,
+        monthly_budget_usd: null,
+        monthlyBudgetUsd: null,
+        expires_at: null,
+        expiresAt: null,
+        metadata,
+        embedded: true,
+        synthetic: true,
+        managed: true,
+        revocable: false,
+        revealable: false,
+    };
+}
+
+function normalizeMetadata(metadata) {
+    if (!metadata) return {};
+    if (typeof metadata === 'object' && !Array.isArray(metadata)) {
+        return metadata;
+    }
+    if (typeof metadata === 'string') {
+        try {
+            const parsed = JSON.parse(metadata);
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                ? parsed
+                : {};
+        } catch {
+            return {};
+        }
+    }
+    return {};
+}

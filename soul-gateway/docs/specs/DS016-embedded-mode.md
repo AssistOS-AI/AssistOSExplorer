@@ -72,7 +72,7 @@ Consumer agents resolve Soul Gateway's base URL through `resolveSoulGatewayBaseU
 
 The `IDE-plugins/soul-gateway-settings/` plugin registers in Explorer's Settings modal under Plugins. It is `adminOnly: true` — non-admin users do not see it.
 
-The plugin calls protected management routes through the Ploinky router for provider CRUD, model discovery, and API key management. The `workspace-default` embedded key is excluded from key listing.
+The plugin calls protected management routes through the Ploinky router for provider CRUD, model discovery, and API key management. The `workspace-default` embedded key is shown as a managed, non-revealable, non-revocable key so admins can see that Explorer and `llmAssistant` already have an automatic workspace credential. The plaintext derived key is never returned by management routes or rendered by the plugin.
 
 ## Backward Compatibility
 

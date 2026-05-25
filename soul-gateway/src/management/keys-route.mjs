@@ -17,6 +17,11 @@ import { randomBytes } from 'node:crypto';
 import * as keysDao from '../db/dao/api-keys-dao.mjs';
 import { DEFAULTS } from '../config/defaults.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
+import { isEmbeddedMode } from '../config/env.mjs';
+import {
+    buildEmbeddedApiKeyManagementRecord,
+    isEmbeddedWorkspaceKeyRecord,
+} from '../runtime/security/api-key-auth.mjs';
 
 /**
  * GET /management/keys
@@ -33,7 +38,11 @@ export async function handleListKeys(ctx) {
     const keys = await keysDao.list(pool, { status, limit, offset });
 
     // Strip sensitive fields before returning
-    const data = keys.map(stripSensitiveFields);
+    const data = includeEmbeddedWorkspaceKey(
+        keys.map(stripSensitiveFields),
+        appCtx.config.env,
+        status
+    );
 
     sendJson(res, 200, { data });
 }
@@ -208,4 +217,24 @@ function stripSensitiveFields(row) {
     if (!row) return row;
     const { key_hash, key_ciphertext, key_iv, key_auth_tag, ...safe } = row;
     return safe;
+}
+
+function includeEmbeddedWorkspaceKey(keys, env, statusFilter) {
+    if (!isEmbeddedMode(env) || !env.SOUL_GATEWAY_API_KEY) {
+        return keys;
+    }
+
+    const existingIndex = keys.findIndex(isEmbeddedWorkspaceKeyRecord);
+    if (existingIndex >= 0) {
+        return keys.map((key, index) => index === existingIndex
+            ? buildEmbeddedApiKeyManagementRecord(key)
+            : key
+        );
+    }
+
+    if (statusFilter && statusFilter !== 'active') {
+        return keys;
+    }
+
+    return [buildEmbeddedApiKeyManagementRecord(), ...keys];
 }

@@ -535,6 +535,68 @@ describe('management/keys-route', () => {
         assert.equal(body.data[0].key_ciphertext, undefined);
     });
 
+    it('handleListKeys exposes embedded workspace key as managed metadata only', async () => {
+        const pool = createMockPool(async () => ({ rows: [] }));
+        const appCtx = createMockAppCtx({ pool });
+        appCtx.config.env.SOUL_GATEWAY_MODE = 'embedded';
+        appCtx.config.env.SOUL_GATEWAY_API_KEY = 'derived-workspace-secret';
+        const res = createMockRes();
+
+        await handleListKeys({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.data.length, 1);
+        assert.equal(body.data[0].label, 'workspace-default');
+        assert.equal(body.data[0].managed, true);
+        assert.equal(body.data[0].revocable, false);
+        assert.equal(body.data[0].key_hint, null);
+        assert.equal(body.data[0].key_hash, undefined);
+        assert.equal(body.data[0].key_ciphertext, undefined);
+    });
+
+    it('handleListKeys normalizes persisted embedded workspace key without exposing hints', async () => {
+        const mockRow = {
+            id: 'k-default',
+            label: 'workspace-default',
+            status: 'active',
+            key_hash: 'h',
+            key_ciphertext: 'c',
+            key_iv: 'i',
+            key_auth_tag: 't',
+            key_hint: 'secret-hint',
+            rpm_limit: 60,
+            metadata: { embedded: true },
+        };
+        const pool = createMockPool(async () => ({ rows: [mockRow] }));
+        const appCtx = createMockAppCtx({ pool });
+        appCtx.config.env.SOUL_GATEWAY_MODE = 'embedded';
+        appCtx.config.env.SOUL_GATEWAY_API_KEY = 'derived-workspace-secret';
+        const res = createMockRes();
+
+        await handleListKeys({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        const body = parseJsonResponse(res);
+        assert.equal(body.data.length, 1);
+        assert.equal(body.data[0].id, 'k-default');
+        assert.equal(body.data[0].managed, true);
+        assert.equal(body.data[0].key_hint, null);
+        assert.equal(body.data[0].rpm_limit, null);
+        assert.equal(body.data[0].metadata.managedBy, 'soul-gateway');
+    });
+
     it('handleGetKey returns 404 for unknown key', async () => {
         const pool = createMockPool(async () => ({ rows: [] }));
         const appCtx = createMockAppCtx({ pool });

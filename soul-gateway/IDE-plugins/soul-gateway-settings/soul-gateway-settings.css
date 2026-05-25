@@ -163,6 +163,10 @@ soul-gateway-settings .sg-list-item {
     border-radius: 6px;
 }
 
+soul-gateway-settings .sg-list-item-managed {
+    border-color: rgba(137, 180, 250, 0.35);
+}
+
 soul-gateway-settings .sg-item-info {
     flex: 1;
     min-width: 0;
@@ -198,6 +202,11 @@ soul-gateway-settings .sg-badge {
 soul-gateway-settings .sg-badge-active {
     background: rgba(166, 227, 161, 0.15);
     color: #a6e3a1;
+}
+
+soul-gateway-settings .sg-badge-managed {
+    background: rgba(137, 180, 250, 0.16);
+    color: #89b4fa;
 }
 
 soul-gateway-settings .sg-badge-disabled {

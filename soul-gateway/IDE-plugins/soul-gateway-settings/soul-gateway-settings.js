@@ -1,5 +1,84 @@
 const API_BASE = '/services/soul-gateway/management';
 
+export function toDisplayText(value, fallback = '') {
+    if (value == null || value === '') {
+        return fallback;
+    }
+    if (typeof value === 'string') {
+        return value === '[object Object]' ? fallback : value;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+        return String(value);
+    }
+    if (Array.isArray(value)) {
+        const parts = value
+            .map((entry) => toDisplayText(entry))
+            .filter(Boolean);
+        return parts.length ? parts.join(', ') : fallback;
+    }
+    if (typeof value === 'object') {
+        for (const key of ['message', 'detail', 'error', 'type', 'code']) {
+            if (value[key] != null && value[key] !== value) {
+                const text = toDisplayText(value[key]);
+                if (text) {
+                    return text;
+                }
+            }
+        }
+        try {
+            const json = JSON.stringify(value);
+            return json && json !== '{}' ? json : fallback;
+        } catch {
+            return fallback;
+        }
+    }
+    return fallback;
+}
+
+export function getApiErrorMessage(payload, fallback = 'Request failed') {
+    let message;
+    if (payload && typeof payload === 'object' && 'error' in payload) {
+        message = toDisplayText(payload.error, fallback) || fallback;
+    } else {
+        message = toDisplayText(payload, fallback) || fallback;
+    }
+    return normalizeSettingsErrorMessage(message);
+}
+
+export function unwrapDataArray(payload) {
+    const data = payload && typeof payload === 'object' && 'data' in payload
+        ? payload.data
+        : payload;
+    if (Array.isArray(data)) {
+        return data;
+    }
+    if (data && typeof data === 'object') {
+        return Object.values(data);
+    }
+    return [];
+}
+
+export function normalizeSettingsErrorMessage(message) {
+    const text = toDisplayText(message, 'Request failed') || 'Request failed';
+    if (/^(admin session required|admin session expired|invalid admin session)$/i.test(text)) {
+        return 'Explorer admin session required. Reload Explorer and sign in as an admin.';
+    }
+    return text;
+}
+
+export function isWorkspaceDefaultKey(key) {
+    if (!key || typeof key !== 'object') return false;
+    const metadata = key.metadata && typeof key.metadata === 'object' ? key.metadata : {};
+    return (
+        key.label === 'workspace-default' ||
+        key.name === 'workspace-default' ||
+        key.id === 'workspace-default' ||
+        key.managed === true ||
+        metadata.embedded === true ||
+        metadata.managedBy === 'soul-gateway'
+    );
+}
+
 async function apiFetch(path, options = {}) {
     const url = `${API_BASE}${path}`;
     const headers = { ...options.headers };
@@ -8,17 +87,20 @@ async function apiFetch(path, options = {}) {
         options.body = JSON.stringify(options.body);
     }
     const res = await fetch(url, { ...options, headers, credentials: 'include' });
-    if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        let message;
+    const text = await res.text().catch(() => '');
+    let payload = null;
+    if (text) {
         try {
-            message = JSON.parse(text).error || text;
+            payload = JSON.parse(text);
         } catch {
-            message = text || res.statusText;
+            payload = text;
         }
+    }
+    if (!res.ok) {
+        const message = getApiErrorMessage(payload, res.statusText || `HTTP ${res.status}`);
         throw new Error(message);
     }
-    return res.json();
+    return payload ?? {};
 }
 
 class SoulGatewaySettingsPresenter {
@@ -73,7 +155,7 @@ class SoulGatewaySettingsPresenter {
     setStatus(elementId, text, type) {
         const el = this.element.querySelector(`#${elementId}`);
         if (!el) return;
-        el.textContent = text;
+        el.textContent = toDisplayText(text);
         el.className = `sg-status-bar ${type || ''}`;
     }
 
@@ -84,12 +166,12 @@ class SoulGatewaySettingsPresenter {
                 apiFetch('/providers'),
                 apiFetch('/providers/templates'),
             ]);
-            this.providers = providersRes.data || [];
-            this.templates = templatesRes.data || [];
+            this.providers = unwrapDataArray(providersRes);
+            this.templates = unwrapDataArray(templatesRes);
             this.renderProviders();
             this.setStatus('providers-status', '', '');
         } catch (err) {
-            this.setStatus('providers-status', err.message, 'error');
+            this.setStatus('providers-status', getApiErrorMessage(err), 'error');
         }
     }
 
@@ -114,10 +196,13 @@ class SoulGatewaySettingsPresenter {
             info.className = 'sg-item-info';
             const name = document.createElement('div');
             name.className = 'sg-item-name';
-            name.textContent = p.display_name || p.provider_key;
+            name.textContent = toDisplayText(p.display_name || p.provider_key, 'Unnamed provider');
             const detail = document.createElement('div');
             detail.className = 'sg-item-detail';
-            detail.textContent = [p.adapter_key, p.auth_strategy, p.base_url].filter(Boolean).join(' · ');
+            detail.textContent = [p.adapter_key, p.auth_strategy, p.base_url]
+                .map((value) => toDisplayText(value))
+                .filter(Boolean)
+                .join(' · ');
             info.append(name, detail);
 
             const actions = document.createElement('div');
@@ -176,17 +261,17 @@ class SoulGatewaySettingsPresenter {
 
         for (const t of this.templates) {
             const opt = document.createElement('option');
-            opt.value = t.providerKey || t.provider_key || '';
-            opt.textContent = t.displayName || t.display_name || opt.value;
+            opt.value = t.providerKey || t.provider_key || t.key || '';
+            opt.textContent = toDisplayText(t.displayName || t.display_name || opt.value, 'Provider template');
             select.appendChild(opt);
         }
 
         select.onchange = () => {
             const key = select.value;
             if (!key) return;
-            const tpl = this.templates.find(t => (t.providerKey || t.provider_key) === key);
+            const tpl = this.templates.find(t => (t.providerKey || t.provider_key || t.key) === key);
             if (!tpl) return;
-            this.element.querySelector('#provider-key').value = tpl.providerKey || tpl.provider_key || '';
+            this.element.querySelector('#provider-key').value = tpl.providerKey || tpl.provider_key || tpl.key || '';
             this.element.querySelector('#provider-name').value = tpl.displayName || tpl.display_name || '';
             this.element.querySelector('#provider-baseurl').value = tpl.baseUrl || tpl.base_url || '';
             const adapterSel = this.element.querySelector('#provider-adapter');
@@ -264,7 +349,7 @@ class SoulGatewaySettingsPresenter {
             this.cancelProviderForm();
             await this.loadProviders();
         } catch (err) {
-            this.setStatus('providers-status', err.message, 'error');
+            this.setStatus('providers-status', getApiErrorMessage(err), 'error');
         }
     }
 
@@ -274,10 +359,10 @@ class SoulGatewaySettingsPresenter {
             const res = await apiFetch(`/providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
             const msg = res.ok
                 ? `Connection OK (${res.latencyMs}ms)`
-                : `Connection failed: ${res.detail || 'unknown error'}`;
+                : `Connection failed: ${toDisplayText(res.detail, 'unknown error')}`;
             this.setStatus('providers-status', msg, res.ok ? 'success' : 'error');
         } catch (err) {
-            this.setStatus('providers-status', err.message, 'error');
+            this.setStatus('providers-status', getApiErrorMessage(err), 'error');
         }
     }
 
@@ -287,7 +372,7 @@ class SoulGatewaySettingsPresenter {
             const res = await apiFetch(`/providers/${encodeURIComponent(id)}/sync-models`, { method: 'POST' });
             this.setStatus('providers-status', `Synced ${res.synced || 0} models (${res.created || 0} new, ${res.updated || 0} updated).`, 'success');
         } catch (err) {
-            this.setStatus('providers-status', err.message, 'error');
+            this.setStatus('providers-status', getApiErrorMessage(err), 'error');
         }
     }
 
@@ -300,7 +385,7 @@ class SoulGatewaySettingsPresenter {
             this.setStatus('providers-status', 'Provider deleted.', 'success');
             await this.loadProviders();
         } catch (err) {
-            this.setStatus('providers-status', err.message, 'error');
+            this.setStatus('providers-status', getApiErrorMessage(err), 'error');
         }
     }
 
@@ -308,11 +393,11 @@ class SoulGatewaySettingsPresenter {
         this.setStatus('models-status', 'Loading...', 'loading');
         try {
             const res = await apiFetch('/models');
-            this.models = res.data || [];
+            this.models = unwrapDataArray(res);
             this.renderModels();
             this.setStatus('models-status', '', '');
         } catch (err) {
-            this.setStatus('models-status', err.message, 'error');
+            this.setStatus('models-status', getApiErrorMessage(err), 'error');
         }
     }
 
@@ -337,10 +422,13 @@ class SoulGatewaySettingsPresenter {
             info.className = 'sg-item-info';
             const name = document.createElement('div');
             name.className = 'sg-item-name';
-            name.textContent = m.model_key || m.display_name;
+            name.textContent = toDisplayText(m.model_key || m.display_name, 'Unnamed model');
             const detail = document.createElement('div');
             detail.className = 'sg-item-detail';
-            detail.textContent = [m.provider_display_name || m.provider_key, m.provider_model_id].filter(Boolean).join(' · ');
+            detail.textContent = [m.provider_display_name || m.provider_key, m.provider_model_id]
+                .map((value) => toDisplayText(value))
+                .filter(Boolean)
+                .join(' · ');
             info.append(name, detail);
 
             const actions = document.createElement('div');
@@ -360,7 +448,7 @@ class SoulGatewaySettingsPresenter {
                     await apiFetch(`/models/${encodeURIComponent(m.id)}/${action}`, { method: 'POST' });
                     await this.loadModels();
                 } catch (err) {
-                    this.setStatus('models-status', err.message, 'error');
+                    this.setStatus('models-status', getApiErrorMessage(err), 'error');
                 }
             });
             actions.appendChild(toggleBtn);
@@ -374,11 +462,11 @@ class SoulGatewaySettingsPresenter {
         this.setStatus('keys-status', 'Loading...', 'loading');
         try {
             const res = await apiFetch('/keys');
-            this.keys = (res.data || []).filter(k => k.label !== 'workspace-default');
+            this.keys = unwrapDataArray(res);
             this.renderKeys();
             this.setStatus('keys-status', '', '');
         } catch (err) {
-            this.setStatus('keys-status', err.message, 'error');
+            this.setStatus('keys-status', getApiErrorMessage(err), 'error');
         }
     }
 
@@ -396,19 +484,33 @@ class SoulGatewaySettingsPresenter {
         }
 
         for (const k of this.keys) {
-            const statusClass = k.status === 'active' ? 'sg-badge-active' : k.status === 'revoked' ? 'sg-badge-revoked' : 'sg-badge-disabled';
+            const managedWorkspaceKey = isWorkspaceDefaultKey(k);
+            const statusClass = managedWorkspaceKey
+                ? 'sg-badge-managed'
+                : k.status === 'active'
+                    ? 'sg-badge-active'
+                    : k.status === 'revoked'
+                        ? 'sg-badge-revoked'
+                        : 'sg-badge-disabled';
 
             const item = document.createElement('div');
             item.className = 'sg-list-item';
+            if (managedWorkspaceKey) {
+                item.classList.add('sg-list-item-managed');
+            }
 
             const info = document.createElement('div');
             info.className = 'sg-item-info';
             const name = document.createElement('div');
             name.className = 'sg-item-name';
-            name.textContent = k.label || 'Unnamed';
+            name.textContent = managedWorkspaceKey
+                ? 'Workspace default'
+                : toDisplayText(k.label, 'Unnamed');
             const detail = document.createElement('div');
             detail.className = 'sg-item-detail';
-            detail.textContent = `${k.keyHint || k.key_hint || ''} · RPM: ${k.rpmLimit ?? k.rpm_limit ?? '-'} · TPM: ${k.tpmLimit ?? k.tpm_limit ?? '-'}`;
+            detail.textContent = managedWorkspaceKey
+                ? 'Embedded key for Explorer and llmAssistant · secret hidden · no rate limits'
+                : `${toDisplayText(k.keyHint || k.key_hint)} · RPM: ${toDisplayText(k.rpmLimit ?? k.rpm_limit, '-')} · TPM: ${toDisplayText(k.tpmLimit ?? k.tpm_limit, '-')}`;
             info.append(name, detail);
 
             const actions = document.createElement('div');
@@ -416,10 +518,12 @@ class SoulGatewaySettingsPresenter {
 
             const badge = document.createElement('span');
             badge.className = `sg-badge ${statusClass}`;
-            badge.textContent = k.status;
+            badge.textContent = managedWorkspaceKey
+                ? 'managed'
+                : toDisplayText(k.status, 'unknown');
             actions.appendChild(badge);
 
-            if (k.status === 'active') {
+            if (!managedWorkspaceKey && k.status === 'active') {
                 const revokeBtn = document.createElement('button');
                 revokeBtn.className = 'sg-btn sg-btn-sm sg-btn-danger';
                 revokeBtn.textContent = 'Revoke';
@@ -430,7 +534,7 @@ class SoulGatewaySettingsPresenter {
                         this.setStatus('keys-status', 'Key revoked.', 'success');
                         await this.loadKeys();
                     } catch (err) {
-                        this.setStatus('keys-status', err.message, 'error');
+                        this.setStatus('keys-status', getApiErrorMessage(err), 'error');
                     }
                 });
                 actions.appendChild(revokeBtn);
@@ -481,7 +585,7 @@ class SoulGatewaySettingsPresenter {
             }
             await this.loadKeys();
         } catch (err) {
-            this.setStatus('keys-status', err.message, 'error');
+            this.setStatus('keys-status', getApiErrorMessage(err), 'error');
         }
     }
 
