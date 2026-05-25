@@ -62,7 +62,7 @@ Consumer agents resolve Soul Gateway's base URL through `resolveSoulGatewayBaseU
 
 ## Embedded Profile Defaults
 
-- `PORT=7000` (no host port binding — Ploinky maps a random localhost port).
+- `PORT=7000` with `ports: []` so the embedded profile clears the standalone `8042` binding and lets Ploinky map a random localhost port to container port `7000`.
 - `DASHBOARD_PASSWORD=""` (management via router SSO, not password).
 - `OAUTH_ADAPTERS_ENABLED=""` (disabled by default).
 - `TOKEN_REFRESH_INTERVAL_MS=0`, `PRICING_REFRESH_INTERVAL_MS=0` (schedulers disabled).

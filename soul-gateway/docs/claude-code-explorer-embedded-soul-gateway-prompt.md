@@ -81,7 +81,7 @@ Implement in phases and commit only coherent changes. Prefer small, testable cha
   - `OAUTH_ADAPTERS_ENABLED=""`
   - `TOKEN_REFRESH_INTERVAL_MS=0`
   - `PRICING_REFRESH_INTERVAL_MS=0`
-- Do not declare explicit `ports` for embedded mode. It should use the router path and Ploinky's localhost service mapping.
+- Declare `ports: []` for embedded mode so it clears the standalone `8042` binding and uses the router path plus Ploinky's localhost service mapping to container port `7000`.
 - Add root-level `httpServices`:
   - protected `/services/soul-gateway/v1/` -> `/v1/`
   - protected `/services/soul-gateway/management/` -> `/management/`

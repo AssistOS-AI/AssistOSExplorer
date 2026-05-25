@@ -161,7 +161,7 @@ Keep the existing `default` profile stable for standalone production and add exp
 }
 ```
 
-Do not declare `ports` in embedded mode. Ploinky will map random localhost host port to container port `7000`, and the router will use that host port for HTTP service proxying.
+Declare `ports: []` in embedded mode. This clears the standalone profile's `8042` binding, lets Ploinky map a random localhost host port to container port `7000`, and lets the router use that host port for HTTP service proxying.
 
 Add root-level `httpServices`:
 
