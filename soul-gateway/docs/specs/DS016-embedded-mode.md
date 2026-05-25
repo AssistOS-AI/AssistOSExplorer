@@ -34,11 +34,13 @@ The `SOUL_GATEWAY_API_KEY` value is derived deterministically from `PLOINKY_MAST
 
 On startup in embedded mode, `bootstrapLocalLlmProvider` idempotently creates a `local-llm` provider:
 
-- `kind: "local_model"`, `adapterKey: "openai-api"`, `authStrategy: "none"`.
-- `baseUrl` from `LOCAL_LLM_BASE_URL` (default: `http://host.containers.internal:11434/v1`).
-- Attempts model auto-discovery; falls back to a single model from `LOCAL_LLM_MODEL` if discovery fails.
+- `kind: "local_model"`, `adapterKey: "openai-api"`.
+- `authStrategy: "api_key"` when `LOCAL_LLM_API_KEY` is present; otherwise `authStrategy: "none"` for true local no-auth endpoints.
+- `baseUrl` from `LOCAL_LLM_BASE_URL` (default: `https://lmstudio.axiologic.dev/v1`).
+- `LOCAL_LLM_DISCOVERY_MODE=single` registers only `LOCAL_LLM_MODEL` (default: `gemma-3-12b-it`). This is the default because the RAAS LM Studio endpoint may list installed but unloaded models.
+- `LOCAL_LLM_DISCOVERY_MODE=auto` probes the endpoint model list and only falls back to `LOCAL_LLM_MODEL` if discovery returns no models.
 - Skips creation if the provider already exists or if no base URL is configured.
-- Because the embedded local provider uses `authStrategy: "none"`, OpenAI-compatible probes and Achilles request-time dispatch omit the `Authorization` header instead of requiring an API key.
+- When `LOCAL_LLM_API_KEY` is configured, the token is stored as an encrypted provider account and is not exposed to Explorer, `llmAssistant`, plugin code, logs, or static files. Consumer agents still authenticate to Soul Gateway with the derived `SOUL_GATEWAY_API_KEY`.
 
 ## HTTP Services
 

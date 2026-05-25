@@ -178,13 +178,24 @@
                 {
                     "name": "LOCAL_LLM_BASE_URL",
                     "required": false,
-                    "default": "http://host.containers.internal:11434/v1",
-                    "description": "Default OpenAI-compatible endpoint for the local LLM deployment"
+                    "default": "https://lmstudio.axiologic.dev/v1",
+                    "description": "Default OpenAI-compatible endpoint for the embedded local LLM deployment"
                 },
                 {
                     "name": "LOCAL_LLM_MODEL",
                     "required": false,
-                    "default": "gemma4:e2b"
+                    "default": "gemma-3-12b-it"
+                },
+                {
+                    "name": "LOCAL_LLM_API_KEY",
+                    "required": false,
+                    "description": "Optional bearer token or API key for the embedded local LLM endpoint"
+                },
+                {
+                    "name": "LOCAL_LLM_DISCOVERY_MODE",
+                    "required": false,
+                    "default": "single",
+                    "description": "Use single to register only LOCAL_LLM_MODEL, or auto to probe the endpoint model list"
                 },
                 {
                     "name": "ENCRYPTION_KEY",

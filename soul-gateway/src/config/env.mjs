@@ -134,6 +134,11 @@ export function readEnv(processEnv = process.env) {
         SOUL_GATEWAY_API_KEY: str(processEnv.SOUL_GATEWAY_API_KEY, null),
         LOCAL_LLM_BASE_URL: str(processEnv.LOCAL_LLM_BASE_URL, null),
         LOCAL_LLM_MODEL: str(processEnv.LOCAL_LLM_MODEL, null),
+        LOCAL_LLM_API_KEY: str(processEnv.LOCAL_LLM_API_KEY, null),
+        LOCAL_LLM_DISCOVERY_MODE: str(
+            processEnv.LOCAL_LLM_DISCOVERY_MODE,
+            'single'
+        ),
         OAUTH_ADAPTERS_ENABLED: str(processEnv.OAUTH_ADAPTERS_ENABLED, null),
 
         // Built-in search provider keys
