@@ -42,7 +42,7 @@ Preserve these invariants:
 - Request-time LLM inference must still go through `achillesAgentLib`.
 - Soul Gateway may use direct provider HTTP only for lifecycle probes and model discovery.
 - Do not inject `PLOINKY_MASTER_KEY` into agent runtimes.
-- Generated workspace-owned credentials must use manifest `derive: "derived-master"` or the existing Ploinky derived-master helpers.
+- Agent-owned generated credentials must use manifest `generatedSecret: true`; shared generated credentials must use `sharedGeneratedSecret: true`.
 - HTTP services must be manifest-declared. Do not hardcode Soul Gateway service paths in Ploinky core.
 - Ploinky router identity headers are not secure by themselves. Soul Gateway may trust `x-ploinky-auth-info` only in embedded mode and only after verifying the router-issued invocation token for audience `agent:proxies/soul-gateway` and tool `__http_service__`.
 - Do not hardcode `http://router/...`. Use `PLOINKY_ROUTER_URL` or runtime URL resolution when Explorer/llmAssistant need an embedded Soul Gateway URL.
@@ -74,9 +74,9 @@ Implement in phases and commit only coherent changes. Prefer small, testable cha
   - `ALLOW_UNAUTHENTICATED=false`
   - `LOCAL_LLM_BASE_URL=http://host.containers.internal:11434/v1`
   - `LOCAL_LLM_MODEL=gemma4:e2b`
-  - derived `ENCRYPTION_KEY`
-  - derived `ADMIN_SESSION_SIGNING_KEY`
-  - derived `SOUL_GATEWAY_API_KEY` with `deriveName: "workspace-default-api-key"`
+  - generated `ENCRYPTION_KEY`
+  - generated `ADMIN_SESSION_SIGNING_KEY`
+  - workspace-scoped generated `SOUL_GATEWAY_API_KEY`
   - `DASHBOARD_PASSWORD=""`
   - `OAUTH_ADAPTERS_ENABLED=""`
   - `TOKEN_REFRESH_INTERVAL_MS=0`
@@ -121,15 +121,13 @@ Implement in phases and commit only coherent changes. Prefer small, testable cha
 - Update `AssistOSExplorer/explorer/manifest.json`:
   - enable `proxies/soul-gateway`
   - make the admin user's roles explicit with `roles: ["admin"]`
-  - derive `SOUL_GATEWAY_API_KEY` using Soul Gateway's derivation identity:
-    - `deriveRepoName: "proxies"`
-    - `deriveAgentName: "soul-gateway"`
-    - `deriveName: "workspace-default-api-key"`
+  - generate `SOUL_GATEWAY_API_KEY` with `sharedGeneratedSecret: true` so it matches Soul Gateway's embedded key.
   - make `SOUL_GATEWAY_BASE_URL` optional for embedded mode
-- Update `AssistOSExplorer/llmAssistant/manifest.json` with the same derived key and optional base URL.
+- Update `AssistOSExplorer/llmAssistant/manifest.json` with the same workspace-generated key and optional base URL.
 - Update gateway URL resolution:
-  - If `SOUL_GATEWAY_BASE_URL` is set, use it.
-  - If not set and `PLOINKY_ROUTER_URL` exists, default to `${PLOINKY_ROUTER_URL}/services/soul-gateway/v1`.
+  - If `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY=generated`, use `${PLOINKY_ROUTER_URL}/services/soul-gateway/v1` and ignore inherited standalone URL env vars.
+  - If `SOUL_GATEWAY_API_KEY` is explicit, use `SOUL_GATEWAY_BASE_URL` / `SOUL_GATEWAY_URL` when provided.
+  - If `SOUL_GATEWAY_API_KEY` is explicit and no base URL is set, keep the `LLMConfig.json` Soul Gateway URL.
 - Update `AssistOSExplorer/.github/workflows/deploy-skills-explorer.yml`:
   - add/enable the `proxies` repo
   - do not require external Soul Gateway secrets for the embedded default
@@ -177,7 +175,7 @@ Implement in phases and commit only coherent changes. Prefer small, testable cha
 - Update relevant `CLAUDE.md` files for:
   - embedded versus standalone modes
   - router-auth trust requirements
-  - derived embedded API-key contract
+  - generated embedded API-key contract
   - Settings plugin location
   - deployment verification
 
@@ -200,8 +198,8 @@ Minimum expected checks:
 - Explorer tests:
   - plugin aggregation discovers Soul Gateway plugin
   - `adminOnly` plugin settings are hidden/disabled for non-admin
-  - derived `SOUL_GATEWAY_API_KEY` manifests resolve consistently
-  - default embedded URL resolves from `PLOINKY_ROUTER_URL`
+  - generated `SOUL_GATEWAY_API_KEY` manifests resolve consistently
+  - default embedded URL resolves from `PLOINKY_ROUTER_URL` only when the key source is `generated`
 - Deployment smoke:
   1. Standalone: `https://soul.axiologic.dev/healthz` and host-local `http://localhost:8042/healthz` still work.
   2. Embedded: router health works.
@@ -228,7 +226,7 @@ When done, summarize:
 - files changed
 - how standalone compatibility was preserved
 - how embedded mode is selected
-- how the derived API-key contract works
+- how the generated API-key contract works
 - how router admin auth is verified
 - how the default local LLM is provisioned
 - what tests were run

@@ -78,6 +78,33 @@ async function ensureLocalLlmAliases(appCtx, provider, createdModel = null) {
     }
 }
 
+async function reconcileExistingLocalLlmProvider(appCtx, providersDao, provider) {
+    const { config, log, pool } = appCtx;
+    const { env } = config;
+
+    if (!env.LOCAL_LLM_API_KEY) return provider;
+
+    await upsertProviderApiKeyAccount({
+        appCtx,
+        providerId: provider.id,
+        providerDisplayName: provider.display_name || 'Local LLM',
+        apiKey: env.LOCAL_LLM_API_KEY,
+    });
+
+    if (provider.auth_strategy === 'api_key') {
+        log.info('local-llm provider API key account refreshed');
+        return provider;
+    }
+
+    const updated = await providersDao.update(pool, provider.id, {
+        authStrategy: 'api_key',
+    });
+    log.info('local-llm provider auth strategy updated', {
+        authStrategy: 'api_key',
+    });
+    return updated || { ...provider, auth_strategy: 'api_key' };
+}
+
 export async function bootstrapLocalLlmProvider(appCtx) {
     const { config, pool, log } = appCtx;
     const { env } = config;
@@ -88,7 +115,12 @@ export async function bootstrapLocalLlmProvider(appCtx) {
     const providersDao = await import('../db/dao/providers-dao.mjs');
     const existing = await providersDao.findByKey(pool, PROVIDER_KEY);
     if (existing) {
-        await ensureLocalLlmAliases(appCtx, existing);
+        const reconciled = await reconcileExistingLocalLlmProvider(
+            appCtx,
+            providersDao,
+            existing
+        );
+        await ensureLocalLlmAliases(appCtx, reconciled);
         log.info('local-llm provider already exists, skipping bootstrap');
         return;
     }

@@ -51,6 +51,16 @@ function makeAppCtx(
                 providers.push(row);
                 return { rows: [row] };
             }
+            if (sql.includes('UPDATE soul_gateway.providers')) {
+                const found = providers.find(
+                    (provider) => provider.id === params[0]
+                );
+                if (found) {
+                    found.auth_strategy = params[1];
+                    return { rows: [found] };
+                }
+                return { rows: [] };
+            }
             if (sql.includes('INSERT INTO soul_gateway.models')) {
                 const row = {
                     id: nextId++,
@@ -191,6 +201,30 @@ describe('bootstrapLocalLlmProvider', () => {
         assert.equal(providers.length, 1);
         assert.equal(providers[0].id, 99);
         assert.ok(logs.some((l) => l.msg.includes('already exists')));
+    });
+
+    it('upgrades an existing no-auth provider when LOCAL_LLM_API_KEY appears', async () => {
+        const existing = {
+            id: 99,
+            provider_key: 'local-llm',
+            display_name: 'Local LLM',
+            auth_strategy: 'none',
+        };
+        const { appCtx, providers, accounts, logs } = makeAppCtx(
+            { LOCAL_LLM_API_KEY: 'lmstudio-secret-token' },
+            existing,
+        );
+
+        await bootstrapLocalLlmProvider(appCtx);
+
+        assert.equal(providers.length, 1);
+        assert.equal(providers[0].auth_strategy, 'api_key');
+        assert.equal(accounts.length, 1);
+        assert.equal(accounts[0].provider_id, 99);
+        assert.equal(accounts[0].auth_type, 'api_key');
+        assert.ok(
+            logs.some((l) => l.msg.includes('auth strategy updated'))
+        );
     });
 
     it('creates local aliases for an existing provider model', async () => {

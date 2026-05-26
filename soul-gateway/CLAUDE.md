@@ -16,7 +16,7 @@ Read the project specs before changing behavior:
 Soul Gateway runs in two manifest-selected modes:
 
 - **Standalone** — the production mode at `soul.axiologic.dev`. Port-bound, dashboard-password/API-key authenticated, externally reachable. Background schedulers enabled.
-- **Embedded** — started as a dependency of another Ploinky agent (typically Explorer). Auth delegates to the Ploinky router via `x-ploinky-auth-info` + invocation JWT verification. Consumer agents derive the same `SOUL_GATEWAY_API_KEY` via cross-agent `derived-master`. Management is through the `soul-gateway-settings` IDE plugin (admin-only). See `docs/specs/DS016-embedded-mode.md` for the full contract.
+- **Embedded** — started as a dependency of another Ploinky agent (typically Explorer). Auth delegates to the Ploinky router via `x-ploinky-auth-info` + invocation JWT verification. Consumer agents receive the same workspace-scoped generated `SOUL_GATEWAY_API_KEY`. Management is through the `soul-gateway-settings` IDE plugin (admin-only). See `docs/specs/DS016-embedded-mode.md` for the full contract.
 
 Profile selection is workspace-wide via `ploinky profile <name>`. The `embedded` and `standalone` profiles are declared in `manifest.json`.
 

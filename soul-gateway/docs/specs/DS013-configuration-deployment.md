@@ -100,9 +100,11 @@ The shared Achilles LLM layer supports two configuration modes:
 
 ### Soul Gateway discovery mode
 
-Driven by `SOUL_GATEWAY_API_KEY` and `SOUL_GATEWAY_URL` / `SOUL_GATEWAY_BASE_URL`. When these env vars are set, `achillesAgentLib` routes all LLM traffic through the configured Soul Gateway instance — the agent running inside a container (or a test harness, or any other consumer) authenticates with its soul-gateway bearer and lets the gateway handle provider selection, rate limiting, budgeting, and observability.
+Driven by `SOUL_GATEWAY_API_KEY` and optionally `SOUL_GATEWAY_URL` / `SOUL_GATEWAY_BASE_URL`. When an explicit API key is set, `achillesAgentLib` routes all LLM traffic through the standalone Soul Gateway instance — the agent running inside a container (or a test harness, or any other consumer) authenticates with its soul-gateway bearer and lets the gateway handle provider selection, rate limiting, budgeting, and observability. A key-only setup uses the `LLMConfig.json` Soul Gateway URL; URL env vars override that default only for explicit or unmarked keys.
 
 This is the production mode for everything that sits behind Soul Gateway. The consumer doesn't need to know which upstream provider is actually serving the request.
+
+For Explorer embedded deployments, consumer agents start with a workspace-generated `SOUL_GATEWAY_API_KEY`, `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY=generated`, and an empty `SOUL_GATEWAY_BASE_URL`, which makes Achilles discover the embedded router service. While the key source is `generated`, Achilles ignores inherited standalone URL env vars so generated keys stay paired with the embedded router. Operators may still force those consumers to use a standalone gateway by providing `SOUL_GATEWAY_API_KEY`; Achilles treats that key as explicit and uses the `LLMConfig.json` Soul Gateway URL unless `SOUL_GATEWAY_BASE_URL` / `SOUL_GATEWAY_URL` is also explicit.
 
 ### Direct-provider mode
 
@@ -198,14 +200,16 @@ Used when Soul Gateway runs as a dependency of another Ploinky agent (typically 
 - `TRUST_PLOINKY_ROUTER_AUTH=true` — the `requireAdmin` middleware accepts Ploinky router identity via `x-ploinky-auth-info` after verifying the invocation JWT.
 - `DASHBOARD_PASSWORD=""` — management access is through router SSO, not password.
 - `TOKEN_REFRESH_INTERVAL_MS=0`, `PRICING_REFRESH_INTERVAL_MS=0` — background schedulers disabled.
-- `ENCRYPTION_KEY` and `ADMIN_SESSION_SIGNING_KEY` are derived from `PLOINKY_MASTER_KEY` via `derive: "derived-master"`.
-- `SOUL_GATEWAY_API_KEY` is derived with `deriveName: "workspace-default-api-key"` so consumer agents can derive the same value using `deriveRepoName`/`deriveAgentName`.
-- The embedded `/services/soul-gateway/v1/` router service uses router `auth: "none"` because sibling agents authenticate with the derived Soul Gateway API key; management routes remain router-protected.
+- `ENCRYPTION_KEY` and `ADMIN_SESSION_SIGNING_KEY` are agent-scoped generated secrets.
+- `SOUL_GATEWAY_API_KEY` is a workspace-scoped generated secret so consumer agents receive the same value by env name. Ploinky injects `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY` so Achilles can distinguish generated embedded credentials from explicit standalone credentials.
+- The embedded `/services/soul-gateway/v1/` router service uses router `auth: "none"` because sibling agents authenticate with the generated Soul Gateway API key; management routes remain router-protected.
 - `LOCAL_LLM_BASE_URL` defaults to `https://lmstudio.axiologic.dev/v1` and `LOCAL_LLM_MODEL` defaults to `gemma-3-12b-it` for embedded local LLM bootstrap.
 - `LOCAL_LLM_DISCOVERY_MODE=single` registers only the configured model by default. Use `auto` only when the endpoint can reliably serve every model it advertises.
 - `LOCAL_LLM_ALIASES` defaults to `fast,axl/fast,plan,code,write,deep,ultra` so existing Explorer-adjacent agents that request Achilles default models resolve to the embedded local model out of the box.
 - `LOCAL_LLM_API_KEY` is optional and deployment-supplied. When present, it is stored as an encrypted provider account; when absent, the embedded provider uses no-auth local endpoint semantics.
+- If `LOCAL_LLM_API_KEY` is added after the first embedded startup, the next startup reconciles the existing `local-llm` provider by storing or refreshing the encrypted account and upgrading the provider auth strategy to `api_key`.
 - `OAUTH_ADAPTERS_ENABLED=""` — OAuth adapters disabled by default.
+- Embedded generated-secret migration intentionally does not preserve old embedded encrypted provider/account data. Existing embedded workspaces should re-enter provider credentials after upgrade if they used the old derived-secret labels.
 
 Profile selection is workspace-wide via `ploinky profile <name>`. See DS016 for the full embedded mode contract.
 

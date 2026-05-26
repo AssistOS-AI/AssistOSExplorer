@@ -28,7 +28,7 @@ Router-authenticated management writes do not require Soul Gateway's dashboard C
 
 In embedded mode, if the bearer token matches `SOUL_GATEWAY_API_KEY`, Soul Gateway authorizes a `workspace-default` key with no budget or rate limits. When Postgres is configured, the key is idempotently persisted to `api_keys` so request sessions, budgets, and audit rows have a real FK-compatible key id. When no database is configured, the runtime falls back to an in-memory synthetic record. The comparison uses `timingSafeEqual`.
 
-The `SOUL_GATEWAY_API_KEY` value is derived deterministically from `PLOINKY_MASTER_KEY` using the `derive: "derived-master"` manifest mechanism with `deriveName: "workspace-default-api-key"`. Consumer agents (Explorer, llmAssistant) derive the same value by specifying `deriveRepoName: "proxies"` and `deriveAgentName: "soul-gateway"`.
+The `SOUL_GATEWAY_API_KEY` value is a workspace-scoped generated secret produced deterministically by Ploinky's generated-secret model. Soul Gateway and consumer agents declare `sharedGeneratedSecret: true`, so they share by the `SOUL_GATEWAY_API_KEY` env name without custom derivation fields.
 
 ## Local LLM Bootstrap
 
@@ -41,7 +41,8 @@ On startup in embedded mode, `bootstrapLocalLlmProvider` idempotently creates a 
 - `LOCAL_LLM_DISCOVERY_MODE=auto` probes the endpoint model list and only falls back to `LOCAL_LLM_MODEL` if discovery returns no models.
 - `LOCAL_LLM_ALIASES` defaults to `fast,axl/fast,plan,code,write,deep,ultra` and maps Achilles default model names to the embedded local model so Explorer-adjacent agents work without custom model configuration.
 - Skips creation if the provider already exists or if no base URL is configured.
-- When `LOCAL_LLM_API_KEY` is configured, the token is stored as an encrypted provider account and is not exposed to Explorer, `llmAssistant`, plugin code, logs, or static files. Consumer agents still authenticate to Soul Gateway with the derived `SOUL_GATEWAY_API_KEY`.
+- If the provider already exists and `LOCAL_LLM_API_KEY` is later configured, startup stores or refreshes the encrypted API-key account and upgrades the provider auth strategy to `api_key`. This lets a workspace recover from an initial no-auth bootstrap without deleting the provider or database.
+- When `LOCAL_LLM_API_KEY` is configured, the token is stored as an encrypted provider account and is not exposed to Explorer, `llmAssistant`, plugin code, logs, or static files. Consumer agents still authenticate to Soul Gateway with the workspace-generated `SOUL_GATEWAY_API_KEY`.
 
 ## HTTP Services
 
@@ -59,9 +60,10 @@ The `/v1/` route intentionally does not require router login because agent calle
 
 Consumer agents resolve Soul Gateway's base URL through `resolveSoulGatewayBaseURL()` in achillesAgentLib:
 
-1. `SOUL_GATEWAY_BASE_URL` (explicit, highest priority).
-2. `SOUL_GATEWAY_URL` (legacy alias).
-3. `${PLOINKY_ROUTER_URL}/services/soul-gateway/v1` (embedded auto-discovery).
+- If `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY=generated`, Achilles treats the key as an embedded workspace key and uses `${PLOINKY_ROUTER_URL}/services/soul-gateway/v1`. In this state, inherited `SOUL_GATEWAY_BASE_URL` / `SOUL_GATEWAY_URL` values are ignored so a generated embedded key is never sent to a standalone gateway by accident.
+- If `SOUL_GATEWAY_API_KEY` is explicit or unmarked, Achilles treats it as a standalone credential. `SOUL_GATEWAY_BASE_URL` has highest priority, `SOUL_GATEWAY_URL` remains the legacy alias, and key-only setups keep the `LLMConfig.json` Soul Gateway URL.
+
+Explorer-adjacent consumers normally receive the embedded workspace-generated `SOUL_GATEWAY_API_KEY` plus `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY=generated`, so Achilles uses the router service URL. If an operator provides `SOUL_GATEWAY_API_KEY` through workspace vars, process env, `.env`, or deployment injection, Ploinky marks the source as `explicit`; Achilles then keeps the `LLMConfig.json` Soul Gateway URL unless `SOUL_GATEWAY_BASE_URL` / `SOUL_GATEWAY_URL` is also explicit. This preserves the developer convention where a local `.env` key is enough to use the standalone gateway.
 
 ## Embedded Profile Defaults
 
@@ -69,17 +71,17 @@ Consumer agents resolve Soul Gateway's base URL through `resolveSoulGatewayBaseU
 - `DASHBOARD_PASSWORD=""` (management via router SSO, not password).
 - `OAUTH_ADAPTERS_ENABLED=""` (disabled by default).
 - `TOKEN_REFRESH_INTERVAL_MS=0`, `PRICING_REFRESH_INTERVAL_MS=0` (schedulers disabled).
-- `ENCRYPTION_KEY` and `ADMIN_SESSION_SIGNING_KEY` derived from master key.
+- `ENCRYPTION_KEY` and `ADMIN_SESSION_SIGNING_KEY` are agent-scoped generated secrets.
 
 ## Settings Plugin
 
 The `IDE-plugins/soul-gateway-settings/` plugin registers in Explorer's Settings modal under Plugins. It is `adminOnly: true` — non-admin users do not see it.
 
-The plugin calls protected management routes through the Ploinky router for provider CRUD, model discovery, and API key management. The `workspace-default` embedded key is shown as a managed, non-revealable, non-revocable key so admins can see that Explorer and `llmAssistant` already have an automatic workspace credential. The plaintext derived key is never returned by management routes or rendered by the plugin.
+The plugin calls protected management routes through the Ploinky router for provider CRUD, model discovery, and API key management. The `workspace-default` embedded key is shown as a managed, non-revealable, non-revocable key so admins can see that Explorer and `llmAssistant` already have an automatic workspace credential. The plaintext generated key is never returned by management routes or rendered by the plugin.
 
 ## Backward Compatibility
 
 - Standalone deployments are unaffected. Existing API keys, dashboard login, Postgres storage, port binding, and deploy workflows continue unchanged.
 - Router auth is gated by `SOUL_GATEWAY_MODE=embedded` and `TRUST_PLOINKY_ROUTER_AUTH=true`.
 - Adding `httpServices` is inert unless the agent runs behind a Ploinky router.
-- Rotating `PLOINKY_MASTER_KEY` changes the derived API key; Explorer and Soul Gateway derive it in sync.
+- Rotating `PLOINKY_MASTER_KEY` changes the generated API key; Explorer and Soul Gateway derive it in sync. The generated-secret migration intentionally does not preserve old embedded encrypted provider/account data; existing embedded workspaces should re-enter provider credentials after upgrade if needed.

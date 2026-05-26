@@ -206,20 +206,17 @@
                 {
                     "name": "ENCRYPTION_KEY",
                     "required": true,
-                    "derive": "derived-master",
-                    "deriveName": "soul-gateway-encryption-key"
+                    "generatedSecret": true
                 },
                 {
                     "name": "ADMIN_SESSION_SIGNING_KEY",
                     "required": true,
-                    "derive": "derived-master",
-                    "deriveName": "soul-gateway-admin-session"
+                    "generatedSecret": true
                 },
                 {
                     "name": "SOUL_GATEWAY_API_KEY",
                     "required": true,
-                    "derive": "derived-master",
-                    "deriveName": "workspace-default-api-key"
+                    "sharedGeneratedSecret": true
                 },
                 {
                     "name": "DASHBOARD_PASSWORD",
