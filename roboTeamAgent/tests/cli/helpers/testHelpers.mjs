@@ -339,7 +339,7 @@ Return JSON: {"intent": "greet|calculate|help", "skill": "greeter|calculator|hel
     try {
         const routing = await llmAgent.executePrompt(routingPrompt, {
             responseShape: 'json',
-            mode: 'fast',
+            model: 'fast',
         });
 
         if (routing.skill && specs.allowedSkills.includes(routing.skill)) {
