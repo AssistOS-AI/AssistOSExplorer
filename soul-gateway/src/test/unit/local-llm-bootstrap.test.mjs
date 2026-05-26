@@ -3,6 +3,16 @@ import assert from 'node:assert/strict';
 
 import { bootstrapLocalLlmProvider } from '../../bootstrap/local-llm-bootstrap.mjs';
 
+const DEFAULT_LOCAL_LLM_ALIASES = [
+    'fast',
+    'axl/fast',
+    'plan',
+    'code',
+    'write',
+    'deep',
+    'ultra',
+];
+
 function makeAppCtx(
     envOverrides = {},
     existingProvider = null,
@@ -21,7 +31,7 @@ function makeAppCtx(
         LOCAL_LLM_MODEL: 'gemma-3-12b-it',
         LOCAL_LLM_API_KEY: null,
         LOCAL_LLM_DISCOVERY_MODE: 'single',
-        LOCAL_LLM_ALIASES: 'fast,axl/fast',
+        LOCAL_LLM_ALIASES: DEFAULT_LOCAL_LLM_ALIASES.join(','),
         ...envOverrides,
     };
 
@@ -206,7 +216,7 @@ describe('bootstrapLocalLlmProvider', () => {
         assert.equal(models.length, 1);
         assert.deepEqual(
             aliases.map((row) => row.alias),
-            ['fast', 'axl/fast'],
+            DEFAULT_LOCAL_LLM_ALIASES,
         );
         assert.ok(aliases.every((row) => row.model_id === 'model-99'));
     });
@@ -243,7 +253,7 @@ describe('bootstrapLocalLlmProvider', () => {
         assert.equal(models[0].display_name, 'gemma-3-12b-it');
         assert.deepEqual(
             aliases.map((row) => row.alias),
-            ['fast', 'axl/fast'],
+            DEFAULT_LOCAL_LLM_ALIASES,
         );
         assert.ok(aliases.every((row) => row.model_id === models[0].id));
         assert.ok(logs.some((l) => l.msg.includes('fallback model')));

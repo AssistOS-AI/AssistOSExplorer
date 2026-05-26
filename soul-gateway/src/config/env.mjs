@@ -139,7 +139,10 @@ export function readEnv(processEnv = process.env) {
             processEnv.LOCAL_LLM_DISCOVERY_MODE,
             'single'
         ),
-        LOCAL_LLM_ALIASES: str(processEnv.LOCAL_LLM_ALIASES, 'fast,axl/fast'),
+        LOCAL_LLM_ALIASES: str(
+            processEnv.LOCAL_LLM_ALIASES,
+            'fast,axl/fast,plan,code,write,deep,ultra'
+        ),
         OAUTH_ADAPTERS_ENABLED: str(processEnv.OAUTH_ADAPTERS_ENABLED, null),
 
         // Built-in search provider keys

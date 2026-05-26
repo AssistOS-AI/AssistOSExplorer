@@ -39,7 +39,7 @@ On startup in embedded mode, `bootstrapLocalLlmProvider` idempotently creates a 
 - `baseUrl` from `LOCAL_LLM_BASE_URL` (default: `https://lmstudio.axiologic.dev/v1`).
 - `LOCAL_LLM_DISCOVERY_MODE=single` registers only `LOCAL_LLM_MODEL` (default: `gemma-3-12b-it`). This is the default because the RAAS LM Studio endpoint may list installed but unloaded models.
 - `LOCAL_LLM_DISCOVERY_MODE=auto` probes the endpoint model list and only falls back to `LOCAL_LLM_MODEL` if discovery returns no models.
-- `LOCAL_LLM_ALIASES` defaults to `fast,axl/fast` and maps those legacy agent model names to the embedded local model so Explorer-adjacent agents that default to `fast` work without custom model configuration.
+- `LOCAL_LLM_ALIASES` defaults to `fast,axl/fast,plan,code,write,deep,ultra` and maps Achilles default model names to the embedded local model so Explorer-adjacent agents work without custom model configuration.
 - Skips creation if the provider already exists or if no base URL is configured.
 - When `LOCAL_LLM_API_KEY` is configured, the token is stored as an encrypted provider account and is not exposed to Explorer, `llmAssistant`, plugin code, logs, or static files. Consumer agents still authenticate to Soul Gateway with the derived `SOUL_GATEWAY_API_KEY`.
 

@@ -203,7 +203,7 @@ Used when Soul Gateway runs as a dependency of another Ploinky agent (typically 
 - The embedded `/services/soul-gateway/v1/` router service uses router `auth: "none"` because sibling agents authenticate with the derived Soul Gateway API key; management routes remain router-protected.
 - `LOCAL_LLM_BASE_URL` defaults to `https://lmstudio.axiologic.dev/v1` and `LOCAL_LLM_MODEL` defaults to `gemma-3-12b-it` for embedded local LLM bootstrap.
 - `LOCAL_LLM_DISCOVERY_MODE=single` registers only the configured model by default. Use `auto` only when the endpoint can reliably serve every model it advertises.
-- `LOCAL_LLM_ALIASES` defaults to `fast,axl/fast` so existing Explorer-adjacent agents that request `fast` resolve to the embedded local model out of the box.
+- `LOCAL_LLM_ALIASES` defaults to `fast,axl/fast,plan,code,write,deep,ultra` so existing Explorer-adjacent agents that request Achilles default models resolve to the embedded local model out of the box.
 - `LOCAL_LLM_API_KEY` is optional and deployment-supplied. When present, it is stored as an encrypted provider account; when absent, the embedded provider uses no-auth local endpoint semantics.
 - `OAUTH_ADAPTERS_ENABLED=""` — OAuth adapters disabled by default.
 

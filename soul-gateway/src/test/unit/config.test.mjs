@@ -13,6 +13,10 @@ describe('readEnv', () => {
         assert.equal(env.DEFAULT_DAILY_BUDGET_USD, 2.0);
         assert.equal(env.DATABASE_URL, null);
         assert.equal(env.SHUTDOWN_GRACE_MS, 30_000);
+        assert.equal(
+            env.LOCAL_LLM_ALIASES,
+            'fast,axl/fast,plan,code,write,deep,ultra'
+        );
     });
 
     it('reads overrides from env', () => {

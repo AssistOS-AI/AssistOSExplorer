@@ -200,7 +200,7 @@
                 {
                     "name": "LOCAL_LLM_ALIASES",
                     "required": false,
-                    "default": "fast,axl/fast",
+                    "default": "fast,axl/fast,plan,code,write,deep,ultra",
                     "description": "Comma-separated aliases mapped to the embedded local LLM model for legacy agent defaults"
                 },
                 {
