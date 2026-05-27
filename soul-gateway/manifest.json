@@ -1,8 +1,8 @@
 {
     "container": "node:20-slim",
-    "agent": "bash /code/startup-v2.sh",
+    "agent": "bash /code/startup.sh",
     "cli": "bash /code/cli.sh",
-    "about": "Soul Gateway — LLM proxy with Soul Family policies, full content logging, and operations dashboard",
+    "about": "Soul Gateway — Ploinky-managed LLM proxy with Soul Family policies, full content logging, and AchillesIDE settings",
     "enable": ["postgres"],
     "readiness": {
         "protocol": "tcp"
@@ -29,7 +29,7 @@
             "env": {
                 "PORT": {
                     "required": false,
-                    "default": "8042"
+                    "default": "7000"
                 },
                 "UPSTREAM_URL": {
                     "required": false,
@@ -70,10 +70,60 @@
                     "default": "",
                     "description": "API key for authenticating with cliproxyapi upstream"
                 },
-                "DASHBOARD_PASSWORD": {
+                "SOUL_GATEWAY_API_KEY": {
+                    "required": true,
+                    "sharedGeneratedSecret": true,
+                    "description": "Managed workspace API key accepted by /v1/*"
+                },
+                "SOUL_GATEWAY_PROVIDER_API_KEY": {
+                    "varName": "SOUL_GATEWAY_API_KEY",
                     "required": false,
                     "default": "",
-                    "description": "Password for dashboard access (empty = no auth)"
+                    "description": "Optional API key for bootstrapping the remote Soul Gateway as a normal provider; sourced from operator SOUL_GATEWAY_API_KEY while the local SOUL_GATEWAY_API_KEY remains generated"
+                },
+                "SOUL_GATEWAY_PROVIDER_BASE_URL": {
+                    "required": false,
+                    "default": "https://soul.axiologic.dev/v1",
+                    "description": "OpenAI-compatible base URL for the remote Soul Gateway provider"
+                },
+                "SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE": {
+                    "required": false,
+                    "default": "auto",
+                    "description": "Use auto to sync the remote Soul Gateway /models at startup, or off to create only the provider/account"
+                },
+                "SOUL_GATEWAY_PROVIDER_ALIASES": {
+                    "required": false,
+                    "default": "fast,axl/fast,plan,code,write,deep,ultra",
+                    "description": "Comma-separated aliases mirrored to same-named remote Soul Gateway provider models when discovered"
+                },
+                "ALLOW_UNAUTHENTICATED": {
+                    "required": false,
+                    "default": "false",
+                    "description": "Development-only switch that disables /v1/* API key auth"
+                },
+                "LOCAL_LLM_BASE_URL": {
+                    "required": false,
+                    "default": "",
+                    "description": "OpenAI-compatible endpoint for explicitly enabled local LLM bootstrap"
+                },
+                "LOCAL_LLM_MODEL": {
+                    "required": false,
+                    "default": ""
+                },
+                "LOCAL_LLM_API_KEY": {
+                    "required": false,
+                    "default": "",
+                    "description": "Optional bearer token or API key for the local LLM endpoint"
+                },
+                "LOCAL_LLM_DISCOVERY_MODE": {
+                    "required": false,
+                    "default": "single",
+                    "description": "Use single to register only LOCAL_LLM_MODEL, or auto to probe the endpoint model list"
+                },
+                "LOCAL_LLM_ALIASES": {
+                    "required": false,
+                    "default": "fast,axl/fast,plan,code,write,deep,ultra",
+                    "description": "Comma-separated aliases mapped to LOCAL_LLM_MODEL for legacy agent defaults"
                 },
                 "AXIOLOGIC_PROXY_API_KEY": {
                     "required": false,
@@ -144,102 +194,25 @@
                     "required": false,
                     "default": "",
                     "description": "Optional persistent Chromium user data directory"
+                },
+                "OAUTH_ADAPTERS_ENABLED": {
+                    "required": false,
+                    "default": "",
+                    "description": "Comma-separated OAuth adapters to enable"
+                },
+                "TOKEN_REFRESH_INTERVAL_MS": {
+                    "required": false,
+                    "default": "0",
+                    "description": "Set a positive interval to enable token refresh scheduling"
+                },
+                "PRICING_REFRESH_INTERVAL_MS": {
+                    "required": false,
+                    "default": "0",
+                    "description": "Set a positive interval to enable pricing refresh scheduling"
                 }
             },
-            "ports": ["0.0.0.0:8042:8042"],
-            "install": "bash /code/install-v2.sh"
-        },
-        "standalone": {
-            "ports": ["0.0.0.0:8042:8042"]
-        },
-        "embedded": {
             "ports": [],
-            "env": [
-                {
-                    "name": "PORT",
-                    "required": false,
-                    "default": "7000"
-                },
-                {
-                    "name": "SOUL_GATEWAY_MODE",
-                    "required": false,
-                    "default": "embedded"
-                },
-                {
-                    "name": "TRUST_PLOINKY_ROUTER_AUTH",
-                    "required": false,
-                    "default": "true"
-                },
-                {
-                    "name": "ALLOW_UNAUTHENTICATED",
-                    "required": false,
-                    "default": "false"
-                },
-                {
-                    "name": "LOCAL_LLM_BASE_URL",
-                    "required": false,
-                    "default": "https://lmstudio.axiologic.dev/v1",
-                    "description": "Default OpenAI-compatible endpoint for the embedded local LLM deployment"
-                },
-                {
-                    "name": "LOCAL_LLM_MODEL",
-                    "required": false,
-                    "default": "gemma-3-12b-it"
-                },
-                {
-                    "name": "LOCAL_LLM_API_KEY",
-                    "required": false,
-                    "description": "Optional bearer token or API key for the embedded local LLM endpoint"
-                },
-                {
-                    "name": "LOCAL_LLM_DISCOVERY_MODE",
-                    "required": false,
-                    "default": "single",
-                    "description": "Use single to register only LOCAL_LLM_MODEL, or auto to probe the endpoint model list"
-                },
-                {
-                    "name": "LOCAL_LLM_ALIASES",
-                    "required": false,
-                    "default": "fast,axl/fast,plan,code,write,deep,ultra",
-                    "description": "Comma-separated aliases mapped to the embedded local LLM model for legacy agent defaults"
-                },
-                {
-                    "name": "ENCRYPTION_KEY",
-                    "required": true,
-                    "generatedSecret": true
-                },
-                {
-                    "name": "ADMIN_SESSION_SIGNING_KEY",
-                    "required": true,
-                    "generatedSecret": true
-                },
-                {
-                    "name": "SOUL_GATEWAY_API_KEY",
-                    "required": true,
-                    "sharedGeneratedSecret": true
-                },
-                {
-                    "name": "DASHBOARD_PASSWORD",
-                    "required": false,
-                    "default": ""
-                },
-                {
-                    "name": "OAUTH_ADAPTERS_ENABLED",
-                    "required": false,
-                    "default": ""
-                },
-                {
-                    "name": "TOKEN_REFRESH_INTERVAL_MS",
-                    "required": false,
-                    "default": "0"
-                },
-                {
-                    "name": "PRICING_REFRESH_INTERVAL_MS",
-                    "required": false,
-                    "default": "0"
-                }
-            ],
-            "install": "bash /code/install-v2.sh"
+            "install": "bash /code/install.sh"
         }
     }
 }

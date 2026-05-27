@@ -411,6 +411,67 @@ describe('auto-provisioner.autoProvisionModels', () => {
         );
     });
 
+    it('drops out-of-range discovery pricing before persisting models', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [
+                    {
+                        modelId: 'remote-fast',
+                        displayName: 'Remote Fast',
+                        pricingMode: 'token',
+                        inputPricePerMillion: 0.25,
+                        outputPricePerMillion: 1_000_000,
+                    },
+                    {
+                        modelId: 'remote-request',
+                        displayName: 'Remote Request',
+                        pricing: {
+                            mode: 'request',
+                            requestPriceUsd: 2_000_000,
+                        },
+                    },
+                ];
+            },
+        };
+        const created = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [],
+            create: async (_pool, row) => {
+                created.push(row);
+                return { id: `new-${created.length}`, ...row };
+            },
+            update: async () => {
+                throw new Error('should not update rows');
+            },
+            disable: async () => {
+                throw new Error('should not disable rows');
+            },
+        };
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'openai-api': backendModule }),
+            credentialManager: createMockCredentialManager({
+                secret: 'sk-test',
+            }),
+            log,
+        });
+
+        await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(appCtx, {
+                id: 'provider-remote',
+                provider_key: 'soul-gateway',
+                adapter_key: 'openai-api',
+            })
+        );
+
+        assert.equal(created.length, 2);
+        assert.equal(created[0].pricingMode, 'external_directory');
+        assert.equal(created[0].inputPricePerMillion, null);
+        assert.equal(created[0].outputPricePerMillion, null);
+        assert.equal(created[1].pricingMode, 'external_directory');
+        assert.equal(created[1].requestPriceUsd, null);
+    });
+
     it('keys inserted models as `${provider_key}/${modelId}` to match dashboard convention', async () => {
         const backendModule = {
             async discoverModels() {

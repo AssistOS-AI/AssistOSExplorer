@@ -1,39 +1,50 @@
 #!/bin/bash
-APP_DIR="/app"
-
 if [ $# -eq 0 ]; then
     echo "Soul Gateway CLI"
     echo ""
     echo "Usage:"
     echo "  status          Show gateway status"
-    echo "  families        List soul families"
     echo "  keys            List API keys"
     echo "  models          List model configs"
     echo "  logs [n]        Show recent logs (default: 20)"
     echo "  health          Check health endpoint"
     echo ""
+    echo "Environment:"
+    echo "  GATEWAY_URL=http://localhost:8080"
+    echo "  PLOINKY_AUTH_COOKIE='ploinky_jwt=...' for management commands"
     exit 0
 fi
 
-PORT="${PORT:-8042}"
-BASE="http://localhost:$PORT"
+GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
+HEALTH_URL="$GATEWAY_URL/public-services/soul-gateway-health/"
+MANAGEMENT_BASE="$GATEWAY_URL/services/soul-gateway/management"
+
+pretty_json() {
+    node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"
+}
+
+management_get() {
+    if [ -z "${PLOINKY_AUTH_COOKIE:-}" ]; then
+        echo "PLOINKY_AUTH_COOKIE is required for management commands."
+        echo "Authenticate through Ploinky and pass the router cookie, or use the AchillesIDE settings dashboard."
+        exit 1
+    fi
+    curl -s -H "Cookie: ${PLOINKY_AUTH_COOKIE}" "$MANAGEMENT_BASE/$1" | pretty_json
+}
 
 case "$1" in
     status|health)
-        curl -s "$BASE/healthz" | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"
-        ;;
-    families)
-        curl -s "$BASE/api/v1/soul-families" | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"
+        curl -s "$HEALTH_URL" | pretty_json
         ;;
     keys)
-        curl -s "$BASE/api/v1/keys" | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"
+        management_get "keys"
         ;;
     models)
-        curl -s "$BASE/api/v1/models" | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"
+        management_get "models"
         ;;
     logs)
         LIMIT="${2:-20}"
-        curl -s "$BASE/api/v1/logs?limit=$LIMIT" | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"
+        management_get "logs?limit=$LIMIT"
         ;;
     *)
         echo "Unknown command: $1"

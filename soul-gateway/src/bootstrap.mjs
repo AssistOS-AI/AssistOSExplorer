@@ -6,6 +6,7 @@ import { createAppContext } from './core/app-context.mjs';
 import { createPgPool, ensureSchema } from './db/pool.mjs';
 import { createRouter } from './core/path-router.mjs';
 import { createHttpServer } from './core/http-server.mjs';
+import { requireAdmin } from './runtime/security/dashboard-auth.mjs';
 import { runMigrations } from './db/migrator.mjs';
 import { startBackgroundJobs } from './background/scheduler.mjs';
 import {
@@ -22,6 +23,9 @@ import {
     installSnapshotServices,
 } from './bootstrap/service-installers.mjs';
 import { bootstrapLocalLlmProvider } from './bootstrap/local-llm-bootstrap.mjs';
+import {
+    bootstrapSoulGatewayProvider,
+} from './bootstrap/soul-gateway-provider-bootstrap.mjs';
 
 /**
  * Full boot sequence.
@@ -42,6 +46,11 @@ import { bootstrapLocalLlmProvider } from './bootstrap/local-llm-bootstrap.mjs';
 export async function bootstrap() {
     // 1. Config
     const env = readEnv();
+    if (!env.PLOINKY_DERIVED_MASTER_KEY) {
+        throw new Error(
+            'PLOINKY_DERIVED_MASTER_KEY is required for Soul Gateway management auth. Start Soul Gateway as a Ploinky-managed agent.'
+        );
+    }
     const config = buildConfig(env);
     const log = createLogger();
 
@@ -70,6 +79,7 @@ export async function bootstrap() {
     await installBackendCatalogServices(appCtx);
     await installBrowserPoolService(appCtx);
     await installOAuthAdapters(appCtx);
+    await bootstrapSoulGatewayProvider(appCtx);
     await bootstrapLocalLlmProvider(appCtx);
     await reconcileProvidersOnStartup(appCtx);
     await installSnapshotServices(appCtx);
@@ -139,7 +149,12 @@ async function handleHealthFull(ctx) {
     });
 }
 
-function handleSystemMetrics(ctx) {
+async function handleSystemMetrics(ctx) {
+    await requireAdmin(
+        ctx.req,
+        ctx.appCtx.config.env,
+        ctx.appCtx.routerAuth || ctx.appCtx
+    );
     const metrics = ctx.appCtx.services.systemMetrics.collect();
     sendJson(ctx.res, 200, metrics);
 }

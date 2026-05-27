@@ -24,6 +24,14 @@ export async function findByAlias(pool, alias) {
     return rows[0] || null;
 }
 
+export async function updateModel(pool, { alias, modelId }) {
+    const { rows } = await pool.query(
+        `UPDATE ${TABLE} SET model_id = $2 WHERE alias = $1 RETURNING *`,
+        [alias, modelId]
+    );
+    return rows[0] || null;
+}
+
 export async function listByModel(pool, modelId) {
     const { rows } = await pool.query(
         `SELECT * FROM ${TABLE} WHERE model_id = $1 ORDER BY alias ASC`,

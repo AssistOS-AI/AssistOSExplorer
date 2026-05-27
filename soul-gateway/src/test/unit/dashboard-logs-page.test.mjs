@@ -11,7 +11,7 @@ async function loadDashboard(fetchImpl) {
     const storage = new Map();
     const listeners = new Map();
     const window = {
-        location: { hash: '#logs', protocol: 'http:', host: 'localhost:8042' },
+        location: { hash: '#logs', protocol: 'http:', host: 'localhost:7000' },
         addEventListener(type, handler) {
             const handlers = listeners.get(type) || [];
             handlers.push(handler);

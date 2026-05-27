@@ -17,10 +17,9 @@ import { randomBytes } from 'node:crypto';
 import * as keysDao from '../db/dao/api-keys-dao.mjs';
 import { DEFAULTS } from '../config/defaults.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
-import { isEmbeddedMode } from '../config/env.mjs';
 import {
-    buildEmbeddedApiKeyManagementRecord,
-    isEmbeddedWorkspaceKeyRecord,
+    buildWorkspaceDefaultApiKeyManagementRecord,
+    isWorkspaceDefaultKeyRecord,
 } from '../runtime/security/api-key-auth.mjs';
 
 /**
@@ -38,7 +37,7 @@ export async function handleListKeys(ctx) {
     const keys = await keysDao.list(pool, { status, limit, offset });
 
     // Strip sensitive fields before returning
-    const data = includeEmbeddedWorkspaceKey(
+    const data = includeWorkspaceDefaultKey(
         keys.map(stripSensitiveFields),
         appCtx.config.env,
         status
@@ -219,15 +218,15 @@ function stripSensitiveFields(row) {
     return safe;
 }
 
-function includeEmbeddedWorkspaceKey(keys, env, statusFilter) {
-    if (!isEmbeddedMode(env) || !env.SOUL_GATEWAY_API_KEY) {
+function includeWorkspaceDefaultKey(keys, env, statusFilter) {
+    if (!env.SOUL_GATEWAY_API_KEY) {
         return keys;
     }
 
-    const existingIndex = keys.findIndex(isEmbeddedWorkspaceKeyRecord);
+    const existingIndex = keys.findIndex(isWorkspaceDefaultKeyRecord);
     if (existingIndex >= 0) {
         return keys.map((key, index) => index === existingIndex
-            ? buildEmbeddedApiKeyManagementRecord(key)
+            ? buildWorkspaceDefaultApiKeyManagementRecord(key)
             : key
         );
     }
@@ -236,5 +235,5 @@ function includeEmbeddedWorkspaceKey(keys, env, statusFilter) {
         return keys;
     }
 
-    return [buildEmbeddedApiKeyManagementRecord(), ...keys];
+    return [buildWorkspaceDefaultApiKeyManagementRecord(), ...keys];
 }

@@ -6,25 +6,52 @@ import {
 import { performRuntimeRefresh } from '../registry/runtime-refresh.mjs';
 import { enrichModelMetadata } from '../policy/model-metadata-classifier.mjs';
 
+const MAX_DB_NUMERIC_14_8_ABS = 1_000_000;
+
+function normalizeDbPricingNumber(value) {
+    if (value === undefined || value === null || value === '') return null;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    if (numeric < 0 || Math.abs(numeric) >= MAX_DB_NUMERIC_14_8_ABS) {
+        return null;
+    }
+    return numeric;
+}
+
 function getDiscoveryPricing(discovery) {
     const pricing = discovery?.pricing || {};
+    let pricingMode =
+        discovery?.pricingMode ??
+        pricing.mode ??
+        'external_directory';
+    let inputPricePerMillion = normalizeDbPricingNumber(
+        discovery?.inputPricePerMillion ?? pricing.inputPricePerMillion
+    );
+    let outputPricePerMillion = normalizeDbPricingNumber(
+        discovery?.outputPricePerMillion ?? pricing.outputPricePerMillion
+    );
+    let requestPriceUsd = normalizeDbPricingNumber(
+        discovery?.requestPriceUsd ?? pricing.requestPriceUsd
+    );
+
+    if (
+        pricingMode === 'token' &&
+        (inputPricePerMillion === null || outputPricePerMillion === null)
+    ) {
+        pricingMode = 'external_directory';
+        inputPricePerMillion = null;
+        outputPricePerMillion = null;
+    }
+    if (pricingMode === 'request' && requestPriceUsd === null) {
+        pricingMode = 'external_directory';
+        requestPriceUsd = null;
+    }
+
     return {
-        pricingMode:
-            discovery?.pricingMode ??
-            pricing.mode ??
-            'external_directory',
-        inputPricePerMillion:
-            discovery?.inputPricePerMillion ??
-            pricing.inputPricePerMillion ??
-            null,
-        outputPricePerMillion:
-            discovery?.outputPricePerMillion ??
-            pricing.outputPricePerMillion ??
-            null,
-        requestPriceUsd:
-            discovery?.requestPriceUsd ??
-            pricing.requestPriceUsd ??
-            null,
+        pricingMode,
+        inputPricePerMillion,
+        outputPricePerMillion,
+        requestPriceUsd,
     };
 }
 

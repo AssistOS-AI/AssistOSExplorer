@@ -4,8 +4,7 @@
     "component": "soul-gateway-settings",
     "label": "Soul Gateway",
     "tooltip": "Configure Soul Gateway providers and models",
-    "presenter": "SoulGatewaySettings",
     "type": "global",
     "adminOnly": true,
-    "settings": "soul-gateway-settings"
+    "settingsUrl": "/services/soul-gateway/management/"
 }

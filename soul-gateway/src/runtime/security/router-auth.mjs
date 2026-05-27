@@ -1,5 +1,3 @@
-import { isEmbeddedMode } from '../../config/env.mjs';
-
 const EXPECTED_TOOL = '__http_service__';
 
 let _verifyFn = null;
@@ -49,30 +47,32 @@ async function resolveReplayCache(config = {}) {
         if (typeof mod.createMemoryReplayCache === 'function') {
             _replayCache = mod.createMemoryReplayCache({ maxSize: 4096 });
         }
-    } catch {
-        // loadVerifier() reports the actionable error; absence of replay cache
-        // should not mask that path.
+    } catch (err) {
+        throw new RouterAuthError(
+            `Ploinky router replay cache unavailable: ${err?.message || err}`
+        );
+    }
+    if (!_replayCache) {
+        throw new RouterAuthError('Ploinky router replay cache unavailable');
     }
     return _replayCache;
 }
 
 function resolveSecret(config) {
-    const derivedKey = config.env.PLOINKY_DERIVED_MASTER_KEY
-        || process.env.PLOINKY_DERIVED_MASTER_KEY;
+    const derivedKey = config?.env?.PLOINKY_DERIVED_MASTER_KEY;
     if (!derivedKey) {
         throw new RouterAuthError('PLOINKY_DERIVED_MASTER_KEY not configured');
     }
-    return Buffer.from(String(derivedKey).trim(), 'hex');
+    const normalized = String(derivedKey).trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(normalized)) {
+        throw new RouterAuthError(
+            'PLOINKY_DERIVED_MASTER_KEY must be a 64-character hex string'
+        );
+    }
+    return Buffer.from(normalized, 'hex');
 }
 
 export async function authenticateRouterAdmin(req, config) {
-    if (!isEmbeddedMode(config.env)) {
-        return null;
-    }
-    if (!config.env.TRUST_PLOINKY_ROUTER_AUTH) {
-        return null;
-    }
-
     const authInfo = parseAuthInfoHeader(req);
     if (!authInfo) return null;
 
@@ -94,7 +94,7 @@ export async function authenticateRouterAdmin(req, config) {
     const principal = process.env.PLOINKY_AGENT_PRINCIPAL
         || 'agent:proxies/soul-gateway';
 
-    verifyInvocationToken(invocationToken, {
+    await verifyInvocationToken(invocationToken, {
         secret,
         expectedAudience: principal,
         expectedTool: EXPECTED_TOOL,

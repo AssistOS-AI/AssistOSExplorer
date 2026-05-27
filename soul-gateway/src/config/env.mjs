@@ -5,7 +5,7 @@
 export function readEnv(processEnv = process.env) {
     const env = {
         // Server
-        PORT: int(processEnv.PORT, 8042),
+        PORT: int(processEnv.PORT, 7000),
         HOST: str(processEnv.HOST, '127.0.0.1'),
 
         // Database
@@ -19,10 +19,10 @@ export function readEnv(processEnv = process.env) {
         // Security
         ENCRYPTION_KEY: str(processEnv.ENCRYPTION_KEY, null),
         API_KEY_HASH_PEPPER: str(processEnv.API_KEY_HASH_PEPPER, null),
-        ADMIN_SESSION_SIGNING_KEY: str(
-            processEnv.ADMIN_SESSION_SIGNING_KEY,
-            null
-        ),
+        // Deprecated dashboard-session settings. Parsed for one release so
+        // old deployments do not fail env loading, but management auth ignores
+        // them and relies on Ploinky protected HTTP services.
+        ADMIN_SESSION_SIGNING_KEY: str(processEnv.ADMIN_SESSION_SIGNING_KEY, null),
         DASHBOARD_PASSWORD: str(processEnv.DASHBOARD_PASSWORD, null),
 
         // Paths
@@ -128,10 +128,37 @@ export function readEnv(processEnv = process.env) {
         // Auth
         ALLOW_UNAUTHENTICATED: bool(processEnv.ALLOW_UNAUTHENTICATED, false),
 
-        // Embedded mode
+        // Ploinky agent integration
+        // Deprecated mode flags are parsed for one release as no-op values so
+        // older deployments do not fail startup while manifests/workflows move
+        // to the single Ploinky-agent deployment model.
+        PLOINKY_DERIVED_MASTER_KEY: hex64(
+            processEnv.PLOINKY_DERIVED_MASTER_KEY,
+            null,
+            'PLOINKY_DERIVED_MASTER_KEY'
+        ),
         SOUL_GATEWAY_MODE: str(processEnv.SOUL_GATEWAY_MODE, null),
-        TRUST_PLOINKY_ROUTER_AUTH: bool(processEnv.TRUST_PLOINKY_ROUTER_AUTH, false),
+        TRUST_PLOINKY_ROUTER_AUTH: bool(
+            processEnv.TRUST_PLOINKY_ROUTER_AUTH,
+            false
+        ),
         SOUL_GATEWAY_API_KEY: str(processEnv.SOUL_GATEWAY_API_KEY, null),
+        SOUL_GATEWAY_PROVIDER_API_KEY: str(
+            processEnv.SOUL_GATEWAY_PROVIDER_API_KEY,
+            null
+        ),
+        SOUL_GATEWAY_PROVIDER_BASE_URL: str(
+            processEnv.SOUL_GATEWAY_PROVIDER_BASE_URL,
+            'https://soul.axiologic.dev/v1'
+        ),
+        SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE: str(
+            processEnv.SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE,
+            'auto'
+        ),
+        SOUL_GATEWAY_PROVIDER_ALIASES: str(
+            processEnv.SOUL_GATEWAY_PROVIDER_ALIASES,
+            'fast,axl/fast,plan,code,write,deep,ultra'
+        ),
         LOCAL_LLM_BASE_URL: str(processEnv.LOCAL_LLM_BASE_URL, null),
         LOCAL_LLM_MODEL: str(processEnv.LOCAL_LLM_MODEL, null),
         LOCAL_LLM_API_KEY: str(processEnv.LOCAL_LLM_API_KEY, null),
@@ -171,10 +198,6 @@ export function readEnv(processEnv = process.env) {
     return Object.freeze(env);
 }
 
-export function isEmbeddedMode(env) {
-    return env.SOUL_GATEWAY_MODE === 'embedded';
-}
-
 // ── helpers ──────────────────────────────────────────────────────────
 
 function str(raw, fallback) {
@@ -199,4 +222,13 @@ function num(raw, fallback) {
 function bool(raw, fallback) {
     if (raw === undefined || raw === '') return fallback;
     return raw === 'true' || raw === '1' || raw === 'yes';
+}
+
+function hex64(raw, fallback, name) {
+    if (raw === undefined || raw === '') return fallback;
+    const value = String(raw).trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(value)) {
+        throw new Error(`${name} must be a 64-character hex string`);
+    }
+    return value;
 }

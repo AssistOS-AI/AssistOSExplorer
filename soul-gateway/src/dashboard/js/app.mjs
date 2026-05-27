@@ -124,69 +124,79 @@ window.sgAuthBadge = sgAuthBadge;
 window.formatModelContextWindow = formatModelContextWindow;
 window.getModelPricingView = getModelPricingView;
 
-// ---- Auth token management ----
-function getAuthToken() {
-    return sessionStorage.getItem('sg_auth_token') || '';
+// ---- Ploinky-routed management helpers ----
+function resolveManagementBasePath() {
+    const marker = '/services/soul-gateway/management';
+    const pathname = window.location.pathname || '/management/';
+    const markerIndex = pathname.indexOf(marker);
+    if (markerIndex >= 0) {
+        return pathname.slice(0, markerIndex + marker.length);
+    }
+    return '/management';
 }
-function setAuthToken(token) {
-    sessionStorage.setItem('sg_auth_token', token);
+
+const MANAGEMENT_BASE_PATH = resolveManagementBasePath().replace(/\/+$/, '');
+
+function managementUrl(path) {
+    const suffix = String(path || '')
+        .replace(/^\/management\/?/, '')
+        .replace(/^\/+/, '');
+    return suffix ? `${MANAGEMENT_BASE_PATH}/${suffix}` : MANAGEMENT_BASE_PATH;
 }
-function getCsrfToken() {
-    return sessionStorage.getItem('sg_csrf_token') || '';
-}
-function setCsrfToken(token) {
-    sessionStorage.setItem('sg_csrf_token', token);
-}
-function clearAuth() {
-    sessionStorage.removeItem('sg_auth_token');
-    sessionStorage.removeItem('sg_csrf_token');
-}
-function isAuthenticated() {
-    return !!getAuthToken();
+
+function redirectToPloinkyLogin() {
+    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.location.href = `/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
 }
 
 // ---- Helpers ----
 const api = {
     _headers() {
-        const h = { 'Content-Type': 'application/json' };
-        const token = getAuthToken();
-        if (token) h['Authorization'] = `Bearer ${token}`;
-        const csrf = getCsrfToken();
-        if (csrf) h['X-CSRF-Token'] = csrf;
-        return h;
+        return { 'Content-Type': 'application/json' };
     },
     async _handleResponse(res) {
-        if (res.status === 401) {
-            clearAuth();
+        const redirectedToLogin =
+            res.redirected &&
+            new URL(res.url, window.location.origin).pathname.startsWith(
+                '/auth/login'
+            );
+        if (res.status === 401 || res.status === 403 || redirectedToLogin) {
             window.dispatchEvent(new CustomEvent('sg-auth-required'));
-            throw new Error('Authentication required');
+            redirectToPloinkyLogin();
+            throw new Error('Ploinky admin session required');
         }
         return res.json();
     },
     async get(path) {
-        const res = await fetch(path, { headers: this._headers() });
+        const res = await fetch(managementUrl(path), {
+            headers: this._headers(),
+            credentials: 'include',
+        });
         return this._handleResponse(res);
     },
     async post(path, body) {
-        const res = await fetch(path, {
+        const res = await fetch(managementUrl(path), {
             method: 'POST',
             headers: this._headers(),
+            credentials: 'include',
             body: JSON.stringify(body),
         });
         return this._handleResponse(res);
     },
     async patch(path, body) {
-        const res = await fetch(path, {
+        const res = await fetch(managementUrl(path), {
             method: 'PATCH',
             headers: this._headers(),
+            credentials: 'include',
             body: JSON.stringify(body),
         });
         return this._handleResponse(res);
     },
     async del(path) {
-        const res = await fetch(path, {
+        const res = await fetch(managementUrl(path), {
             method: 'DELETE',
             headers: this._headers(),
+            credentials: 'include',
         });
         return this._handleResponse(res);
     },
@@ -554,41 +564,6 @@ const CHART_COLORS = [
     '#7bc8a4',
 ];
 
-// ---- Login component ----
-function loginForm() {
-    return {
-        password: '',
-        error: '',
-        loading: false,
-
-        async login() {
-            this.error = '';
-            this.loading = true;
-            try {
-                const res = await fetch('/management/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password: this.password }),
-                });
-                const data = await res.json();
-                if (data.ok && data.token) {
-                    setAuthToken(data.token);
-                    if (data.csrfToken) setCsrfToken(data.csrfToken);
-                    window.dispatchEvent(new CustomEvent('sg-auth-success'));
-                } else {
-                    this.error =
-                        (data.error && data.error.message) ||
-                        data.error ||
-                        'Login failed';
-                }
-            } catch (e) {
-                this.error = e.message || 'Login failed';
-            }
-            this.loading = false;
-        },
-    };
-}
-
 // ---- Main App ----
 function app() {
     return {
@@ -610,17 +585,11 @@ function app() {
         streamMode: '', // 'ws', 'sse', or ''
         ws: null,
         sse: null,
-        authenticated: false,
+        authenticated: true,
 
         init() {
-            this.authenticated = isAuthenticated();
-
             window.addEventListener('sg-auth-required', () => {
                 this.authenticated = false;
-            });
-            window.addEventListener('sg-auth-success', () => {
-                this.authenticated = true;
-                this.connectWs();
             });
 
             // Read page from URL hash
@@ -628,9 +597,7 @@ function app() {
             const validPages = this.pages.map((p) => p.id);
             if (hash && validPages.includes(hash)) this.page = hash;
 
-            if (this.authenticated) {
-                this.connectWs();
-            }
+            this.connectWs();
         },
 
         navigate(p) {
@@ -648,8 +615,7 @@ function app() {
         },
 
         logout() {
-            clearAuth();
-            this.authenticated = false;
+            const returnTo = encodeURIComponent('/auth/login');
             if (this.ws) {
                 this.ws.close();
                 this.ws = null;
@@ -660,6 +626,7 @@ function app() {
             }
             this.wsConnected = false;
             this.streamMode = '';
+            window.location.href = `/auth/logout?returnTo=${returnTo}`;
         },
 
         _handleLogMessage(raw) {
@@ -675,8 +642,7 @@ function app() {
 
         connectWs() {
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const token = getAuthToken();
-            const wsUrl = `${proto}//${location.host}/ws/logs${token ? '?token=' + encodeURIComponent(token) : ''}`;
+            const wsUrl = `${proto}//${location.host}${managementUrl('/management/ws/logs')}`;
             const ws = new WebSocket(wsUrl);
             let opened = false;
             ws.onopen = () => {
@@ -704,8 +670,7 @@ function app() {
                 this.sse.close();
                 this.sse = null;
             }
-            const token = getAuthToken();
-            const sseUrl = `/management/logs/stream/sse${token ? '?token=' + encodeURIComponent(token) : ''}`;
+            const sseUrl = managementUrl('/management/logs/stream/sse');
             const sse = new EventSource(sseUrl);
             sse.onopen = () => {
                 this.wsConnected = true;
@@ -3073,7 +3038,6 @@ function exportPage() {
 
 Object.assign(window, {
     app,
-    loginForm,
     providersPage,
     logsPage,
     costsPage,

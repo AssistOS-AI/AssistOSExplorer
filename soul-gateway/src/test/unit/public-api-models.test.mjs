@@ -4,6 +4,8 @@ import { Writable } from 'node:stream';
 
 import { registerPublicApiRoutes } from '../../public-api/register-routes.mjs';
 
+const TEST_API_KEY = 'sk-soul-test-workspace-key';
+
 function createMockRouter() {
     const routes = new Map();
     return {
@@ -149,20 +151,81 @@ function createPricingDirectory() {
     };
 }
 
+function createApiKeyPool() {
+    let workspaceRow = null;
+    return {
+        async query(sql, params) {
+            if (sql.includes('WHERE key_hash = $1')) {
+                return { rows: workspaceRow ? [workspaceRow] : [] };
+            }
+            if (sql.includes('INSERT INTO soul_gateway.api_keys')) {
+                workspaceRow = {
+                    id: 'workspace-default',
+                    label: params[0],
+                    key_hash: params[1],
+                    key_hint: params[5],
+                    rpm_limit: params[6],
+                    tpm_limit: params[7],
+                    daily_budget_usd: params[8],
+                    monthly_budget_usd: params[9],
+                    expires_at: params[10],
+                    metadata: params[11],
+                    status: 'active',
+                };
+                return { rows: [workspaceRow] };
+            }
+            return { rows: [] };
+        },
+    };
+}
+
+function createAppCtx(snapshot, services = {}) {
+    return {
+        config: {
+            env: {
+                DATABASE_URL: 'postgresql://example.test/soul',
+                ENCRYPTION_KEY: 'test-encryption-key',
+                SOUL_GATEWAY_API_KEY: TEST_API_KEY,
+                DEFAULT_RPM_LIMIT: 60,
+                DEFAULT_TPM_LIMIT: 100000,
+                ALLOW_UNAUTHENTICATED: false,
+            },
+        },
+        pool: createApiKeyPool(),
+        log: { debug() {}, info() {}, warn() {}, error() {}, fatal() {} },
+        services: { snapshot, encryptionKey: Buffer.alloc(32), ...services },
+    };
+}
+
 function invokeModelsHandler(snapshot, services = {}) {
     const router = createMockRouter();
     registerPublicApiRoutes(router, {});
     const handler = router.get('GET', '/v1/models');
     const res = createMockRes();
     const ctx = {
-        req: {},
+        req: { headers: { authorization: `Bearer ${TEST_API_KEY}` } },
         res,
-        appCtx: { services: { snapshot, ...services } },
+        appCtx: createAppCtx(snapshot, services),
     };
     return Promise.resolve(handler(ctx)).then(() => res);
 }
 
 describe('Public /v1/models — additive gateway fields', () => {
+    it('requires an API key', async () => {
+        const router = createMockRouter();
+        registerPublicApiRoutes(router, {});
+        const handler = router.get('GET', '/v1/models');
+        const res = createMockRes();
+        await assert.rejects(
+            handler({
+                req: { headers: {} },
+                res,
+                appCtx: createAppCtx(snapshotFixture()),
+            }),
+            (err) => err?.errorType === 'authentication_required'
+        );
+    });
+
     it('emits _pricing/_context/_tags/_is_free for direct models', async () => {
         const snapshot = snapshotFixture();
         const res = await invokeModelsHandler(snapshot);
@@ -248,9 +311,9 @@ describe('Public /v1/models — additive gateway fields', () => {
         const handler = router.get('GET', '/v1/models');
         const res = createMockRes();
         await handler({
-            req: {},
+            req: { headers: { authorization: `Bearer ${TEST_API_KEY}` } },
             res,
-            appCtx: { services: {} },
+            appCtx: createAppCtx(null),
         });
         assert.deepEqual(body(res), { object: 'list', data: [] });
     });

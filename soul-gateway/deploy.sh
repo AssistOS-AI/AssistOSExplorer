@@ -2,13 +2,17 @@
 set -e
 
 # Soul Gateway remote deployment script
-# Called by GH Actions with env vars: PGPASSWORD, DEFAULT_PROXY_API_KEY
+# Called by GH Actions with env vars:
+#   PGPASSWORD, DEFAULT_PROXY_API_KEY, PLOINKY_ADMIN_PASSWORD
 
 WORKSPACE="$HOME/soulGateway"
 PLOINKY="$HOME/ploinky/bin/ploinky"
 PROXIES_REPO="https://github.com/PloinkyRepos/proxies.git"
 BASIC_REPO="https://github.com/PloinkyRepos/Basic.git"
 CODE_DIR="$HOME/code"
+ROUTER_URL="${PLOINKY_ROUTER_URL:-http://localhost:${ROUTER_PORT:-8080}}"
+HEALTH_URL="${ROUTER_URL%/}/public-services/soul-gateway-health/"
+PLOINKY_ADMIN_USER="${PLOINKY_ADMIN_USER:-admin}"
 
 echo "=== Soul Gateway Deploy ==="
 
@@ -53,10 +57,15 @@ echo "Configuring env vars..."
 $PLOINKY var UPSTREAM_URL "https://proxy.axiologic.dev"
 $PLOINKY var PGHOST "host.containers.internal"
 $PLOINKY var PGPORT "5432"
-$PLOINKY var PGUSER "keycloak"
+$PLOINKY var PGUSER "postgres"
 $PLOINKY var PGPASSWORD "${PGPASSWORD}"
-$PLOINKY var PGDATABASE "keycloak"
+$PLOINKY var PGDATABASE "soul_gateway_v2"
 $PLOINKY var DEFAULT_PROXY_API_KEY "${DEFAULT_PROXY_API_KEY}"
+
+if [ -z "${PLOINKY_ADMIN_PASSWORD:-}" ]; then
+    echo "ERROR: PLOINKY_ADMIN_PASSWORD is required for Ploinky local-auth admin login."
+    exit 1
+fi
 
 # 6. Stop existing soul-gateway if running
 if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "soul-gateway.*soulGateway"; then
@@ -65,17 +74,26 @@ if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "soul-gateway.*soulGate
     $PLOINKY clean soul-gateway 2>&1 || true
 fi
 
-# 7. Start soul-gateway
+# 7. Ensure the gateway is protected by Ploinky local auth
+echo "Ensuring soul-gateway uses Ploinky local auth..."
+$PLOINKY disable soul-gateway 2>&1 || true
+$PLOINKY enable agent proxies/soul-gateway \
+    --auth pwd \
+    --user "$PLOINKY_ADMIN_USER" \
+    --password "$PLOINKY_ADMIN_PASSWORD" \
+    as soul-gateway
+
+# 8. Start soul-gateway
 echo "Starting soul-gateway..."
 $PLOINKY start soul-gateway 2>&1
 
-# 8. Wait for startup and health check
+# 9. Wait for startup and health check
 echo "Waiting for startup..."
 for i in $(seq 1 30); do
     sleep 2
-    if curl -sf http://localhost:8042/healthz > /dev/null 2>&1; then
+    if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
         echo "Soul Gateway is healthy!"
-        curl -s http://localhost:8042/healthz
+        curl -s "$HEALTH_URL"
         echo ""
         exit 0
     fi

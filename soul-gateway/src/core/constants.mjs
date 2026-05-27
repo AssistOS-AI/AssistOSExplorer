@@ -83,7 +83,6 @@ export const HEADER_NAMES = Object.freeze({
     CONTENT_TYPE: 'Content-Type',
     RETRY_AFTER: 'Retry-After',
     SET_COOKIE: 'Set-Cookie',
-    X_CSRF_TOKEN: 'x-csrf-token',
     X_REQUEST_ID: 'X-Request-Id',
 });
 

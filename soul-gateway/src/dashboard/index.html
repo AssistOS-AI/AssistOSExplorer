@@ -4,7 +4,6 @@
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Soul Gateway</title>
-        <base href="/management/" />
         <link
             href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css"
             rel="stylesheet"
@@ -15,63 +14,11 @@
             src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"
         ></script>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-        <link rel="stylesheet" href="css/app.css" />
+        <link rel="stylesheet" href="./css/app.css" />
     </head>
     <body class="min-h-screen bg-base-200">
         <div x-data="app()" x-init="init()">
-            <!-- Login Screen -->
-            <template x-if="!authenticated">
-                <div class="flex items-center justify-center min-h-screen">
-                    <div
-                        x-data="loginForm()"
-                        class="card bg-base-100 shadow-xl w-96"
-                    >
-                        <div class="card-body">
-                            <h2 class="card-title justify-center text-2xl mb-4">
-                                Soul Gateway
-                            </h2>
-                            <div class="form-control">
-                                <label class="label"
-                                    ><span class="label-text"
-                                        >Password</span
-                                    ></label
-                                >
-                                <input
-                                    type="password"
-                                    class="input input-bordered"
-                                    x-model="password"
-                                    @keydown.enter="login()"
-                                    placeholder="Enter dashboard password"
-                                    autofocus
-                                />
-                            </div>
-                            <div
-                                x-show="error"
-                                class="alert alert-error mt-2 text-sm"
-                            >
-                                <span x-text="error"></span>
-                            </div>
-                            <div class="form-control mt-4">
-                                <button
-                                    class="btn btn-primary"
-                                    @click="login()"
-                                    :disabled="loading"
-                                >
-                                    <span x-show="!loading">Login</span>
-                                    <span
-                                        x-show="loading"
-                                        class="loading loading-spinner loading-sm"
-                                    ></span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </template>
-
-            <!-- Authenticated Dashboard -->
-            <template x-if="authenticated">
-                <div>
+            <div>
                     <!-- Navbar -->
                     <div class="navbar bg-base-100 shadow-lg">
                         <div class="navbar-start">
@@ -5384,11 +5331,10 @@
                             </div>
                         </div>
                     </div>
-                </div>
-            </template>
+            </div>
         </div>
 
-        <script src="js/markdown.js"></script>
-        <script src="js/app.mjs"></script>
+        <script src="./js/markdown.js"></script>
+        <script src="./js/app.mjs"></script>
     </body>
 </html>

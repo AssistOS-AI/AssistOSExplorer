@@ -87,9 +87,9 @@ Rate and budget middleware can be bound at:
 
 The management API writes model-scoped bindings into unified `middleware_bindings` rows. The dashboard exposes `/management/tiers` as a cascade-model editor, but tier-scoped policy still lands in ordinary model-scoped `middleware_bindings` rows targeting the cascade model id.
 
-## Login rate limiting
+## Management auth boundary
 
-Dashboard login attempts (`POST /management/auth/login`) are rate-limited to 5 attempts per minute per source IP using an in-memory sliding window. Excess attempts receive HTTP 429.
+Soul Gateway does not own management login attempts or session issuance. Browser login throttling belongs to Ploinky's default auth surface. The removed `/management/auth/*` compatibility endpoints return HTTP 410 and do not participate in rate-limit or budget policy.
 
 ## Related specs
 

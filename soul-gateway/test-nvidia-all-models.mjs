@@ -9,9 +9,11 @@
  *
  * Environment variables (only SOUL_API_KEY is required):
  *
- *   GATEWAY_URL          base URL of the gateway        default http://localhost:8042
+ *   GATEWAY_URL          router base URL                default http://localhost:8080
+ *   PUBLIC_BASE_URL      /v1 service URL                default $GATEWAY_URL/services/soul-gateway/v1
+ *   MANAGEMENT_BASE_URL  management service URL         default $GATEWAY_URL/services/soul-gateway/management
  *   SOUL_API_KEY         sk-soul-... bearer for /v1     REQUIRED
- *   DASHBOARD_PASSWORD   admin password for /management default soulpass!321
+ *   PLOINKY_AUTH_COOKIE  authenticated admin cookie     REQUIRED for management
  *   CONCURRENCY          parallel test workers          default 5
  *   PROMPT               user prompt                    default short math question
  *   MAX_TOKENS           per-call max_tokens            default 16
@@ -26,15 +28,15 @@
  *
  * Flow
  * ----
- *   1. POST /management/auth/login           → admin session cookie + CSRF
- *   2. GET  /management/providers            → find provider_key === 'nvidia'
+ *   1. GET  /services/soul-gateway/management/providers
+ *      with Ploinky admin auth               → find provider_key === 'nvidia'
  *   3. POST .../discover-models              → live NVIDIA NIM catalog
- *   4. Register all models in parallel       → POST /management/models
+ *   4. Register all models in parallel       -> POST management /models
  *   5. Wait `SNAPSHOT_WAIT_MS` for the gateway's debounced runtime
  *      snapshot rebuild to settle (handleCreateModel kicks off the
  *      rebuild fire-and-forget via requestRuntimeRefresh, so the new
- *      model_keys aren't immediately resolvable on /v1/chat/completions)
- *   6. Send /v1/chat/completions to each registered model in parallel
+ *      model_keys aren't immediately resolvable on public /chat/completions)
+ *   6. Send public /chat/completions to each registered model in parallel
  *      with bounded concurrency. Captures:
  *        { ok, providerModelId, latencyMs, status, replyPreview, error, errorType }
  *      Streams a PASS/FAIL line per model as it completes.
@@ -60,9 +62,14 @@
 
 // ── Configuration ───────────────────────────────────────────────────
 
-const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8042';
+const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
+const PUBLIC_BASE_URL =
+    process.env.PUBLIC_BASE_URL || `${GATEWAY_URL}/services/soul-gateway/v1`;
+const MANAGEMENT_BASE_URL =
+    process.env.MANAGEMENT_BASE_URL || `${GATEWAY_URL}/services/soul-gateway/management`;
 const SOUL_API_KEY = process.env.SOUL_API_KEY || '';
-const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || 'soulpass!321';
+const PLOINKY_AUTH_COOKIE = process.env.PLOINKY_AUTH_COOKIE || '';
+const TEST_PLOINKY_AUTH_INFO = process.env.SG_TEST_PLOINKY_AUTH_INFO || '';
 const CONCURRENCY = parseInt(process.env.CONCURRENCY ?? '5', 10);
 const REGISTER_CONCURRENCY = parseInt(
     process.env.REGISTER_CONCURRENCY ?? '10',
@@ -93,50 +100,35 @@ const SNAPSHOT_WAIT_MS = parseInt(process.env.SNAPSHOT_WAIT_MS ?? '2000', 10);
 if (!SOUL_API_KEY) {
     console.error('Error: SOUL_API_KEY env var is required.');
     console.error(
-        '       It is the sk-soul-... bearer used to call /v1/chat/completions.'
+        '       It is the sk-soul-... bearer used to call the public chat completions service.'
     );
     console.error(
-        '       Create one in the dashboard (Keys tab) or via POST /management/keys.'
+        '       Create one in the Soul Gateway dashboard or via management API.'
     );
     process.exit(2);
 }
 
-// ── Tiny dashboard client (cookie + CSRF) ───────────────────────────
+if (!PLOINKY_AUTH_COOKIE && !TEST_PLOINKY_AUTH_INFO) {
+    console.error('Error: PLOINKY_AUTH_COOKIE or SG_TEST_PLOINKY_AUTH_INFO is required.');
+    console.error(
+        '       Management routes are protected by Ploinky login; Soul Gateway no longer has a dashboard password login.'
+    );
+    process.exit(2);
+}
+
+// ── Tiny management client (Ploinky-protected service) ──────────────
 
 class GatewayClient {
-    constructor(baseUrl) {
-        this.baseUrl = baseUrl;
-        this.cookie = null;
-        this.csrf = null;
-    }
-
-    async loginAdmin(password) {
-        const res = await fetch(`${this.baseUrl}/management/auth/login`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ password }),
-        });
-        if (!res.ok) {
-            throw new Error(`admin login failed: HTTP ${res.status}`);
-        }
-        const setCookie = res.headers.get('set-cookie');
-        if (!setCookie) {
-            throw new Error('admin login: no Set-Cookie header in response');
-        }
-        this.cookie = setCookie.split(';')[0];
-        const body = await res.json();
-        this.csrf = body.csrfToken;
-        if (!this.csrf) {
-            throw new Error('admin login: no csrfToken in response body');
-        }
+    constructor(managementBaseUrl) {
+        this.managementBaseUrl = managementBaseUrl;
     }
 
     async _adminCall(method, path, body = null) {
-        return fetch(`${this.baseUrl}${path}`, {
+        return fetch(`${this.managementBaseUrl}${path}`, {
             method,
             headers: {
-                cookie: this.cookie,
-                'x-csrf-token': this.csrf,
+                ...(PLOINKY_AUTH_COOKIE ? { cookie: PLOINKY_AUTH_COOKIE } : {}),
+                ...(TEST_PLOINKY_AUTH_INFO ? { 'x-ploinky-auth-info': TEST_PLOINKY_AUTH_INFO } : {}),
                 ...(body ? { 'content-type': 'application/json' } : {}),
             },
             body: body ? JSON.stringify(body) : undefined,
@@ -144,7 +136,7 @@ class GatewayClient {
     }
 
     async listProviders() {
-        const res = await this._adminCall('GET', '/management/providers');
+        const res = await this._adminCall('GET', '/providers');
         if (!res.ok) throw new Error(`listProviders: HTTP ${res.status}`);
         return (await res.json()).data || [];
     }
@@ -152,7 +144,7 @@ class GatewayClient {
     async discoverModels(providerId) {
         const res = await this._adminCall(
             'POST',
-            `/management/providers/${providerId}/discover-models`,
+            `/providers/${providerId}/discover-models`,
             {}
         );
         if (!res.ok) {
@@ -165,7 +157,7 @@ class GatewayClient {
     }
 
     async createModel(spec) {
-        const res = await this._adminCall('POST', '/management/models', spec);
+        const res = await this._adminCall('POST', '/models', spec);
         if (!res.ok) {
             const text = await res.text();
             throw new Error(`HTTP ${res.status} ${text.slice(0, 200)}`);
@@ -174,7 +166,7 @@ class GatewayClient {
     }
 
     async deleteModel(id) {
-        const res = await this._adminCall('DELETE', `/management/models/${id}`);
+        const res = await this._adminCall('DELETE', `/models/${id}`);
         if (!res.ok) {
             throw new Error(`HTTP ${res.status}`);
         }
@@ -184,7 +176,7 @@ class GatewayClient {
      * Force a synchronous runtime snapshot rebuild via the rescan
      * endpoint. handleCreateModel kicks off its rebuilds via
      * requestRuntimeRefresh (fire-and-forget), so a freshly-registered
-     * model isn't immediately resolvable on /v1/chat/completions —
+     * model isn't immediately resolvable on the public chat completions service -
      * the resolver still reads the stale snapshot until the async
      * rebuild lands. Rescan, in contrast, awaits performRuntimeRefresh,
      * so by the time this call returns the snapshot is current.
@@ -192,7 +184,7 @@ class GatewayClient {
     async forceRuntimeRescan() {
         const res = await this._adminCall(
             'POST',
-            '/management/providers/rescan',
+            '/providers/rescan',
             {}
         );
         if (!res.ok) {
@@ -202,7 +194,7 @@ class GatewayClient {
     }
 }
 
-// ── /v1/chat/completions caller with timeout ────────────────────────
+// ── Public chat completions caller with timeout ─────────────────────
 
 async function sendCompletion(modelKey) {
     const start = Date.now();
@@ -210,7 +202,7 @@ async function sendCompletion(modelKey) {
     const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
 
     try {
-        const res = await fetch(`${GATEWAY_URL}/v1/chat/completions`, {
+        const res = await fetch(`${PUBLIC_BASE_URL}/chat/completions`, {
             method: 'POST',
             headers: {
                 authorization: `Bearer ${SOUL_API_KEY}`,
@@ -350,6 +342,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
     console.log(`[nvidia-sweep] gateway=${GATEWAY_URL}`);
+    console.log(`[nvidia-sweep] public-api=${PUBLIC_BASE_URL}`);
+    console.log(`[nvidia-sweep] management=${MANAGEMENT_BASE_URL}`);
     console.log(
         `[nvidia-sweep] register-concurrency=${REGISTER_CONCURRENCY}  test-concurrency=${CONCURRENCY}`
     );
@@ -359,17 +353,14 @@ async function main() {
     console.log(`[nvidia-sweep] prompt=${JSON.stringify(PROMPT)}`);
     console.log();
 
-    const client = new GatewayClient(GATEWAY_URL);
-
-    console.log('[nvidia-sweep] logging in to dashboard …');
-    await client.loginAdmin(DASHBOARD_PASSWORD);
+    const client = new GatewayClient(MANAGEMENT_BASE_URL);
 
     console.log('[nvidia-sweep] resolving NVIDIA provider …');
     const providers = await client.listProviders();
     const nvidia = providers.find((p) => p.provider_key === 'nvidia');
     if (!nvidia) {
         console.error(
-            'No provider with provider_key="nvidia" found in /management/providers.'
+            'No provider with provider_key="nvidia" found in the management providers list.'
         );
         console.error(
             'Add the NVIDIA preset from the dashboard first, or set its api_key via PATCH.'
@@ -466,7 +457,7 @@ async function main() {
     console.log();
 
     // ── Phase 5: force a synchronous snapshot rebuild ──────────────
-    // POST /management/providers/rescan awaits performRuntimeRefresh,
+    // POST management /providers/rescan awaits performRuntimeRefresh,
     // unlike handleCreateModel which fires it async. After this returns
     // the runtime snapshot is guaranteed to be current. The follow-up
     // sleep is just paranoia for any in-flight rebuild started by an

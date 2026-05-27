@@ -7,13 +7,7 @@ import {
     decrypt,
     ensureEncryptionKey,
 } from '../../runtime/security/encryption.mjs';
-import { compareDashboardPassword } from '../../runtime/security/password.mjs';
-import { generateCsrfToken, verifyCsrf } from '../../runtime/security/csrf.mjs';
-import {
-    loginAdmin,
-    requireAdmin,
-    createAdminSessionCookie,
-} from '../../runtime/security/dashboard-auth.mjs';
+import { requireAdmin } from '../../runtime/security/dashboard-auth.mjs';
 import {
     extractBearerToken,
     hashApiKey,
@@ -248,210 +242,86 @@ describe('extractBearerToken', () => {
     });
 });
 
-// ── Admin Session Token ─────────────────────────────────────────────
+// ── Router Admin Auth ───────────────────────────────────────────────
 
-describe('admin session sign/verify (loginAdmin + requireAdmin)', () => {
-    const signingKey = 'test-signing-key-abc123';
+describe('router admin requireAdmin', () => {
     const config = {
-        DASHBOARD_PASSWORD: 's3cret',
-        ADMIN_SESSION_SIGNING_KEY: signingKey,
+        PLOINKY_DERIVED_MASTER_KEY: '9'.repeat(64),
+    };
+    const invocationBody = {
+        tool: '__http_service__',
+        arguments: {
+            method: 'GET',
+            path: '/services/soul-gateway/management/providers',
+            search: '',
+        },
+    };
+    const routerAuthOptions = {
+        verifyInvocationToken: mock.fn(() => ({
+            payload: { sub: 'local:admin' },
+        })),
+        replayCache: {
+            seen: () => false,
+            remember: () => {},
+        },
     };
 
-    it('loginAdmin returns a valid token on correct password', async () => {
-        const { token, expiresAt } = await loginAdmin('s3cret', config);
-        assert.equal(typeof token, 'string');
-        assert(token.includes('.'), 'token should contain a dot separator');
-        assert(expiresAt > Date.now(), 'expiry should be in the future');
-    });
-
-    it('loginAdmin throws for wrong password', async () => {
-        await assert.rejects(
-            () => loginAdmin('wrong', config),
-            (err) => {
-                assert(err instanceof AuthenticationRequiredError);
-                return true;
-            }
-        );
-    });
-
-    it('loginAdmin throws when DASHBOARD_PASSWORD is unset', async () => {
-        await assert.rejects(
-            () =>
-                loginAdmin('whatever', { ...config, DASHBOARD_PASSWORD: null }),
-            (err) => {
-                assert(err instanceof AuthenticationRequiredError);
-                return true;
-            }
-        );
-    });
-
-    it('requireAdmin accepts a valid Bearer token', async () => {
-        const { token } = await loginAdmin('s3cret', config);
-        const req = { headers: { authorization: `Bearer ${token}` } };
-        const decoded = await requireAdmin(req, config);
-        assert(decoded.exp > Date.now());
-    });
-
-    it('requireAdmin accepts a valid cookie token', async () => {
-        const { token } = await loginAdmin('s3cret', config);
-        const req = {
-            headers: { cookie: `soul_session=${encodeURIComponent(token)}` },
+    function makeReq(authInfo, extraHeaders = {}) {
+        return {
+            headers: {
+                ...extraHeaders,
+                'x-ploinky-auth-info': JSON.stringify(authInfo),
+            },
         };
-        const decoded = await requireAdmin(req, config);
-        assert(decoded.exp > Date.now());
-    });
+    }
 
-    it('requireAdmin throws for missing token', async () => {
-        const req = { headers: {} };
+    it('rejects missing router identity', async () => {
         await assert.rejects(
-            () => requireAdmin(req, config),
+            () => requireAdmin({ headers: {} }, config, routerAuthOptions),
             (err) => err instanceof AuthenticationRequiredError,
         );
     });
 
-    it('requireAdmin throws for tampered token', async () => {
-        const { token } = await loginAdmin('s3cret', config);
-        const tampered = token.slice(0, -4) + 'xxxx';
-        const req = { headers: { authorization: `Bearer ${tampered}` } };
+    it('rejects dashboard-style bearer tokens without router identity', async () => {
         await assert.rejects(
-            () => requireAdmin(req, config),
+            () => requireAdmin(
+                { headers: { authorization: 'Bearer legacy-dashboard-token' } },
+                config,
+                routerAuthOptions,
+            ),
             (err) => err instanceof AuthenticationRequiredError,
         );
     });
 
-    it('requireAdmin throws for expired token', async () => {
-        const exp = Date.now() - 1000;
-        const csrfToken = randomBytes(32).toString('hex');
-        const payload = `${exp}.${csrfToken}`;
-        const sig = createHmac('sha256', signingKey)
-            .update(payload)
-            .digest('hex');
-        const expiredToken = `${payload}.${sig}`;
+    it('rejects non-admin router users', async () => {
+        const req = makeReq({
+            user: { username: 'viewer', roles: ['viewer'] },
+            invocationToken: 'router.jwt',
+            invocationBody,
+        });
 
-        const req = { headers: { authorization: `Bearer ${expiredToken}` } };
         await assert.rejects(
-            () => requireAdmin(req, config),
+            () => requireAdmin(req, config, routerAuthOptions),
             (err) => {
                 assert(err instanceof AuthenticationRequiredError);
-                assert.match(err.message, /expired/i);
+                assert.match(err.message, /admin role/i);
                 return true;
             },
         );
     });
 
-    it('requireAdmin rejects tokens without CSRF component', async () => {
-        const exp = Date.now() + 60_000;
-        const payload = String(exp);
-        const sig = createHmac('sha256', signingKey)
-            .update(payload)
-            .digest('hex');
-        const legacyToken = `${payload}.${sig}`;
+    it('accepts verified admin router identity', async () => {
+        const req = makeReq({
+            user: { username: 'admin', roles: ['local', 'admin'] },
+            invocationToken: 'router.jwt',
+            invocationBody,
+        });
 
-        const req = { headers: { authorization: `Bearer ${legacyToken}` } };
-        await assert.rejects(
-            () => requireAdmin(req, config),
-            (err) => {
-                assert(err instanceof AuthenticationRequiredError);
-                assert.match(err.message, /Invalid admin session/i);
-                return true;
-            },
-        );
-    });
-});
+        const result = await requireAdmin(req, config, routerAuthOptions);
 
-describe('createAdminSessionCookie', () => {
-    it('produces a well-formed Set-Cookie value', () => {
-        const cookie = createAdminSessionCookie('tok.sig', 43_200_000);
-        assert(cookie.startsWith('soul_session='));
-        assert(cookie.includes('HttpOnly'));
-        assert(cookie.includes('SameSite=Strict'));
-        assert(cookie.includes('Path=/'));
-        assert(cookie.includes('Max-Age=43200'));
-    });
-});
-
-// ── CSRF ────────────────────────────────────────────────────────────
-
-describe('CSRF tokens', () => {
-    it('generates a 64-character hex token', () => {
-        const token = generateCsrfToken();
-        assert.equal(typeof token, 'string');
-        assert.equal(token.length, 64);
-        assert.match(token, /^[0-9a-f]+$/);
-    });
-
-    it('generates unique tokens', () => {
-        const a = generateCsrfToken();
-        const b = generateCsrfToken();
-        assert.notEqual(a, b);
-    });
-
-    it('verifyCsrf passes when tokens match', () => {
-        const token = generateCsrfToken();
-        const reqCtx = {
-            headers: { 'x-csrf-token': token },
-            session: { csrfToken: token },
-        };
-        assert.equal(verifyCsrf(reqCtx), true);
-    });
-
-    it('verifyCsrf throws when header is missing', () => {
-        const reqCtx = {
-            headers: {},
-            session: { csrfToken: 'abc' },
-        };
-        assert.throws(() => verifyCsrf(reqCtx), /Missing CSRF/);
-    });
-
-    it('verifyCsrf throws when session token is missing', () => {
-        const reqCtx = {
-            headers: { 'x-csrf-token': 'abc' },
-            session: {},
-        };
-        assert.throws(() => verifyCsrf(reqCtx), /No CSRF token in session/);
-    });
-
-    it('verifyCsrf throws on mismatch', () => {
-        const reqCtx = {
-            headers: { 'x-csrf-token': 'aaa' },
-            session: { csrfToken: 'bbb' },
-        };
-        assert.throws(() => verifyCsrf(reqCtx), /mismatch/i);
-    });
-});
-
-// ── Timing-Safe Password Comparison ─────────────────────────────────
-
-describe('compareDashboardPassword', () => {
-    it('returns true for matching passwords', () => {
-        assert.equal(compareDashboardPassword('s3cret', 's3cret'), true);
-    });
-
-    it('returns false for different passwords', () => {
-        assert.equal(compareDashboardPassword('s3cret', 'wrong'), false);
-    });
-
-    it('returns false for different length passwords', () => {
-        assert.equal(
-            compareDashboardPassword('short', 'much-longer-password'),
-            false
-        );
-    });
-
-    it('returns false when input is not a string', () => {
-        assert.equal(compareDashboardPassword(null, 's3cret'), false);
-        assert.equal(compareDashboardPassword(123, 's3cret'), false);
-        assert.equal(compareDashboardPassword(undefined, 's3cret'), false);
-    });
-
-    it('returns false when expected is not a string', () => {
-        assert.equal(compareDashboardPassword('s3cret', null), false);
-    });
-
-    it('returns false for empty strings', () => {
-        assert.equal(compareDashboardPassword('', 's3cret'), false);
-        assert.equal(compareDashboardPassword('s3cret', ''), false);
-        assert.equal(compareDashboardPassword('', ''), false);
+        assert.equal(result.authenticated, true);
+        assert.equal(result.source, 'router-sso');
+        assert.equal(result.user.username, 'admin');
     });
 });
 

@@ -14,10 +14,9 @@ import {
     ExpiredApiKeyError,
     RevokedApiKeyError,
 } from '../../core/errors.mjs';
-import { isEmbeddedMode } from '../../config/env.mjs';
 
-const EMBEDDED_API_KEY_DB_RPM_LIMIT = 60;
-const EMBEDDED_API_KEY_DB_TPM_LIMIT = 100000;
+const WORKSPACE_API_KEY_DB_RPM_LIMIT = 60;
+const WORKSPACE_API_KEY_DB_TPM_LIMIT = 100000;
 
 /**
  * Authenticate an incoming request by its API key.
@@ -34,10 +33,10 @@ export async function authenticateApiKey(authHeader, appCtx) {
     // 1. Extract bearer token
     const token = extractBearerToken(authHeader);
 
-    // 1b. Embedded workspace key: auto-persist when a DB is available so
+    // 1b. Ploinky workspace key: auto-persist when a DB is available so
     // sessions, budgets, and audit rows keep a real FK-compatible key id.
-    if (matchEmbeddedKey(token, appCtx.config.env)) {
-        return ensureEmbeddedApiKeyRecord(token, appCtx);
+    if (matchWorkspaceKey(token, appCtx.config.env)) {
+        return ensureWorkspaceApiKeyRecord(token, appCtx);
     }
 
     // 2. HMAC the token
@@ -122,8 +121,7 @@ export function derivePepper(config) {
     );
 }
 
-function matchEmbeddedKey(token, env) {
-    if (!isEmbeddedMode(env)) return null;
+function matchWorkspaceKey(token, env) {
     const expected = env.SOUL_GATEWAY_API_KEY;
     if (!expected) return null;
 
@@ -132,21 +130,22 @@ function matchEmbeddedKey(token, env) {
     return a.length === b.length && timingSafeEqual(a, b);
 }
 
-async function ensureEmbeddedApiKeyRecord(token, appCtx) {
+async function ensureWorkspaceApiKeyRecord(token, appCtx) {
     const env = appCtx.config.env;
     const hasPersistentDb = appCtx.pool && env.DATABASE_URL;
     if (!hasPersistentDb) {
-        return buildEmbeddedApiKeyRecord();
+        return buildWorkspaceApiKeyRecord();
     }
 
     const pepper = derivePepper(env);
     const keyHash = hashApiKey(token, pepper);
     const existing = await apiKeysDao.findByHash(appCtx.pool, keyHash);
     if (existing) {
-        return normalizeEmbeddedApiKeyRecord(existing);
+        return normalizeWorkspaceApiKeyRecord(existing);
     }
 
-    const encryptionKey = appCtx.services?.encryptionKey || ensureEncryptionKey(env);
+    const encryptionKey =
+        appCtx.services?.encryptionKey || ensureEncryptionKey(env);
     const {
         ciphertext: keyCiphertext,
         iv: keyIv,
@@ -161,22 +160,22 @@ async function ensureEmbeddedApiKeyRecord(token, appCtx) {
             keyIv,
             keyAuthTag,
             keyHint: buildKeyHint(token),
-            rpmLimit: EMBEDDED_API_KEY_DB_RPM_LIMIT,
-            tpmLimit: EMBEDDED_API_KEY_DB_TPM_LIMIT,
+            rpmLimit: WORKSPACE_API_KEY_DB_RPM_LIMIT,
+            tpmLimit: WORKSPACE_API_KEY_DB_TPM_LIMIT,
             dailyBudgetUsd: null,
             monthlyBudgetUsd: null,
             expiresAt: null,
             metadata: {
-                embedded: true,
+                workspaceDefault: true,
                 synthetic: true,
                 managedBy: 'soul-gateway',
             },
         });
-        return normalizeEmbeddedApiKeyRecord(row);
+        return normalizeWorkspaceApiKeyRecord(row);
     } catch (err) {
         if (err?.code === '23505') {
             const row = await apiKeysDao.findByHash(appCtx.pool, keyHash);
-            if (row) return normalizeEmbeddedApiKeyRecord(row);
+            if (row) return normalizeWorkspaceApiKeyRecord(row);
         }
         throw err;
     }
@@ -188,7 +187,7 @@ function buildKeyHint(token) {
     return `${value.slice(0, 8)}...${value.slice(-4)}`;
 }
 
-function buildEmbeddedApiKeyRecord(fields = {}) {
+function buildWorkspaceApiKeyRecord(fields = {}) {
     return {
         ...fields,
         id: fields.id || 'workspace-default',
@@ -204,29 +203,30 @@ function buildEmbeddedApiKeyRecord(fields = {}) {
     };
 }
 
-function normalizeEmbeddedApiKeyRecord(row) {
-    return buildEmbeddedApiKeyRecord({
+function normalizeWorkspaceApiKeyRecord(row) {
+    return buildWorkspaceApiKeyRecord({
         ...row,
         label: row.label || 'workspace-default',
         name: row.name || row.label || 'workspace-default',
     });
 }
 
-export function isEmbeddedWorkspaceKeyRecord(row) {
+export function isWorkspaceDefaultKeyRecord(row) {
     if (!row) return false;
     const metadata = normalizeMetadata(row.metadata);
     return (
         row.id === 'workspace-default' ||
         row.label === 'workspace-default' ||
+        metadata.workspaceDefault === true ||
         metadata.embedded === true ||
         metadata.managedBy === 'soul-gateway'
     );
 }
 
-export function buildEmbeddedApiKeyManagementRecord(row = {}) {
+export function buildWorkspaceDefaultApiKeyManagementRecord(row = {}) {
     const metadata = {
         ...normalizeMetadata(row.metadata),
-        embedded: true,
+        workspaceDefault: true,
         synthetic: true,
         managedBy: 'soul-gateway',
     };
@@ -250,7 +250,6 @@ export function buildEmbeddedApiKeyManagementRecord(row = {}) {
         expires_at: null,
         expiresAt: null,
         metadata,
-        embedded: true,
         synthetic: true,
         managed: true,
         revocable: false,
@@ -275,3 +274,7 @@ function normalizeMetadata(metadata) {
     }
     return {};
 }
+
+export const isEmbeddedWorkspaceKeyRecord = isWorkspaceDefaultKeyRecord;
+export const buildEmbeddedApiKeyManagementRecord =
+    buildWorkspaceDefaultApiKeyManagementRecord;

@@ -5,16 +5,11 @@
  *   - httpRouter has all HTTP management routes
  *   - wsRouter has WebSocket upgrade routes
  *
- * All routes except auth routes require admin session authentication.
+ * All management routes require verified Ploinky router admin identity.
  */
 
 import { createRouter } from '../core/path-router.mjs';
-import { sendJson, sendError } from '../core/responses.mjs';
 import { requireAdmin } from '../runtime/security/dashboard-auth.mjs';
-import { verifyRequiredCsrf } from '../runtime/security/csrf.mjs';
-import { GatewayError, AuthenticationRequiredError } from '../core/errors.mjs';
-
-const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 // Auth (no admin required)
 import { handleLogin, handleLogout, handleSession } from './auth-route.mjs';
@@ -174,21 +169,14 @@ export function buildManagementRouter(appCtx) {
     const httpRouter = createRouter();
     const wsRouter = createRouter();
 
-    // ── Helper: wrap handler with admin auth + CSRF guard ─────────────
+    // ── Helper: wrap handler with Ploinky router admin auth ───────────
     function admin(handler) {
         return async (ctx) => {
-            const decoded = await requireAdmin(
+            await requireAdmin(
                 ctx.req,
                 appCtx.config.env,
                 appCtx.routerAuth || appCtx
             );
-            const routerSso = decoded?.source === 'router-sso';
-            if (!routerSso && !CSRF_SAFE_METHODS.has(ctx.req.method)) {
-                verifyRequiredCsrf({
-                    headers: ctx.req.headers,
-                    session: { csrfToken: decoded.csrfToken },
-                });
-            }
             return handler(ctx);
         };
     }
@@ -198,10 +186,11 @@ export function buildManagementRouter(appCtx) {
     httpRouter.add('POST', '/management/auth/logout', handleLogout);
     httpRouter.add('GET', '/management/auth/session', handleSession);
 
-    // ── Dashboard (no auth — login page needs assets) ────────────────
-    httpRouter.add('GET', '/management', handleDashboard);
-    httpRouter.add('GET', '/management/css/*', handleStatic);
-    httpRouter.add('GET', '/management/js/*', handleStatic);
+    // ── Dashboard ────────────────────────────────────────────────────
+    httpRouter.add('GET', '/management', admin(handleDashboard));
+    httpRouter.add('GET', '/management/', admin(handleDashboard));
+    httpRouter.add('GET', '/management/css/*', admin(handleStatic));
+    httpRouter.add('GET', '/management/js/*', admin(handleStatic));
 
     // ── Keys ─────────────────────────────────────────────────────────
     httpRouter.add('GET', '/management/keys', admin(handleListKeys));
@@ -344,7 +333,7 @@ export function buildManagementRouter(appCtx) {
     httpRouter.add(
         'GET',
         '/management/providers/:providerId/auth/callback',
-        handleAuthCallback
+        admin(handleAuthCallback)
     );
     httpRouter.add(
         'GET',
@@ -577,6 +566,8 @@ export function buildManagementRouter(appCtx) {
     );
 
     // ── WebSocket streaming ──────────────────────────────────────────
+    wsRouter.add('GET', '/management/ws/logs', admin(handleLogStreamWs));
+    wsRouter.add('GET', '/management/ws/logs/soul/:soulId', admin(handleLogStreamWsSoul));
     wsRouter.add('GET', '/ws/logs', admin(handleLogStreamWs));
     wsRouter.add('GET', '/ws/logs/soul/:soulId', admin(handleLogStreamWsSoul));
 

@@ -119,21 +119,12 @@ describe('authenticateRouterAdmin', () => {
             search: '',
         },
     };
-    const embeddedConfig = {
+    const routerConfig = {
         env: {
-            SOUL_GATEWAY_MODE: 'embedded',
-            TRUST_PLOINKY_ROUTER_AUTH: true,
             PLOINKY_DERIVED_MASTER_KEY: derivedMasterKey,
         },
         verifyInvocationToken,
         replayCache: createMemoryReplayCache(),
-    };
-
-    const standaloneConfig = {
-        env: {
-            SOUL_GATEWAY_MODE: null,
-            TRUST_PLOINKY_ROUTER_AUTH: false,
-        },
     };
 
     function makeReq(authInfo) {
@@ -171,27 +162,9 @@ describe('authenticateRouterAdmin', () => {
         });
     }
 
-    it('returns null when not in embedded mode', async () => {
-        const req = makeReq({ user: { roles: ['admin'] } });
-        const result = await authenticateRouterAdmin(req, standaloneConfig);
-        assert.equal(result, null);
-    });
-
-    it('returns null when TRUST_PLOINKY_ROUTER_AUTH is false', async () => {
-        const config = {
-            env: {
-                SOUL_GATEWAY_MODE: 'embedded',
-                TRUST_PLOINKY_ROUTER_AUTH: false,
-            },
-        };
-        const req = makeReq({ user: { roles: ['admin'] } });
-        const result = await authenticateRouterAdmin(req, config);
-        assert.equal(result, null);
-    });
-
     it('returns null when no auth info header', async () => {
         const req = { headers: {} };
-        const result = await authenticateRouterAdmin(req, embeddedConfig);
+        const result = await authenticateRouterAdmin(req, routerConfig);
         assert.equal(result, null);
     });
 
@@ -199,7 +172,7 @@ describe('authenticateRouterAdmin', () => {
         const req = {
             headers: { 'x-ploinky-auth-info': 'not-json' },
         };
-        const result = await authenticateRouterAdmin(req, embeddedConfig);
+        const result = await authenticateRouterAdmin(req, routerConfig);
         assert.equal(result, null);
     });
 
@@ -209,7 +182,7 @@ describe('authenticateRouterAdmin', () => {
             invocationToken: 'tok',
         });
         await assert.rejects(
-            () => authenticateRouterAdmin(req, embeddedConfig),
+            () => authenticateRouterAdmin(req, routerConfig),
             (err) => {
                 assert(err instanceof RouterAuthError);
                 assert.match(err.message, /admin role/i);
@@ -224,7 +197,7 @@ describe('authenticateRouterAdmin', () => {
             invocationToken: 'tok',
         });
         await assert.rejects(
-            () => authenticateRouterAdmin(req, embeddedConfig),
+            () => authenticateRouterAdmin(req, routerConfig),
             (err) => err instanceof RouterAuthError,
         );
     });
@@ -234,7 +207,7 @@ describe('authenticateRouterAdmin', () => {
             user: { username: 'admin', roles: ['admin'] },
         });
         await assert.rejects(
-            () => authenticateRouterAdmin(req, embeddedConfig),
+            () => authenticateRouterAdmin(req, routerConfig),
             (err) => {
                 assert(err instanceof RouterAuthError);
                 assert.match(err.message, /invocation token/i);
@@ -250,7 +223,7 @@ describe('authenticateRouterAdmin', () => {
             invocationBody,
         });
 
-        const result = await authenticateRouterAdmin(req, embeddedConfig);
+        const result = await authenticateRouterAdmin(req, routerConfig);
 
         assert.equal(result.authenticated, true);
         assert.equal(result.source, 'router-sso');
@@ -264,7 +237,7 @@ describe('authenticateRouterAdmin', () => {
         });
 
         await assert.rejects(
-            () => authenticateRouterAdmin(req, embeddedConfig),
+            () => authenticateRouterAdmin(req, routerConfig),
             (err) => {
                 assert(err instanceof RouterAuthError);
                 assert.match(err.message, /invocation body/i);
@@ -287,7 +260,7 @@ describe('authenticateRouterAdmin', () => {
         });
 
         await assert.rejects(
-            () => authenticateRouterAdmin(req, embeddedConfig),
+            () => authenticateRouterAdmin(req, routerConfig),
             /body hash mismatch/,
         );
     });
@@ -300,22 +273,21 @@ describe('authenticateRouterAdmin', () => {
             invocationBody,
         });
 
-        await authenticateRouterAdmin(req, embeddedConfig);
+        await authenticateRouterAdmin(req, routerConfig);
         await assert.rejects(
-            () => authenticateRouterAdmin(req, embeddedConfig),
+            () => authenticateRouterAdmin(req, routerConfig),
             /already been consumed/,
         );
     });
 });
 
-// ── Synthetic Embedded API Key ──────────────────────────────────────
+// ── Workspace Default API Key ───────────────────────────────────────
 
-describe('synthetic embedded API key', () => {
-    function makeAppCtx(mode, apiKey) {
+describe('workspace default API key', () => {
+    function makeAppCtx(apiKey) {
         return {
             config: {
                 env: {
-                    SOUL_GATEWAY_MODE: mode,
                     SOUL_GATEWAY_API_KEY: apiKey,
                     API_KEY_HASH_PEPPER: 'test-pepper',
                     ENCRYPTION_KEY: 'test-enc',
@@ -327,9 +299,9 @@ describe('synthetic embedded API key', () => {
         };
     }
 
-    it('returns synthetic record when embedded key matches', async () => {
+    it('returns synthetic record when workspace key matches', async () => {
         const key = 'derived-workspace-key-abc';
-        const appCtx = makeAppCtx('embedded', key);
+        const appCtx = makeAppCtx(key);
         const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
         assert.equal(result.id, 'workspace-default');
         assert.equal(result.name, 'workspace-default');
@@ -338,20 +310,15 @@ describe('synthetic embedded API key', () => {
         assert.equal(result.expires_at, null);
     });
 
-    it('does not return synthetic record in standalone mode', async () => {
+    it('accepts the workspace key without SOUL_GATEWAY_MODE', async () => {
         const key = 'derived-workspace-key-abc';
-        const appCtx = makeAppCtx(null, key);
-        await assert.rejects(
-            () => authenticateApiKey(`Bearer ${key}`, appCtx),
-            (err) => {
-                assert(err.errorType === 'invalid_api_key');
-                return true;
-            },
-        );
+        const appCtx = makeAppCtx(key);
+        const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
+        assert.equal(result.id, 'workspace-default');
     });
 
     it('does not return synthetic record when key mismatches', async () => {
-        const appCtx = makeAppCtx('embedded', 'correct-key');
+        const appCtx = makeAppCtx('correct-key');
         await assert.rejects(
             () => authenticateApiKey('Bearer wrong-key', appCtx),
             (err) => {
@@ -362,7 +329,7 @@ describe('synthetic embedded API key', () => {
     });
 
     it('does not return synthetic record when SOUL_GATEWAY_API_KEY is unset', async () => {
-        const appCtx = makeAppCtx('embedded', null);
+        const appCtx = makeAppCtx(null);
         await assert.rejects(
             () => authenticateApiKey('Bearer some-key', appCtx),
             (err) => {
@@ -374,20 +341,19 @@ describe('synthetic embedded API key', () => {
 
     it('synthetic key has no budget or rate limits', async () => {
         const key = 'derived-key-xyz';
-        const appCtx = makeAppCtx('embedded', key);
+        const appCtx = makeAppCtx(key);
         const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
         assert.equal(result.daily_budget_usd, null);
         assert.equal(result.rpm_limit, null);
         assert.equal(result.tpm_limit, null);
     });
 
-    it('persists the embedded workspace key when Postgres is configured', async () => {
+    it('persists the workspace default key when Postgres is configured', async () => {
         const key = 'derived-workspace-key-for-db';
         const queries = [];
         const appCtx = {
             config: {
                 env: {
-                    SOUL_GATEWAY_MODE: 'embedded',
                     SOUL_GATEWAY_API_KEY: key,
                     DATABASE_URL: 'postgres://localhost/soul_gateway',
                     API_KEY_HASH_PEPPER: 'test-pepper',

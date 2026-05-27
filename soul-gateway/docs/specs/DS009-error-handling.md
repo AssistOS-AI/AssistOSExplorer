@@ -101,7 +101,7 @@ At the HTTP server level, if headers were sent and an unhandled error occurs out
 
 The gateway enforces fail-fast behavior for configuration and runtime invariants:
 
-- **Missing signing key** — If neither `ADMIN_SESSION_SIGNING_KEY` nor `ENCRYPTION_KEY` is set, dashboard auth throws `ConfigurationError` at the point of use rather than falling back to a default key.
+- **Missing protected-service signing material** — If Soul Gateway cannot verify the Ploinky invocation JWT for a management request, the request fails closed instead of trusting caller-supplied identity.
 - **Missing concurrency config** — If a model lacks concurrency configuration, `ConcurrencyController.acquire()` throws `ConfigurationError` instead of silently defaulting.
 - **Missing response** — If the route chain reaches the `respond` middleware without `ctx.response` being set, it throws `InternalServerError` rather than passing `undefined` to the serializer.
 - **DAO update builders** — `models-dao` filters updates through an explicit allowlist, while several other DAO update helpers still build SQL column lists from caller-supplied field names. Callers therefore must pass already-vetted field sets; the current runtime does not enforce a uniform update allowlist across every DAO.

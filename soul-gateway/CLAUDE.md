@@ -9,16 +9,15 @@ Read the project specs before changing behavior:
 - [docs/specs/DS002-provider-auth.md](docs/specs/DS002-provider-auth.md)
 - [docs/specs/DS003-middleware-framework.md](docs/specs/DS003-middleware-framework.md)
 - [docs/specs/DS013-configuration-deployment.md](docs/specs/DS013-configuration-deployment.md)
-- [docs/specs/DS016-embedded-mode.md](docs/specs/DS016-embedded-mode.md)
+- [docs/specs/DS016-ploinky-agent-mode.md](docs/specs/DS016-ploinky-agent-mode.md)
 
-## Deployment Modes
+## Deployment Model
 
-Soul Gateway runs in two manifest-selected modes:
+Soul Gateway has one deployment model: a Ploinky-managed agent with HTTP services. Public inference traffic enters through `/services/soul-gateway/v1/` and still requires Soul Gateway API-key auth. Browser-facing management enters through `/services/soul-gateway/management/`, protected by Ploinky login and verified protected-service identity. Health checks use `/public-services/soul-gateway-health/`.
 
-- **Standalone** — the production mode at `soul.axiologic.dev`. Port-bound, dashboard-password/API-key authenticated, externally reachable. Background schedulers enabled.
-- **Embedded** — started as a dependency of another Ploinky agent (typically Explorer). Auth delegates to the Ploinky router via `x-ploinky-auth-info` + invocation JWT verification. Consumer agents receive the same workspace-scoped generated `SOUL_GATEWAY_API_KEY`. Management is through the `soul-gateway-settings` IDE plugin (admin-only). See `docs/specs/DS016-embedded-mode.md` for the full contract.
+Management UI is the router-protected dashboard at `/services/soul-gateway/management/`. Explorer exposes an admin-only `soul-gateway-settings` plugin entry whose Settings action opens that local dashboard directly; do not reintroduce a separate settings modal. See `docs/specs/DS016-ploinky-agent-mode.md` for the full contract.
 
-Profile selection is workspace-wide via `ploinky profile <name>`. The `embedded` and `standalone` profiles are declared in `manifest.json`.
+In Explorer deployments, the local Ploinky-managed Soul Gateway is the reference gateway. A remote `soul.axiologic.dev` credential must be represented as a normal provider account inside that local gateway (`SOUL_GATEWAY_PROVIDER_API_KEY`, sourced from an operator `SOUL_GATEWAY_API_KEY` when present), not as a replacement for the generated local `SOUL_GATEWAY_API_KEY`.
 
 ## Provider Boundary
 
@@ -62,7 +61,7 @@ For provider transport changes, also run the relevant `achillesAgentLib` tests f
 Production runs at:
 
 - Public URL: `https://soul.axiologic.dev`
-- Health check: `https://soul.axiologic.dev/healthz`
+- Health check: `https://soul.axiologic.dev/public-services/soul-gateway-health/`
 - Remote SSH target: `admin@45.136.70.141`
 - SSH key: `~/proxies_server_private_key.pem`
 - Remote workspace: `~/soulGateway`
@@ -75,7 +74,7 @@ Read-only SSH examples:
 
 ```bash
 ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'cd ~/soulGateway && ploinky status'
-ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'curl -s http://localhost:8042/healthz'
+ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'curl -s http://localhost:${ROUTER_PORT:-8080}/public-services/soul-gateway-health/'
 ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'podman ps --format "table {{.Names}}\t{{.Status}}"'
 ```
 
@@ -85,4 +84,4 @@ Deployment and admin workflows live under `../.github/workflows/`:
 - `destroy-soul-gateway.yml` (`Destroy Soul Gateway`)
 - `soul-gateway-admin.yml` (`Soul Gateway Admin`)
 
-Prefer GitHub Actions for deploy/restart/status tasks. After any deploy or restart, verify `/healthz`, container status, and that the running environment still points at `PGDATABASE=soul_gateway_v2`.
+Prefer GitHub Actions for deploy/restart/status tasks. After any deploy or restart, verify `/public-services/soul-gateway-health/` through the Ploinky router, container status, and that the running environment still points at `PGDATABASE=soul_gateway_v2`.

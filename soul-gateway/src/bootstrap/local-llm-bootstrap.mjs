@@ -1,4 +1,3 @@
-import { isEmbeddedMode } from '../config/env.mjs';
 import { upsertProviderApiKeyAccount } from '../runtime/providers/api-key-account.mjs';
 
 const PROVIDER_KEY = 'local-llm';
@@ -109,7 +108,6 @@ export async function bootstrapLocalLlmProvider(appCtx) {
     const { config, pool, log } = appCtx;
     const { env } = config;
 
-    if (!isEmbeddedMode(env)) return;
     if (!env.DATABASE_URL) return;
 
     const providersDao = await import('../db/dao/providers-dao.mjs');

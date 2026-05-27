@@ -25,7 +25,6 @@ function makeAppCtx(
     let nextId = 1;
 
     const env = {
-        SOUL_GATEWAY_MODE: 'embedded',
         DATABASE_URL: 'postgres://localhost/test',
         LOCAL_LLM_BASE_URL: 'https://lmstudio.axiologic.dev/v1',
         LOCAL_LLM_MODEL: 'gemma-3-12b-it',
@@ -174,12 +173,10 @@ function makeAppCtx(
 }
 
 describe('bootstrapLocalLlmProvider', () => {
-    it('skips when not in embedded mode', async () => {
-        const { appCtx, providers } = makeAppCtx({
-            SOUL_GATEWAY_MODE: null,
-        });
+    it('bootstraps without SOUL_GATEWAY_MODE', async () => {
+        const { appCtx, providers } = makeAppCtx();
         await bootstrapLocalLlmProvider(appCtx);
-        assert.equal(providers.length, 0);
+        assert.equal(providers.length, 1);
     });
 
     it('skips when DATABASE_URL is not set', async () => {

@@ -47,10 +47,11 @@ In buffered mode the provider chain drains the canonical stream into a buffered 
 | [DS008](DS008-content-filtering.md) | Content filtering | Blacklist rules, response filtering, where those policies run, and how overrides are applied. |
 | [DS009](DS009-error-handling.md) | Error handling | Error classification, retry policy, cascade triggers, cooldown triggers, and shared error envelopes. |
 | [DS010](DS010-agent-loop-detector.md) | Agent loop detector | Loop-detection heuristics, session-scoped state, response modes, and middleware settings. |
-| [DS012](DS012-api-reference.md) | Management API & dashboard | Dashboard auth, provider/model management, middleware binding APIs, and observability endpoints. |
+| [DS012](DS012-api-reference.md) | Management API & dashboard | Router-protected management auth, provider/model management, middleware binding APIs, and observability endpoints. |
 | [DS013](DS013-configuration-deployment.md) | Configuration & deployment | Environment variables, initialization, importer/DDL split, health checks, and shutdown behavior. |
 | [DS014](DS014-built-in-middlewares.md) | Built-in middlewares | Current built-in gateway middleware catalog and how those modules are assigned and ordered. |
 | [DS015](DS015-observability.md) | Observability | Audit logging, live log streaming, metrics dashboards, session grouping, and exports. |
+| [DS016](DS016-ploinky-agent-mode.md) | Ploinky agent mode | Unified Ploinky-agent deployment, protected management auth, workspace API key behavior, and Explorer plugin integration. |
 
 ## Cross-reference notes
 

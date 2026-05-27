@@ -1,6 +1,11 @@
 import { describe, it, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+    createHash,
+    createHmac,
+    randomBytes,
+    timingSafeEqual,
+} from 'node:crypto';
 import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { MetricsService } from '../../observability/metrics-service.mjs';
@@ -13,16 +18,6 @@ function createMockPool(queryFn) {
     return {
         query: queryFn || (async () => ({ rows: [], rowCount: 0 })),
     };
-}
-
-function makeSigningKey() {
-    return 'test-signing-key-' + randomBytes(8).toString('hex');
-}
-
-function signAdminToken(expiresAt, signingKey, csrfToken = null) {
-    const payload = csrfToken ? `${expiresAt}.${csrfToken}` : String(expiresAt);
-    const sig = createHmac('sha256', signingKey).update(payload).digest('hex');
-    return `${payload}.${sig}`;
 }
 
 const ROUTER_DERIVED_MASTER_KEY = '9'.repeat(64);
@@ -42,7 +37,10 @@ function canonicalJson(value) {
     if (Array.isArray(value)) {
         return `[${value.map(canonicalJson).join(',')}]`;
     }
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+    return `{${Object.keys(value)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+        .join(',')}}`;
 }
 
 function bodyHashForRequest(bodyObject) {
@@ -55,7 +53,9 @@ function signHmacJwt({ payload, secret }) {
     const header = base64urlJson({ alg: 'HS256', typ: 'JWT' });
     const body = base64urlJson(payload);
     const signingInput = `${header}.${body}`;
-    const sig = base64url(createHmac('sha256', secret).update(signingInput).digest());
+    const sig = base64url(
+        createHmac('sha256', secret).update(signingInput).digest()
+    );
     return `${signingInput}.${sig}`;
 }
 
@@ -94,7 +94,10 @@ function verifyInvocationToken(token, {
     if (header.alg !== 'HS256') {
         throw new Error(`jwtVerify: unsupported alg ${header.alg}`);
     }
-    if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) {
+    if (
+        signature.length !== expected.length ||
+        !timingSafeEqual(signature, expected)
+    ) {
         throw new Error('jwtVerify: signature invalid');
     }
     if (String(payload.aud || '') !== String(expectedAudience)) {
@@ -103,7 +106,10 @@ function verifyInvocationToken(token, {
     if (String(payload.tool || '') !== String(expectedTool)) {
         throw new Error('jwtVerify: tool mismatch');
     }
-    if ((payload.bh ?? payload.body_hash) !== bodyHashForRequest(bodyObject ?? {})) {
+    if (
+        (payload.bh ?? payload.body_hash) !==
+        bodyHashForRequest(bodyObject ?? {})
+    ) {
         throw new Error('jwtVerify: body hash mismatch');
     }
     if (replayCache?.seen(payload.jti)) {
@@ -115,7 +121,8 @@ function verifyInvocationToken(token, {
 
 function signRouterInvocation(bodyObject) {
     const now = Math.floor(Date.now() / 1000);
-    const audience = process.env.PLOINKY_AGENT_PRINCIPAL || 'agent:proxies/soul-gateway';
+    const audience =
+        process.env.PLOINKY_AGENT_PRINCIPAL || 'agent:proxies/soul-gateway';
     return signHmacJwt({
         secret: Buffer.from(ROUTER_DERIVED_MASTER_KEY, 'hex'),
         payload: {
@@ -142,7 +149,6 @@ function signRouterInvocation(bodyObject) {
 }
 
 function createMockAppCtx(overrides = {}) {
-    const signingKey = overrides.signingKey || makeSigningKey();
     const services = { ...(overrides.services || {}) };
     const availableBackends = new Map(
         (overrides.availableBackends || [
@@ -271,10 +277,9 @@ function createMockAppCtx(overrides = {}) {
     return {
         config: {
             env: {
-                DASHBOARD_PASSWORD: overrides.dashboardPassword || 'testpass',
-                ADMIN_SESSION_SIGNING_KEY: signingKey,
                 ENCRYPTION_KEY: null,
                 API_KEY_HASH_PEPPER: 'test-pepper',
+                PLOINKY_DERIVED_MASTER_KEY: ROUTER_DERIVED_MASTER_KEY,
                 DATA_DIR: '/tmp/soul-gateway-test',
                 DASHBOARD_STATIC_DIR: '/tmp/soul-gateway-test/dashboard',
             },
@@ -288,13 +293,18 @@ function createMockAppCtx(overrides = {}) {
         pool: overrides.pool || createMockPool(),
         log: { info() {}, warn() {}, error() {}, debug() {} },
         services: Object.assign(services, {
-            metricsService: services.metricsService || new MetricsService(overrides.pool || createMockPool()),
-            exportService: services.exportService || new ExportService(overrides.pool || createMockPool()),
+            metricsService:
+                services.metricsService ||
+                new MetricsService(overrides.pool || createMockPool()),
+            exportService:
+                services.exportService ||
+                new ExportService(overrides.pool || createMockPool()),
         }),
         draining: false,
         snapshotGeneration: 1,
         startedAt: Date.now(),
-        _signingKey: signingKey,
+        verifyInvocationToken: overrides.verifyInvocationToken || verifyInvocationToken,
+        replayCache: overrides.replayCache || createMemoryReplayCache(),
     };
 }
 
@@ -355,14 +365,30 @@ function compactSql(sql) {
     return sql.replace(/\s+/g, ' ').trim();
 }
 
-function addAdminAuth(req, appCtx, { csrfToken = null } = {}) {
-    const token = signAdminToken(
-        Date.now() + 3_600_000,
-        appCtx._signingKey,
-        csrfToken
-    );
-    req.headers.authorization = `Bearer ${token}`;
-    return token;
+function addRouterAdminAuth(
+    req,
+    {
+        method = req.method || 'GET',
+        path = '/services/soul-gateway/management/keys',
+        search = '',
+        roles = ['admin'],
+        username = 'admin',
+    } = {}
+) {
+    const invocationBody = {
+        tool: '__http_service__',
+        arguments: { method, path, search },
+    };
+    req.headers['x-ploinky-auth-info'] = JSON.stringify({
+        user: {
+            id: `local:${username}`,
+            username,
+            roles,
+        },
+        sessionId: 'session-1',
+        invocationToken: signRouterInvocation(invocationBody),
+        invocationBody,
+    });
 }
 
 // ── Auth route tests ────────────────────────────────────────────────
@@ -376,111 +402,44 @@ describe('management/auth-route', () => {
         ));
     });
 
-    it('handleLogin returns token for valid password', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq({
-            method: 'POST',
-            body: { password: 'testpass' },
-        });
-        const res = createMockRes();
-
-        await handleLogin({ req, res, params: {}, query: {}, appCtx });
-
-        assert.equal(res.statusCode, 200);
-        const body = parseJsonResponse(res);
-        assert.equal(body.ok, true);
-        assert.ok(body.token);
-        assert.ok(body.expiresAt);
-        assert.ok(body.csrfToken);
-    });
-
-    it('handleLogin rejects wrong password', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq({
-            method: 'POST',
-            body: { password: 'wrong' },
-        });
-        const res = createMockRes();
-
-        await assert.rejects(
-            () => handleLogin({ req, res, params: {}, query: {}, appCtx }),
-            (err) => err.httpStatus === 401
-        );
-    });
-
-    it('handleLogin rejects missing password field', async () => {
+    it('handleLogin returns 410 with Ploinky login semantics', async () => {
         const appCtx = createMockAppCtx();
         const req = createMockReq({ method: 'POST', body: {} });
         const res = createMockRes();
 
-        await assert.rejects(
-            () => handleLogin({ req, res, params: {}, query: {}, appCtx }),
-            (err) => err.httpStatus === 400
-        );
-    });
+        await handleLogin({ req, res, params: {}, query: {}, appCtx });
 
-    it('handleSession returns authenticated: true for valid session', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq();
-        addAdminAuth(req, appCtx, { csrfToken: 'csrf-valid' });
-        const res = createMockRes();
-
-        await handleSession({ req, res, params: {}, query: {}, appCtx });
-
-        assert.equal(res.statusCode, 200);
+        assert.equal(res.statusCode, 410);
         const body = parseJsonResponse(res);
-        assert.equal(body.authenticated, true);
+        assert.equal(body.ok, false);
+        assert.equal(body.error.type, 'ploinky_auth_required');
+        assert.match(body.error.message, /Ploinky login/i);
     });
 
-    it('handleSession returns authenticated: false for missing session', async () => {
+    it('handleSession returns 410 and never validates Soul Gateway sessions', async () => {
         const appCtx = createMockAppCtx();
         const req = createMockReq();
         const res = createMockRes();
 
         await handleSession({ req, res, params: {}, query: {}, appCtx });
 
-        assert.equal(res.statusCode, 200);
+        assert.equal(res.statusCode, 410);
         const body = parseJsonResponse(res);
-        assert.equal(body.authenticated, false);
+        assert.equal(body.ok, false);
+        assert.match(body.error.message, /Ploinky login/i);
     });
 
-    it('handleLogout clears the session cookie when CSRF token matches', async () => {
+    it('handleLogout returns 410 without clearing Soul Gateway cookies', async () => {
         const appCtx = createMockAppCtx();
-        const req = createMockReq({
-            method: 'POST',
-            headers: { 'x-csrf-token': 'csrf-1' },
-        });
-        addAdminAuth(req, appCtx, { csrfToken: 'csrf-1' });
+        const req = createMockReq({ method: 'POST' });
         const res = createMockRes();
 
         await handleLogout({ req, res, params: {}, query: {}, appCtx });
 
-        assert.equal(res.statusCode, 200);
-        assert.ok(res.headers['Set-Cookie'].includes('Max-Age=0'));
-    });
-
-    it('handleLogout rejects tokens without CSRF component', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq({ method: 'POST' });
-        addAdminAuth(req, appCtx); // token without csrfToken is now rejected
-        const res = createMockRes();
-
-        await assert.rejects(
-            () => handleLogout({ req, res, params: {}, query: {}, appCtx }),
-            (err) => err instanceof AuthenticationRequiredError
-        );
-    });
-
-    it('handleLogout rejects a missing CSRF token header for valid sessions', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq({ method: 'POST' });
-        addAdminAuth(req, appCtx, { csrfToken: 'csrf-1' });
-        const res = createMockRes();
-
-        await assert.rejects(
-            () => handleLogout({ req, res, params: {}, query: {}, appCtx }),
-            (err) => err.httpStatus === 400
-        );
+        assert.equal(res.statusCode, 410);
+        assert.equal(res.headers['Set-Cookie'], undefined);
+        const body = parseJsonResponse(res);
+        assert.match(body.error.message, /Ploinky login/i);
     });
 });
 
@@ -535,10 +494,9 @@ describe('management/keys-route', () => {
         assert.equal(body.data[0].key_ciphertext, undefined);
     });
 
-    it('handleListKeys exposes embedded workspace key as managed metadata only', async () => {
+    it('handleListKeys exposes workspace default key as managed metadata only', async () => {
         const pool = createMockPool(async () => ({ rows: [] }));
         const appCtx = createMockAppCtx({ pool });
-        appCtx.config.env.SOUL_GATEWAY_MODE = 'embedded';
         appCtx.config.env.SOUL_GATEWAY_API_KEY = 'derived-workspace-secret';
         const res = createMockRes();
 
@@ -561,7 +519,7 @@ describe('management/keys-route', () => {
         assert.equal(body.data[0].key_ciphertext, undefined);
     });
 
-    it('handleListKeys normalizes persisted embedded workspace key without exposing hints', async () => {
+    it('handleListKeys normalizes persisted workspace default key without exposing hints', async () => {
         const mockRow = {
             id: 'k-default',
             label: 'workspace-default',
@@ -572,11 +530,10 @@ describe('management/keys-route', () => {
             key_auth_tag: 't',
             key_hint: 'secret-hint',
             rpm_limit: 60,
-            metadata: { embedded: true },
+            metadata: { workspaceDefault: true },
         };
         const pool = createMockPool(async () => ({ rows: [mockRow] }));
         const appCtx = createMockAppCtx({ pool });
-        appCtx.config.env.SOUL_GATEWAY_MODE = 'embedded';
         appCtx.config.env.SOUL_GATEWAY_API_KEY = 'derived-workspace-secret';
         const res = createMockRes();
 
@@ -3210,14 +3167,12 @@ describe('management/router', () => {
         assert.ok(typeof match.handler === 'function');
     });
 
-    it('rejects tokens without CSRF component on all admin routes', async () => {
+    it('rejects management routes without router admin identity', async () => {
         const appCtx = createMockAppCtx();
         const { httpRouter } = buildManagementRouter(appCtx);
         const match = httpRouter.match('POST', '/management/keys');
         const req = createMockReq({ method: 'POST' });
         const res = createMockRes();
-
-        addAdminAuth(req, appCtx); // token without csrfToken is now rejected
 
         await assert.rejects(
             () =>
@@ -3232,14 +3187,65 @@ describe('management/router', () => {
         );
     });
 
-    it('accepts valid CSRF tokens on read-only admin routes', async () => {
+    it('rejects OAuth callbacks without router admin identity', async () => {
+        const appCtx = createMockAppCtx();
+        const { httpRouter } = buildManagementRouter(appCtx);
+        const match = httpRouter.match(
+            'GET',
+            '/management/providers/openai/auth/callback'
+        );
+        const req = createMockReq({ method: 'GET' });
+        const res = createMockRes();
+
+        await assert.rejects(
+            () =>
+                match.handler({
+                    req,
+                    res,
+                    params: match.params,
+                    query: { code: 'unused', state: 'unused' },
+                    appCtx,
+                }),
+            (err) => err instanceof AuthenticationRequiredError
+        );
+    });
+
+    it('rejects non-admin router identity on management routes', async () => {
+        const appCtx = createMockAppCtx();
+        const { httpRouter } = buildManagementRouter(appCtx);
+        const match = httpRouter.match('GET', '/management/keys');
+        const req = createMockReq({ method: 'GET' });
+        const res = createMockRes();
+        addRouterAdminAuth(req, {
+            method: 'GET',
+            path: '/services/soul-gateway/management/keys',
+            roles: ['viewer'],
+        });
+
+        await assert.rejects(
+            () =>
+                match.handler({
+                    req,
+                    res,
+                    params: match.params,
+                    query: {},
+                    appCtx,
+                }),
+            (err) => err instanceof AuthenticationRequiredError
+        );
+    });
+
+    it('accepts verified router admin identity on read-only admin routes', async () => {
         const appCtx = createMockAppCtx();
         const { httpRouter } = buildManagementRouter(appCtx);
         const match = httpRouter.match('GET', '/management/keys');
         const req = createMockReq({ method: 'GET' });
         const res = createMockRes();
 
-        addAdminAuth(req, appCtx, { csrfToken: 'csrf-token-123' });
+        addRouterAdminAuth(req, {
+            method: 'GET',
+            path: '/services/soul-gateway/management/keys',
+        });
 
         await match.handler({
             req,
@@ -3252,7 +3258,7 @@ describe('management/router', () => {
         assert.equal(res.statusCode, 200);
     });
 
-    it('does not require CSRF on admin writes authenticated by verified router SSO', async () => {
+    it('does not require Soul Gateway CSRF on admin writes with verified router identity', async () => {
         const keyId = '11111111-1111-1111-1111-111111111111';
         const appCtx = createMockAppCtx({
             pool: createMockPool(async (sql) => {
@@ -3268,37 +3274,12 @@ describe('management/router', () => {
                 return { rows: [], rowCount: 0 };
             }),
         });
-        Object.assign(appCtx.config.env, {
-            SOUL_GATEWAY_MODE: 'embedded',
-            TRUST_PLOINKY_ROUTER_AUTH: true,
-            PLOINKY_DERIVED_MASTER_KEY: ROUTER_DERIVED_MASTER_KEY,
-        });
-        appCtx.verifyInvocationToken = verifyInvocationToken;
-        appCtx.replayCache = createMemoryReplayCache();
         const { httpRouter } = buildManagementRouter(appCtx);
         const match = httpRouter.match('POST', `/management/keys/${keyId}/revoke`);
-        const invocationBody = {
-            tool: '__http_service__',
-            arguments: {
-                method: 'POST',
-                path: `/services/soul-gateway/management/keys/${keyId}/revoke`,
-                search: '',
-            },
-        };
-        const req = createMockReq({
+        const req = createMockReq({ method: 'POST' });
+        addRouterAdminAuth(req, {
             method: 'POST',
-            headers: {
-                'x-ploinky-auth-info': JSON.stringify({
-                    user: {
-                        id: 'local:admin',
-                        username: 'admin',
-                        roles: ['admin'],
-                    },
-                    sessionId: 'session-1',
-                    invocationToken: signRouterInvocation(invocationBody),
-                    invocationBody,
-                }),
-            },
+            path: `/services/soul-gateway/management/keys/${keyId}/revoke`,
         });
         const res = createMockRes();
 

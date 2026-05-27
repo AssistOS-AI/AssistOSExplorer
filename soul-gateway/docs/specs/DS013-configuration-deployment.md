@@ -16,14 +16,14 @@ Environment variables cover:
 |---|---|
 | Server | `PORT`, `HOST` |
 | Database | `DATABASE_URL`, `PG_POOL_MAX`, `PG_POOL_MIN`, `PG_IDLE_TIMEOUT_MS`, `PG_CONNECT_TIMEOUT_MS`, `PG_MAX_USES` |
-| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `ADMIN_SESSION_SIGNING_KEY`, `DASHBOARD_PASSWORD` |
+| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `SOUL_GATEWAY_API_KEY`, `PLOINKY_DERIVED_MASTER_KEY` |
 | Directories | `DATA_DIR`, `CREDENTIALS_DIR`, `EXTENSIONS_DIR`, `DASHBOARD_STATIC_DIR` |
 | Observability | `LOG_RETENTION_DAYS`, `STREAM_HEARTBEAT_MS`, `WS_PING_INTERVAL_MS`, `PARTITION_AHEAD_DAYS`, `PARTITION_JOB_INTERVAL_MS`, `RETENTION_JOB_CRON_UTC_MINUTE` |
 | Cooldown | `COOLDOWN_DURATION_MS` |
 | Routing defaults | `DEFAULT_MODEL_ATTEMPTS`, `DEFAULT_MODEL_CONCURRENCY`, `DEFAULT_QUEUE_TIMEOUT_MS`, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | HTTP retry | `HTTP_RETRY_MAX_ATTEMPTS`, `HTTP_RETRY_BASE_DELAY_MS`, `HTTP_RETRY_MULTIPLIER`, `HTTP_RETRY_MAX_DELAY_MS`, `HTTP_RETRY_JITTER_PCT` |
 | Rate limiting & budgets | `DEFAULT_RPM_LIMIT`, `DEFAULT_TPM_LIMIT`, `DEFAULT_DAILY_BUDGET_USD` |
-| Sessions/auth | `SESSION_TIMEOUT_MINUTES`, `TOKEN_REFRESH_INTERVAL_MS`, `QUOTA_RESET_SWEEP_MS`, `ALLOW_UNAUTHENTICATED` |
+| Auth/jobs | `SESSION_TIMEOUT_MINUTES`, `TOKEN_REFRESH_INTERVAL_MS`, `QUOTA_RESET_SWEEP_MS`, `ALLOW_UNAUTHENTICATED`, `OAUTH_ADAPTERS_ENABLED` |
 | Pricing/export/shutdown | `PRICING_DIRECTORY_URL`, `PRICING_REFRESH_INTERVAL_MS`, `EXPORT_BATCH_SIZE`, `SHUTDOWN_GRACE_MS`, `BODY_LIMIT_BYTES` |
 | Loop detection | `LOOP_MIN_RESPONSES`, `LOOP_WINDOW_SIZE`, `LOOP_SIMILARITY_THRESHOLD`, `LOOP_GROWTH_THRESHOLD_TOKENS`, `LOOP_REPETITIVE_RATIO_THRESHOLD`, `LOOP_INTERVENTION_MESSAGE` |
 | Search bootstrap / legacy inputs | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
@@ -100,11 +100,13 @@ The shared Achilles LLM layer supports two configuration modes:
 
 ### Soul Gateway discovery mode
 
-Driven by `SOUL_GATEWAY_API_KEY` and optionally `SOUL_GATEWAY_URL` / `SOUL_GATEWAY_BASE_URL`. When an explicit API key is set, `achillesAgentLib` routes all LLM traffic through the standalone Soul Gateway instance — the agent running inside a container (or a test harness, or any other consumer) authenticates with its soul-gateway bearer and lets the gateway handle provider selection, rate limiting, budgeting, and observability. A key-only setup uses the `LLMConfig.json` Soul Gateway URL; URL env vars override that default only for explicit or unmarked keys.
+Driven by `SOUL_GATEWAY_API_KEY` and optionally `SOUL_GATEWAY_URL` / `SOUL_GATEWAY_BASE_URL`. Consumer agents authenticate with their Soul Gateway bearer and let the gateway handle provider selection, rate limiting, budgeting, and observability. A key-only setup uses the `LLMConfig.json` Soul Gateway URL; URL env vars override that default only for explicit or unmarked keys.
 
 This is the production mode for everything that sits behind Soul Gateway. The consumer doesn't need to know which upstream provider is actually serving the request.
 
-For Explorer embedded deployments, consumer agents start with a workspace-generated `SOUL_GATEWAY_API_KEY`, `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY=generated`, and an empty `SOUL_GATEWAY_BASE_URL`, which makes Achilles discover the embedded router service. While the key source is `generated`, Achilles ignores inherited standalone URL env vars so generated keys stay paired with the embedded router. Operators may still force those consumers to use a standalone gateway by providing `SOUL_GATEWAY_API_KEY`; Achilles treats that key as explicit and uses the `LLMConfig.json` Soul Gateway URL unless `SOUL_GATEWAY_BASE_URL` / `SOUL_GATEWAY_URL` is also explicit.
+For Ploinky workspaces, consumer agents start with a workspace-generated `SOUL_GATEWAY_API_KEY`, `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY=generated`, and an empty `SOUL_GATEWAY_BASE_URL`, which makes Achilles discover the router service at `${PLOINKY_ROUTER_URL}/services/soul-gateway/v1`. While the key source is `generated`, Achilles ignores inherited public URL env vars so generated keys stay paired with the router service. Explorer-started consumer manifests do not opt into explicit `SOUL_GATEWAY_API_KEY` overrides; remote gateways belong in provider configuration inside the local gateway.
+
+Explorer production uses that generated-key path for local calls. If it needs the production gateway at `soul.axiologic.dev`, the remote gateway is configured as a normal `soul-gateway` provider inside the local Soul Gateway with `SOUL_GATEWAY_PROVIDER_API_KEY` and optional `SOUL_GATEWAY_PROVIDER_BASE_URL`. The Ploinky Soul Gateway manifest sources `SOUL_GATEWAY_PROVIDER_API_KEY` from an operator `SOUL_GATEWAY_API_KEY`, so existing deployment environments can keep that secret name while the container's local `SOUL_GATEWAY_API_KEY` remains generated. This keeps the Explorer-local gateway as the reference policy, logging, budget, and settings surface.
 
 ### Direct-provider mode
 
@@ -114,7 +116,7 @@ Request-time provider credentials still come from the gateway credential lease. 
 
 ## Production deployment
 
-The production Soul Gateway service runs at `https://soul.axiologic.dev` and exposes `GET /healthz` for public health verification. The remote host is `admin@45.136.70.141`; use `ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141` for read-only status/debug checks unless the user explicitly asks for a state-changing remote operation.
+The production Soul Gateway service runs at `https://soul.axiologic.dev`. Public health verification goes through the Ploinky router service at `/public-services/soul-gateway-health/`. The remote host is `admin@45.136.70.141`; use `ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141` for read-only status/debug checks unless the user explicitly asks for a state-changing remote operation.
 
 Operational paths on the remote host:
 
@@ -122,13 +124,13 @@ Operational paths on the remote host:
 - Source checkout: `~/code/proxies`
 - Soul Gateway service: `soul-gateway` Ploinky agent
 - Expected production database: `soul_gateway_v2`
-- Local health check from the host: `curl -s http://localhost:8042/healthz`
+- Host-local router health check: `curl -s http://localhost:8080/public-services/soul-gateway-health/`
 
 Useful read-only checks:
 
 ```bash
 ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'cd ~/soulGateway && ploinky status'
-ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'curl -s http://localhost:8042/healthz'
+ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'curl -s http://localhost:8080/public-services/soul-gateway-health/'
 ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'podman ps --format "table {{.Names}}\t{{.Status}}"'
 ```
 
@@ -138,13 +140,14 @@ Deployment and admin workflows are defined in the repository-level GitHub Action
 - `../.github/workflows/destroy-soul-gateway.yml` — `Destroy Soul Gateway`
 - `../.github/workflows/soul-gateway-admin.yml` — `Soul Gateway Admin`
 
-Prefer the workflows for deploy, restart, stop, destroy, and admin tasks. After any deploy or restart, verify both the public `https://soul.axiologic.dev/healthz` endpoint and the host-local `http://localhost:8042/healthz` endpoint, then confirm the running container still uses `PGDATABASE=soul_gateway_v2`.
+Prefer the workflows for deploy, restart, stop, destroy, and admin tasks. After any deploy or restart, verify both the public `https://soul.axiologic.dev/public-services/soul-gateway-health/` endpoint and the host-local Ploinky router public health service, then confirm the running container still uses `PGDATABASE=soul_gateway_v2`.
 
 ## Health check
 
 A health check endpoint reports whether the system is operational:
 
-- `GET /healthz` — returns HTTP 200 with `{ ok, db, snapshotGeneration, uptimeSeconds }`
+- Public/router contract: `GET /public-services/soul-gateway-health/` returns HTTP 200 with `{ ok, db, snapshotGeneration, uptimeSeconds }`
+- Internal implementation detail: `GET /healthz` is the container-local target behind the router public health service and is not a direct public probing contract.
 
 Current implementation detail:
 
@@ -153,15 +156,13 @@ Current implementation detail:
 - the handler still returns HTTP 200 even when `db` is false
 - the old `/health` compatibility alias is gone
 
-The health check is unauthenticated and has minimal overhead so it can be polled frequently by a load balancer or orchestrator.
+The router public health service is unauthenticated and has minimal overhead so it can be polled frequently by a load balancer or orchestrator without exposing the Soul Gateway container port.
 
-## Dashboard authentication
+## Management authentication
 
-Dashboard sessions use HMAC-signed stateless tokens. The signing key is resolved from `ADMIN_SESSION_SIGNING_KEY` or, if absent, from `ENCRYPTION_KEY`. If neither is set, the gateway throws `ConfigurationError` at the point of use — there is no hardcoded fallback key.
+Soul Gateway management is protected by Ploinky's protected HTTP service identity. The gateway accepts only router-provided `x-ploinky-auth-info` plus a verified Ploinky invocation JWT, and it requires the authenticated user to have the `admin` role.
 
-Session tokens embed a CSRF token in the format `{exp}.{csrfToken}.{hmac}`. Every mutating management request must include an `X-CSRF-Token` header matching the embedded value — enforcement is unconditional.
-
-Login attempts are rate-limited to 5 per minute per source IP.
+The removed Soul Gateway dashboard login/session endpoints return HTTP 410 with "use Ploinky login" semantics. `DASHBOARD_PASSWORD`, `ADMIN_SESSION_SIGNING_KEY`, `SOUL_GATEWAY_MODE`, and `TRUST_PLOINKY_ROUTER_AUTH` are deprecated compatibility inputs only; they are parsed for one release but do not control active behavior. Existing `soul_session` cookies are ignored.
 
 ## Graceful shutdown
 
@@ -184,34 +185,30 @@ If the grace period expires with requests still in flight, the remaining connect
 - On subsequent startups, the key is loaded from the env var if set, otherwise from the persisted file.
 - Rotating the encryption key requires re-encrypting all `provider_accounts.secret_*` and `api_keys.key_*` rows, which is not automated. Operators should plan rotations with a maintenance window.
 
-## Deployment profiles
+## Ploinky agent deployment
 
-Soul Gateway declares two Ploinky manifest profiles: `standalone` and `embedded`.
+Soul Gateway declares one default Ploinky-agent profile:
 
-### Standalone profile
+- `PORT=7000`.
+- `ports: []` so the public interface is the Ploinky router, not the internal container port.
+- `SOUL_GATEWAY_API_KEY` is a workspace-scoped generated secret so consumer agents receive the same value by env name.
+- `SOUL_GATEWAY_PROVIDER_API_KEY`, sourced from operator `SOUL_GATEWAY_API_KEY` when configured, bootstraps the remote `soul.axiologic.dev` gateway as the local gateway's `soul-gateway` provider.
+- `SOUL_GATEWAY_PROVIDER_BASE_URL` defaults to `https://soul.axiologic.dev/v1`.
+- `SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE` controls provider model discovery (`auto` or `off`).
+- `SOUL_GATEWAY_PROVIDER_ALIASES` mirrors configured alias names to same-named discovered provider models and can migrate aliases away from `local-llm/*` fallback targets.
+- `/services/soul-gateway/v1/` uses router `auth: "none"` because callers authenticate with the Soul Gateway API key.
+- `/services/soul-gateway/management/` uses router `auth: "protected"` and requires Ploinky admin identity.
+- `/public-services/soul-gateway-health/` is unauthenticated for smoke checks.
+- `LOCAL_LLM_*` config controls local model bootstrap.
+- `TOKEN_REFRESH_INTERVAL_MS`, `PRICING_REFRESH_INTERVAL_MS`, and `OAUTH_ADAPTERS_ENABLED` explicitly control schedulers and OAuth behavior.
 
-The default production mode. Soul Gateway binds to `PORT` on `HOST`, uses `DASHBOARD_PASSWORD` for admin login, manages its own API keys in Postgres, and runs background schedulers (token refresh, pricing refresh). This is the mode used at `soul.axiologic.dev`.
+Dedicated production workspaces should enable the agent with Ploinky local auth, for example:
 
-### Embedded profile
+```bash
+ploinky enable agent proxies/soul-gateway --auth pwd --user admin --password "$PLOINKY_ADMIN_PASSWORD" as soul-gateway
+```
 
-Used when Soul Gateway runs as a dependency of another Ploinky agent (typically Explorer). Key differences from standalone:
-
-- `SOUL_GATEWAY_MODE=embedded` — activates router SSO auth and synthetic API key handling.
-- `TRUST_PLOINKY_ROUTER_AUTH=true` — the `requireAdmin` middleware accepts Ploinky router identity via `x-ploinky-auth-info` after verifying the invocation JWT.
-- `DASHBOARD_PASSWORD=""` — management access is through router SSO, not password.
-- `TOKEN_REFRESH_INTERVAL_MS=0`, `PRICING_REFRESH_INTERVAL_MS=0` — background schedulers disabled.
-- `ENCRYPTION_KEY` and `ADMIN_SESSION_SIGNING_KEY` are agent-scoped generated secrets.
-- `SOUL_GATEWAY_API_KEY` is a workspace-scoped generated secret so consumer agents receive the same value by env name. Ploinky injects `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY` so Achilles can distinguish generated embedded credentials from explicit standalone credentials.
-- The embedded `/services/soul-gateway/v1/` router service uses router `auth: "none"` because sibling agents authenticate with the generated Soul Gateway API key; management routes remain router-protected.
-- `LOCAL_LLM_BASE_URL` defaults to `https://lmstudio.axiologic.dev/v1` and `LOCAL_LLM_MODEL` defaults to `gemma-3-12b-it` for embedded local LLM bootstrap.
-- `LOCAL_LLM_DISCOVERY_MODE=single` registers only the configured model by default. Use `auto` only when the endpoint can reliably serve every model it advertises.
-- `LOCAL_LLM_ALIASES` defaults to `fast,axl/fast,plan,code,write,deep,ultra` so existing Explorer-adjacent agents that request Achilles default models resolve to the embedded local model out of the box.
-- `LOCAL_LLM_API_KEY` is optional and deployment-supplied. When present, it is stored as an encrypted provider account; when absent, the embedded provider uses no-auth local endpoint semantics.
-- If `LOCAL_LLM_API_KEY` is added after the first embedded startup, the next startup reconciles the existing `local-llm` provider by storing or refreshing the encrypted account and upgrading the provider auth strategy to `api_key`.
-- `OAUTH_ADAPTERS_ENABLED=""` — OAuth adapters disabled by default.
-- Embedded generated-secret migration intentionally does not preserve old embedded encrypted provider/account data. Existing embedded workspaces should re-enter provider credentials after upgrade if they used the old derived-secret labels.
-
-Profile selection is workspace-wide via `ploinky profile <name>`. See DS016 for the full embedded mode contract.
+Public `/v1/*` compatibility is maintained by reverse-proxy rewrite rules that route `soul.axiologic.dev/v1/*` to `/services/soul-gateway/v1/*`.
 
 ## Related specs
 
@@ -219,4 +216,4 @@ Profile selection is workspace-wide via `ploinky profile <name>`. See DS016 for 
 - **DS006** — the database schema that the migration step creates.
 - **DS009** — the retry knobs this spec sets defaults for.
 - **DS015** — the background jobs (partition maintenance, log retention purge) that this spec starts.
-- **DS016** — the embedded mode contract (router SSO, synthetic API key, HTTP services, settings plugin).
+- **DS016** — the Ploinky agent mode contract (router auth, workspace API key, HTTP services, settings dashboard entry).

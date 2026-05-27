@@ -10,11 +10,12 @@ The dashboard shell served at `/management` loads its frontend entrypoint from `
 
 ## Dashboard authentication
 
-- password-protected admin login (rate-limited: 5 attempts/minute/IP)
-- HMAC-signed stateless session token (format: `{exp}.{csrfToken}.{hmac}`)
-- CSRF protection for every state-changing management request via `X-CSRF-Token` matching the `csrfToken` embedded in the validated session token (no conditional bypass)
-- signing key resolved from `ADMIN_SESSION_SIGNING_KEY` or `ENCRYPTION_KEY` (no fallback — throws if both are missing)
-- timing-safe HMAC comparison to prevent side-channel attacks
+- management routes are exposed through Ploinky's protected HTTP service at `/services/soul-gateway/management/`
+- Ploinky login is the only browser-facing admin login; Soul Gateway does not create dashboard sessions
+- management auth validates `x-ploinky-auth-info` plus the Ploinky invocation JWT and requires an admin role
+- dashboard cookies, bearer dashboard tokens, and caller-supplied identity headers are rejected as management auth
+- compatibility endpoints under `/management/auth/*` return HTTP 410 with instructions to use Ploinky login
+- state-changing management requests do not require Soul Gateway CSRF tokens; the protected-service invocation JWT is the request binding
 - live-refresh behavior on data-backed tabs
 
 ## Provider management

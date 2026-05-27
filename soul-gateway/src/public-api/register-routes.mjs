@@ -14,6 +14,7 @@
 import { runRouteRequest } from '../runtime/route/run-route-request.mjs';
 import { sendJson } from '../core/responses.mjs';
 import { enrichModelMetadata } from '../runtime/policy/model-metadata-classifier.mjs';
+import { authenticateMiddleware } from '../runtime/route/authenticate.mjs';
 
 /**
  * Register public API routes on an existing path router.
@@ -32,7 +33,9 @@ export function registerPublicApiRoutes(router, appCtx) {
     router.add('POST', '/v1/responses', (ctx) =>
         handleCompletionRoute(ctx, 'openai_responses')
     );
-    router.add('GET', '/v1/models', (ctx) => handleListModels(ctx));
+    router.add('GET', '/v1/models', (ctx) =>
+        handleAuthenticatedListModels(ctx)
+    );
 }
 
 // ── Route handlers ──────────────────────────────────────────────────
@@ -47,6 +50,21 @@ async function handleCompletionRoute(ctx, routeKind) {
         res: ctx.res,
         appCtx: ctx.appCtx,
         routeKind,
+    });
+}
+
+async function handleAuthenticatedListModels(ctx) {
+    const authCtx = {
+        requestId: ctx.requestId,
+        appCtx: ctx.appCtx,
+        http: { req: ctx.req, res: ctx.res },
+        metadata: {},
+        log: ctx.appCtx?.log,
+    };
+
+    await authenticateMiddleware()(authCtx, async () => {
+        ctx.auth = authCtx.auth;
+        handleListModels(ctx);
     });
 }
 
