@@ -189,6 +189,7 @@ If the grace period expires with requests still in flight, the remaining connect
 
 Soul Gateway declares one default Ploinky-agent profile:
 
+- It runs on the shared `docker.io/assistos/ploinky-node:24-bookworm-tools` image used by the Explorer dependency graph.
 - `PORT=7000`.
 - `ports: []` so the public interface is the Ploinky router, not the internal container port.
 - `SOUL_GATEWAY_API_KEY` is a workspace-scoped generated secret so consumer agents receive the same value by env name.
