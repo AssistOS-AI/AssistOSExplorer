@@ -8,13 +8,8 @@ export function readEnv(processEnv = process.env) {
         PORT: int(processEnv.PORT, 7000),
         HOST: str(processEnv.HOST, '127.0.0.1'),
 
-        // Database
-        DATABASE_URL: str(processEnv.DATABASE_URL, null),
-        PG_POOL_MAX: int(processEnv.PG_POOL_MAX, 20),
-        PG_POOL_MIN: int(processEnv.PG_POOL_MIN, 2),
-        PG_IDLE_TIMEOUT_MS: int(processEnv.PG_IDLE_TIMEOUT_MS, 30_000),
-        PG_CONNECT_TIMEOUT_MS: int(processEnv.PG_CONNECT_TIMEOUT_MS, 2000),
-        PG_MAX_USES: int(processEnv.PG_MAX_USES, 10_000),
+        // Database (embedded SQLite)
+        SQLITE_PATH: str(processEnv.SQLITE_PATH, './data/soul-gateway.sqlite3'),
 
         // Security
         ENCRYPTION_KEY: str(processEnv.ENCRYPTION_KEY, null),

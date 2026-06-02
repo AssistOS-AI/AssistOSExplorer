@@ -36,15 +36,15 @@ export async function loadRuntimeSnapshot(appCtx) {
     ] = await Promise.all([
         pool.query(`
       SELECT m.*, p.provider_key
-      FROM soul_gateway.models m
-      LEFT JOIN soul_gateway.providers p ON p.id = m.provider_id
+      FROM models m
+      LEFT JOIN providers p ON p.id = m.provider_id
       WHERE m.enabled = true
       ORDER BY m.display_name ASC
     `),
         pool.query(`
       SELECT ma.alias, m.model_key
-      FROM soul_gateway.model_aliases ma
-      JOIN soul_gateway.models m ON m.id = ma.model_id
+      FROM model_aliases ma
+      JOIN models m ON m.id = ma.model_id
       WHERE m.enabled = true
     `),
         pool.query(`
@@ -52,27 +52,27 @@ export async function loadRuntimeSnapshot(appCtx) {
              mc.enabled AS child_enabled, mc.settings,
              m.model_key AS child_model_key,
              m.enabled AS child_model_enabled
-      FROM soul_gateway.model_children mc
-      JOIN soul_gateway.models m ON m.id = mc.child_model_id
+      FROM model_children mc
+      JOIN models m ON m.id = mc.child_model_id
       WHERE mc.enabled = true
       ORDER BY mc.parent_model_id, mc.priority ASC
     `),
         pool.query(`
-      SELECT * FROM soul_gateway.providers
+      SELECT * FROM providers
       WHERE enabled = true
     `),
         pool.query(`
       SELECT mb.*, mw.module_path, mw.source_type,
              mw.default_settings AS middleware_default_settings
-      FROM soul_gateway.middleware_bindings mb
-      LEFT JOIN soul_gateway.middlewares mw ON mw.middleware_key = mb.middleware_key
+      FROM middleware_bindings mb
+      LEFT JOIN middlewares mw ON mw.middleware_key = mb.middleware_key
       WHERE mb.enabled = true
       ORDER BY mb.scope, mb.target_id NULLS FIRST, mb.sort_order ASC
     `),
         pool.query(`
       SELECT cd.model_id, m.model_key
-      FROM soul_gateway.model_cooldowns cd
-      JOIN soul_gateway.models m ON m.id = cd.model_id
+      FROM model_cooldowns cd
+      JOIN models m ON m.id = cd.model_id
       WHERE cd.cleared_at IS NULL AND cd.expires_at > now()
     `),
     ]);

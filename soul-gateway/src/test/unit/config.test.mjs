@@ -8,10 +8,9 @@ describe('readEnv', () => {
         const env = readEnv({});
         assert.equal(env.PORT, 7000);
         assert.equal(env.HOST, '127.0.0.1');
-        assert.equal(env.PG_POOL_MAX, 20);
+        assert.equal(env.SQLITE_PATH, './data/soul-gateway.sqlite3');
         assert.equal(env.DEFAULT_RPM_LIMIT, 60);
         assert.equal(env.DEFAULT_DAILY_BUDGET_USD, 2.0);
-        assert.equal(env.DATABASE_URL, null);
         assert.equal(env.SHUTDOWN_GRACE_MS, 30_000);
         assert.equal(
             env.LOCAL_LLM_ALIASES,

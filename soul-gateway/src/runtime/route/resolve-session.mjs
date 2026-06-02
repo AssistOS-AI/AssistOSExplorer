@@ -20,9 +20,8 @@ export function resolveSessionMiddleware() {
     return async function resolveSessionMw(ctx, next) {
         const apiKey = ctx.auth?.apiKeyRecord;
         const pool = ctx.appCtx?.pool;
-        const env = ctx.appCtx?.config?.env || {};
 
-        if (!apiKey || !pool || !env.DATABASE_URL) {
+        if (!apiKey || !pool) {
             // No DB → no persistent session.  Build a synthetic identity-only
             // session view so downstream middleware (rate limiter, loop detector)
             // still has a stable session key.

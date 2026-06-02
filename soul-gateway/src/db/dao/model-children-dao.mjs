@@ -7,7 +7,9 @@
  * the snapshot loader; the management API mutates it directly.
  */
 
-const TABLE = 'soul_gateway.model_children';
+import { randomUUID } from 'node:crypto';
+
+const TABLE = 'model_children';
 
 export async function create(
     pool,
@@ -15,8 +17,8 @@ export async function create(
 ) {
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
-       (parent_model_id, child_model_id, priority, enabled, settings)
-     VALUES ($1, $2, $3, $4, $5)
+       (parent_model_id, child_model_id, priority, enabled, settings, id)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
         [
             parentModelId,
@@ -24,6 +26,7 @@ export async function create(
             priority,
             enabled,
             JSON.stringify(settings),
+            randomUUID(),
         ]
     );
     return rows[0];
@@ -41,7 +44,7 @@ export async function listForParent(
             m.enabled AS child_enabled,
             m.strategy_kind AS child_strategy_kind
      FROM ${TABLE} mc
-     JOIN soul_gateway.models m ON m.id = mc.child_model_id
+     JOIN models m ON m.id = mc.child_model_id
      WHERE mc.parent_model_id = $1 ${enabledClause}
      ORDER BY mc.priority ASC`,
         [parentModelId]
@@ -54,8 +57,8 @@ export async function listAll(pool) {
         `SELECT mc.*, parent.model_key AS parent_model_key,
             child.model_key AS child_model_key
      FROM ${TABLE} mc
-     JOIN soul_gateway.models parent ON parent.id = mc.parent_model_id
-     JOIN soul_gateway.models child  ON child.id  = mc.child_model_id
+     JOIN models parent ON parent.id = mc.parent_model_id
+     JOIN models child  ON child.id  = mc.child_model_id
      ORDER BY mc.parent_model_id, mc.priority ASC`
     );
     return rows;
@@ -111,14 +114,15 @@ export async function replaceChildren(pool, parentModelId, children) {
         for (const child of children) {
             await client.query(
                 `INSERT INTO ${TABLE}
-           (parent_model_id, child_model_id, priority, enabled, settings)
-         VALUES ($1, $2, $3, $4, $5)`,
+           (parent_model_id, child_model_id, priority, enabled, settings, id)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
                 [
                     parentModelId,
                     child.childModelId,
                     child.priority,
                     child.enabled ?? true,
                     JSON.stringify(child.settings || {}),
+                    randomUUID(),
                 ]
             );
         }

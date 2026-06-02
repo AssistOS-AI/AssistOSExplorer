@@ -82,7 +82,7 @@ async function resolveExplicitSession(
  */
 async function findByExplicitId(pool, explicitSessionId, apiKeyId) {
     const { rows } = await pool.query(
-        `SELECT * FROM soul_gateway.sessions
+        `SELECT * FROM sessions
      WHERE explicit_session_id = $1
        AND api_key_id = $2
        AND status = 'open'

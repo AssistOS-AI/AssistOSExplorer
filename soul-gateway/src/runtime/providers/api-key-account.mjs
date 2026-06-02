@@ -35,7 +35,7 @@ export async function upsertProviderApiKeyAccount({
 
     if (existing) {
         await appCtx.pool.query(
-            `UPDATE soul_gateway.provider_accounts
+            `UPDATE provider_accounts
        SET secret_ciphertext = $2, secret_iv = $3, secret_auth_tag = $4,
            secret_hint = $5, status = 'active', updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL`,

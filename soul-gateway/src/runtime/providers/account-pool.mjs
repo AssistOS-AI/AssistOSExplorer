@@ -13,7 +13,7 @@
 export class AccountPool {
     /**
      * @param {object} deps
-     * @param {object} deps.pool          pg Pool
+     * @param {object} deps.pool          database query facade
      * @param {object} deps.accountsDao   provider-accounts DAO
      * @param {object} deps.log
      */
@@ -256,7 +256,7 @@ export class AccountPool {
 
     async _touchLastUsed(accountId) {
         await this._pool.query(
-            `UPDATE soul_gateway.provider_accounts
+            `UPDATE provider_accounts
        SET last_used_at = now()
        WHERE id = $1 AND deleted_at IS NULL`,
             [accountId]

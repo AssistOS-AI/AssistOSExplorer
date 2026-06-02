@@ -148,7 +148,7 @@ export async function bootstrapSoulGatewayProvider(appCtx) {
     const { config, pool, log } = appCtx;
     const { env } = config;
 
-    if (!env.DATABASE_URL) return;
+    if (!pool) return;
     if (!env.SOUL_GATEWAY_PROVIDER_API_KEY) {
         log.info(
             'SOUL_GATEWAY_PROVIDER_API_KEY not set, skipping Soul Gateway provider bootstrap'

@@ -228,7 +228,7 @@ export async function handleListModelProviders(ctx) {
 
     const { rows } = await pool.query(
         `SELECT id AS provider_id, provider_key, display_name
-     FROM soul_gateway.providers
+     FROM providers
      WHERE enabled = true
      ORDER BY provider_key ASC`
     );
@@ -292,7 +292,10 @@ export async function handleListModelTags(ctx) {
     const { pool } = appCtx;
 
     const { rows } = await pool.query(
-        `SELECT DISTINCT unnest(tags) AS tag FROM soul_gateway.models ORDER BY tag ASC`
+        `SELECT DISTINCT json_each.value AS tag
+     FROM models, json_each(models.tags)
+     WHERE json_each.value IS NOT NULL AND json_each.value <> ''
+     ORDER BY tag ASC`
     );
     const merged = new Set(PREDEFINED_MODEL_TAGS);
     for (const r of rows) {

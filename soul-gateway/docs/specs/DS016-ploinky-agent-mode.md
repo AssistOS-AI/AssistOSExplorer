@@ -33,13 +33,13 @@ The removed `/management/auth/*` endpoints return HTTP 410 with instructions to 
 
 When `SOUL_GATEWAY_API_KEY` is configured, that value is accepted as the managed `workspace-default` key in any host context.
 
-Ploinky normally supplies the key as a workspace-scoped generated secret (`sharedGeneratedSecret: true`) so Soul Gateway and consumer agents receive the same value by env name. When Postgres is configured, the key is idempotently persisted to `api_keys` so request sessions, budgets, and audit rows have a real FK-compatible key id. Without Postgres, the runtime uses an in-memory synthetic record.
+Ploinky normally supplies the key as a workspace-scoped generated secret (`sharedGeneratedSecret: true`) so Soul Gateway and consumer agents receive the same value by env name. When the SQLite database is open, the generated workspace key is idempotently persisted to `api_keys` so request sessions, budgets, and audit rows have a durable, FK-compatible key id. Without a database, the runtime uses an in-memory synthetic record.
 
 Existing database keys remain valid. Existing rows marked with the legacy workspace-default metadata flag are still recognized for migration compatibility, but new behavior is keyed by `workspaceDefault`.
 
 ## Local LLM Bootstrap
 
-`bootstrapLocalLlmProvider` runs when `DATABASE_URL` and an explicit `LOCAL_LLM_BASE_URL` are present. It no longer depends on deployment mode, and the default manifest profile does not enable it implicitly.
+`bootstrapLocalLlmProvider` runs when the SQLite database is open and an explicit `LOCAL_LLM_BASE_URL` is present. It no longer depends on deployment mode, and the default manifest profile does not enable it implicitly.
 
 - `LOCAL_LLM_BASE_URL` sets the OpenAI-compatible endpoint.
 - `LOCAL_LLM_MODEL` selects the single-model fallback when set.
@@ -51,7 +51,7 @@ Existing database keys remain valid. Existing rows marked with the legacy worksp
 
 Explorer deployments treat their local Ploinky-managed Soul Gateway as the reference gateway. If the deployment has a credential for `soul.axiologic.dev`, that remote gateway is registered as a normal provider inside the local gateway rather than replacing the local generated `SOUL_GATEWAY_API_KEY`.
 
-`bootstrapSoulGatewayProvider` runs before the local LLM bootstrap when `DATABASE_URL` and `SOUL_GATEWAY_PROVIDER_API_KEY` are present. In the Ploinky agent manifest, `SOUL_GATEWAY_PROVIDER_API_KEY` is sourced from an operator-provided `SOUL_GATEWAY_API_KEY`, while the container's local `SOUL_GATEWAY_API_KEY` remains the workspace-generated key accepted by `/v1/*`.
+`bootstrapSoulGatewayProvider` runs before the local LLM bootstrap when the SQLite database is open and `SOUL_GATEWAY_PROVIDER_API_KEY` is present. In the Ploinky agent manifest, `SOUL_GATEWAY_PROVIDER_API_KEY` is sourced from an operator-provided `SOUL_GATEWAY_API_KEY`, while the container's local `SOUL_GATEWAY_API_KEY` remains the workspace-generated key accepted by `/v1/*`.
 
 - It creates or reconciles provider key `soul-gateway` with display name `Soul Gateway`, backend `openai-api`, kind `external_api`, auth strategy `api_key`, and base URL `SOUL_GATEWAY_PROVIDER_BASE_URL` (default `https://soul.axiologic.dev/v1`).
 - It stores `SOUL_GATEWAY_PROVIDER_API_KEY` as an encrypted provider API-key account.

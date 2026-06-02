@@ -32,7 +32,6 @@ function makeAppCtx({
     let nextId = 1;
 
     const env = {
-        DATABASE_URL: 'postgres://localhost/test',
         SOUL_GATEWAY_PROVIDER_API_KEY: 'provider-secret',
         SOUL_GATEWAY_PROVIDER_BASE_URL: 'https://soul.axiologic.dev/v1/',
         SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE: 'auto',
@@ -42,7 +41,7 @@ function makeAppCtx({
 
     const pool = {
         async query(sql, params) {
-            if (sql.includes('INSERT INTO soul_gateway.providers')) {
+            if (sql.includes('INSERT INTO providers')) {
                 const row = {
                     id: nextId++,
                     provider_key: params[0],
@@ -64,7 +63,7 @@ function makeAppCtx({
                 providers.push(row);
                 return { rows: [row] };
             }
-            if (sql.includes('UPDATE soul_gateway.providers SET')) {
+            if (sql.includes('UPDATE providers SET')) {
                 const found = providers.find(
                     (provider) => provider.id === params[0]
                 );
@@ -75,11 +74,11 @@ function makeAppCtx({
                 });
                 return { rows: [found] };
             }
-            if (sql.includes('FROM soul_gateway.providers WHERE provider_key')) {
+            if (sql.includes('FROM providers WHERE provider_key')) {
                 const found = providers.find((p) => p.provider_key === params[0]);
                 return { rows: found ? [found] : [] };
             }
-            if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+            if (sql.includes('INSERT INTO provider_accounts')) {
                 const row = {
                     id: nextId++,
                     provider_id: params[0],
@@ -95,7 +94,7 @@ function makeAppCtx({
                 accounts.push(row);
                 return { rows: [row] };
             }
-            if (sql.includes('UPDATE soul_gateway.provider_accounts')) {
+            if (sql.includes('UPDATE provider_accounts')) {
                 const found = accounts.find(
                     (account) => account.id === params[0]
                 );
@@ -107,7 +106,7 @@ function makeAppCtx({
                 found.status = 'active';
                 return { rows: [found] };
             }
-            if (sql.includes('FROM soul_gateway.provider_accounts')) {
+            if (sql.includes('FROM provider_accounts')) {
                 const rows = accounts.filter(
                     (account) => (
                         account.provider_id === params[0] &&
@@ -116,7 +115,7 @@ function makeAppCtx({
                 );
                 return { rows };
             }
-            if (sql.includes('INSERT INTO soul_gateway.models')) {
+            if (sql.includes('INSERT INTO models')) {
                 const row = {
                     id: nextId++,
                     model_key: params[0],
@@ -130,14 +129,14 @@ function makeAppCtx({
                 models.push(row);
                 return { rows: [row] };
             }
-            if (sql.includes('FROM soul_gateway.models WHERE provider_id')) {
+            if (sql.includes('FROM models WHERE provider_id')) {
                 const rows = models.filter((model) => (
                     model.provider_id === params[0] &&
                     (params.length < 2 || model.enabled === params[1])
                 ));
                 return { rows };
             }
-            if (sql.includes('INSERT INTO soul_gateway.model_aliases')) {
+            if (sql.includes('INSERT INTO model_aliases')) {
                 const row = {
                     id: nextId++,
                     alias: params[0],
@@ -146,13 +145,13 @@ function makeAppCtx({
                 aliases.push(row);
                 return { rows: [row] };
             }
-            if (sql.includes('UPDATE soul_gateway.model_aliases')) {
+            if (sql.includes('UPDATE model_aliases')) {
                 const found = aliases.find((alias) => alias.alias === params[0]);
                 if (!found) return { rows: [] };
                 found.model_id = params[1];
                 return { rows: [found] };
             }
-            if (sql.includes('FROM soul_gateway.model_aliases')) {
+            if (sql.includes('FROM model_aliases')) {
                 const found = aliases.find((alias) => alias.alias === params[0]);
                 const model = found
                     ? models.find((entry) => entry.id === found.model_id)

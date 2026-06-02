@@ -51,9 +51,9 @@ describe('encryption', () => {
     });
 
     it('returns Buffer fields with AES-256-GCM-shaped lengths', () => {
-        // Locked in to prevent the bytea round-trip regression: pg writes
-        // hex strings into bytea columns by UTF-8 encoding (doubling the
-        // byte count), so the IV/auth-tag lengths must come from raw
+        // Locked in to prevent the BLOB round-trip regression: encoding the
+        // bytes as hex strings instead of raw bytes doubles the byte count,
+        // so the IV/auth-tag lengths must come from raw
         // Buffers, not hex strings. A 12-byte IV and 16-byte tag is the
         // standard AES-256-GCM shape; if encrypt() ever returns hex
         // strings again the lengths jump to 24 and 32 and this test
@@ -66,16 +66,16 @@ describe('encryption', () => {
         assert.equal(authTag.length, 16, 'GCM auth tag must be 16 bytes');
     });
 
-    it('round-trips through a simulated bytea column (Buffer in, Buffer out)', () => {
-        // Mirrors what node-postgres does for bytea columns: the encoded
+    it('round-trips through a simulated BLOB column (Buffer in, Buffer out)', () => {
+        // Mirrors what the SQLite facade does for BLOB columns: the encoded
         // Buffer goes in unchanged and comes back out as a Buffer of
         // exactly the same bytes. If decrypt() ever silently re-decodes
         // its inputs as hex strings, this test fails.
         const plaintext = 'nvapi-NFijszSNRSlZxkY-bXsL0KVEeq4OJcn';
         const { ciphertext, iv, authTag } = encrypt(plaintext, key);
 
-        // Simulate persisting + reading back from a bytea column —
-        // node-postgres returns identical Buffer instances, so a deep
+        // Simulate persisting + reading back from a BLOB column —
+        // the SQLite facade returns identical Buffer instances, so a deep
         // copy is the closest thing to a "fresh" row from the DB.
         const persistedCiphertext = Buffer.from(ciphertext);
         const persistedIv = Buffer.from(iv);

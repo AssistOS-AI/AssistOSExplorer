@@ -5,8 +5,9 @@
  * ENCRYPTION_KEY env var.  When no key is configured, one is
  * auto-generated and persisted to DATA_DIR/encryption.key.
  *
- * encrypt() returns Buffers (not hex strings) so the values map
- * cleanly onto Postgres `bytea` columns via node-postgres without any
+ * encrypt() returns Buffers (not hex strings) so the values map cleanly
+ * onto SQLite `BLOB` columns. The database facade normalizes SQLite
+ * `Uint8Array` reads back to `Buffer` before decryption, so there is no
  * encoding dance. Callers that need to persist the result through a
  * text/JSON channel (e.g. OAuthCredentialStore) must explicitly
  * convert the Buffers to hex on write and back on read.

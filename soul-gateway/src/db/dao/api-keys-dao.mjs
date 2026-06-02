@@ -2,9 +2,10 @@
  * DAO for the api_keys table.
  * Pure data-access functions — no business logic.
  */
+import { randomUUID } from 'node:crypto';
 import { updateRow } from './helpers/query-builder.mjs';
 
-const TABLE = 'soul_gateway.api_keys';
+const TABLE = 'api_keys';
 
 export async function create(
     pool,
@@ -23,12 +24,13 @@ export async function create(
         metadata = {},
     }
 ) {
+    const id = randomUUID();
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
        (label, key_hash, key_ciphertext, key_iv, key_auth_tag, key_hint,
         rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
-        expires_at, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        expires_at, metadata, id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
         [
             label,
@@ -43,6 +45,7 @@ export async function create(
             monthlyBudgetUsd,
             expiresAt,
             JSON.stringify(metadata),
+            id,
         ]
     );
     return rows[0];

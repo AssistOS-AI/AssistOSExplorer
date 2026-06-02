@@ -3,7 +3,9 @@
  * Pure data-access functions — no business logic.
  */
 
-const TABLE = 'soul_gateway.model_cooldowns';
+import { randomUUID } from 'node:crypto';
+
+const TABLE = 'model_cooldowns';
 
 export async function create(
     pool,
@@ -20,8 +22,8 @@ export async function create(
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
        (model_id, source_account_id, request_id,
-        reason_type, reason_message, expires_at, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+        reason_type, reason_message, expires_at, metadata, id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
         [
             modelId,
@@ -31,6 +33,7 @@ export async function create(
             reasonMessage,
             expiresAt,
             JSON.stringify(metadata),
+            randomUUID(),
         ]
     );
     return rows[0];
@@ -59,7 +62,7 @@ export async function listActive(pool) {
     const { rows } = await pool.query(
         `SELECT cd.*, m.model_key
      FROM ${TABLE} cd
-     JOIN soul_gateway.models m ON m.id = cd.model_id
+     JOIN models m ON m.id = cd.model_id
      WHERE cd.cleared_at IS NULL
        AND cd.expires_at > now()
      ORDER BY cd.expires_at ASC`

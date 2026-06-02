@@ -2,9 +2,10 @@
  * DAO for the blacklist_rules table.
  * Pure data-access functions — no business logic.
  */
+import { randomUUID } from 'node:crypto';
 import { updateRow } from './helpers/query-builder.mjs';
 
-const TABLE = 'soul_gateway.blacklist_rules';
+const TABLE = 'blacklist_rules';
 
 export async function create(
     pool,
@@ -21,8 +22,8 @@ export async function create(
 ) {
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
-       (rule_key, description, match_type, pattern, case_sensitive, priority, enabled, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (rule_key, description, match_type, pattern, case_sensitive, priority, enabled, metadata, id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
         [
             ruleKey,
@@ -33,6 +34,7 @@ export async function create(
             priority,
             enabled,
             JSON.stringify(metadata),
+            randomUUID(),
         ]
     );
     return rows[0];

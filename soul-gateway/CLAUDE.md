@@ -66,7 +66,7 @@ Production runs at:
 - SSH key: `~/proxies_server_private_key.pem`
 - Remote workspace: `~/soulGateway`
 - Remote source checkout: `~/code/proxies`
-- Expected production database: `soul_gateway_v2`
+- Expected production database file: `/data/soul-gateway.sqlite3` inside the Soul Gateway container (embedded SQLite)
 
 Direct SSH is for status/debug by default. Do not modify production state over SSH unless the user explicitly asks for that specific operation.
 
@@ -84,4 +84,4 @@ Deployment and admin workflows live under `../.github/workflows/`:
 - `destroy-soul-gateway.yml` (`Destroy Soul Gateway`)
 - `soul-gateway-admin.yml` (`Soul Gateway Admin`)
 
-Prefer GitHub Actions for deploy/restart/status tasks. After any deploy or restart, verify `/public-services/soul-gateway-health/` through the Ploinky router, container status, and that the running environment still points at `PGDATABASE=soul_gateway_v2`.
+Prefer GitHub Actions for deploy/restart/status tasks. After any deploy or restart, verify `/public-services/soul-gateway-health/` through the Ploinky router and container status, and confirm the SQLite file exists at `${SQLITE_PATH:-/data/soul-gateway.sqlite3}` inside the Soul Gateway container.

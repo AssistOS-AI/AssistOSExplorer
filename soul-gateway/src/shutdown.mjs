@@ -10,7 +10,7 @@
  *  6. Abort remaining requests
  *  7. Flush pending audit updates
  *  8. Call shutdown() on current provider/middleware generations
- *  9. Close pg pool
+ *  9. Close the SQLite database
  * 10. Exit
  */
 export async function shutdown(appCtx, server, reason = 'SIGTERM') {

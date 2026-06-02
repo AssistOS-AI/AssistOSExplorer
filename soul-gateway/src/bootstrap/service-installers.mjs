@@ -69,7 +69,7 @@ export async function installObservabilityServices(appCtx) {
     auditLogWriter.setBroadcastHub(broadcastHub);
     appCtx.services.auditLogWriter = auditLogWriter;
 
-    if (env.DATABASE_URL) {
+    if (pool) {
         appCtx.services.metricsService = new MetricsService(pool);
         appCtx.services.exportService = new ExportService(
             pool,
@@ -118,9 +118,8 @@ export async function installExecutionServices(appCtx) {
 
 export async function installProviderAuthServices(appCtx) {
     const { config, pool, log } = appCtx;
-    const { env } = config;
 
-    if (!env.DATABASE_URL) {
+    if (!pool) {
         return;
     }
 
@@ -175,11 +174,10 @@ export async function installProviderAuthServices(appCtx) {
 }
 
 export async function installSnapshotServices(appCtx) {
-    const { config, log } = appCtx;
-    const { env } = config;
+    const { log } = appCtx;
 
     appCtx.services.reloadRuntimeSnapshot = async () => {
-        if (!env.DATABASE_URL) {
+        if (!appCtx.pool) {
             return appCtx.services.snapshot || null;
         }
 
@@ -189,7 +187,7 @@ export async function installSnapshotServices(appCtx) {
         return snapshot;
     };
 
-    if (env.DATABASE_URL) {
+    if (appCtx.pool) {
         const snapshot = await appCtx.services.reloadRuntimeSnapshot();
         log.info('runtime snapshot loaded', {
             generation: snapshot.generation,
@@ -198,9 +196,9 @@ export async function installSnapshotServices(appCtx) {
 }
 
 export async function reconcileProvidersOnStartup(appCtx) {
-    const { config, pool, log } = appCtx;
+    const { pool, log } = appCtx;
 
-    if (!config.env.DATABASE_URL) {
+    if (!pool) {
         return {
             scanned: 0,
             reconciled: 0,
@@ -262,7 +260,6 @@ export async function reconcileProvidersOnStartup(appCtx) {
 
 export async function installMiddlewareServices(appCtx) {
     const { config, pool, log } = appCtx;
-    const { env } = config;
     const builtinDir = new URL('../runtime/middleware/builtin', import.meta.url)
         .pathname;
     const extensionsDir = config.env.EXTENSIONS_DIR || './extensions';
@@ -276,14 +273,14 @@ export async function installMiddlewareServices(appCtx) {
 
     const catalog = new MiddlewareCatalog({
         gcGraceMs: config.defaults.middlewareGenerationGcGraceMs,
-        pool: env.DATABASE_URL ? pool : null,
+        pool: pool,
         builtinDir,
     });
 
     appCtx.services.middlewareCatalog = catalog;
     appCtx.services.reloadMiddlewareCatalog = async () => {
         const nextGeneration = await catalog.rescan({
-            pool: env.DATABASE_URL ? pool : null,
+            pool: pool,
             builtinDir,
         });
 
@@ -296,7 +293,7 @@ export async function installMiddlewareServices(appCtx) {
                         ext.manifest,
                         ext.module,
                         ext.checksum,
-                        env.DATABASE_URL ? pool : null
+                        pool
                     );
                     extensionCount++;
                 }

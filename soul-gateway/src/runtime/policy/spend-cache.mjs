@@ -6,7 +6,7 @@
  * is only needed when the cache goes stale.
  */
 
-const TABLE = 'soul_gateway.audit_logs';
+const TABLE = 'audit_logs';
 
 export class SpendCache {
     /**
@@ -71,7 +71,7 @@ export class SpendCache {
      * Refresh cache for a key by querying the database.
      *
      * @param {string} keyId
-     * @param {object} pool  pg Pool
+     * @param {object} pool  database query facade
      */
     async refresh(keyId, pool) {
         const now = new Date();
@@ -87,13 +87,13 @@ export class SpendCache {
 
         const [dailyResult, monthlyResult] = await Promise.all([
             pool.query(
-                `SELECT COALESCE(SUM(total_cost_usd), 0)::float AS total
+                `SELECT COALESCE(SUM(total_cost_usd), 0) AS total
          FROM ${TABLE}
          WHERE api_key_id = $1 AND started_at >= $2`,
                 [keyId, startOfDay]
             ),
             pool.query(
-                `SELECT COALESCE(SUM(total_cost_usd), 0)::float AS total
+                `SELECT COALESCE(SUM(total_cost_usd), 0) AS total
          FROM ${TABLE}
          WHERE api_key_id = $1 AND started_at >= $2`,
                 [keyId, startOfMonth]

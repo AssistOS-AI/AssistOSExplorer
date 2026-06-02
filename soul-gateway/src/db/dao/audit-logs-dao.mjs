@@ -2,9 +2,10 @@
  * DAO for the audit_logs partitioned table.
  * Pure data-access functions — no business logic.
  */
+import { randomUUID } from 'node:crypto';
 import { toSnake } from './helpers/case-convert.mjs';
 
-const TABLE = 'soul_gateway.audit_logs';
+const TABLE = 'audit_logs';
 
 const INSERTABLE_FIELDS = [
     'startedAt',
@@ -100,8 +101,8 @@ export async function insertStart(
        (started_at, request_id, request_format, status,
         api_key_id, soul_id, agent_name, user_agent,
         session_id, requested_model, streaming,
-        request_headers, request_payload)
-     VALUES ($1, $2, $3, 'in_progress', $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        request_headers, request_payload, log_id)
+     VALUES ($1, $2, $3, 'in_progress', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
         [
             startedAt,
@@ -116,6 +117,7 @@ export async function insertStart(
             streaming,
             JSON.stringify(requestHeaders),
             JSON.stringify(requestPayload),
+            randomUUID(),
         ]
     );
     return rows[0];
@@ -143,6 +145,11 @@ export async function insertCompleted(pool, fields) {
         placeholders.push(`$${values.length + 1}`);
         values.push(JSON_FIELDS.has(key) ? JSON.stringify(fields[key]) : fields[key]);
     }
+
+    // SQLite has no DB-side id default; generate the audit row's log_id here.
+    columns.push('log_id');
+    placeholders.push(`$${values.length + 1}`);
+    values.push(fields.logId || randomUUID());
 
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
@@ -250,7 +257,7 @@ export async function countByFilters(pool, filters = {}) {
         conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const { rows } = await pool.query(
-        `SELECT COUNT(*)::int AS total FROM ${TABLE} ${where}`,
+        `SELECT COUNT(*) AS total FROM ${TABLE} ${where}`,
         params
     );
     return rows[0].total;
@@ -273,12 +280,12 @@ export async function summarizeByApiKey(pool, filters = {}) {
            ) AS key_label,
            COALESCE(keys.key_hint, '') AS key_hint,
            COALESCE(keys.status, 'unknown') AS key_status,
-           COUNT(*)::int AS request_count,
-           COUNT(*) FILTER (WHERE logs.status <> 'succeeded')::int AS error_count,
-           COALESCE(SUM(logs.total_cost_usd), 0)::float AS total_cost,
+           COUNT(*) AS request_count,
+           SUM(CASE WHEN logs.status <> 'succeeded' THEN 1 ELSE 0 END) AS error_count,
+           COALESCE(SUM(logs.total_cost_usd), 0) AS total_cost,
            MAX(logs.started_at) AS last_activity
          FROM ${TABLE} logs
-         LEFT JOIN soul_gateway.api_keys keys
+         LEFT JOIN api_keys keys
            ON keys.id = logs.api_key_id
          ${where}
          GROUP BY logs.api_key_id, keys.label, keys.key_hint, keys.status
@@ -289,61 +296,25 @@ export async function summarizeByApiKey(pool, filters = {}) {
 }
 
 /**
- * Ensure a monthly partition exists for the given date.
- * Partitions are named audit_logs_YYYY_MM.
+ * SQLite stores audit logs in a single table; there is no monthly partition
+ * to create. Kept as a no-op returning the table name so callers that expected
+ * a partition name during the partitioned-table era keep working.
  */
-export async function ensurePartition(pool, date) {
-    const year = date.getUTCFullYear();
-    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const partName = `audit_logs_${year}_${month}`;
-
-    const nextMonth = new Date(Date.UTC(year, date.getUTCMonth() + 1, 1));
-    const fromStr = `${year}-${month}-01`;
-    const toStr = `${nextMonth.getUTCFullYear()}-${String(nextMonth.getUTCMonth() + 1).padStart(2, '0')}-01`;
-
-    await pool.query(
-        `CREATE TABLE IF NOT EXISTS soul_gateway.${partName}
-     PARTITION OF ${TABLE}
-     FOR VALUES FROM ('${fromStr}') TO ('${toStr}')`
-    );
-    return partName;
+export async function ensurePartition() {
+    return 'audit_logs';
 }
 
 /**
- * Drop partitions older than the given retention cutoff date.
- * Returns the names of dropped partitions.
+ * Delete audit rows older than the given retention cutoff date.
+ * Returns ['audit_logs'] when rows were removed, [] otherwise, mirroring the
+ * old "dropped partitions" contract for callers/logs.
  */
 export async function dropExpiredPartitions(pool, cutoffDate) {
-    const { rows } = await pool.query(
-        `SELECT schemaname, tablename FROM pg_tables
-     WHERE schemaname = 'soul_gateway'
-       AND tablename LIKE 'audit_logs_%'
-     ORDER BY tablename ASC`
+    const result = await pool.query(
+        `DELETE FROM ${TABLE} WHERE started_at < $1`,
+        [cutoffDate.toISOString()]
     );
-
-    const cutoffYear = cutoffDate.getUTCFullYear();
-    const cutoffMonth = cutoffDate.getUTCMonth() + 1;
-    const dropped = [];
-
-    for (const row of rows) {
-        const match = row.tablename.match(/^audit_logs_(\d{4})_(\d{2})$/);
-        if (!match) continue;
-
-        const partYear = parseInt(match[1], 10);
-        const partMonth = parseInt(match[2], 10);
-
-        if (
-            partYear < cutoffYear ||
-            (partYear === cutoffYear && partMonth < cutoffMonth)
-        ) {
-            await pool.query(
-                `DROP TABLE IF EXISTS soul_gateway.${row.tablename}`
-            );
-            dropped.push(row.tablename);
-        }
-    }
-
-    return dropped;
+    return result.rowCount > 0 ? ['audit_logs'] : [];
 }
 
 // ── internal helpers ─────────────────────────────────────────────────
@@ -379,7 +350,7 @@ function buildFilterClauses(filters) {
     }
     if (filters.keyword) {
         conditions.push(
-            `(response_excerpt ILIKE $${idx} OR error_message ILIKE $${idx})`
+            `(response_excerpt LIKE $${idx} COLLATE NOCASE OR error_message LIKE $${idx} COLLATE NOCASE)`
         );
         params.push(`%${filters.keyword}%`);
         idx++;

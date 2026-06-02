@@ -3,12 +3,14 @@
  * Pure data-access functions — no business logic.
  */
 
-const TABLE = 'soul_gateway.model_aliases';
+import { randomUUID } from 'node:crypto';
+
+const TABLE = 'model_aliases';
 
 export async function create(pool, { alias, modelId }) {
     const { rows } = await pool.query(
-        `INSERT INTO ${TABLE} (alias, model_id) VALUES ($1, $2) RETURNING *`,
-        [alias, modelId]
+        `INSERT INTO ${TABLE} (alias, model_id, id) VALUES ($1, $2, $3) RETURNING *`,
+        [alias, modelId, randomUUID()]
     );
     return rows[0];
 }
@@ -17,7 +19,7 @@ export async function findByAlias(pool, alias) {
     const { rows } = await pool.query(
         `SELECT ma.*, m.model_key
      FROM ${TABLE} ma
-     JOIN soul_gateway.models m ON m.id = ma.model_id
+     JOIN models m ON m.id = ma.model_id
      WHERE ma.alias = $1`,
         [alias]
     );

@@ -3,11 +3,10 @@ import { readEnv } from './config/env.mjs';
 import { buildConfig } from './config/app-config.mjs';
 import { createLogger } from './core/logger.mjs';
 import { createAppContext } from './core/app-context.mjs';
-import { createPgPool, ensureSchema } from './db/pool.mjs';
+import { openDatabase, initializeSchema } from './db/sqlite-db.mjs';
 import { createRouter } from './core/path-router.mjs';
 import { createHttpServer } from './core/http-server.mjs';
 import { requireAdmin } from './runtime/security/dashboard-auth.mjs';
-import { runMigrations } from './db/migrator.mjs';
 import { startBackgroundJobs } from './background/scheduler.mjs';
 import {
     installBackendCatalogServices,
@@ -35,9 +34,8 @@ import {
  * Boot order follows the design doc §14.1:
  *  1. readEnv() and buildConfig()
  *  2. initialize logger
- *  3. create PostgreSQL pool
- *  4. acquire migration lock and run migrations
- *  5. initialize subsystem services
+ *  3. open SQLite database and initialize schema
+ *  4. initialize subsystem services
  *  6. register OAuth adapters and reconcile provider catalogs
  *  7. load runtime snapshot
  *  8. start background jobs
@@ -56,19 +54,10 @@ export async function bootstrap() {
 
     log.info('booting', { host: env.HOST, port: env.PORT });
 
-    // 2. Database
-    const pool = createPgPool(config);
-    if (env.DATABASE_URL) {
-        await ensureSchema(pool);
-        log.info('database connected');
-
-        // 2b. Run migrations
-        const migrationsDir = new URL('./db/migrations', import.meta.url)
-            .pathname;
-        await runMigrations(pool, migrationsDir, log);
-    } else {
-        log.warn('DATABASE_URL not set — running without database');
-    }
+    // 2. Database — embedded SQLite inside the agent container
+    const pool = await openDatabase(env);
+    await initializeSchema(pool);
+    log.info('sqlite database initialized', { path: env.SQLITE_PATH });
 
     // 3. Application context
     const appCtx = createAppContext({ config, pool, log });
@@ -134,7 +123,7 @@ async function handleHealthFull(ctx) {
     const uptime = (Date.now() - ctx.appCtx.startedAt) / 1000;
     let dbOk = false;
     try {
-        if (ctx.appCtx.pool && ctx.appCtx.config.env.DATABASE_URL) {
+        if (ctx.appCtx.pool) {
             await ctx.appCtx.pool.query('SELECT 1');
             dbOk = true;
         }

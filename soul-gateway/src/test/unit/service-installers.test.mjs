@@ -21,7 +21,6 @@ describe('service installers extension integration', () => {
         appCtx = {
             config: {
                 env: {
-                    DATABASE_URL: null,
                     EXTENSIONS_DIR: tmpDir,
                 },
                 defaults: {
@@ -220,9 +219,7 @@ describe('reconcileProvidersOnStartup', () => {
         const calls = [];
         const appCtx = {
             config: {
-                env: {
-                    DATABASE_URL: 'postgres://example.test/db',
-                },
+                env: {},
             },
             pool: {},
             services: {},
@@ -331,9 +328,7 @@ describe('reconcileProvidersOnStartup', () => {
     it('fails startup when reconciliation cannot seed an eligible provider', async () => {
         const appCtx = {
             config: {
-                env: {
-                    DATABASE_URL: 'postgres://example.test/db',
-                },
+                env: {},
             },
             pool: {},
             services: {},

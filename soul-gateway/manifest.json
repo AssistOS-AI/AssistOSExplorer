@@ -1,9 +1,11 @@
 {
-    "container": "docker.io/assistos/ploinky-node:24-bookworm-tools",
-    "agent": "bash /code/startup.sh",
-    "cli": "bash /code/cli.sh",
+    "container": "docker.io/assistos/soul-gateway:node24-sqlite",
+    "agent": "bash /opt/soul-gateway/startup.sh",
+    "cli": "bash /opt/soul-gateway/cli.sh",
     "about": "Soul Gateway — Ploinky-managed LLM proxy with Soul Family policies, full content logging, and AchillesIDE settings",
-    "enable": ["postgres"],
+    "volumes": {
+        ".ploinky/data/soul-gateway": "/data"
+    },
     "readiness": {
         "protocol": "tcp"
     },
@@ -36,25 +38,10 @@
                     "default": "https://proxy.axiologic.dev",
                     "description": "CLIProxyAPI upstream URL"
                 },
-                "PGHOST": {
+                "SQLITE_PATH": {
                     "required": false,
-                    "default": "host.containers.internal"
-                },
-                "PGPORT": {
-                    "required": false,
-                    "default": "5432"
-                },
-                "PGUSER": {
-                    "required": false,
-                    "default": "postgres"
-                },
-                "PGPASSWORD": {
-                    "required": false,
-                    "default": "postgres"
-                },
-                "PGDATABASE": {
-                    "required": false,
-                    "default": "postgres"
+                    "default": "/data/soul-gateway.sqlite3",
+                    "description": "SQLite database path inside the Soul Gateway agent container"
                 },
                 "ENCRYPTION_KEY": {
                     "required": false,
@@ -212,7 +199,7 @@
                 }
             },
             "ports": [],
-            "install": "bash /code/install.sh"
+            "install": "bash /opt/soul-gateway/install.sh"
         }
     }
 }

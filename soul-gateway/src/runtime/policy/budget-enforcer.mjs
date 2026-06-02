@@ -12,7 +12,7 @@
  *
  * @param {object} keyRecord      Database row from api_keys table
  * @param {import('./spend-cache.mjs').SpendCache} spendCache
- * @param {object} pool           pg Pool
+ * @param {object} pool           database query facade
  * @returns {Promise<{ allowed: boolean, dailySpend: number, monthlySpend: number, dailyLimit: number|null, monthlyLimit: number|null }>}
  */
 export async function checkBudget(keyRecord, spendCache, pool) {

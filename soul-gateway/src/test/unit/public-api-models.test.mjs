@@ -158,7 +158,7 @@ function createApiKeyPool() {
             if (sql.includes('WHERE key_hash = $1')) {
                 return { rows: workspaceRow ? [workspaceRow] : [] };
             }
-            if (sql.includes('INSERT INTO soul_gateway.api_keys')) {
+            if (sql.includes('INSERT INTO api_keys')) {
                 workspaceRow = {
                     id: 'workspace-default',
                     label: params[0],
@@ -183,7 +183,6 @@ function createAppCtx(snapshot, services = {}) {
     return {
         config: {
             env: {
-                DATABASE_URL: 'postgresql://example.test/soul',
                 ENCRYPTION_KEY: 'test-encryption-key',
                 SOUL_GATEWAY_API_KEY: TEST_API_KEY,
                 DEFAULT_RPM_LIMIT: 60,

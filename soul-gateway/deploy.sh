@@ -3,7 +3,8 @@ set -e
 
 # Soul Gateway remote deployment script
 # Called by GH Actions with env vars:
-#   PGPASSWORD, DEFAULT_PROXY_API_KEY, PLOINKY_ADMIN_PASSWORD
+#   DEFAULT_PROXY_API_KEY, PLOINKY_ADMIN_PASSWORD
+# Persistence is embedded SQLite inside the agent container (no external DB).
 
 WORKSPACE="$HOME/soulGateway"
 PLOINKY="$HOME/ploinky/bin/ploinky"
@@ -55,11 +56,6 @@ fi
 # 5. Set ploinky vars for soul-gateway
 echo "Configuring env vars..."
 $PLOINKY var UPSTREAM_URL "https://proxy.axiologic.dev"
-$PLOINKY var PGHOST "host.containers.internal"
-$PLOINKY var PGPORT "5432"
-$PLOINKY var PGUSER "postgres"
-$PLOINKY var PGPASSWORD "${PGPASSWORD}"
-$PLOINKY var PGDATABASE "soul_gateway_v2"
 $PLOINKY var DEFAULT_PROXY_API_KEY "${DEFAULT_PROXY_API_KEY}"
 
 if [ -z "${PLOINKY_ADMIN_PASSWORD:-}" ]; then

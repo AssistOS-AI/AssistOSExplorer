@@ -2,9 +2,10 @@
  * DAO for the middlewares table.
  * Pure data-access functions — no business logic.
  */
+import { randomUUID } from 'node:crypto';
 import { updateRow } from './helpers/query-builder.mjs';
 
-const TABLE = 'soul_gateway.middlewares';
+const TABLE = 'middlewares';
 
 export async function create(
     pool,
@@ -24,8 +25,8 @@ export async function create(
         `INSERT INTO ${TABLE}
        (middleware_key, display_name, source_type,
         module_path, version, checksum,
-        default_settings, enabled, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        default_settings, enabled, metadata, id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      RETURNING *`,
         [
             middlewareKey,
@@ -37,6 +38,7 @@ export async function create(
             JSON.stringify(defaultSettings),
             enabled,
             JSON.stringify(metadata),
+            randomUUID(),
         ]
     );
     return rows[0];
@@ -120,8 +122,8 @@ export async function upsertFromDiscovery(
         `INSERT INTO ${TABLE}
        (middleware_key, display_name, source_type,
         module_path, version, checksum,
-        default_settings, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        default_settings, metadata, id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (middleware_key) DO UPDATE SET
        display_name = EXCLUDED.display_name,
        source_type = EXCLUDED.source_type,
@@ -141,6 +143,7 @@ export async function upsertFromDiscovery(
             checksum,
             JSON.stringify(defaultSettings),
             JSON.stringify(metadata),
+            randomUUID(),
         ]
     );
     return rows[0];

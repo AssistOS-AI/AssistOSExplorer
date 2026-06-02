@@ -584,7 +584,7 @@ async function main() {
         );
         console.log('  delete them with:');
         console.log(
-            `    psql -c "DELETE FROM soul_gateway.models WHERE model_key LIKE 'nvidia-sweep-${runId}/%'"`
+            `    sqlite3 "\${SQLITE_PATH:-/data/soul-gateway.sqlite3}" "DELETE FROM models WHERE model_key LIKE 'nvidia-sweep-${runId}/%';"`
         );
     }
 

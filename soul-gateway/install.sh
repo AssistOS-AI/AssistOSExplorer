@@ -1,14 +1,16 @@
 #!/bin/bash
 set -e
 
-CODE_DIR="/code"
-APP_DIR="/app"
-SHARED_DIR="/shared/soul-gateway"
+IMAGE_APP_DIR="${SOUL_GATEWAY_IMAGE_APP_DIR:-/opt/soul-gateway}"
+CODE_DIR="${CODE_DIR:-/code}"
+APP_DIR="${APP_DIR:-/app}"
+DATA_DIR="${DATA_DIR:-/data}"
+CREDENTIALS_DIR="${CREDENTIALS_DIR:-$DATA_DIR/credentials}"
 
 echo "=== Soul Gateway: Install ==="
 
-# Create persistent storage
-mkdir -p "$SHARED_DIR/config" "$SHARED_DIR/data/credentials" "$APP_DIR"
+# Create durable storage (mounted volume) and app directory
+mkdir -p "$DATA_DIR" "$CREDENTIALS_DIR" "$APP_DIR"
 
 ensure_browser_runtime() {
     case "${BROWSER_POOL_SIZE:-0}" in
@@ -32,14 +34,25 @@ ensure_browser_runtime() {
 }
 
 prepare_runtime_dependencies() {
-    for candidate in /code/node_modules /Agent/node_modules; do
-        if [ -d "$candidate/pg" ]; then
+    # Production dependencies are baked into the image; only fall back to an
+    # in-place install when no prepared node_modules tree is available.
+    for candidate in "$IMAGE_APP_DIR/node_modules" /code/node_modules /Agent/node_modules; do
+        if [ -d "$candidate" ]; then
             echo "Using prepared runtime dependencies from $candidate"
-            rm -rf "$APP_DIR/node_modules"
-            ln -s "$candidate" "$APP_DIR/node_modules"
             return
         fi
     done
+
+    if [ -d "$CODE_DIR/src" ]; then
+        rm -rf "$APP_DIR/src"
+        cp -r "$CODE_DIR/src" "$APP_DIR/src"
+        cp -f "$CODE_DIR/package.json" "$APP_DIR/package.json"
+        if [ -f "$CODE_DIR/package-lock.json" ]; then
+            cp -f "$CODE_DIR/package-lock.json" "$APP_DIR/package-lock.json"
+        else
+            rm -f "$APP_DIR/package-lock.json"
+        fi
+    fi
 
     if [ ! -f "$APP_DIR/package.json" ]; then
         return
@@ -53,28 +66,16 @@ prepare_runtime_dependencies() {
     fi
 }
 
-# Copy src/ and package.json
-if [ -d "$CODE_DIR/src" ]; then
-    echo "Copying source from /code/src/"
-    rm -rf "$APP_DIR/src"
-    cp -r "$CODE_DIR/src" "$APP_DIR/src"
-    cp -f "$CODE_DIR/package.json" "$APP_DIR/package.json"
-    if [ -f "$CODE_DIR/package-lock.json" ]; then
-        cp -f "$CODE_DIR/package-lock.json" "$APP_DIR/package-lock.json"
-    else
-        rm -f "$APP_DIR/package-lock.json"
-    fi
-fi
-
-# Install runtime dependencies, including achillesAgentLib for provider/wrapper
-# plugins that depend on it in src-based deployments.
 prepare_runtime_dependencies
 ensure_browser_runtime
 
-# Generate encryption key if not present
-if [ ! -f "$SHARED_DIR/config/encryption.key" ]; then
-    node -e "console.log(require('crypto').randomBytes(32).toString('base64'))" > "$SHARED_DIR/config/encryption.key"
-    echo "Generated encryption key"
+# Generate the encryption key under DATA_DIR so it matches ensureEncryptionKey,
+# which reads/writes DATA_DIR/encryption.key. The app regenerates it on first
+# run if missing; this keeps a stable key across container rebuilds.
+if [ ! -f "$DATA_DIR/encryption.key" ]; then
+    node -e "console.log(require('crypto').randomBytes(32).toString('base64'))" > "$DATA_DIR/encryption.key"
+    chmod 600 "$DATA_DIR/encryption.key"
+    echo "Generated encryption key at $DATA_DIR/encryption.key"
 fi
 
 echo "=== Soul Gateway: Install complete ==="

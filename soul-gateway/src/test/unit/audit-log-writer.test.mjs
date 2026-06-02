@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { AuditLogWriter } from '../../observability/audit-log-writer.mjs';
 
 describe('AuditLogWriter', () => {
-    it('creates the monthly partition before writing a completed audit row', async () => {
+    it('writes a completed audit row and publishes it', async () => {
         const calls = [];
         const pool = {
             async query(sql, params) {
@@ -34,15 +34,10 @@ describe('AuditLogWriter', () => {
 
         assert.equal(row.log_id, 'log-1');
         assert.equal(published.length, 1);
-        assert.match(
-            calls[0].sql,
-            /CREATE TABLE IF NOT EXISTS soul_gateway\.audit_logs_2026_05/
-        );
-        assert.match(calls[0].sql, /FOR VALUES FROM \('2026-05-01'\) TO \('2026-06-01'\)/);
-        assert.match(calls[1].sql, /INSERT INTO soul_gateway\.audit_logs/);
+        assert.match(calls[0].sql, /INSERT INTO audit_logs/);
     });
 
-    it('creates the monthly partition before writing a legacy start row', async () => {
+    it('writes a legacy start row', async () => {
         const calls = [];
         const pool = {
             async query(sql, params) {
@@ -67,10 +62,6 @@ describe('AuditLogWriter', () => {
         });
 
         assert.equal(row.log_id, 'log-2');
-        assert.match(
-            calls[0].sql,
-            /CREATE TABLE IF NOT EXISTS soul_gateway\.audit_logs_2026_05/
-        );
-        assert.match(calls[1].sql, /INSERT INTO soul_gateway\.audit_logs/);
+        assert.match(calls[0].sql, /INSERT INTO audit_logs/);
     });
 });

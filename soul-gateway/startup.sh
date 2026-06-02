@@ -1,14 +1,17 @@
 #!/bin/bash
 set -e
 
-CODE_DIR="/code"
-APP_DIR="/app"
-SHARED_DIR="/shared/soul-gateway"
+IMAGE_APP_DIR="${SOUL_GATEWAY_IMAGE_APP_DIR:-/opt/soul-gateway}"
+CODE_DIR="${CODE_DIR:-/code}"
+APP_DIR="${APP_DIR:-/app}"
+DATA_DIR="${DATA_DIR:-/data}"
+CREDENTIALS_DIR="${CREDENTIALS_DIR:-$DATA_DIR/credentials}"
+SQLITE_PATH="${SQLITE_PATH:-$DATA_DIR/soul-gateway.sqlite3}"
 
 echo "=== Soul Gateway: Starting ==="
 
-# Ensure directories exist
-mkdir -p "$SHARED_DIR/config" "$SHARED_DIR/data" "$APP_DIR"
+# Ensure durable + app directories exist
+mkdir -p "$DATA_DIR" "$CREDENTIALS_DIR" "$APP_DIR"
 
 ensure_browser_runtime() {
     case "${BROWSER_POOL_SIZE:-0}" in
@@ -44,8 +47,8 @@ ensure_browser_runtime() {
 }
 
 prepare_runtime_dependencies() {
-    for candidate in /code/node_modules /Agent/node_modules; do
-        if [ -d "$candidate/pg" ]; then
+    for candidate in "$IMAGE_APP_DIR/node_modules" /code/node_modules /Agent/node_modules; do
+        if [ -d "$candidate" ]; then
             echo "Using prepared runtime dependencies from $candidate"
             rm -rf "$APP_DIR/node_modules"
             ln -s "$candidate" "$APP_DIR/node_modules"
@@ -65,27 +68,32 @@ prepare_runtime_dependencies() {
     fi
 }
 
-# Copy src/ and package.json from code mount (always fresh copy)
-if [ -d "$CODE_DIR/src" ]; then
-    echo "Copying source from /code/src/"
+copy_source_tree() {
+    source_dir="$1"
+    label="$2"
+    echo "$label"
     rm -rf "$APP_DIR/src"
-    cp -r "$CODE_DIR/src" "$APP_DIR/src"
-    cp -f "$CODE_DIR/package.json" "$APP_DIR/package.json"
-    if [ -f "$CODE_DIR/package-lock.json" ]; then
-        cp -f "$CODE_DIR/package-lock.json" "$APP_DIR/package-lock.json"
+    cp -r "$source_dir/src" "$APP_DIR/src"
+    cp -f "$source_dir/package.json" "$APP_DIR/package.json"
+    if [ -f "$source_dir/package-lock.json" ]; then
+        cp -f "$source_dir/package-lock.json" "$APP_DIR/package-lock.json"
     else
         rm -f "$APP_DIR/package-lock.json"
     fi
+}
+
+# Production runs the source baked into the image. Live source mounts remain
+# available for development by setting SOUL_GATEWAY_USE_LIVE_SOURCE=1, or as a
+# fallback when running from a base image without baked source.
+USE_LIVE_SOURCE="${SOUL_GATEWAY_USE_LIVE_SOURCE:-0}"
+if [ -d "$IMAGE_APP_DIR/src" ] && [ "$USE_LIVE_SOURCE" != "1" ]; then
+    copy_source_tree "$IMAGE_APP_DIR" "Using baked source from $IMAGE_APP_DIR/src/"
+elif [ -d "$CODE_DIR/src" ]; then
+    copy_source_tree "$CODE_DIR" "Copying source from $CODE_DIR/src/"
 elif [ -n "$WORKSPACE_PATH" ] && [ -d "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/src" ]; then
-    echo "Copying source from workspace repos"
-    rm -rf "$APP_DIR/src"
-    cp -r "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/src" "$APP_DIR/src"
-    cp -f "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/package.json" "$APP_DIR/package.json"
-    if [ -f "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/package-lock.json" ]; then
-        cp -f "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway/package-lock.json" "$APP_DIR/package-lock.json"
-    else
-        rm -f "$APP_DIR/package-lock.json"
-    fi
+    copy_source_tree "$WORKSPACE_PATH/.ploinky/repos/proxies/soul-gateway" "Copying source from workspace repos"
+elif [ -d "$IMAGE_APP_DIR/src" ]; then
+    copy_source_tree "$IMAGE_APP_DIR" "Using baked source from $IMAGE_APP_DIR/src/"
 fi
 
 # Install runtime deps and let npm failures stop container startup.
@@ -112,27 +120,13 @@ elif [ ! -e "$APP_DIR/node_modules/achillesAgentLib" ]; then
     echo "WARNING: achillesAgentLib not found — provider transport will not work"
 fi
 
-# Load encryption key from shared storage if ENCRYPTION_KEY not set
-if [ -z "$ENCRYPTION_KEY" ] && [ -f "$SHARED_DIR/config/encryption.key" ]; then
-    export ENCRYPTION_KEY=$(cat "$SHARED_DIR/config/encryption.key")
-fi
-
-# Construct DATABASE_URL from PG* env vars if not already set
-if [ -z "$DATABASE_URL" ]; then
-    PGHOST="${PGHOST:-host.containers.internal}"
-    PGPORT="${PGPORT:-5432}"
-    PGUSER="${PGUSER:-postgres}"
-    PGPASSWORD="${PGPASSWORD:-postgres}"
-    PGDATABASE="${PGDATABASE:-postgres}"
-    export DATABASE_URL="postgresql://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}?search_path=soul_gateway"
-fi
-
+export DATA_DIR
+export CREDENTIALS_DIR
+export SQLITE_PATH
 export PORT="${PORT:-7000}"
 export HOST="${HOST:-0.0.0.0}"
-export DATA_DIR="$SHARED_DIR/data"
-export CREDENTIALS_DIR="$SHARED_DIR/data/credentials"
 
-echo "DATABASE_URL=${DATABASE_URL%%@*}@***"
+echo "SQLITE_PATH=$SQLITE_PATH"
 echo "PORT=$PORT HOST=$HOST"
 
 cd "$APP_DIR"

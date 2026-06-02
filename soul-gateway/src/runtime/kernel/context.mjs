@@ -116,7 +116,7 @@ export function createKernelContext(input = {}) {
         invokeModel: input.invokeModel ?? null,
 
         // Application context. Route-scope middleware reads ctx.appCtx
-        // for things like config.env and the pg pool.
+        // for things like config.env and the database handle.
         appCtx: input.appCtx ?? null,
 
         // Raw HTTP primitives, populated by the route handler.  Route-scope

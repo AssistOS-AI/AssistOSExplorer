@@ -2,9 +2,10 @@
  * DAO for the models table.
  * Pure data-access functions — no business logic.
  */
+import { randomUUID } from 'node:crypto';
 import { updateRow } from './helpers/query-builder.mjs';
 
-const TABLE = 'soul_gateway.models';
+const TABLE = 'models';
 
 export async function create(
     pool,
@@ -34,14 +35,15 @@ export async function create(
         metadata = {},
     }
 ) {
+    const id = randomUUID();
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
        (model_key, display_name, provider_id, provider_model_id,
         execution_kind, enabled, concurrency_limit, queue_timeout_ms, request_timeout_ms,
         pricing_mode, input_price_per_million, output_price_per_million, request_price_usd,
         rate_limit_override, budget_override, loop_override, response_filter_override,
-        retry_policy, capabilities, tags, is_free, discovery_source, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+        retry_policy, capabilities, tags, is_free, discovery_source, metadata, id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
      RETURNING *`,
         [
             modelKey,
@@ -63,10 +65,11 @@ export async function create(
             JSON.stringify(responseFilterOverride),
             JSON.stringify(retryPolicy),
             JSON.stringify(capabilities),
-            tags,
+            JSON.stringify(tags),
             isFree,
             discoverySource,
             JSON.stringify(metadata),
+            id,
         ]
     );
     return rows[0];
@@ -122,7 +125,7 @@ export async function list(
             p.auth_strategy,
             p.kind AS provider_kind
      FROM ${TABLE} m
-     LEFT JOIN soul_gateway.providers p ON p.id = m.provider_id
+     LEFT JOIN providers p ON p.id = m.provider_id
      ${where}
      ORDER BY m.display_name ASC
      LIMIT $${idx++} OFFSET $${idx}`,
@@ -166,6 +169,7 @@ const JSON_FIELDS = new Set([
     'responseFilterOverride',
     'retryPolicy',
     'capabilities',
+    'tags',
     'metadata',
 ]);
 

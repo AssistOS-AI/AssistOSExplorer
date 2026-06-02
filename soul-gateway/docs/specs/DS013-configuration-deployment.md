@@ -15,7 +15,7 @@ Environment variables cover:
 | Surface | Examples |
 |---|---|
 | Server | `PORT`, `HOST` |
-| Database | `DATABASE_URL`, `PG_POOL_MAX`, `PG_POOL_MIN`, `PG_IDLE_TIMEOUT_MS`, `PG_CONNECT_TIMEOUT_MS`, `PG_MAX_USES` |
+| Database | `SQLITE_PATH` |
 | Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `SOUL_GATEWAY_API_KEY`, `PLOINKY_DERIVED_MASTER_KEY` |
 | Directories | `DATA_DIR`, `CREDENTIALS_DIR`, `EXTENSIONS_DIR`, `DASHBOARD_STATIC_DIR` |
 | Observability | `LOG_RETENTION_DAYS`, `STREAM_HEARTBEAT_MS`, `WS_PING_INTERVAL_MS`, `PARTITION_AHEAD_DAYS`, `PARTITION_JOB_INTERVAL_MS`, `RETENTION_JOB_CRON_UTC_MINUTE` |
@@ -29,7 +29,7 @@ Environment variables cover:
 | Search bootstrap / legacy inputs | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
 | Deep research | `DEEP_RESEARCH_PROVIDERS`, `DEEP_RESEARCH_MAX_RESULTS` |
 
-The gateway reads database connectivity from `DATABASE_URL`; the old `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` inputs are not consumed by the current pool implementation. `ENCRYPTION_KEY` is optional because the runtime auto-generates and persists `DATA_DIR/encryption.key` on first run if needed.
+The gateway opens its embedded SQLite database at `SQLITE_PATH` (default `/data/soul-gateway.sqlite3` inside the Ploinky-managed container). There is no external database connection to configure. `ENCRYPTION_KEY` is optional because the runtime auto-generates and persists `DATA_DIR/encryption.key` on first run if needed.
 
 Pricing directory detail:
 
@@ -57,7 +57,7 @@ These live in the application config module and can be overridden by environment
 The runtime performs self-initialization on startup so there's no manual provisioning step required in a fresh environment:
 
 1. **Create required storage structures** — data directory, credential directory, extensions directory.
-2. **Connect to Postgres and apply migrations** — the schema is created and migrated to the latest version automatically.
+2. **Open SQLite and initialize schema** — the database file is created under `/data` and schema objects are created if missing.
 3. **Generate encryption key** if not provided — a random 32-byte key is written to `DATA_DIR/encryption.key` with 0600 permissions.
 4. **Discover middlewares** — scans built-in and extension middleware directories and syncs the middleware catalog rows into the database.
 5. **Install execution services** — creates the concurrency controller, spend cache, encryption key, and the shared cached pricing/model directory service. That directory is used for `external_directory` pricing lookups plus missing pricing/context/tag enrichment in management flows, and the runtime kicks off an initial best-effort background refresh.
@@ -65,28 +65,14 @@ The runtime performs self-initialization on startup so there's no manual provisi
 7. **Register OAuth adapters** — the five OAuth adapters are registered into the OAuth manager.
 8. **Reconcile providers** — any enabled provider with at least one active stored credential and zero model rows gets its auto-provision pass re-run to catch up before the initial snapshot is built.
 9. **Load the runtime snapshot** — providers, models, model children, middleware bindings, and API keys are loaded into the in-memory runtime state used by the request path. Snapshot load validates enabled providers against the loaded backend catalog and enabled provider-scoped bindings against the loaded provider middleware registry; invalid composition aborts startup/refresh.
-10. **Start background jobs** — token refresh loop, cooldown cleanup, partition maintenance, quota reset sweep, spend cache cleanup.
+10. **Start background jobs** — token refresh loop, cooldown cleanup, audit-log retention, quota reset sweep, spend cache cleanup.
 11. **Start the HTTP server** — the public and management routes are registered and the server begins accepting requests.
 
 Each step logs a structured event so the operator can see the initialization sequence in the startup log.
 
-## Historical data import from `main`
+## Historical data import
 
-Applying the SQL migrations only creates the current target schema. It does not backfill data from the old `main`-branch Soul Gateway app schema under `soul-gateway/app/`.
-
-For that cutover, operators run the dedicated importer:
-
-- `npm run import:main -- --dry-run`
-- `npm run import:main`
-- `npm run import:main:with-logs`
-
-The importer reads `SOURCE_DATABASE_URL` for the old app database, writes into `TARGET_DATABASE_URL` (or `DATABASE_URL`) using the current schema, decrypts old AES-GCM blobs with `SOURCE_ENCRYPTION_KEY`, `SOURCE_ENCRYPTION_KEY_HEX`, or the multi-key `SOURCE_ENCRYPTION_KEYS` input, re-encrypts into the current split ciphertext/IV/auth-tag format using `TARGET_ENCRYPTION_KEY` / `ENCRYPTION_KEY`, and re-hashes client API keys with `TARGET_API_KEY_HASH_PEPPER` / `API_KEY_HASH_PEPPER`.
-
-Optional importer flags:
-
-- `--include-call-logs` — also migrate historical `call_logs` into `audit_logs` and derive closed `sessions` rows from those logs
-- `--call-log-batch-size=<n>` — batch size for historical log import; defaults to `500`
-- `--session-timeout-minutes=<n>` — implicit-session gap used while deriving historical sessions; defaults to `SESSION_TIMEOUT_MINUTES` or `30`
+The SQLite cutover intentionally starts from an empty database. Old Postgres data and `main`-branch historical data are not imported, and there is no importer in the SQLite deployment.
 
 ## `achillesAgentLib` configuration modes
 
@@ -123,7 +109,7 @@ Operational paths on the remote host:
 - Workspace: `~/soulGateway`
 - Source checkout: `~/code/proxies`
 - Soul Gateway service: `soul-gateway` Ploinky agent
-- Expected production database: `soul_gateway_v2`
+- Expected production database file: `/data/soul-gateway.sqlite3` inside the Soul Gateway container
 - Host-local router health check: `curl -s http://localhost:8080/public-services/soul-gateway-health/`
 
 Useful read-only checks:
@@ -140,7 +126,7 @@ Deployment and admin workflows are defined in the repository-level GitHub Action
 - `../.github/workflows/destroy-soul-gateway.yml` — `Destroy Soul Gateway`
 - `../.github/workflows/soul-gateway-admin.yml` — `Soul Gateway Admin`
 
-Prefer the workflows for deploy, restart, stop, destroy, and admin tasks. After any deploy or restart, verify both the public `https://soul.axiologic.dev/public-services/soul-gateway-health/` endpoint and the host-local Ploinky router public health service, then confirm the running container still uses `PGDATABASE=soul_gateway_v2`.
+Prefer the workflows for deploy, restart, stop, destroy, and admin tasks. After any deploy or restart, verify both the public `https://soul.axiologic.dev/public-services/soul-gateway-health/` endpoint and the host-local Ploinky router public health service, confirm the Soul Gateway container is running with no Ploinky Postgres dependency, and confirm its SQLite file exists at `${SQLITE_PATH:-/data/soul-gateway.sqlite3}`.
 
 ## Health check
 
@@ -151,7 +137,7 @@ A health check endpoint reports whether the system is operational:
 
 Current implementation detail:
 
-- if `DATABASE_URL` is configured, the handler probes `SELECT 1`
+- the handler probes SQLite with `SELECT 1`
 - a failed database probe sets `db: false`
 - the handler still returns HTTP 200 even when `db` is false
 - the old `/health` compatibility alias is gone
@@ -169,12 +155,12 @@ The removed Soul Gateway dashboard login/session endpoints return HTTP 410 with 
 On `SIGTERM` / `SIGINT` the runtime shuts down gracefully:
 
 1. The HTTP server stops accepting new connections and `appCtx.draining` is set to `true`.
-2. Background jobs (token refresh, cleanup tasks, partition maintenance, quota reset sweep) are stopped.
+2. Background jobs (token refresh, cleanup tasks, audit-log retention, quota reset sweep) are stopped.
 3. SSE and WebSocket subscriber connections are closed via the broadcast hub.
 4. In-flight requests are allowed to complete, up to a configurable grace period (`SHUTDOWN_GRACE_MS`, default 30 seconds).
 5. Pending audit log writes are flushed.
 6. The backend catalog shuts down all loaded backends.
-7. The Postgres connection pool drains.
+7. The SQLite database handle closes.
 8. The process exits with code 0.
 
 If the grace period expires with requests still in flight, the remaining connections are terminated and the process exits anyway — a slow shutdown should never block container orchestration indefinitely.

@@ -98,7 +98,7 @@ export async function handleAgentsTree(ctx) {
     let sql = `
     SELECT soul_id, agent_name, COUNT(*) AS session_count,
            MAX(last_activity_at) AS last_activity
-    FROM soul_gateway.sessions
+    FROM sessions
   `;
     const params = [];
     const conditions = [];

@@ -6,7 +6,7 @@
  * layer installs that hook inside `gatewayDispatchMiddleware`, and the
  * hook must:
  *
- *   - insert a row into `soul_gateway.model_cooldowns` (write side)
+ *   - insert a row into `model_cooldowns` (write side)
  *   - trigger an async snapshot refresh so the next request bound to a
  *     fresh snapshot sees the cooldown in `snapshot.cooldowns`
  *   - never throw out of the callback and never block cascade flow
@@ -54,7 +54,7 @@ function makePool({ onInsert, insertShouldFail = false } = {}) {
         queries,
         async query(sql, params) {
             queries.push({ sql, params });
-            if (/INSERT INTO soul_gateway\.model_cooldowns/.test(sql)) {
+            if (/INSERT INTO model_cooldowns/.test(sql)) {
                 if (insertShouldFail) {
                     throw new Error('db write failed');
                 }

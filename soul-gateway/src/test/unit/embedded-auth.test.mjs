@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import {
     authenticateRouterAdmin,
@@ -9,6 +12,9 @@ import {
 import {
     authenticateApiKey,
 } from '../../runtime/security/api-key-auth.mjs';
+import { ensureEncryptionKey } from '../../runtime/security/encryption.mjs';
+import { authenticateMiddleware } from '../../runtime/route/authenticate.mjs';
+import { openDatabase, initializeSchema } from '../../db/sqlite-db.mjs';
 
 function base64url(value) {
     return Buffer.from(value).toString('base64url');
@@ -284,7 +290,7 @@ describe('authenticateRouterAdmin', () => {
 // ── Workspace Default API Key ───────────────────────────────────────
 
 describe('workspace default API key', () => {
-    function makeAppCtx(apiKey) {
+    function makeAppCtx(apiKey, pool = null) {
         return {
             config: {
                 env: {
@@ -293,9 +299,9 @@ describe('workspace default API key', () => {
                     ENCRYPTION_KEY: 'test-enc',
                 },
             },
-            pool: {
-                query: async () => ({ rows: [] }),
-            },
+            // Default: no persistent DB, so the workspace key resolves to the
+            // synthetic record. Pass an (empty) pool to exercise DB lookups.
+            pool,
         };
     }
 
@@ -318,7 +324,7 @@ describe('workspace default API key', () => {
     });
 
     it('does not return synthetic record when key mismatches', async () => {
-        const appCtx = makeAppCtx('correct-key');
+        const appCtx = makeAppCtx('correct-key', { query: async () => ({ rows: [] }) });
         await assert.rejects(
             () => authenticateApiKey('Bearer wrong-key', appCtx),
             (err) => {
@@ -329,7 +335,7 @@ describe('workspace default API key', () => {
     });
 
     it('does not return synthetic record when SOUL_GATEWAY_API_KEY is unset', async () => {
-        const appCtx = makeAppCtx(null);
+        const appCtx = makeAppCtx(null, { query: async () => ({ rows: [] }) });
         await assert.rejects(
             () => authenticateApiKey('Bearer some-key', appCtx),
             (err) => {
@@ -348,14 +354,13 @@ describe('workspace default API key', () => {
         assert.equal(result.tpm_limit, null);
     });
 
-    it('persists the workspace default key when Postgres is configured', async () => {
+    it('persists the workspace default key when the database is available', async () => {
         const key = 'derived-workspace-key-for-db';
         const queries = [];
         const appCtx = {
             config: {
                 env: {
                     SOUL_GATEWAY_API_KEY: key,
-                    DATABASE_URL: 'postgres://localhost/soul_gateway',
                     API_KEY_HASH_PEPPER: 'test-pepper',
                     ENCRYPTION_KEY: '8'.repeat(64),
                 },
@@ -366,10 +371,10 @@ describe('workspace default API key', () => {
             pool: {
                 query: async (sql, params = []) => {
                     queries.push({ sql, params });
-                    if (/SELECT \* FROM soul_gateway\.api_keys WHERE key_hash/.test(sql)) {
+                    if (/SELECT \* FROM api_keys WHERE key_hash/.test(sql)) {
                         return { rows: [] };
                     }
-                    if (/INSERT INTO soul_gateway\.api_keys/.test(sql)) {
+                    if (/INSERT INTO api_keys/.test(sql)) {
                         return {
                             rows: [{
                                 id: '11111111-1111-1111-1111-111111111111',
@@ -398,9 +403,108 @@ describe('workspace default API key', () => {
         assert.equal(result.synthetic, true);
         assert.equal(result.rpm_limit, null);
         assert.equal(result.tpm_limit, null);
-        const insertQuery = queries.find((query) => /INSERT INTO soul_gateway\.api_keys/.test(query.sql));
+        const insertQuery = queries.find((query) => /INSERT INTO api_keys/.test(query.sql));
         assert.equal(insertQuery.params[6], 60);
         assert.equal(insertQuery.params[7], 100000);
-        assert.equal(queries.some((query) => /INSERT INTO soul_gateway\.api_keys/.test(query.sql)), true);
+        assert.equal(queries.some((query) => /INSERT INTO api_keys/.test(query.sql)), true);
+    });
+
+    it('authenticates the workspace key with default SQLite key-file configuration', async () => {
+        const key = 'derived-workspace-key-from-manifest';
+        const dir = await mkdtemp(join(tmpdir(), 'soul-auth-default-'));
+        const db = await openDatabase({
+            SQLITE_PATH: join(dir, 'gateway.sqlite3'),
+        });
+        try {
+            await initializeSchema(db);
+            const env = {
+                SOUL_GATEWAY_API_KEY: key,
+                API_KEY_HASH_PEPPER: null,
+                ENCRYPTION_KEY: null,
+                DATA_DIR: dir,
+                ALLOW_UNAUTHENTICATED: false,
+                DEFAULT_RPM_LIMIT: 60,
+                DEFAULT_TPM_LIMIT: 100000,
+            };
+            const appCtx = {
+                config: { env },
+                services: { encryptionKey: ensureEncryptionKey(env) },
+                pool: db,
+                log: { warn() {} },
+            };
+            const ctx = {
+                appCtx,
+                http: {
+                    req: {
+                        headers: { authorization: `Bearer ${key}` },
+                    },
+                },
+                metadata: {},
+            };
+
+            await authenticateMiddleware()(ctx, async () => {});
+
+            assert.equal(ctx.auth.label, 'workspace-default');
+            assert.equal(ctx.auth.apiKeyRecord.synthetic, true);
+            const stored = await db.query(
+                'SELECT label FROM api_keys WHERE label = $1',
+                ['workspace-default']
+            );
+            assert.equal(stored.rows.length, 1);
+        } finally {
+            await db.end();
+            await rm(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('recovers from a concurrent UNIQUE violation by re-reading the existing key', async () => {
+        const key = 'derived-workspace-key-race';
+        let selectCount = 0;
+        const existingRow = {
+            id: '22222222-2222-2222-2222-222222222222',
+            label: 'workspace-default',
+            key_hint: 'sk...race',
+            rpm_limit: 60,
+            tpm_limit: 100000,
+            daily_budget_usd: null,
+            monthly_budget_usd: null,
+            expires_at: null,
+            status: 'active',
+            metadata: { workspaceDefault: true },
+        };
+        const appCtx = {
+            config: {
+                env: {
+                    SOUL_GATEWAY_API_KEY: key,
+                    API_KEY_HASH_PEPPER: 'test-pepper',
+                    ENCRYPTION_KEY: '8'.repeat(64),
+                },
+            },
+            services: { encryptionKey: Buffer.alloc(32, 8) },
+            pool: {
+                query: async (sql) => {
+                    if (/SELECT \* FROM api_keys WHERE key_hash/.test(sql)) {
+                        // First lookup misses (triggers create); the post-conflict
+                        // re-read returns the row a concurrent writer inserted.
+                        selectCount += 1;
+                        return selectCount === 1 ? { rows: [] } : { rows: [existingRow] };
+                    }
+                    if (/INSERT INTO api_keys/.test(sql)) {
+                        // Shape of a node:sqlite UNIQUE-constraint failure.
+                        const err = new Error('UNIQUE constraint failed: api_keys.key_hash');
+                        err.code = 'ERR_SQLITE_ERROR';
+                        err.errcode = 2067;
+                        throw err;
+                    }
+                    return { rows: [] };
+                },
+            },
+        };
+
+        const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
+
+        assert.equal(result.id, '22222222-2222-2222-2222-222222222222');
+        assert.equal(result.synthetic, true);
+        assert.equal(selectCount, 2, 'should re-read by hash after the UNIQUE violation');
     });
 });

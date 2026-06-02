@@ -786,7 +786,7 @@ describe('management/models-route', () => {
 
     it('handleListModelProviders returns all enabled providers, not just those with model rows', async () => {
         const pool = createMockPool(async (sql) => {
-            if (sql.includes('FROM soul_gateway.providers')) {
+            if (sql.includes('FROM providers')) {
                 return {
                     rows: [
                         {
@@ -834,7 +834,7 @@ describe('management/models-route', () => {
     it('handleListProviderModels discovers provider models from the backend catalog', async () => {
         const pool = createMockPool(async (sql, params) => {
             if (
-                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('FROM providers') &&
                 sql.includes('provider_key = $1')
             ) {
                 assert.deepEqual(params, ['openai']);
@@ -927,7 +927,7 @@ describe('management/models-route', () => {
     it('handleListProviderModels overlays missing discovery metadata from the pricing directory', async () => {
         const pool = createMockPool(async (sql, params) => {
             if (
-                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('FROM providers') &&
                 sql.includes('provider_key = $1')
             ) {
                 assert.deepEqual(params, ['nvidia']);
@@ -1134,8 +1134,8 @@ describe('management/tiers-route', () => {
             const normalized = compactSql(sql);
 
             if (
-                normalized.includes('FROM soul_gateway.models m') &&
-                normalized.includes('LEFT JOIN soul_gateway.providers p')
+                normalized.includes('FROM models m') &&
+                normalized.includes('LEFT JOIN providers p')
             ) {
                 return {
                     rows: [
@@ -1158,7 +1158,7 @@ describe('management/tiers-route', () => {
                 };
             }
 
-            if (normalized.includes('FROM soul_gateway.model_children mc')) {
+            if (normalized.includes('FROM model_children mc')) {
                 return {
                     rows: [
                         {
@@ -1222,13 +1222,13 @@ describe('management/tiers-route', () => {
 
             if (
                 normalized ===
-                'SELECT * FROM soul_gateway.models WHERE model_key = $1'
+                'SELECT * FROM models WHERE model_key = $1'
             ) {
                 return { rows: [] };
             }
 
             if (
-                normalized === 'SELECT * FROM soul_gateway.models WHERE id = $1'
+                normalized === 'SELECT * FROM models WHERE id = $1'
             ) {
                 if (params[0] === 'model-1') {
                     return {
@@ -1255,7 +1255,7 @@ describe('management/tiers-route', () => {
             }
 
             if (
-                normalized.startsWith('INSERT INTO soul_gateway.models')
+                normalized.startsWith('INSERT INTO models')
             ) {
                 return {
                     rows: [
@@ -1281,18 +1281,18 @@ describe('management/tiers-route', () => {
 
             if (
                 normalized ===
-                'DELETE FROM soul_gateway.model_children WHERE parent_model_id = $1'
+                'DELETE FROM model_children WHERE parent_model_id = $1'
             ) {
                 return { rows: [], rowCount: 0 };
             }
 
             if (
-                normalized.startsWith('INSERT INTO soul_gateway.model_children')
+                normalized.startsWith('INSERT INTO model_children')
             ) {
                 return { rows: [], rowCount: 1 };
             }
 
-            if (normalized.includes('FROM soul_gateway.model_children mc')) {
+            if (normalized.includes('FROM model_children mc')) {
                 return {
                     rows: [
                         {
@@ -1362,7 +1362,7 @@ describe('management/tiers-route', () => {
         const pool = createMockPool(async (sql, params) => {
             const normalized = compactSql(sql);
             if (
-                normalized === 'SELECT * FROM soul_gateway.models WHERE id = $1'
+                normalized === 'SELECT * FROM models WHERE id = $1'
             ) {
                 if (params[0] === 'tier-1') {
                     return {
@@ -1582,7 +1582,7 @@ describe('management/providers-route', () => {
         const pool = createMockPool(async (sql, params) => {
             queries.push(compactSql(sql));
 
-            if (sql.includes('INSERT INTO soul_gateway.providers')) {
+            if (sql.includes('INSERT INTO providers')) {
                 return {
                     rows: [
                         {
@@ -1604,13 +1604,13 @@ describe('management/providers-route', () => {
             }
 
             if (
-                sql.includes('FROM soul_gateway.provider_accounts') &&
+                sql.includes('FROM provider_accounts') &&
                 sql.includes('provider_id = $1')
             ) {
                 return { rows: [] };
             }
 
-            if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+            if (sql.includes('INSERT INTO provider_accounts')) {
                 return {
                     rows: [
                         {
@@ -1623,7 +1623,7 @@ describe('management/providers-route', () => {
                 };
             }
 
-            if (sql.includes('DELETE FROM soul_gateway.providers')) {
+            if (sql.includes('DELETE FROM providers')) {
                 return { rows: [], rowCount: 1 };
             }
 
@@ -1674,7 +1674,7 @@ describe('management/providers-route', () => {
         );
 
         assert.ok(
-            queries.find((sql) => sql.includes('DELETE FROM soul_gateway.providers')),
+            queries.find((sql) => sql.includes('DELETE FROM providers')),
             'expected the failed create flow to delete the provider row'
         );
     });
@@ -1685,7 +1685,7 @@ describe('management/providers-route', () => {
         const pool = createMockPool(async (sql, params) => {
             queries.push(compactSql(sql));
 
-            if (sql.includes('INSERT INTO soul_gateway.providers')) {
+            if (sql.includes('INSERT INTO providers')) {
                 return {
                     rows: [
                         {
@@ -1707,13 +1707,13 @@ describe('management/providers-route', () => {
             }
 
             if (
-                sql.includes('FROM soul_gateway.provider_accounts') &&
+                sql.includes('FROM provider_accounts') &&
                 sql.includes('provider_id = $1')
             ) {
                 return { rows: [] };
             }
 
-            if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+            if (sql.includes('INSERT INTO provider_accounts')) {
                 return {
                     rows: [
                         {
@@ -1726,11 +1726,11 @@ describe('management/providers-route', () => {
                 };
             }
 
-            if (sql.includes('SELECT * FROM soul_gateway.models')) {
+            if (sql.includes('SELECT * FROM models')) {
                 return { rows: [] };
             }
 
-            if (sql.includes('INSERT INTO soul_gateway.models')) {
+            if (sql.includes('INSERT INTO models')) {
                 return {
                     rows: [
                         {
@@ -1744,12 +1744,12 @@ describe('management/providers-route', () => {
                 };
             }
 
-            if (sql.includes('DELETE FROM soul_gateway.models WHERE provider_id = $1')) {
+            if (sql.includes('DELETE FROM models WHERE provider_id = $1')) {
                 assert.equal(params[0], 'p-partial-sync');
                 return { rows: [], rowCount: 1 };
             }
 
-            if (sql.includes('DELETE FROM soul_gateway.providers')) {
+            if (sql.includes('DELETE FROM providers')) {
                 assert.equal(params[0], 'p-partial-sync');
                 return { rows: [], rowCount: 1 };
             }
@@ -1814,10 +1814,10 @@ describe('management/providers-route', () => {
         );
 
         const deleteModelsIndex = queries.findIndex((sql) =>
-            sql.includes('DELETE FROM soul_gateway.models WHERE provider_id = $1')
+            sql.includes('DELETE FROM models WHERE provider_id = $1')
         );
         const deleteProviderIndex = queries.findIndex((sql) =>
-            sql.includes('DELETE FROM soul_gateway.providers')
+            sql.includes('DELETE FROM providers')
         );
         assert.ok(deleteModelsIndex >= 0, 'expected rollback to delete provider models');
         assert.ok(deleteProviderIndex >= 0, 'expected rollback to delete the provider row');
@@ -1846,18 +1846,18 @@ describe('management/providers-route', () => {
             calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
 
             if (
-                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('FROM providers') &&
                 sql.includes('WHERE id')
             ) {
                 return { rows: [providerRow] };
             }
             if (
-                sql.includes('FROM soul_gateway.provider_accounts') &&
+                sql.includes('FROM provider_accounts') &&
                 sql.includes('provider_id = $1')
             ) {
                 return { rows: [] };
             }
-            if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+            if (sql.includes('INSERT INTO provider_accounts')) {
                 return {
                     rows: [
                         {
@@ -1871,7 +1871,7 @@ describe('management/providers-route', () => {
             }
             // Defensive: any UPDATE on the providers table is a regression — the
             // handler must NOT touch the providers row when only apiKey is sent.
-            if (sql.includes('UPDATE soul_gateway.providers')) {
+            if (sql.includes('UPDATE providers')) {
                 throw new Error(
                     'Unexpected UPDATE on providers table for apiKey-only PATCH'
                 );
@@ -1926,7 +1926,7 @@ describe('management/providers-route', () => {
         assert.equal(body.provider.provider_key, 'nvidia');
 
         const inserted = calls.find((c) =>
-            c.sql.includes('INSERT INTO soul_gateway.provider_accounts')
+            c.sql.includes('INSERT INTO provider_accounts')
         );
         assert.ok(
             inserted,
@@ -1949,18 +1949,18 @@ describe('management/providers-route', () => {
         };
         const pool = createMockPool(async (sql) => {
             if (
-                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('FROM providers') &&
                 sql.includes('WHERE id')
             ) {
                 return { rows: [providerRow] };
             }
             if (
-                sql.includes('FROM soul_gateway.provider_accounts') &&
+                sql.includes('FROM provider_accounts') &&
                 sql.includes('provider_id = $1')
             ) {
                 return { rows: [] };
             }
-            if (sql.includes('INSERT INTO soul_gateway.provider_accounts')) {
+            if (sql.includes('INSERT INTO provider_accounts')) {
                 return {
                     rows: [
                         {
@@ -1972,7 +1972,7 @@ describe('management/providers-route', () => {
                     ],
                 };
             }
-            if (sql.includes('SELECT * FROM soul_gateway.models')) {
+            if (sql.includes('SELECT * FROM models')) {
                 return { rows: [] };
             }
             return { rows: [], rowCount: 0 };
@@ -2027,7 +2027,7 @@ describe('management/providers-route', () => {
     it('handleUpdateProvider returns 404 when the provider id does not exist', async () => {
         const pool = createMockPool(async (sql) => {
             if (
-                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('FROM providers') &&
                 sql.includes('WHERE id')
             ) {
                 return { rows: [] };
@@ -2067,7 +2067,7 @@ describe('management/providers-route', () => {
         };
         const pool = createMockPool(async (sql) => {
             if (
-                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('FROM providers') &&
                 sql.includes('WHERE id')
             ) {
                 return { rows: [providerRow] };
@@ -2111,7 +2111,7 @@ describe('management/providers-route', () => {
         };
         const pool = createMockPool(async (sql) => {
             if (
-                sql.includes('FROM soul_gateway.providers') &&
+                sql.includes('FROM providers') &&
                 sql.includes('WHERE id')
             ) {
                 return { rows: [providerRow] };
@@ -2173,7 +2173,7 @@ describe('management/providers-route', () => {
                     ],
                 };
             }
-            if (sql.includes('DELETE FROM soul_gateway.providers')) {
+            if (sql.includes('DELETE FROM providers')) {
                 throw new Error(
                     'Provider delete should not run when manual models exist'
                 );
@@ -2207,7 +2207,7 @@ describe('management/providers-route', () => {
         const pool = createMockPool(async (sql, params) => {
             queries.push(compactSql(sql));
 
-            if (sql.includes('SELECT * FROM soul_gateway.models')) {
+            if (sql.includes('SELECT * FROM models')) {
                 return {
                     rows: [
                         {
@@ -2222,12 +2222,12 @@ describe('management/providers-route', () => {
                 };
             }
 
-            if (sql.includes('DELETE FROM soul_gateway.models WHERE provider_id = $1')) {
+            if (sql.includes('DELETE FROM models WHERE provider_id = $1')) {
                 assert.equal(params[0], 'p-auto');
                 return { rows: [], rowCount: 2 };
             }
 
-            if (sql.includes('DELETE FROM soul_gateway.providers')) {
+            if (sql.includes('DELETE FROM providers')) {
                 assert.equal(params[0], 'p-auto');
                 return { rows: [], rowCount: 1 };
             }
@@ -2251,10 +2251,10 @@ describe('management/providers-route', () => {
         assert.equal(body.deletedModels, 2);
 
         const deleteModelsIndex = queries.findIndex((sql) =>
-            sql.includes('DELETE FROM soul_gateway.models WHERE provider_id = $1')
+            sql.includes('DELETE FROM models WHERE provider_id = $1')
         );
         const deleteProviderIndex = queries.findIndex((sql) =>
-            sql.includes('DELETE FROM soul_gateway.providers')
+            sql.includes('DELETE FROM providers')
         );
         assert.ok(deleteModelsIndex >= 0, 'expected provider model cleanup');
         assert.ok(deleteProviderIndex >= 0, 'expected provider delete');
@@ -3262,7 +3262,7 @@ describe('management/router', () => {
         const keyId = '11111111-1111-1111-1111-111111111111';
         const appCtx = createMockAppCtx({
             pool: createMockPool(async (sql) => {
-                if (/UPDATE soul_gateway\.api_keys/.test(sql)) {
+                if (/UPDATE api_keys/.test(sql)) {
                     return {
                         rows: [{
                             id: keyId,

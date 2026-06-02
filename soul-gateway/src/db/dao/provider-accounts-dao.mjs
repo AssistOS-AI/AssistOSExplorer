@@ -3,7 +3,9 @@
  * Pure data-access functions — no business logic.
  */
 
-const TABLE = 'soul_gateway.provider_accounts';
+import { randomUUID } from 'node:crypto';
+
+const TABLE = 'provider_accounts';
 
 export async function create(
     pool,
@@ -33,8 +35,8 @@ export async function create(
         credentials_path,
         access_token_expires_at, refresh_token_expires_at,
         refresh_margin_seconds, quota_resets_at,
-        metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        metadata, id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      RETURNING *`,
         [
             providerId,
@@ -52,6 +54,7 @@ export async function create(
             refreshMarginSeconds,
             quotaResetsAt,
             JSON.stringify(metadata),
+            randomUUID(),
         ]
     );
     return rows[0];
@@ -177,8 +180,8 @@ export async function upsertOAuth(
         `INSERT INTO ${TABLE}
        (provider_id, account_label, auth_type, status, external_account_id,
         credentials_path, access_token_expires_at, refresh_token_expires_at,
-        refresh_margin_seconds, quota_resets_at, metadata)
-     VALUES ($1, $2, 'oauth', 'active', $3, $4, $5, $6, $7, $8, $9)
+        refresh_margin_seconds, quota_resets_at, metadata, id)
+     VALUES ($1, $2, 'oauth', 'active', $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (provider_id, external_account_id)
        WHERE deleted_at IS NULL
      DO UPDATE SET
@@ -203,6 +206,7 @@ export async function upsertOAuth(
             refreshMarginSeconds,
             quotaResetsAt,
             JSON.stringify(metadata),
+            randomUUID(),
         ]
     );
     return rows[0] || null;
@@ -224,12 +228,12 @@ export async function listExpiringOAuth(pool, withinSeconds = 300) {
         `
     SELECT pa.id, pa.provider_id, pa.status, pa.access_token_expires_at, pa.refresh_margin_seconds,
            p.oauth_adapter_key
-    FROM soul_gateway.provider_accounts pa
-    JOIN soul_gateway.providers p ON p.id = pa.provider_id
+    FROM provider_accounts pa
+    JOIN providers p ON p.id = pa.provider_id
     WHERE pa.auth_type = 'oauth'
       AND pa.status IN ('active', 'refreshing')
       AND pa.access_token_expires_at IS NOT NULL
-      AND pa.access_token_expires_at <= now() + make_interval(secs => GREATEST(pa.refresh_margin_seconds, $1))
+      AND pa.access_token_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || max(pa.refresh_margin_seconds, $1) || ' seconds')
   `,
         [withinSeconds]
     );
@@ -238,7 +242,7 @@ export async function listExpiringOAuth(pool, withinSeconds = 300) {
 
 export async function sweepExpiredQuotas(pool) {
     const { rows } = await pool.query(`
-    UPDATE soul_gateway.provider_accounts
+    UPDATE provider_accounts
     SET status = 'active', quota_resets_at = NULL, updated_at = now()
     WHERE status = 'quota_exhausted'
       AND quota_resets_at IS NOT NULL

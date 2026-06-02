@@ -32,7 +32,7 @@ export function startBackgroundJobs(appCtx) {
 
     // Cooldown cleanup — every minute
     schedule('cooldown-cleanup', 60_000, async () => {
-        if (!appCtx.pool || !env.DATABASE_URL) return;
+        if (!appCtx.pool) return;
         const { deleteExpired } = await import('../db/dao/cooldowns-dao.mjs');
         await deleteExpired(appCtx.pool);
     });
@@ -42,7 +42,7 @@ export function startBackgroundJobs(appCtx) {
         'partition-maintenance',
         env.PARTITION_JOB_INTERVAL_MS,
         async () => {
-            if (!appCtx.pool || !env.DATABASE_URL) return;
+            if (!appCtx.pool) return;
             const { ensurePartition, dropExpiredPartitions } = await import(
                 '../db/dao/audit-logs-dao.mjs'
             );
@@ -63,7 +63,7 @@ export function startBackgroundJobs(appCtx) {
         'token-refresh',
         env.TOKEN_REFRESH_INTERVAL_MS || 60_000,
         async () => {
-            if (!appCtx.pool || !env.DATABASE_URL) return;
+            if (!appCtx.pool) return;
             if (!appCtx.services.oauthManager) return;
             const { listExpiringOAuth } = await import(
                 '../db/dao/provider-accounts-dao.mjs'
@@ -90,7 +90,7 @@ export function startBackgroundJobs(appCtx) {
         'quota-reset-sweep',
         env.QUOTA_RESET_SWEEP_MS || 300_000,
         async () => {
-            if (!appCtx.pool || !env.DATABASE_URL) return;
+            if (!appCtx.pool) return;
             const { sweepExpiredQuotas } = await import(
                 '../db/dao/provider-accounts-dao.mjs'
             );

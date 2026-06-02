@@ -83,7 +83,7 @@ When a model fails with a classified cooldown-triggering error, the runtime reco
 
 ### Read side — snapshot
 
-`snapshot.cooldowns` is a `Set<modelKey>` built at snapshot load time from `soul_gateway.model_cooldowns` rows where `cleared_at IS NULL AND expires_at > now()`. The cascade adapter in `src/runtime/execution/model-execution.mjs` filters out any child whose `modelKey` is in that set before computing the next candidate, so a request bound to a fresh snapshot never attempts a cooled-down model.
+`snapshot.cooldowns` is a `Set<modelKey>` built at snapshot load time from `model_cooldowns` rows where `cleared_at IS NULL AND expires_at > now()`. The cascade adapter in `src/runtime/execution/model-execution.mjs` filters out any child whose `modelKey` is in that set before computing the next candidate, so a request bound to a fresh snapshot never attempts a cooled-down model.
 
 ### Write side — cascade hook
 

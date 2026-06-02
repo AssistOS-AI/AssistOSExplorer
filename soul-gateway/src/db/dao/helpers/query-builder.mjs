@@ -8,7 +8,7 @@ import { toSnake } from './case-convert.mjs';
 /**
  * Build and execute a parameterized UPDATE query against a table.
  *
- * @param {import('pg').Pool} pool
+ * @param {{ query(sql: string, params?: unknown[]): Promise<{ rows: object[] }> }} pool
  * @param {string} table          - fully qualified table name
  * @param {string|number} id      - row primary key
  * @param {object} fields         - camelCase field map from the API caller

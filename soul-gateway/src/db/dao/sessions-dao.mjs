@@ -3,7 +3,9 @@
  * Pure data-access functions — no business logic.
  */
 
-const TABLE = 'soul_gateway.sessions';
+import { randomUUID } from 'node:crypto';
+
+const TABLE = 'sessions';
 
 export async function create(
     pool,
@@ -22,8 +24,8 @@ export async function create(
         `INSERT INTO ${TABLE}
        (group_key, group_display, sequence_no,
         api_key_id, soul_id, agent_name,
-        explicit_session_id, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        explicit_session_id, metadata, id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
         [
             groupKey,
@@ -34,6 +36,7 @@ export async function create(
             agentName,
             explicitSessionId,
             JSON.stringify(metadata),
+            randomUUID(),
         ]
     );
     return rows[0];
@@ -59,31 +62,19 @@ export async function findOrCreateImplicit(
 ) {
     const groupKey = `implicit:${apiKeyId}:${agentName}`;
 
-    // Concurrency model:
-    //   1. Open an explicit READ COMMITTED transaction on a checked-out
-    //      client so every statement shares one connection.
-    //   2. Take pg_advisory_xact_lock(hashtext(group_key)) — serialized
-    //      per group for the lifetime of this transaction.
-    //   3. Each subsequent statement observes a FRESH snapshot of
-    //      committed data (READ COMMITTED re-reads per statement), so
-    //      the recheck below sees any row a peer committed while we
-    //      were blocked on the advisory lock.
-    //   4. Insert with ON CONFLICT (group_key, sequence_no) DO NOTHING.
-    //      Under the lock this should never collide, but the clause is
-    //      kept as defense-in-depth. If it ever does, we retry once by
-    //      reading the existing open row again.
-    //
-    // A single-statement CTE is NOT sufficient here: the SELECT part of
-    // a CTE freezes its snapshot BEFORE the advisory lock inside the
-    // same statement grants, so a concurrent commit during the wait
-    // would be invisible to the recheck.
+    // Compute the activity cutoff in JS so the comparison uses the same
+    // ISO-8601 string format the stored rows use.
+    const cutoffIso = new Date(Date.now() - timeoutMinutes * 60_000).toISOString();
+
+    // SQLite is a single connection. Hold an exclusive write transaction
+    // (BEGIN IMMEDIATE) for the whole find-or-create so two racing requests
+    // for the same (api_key, agent) cannot both insert. The facade serializes
+    // a connect()ed client against all other database access, so the recheck/
+    // ON CONFLICT dance the previous advisory-lock path needed is unnecessary.
     const client = pool.connect ? await pool.connect() : pool;
     const owned = !!pool.connect;
     try {
-        await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
-        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-            groupKey,
-        ]);
+        await client.query('BEGIN IMMEDIATE');
 
         const existing = await client.query(
             `SELECT *
@@ -92,57 +83,42 @@ export async function findOrCreateImplicit(
                AND agent_name = $2
                AND explicit_session_id IS NULL
                AND status = 'open'
-               AND last_activity_at > now() - ($3 || ' minutes')::interval
+               AND last_activity_at > $3
              ORDER BY last_activity_at DESC
              LIMIT 1`,
-            [apiKeyId, agentName, String(timeoutMinutes)]
+            [apiKeyId, agentName, cutoffIso]
         );
         if (existing.rows[0]) {
             await client.query('COMMIT');
             return { session: existing.rows[0], created: false };
         }
 
-        const inserted = await client.query(
-            `WITH next AS (
-                 SELECT COALESCE(MAX(sequence_no), 0) + 1 AS seq
-                 FROM ${TABLE}
-                 WHERE group_key = $1
-             )
-             INSERT INTO ${TABLE}
-                 (group_key, group_display, sequence_no,
-                  api_key_id, soul_id, agent_name)
-             SELECT $1, $2 || ' #' || next.seq, next.seq, $3, $4, $2
-             FROM next
-             ON CONFLICT (group_key, sequence_no) DO NOTHING
-             RETURNING *`,
-            [groupKey, agentName, apiKeyId, soulId]
-        );
-        if (inserted.rows[0]) {
-            await client.query('COMMIT');
-            return { session: inserted.rows[0], created: true };
-        }
-
-        // Defense-in-depth: advisory lock should have prevented this,
-        // but if a conflict happened, another session now exists for
-        // the computed sequence_no. Re-read the open row and return it.
-        const recheck = await client.query(
-            `SELECT *
+        const seqResult = await client.query(
+            `SELECT COALESCE(MAX(sequence_no), 0) + 1 AS seq
              FROM ${TABLE}
-             WHERE api_key_id = $1
-               AND agent_name = $2
-               AND explicit_session_id IS NULL
-               AND status = 'open'
-             ORDER BY last_activity_at DESC
-             LIMIT 1`,
-            [apiKeyId, agentName]
+             WHERE group_key = $1`,
+            [groupKey]
+        );
+        const sequenceNo = seqResult.rows[0]?.seq || 1;
+
+        const inserted = await client.query(
+            `INSERT INTO ${TABLE}
+                 (id, group_key, group_display, sequence_no,
+                  api_key_id, soul_id, agent_name)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING *`,
+            [
+                randomUUID(),
+                groupKey,
+                `${agentName} #${sequenceNo}`,
+                sequenceNo,
+                apiKeyId,
+                soulId,
+                agentName,
+            ]
         );
         await client.query('COMMIT');
-        if (!recheck.rows[0]) {
-            throw new Error(
-                `findOrCreateImplicit: insert conflicted on (${groupKey}, sequence_no) but no open session exists after recheck`
-            );
-        }
-        return { session: recheck.rows[0], created: false };
+        return { session: inserted.rows[0], created: true };
     } catch (err) {
         try {
             await client.query('ROLLBACK');

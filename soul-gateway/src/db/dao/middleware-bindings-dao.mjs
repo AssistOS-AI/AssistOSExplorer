@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { updateRow } from './helpers/query-builder.mjs';
 
 /**
@@ -17,7 +18,7 @@ import { updateRow } from './helpers/query-builder.mjs';
  * `MiddlewareCatalog.resolveBindings(...)`.
  */
 
-const TABLE = 'soul_gateway.middleware_bindings';
+const TABLE = 'middleware_bindings';
 
 export async function create(
     pool,
@@ -32,8 +33,8 @@ export async function create(
 ) {
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
-       (scope, target_id, middleware_key, sort_order, enabled, settings)
-     VALUES ($1, $2, $3, $4, $5, $6)
+       (scope, target_id, middleware_key, sort_order, enabled, settings, id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
         [
             scope,
@@ -42,6 +43,7 @@ export async function create(
             sortOrder,
             enabled,
             JSON.stringify(settings),
+            randomUUID(),
         ]
     );
     return rows[0];
@@ -139,7 +141,7 @@ export async function listEnabledWithMiddleware(pool) {
         `SELECT b.*, mw.middleware_key AS mw_key, mw.module_path,
             mw.source_type, mw.default_settings AS middleware_default_settings
      FROM ${TABLE} b
-     LEFT JOIN soul_gateway.middlewares mw ON mw.middleware_key = b.middleware_key
+     LEFT JOIN middlewares mw ON mw.middleware_key = b.middleware_key
      WHERE b.enabled = true
      ORDER BY b.scope, b.target_id NULLS FIRST, b.sort_order ASC`
     );

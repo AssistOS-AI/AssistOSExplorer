@@ -2,8 +2,8 @@
  * Management tier routes.
  *
  * A tier is a dashboard management view over a cascade model stored in
- * `soul_gateway.models` plus its ordered children in
- * `soul_gateway.model_children`.
+ * `models` plus its ordered children in
+ * `model_children`.
  *
  * URL surface:
  *
@@ -16,6 +16,7 @@
  *   POST   /management/tiers/:tierId/disable
  */
 
+import { randomUUID } from 'node:crypto';
 import { readJsonBody } from '../core/json-body.mjs';
 import { sendJson } from '../core/responses.mjs';
 import { BadRequestError } from '../core/errors.mjs';
@@ -211,11 +212,11 @@ export async function handleCreateTier(ctx) {
     await validateChildModels(pool, childModelIds);
 
     const { rows } = await pool.query(
-        `INSERT INTO soul_gateway.models
-       (model_key, display_name, enabled, strategy_kind, max_attempts)
-     VALUES ($1, $2, $3, 'cascade', $4)
+        `INSERT INTO models
+       (model_key, display_name, enabled, strategy_kind, max_attempts, id)
+     VALUES ($1, $2, $3, 'cascade', $4, $5)
      RETURNING *`,
-        [tierKey, displayName, enabled, maxAttempts]
+        [tierKey, displayName, enabled, maxAttempts, randomUUID()]
     );
     const tier = rows[0];
 
@@ -325,7 +326,7 @@ export async function handleDeleteTier(ctx) {
     }
 
     await pool.query(
-        `DELETE FROM soul_gateway.middleware_bindings
+        `DELETE FROM middleware_bindings
      WHERE scope = $1 AND target_id = $2`,
         ['model', params.tierId]
     );

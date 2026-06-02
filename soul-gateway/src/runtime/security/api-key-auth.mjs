@@ -107,17 +107,18 @@ export function hashApiKey(token, pepper) {
 /**
  * Derive the pepper used for API key hashing.
  *
- * If API_KEY_HASH_PEPPER is explicitly set, use it.
- * Otherwise fall back to ENCRYPTION_KEY.
+ * If API_KEY_HASH_PEPPER is explicitly set, use it. Otherwise fall back to
+ * ENCRYPTION_KEY, then to the persisted encryption key under DATA_DIR.
  *
- * @param {{ API_KEY_HASH_PEPPER: string|null, ENCRYPTION_KEY: string|null }} config
+ * @param {{ API_KEY_HASH_PEPPER: string|null, ENCRYPTION_KEY: string|null, DATA_DIR?: string }} config
  * @returns {string}
  */
 export function derivePepper(config) {
     if (config.API_KEY_HASH_PEPPER) return config.API_KEY_HASH_PEPPER;
     if (config.ENCRYPTION_KEY) return config.ENCRYPTION_KEY;
+    if (config.DATA_DIR) return ensureEncryptionKey(config).toString('base64');
     throw new Error(
-        'Neither API_KEY_HASH_PEPPER nor ENCRYPTION_KEY is configured'
+        'Neither API_KEY_HASH_PEPPER, ENCRYPTION_KEY, nor DATA_DIR encryption key is configured'
     );
 }
 
@@ -132,7 +133,7 @@ function matchWorkspaceKey(token, env) {
 
 async function ensureWorkspaceApiKeyRecord(token, appCtx) {
     const env = appCtx.config.env;
-    const hasPersistentDb = appCtx.pool && env.DATABASE_URL;
+    const hasPersistentDb = Boolean(appCtx.pool);
     if (!hasPersistentDb) {
         return buildWorkspaceApiKeyRecord();
     }
@@ -173,7 +174,16 @@ async function ensureWorkspaceApiKeyRecord(token, appCtx) {
         });
         return normalizeWorkspaceApiKeyRecord(row);
     } catch (err) {
-        if (err?.code === '23505') {
+        // A concurrent writer won the race on the key_hash unique index.
+        // node:sqlite surfaces this as ERR_SQLITE_ERROR with extended result
+        // code 2067 (SQLITE_CONSTRAINT_UNIQUE) and a "UNIQUE constraint failed"
+        // message; SQLSTATE 23505 is kept for compatibility. In all cases re-read the row
+        // that now exists instead of failing the request.
+        const isUniqueViolation =
+            err?.errcode === 2067 ||
+            /UNIQUE constraint failed/i.test(err?.message || '') ||
+            err?.code === '23505';
+        if (isUniqueViolation) {
             const row = await apiKeysDao.findByHash(appCtx.pool, keyHash);
             if (row) return normalizeWorkspaceApiKeyRecord(row);
         }

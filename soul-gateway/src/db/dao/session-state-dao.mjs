@@ -3,7 +3,7 @@
  * Pure data-access functions — no business logic.
  */
 
-const TABLE = 'soul_gateway.session_state';
+const TABLE = 'session_state';
 
 /**
  * Insert or update session state for a given session.

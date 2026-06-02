@@ -12,7 +12,7 @@ import { decrypt } from '../security/encryption.mjs';
 export class CredentialManager {
     /**
      * @param {object} deps
-     * @param {object} deps.pool                  pg Pool
+     * @param {object} deps.pool                  database query facade
      * @param {object} deps.accountsDao           provider-accounts DAO
      * @param {object} deps.providersDao          providers DAO (for adapter-key lookup)
      * @param {object} deps.accountPool           AccountPool instance

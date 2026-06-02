@@ -108,7 +108,7 @@ export async function bootstrapLocalLlmProvider(appCtx) {
     const { config, pool, log } = appCtx;
     const { env } = config;
 
-    if (!env.DATABASE_URL) return;
+    if (!pool) return;
 
     const providersDao = await import('../db/dao/providers-dao.mjs');
     const existing = await providersDao.findByKey(pool, PROVIDER_KEY);

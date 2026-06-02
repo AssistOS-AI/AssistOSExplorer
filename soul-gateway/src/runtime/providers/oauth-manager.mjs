@@ -13,7 +13,7 @@ import { normalizeProviderRecord } from './runtime-record-normalizer.mjs';
 export class OAuthManager {
     /**
      * @param {object} deps
-     * @param {object} deps.pool          pg Pool
+     * @param {object} deps.pool          database query facade
      * @param {object} deps.accountsDao   provider-accounts DAO
      * @param {object} deps.accountPool   AccountPool instance
      * @param {object} [deps.oauthCredentialStore]
@@ -502,7 +502,7 @@ export class OAuthManager {
             };
 
             await this._pool.query(
-                `UPDATE soul_gateway.provider_accounts
+                `UPDATE provider_accounts
          SET metadata = $2,
              access_token_expires_at = $3,
              refresh_token_expires_at = $4,

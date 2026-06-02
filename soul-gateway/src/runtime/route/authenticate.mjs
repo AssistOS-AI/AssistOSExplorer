@@ -2,9 +2,8 @@
  * Route middleware: API key authentication.
  *
  * Verifies the bearer token via the configured auth path.  When the
- * gateway is running without auth configured (no DATABASE_URL or no
- * encryption key) and `ALLOW_UNAUTHENTICATED=true`, falls back to a
- * permissive stub.
+ * gateway is running without a database and `ALLOW_UNAUTHENTICATED=true`,
+ * falls back to a permissive stub.
  *
  * Sets `ctx.auth` to the route auth view shape:
  *   { keyId, label, rpmLimit, tpmLimit, apiKeyRecord }
@@ -31,11 +30,8 @@ export function authenticateMiddleware() {
 
         const authHeader = ctx.http?.req?.headers?.['authorization'] || '';
 
-        const hasDb = pool && env.DATABASE_URL;
-        const hasKey = env.ENCRYPTION_KEY || env.API_KEY_HASH_PEPPER;
-
         let apiKey = null;
-        if (hasDb && hasKey) {
+        if (pool) {
             apiKey = await authenticateApiKey(authHeader, ctx.appCtx);
         } else if (env.ALLOW_UNAUTHENTICATED) {
             if (!_permissiveWarned) {
@@ -55,7 +51,7 @@ export function authenticateMiddleware() {
             };
         } else {
             throw new AuthenticationRequiredError(
-                'API key authentication is not configured. Set ENCRYPTION_KEY or API_KEY_HASH_PEPPER, ' +
+                'API key authentication is not configured. Open the persistent database, ' +
                     'or set ALLOW_UNAUTHENTICATED=true to disable auth (development only).'
             );
         }

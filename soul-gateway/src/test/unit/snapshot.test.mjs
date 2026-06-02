@@ -237,7 +237,7 @@ describe('resolveModel', () => {
 // `middleware_bindings` table.  There is no in-memory synthesizer any
 // more — the loader reads the new shape directly.
 //
-// These tests drive `loadRuntimeSnapshot` through a fake pg pool that
+// These tests drive `loadRuntimeSnapshot` through a fake database pool that
 // returns hand-crafted rows.
 
 function makeFakePool({
@@ -251,17 +251,17 @@ function makeFakePool({
     return {
         async query(sql) {
             const text = sql.toLowerCase();
-            if (text.includes('from soul_gateway.models m'))
+            if (text.includes('from models m'))
                 return { rows: models };
-            if (text.includes('from soul_gateway.model_aliases'))
+            if (text.includes('from model_aliases'))
                 return { rows: aliases };
-            if (text.includes('from soul_gateway.model_children'))
+            if (text.includes('from model_children'))
                 return { rows: modelChildren };
-            if (text.includes('from soul_gateway.providers'))
+            if (text.includes('from providers'))
                 return { rows: providers };
-            if (text.includes('from soul_gateway.middleware_bindings'))
+            if (text.includes('from middleware_bindings'))
                 return { rows: middlewareBindings };
-            if (text.includes('from soul_gateway.model_cooldowns'))
+            if (text.includes('from model_cooldowns'))
                 return { rows: cooldowns };
             return { rows: [] };
         },

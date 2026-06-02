@@ -2,9 +2,10 @@
  * DAO for the providers table.
  * Pure data-access functions — no business logic.
  */
+import { randomUUID } from 'node:crypto';
 import { updateRow } from './helpers/query-builder.mjs';
 
-const TABLE = 'soul_gateway.providers';
+const TABLE = 'providers';
 
 export async function create(
     pool,
@@ -26,6 +27,7 @@ export async function create(
         metadata = {},
     }
 ) {
+    const id = randomUUID();
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
        (provider_key, display_name, kind, adapter_key, auth_strategy,
@@ -33,8 +35,8 @@ export async function create(
         oauth_adapter_key, base_url, enabled,
         supports_streaming, supports_tools,
         supports_messages_api, supports_responses_api,
-        settings, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        settings, metadata, id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      RETURNING *`,
         [
             providerKey,
@@ -52,6 +54,7 @@ export async function create(
             supportsResponsesApi,
             JSON.stringify(settings),
             JSON.stringify(metadata),
+            id,
         ]
     );
     return rows[0];
