@@ -11,10 +11,15 @@ import {
 } from '../../runtime/security/router-auth.mjs';
 import {
     authenticateApiKey,
+    parseSignedSubjectApiKey,
 } from '../../runtime/security/api-key-auth.mjs';
 import { ensureEncryptionKey } from '../../runtime/security/encryption.mjs';
 import { authenticateMiddleware } from '../../runtime/route/authenticate.mjs';
 import { openDatabase, initializeSchema } from '../../db/sqlite-db.mjs';
+import {
+    makeSignedSubjectKey,
+    makeSignedSubjectSigner,
+} from '../fixtures/signed-subject-key.mjs';
 
 function base64url(value) {
     return Buffer.from(value).toString('base64url');
@@ -287,224 +292,300 @@ describe('authenticateRouterAdmin', () => {
     });
 });
 
-// ── Workspace Default API Key ───────────────────────────────────────
+// ── Signed-Subject API Key ──────────────────────────────────────────
+//
+// Revocation semantics covered here:
+//   - Revoking the DB row blocks that deterministic key (denied, never
+//     reactivated).
+//   - Deleting the DB row permits recreation on the next valid signed request.
+//   - Per-subject key rotation is not available without changing the subject id
+//     (the key is deterministic for a subject + signing key).
+//   - Rotating the Ploinky signing key invalidates all signed-subject keys at
+//     once (covered implicitly: a key signed by one keypair fails against a
+//     different public key — see "rejects a key signed by a different key").
 
-describe('workspace default API key', () => {
-    function makeAppCtx(apiKey, pool = null) {
-        return {
-            config: {
-                env: {
-                    SOUL_GATEWAY_API_KEY: apiKey,
-                    API_KEY_HASH_PEPPER: 'test-pepper',
-                    ENCRYPTION_KEY: 'test-enc',
-                },
-            },
-            // Default: no persistent DB, so the workspace key resolves to the
-            // synthetic record. Pass an (empty) pool to exercise DB lookups.
-            pool,
-        };
-    }
-
-    it('returns synthetic record when workspace key matches', async () => {
-        const key = 'derived-workspace-key-abc';
-        const appCtx = makeAppCtx(key);
-        const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
-        assert.equal(result.id, 'workspace-default');
-        assert.equal(result.name, 'workspace-default');
-        assert.equal(result.status, 'active');
-        assert.equal(result.synthetic, true);
-        assert.equal(result.expires_at, null);
-    });
-
-    it('accepts the workspace key without SOUL_GATEWAY_MODE', async () => {
-        const key = 'derived-workspace-key-abc';
-        const appCtx = makeAppCtx(key);
-        const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
-        assert.equal(result.id, 'workspace-default');
-    });
-
-    it('does not return synthetic record when key mismatches', async () => {
-        const appCtx = makeAppCtx('correct-key', { query: async () => ({ rows: [] }) });
-        await assert.rejects(
-            () => authenticateApiKey('Bearer wrong-key', appCtx),
-            (err) => {
-                assert(err.errorType === 'invalid_api_key');
-                return true;
-            },
-        );
-    });
-
-    it('does not return synthetic record when SOUL_GATEWAY_API_KEY is unset', async () => {
-        const appCtx = makeAppCtx(null, { query: async () => ({ rows: [] }) });
-        await assert.rejects(
-            () => authenticateApiKey('Bearer some-key', appCtx),
-            (err) => {
-                assert(err.errorType === 'invalid_api_key');
-                return true;
-            },
-        );
-    });
-
-    it('synthetic key has no budget or rate limits', async () => {
-        const key = 'derived-key-xyz';
-        const appCtx = makeAppCtx(key);
-        const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
-        assert.equal(result.daily_budget_usd, null);
-        assert.equal(result.rpm_limit, null);
-        assert.equal(result.tpm_limit, null);
-    });
-
-    it('persists the workspace default key when the database is available', async () => {
-        const key = 'derived-workspace-key-for-db';
-        const queries = [];
-        const appCtx = {
-            config: {
-                env: {
-                    SOUL_GATEWAY_API_KEY: key,
-                    API_KEY_HASH_PEPPER: 'test-pepper',
-                    ENCRYPTION_KEY: '8'.repeat(64),
-                },
-            },
-            services: {
-                encryptionKey: Buffer.alloc(32, 8),
-            },
-            pool: {
-                query: async (sql, params = []) => {
-                    queries.push({ sql, params });
-                    if (/SELECT \* FROM api_keys WHERE key_hash/.test(sql)) {
-                        return { rows: [] };
-                    }
-                    if (/INSERT INTO api_keys/.test(sql)) {
-                        return {
-                            rows: [{
-                                id: '11111111-1111-1111-1111-111111111111',
-                                label: params[0],
-                                key_hash: params[1],
-                                key_hint: params[5],
-                                rpm_limit: params[6],
-                                tpm_limit: params[7],
-                                daily_budget_usd: params[8],
-                                monthly_budget_usd: params[9],
-                                expires_at: params[10],
-                                metadata: params[11],
-                                status: 'active',
-                            }],
-                        };
-                    }
-                    throw new Error(`Unexpected query: ${sql}`);
-                },
-            },
-        };
-
-        const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
-
-        assert.equal(result.id, '11111111-1111-1111-1111-111111111111');
-        assert.equal(result.label, 'workspace-default');
-        assert.equal(result.synthetic, true);
-        assert.equal(result.rpm_limit, null);
-        assert.equal(result.tpm_limit, null);
-        const insertQuery = queries.find((query) => /INSERT INTO api_keys/.test(query.sql));
-        assert.equal(insertQuery.params[6], 60);
-        assert.equal(insertQuery.params[7], 100000);
-        assert.equal(queries.some((query) => /INSERT INTO api_keys/.test(query.sql)), true);
-    });
-
-    it('authenticates the workspace key with default SQLite key-file configuration', async () => {
-        const key = 'derived-workspace-key-from-manifest';
-        const dir = await mkdtemp(join(tmpdir(), 'soul-auth-default-'));
-        const db = await openDatabase({
-            SQLITE_PATH: join(dir, 'gateway.sqlite3'),
-        });
+describe('signed-subject API key', () => {
+    async function withSignedDb(fn) {
+        const dir = await mkdtemp(join(tmpdir(), 'soul-signed-'));
+        const db = await openDatabase({ SQLITE_PATH: join(dir, 'gateway.sqlite3') });
         try {
             await initializeSchema(db);
-            const env = {
-                SOUL_GATEWAY_API_KEY: key,
-                API_KEY_HASH_PEPPER: null,
-                ENCRYPTION_KEY: null,
-                DATA_DIR: dir,
-                ALLOW_UNAUTHENTICATED: false,
-                DEFAULT_RPM_LIMIT: 60,
-                DEFAULT_TPM_LIMIT: 100000,
-            };
-            const appCtx = {
-                config: { env },
-                services: { encryptionKey: ensureEncryptionKey(env) },
-                pool: db,
-                log: { warn() {} },
-            };
-            const ctx = {
-                appCtx,
-                http: {
-                    req: {
-                        headers: { authorization: `Bearer ${key}` },
-                    },
-                },
-                metadata: {},
-            };
-
-            await authenticateMiddleware()(ctx, async () => {});
-
-            assert.equal(ctx.auth.label, 'workspace-default');
-            assert.equal(ctx.auth.apiKeyRecord.synthetic, true);
-            const stored = await db.query(
-                'SELECT label FROM api_keys WHERE label = $1',
-                ['workspace-default']
-            );
-            assert.equal(stored.rows.length, 1);
+            return await fn(db);
         } finally {
             await db.end();
             await rm(dir, { recursive: true, force: true });
         }
+    }
+
+    function makeEnv(publicKeyBase64url) {
+        return {
+            PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: publicKeyBase64url,
+            API_KEY_HASH_PEPPER: 'test-pepper',
+            ENCRYPTION_KEY: '8'.repeat(64),
+        };
+    }
+
+    it('authenticates a valid agent key and creates a DB row', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'agent:AssistOSExplorer/llmAssistant';
+            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            const result = await authenticateApiKey(`Bearer ${apiKey}`, appCtx);
+
+            assert.equal(result.subjectId, subjectId);
+            assert.equal(result.subjectType, 'agent');
+            assert.equal(result.apiKeySource, 'signed-subject');
+            assert.equal(result.apiKeyId, result.id);
+            assert.equal(result.status, 'active');
+
+            const stored = await db.query(
+                'SELECT subject_id, subject_type, source FROM api_keys WHERE subject_id = $1',
+                [subjectId]
+            );
+            assert.equal(stored.rows.length, 1);
+            assert.equal(stored.rows[0].subject_type, 'agent');
+            assert.equal(stored.rows[0].source, 'signed-subject');
+        });
     });
 
-    it('recovers from a concurrent UNIQUE violation by re-reading the existing key', async () => {
-        const key = 'derived-workspace-key-race';
-        let selectCount = 0;
-        const existingRow = {
-            id: '22222222-2222-2222-2222-222222222222',
-            label: 'workspace-default',
-            key_hint: 'sk...race',
-            rpm_limit: 60,
-            tpm_limit: 100000,
-            daily_budget_usd: null,
-            monthly_budget_usd: null,
-            expires_at: null,
-            status: 'active',
-            metadata: { workspaceDefault: true },
-        };
-        const appCtx = {
-            config: {
-                env: {
-                    SOUL_GATEWAY_API_KEY: key,
-                    API_KEY_HASH_PEPPER: 'test-pepper',
-                    ENCRYPTION_KEY: '8'.repeat(64),
-                },
-            },
-            services: { encryptionKey: Buffer.alloc(32, 8) },
-            pool: {
-                query: async (sql) => {
-                    if (/SELECT \* FROM api_keys WHERE key_hash/.test(sql)) {
-                        // First lookup misses (triggers create); the post-conflict
-                        // re-read returns the row a concurrent writer inserted.
-                        selectCount += 1;
-                        return selectCount === 1 ? { rows: [] } : { rows: [existingRow] };
-                    }
-                    if (/INSERT INTO api_keys/.test(sql)) {
-                        // Shape of a node:sqlite UNIQUE-constraint failure.
-                        const err = new Error('UNIQUE constraint failed: api_keys.key_hash');
-                        err.code = 'ERR_SQLITE_ERROR';
-                        err.errcode = 2067;
-                        throw err;
-                    }
-                    return { rows: [] };
-                },
-            },
-        };
+    it('authenticates a valid user key and creates a DB row', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'user:alice';
+            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
 
-        const result = await authenticateApiKey(`Bearer ${key}`, appCtx);
+            const result = await authenticateApiKey(`Bearer ${apiKey}`, appCtx);
 
-        assert.equal(result.id, '22222222-2222-2222-2222-222222222222');
-        assert.equal(result.synthetic, true);
-        assert.equal(selectCount, 2, 'should re-read by hash after the UNIQUE violation');
+            assert.equal(result.subjectId, subjectId);
+            assert.equal(result.subjectType, 'user');
+            assert.equal(result.apiKeySource, 'signed-subject');
+
+            const stored = await db.query(
+                'SELECT subject_type FROM api_keys WHERE subject_id = $1',
+                [subjectId]
+            );
+            assert.equal(stored.rows.length, 1);
+            assert.equal(stored.rows[0].subject_type, 'user');
+        });
+    });
+
+    it('does not require ciphertext columns to insert a row', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'agent:proxies/soul-gateway';
+            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            await authenticateApiKey(`Bearer ${apiKey}`, appCtx);
+
+            // The api_keys table has no ciphertext columns at all.
+            const cols = await db.query("PRAGMA table_info('api_keys')", []);
+            const names = cols.rows.map((c) => c.name);
+            assert.equal(names.includes('key_ciphertext'), false);
+            assert.equal(names.includes('key_iv'), false);
+            assert.equal(names.includes('key_auth_tag'), false);
+            assert.equal(names.includes('key_hash'), true);
+        });
+    });
+
+    it('returns one logical row for concurrent first use of the same key', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'agent:AssistOSExplorer/tasksAgent';
+            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            const [a, b] = await Promise.all([
+                authenticateApiKey(`Bearer ${apiKey}`, appCtx),
+                authenticateApiKey(`Bearer ${apiKey}`, appCtx),
+            ]);
+
+            assert.equal(a.id, b.id, 'both requests resolve to the same row id');
+            const stored = await db.query(
+                'SELECT id FROM api_keys WHERE subject_id = $1',
+                [subjectId]
+            );
+            assert.equal(stored.rows.length, 1, 'exactly one row persisted');
+        });
+    });
+
+    it('denies a revoked signed key and does not reactivate it', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'user:bob';
+            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            const first = await authenticateApiKey(`Bearer ${apiKey}`, appCtx);
+            // Revoke the row, then re-present the same key.
+            await db.query(
+                "UPDATE api_keys SET status = 'revoked', revoked_at = now() WHERE id = $1",
+                [first.id]
+            );
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${apiKey}`, appCtx),
+                (err) => err.errorType === 'api_key_revoked'
+            );
+
+            // Still revoked — never reactivated by the failed auth attempt.
+            const stored = await db.query(
+                'SELECT status FROM api_keys WHERE id = $1',
+                [first.id]
+            );
+            assert.equal(stored.rows[0].status, 'revoked');
+        });
+    });
+
+    it('recreates a deleted signed key on the next valid request', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'agent:AssistOSExplorer/gitAgent';
+            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            const first = await authenticateApiKey(`Bearer ${apiKey}`, appCtx);
+            await db.query('DELETE FROM api_keys WHERE id = $1', [first.id]);
+            assert.equal(
+                (await db.query('SELECT id FROM api_keys WHERE subject_id = $1', [subjectId])).rows.length,
+                0
+            );
+
+            const recreated = await authenticateApiKey(`Bearer ${apiKey}`, appCtx);
+            assert.equal(recreated.subjectId, subjectId);
+            assert.equal(recreated.status, 'active');
+            const stored = await db.query(
+                'SELECT id FROM api_keys WHERE subject_id = $1',
+                [subjectId]
+            );
+            assert.equal(stored.rows.length, 1);
+        });
+    });
+
+    it('does not accept a legacy workspace env key', async () => {
+        await withSignedDb(async (db) => {
+            const { publicKeyBase64url } = makeSignedSubjectKey('user:ignored');
+            const env = {
+                ...makeEnv(publicKeyBase64url),
+                // Legacy workspace key var — must no longer grant access.
+                SOUL_GATEWAY_API_KEY: 'legacy-workspace-secret',
+            };
+            const appCtx = { config: { env }, pool: db };
+
+            await assert.rejects(
+                () => authenticateApiKey('Bearer legacy-workspace-secret', appCtx),
+                (err) => err.errorType === 'invalid_api_key'
+            );
+        });
+    });
+
+    it('fails signed-subject auth when the public key is missing', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'user:carol';
+            const { apiKey } = makeSignedSubjectKey(subjectId);
+            const appCtx = {
+                config: {
+                    env: {
+                        PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: null,
+                        API_KEY_HASH_PEPPER: 'test-pepper',
+                    },
+                },
+                pool: db,
+            };
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${apiKey}`, appCtx),
+                (err) => {
+                    assert.equal(err.errorType, 'invalid_api_key');
+                    assert.match(err.message, /PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY/);
+                    return true;
+                }
+            );
+        });
+    });
+
+    it('rejects a key whose signature does not verify', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'agent:AssistOSExplorer/llmAssistant';
+            const { publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            // Tamper: keep the subject but corrupt the signature.
+            const badKey = `${subjectId}|${'A'.repeat(86)}`;
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${badKey}`, appCtx),
+                (err) => err.errorType === 'invalid_api_key'
+            );
+        });
+    });
+
+    it('rejects a key signed by a different keypair (key rotation invalidates)', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'agent:AssistOSExplorer/llmAssistant';
+            const { apiKey } = makeSignedSubjectKey(subjectId);
+            // A *different* keypair's public key — simulates a rotated signing key.
+            const { publicKeyBase64url: otherPub } = makeSignedSubjectKey('user:unused');
+            const appCtx = { config: { env: makeEnv(otherPub) }, pool: db };
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${apiKey}`, appCtx),
+                (err) => err.errorType === 'invalid_api_key'
+            );
+        });
+    });
+
+    it('rejects subjects outside the agent/user grammar', async () => {
+        await withSignedDb(async (db) => {
+            // Sign a structurally-invalid subject with a valid keypair; the
+            // subject classifier must reject it before/independent of the
+            // signature check.
+            const signer = makeSignedSubjectSigner();
+            const badSubject = 'service:foo';
+            const apiKey = `${badSubject}|${signer.sign(badSubject)}`;
+            const appCtx = {
+                config: { env: makeEnv(signer.publicKeyBase64url) },
+                pool: db,
+            };
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${apiKey}`, appCtx),
+                (err) => err.errorType === 'invalid_api_key'
+            );
+        });
+    });
+});
+
+// ── parseSignedSubjectApiKey ────────────────────────────────────────
+
+describe('parseSignedSubjectApiKey', () => {
+    it('splits a well-formed <subjectId>|<signature>', () => {
+        const parsed = parseSignedSubjectApiKey('agent:repo/name|sigbytes');
+        assert.equal(parsed.subjectId, 'agent:repo/name');
+        assert.equal(parsed.signature, 'sigbytes');
+    });
+
+    it('rejects a missing delimiter', () => {
+        assert.throws(
+            () => parseSignedSubjectApiKey('agent:repo/name'),
+            (err) => err.errorType === 'invalid_api_key'
+        );
+    });
+
+    it('rejects an empty subject (leading delimiter)', () => {
+        assert.throws(
+            () => parseSignedSubjectApiKey('|sig'),
+            (err) => err.errorType === 'invalid_api_key'
+        );
+    });
+
+    it('rejects an empty signature (trailing delimiter)', () => {
+        assert.throws(
+            () => parseSignedSubjectApiKey('agent:repo/name|'),
+            (err) => err.errorType === 'invalid_api_key'
+        );
+    });
+
+    it('rejects more than one delimiter', () => {
+        assert.throws(
+            () => parseSignedSubjectApiKey('agent:repo/name|sig|extra'),
+            (err) => err.errorType === 'invalid_api_key'
+        );
     });
 });

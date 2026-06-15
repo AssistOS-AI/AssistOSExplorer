@@ -1,13 +1,34 @@
 /**
- * Client API key authentication.
+ * Client API key authentication — signed-subject only.
  *
- * Extracts the bearer token, hashes it with HMAC-SHA256 + pepper,
- * looks it up in the database, and validates status / expiry.
+ * The only accepted bearer token is a Ploinky-minted signed-subject key of the
+ * exact shape `<subjectId>|<signature>`, where the signature is an Ed25519
+ * signature over the *exact UTF-8 bytes of subjectId and nothing else*. This
+ * verifier is independent of (but byte-compatible with) the Ploinky signer in
+ * `ploinky/cli/services/soulGatewaySubjectKey.js`:
+ *   - public key: raw 32-byte Ed25519 key, base64url (no padding), supplied via
+ *     `config.env.PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY`;
+ *   - subject ids: `agent:<repo>/<agentName>` or `user:<userId>`, validated with
+ *     the same anchored regexes the signer uses.
+ *
+ * On a valid request we upsert a deterministic `api_keys` row (one per subject)
+ * and return a normalized auth subject. The row carries the FK id, limits, and
+ * budgets the rest of the pipeline reads, plus the normalized
+ * `{ subjectId, subjectType, apiKeyId, apiKeySource }` fields.
+ *
+ * Revocation semantics:
+ *   - Revoking the DB row blocks that deterministic key (denied below; never
+ *     reactivated).
+ *   - Deleting the DB row permits recreation on the next valid signed request.
+ *   - Per-subject rotation requires changing the subject id (the key is
+ *     deterministic for a given subject + signing key).
+ *   - Rotating the Ploinky signing key invalidates all signed-subject keys at
+ *     once (every signature fails against the new public key).
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import * as apiKeysDao from '../../db/dao/api-keys-dao.mjs';
-import { encrypt, ensureEncryptionKey } from './encryption.mjs';
+import { ensureEncryptionKey } from './encryption.mjs';
 import {
     AuthenticationRequiredError,
     InvalidApiKeyError,
@@ -15,54 +36,205 @@ import {
     RevokedApiKeyError,
 } from '../../core/errors.mjs';
 
-const WORKSPACE_API_KEY_DB_RPM_LIMIT = 60;
-const WORKSPACE_API_KEY_DB_TPM_LIMIT = 100000;
+// Fixed 12-byte DER prefix for an Ed25519 SubjectPublicKeyInfo (RFC 8410). A raw
+// 32-byte Ed25519 public key is exactly these bytes followed by the key bytes,
+// so a base64url raw-32 key rebuilds into a usable KeyObject by re-prepending
+// this prefix. Must stay byte-identical to the Ploinky signer's encoding.
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+const ED25519_PUBLIC_KEY_BYTES = 32;
+
+// Subject validators — anchored end-to-end, identical to the Ploinky signer so
+// a key minted there classifies the same way here. The segment alphabet
+// excludes '/' and '|' so an agent id cannot smuggle a second slash and a user
+// id cannot contain a slash.
+const SEGMENT = '[A-Za-z0-9._:-]+';
+const AGENT_SUBJECT_RE = new RegExp(`^agent:(${SEGMENT})/(${SEGMENT})$`);
+const USER_SUBJECT_RE = new RegExp(`^user:(${SEGMENT})$`);
+
+const SIGNED_SUBJECT_DEFAULT_RPM_LIMIT = 60;
+const SIGNED_SUBJECT_DEFAULT_TPM_LIMIT = 100000;
 
 /**
- * Authenticate an incoming request by its API key.
+ * Authenticate an incoming request by its signed-subject API key.
  *
- * @param {string|null|undefined} authHeader  The raw Authorization header value
- * @param {{ config: object, pool: object }} appCtx  Application context
- * @returns {Promise<object>} The api_keys row record
- * @throws {AuthenticationRequiredError} missing / malformed header
- * @throws {InvalidApiKeyError}          key not found in database
- * @throws {RevokedApiKeyError}          key has status 'revoked'
- * @throws {ExpiredApiKeyError}          key has passed its expires_at
+ * @param {string|null|undefined} authHeader  Raw Authorization header value.
+ * @param {{ config: { env: object }, pool: object }} appCtx  Application context.
+ * @returns {Promise<object>} Normalized auth subject merged onto the api_keys
+ *   row: { ...row, subjectId, subjectType, apiKeyId, apiKeySource }.
+ * @throws {AuthenticationRequiredError} missing / malformed header.
+ * @throws {InvalidApiKeyError}          missing public key, malformed key,
+ *                                       invalid subject, or failed signature.
+ * @throws {RevokedApiKeyError}          resulting row has status 'revoked'.
+ * @throws {ExpiredApiKeyError}          row has passed its expires_at.
  */
 export async function authenticateApiKey(authHeader, appCtx) {
-    // 1. Extract bearer token
+    const env = appCtx.config.env;
+
+    // 1. Extract bearer token.
     const token = extractBearerToken(authHeader);
 
-    // 1b. Ploinky workspace key: auto-persist when a DB is available so
-    // sessions, budgets, and audit rows keep a real FK-compatible key id.
-    if (matchWorkspaceKey(token, appCtx.config.env)) {
-        return ensureWorkspaceApiKeyRecord(token, appCtx);
+    // 2. Require the Ploinky public key. Without it signed-subject auth cannot
+    //    verify anything, so reject rather than silently accepting.
+    const publicKeyB64 = env.PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY;
+    if (!publicKeyB64) {
+        throw new InvalidApiKeyError(
+            'Signed-subject auth is not configured: PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY is missing'
+        );
     }
 
-    // 2. HMAC the token
-    const pepper = derivePepper(appCtx.config.env);
-    const keyHash = hashApiKey(token, pepper);
+    // 3. Parse <subjectId>|<signature>.
+    const { subjectId, signature } = parseSignedSubjectApiKey(token);
 
-    // 3. Lookup
-    const keyRecord = await apiKeysDao.findByHash(appCtx.pool, keyHash);
-    if (!keyRecord) {
+    // 4. Classify the subject BEFORE doing signature math.
+    const subjectType = classifySubjectType(subjectId);
+
+    // 5. Verify the Ed25519 signature over the exact subject bytes.
+    const publicKeyObject = publicKeyObjectFromBase64url(publicKeyB64);
+    if (!verifySignedSubject(subjectId, signature, publicKeyObject)) {
+        throw new InvalidApiKeyError('Signed subject API key signature is invalid');
+    }
+
+    // 6. Upsert the deterministic row for this subject. The key hash is computed
+    //    here (the pepper stays in the security layer) and passed to the DAO.
+    const pepper = derivePepper(env);
+    const keyHash = hashApiKey(token, pepper);
+    const row = await apiKeysDao.createSignedSubjectKeyRecord(appCtx.pool, {
+        keyHash,
+        subjectId,
+        subjectType,
+        keyHint: buildKeyHint(subjectId),
+        rpmLimit: SIGNED_SUBJECT_DEFAULT_RPM_LIMIT,
+        tpmLimit: SIGNED_SUBJECT_DEFAULT_TPM_LIMIT,
+    });
+
+    if (!row) {
+        // Should not happen: create() returns the row, and the post-conflict
+        // re-read found nothing only if the row was deleted between the
+        // conflict and the re-read. Treat as a transient invalid key.
         throw new InvalidApiKeyError();
     }
 
-    // 4. Check status
-    if (keyRecord.status === 'revoked') {
+    // 7. Deny revoked rows; never reactivate them.
+    if (row.status === 'revoked') {
         throw new RevokedApiKeyError();
     }
 
-    // 5. Check expiry
-    if (keyRecord.expires_at && new Date(keyRecord.expires_at) <= new Date()) {
+    // 8. Honor an explicit expiry if one was set on the row.
+    if (row.expires_at && new Date(row.expires_at) <= new Date()) {
         throw new ExpiredApiKeyError();
     }
 
-    // 6. Fire-and-forget last_used_at update (don't slow down the request)
-    apiKeysDao.updateLastUsed(appCtx.pool, keyRecord.id).catch(() => {});
+    // 9. Fire-and-forget last_used_at update (don't slow down the request).
+    apiKeysDao.updateLastUsed(appCtx.pool, row.id).catch(() => {});
 
-    return keyRecord;
+    return {
+        ...row,
+        subjectId,
+        subjectType,
+        apiKeyId: row.id,
+        apiKeySource: 'signed-subject',
+    };
+}
+
+// ── Parsing ─────────────────────────────────────────────────────────
+
+/**
+ * Parse a signed-subject API key of the form `<subjectId>|<signature>`.
+ *
+ * Rejects a missing/empty subject, a missing/empty signature, and any key with
+ * more than one delimiter.
+ *
+ * @param {string} rawKey
+ * @returns {{ subjectId: string, signature: string }}
+ * @throws {InvalidApiKeyError}
+ */
+export function parseSignedSubjectApiKey(rawKey) {
+    const delimiter = rawKey.indexOf('|');
+    if (delimiter <= 0 || delimiter === rawKey.length - 1) {
+        throw new InvalidApiKeyError(
+            'Signed subject API key must use <subjectId>|<signature>'
+        );
+    }
+    if (rawKey.indexOf('|', delimiter + 1) !== -1) {
+        throw new InvalidApiKeyError(
+            'Signed subject API key must contain exactly one delimiter'
+        );
+    }
+    return {
+        subjectId: rawKey.slice(0, delimiter),
+        signature: rawKey.slice(delimiter + 1),
+    };
+}
+
+// ── Subject classification ──────────────────────────────────────────
+
+/**
+ * Classify a subject id into 'agent' or 'user', matching the Ploinky signer's
+ * anchored validators. Anything else is rejected.
+ *
+ * @param {string} subjectId
+ * @returns {'agent'|'user'}
+ * @throws {InvalidApiKeyError}
+ */
+export function classifySubjectType(subjectId) {
+    if (AGENT_SUBJECT_RE.test(subjectId)) return 'agent';
+    if (USER_SUBJECT_RE.test(subjectId)) return 'user';
+    throw new InvalidApiKeyError(
+        'Signed subject id must match agent:<repo>/<agentName> or user:<userId>'
+    );
+}
+
+// ── Ed25519 verification ────────────────────────────────────────────
+
+/**
+ * Rebuild an Ed25519 public KeyObject from a base64url raw-32-byte key.
+ *
+ * @param {string} b64
+ * @returns {import('node:crypto').KeyObject}
+ * @throws {InvalidApiKeyError}
+ */
+export function publicKeyObjectFromBase64url(b64) {
+    const raw = Buffer.from(String(b64 || ''), 'base64url');
+    if (raw.length !== ED25519_PUBLIC_KEY_BYTES) {
+        throw new InvalidApiKeyError(
+            'PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY must decode to 32 raw Ed25519 bytes'
+        );
+    }
+    try {
+        return createPublicKey({
+            key: Buffer.concat([ED25519_SPKI_PREFIX, raw]),
+            format: 'der',
+            type: 'spki',
+        });
+    } catch {
+        throw new InvalidApiKeyError(
+            'PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY could not be parsed as Ed25519'
+        );
+    }
+}
+
+/**
+ * Verify an Ed25519 signature (base64url) over the exact UTF-8 bytes of the
+ * subject id. Returns false on any malformed signature or verification failure.
+ *
+ * @param {string} subjectId
+ * @param {string} signatureB64url
+ * @param {import('node:crypto').KeyObject} publicKeyObject
+ * @returns {boolean}
+ */
+export function verifySignedSubject(subjectId, signatureB64url, publicKeyObject) {
+    const signature = Buffer.from(String(signatureB64url || ''), 'base64url');
+    if (signature.length === 0) return false;
+    try {
+        return cryptoVerify(
+            null,
+            Buffer.from(subjectId, 'utf8'),
+            publicKeyObject,
+            signature
+        );
+    } catch {
+        return false;
+    }
 }
 
 // ── Exported helpers (also used in key generation) ──────────────────
@@ -71,7 +243,7 @@ export async function authenticateApiKey(authHeader, appCtx) {
  * Extract a bearer token from the Authorization header.
  *
  * @param {string|null|undefined} authHeader
- * @returns {string} The raw token string
+ * @returns {string} The raw token string.
  * @throws {AuthenticationRequiredError}
  */
 export function extractBearerToken(authHeader) {
@@ -96,9 +268,9 @@ export function extractBearerToken(authHeader) {
 /**
  * HMAC-SHA256 hash an API key with the pepper.
  *
- * @param {string} token  The raw API key
- * @param {string} pepper The HMAC pepper
- * @returns {string} hex-encoded hash
+ * @param {string} token  The raw API key.
+ * @param {string} pepper The HMAC pepper.
+ * @returns {string} hex-encoded hash.
  */
 export function hashApiKey(token, pepper) {
     return createHmac('sha256', pepper).update(token).digest('hex');
@@ -122,169 +294,8 @@ export function derivePepper(config) {
     );
 }
 
-function matchWorkspaceKey(token, env) {
-    const expected = env.SOUL_GATEWAY_API_KEY;
-    if (!expected) return null;
-
-    const a = Buffer.from(token);
-    const b = Buffer.from(expected);
-    return a.length === b.length && timingSafeEqual(a, b);
+function buildKeyHint(value) {
+    const str = String(value || '');
+    if (str.length <= 12) return str;
+    return `${str.slice(0, 8)}...${str.slice(-4)}`;
 }
-
-async function ensureWorkspaceApiKeyRecord(token, appCtx) {
-    const env = appCtx.config.env;
-    const hasPersistentDb = Boolean(appCtx.pool);
-    if (!hasPersistentDb) {
-        return buildWorkspaceApiKeyRecord();
-    }
-
-    const pepper = derivePepper(env);
-    const keyHash = hashApiKey(token, pepper);
-    const existing = await apiKeysDao.findByHash(appCtx.pool, keyHash);
-    if (existing) {
-        return normalizeWorkspaceApiKeyRecord(existing);
-    }
-
-    const encryptionKey =
-        appCtx.services?.encryptionKey || ensureEncryptionKey(env);
-    const {
-        ciphertext: keyCiphertext,
-        iv: keyIv,
-        authTag: keyAuthTag,
-    } = encrypt(token, encryptionKey);
-
-    try {
-        const row = await apiKeysDao.create(appCtx.pool, {
-            label: 'workspace-default',
-            keyHash,
-            keyCiphertext,
-            keyIv,
-            keyAuthTag,
-            keyHint: buildKeyHint(token),
-            rpmLimit: WORKSPACE_API_KEY_DB_RPM_LIMIT,
-            tpmLimit: WORKSPACE_API_KEY_DB_TPM_LIMIT,
-            dailyBudgetUsd: null,
-            monthlyBudgetUsd: null,
-            expiresAt: null,
-            metadata: {
-                workspaceDefault: true,
-                synthetic: true,
-                managedBy: 'soul-gateway',
-            },
-        });
-        return normalizeWorkspaceApiKeyRecord(row);
-    } catch (err) {
-        // A concurrent writer won the race on the key_hash unique index.
-        // node:sqlite surfaces this as ERR_SQLITE_ERROR with extended result
-        // code 2067 (SQLITE_CONSTRAINT_UNIQUE) and a "UNIQUE constraint failed"
-        // message; SQLSTATE 23505 is kept for compatibility. In all cases re-read the row
-        // that now exists instead of failing the request.
-        const isUniqueViolation =
-            err?.errcode === 2067 ||
-            /UNIQUE constraint failed/i.test(err?.message || '') ||
-            err?.code === '23505';
-        if (isUniqueViolation) {
-            const row = await apiKeysDao.findByHash(appCtx.pool, keyHash);
-            if (row) return normalizeWorkspaceApiKeyRecord(row);
-        }
-        throw err;
-    }
-}
-
-function buildKeyHint(token) {
-    const value = String(token || '');
-    if (value.length <= 12) return value;
-    return `${value.slice(0, 8)}...${value.slice(-4)}`;
-}
-
-function buildWorkspaceApiKeyRecord(fields = {}) {
-    return {
-        ...fields,
-        id: fields.id || 'workspace-default',
-        label: fields.label || 'workspace-default',
-        name: fields.name || fields.label || 'workspace-default',
-        status: 'active',
-        expires_at: null,
-        daily_budget_usd: null,
-        monthly_budget_usd: null,
-        rpm_limit: null,
-        tpm_limit: null,
-        synthetic: true,
-    };
-}
-
-function normalizeWorkspaceApiKeyRecord(row) {
-    return buildWorkspaceApiKeyRecord({
-        ...row,
-        label: row.label || 'workspace-default',
-        name: row.name || row.label || 'workspace-default',
-    });
-}
-
-export function isWorkspaceDefaultKeyRecord(row) {
-    if (!row) return false;
-    const metadata = normalizeMetadata(row.metadata);
-    return (
-        row.id === 'workspace-default' ||
-        row.label === 'workspace-default' ||
-        metadata.workspaceDefault === true ||
-        metadata.embedded === true ||
-        metadata.managedBy === 'soul-gateway'
-    );
-}
-
-export function buildWorkspaceDefaultApiKeyManagementRecord(row = {}) {
-    const metadata = {
-        ...normalizeMetadata(row.metadata),
-        workspaceDefault: true,
-        synthetic: true,
-        managedBy: 'soul-gateway',
-    };
-
-    return {
-        ...row,
-        id: row.id || 'workspace-default',
-        label: row.label || 'workspace-default',
-        name: row.name || row.label || 'workspace-default',
-        status: 'active',
-        key_hint: null,
-        keyHint: null,
-        rpm_limit: null,
-        rpmLimit: null,
-        tpm_limit: null,
-        tpmLimit: null,
-        daily_budget_usd: null,
-        dailyBudgetUsd: null,
-        monthly_budget_usd: null,
-        monthlyBudgetUsd: null,
-        expires_at: null,
-        expiresAt: null,
-        metadata,
-        synthetic: true,
-        managed: true,
-        revocable: false,
-        revealable: false,
-    };
-}
-
-function normalizeMetadata(metadata) {
-    if (!metadata) return {};
-    if (typeof metadata === 'object' && !Array.isArray(metadata)) {
-        return metadata;
-    }
-    if (typeof metadata === 'string') {
-        try {
-            const parsed = JSON.parse(metadata);
-            return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-                ? parsed
-                : {};
-        } catch {
-            return {};
-        }
-    }
-    return {};
-}
-
-export const isEmbeddedWorkspaceKeyRecord = isWorkspaceDefaultKeyRecord;
-export const buildEmbeddedApiKeyManagementRecord =
-    buildWorkspaceDefaultApiKeyManagementRecord;

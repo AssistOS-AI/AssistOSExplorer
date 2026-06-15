@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
 
 import { registerPublicApiRoutes } from '../../public-api/register-routes.mjs';
+import { makeSignedSubjectKey } from '../fixtures/signed-subject-key.mjs';
 
-const TEST_API_KEY = 'sk-soul-test-workspace-key';
+const TEST_SUBJECT = 'agent:AssistOSExplorer/llmAssistant';
+const { apiKey: TEST_API_KEY, publicKeyBase64url: TEST_PUBLIC_KEY } =
+    makeSignedSubjectKey(TEST_SUBJECT);
 
 function createMockRouter() {
     const routes = new Map();
@@ -152,27 +155,33 @@ function createPricingDirectory() {
 }
 
 function createApiKeyPool() {
-    let workspaceRow = null;
+    // Signed-subject upsert: first lookup misses, the INSERT creates the row,
+    // and subsequent lookups return it. Column order matches the new
+    // api_keys INSERT in api-keys-dao.create().
+    let subjectRow = null;
     return {
         async query(sql, params) {
             if (sql.includes('WHERE key_hash = $1')) {
-                return { rows: workspaceRow ? [workspaceRow] : [] };
+                return { rows: subjectRow ? [subjectRow] : [] };
             }
             if (sql.includes('INSERT INTO api_keys')) {
-                workspaceRow = {
-                    id: 'workspace-default',
+                subjectRow = {
+                    id: '11111111-1111-1111-1111-111111111111',
                     label: params[0],
-                    key_hash: params[1],
+                    subject_id: params[1],
+                    subject_type: params[2],
+                    source: params[3],
+                    key_hash: params[4],
                     key_hint: params[5],
                     rpm_limit: params[6],
                     tpm_limit: params[7],
                     daily_budget_usd: params[8],
                     monthly_budget_usd: params[9],
                     expires_at: params[10],
-                    metadata: params[11],
-                    status: 'active',
+                    status: params[11],
+                    metadata: params[12],
                 };
-                return { rows: [workspaceRow] };
+                return { rows: [subjectRow] };
             }
             return { rows: [] };
         },
@@ -184,7 +193,8 @@ function createAppCtx(snapshot, services = {}) {
         config: {
             env: {
                 ENCRYPTION_KEY: 'test-encryption-key',
-                SOUL_GATEWAY_API_KEY: TEST_API_KEY,
+                API_KEY_HASH_PEPPER: 'test-pepper',
+                PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: TEST_PUBLIC_KEY,
                 DEFAULT_RPM_LIMIT: 60,
                 DEFAULT_TPM_LIMIT: 100000,
                 ALLOW_UNAUTHENTICATED: false,

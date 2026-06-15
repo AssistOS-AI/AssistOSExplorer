@@ -17,10 +17,6 @@ import { randomBytes } from 'node:crypto';
 import * as keysDao from '../db/dao/api-keys-dao.mjs';
 import { DEFAULTS } from '../config/defaults.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
-import {
-    buildWorkspaceDefaultApiKeyManagementRecord,
-    isWorkspaceDefaultKeyRecord,
-} from '../runtime/security/api-key-auth.mjs';
 
 /**
  * GET /management/keys
@@ -36,12 +32,9 @@ export async function handleListKeys(ctx) {
 
     const keys = await keysDao.list(pool, { status, limit, offset });
 
-    // Strip sensitive fields before returning
-    const data = includeWorkspaceDefaultKey(
-        keys.map(stripSensitiveFields),
-        appCtx.config.env,
-        status
-    );
+    // Strip sensitive fields before returning. Signed-subject rows are the only
+    // api_keys rows; there is no synthetic workspace-default key to inject.
+    const data = keys.map(stripSensitiveFields);
 
     sendJson(res, 200, { data });
 }
@@ -59,37 +52,34 @@ export async function handleCreateKey(ctx) {
         throw new BadRequestError('Missing required field: label');
     }
 
-    // Generate key value or use provided
+    // NOTE (Task 9): api_keys is signed-subject-only. A manually-created key has
+    // no Ed25519 signature and can never authenticate; this handler only keeps
+    // the route compiling against the signed-subject schema. Task 9 owns the
+    // real management semantics (disabling manual creation / revoke-only).
     const plaintextKey =
         body.keyValue ||
         DEFAULTS.apiKeyPrefix + randomBytes(32).toString('hex');
     const keyHint = plaintextKey.slice(0, 8) + '...' + plaintextKey.slice(-4);
 
-    // Hash and encrypt the key
-    const { encrypt } = await import('../runtime/security/encryption.mjs');
     const { hashApiKey, derivePepper } = await import(
         '../runtime/security/api-key-auth.mjs'
     );
-
     const pepper = derivePepper(appCtx.config.env);
     const keyHash = hashApiKey(plaintextKey, pepper);
 
-    const encryptionKey = (
-        await import('../runtime/security/encryption.mjs')
-    ).ensureEncryptionKey(appCtx.config.env);
-    const {
-        ciphertext: keyCiphertext,
-        iv: keyIv,
-        authTag: keyAuthTag,
-    } = encrypt(plaintextKey, encryptionKey);
+    const subjectId =
+        typeof body.subjectId === 'string' && body.subjectId
+            ? body.subjectId
+            : `user:${body.label}:${randomBytes(8).toString('hex')}`;
 
     const row = await keysDao.create(pool, {
         label: body.label,
         keyHash,
-        keyCiphertext,
-        keyIv,
-        keyAuthTag,
         keyHint,
+        subjectId,
+        subjectType: 'user',
+        source: 'signed-subject',
+        status: 'active',
         rpmLimit: body.rpmLimit ?? 60,
         tpmLimit: body.tpmLimit ?? 100_000,
         dailyBudgetUsd: body.dailyBudgetUsd ?? null,
@@ -214,26 +204,6 @@ export async function handleGetSpend(ctx) {
 
 function stripSensitiveFields(row) {
     if (!row) return row;
-    const { key_hash, key_ciphertext, key_iv, key_auth_tag, ...safe } = row;
+    const { key_hash, ...safe } = row;
     return safe;
-}
-
-function includeWorkspaceDefaultKey(keys, env, statusFilter) {
-    if (!env.SOUL_GATEWAY_API_KEY) {
-        return keys;
-    }
-
-    const existingIndex = keys.findIndex(isWorkspaceDefaultKeyRecord);
-    if (existingIndex >= 0) {
-        return keys.map((key, index) => index === existingIndex
-            ? buildWorkspaceDefaultApiKeyManagementRecord(key)
-            : key
-        );
-    }
-
-    if (statusFilter && statusFilter !== 'active') {
-        return keys;
-    }
-
-    return [buildWorkspaceDefaultApiKeyManagementRecord(), ...keys];
 }

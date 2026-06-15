@@ -31,21 +31,33 @@ describe('SQLite DAO integration', () => {
     it('creates API key, provider, model, implicit session, and audit row with normalized values', async () => {
         await withDb(async (db) => {
             const key = await apiKeysDao.create(db, {
-                label: 'test',
+                label: 'agent:proxies/soul-gateway',
                 keyHash: Buffer.from('hash'),
-                keyCiphertext: Buffer.from('cipher'),
-                keyIv: Buffer.alloc(12),
-                keyAuthTag: Buffer.alloc(16),
-                keyHint: 'sk...test',
+                keyHint: 'agent:...way',
+                subjectId: 'agent:proxies/soul-gateway',
+                subjectType: 'agent',
                 metadata: { purpose: 'integration' },
             });
             assert.ok(key.id, 'api key id generated');
             assert.equal(key.metadata.purpose, 'integration');
+            assert.equal(key.subject_id, 'agent:proxies/soul-gateway');
+            assert.equal(key.subject_type, 'agent');
+            assert.equal(key.source, 'signed-subject');
             assert.ok(Buffer.isBuffer(key.key_hash), 'key_hash normalized to Buffer');
 
             // findByHash must match on the raw bytes
             const found = await apiKeysDao.findByHash(db, Buffer.from('hash'));
             assert.equal(found.id, key.id);
+
+            // createSignedSubjectKeyRecord upserts: reusing the same hash for the
+            // same subject returns the existing logical row, not a duplicate.
+            const again = await apiKeysDao.createSignedSubjectKeyRecord(db, {
+                keyHash: Buffer.from('hash'),
+                subjectId: 'agent:proxies/soul-gateway',
+                subjectType: 'agent',
+                keyHint: 'agent:...way',
+            });
+            assert.equal(again.id, key.id, 'same subject re-reads one logical row');
 
             const provider = await providersDao.create(db, {
                 providerKey: 'openrouter',
