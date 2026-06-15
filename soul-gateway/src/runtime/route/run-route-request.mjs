@@ -18,6 +18,7 @@
  *     auditLog
  *     validateRequest
  *     resolveModel
+ *     agentModelLoopGuard
  *     resolveSession
  *     respond            (post phase only)
  *     gatewayDispatch    (terminal — sets ctx.response)
@@ -44,6 +45,7 @@ import { bindSnapshotMiddleware } from './bind-snapshot.mjs';
 import { normalizeIngressMiddleware } from './normalize-ingress.mjs';
 import { validateRequestMiddleware } from './validate-request.mjs';
 import { resolveModelMiddleware } from './resolve-model.mjs';
+import { agentModelLoopGuardMiddleware } from './agent-model-loop-guard.mjs';
 import { resolveSessionMiddleware } from './resolve-session.mjs';
 import { respondMiddleware } from './respond.mjs';
 import { gatewayDispatchMiddleware } from './gateway-dispatch.mjs';
@@ -69,6 +71,7 @@ export function buildRouteChain() {
         auditLogMiddleware(),
         validateRequestMiddleware(),
         resolveModelMiddleware(),
+        agentModelLoopGuardMiddleware(),
         resolveSessionMiddleware(),
         respondMiddleware(),
         gatewayDispatchMiddleware(),
@@ -120,6 +123,7 @@ export {
     normalizeIngressMiddleware,
     validateRequestMiddleware,
     resolveModelMiddleware,
+    agentModelLoopGuardMiddleware,
     resolveSessionMiddleware,
     respondMiddleware,
     gatewayDispatchMiddleware,
