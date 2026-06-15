@@ -26,6 +26,16 @@
             "access": "public"
         }
     ],
+    "ideSettings": [
+        {
+            "key": "soul-gateway",
+            "label": "Soul Gateway",
+            "scope": "workspace",
+            "pluginKey": "soul-gateway/soul-gateway",
+            "settingsUrl": "/services/soul-gateway/management/",
+            "adminOnly": true
+        }
+    ],
     "profiles": {
         "default": {
             "env": {
