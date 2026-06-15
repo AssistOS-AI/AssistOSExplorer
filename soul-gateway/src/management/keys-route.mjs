@@ -13,9 +13,7 @@
 import { readJsonBody } from '../core/json-body.mjs';
 import { sendJson } from '../core/responses.mjs';
 import { BadRequestError } from '../core/errors.mjs';
-import { randomBytes } from 'node:crypto';
 import * as keysDao from '../db/dao/api-keys-dao.mjs';
-import { DEFAULTS } from '../config/defaults.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
 
 /**
@@ -41,56 +39,24 @@ export async function handleListKeys(ctx) {
 
 /**
  * POST /management/keys
- * Create a new API key.
+ * Manual key creation is not supported.
+ *
+ * Soul Gateway API keys are signed-subject keys minted by Ploinky during
+ * agent provisioning. They carry an Ed25519 signature over the subject
+ * identifier and cannot be created here. To deny access to a key, use the
+ * revoke endpoint instead.
  */
 export async function handleCreateKey(ctx) {
-    const { req, res, appCtx } = ctx;
-    const { pool } = appCtx;
-    const body = await readJsonBody(req);
-
-    if (!body || !body.label) {
-        throw new BadRequestError('Missing required field: label');
-    }
-
-    // NOTE (Task 9): api_keys is signed-subject-only. A manually-created key has
-    // no Ed25519 signature and can never authenticate; this handler only keeps
-    // the route compiling against the signed-subject schema. Task 9 owns the
-    // real management semantics (disabling manual creation / revoke-only).
-    const plaintextKey =
-        body.keyValue ||
-        DEFAULTS.apiKeyPrefix + randomBytes(32).toString('hex');
-    const keyHint = plaintextKey.slice(0, 8) + '...' + plaintextKey.slice(-4);
-
-    const { hashApiKey, derivePepper } = await import(
-        '../runtime/security/api-key-auth.mjs'
-    );
-    const pepper = derivePepper(appCtx.config.env);
-    const keyHash = hashApiKey(plaintextKey, pepper);
-
-    const subjectId =
-        typeof body.subjectId === 'string' && body.subjectId
-            ? body.subjectId
-            : `user:${body.label}:${randomBytes(8).toString('hex')}`;
-
-    const row = await keysDao.create(pool, {
-        label: body.label,
-        keyHash,
-        keyHint,
-        subjectId,
-        subjectType: 'user',
-        source: 'signed-subject',
-        status: 'active',
-        rpmLimit: body.rpmLimit ?? 60,
-        tpmLimit: body.tpmLimit ?? 100_000,
-        dailyBudgetUsd: body.dailyBudgetUsd ?? null,
-        monthlyBudgetUsd: body.monthlyBudgetUsd ?? null,
-        expiresAt: body.expiresAt ?? null,
-        metadata: body.metadata ?? {},
-    });
-
-    sendJson(res, 201, {
-        key: stripSensitiveFields(row),
-        plaintextKey,
+    const { req, res } = ctx;
+    // Drain the body to avoid leaving the connection in a broken state.
+    await readJsonBody(req).catch(() => {});
+    sendJson(res, 405, {
+        error: {
+            message:
+                'Soul Gateway API keys are signed-subject keys issued by Ploinky and cannot be created via the management API. ' +
+                'To deny access, revoke the key via POST /management/keys/:keyId/revoke.',
+            type: 'method_not_allowed',
+        },
     });
 }
 

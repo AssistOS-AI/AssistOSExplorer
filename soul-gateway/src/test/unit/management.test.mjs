@@ -546,6 +546,97 @@ describe('management/keys-route', () => {
 
         assert.equal(res.statusCode, 404);
     });
+
+    it('handleCreateKey returns 405 and does not insert any row', async () => {
+        let insertCalled = false;
+        const pool = createMockPool(async (sql) => {
+            if (sql.includes('INSERT')) insertCalled = true;
+            return { rows: [], rowCount: 0 };
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const req = createMockReq({ method: 'POST', body: { label: 'test-key' } });
+        const res = createMockRes();
+
+        await handleCreateKey({ req, res, params: {}, query: {}, appCtx });
+
+        assert.equal(res.statusCode, 405);
+        const body = parseJsonResponse(res);
+        assert.equal(body.error.type, 'method_not_allowed');
+        assert.match(body.error.message, /Ploinky/);
+        assert.equal(insertCalled, false, 'no DB INSERT must be issued');
+    });
+
+    it('handleListKeys returns signed-subject row with subject_id, subject_type, source and no key_hash', async () => {
+        const signedSubjectRow = {
+            id: 'k-signed',
+            label: 'agent:proxies/soul-gateway',
+            subject_id: 'agent:proxies/soul-gateway',
+            subject_type: 'agent',
+            source: 'signed-subject',
+            status: 'active',
+            key_hash: 'secret-hash-must-be-stripped',
+            key_hint: 'agent:...way',
+            rpm_limit: 60,
+            tpm_limit: 100000,
+        };
+        const pool = createMockPool(async () => ({ rows: [signedSubjectRow] }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListKeys({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.data.length, 1);
+        const row = body.data[0];
+        assert.equal(row.subject_id, 'agent:proxies/soul-gateway');
+        assert.equal(row.subject_type, 'agent');
+        assert.equal(row.source, 'signed-subject');
+        assert.equal(row.key_hash, undefined, 'key_hash must be stripped');
+    });
+
+    it('handleRevokeKey sets row status to revoked, denying future auth', async () => {
+        // Seed an active signed-subject row and revoke it; the returned row must
+        // have status 'revoked'. The auth layer (api-key-auth.mjs) denies any
+        // row whose status === 'revoked' — verified by that module's own tests.
+        const revokedRow = {
+            id: 'k-signed',
+            label: 'agent:proxies/soul-gateway',
+            subject_id: 'agent:proxies/soul-gateway',
+            subject_type: 'agent',
+            source: 'signed-subject',
+            status: 'revoked',
+            key_hash: 'h',
+            key_hint: 'agent:...way',
+        };
+        const pool = createMockPool(async (sql) => {
+            if (sql.includes('UPDATE') && sql.includes("status = 'revoked'")) {
+                return { rows: [revokedRow], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleRevokeKey({
+            req: createMockReq(),
+            res,
+            params: { keyId: 'k-signed' },
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.key.status, 'revoked');
+        assert.equal(body.key.key_hash, undefined, 'key_hash must be stripped from revoke response');
+    });
 });
 
 // ── Models route tests ──────────────────────────────────────────────
