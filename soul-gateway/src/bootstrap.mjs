@@ -1,5 +1,5 @@
 import { sendJson } from './core/responses.mjs';
-import { readEnv } from './config/env.mjs';
+import { readEnv, assertSignedSubjectAuthConfig } from './config/env.mjs';
 import { buildConfig } from './config/app-config.mjs';
 import { createLogger } from './core/logger.mjs';
 import { createAppContext } from './core/app-context.mjs';
@@ -51,6 +51,11 @@ export async function bootstrap() {
     }
     const config = buildConfig(env);
     const log = createLogger();
+
+    // Fail closed unless signed-subject auth is configured. readEnv() carries
+    // the PLOINKY_* fields directly; buildConfig() only wraps them as
+    // config.env, so validate the env object here.
+    assertSignedSubjectAuthConfig(env, { log });
 
     log.info('booting', { host: env.HOST, port: env.PORT });
 

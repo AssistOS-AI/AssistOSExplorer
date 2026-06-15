@@ -167,6 +167,32 @@ export function readEnv(processEnv = process.env) {
         ),
         OAUTH_ADAPTERS_ENABLED: str(processEnv.OAUTH_ADAPTERS_ENABLED, null),
 
+        // Ploinky signed-subject auth (production path). Injected by the
+        // Ploinky router/agent runtime. When ALLOW_UNAUTHENTICATED is not
+        // true, the public key, router URL, agent id, and agent secret are
+        // required at startup (see assertSignedSubjectAuthConfig).
+        PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: str(
+            processEnv.PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY,
+            null
+        ),
+        PLOINKY_ROUTER_URL: str(processEnv.PLOINKY_ROUTER_URL, null),
+        PLOINKY_AGENT_ID: str(processEnv.PLOINKY_AGENT_ID, null),
+        PLOINKY_AGENT_PRINCIPAL: str(processEnv.PLOINKY_AGENT_PRINCIPAL, null),
+        PLOINKY_AGENT_SECRET: str(processEnv.PLOINKY_AGENT_SECRET, null),
+        PLOINKY_AGENT_API_KEY: str(processEnv.PLOINKY_AGENT_API_KEY, null),
+        PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY: str(
+            processEnv.PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY,
+            null
+        ),
+        PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY: str(
+            processEnv.PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY,
+            null
+        ),
+        PLOINKY_ENV_SOURCE_PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: str(
+            processEnv.PLOINKY_ENV_SOURCE_PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY,
+            null
+        ),
+
         // Built-in search provider keys
         SEARCH_TAVILY_API_KEY: str(processEnv.SEARCH_TAVILY_API_KEY, null),
         SEARCH_BRAVE_API_KEY: str(processEnv.SEARCH_BRAVE_API_KEY, null),
@@ -191,6 +217,67 @@ export function readEnv(processEnv = process.env) {
     };
 
     return Object.freeze(env);
+}
+
+/**
+ * Environment variables required for Ploinky signed-subject authentication,
+ * which is the production path for Soul Gateway.
+ */
+const SIGNED_SUBJECT_AUTH_REQUIRED = Object.freeze([
+    'PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY',
+    'PLOINKY_ROUTER_URL',
+    'PLOINKY_AGENT_ID',
+    'PLOINKY_AGENT_SECRET',
+]);
+
+/**
+ * Enforce the signed-subject auth contract at startup.
+ *
+ * Signed-subject auth is the production path. Unless `ALLOW_UNAUTHENTICATED`
+ * is enabled, all of {@link SIGNED_SUBJECT_AUTH_REQUIRED} must be present;
+ * otherwise startup fails with an error naming every missing variable.
+ *
+ * `ALLOW_UNAUTHENTICATED` is the only non-Ploinky development path. In that
+ * mode signed-subject auth is disabled, a loud warning is logged, and the
+ * Ploinky env is not required. This mode must never be used in production and
+ * must not silently accept legacy workspace API keys.
+ *
+ * This function is intentionally separate from {@link readEnv} so that
+ * `readEnv` stays side-effect-free and never throws for missing Ploinky env.
+ *
+ * @param {object} config Parsed config carrying the PLOINKY_* fields and the
+ *   parsed boolean `ALLOW_UNAUTHENTICATED` (the object returned by `readEnv`).
+ * @param {{ log?: { warn?: Function, error?: Function } }} [options]
+ * @returns {void}
+ * @throws {Error} when signed-subject auth is required but misconfigured.
+ */
+export function assertSignedSubjectAuthConfig(config, { log = console } = {}) {
+    if (config.ALLOW_UNAUTHENTICATED === true) {
+        const warn =
+            typeof log?.warn === 'function'
+                ? log.warn.bind(log)
+                : console.warn.bind(console);
+        warn(
+            'ALLOW_UNAUTHENTICATED=true — Ploinky signed-subject authentication ' +
+                'is DISABLED. This is a development-only mode and must not be ' +
+                'used in production.'
+        );
+        return;
+    }
+
+    const missing = SIGNED_SUBJECT_AUTH_REQUIRED.filter(
+        (name) => config[name] === null || config[name] === undefined
+    );
+
+    if (missing.length > 0) {
+        throw new Error(
+            'Ploinky signed-subject authentication requires the following ' +
+                `environment variable(s): ${missing.join(', ')}. Start Soul ` +
+                'Gateway as a Ploinky-managed agent so these are injected, or ' +
+                'set ALLOW_UNAUTHENTICATED=true for development (not for ' +
+                'production).'
+        );
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
