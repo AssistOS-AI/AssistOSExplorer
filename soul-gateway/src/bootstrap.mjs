@@ -25,6 +25,10 @@ import { bootstrapLocalLlmProvider } from './bootstrap/local-llm-bootstrap.mjs';
 import {
     bootstrapSoulGatewayProvider,
 } from './bootstrap/soul-gateway-provider-bootstrap.mjs';
+import {
+    runInitialPloinkyReconcile,
+    startPloinkyDiscoveryTimer,
+} from './ploinky/discovery-scheduler.mjs';
 
 /**
  * Full boot sequence.
@@ -75,6 +79,10 @@ export async function bootstrap() {
     await installOAuthAdapters(appCtx);
     await bootstrapSoulGatewayProvider(appCtx);
     await bootstrapLocalLlmProvider(appCtx);
+    // Reconcile discovered Ploinky agents into the provider/model catalog
+    // BEFORE installSnapshotServices so the initial snapshot includes them.
+    // No-ops cleanly outside Ploinky mode; never crashes startup on failure.
+    await runInitialPloinkyReconcile(appCtx);
     await reconcileProvidersOnStartup(appCtx);
     await installSnapshotServices(appCtx);
     try {
@@ -87,6 +95,10 @@ export async function bootstrap() {
     // 8. Background jobs
     const jobScheduler = startBackgroundJobs(appCtx);
     appCtx.services.jobScheduler = jobScheduler;
+
+    // Periodic Ploinky agent discovery + reconcile (~60s). No-ops cleanly
+    // outside Ploinky mode. The handle is stored for shutdown to clear.
+    appCtx.services.ploinkyDiscoveryTimer = startPloinkyDiscoveryTimer(appCtx);
 
     // 9. Build routers
     const httpRouter = createRouter();

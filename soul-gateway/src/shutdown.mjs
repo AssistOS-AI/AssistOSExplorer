@@ -37,6 +37,19 @@ export async function shutdown(appCtx, server, reason = 'SIGTERM') {
         }
     }
 
+    // 3b. Stop the Ploinky agent discovery timer
+    if (appCtx.services.ploinkyDiscoveryTimer) {
+        try {
+            clearInterval(appCtx.services.ploinkyDiscoveryTimer);
+            appCtx.services.ploinkyDiscoveryTimer = null;
+            log.info('ploinky discovery timer stopped');
+        } catch (err) {
+            log.error('error stopping ploinky discovery timer', {
+                error: err.message,
+            });
+        }
+    }
+
     // 4. Close SSE/WS subscribers
     if (appCtx.services.broadcastHub) {
         try {
