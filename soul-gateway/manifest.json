@@ -13,17 +13,17 @@
         {
             "externalPrefix": "/services/soul-gateway/v1/",
             "internalPrefix": "/v1/",
-            "auth": "none"
+            "access": "public"
         },
         {
             "externalPrefix": "/services/soul-gateway/management/",
             "internalPrefix": "/management/",
-            "auth": "protected"
+            "access": "authenticated"
         },
         {
             "externalPrefix": "/public-services/soul-gateway-health/",
             "internalPrefix": "/healthz/",
-            "auth": "none"
+            "access": "public"
         }
     ],
     "profiles": {
@@ -57,16 +57,10 @@
                     "default": "",
                     "description": "API key for authenticating with cliproxyapi upstream"
                 },
-                "SOUL_GATEWAY_API_KEY": {
-                    "required": true,
-                    "sharedGeneratedSecret": true,
-                    "description": "Managed workspace API key accepted by /v1/*"
-                },
                 "SOUL_GATEWAY_PROVIDER_API_KEY": {
-                    "varName": "SOUL_GATEWAY_API_KEY",
                     "required": false,
                     "default": "",
-                    "description": "Optional API key for bootstrapping the remote Soul Gateway as a normal provider; sourced from operator SOUL_GATEWAY_API_KEY while the local SOUL_GATEWAY_API_KEY remains generated"
+                    "description": "Optional API key for bootstrapping the remote Soul Gateway as a normal provider"
                 },
                 "SOUL_GATEWAY_PROVIDER_BASE_URL": {
                     "required": false,
