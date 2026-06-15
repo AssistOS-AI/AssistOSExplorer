@@ -14,16 +14,38 @@
  * @module runtime/route/authenticate
  */
 
-import { AuthenticationRequiredError } from '../../core/errors.mjs';
+import { AuthenticationRequiredError, GatewayError } from '../../core/errors.mjs';
+import { HTTP_STATUS } from '../../core/constants.mjs';
 import { authenticateApiKey } from '../security/api-key-auth.mjs';
 
 let _permissiveWarned = false;
+
+/**
+ * Legacy Soul Gateway identity headers. Identity now comes solely from the
+ * signed-subject API key, so any request that still carries one of these is
+ * rejected before authentication runs.
+ */
+const LEGACY_IDENTITY_HEADERS = ['x-soul-id', 'x-agent-name', 'x-soul-agent'];
 
 /**
  * @returns {(ctx: object, next: () => Promise<void>) => Promise<void>}
  */
 export function authenticateMiddleware() {
     return async function authenticate(ctx, next) {
+        const headers = ctx.http?.req?.headers || {};
+        for (const name of LEGACY_IDENTITY_HEADERS) {
+            if (headers[name] !== undefined) {
+                throw new GatewayError(
+                    'Legacy Soul Gateway identity headers are not supported; ' +
+                        'use the signed-subject API key.',
+                    {
+                        httpStatus: HTTP_STATUS.BAD_REQUEST,
+                        errorType: 'invalid_request_error',
+                    }
+                );
+            }
+        }
+
         const start = Date.now();
         const env = ctx.appCtx?.config?.env || {};
         const pool = ctx.appCtx?.pool;

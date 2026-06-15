@@ -715,8 +715,6 @@ describe('full route chain integration', () => {
                     authorization: 'Bearer sk-test-123',
                     cookie: 'session=secret',
                     'x-session-id': '11111111-1111-1111-1111-111111111111',
-                    'x-soul-id': 'soul-1',
-                    'x-agent-name': 'agent-1',
                 },
             }
         );
@@ -738,8 +736,6 @@ describe('full route chain integration', () => {
         assert.deepEqual(calls.write.requestHeaders, {
             'content-type': 'application/json',
             'x-session-id': '11111111-1111-1111-1111-111111111111',
-            'x-soul-id': 'soul-1',
-            'x-agent-name': 'agent-1',
         });
         assert.equal(calls.write.totalTokens, 7);
         assert.equal(calls.write.totalCostUsd, 0.012);
