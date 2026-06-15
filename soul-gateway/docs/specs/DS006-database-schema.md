@@ -26,7 +26,7 @@ This document stays at the capability level: which data lives in which table and
 
 ### API keys and auth
 
-- **`api_keys`** — one row per soul-gateway API key issued to a client. Carries label, HMAC hash of the plaintext key (for lookup), encrypted plaintext key (so the full key can be recovered for display/export if needed) using the same AES-256-GCM components as provider accounts, per-key RPM limit, per-key TPM limit, per-key daily budget, per-key monthly budget, expiration, status (active/revoked), and a metadata JSON blob.
+- **`api_keys`** — one row per signed-subject API key tracked by Soul Gateway. The schema is signed-subject-only: columns are `subject_id` (UNIQUE, e.g. `agent:<repo>/<agentName>` or `user:<userId>`), `subject_type` (`agent` | `user`), `source` (always `signed-subject`), `key_hash` (HMAC of the deterministic key for fast lookup), per-key RPM/TPM/daily/monthly limits, `status` (`active` | `revoked`), and a metadata JSON blob. The previous `key_ciphertext`, `key_iv`, and `key_auth_tag` columns are gone — no encrypted plaintext key is stored because the key is deterministic from the subject and Ploinky's signing key. Revoking a row blocks that subject's deterministic key; deleting the row permits recreation on the next valid signed request. Rotating Ploinky's Ed25519 signing key invalidates every signed key simultaneously.
 - **`sessions`** — persistent conversation-group rows used by the request path and dashboard session browsers. Rows are created for live traffic by the session resolver. Implicit-session creation holds an exclusive `BEGIN IMMEDIATE` write transaction around the find-or-create so two racing requests for the same `(api_key, agent)` pair cannot both insert: it rechecks for an existing open row inside the activity window, computes the next `sequence_no`, and inserts a new row only when none exists. Because the SQLite database is a single connection serialized by the runtime's database facade, concurrent creators deterministically reuse the existing open session or allocate one new `sequence_no`.
 
 ### Middleware and policy
@@ -43,7 +43,9 @@ This document stays at the capability level: which data lives in which table and
 
 ## Encryption
 
-All encrypted columns across the schema (`api_keys.key_ciphertext/iv/auth_tag` and `provider_accounts.secret_ciphertext/iv/auth_tag`) are SQLite `BLOB` values holding raw bytes — not hex-encoded strings. The runtime normalizes SQLite `Uint8Array` values back to Node `Buffer` instances before decrypting so encryption callers continue to use raw bytes. This is a hard requirement: storing hex strings into these columns corrupts the auth tag length and fails every subsequent decryption.
+Provider account encrypted columns (`provider_accounts.secret_ciphertext/iv/auth_tag`) are SQLite `BLOB` values holding raw bytes — not hex-encoded strings. The runtime normalizes SQLite `Uint8Array` values back to Node `Buffer` instances before decrypting so encryption callers continue to use raw bytes. This is a hard requirement: storing hex strings into these columns corrupts the auth tag length and fails every subsequent decryption.
+
+The `api_keys` table has no ciphertext columns. API keys are signed-subject values verified cryptographically; only a key hash is stored for lookup.
 
 ## Retention
 

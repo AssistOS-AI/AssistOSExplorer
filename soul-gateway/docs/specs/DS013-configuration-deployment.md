@@ -16,14 +16,15 @@ Environment variables cover:
 |---|---|
 | Server | `PORT`, `HOST` |
 | Database | `SQLITE_PATH` |
-| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `SOUL_GATEWAY_API_KEY`, `PLOINKY_DERIVED_MASTER_KEY` |
+| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY`, `PLOINKY_DERIVED_MASTER_KEY` |
 | Directories | `DATA_DIR`, `CREDENTIALS_DIR`, `EXTENSIONS_DIR`, `DASHBOARD_STATIC_DIR` |
 | Observability | `LOG_RETENTION_DAYS`, `STREAM_HEARTBEAT_MS`, `WS_PING_INTERVAL_MS`, `PARTITION_AHEAD_DAYS`, `PARTITION_JOB_INTERVAL_MS`, `RETENTION_JOB_CRON_UTC_MINUTE` |
 | Cooldown | `COOLDOWN_DURATION_MS` |
 | Routing defaults | `DEFAULT_MODEL_ATTEMPTS`, `DEFAULT_MODEL_CONCURRENCY`, `DEFAULT_QUEUE_TIMEOUT_MS`, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | HTTP retry | `HTTP_RETRY_MAX_ATTEMPTS`, `HTTP_RETRY_BASE_DELAY_MS`, `HTTP_RETRY_MULTIPLIER`, `HTTP_RETRY_MAX_DELAY_MS`, `HTTP_RETRY_JITTER_PCT` |
 | Rate limiting & budgets | `DEFAULT_RPM_LIMIT`, `DEFAULT_TPM_LIMIT`, `DEFAULT_DAILY_BUDGET_USD` |
-| Auth/jobs | `SESSION_TIMEOUT_MINUTES`, `TOKEN_REFRESH_INTERVAL_MS`, `QUOTA_RESET_SWEEP_MS`, `ALLOW_UNAUTHENTICATED`, `OAUTH_ADAPTERS_ENABLED` |
+| Auth/jobs | `SESSION_TIMEOUT_MINUTES`, `TOKEN_REFRESH_INTERVAL_MS`, `QUOTA_RESET_SWEEP_MS`, `ALLOW_UNAUTHENTICATED` (dev gate — bypasses signed-subject verification; never set in production), `OAUTH_ADAPTERS_ENABLED` |
+| Ploinky injection | `PLOINKY_AGENT_API_KEY` (signed-subject key for this agent), `SOUL_GATEWAY_API_KEY` (alias for `PLOINKY_AGENT_API_KEY`), `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY` (Ed25519 public key for verifying incoming signed-subject keys) |
 | Pricing/export/shutdown | `PRICING_DIRECTORY_URL`, `PRICING_REFRESH_INTERVAL_MS`, `EXPORT_BATCH_SIZE`, `SHUTDOWN_GRACE_MS`, `BODY_LIMIT_BYTES` |
 | Loop detection | `LOOP_MIN_RESPONSES`, `LOOP_WINDOW_SIZE`, `LOOP_SIMILARITY_THRESHOLD`, `LOOP_GROWTH_THRESHOLD_TOKENS`, `LOOP_REPETITIVE_RATIO_THRESHOLD`, `LOOP_INTERVENTION_MESSAGE` |
 | Search bootstrap / legacy inputs | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
@@ -73,6 +74,10 @@ Each step logs a structured event so the operator can see the initialization seq
 ## Historical data import
 
 The SQLite cutover intentionally starts from an empty database. Old Postgres data and `main`-branch historical data are not imported, and there is no importer in the SQLite deployment.
+
+## Local and development DB reset
+
+This schema change removes the `key_ciphertext`, `key_iv`, and `key_auth_tag` columns from `api_keys` and replaces the table with the signed-subject schema. Local and development installs must delete and recreate the SQLite database file after updating to this schema. No automated migration is provided. Production deployments with no existing key rows can drop and recreate the DB file; deployments with existing data should consult the schema diff and apply it manually if a cold recreation is not acceptable.
 
 ## `achillesAgentLib` configuration modes
 
@@ -169,7 +174,7 @@ If the grace period expires with requests still in flight, the remaining connect
 
 - On first startup, if `ENCRYPTION_KEY` is not set and `DATA_DIR/encryption.key` does not exist, the runtime generates a random 32-byte key, writes it to `DATA_DIR/encryption.key` with 0600 permissions, and uses it from there on.
 - On subsequent startups, the key is loaded from the env var if set, otherwise from the persisted file.
-- Rotating the encryption key requires re-encrypting all `provider_accounts.secret_*` and `api_keys.key_*` rows, which is not automated. Operators should plan rotations with a maintenance window.
+- Rotating the encryption key requires re-encrypting all `provider_accounts.secret_*` rows, which is not automated. Operators should plan rotations with a maintenance window. The `api_keys` table no longer stores encrypted ciphertext — it holds only a key hash — so rotating the encryption key does not require an `api_keys` migration.
 
 ## Ploinky agent deployment
 
@@ -178,13 +183,13 @@ Soul Gateway declares one default Ploinky-agent profile:
 - It runs on the shared `docker.io/assistos/ploinky-node:24-bookworm-tools` image used by the Explorer dependency graph.
 - `PORT=7000`.
 - `ports: []` so the public interface is the Ploinky router, not the internal container port.
-- `SOUL_GATEWAY_API_KEY` is a workspace-scoped generated secret so consumer agents receive the same value by env name.
+- `PLOINKY_AGENT_API_KEY` and `SOUL_GATEWAY_API_KEY` (its alias) are injected by the Ploinky launcher as signed-subject keys; they are not manifest `sharedGeneratedSecret` fields.
 - `SOUL_GATEWAY_PROVIDER_API_KEY`, sourced from operator `SOUL_GATEWAY_API_KEY` when configured, bootstraps the remote `soul.axiologic.dev` gateway as the local gateway's `soul-gateway` provider.
 - `SOUL_GATEWAY_PROVIDER_BASE_URL` defaults to `https://soul.axiologic.dev/v1`.
 - `SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE` controls provider model discovery (`auto` or `off`).
 - `SOUL_GATEWAY_PROVIDER_ALIASES` mirrors configured alias names to same-named discovered provider models and can migrate aliases away from `local-llm/*` fallback targets.
-- `/services/soul-gateway/v1/` uses router `auth: "none"` because callers authenticate with the Soul Gateway API key.
-- `/services/soul-gateway/management/` uses router `auth: "protected"` and requires Ploinky admin identity.
+- `/services/soul-gateway/v1/` uses router `access: "public"` because callers authenticate with the Soul Gateway API key.
+- `/services/soul-gateway/management/` uses router `access: "authenticated"` and requires Ploinky admin identity.
 - `/public-services/soul-gateway-health/` is unauthenticated for smoke checks.
 - `LOCAL_LLM_*` config controls local model bootstrap.
 - `TOKEN_REFRESH_INTERVAL_MS`, `PRICING_REFRESH_INTERVAL_MS`, and `OAUTH_ADAPTERS_ENABLED` explicitly control schedulers and OAuth behavior.

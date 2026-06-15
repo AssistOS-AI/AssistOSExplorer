@@ -111,7 +111,7 @@ Bindings write to unified `middleware_bindings` with `scope='model'` and `target
 
 ## Other management surfaces
 
-- API key management
+- API key management — the management API exposes read-only key listing and revocation/deletion; manual key creation via `POST /management/keys` returns HTTP 405. All keys are Ploinky-issued signed-subject keys; the dashboard does not create raw keys. The `status` field on each key row reflects `active` or `revoked`.
 - blacklist management
 - cooldown management
 - logs
