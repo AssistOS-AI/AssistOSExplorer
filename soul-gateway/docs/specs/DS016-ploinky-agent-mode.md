@@ -23,7 +23,7 @@ Production compatibility for `https://soul.axiologic.dev/v1/*` is provided by th
 Management auth accepts only verified Ploinky protected-service identity:
 
 1. Read `x-ploinky-auth-info`, which contains the authenticated Ploinky user, `invocationToken`, and `invocationBody`.
-2. Verify the invocation JWT with `PLOINKY_DERIVED_MASTER_KEY` for audience `agent:proxies/soul-gateway`, tool `__http_service__`, the signed body hash, and replay-protected `jti`.
+2. Verify the router-request JWT with this agent's injected `PLOINKY_AGENT_SECRET` for audience `agent:proxies/soul-gateway`, tool `__http_service__`, the signed request hash, and replay-protected `jti`.
 3. Require `admin` in the Ploinky user's roles.
 4. Reject requests that rely only on Soul Gateway cookies, bearer dashboard tokens, or caller-supplied identity headers.
 

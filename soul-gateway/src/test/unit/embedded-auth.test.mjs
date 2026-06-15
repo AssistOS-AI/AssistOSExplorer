@@ -39,12 +39,6 @@ function canonicalJson(value) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
 }
 
-function bodyHashForRequest(bodyObject) {
-    return createHash('sha256')
-        .update(canonicalJson(bodyObject ?? {}), 'utf8')
-        .digest('base64url');
-}
-
 function signHmacJwt({ payload, secret }) {
     const header = base64urlJson({ alg: 'HS256', typ: 'JWT' });
     const body = base64urlJson(payload);
@@ -71,13 +65,54 @@ function createMemoryReplayCache() {
     };
 }
 
-function verifyInvocationToken(token, {
-    secret,
-    expectedAudience,
-    expectedTool,
-    bodyObject,
+function sha256RawBodyHash(body = '') {
+    const bytes = Buffer.isBuffer(body)
+        ? body
+        : Buffer.from(body === undefined || body === null ? '' : body);
+    return createHash('sha256').update(bytes).digest('base64url');
+}
+
+function computeRchHttp({ method, path, query, bodyHash }) {
+    return createHash('sha256')
+        .update(canonicalJson({
+            method: String(method ?? ''),
+            path: String(path ?? ''),
+            query: query === undefined || query === null ? '' : String(query),
+            bodyHash: String(bodyHash ?? ''),
+        }), 'utf8')
+        .digest('base64url');
+}
+
+function verifyHttpServiceAuthInfo(headers, {
+    env,
     replayCache,
+    method,
+    path,
+    query = '',
+    bodyHash,
 }) {
+    const authInfo = JSON.parse(headers['x-ploinky-auth-info']);
+    const token = authInfo.invocationToken;
+    const invocationBody = authInfo.invocationBody;
+    if (String(invocationBody.method || '').toUpperCase() !== String(method || '').toUpperCase()) {
+        return { ok: false, reason: 'HTTP service method mismatch' };
+    }
+    if (String(invocationBody.path || '') !== String(path || '')) {
+        return { ok: false, reason: 'HTTP service path mismatch' };
+    }
+    if (String(invocationBody.search ?? '') !== String(query ?? '')) {
+        return { ok: false, reason: 'HTTP service query mismatch' };
+    }
+    if (String(invocationBody.bodyHash || '') !== String(bodyHash || '')) {
+        return { ok: false, reason: 'HTTP service body hash mismatch' };
+    }
+
+    const secretHex = String(env.PLOINKY_AGENT_SECRET || '').trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(secretHex)) {
+        return { ok: false, reason: 'PLOINKY_AGENT_SECRET not configured' };
+    }
+    const secret = Buffer.from(secretHex, 'hex');
+    const expectedAudience = env.PLOINKY_AGENT_ID || env.PLOINKY_AGENT_PRINCIPAL;
     const parts = token.split('.');
     assert.equal(parts.length, 3);
     const header = JSON.parse(base64urlDecode(parts[0]).toString('utf8'));
@@ -91,55 +126,70 @@ function verifyInvocationToken(token, {
     if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) {
         throw new Error('jwtVerify: signature invalid');
     }
-    if (payload.typ !== 'invocation') {
-        throw new Error('jwtVerify: token type is not invocation');
+    if (payload.typ !== 'router-request') {
+        return { ok: false, reason: 'jwtVerify: token type is not router-request' };
     }
     if (payload.iss !== 'ploinky-router') {
-        throw new Error('jwtVerify: issuer mismatch');
+        return { ok: false, reason: 'jwtVerify: issuer mismatch' };
     }
     if (String(payload.aud || '') !== String(expectedAudience)) {
-        throw new Error('jwtVerify: audience mismatch');
+        return { ok: false, reason: 'jwtVerify: audience mismatch' };
     }
-    if (String(payload.tool || '') !== String(expectedTool)) {
-        throw new Error('jwtVerify: tool mismatch');
+    if (String(payload.tool || '') !== '__http_service__') {
+        return { ok: false, reason: 'jwtVerify: tool mismatch' };
     }
-    const expectedBodyHash = bodyHashForRequest(bodyObject ?? {});
-    if ((payload.bh ?? payload.body_hash) !== expectedBodyHash) {
-        throw new Error('jwtVerify: body hash mismatch');
+    if (String(payload.method || '') !== String(method || '').toUpperCase()) {
+        return { ok: false, reason: 'jwtVerify: method mismatch' };
+    }
+    if (String(payload.path || '') !== String(path || '')) {
+        return { ok: false, reason: 'jwtVerify: path mismatch' };
+    }
+    const rch = computeRchHttp({
+        method,
+        path,
+        query,
+        bodyHash,
+    });
+    if (String(payload.rch || '') !== rch) {
+        return { ok: false, reason: 'jwtVerify: request hash mismatch' };
     }
     const jti = String(payload.jti || '').trim();
     if (!jti) {
-        throw new Error('jwtVerify: jti missing');
+        return { ok: false, reason: 'jwtVerify: jti missing' };
     }
     if (replayCache?.seen(jti)) {
-        throw new Error('jwtVerify: jti has already been consumed');
+        return { ok: false, reason: 'jwtVerify: jti has already been consumed' };
     }
     replayCache?.remember(jti);
-    return { header, payload };
+    return { ok: true, header, payload, authInfo, invocationBody, bodyHash };
 }
 
 // ── Router Admin SSO ────────────────────────────────────────────────
 
 describe('authenticateRouterAdmin', () => {
-    const derivedMasterKey = '7'.repeat(64);
+    const agentSecret = '7'.repeat(64);
     const invocationBody = {
-        tool: '__http_service__',
-        arguments: {
-            method: 'GET',
-            path: '/services/soul-gateway/management/providers',
-            search: '',
-        },
+        method: 'GET',
+        externalPath: '/services/soul-gateway/management/providers',
+        path: '/management/providers',
+        search: '',
+        routeKey: 'soul-gateway',
+        bodyHash: sha256RawBodyHash(''),
     };
     const routerConfig = {
         env: {
-            PLOINKY_DERIVED_MASTER_KEY: derivedMasterKey,
+            PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
+            PLOINKY_AGENT_PRINCIPAL: 'agent:proxies/soul-gateway',
+            PLOINKY_AGENT_SECRET: agentSecret,
         },
-        verifyInvocationToken,
+        verifyHttpServiceAuthInfo,
         replayCache: createMemoryReplayCache(),
     };
 
-    function makeReq(authInfo) {
+    function makeReq(authInfo, { method = 'GET', url = '/management/providers' } = {}) {
         return {
+            method,
+            url,
             headers: {
                 'x-ploinky-auth-info': JSON.stringify(authInfo),
             },
@@ -149,16 +199,20 @@ describe('authenticateRouterAdmin', () => {
     function mintInvocationToken(bodyObject = invocationBody) {
         const now = Math.floor(Date.now() / 1000);
         return signHmacJwt({
-            secret: Buffer.from(derivedMasterKey, 'hex'),
+            secret: Buffer.from(agentSecret, 'hex'),
             payload: {
-                typ: 'invocation',
+                typ: 'router-request',
                 iss: 'ploinky-router',
                 aud: 'agent:proxies/soul-gateway',
-                sub: 'local:admin',
-                caller: 'router:first-party',
+                sub: 'user:local:admin',
+                actor: {
+                    kind: 'user',
+                    id: 'user:local:admin',
+                    roles: ['local', 'admin'],
+                },
+                method: bodyObject.method,
+                path: bodyObject.path,
                 tool: '__http_service__',
-                scope: [],
-                bh: bodyHashForRequest(bodyObject),
                 usr: {
                     sub: 'local:admin',
                     id: 'local:admin',
@@ -166,6 +220,12 @@ describe('authenticateRouterAdmin', () => {
                     username: 'admin',
                     roles: ['local', 'admin'],
                 },
+                rch: computeRchHttp({
+                    method: bodyObject.method,
+                    path: bodyObject.path,
+                    query: bodyObject.search,
+                    bodyHash: bodyObject.bodyHash,
+                }),
                 jti: randomBytes(16).toString('base64url'),
                 iat: now,
                 exp: now + 60,
@@ -257,22 +317,19 @@ describe('authenticateRouterAdmin', () => {
         );
     });
 
-    it('rejects invocation tokens whose signed body does not match the header body', async () => {
+    it('rejects invocation tokens whose request hash does not match the header body', async () => {
         const req = makeReq({
             user: { username: 'admin', roles: ['admin'] },
             invocationToken: mintInvocationToken(invocationBody),
             invocationBody: {
                 ...invocationBody,
-                arguments: {
-                    ...invocationBody.arguments,
-                    path: '/services/soul-gateway/management/keys',
-                },
+                bodyHash: sha256RawBodyHash(JSON.stringify({ tampered: true })),
             },
         });
 
         await assert.rejects(
             () => authenticateRouterAdmin(req, routerConfig),
-            /body hash mismatch/,
+            /request hash mismatch/,
         );
     });
 

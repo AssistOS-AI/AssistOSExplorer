@@ -16,7 +16,7 @@ Environment variables cover:
 |---|---|
 | Server | `PORT`, `HOST` |
 | Database | `SQLITE_PATH` |
-| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY`, `PLOINKY_DERIVED_MASTER_KEY` |
+| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY`, `PLOINKY_AGENT_ID`, `PLOINKY_AGENT_SECRET` |
 | Directories | `DATA_DIR`, `CREDENTIALS_DIR`, `EXTENSIONS_DIR`, `DASHBOARD_STATIC_DIR` |
 | Observability | `LOG_RETENTION_DAYS`, `STREAM_HEARTBEAT_MS`, `WS_PING_INTERVAL_MS`, `PARTITION_AHEAD_DAYS`, `PARTITION_JOB_INTERVAL_MS`, `RETENTION_JOB_CRON_UTC_MINUTE` |
 | Cooldown | `COOLDOWN_DURATION_MS` |
@@ -151,7 +151,7 @@ The router public health service is unauthenticated and has minimal overhead so 
 
 ## Management authentication
 
-Soul Gateway management is protected by Ploinky's protected HTTP service identity. The gateway accepts only router-provided `x-ploinky-auth-info` plus a verified Ploinky invocation JWT, and it requires the authenticated user to have the `admin` role.
+Soul Gateway management is protected by Ploinky's protected HTTP service identity. The gateway accepts only router-provided `x-ploinky-auth-info` plus a verified Ploinky router-request JWT signed with this agent's injected `PLOINKY_AGENT_SECRET`, and it requires the authenticated user to have the `admin` role.
 
 The removed Soul Gateway dashboard login/session endpoints return HTTP 410 with "use Ploinky login" semantics. `DASHBOARD_PASSWORD`, `ADMIN_SESSION_SIGNING_KEY`, `SOUL_GATEWAY_MODE`, and `TRUST_PLOINKY_ROUTER_AUTH` are deprecated compatibility inputs only; they are parsed for one release but do not control active behavior. Existing `soul_session` cookies are ignored.
 

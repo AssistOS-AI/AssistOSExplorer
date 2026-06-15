@@ -12,7 +12,7 @@ The dashboard shell served at `/management` loads its frontend entrypoint from `
 
 - management routes are exposed through Ploinky's protected HTTP service at `/services/soul-gateway/management/`
 - Ploinky login is the only browser-facing admin login; Soul Gateway does not create dashboard sessions
-- management auth validates `x-ploinky-auth-info` plus the Ploinky invocation JWT and requires an admin role
+- management auth validates `x-ploinky-auth-info` plus the Ploinky router-request JWT and requires an admin role
 - dashboard cookies, bearer dashboard tokens, and caller-supplied identity headers are rejected as management auth
 - compatibility endpoints under `/management/auth/*` return HTTP 410 with instructions to use Ploinky login
 - state-changing management requests do not require Soul Gateway CSRF tokens; the protected-service invocation JWT is the request binding

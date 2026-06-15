@@ -48,17 +48,12 @@ import {
 export async function bootstrap() {
     // 1. Config
     const env = readEnv();
-    if (!env.PLOINKY_DERIVED_MASTER_KEY) {
-        throw new Error(
-            'PLOINKY_DERIVED_MASTER_KEY is required for Soul Gateway management auth. Start Soul Gateway as a Ploinky-managed agent.'
-        );
-    }
     const config = buildConfig(env);
     const log = createLogger();
 
-    // Fail closed unless signed-subject auth is configured. readEnv() carries
-    // the PLOINKY_* fields directly; buildConfig() only wraps them as
-    // config.env, so validate the env object here.
+    // Fail closed unless the current Ploinky agent identity and signed-subject
+    // auth are configured. readEnv() carries the PLOINKY_* fields directly;
+    // buildConfig() only wraps them as config.env, so validate the env object here.
     assertSignedSubjectAuthConfig(env, { log });
 
     log.info('booting', { host: env.HOST, port: env.PORT });

@@ -1,6 +1,8 @@
+import { pathToFileURL } from 'node:url';
+
 const EXPECTED_TOOL = '__http_service__';
 
-let _verifyFn = null;
+let _verifyHttpServiceFn = null;
 let _replayCache = null;
 
 export class RouterAuthError extends Error {
@@ -25,18 +27,21 @@ function hasAdminRole(authInfo) {
     return Array.isArray(roles) && roles.includes('admin');
 }
 
-async function loadVerifier(config = {}) {
-    if (typeof config.verifyInvocationToken === 'function') {
-        return config.verifyInvocationToken;
+async function loadHttpServiceVerifier(config = {}) {
+    if (typeof config.verifyHttpServiceAuthInfo === 'function') {
+        return config.verifyHttpServiceAuthInfo;
     }
-    if (_verifyFn) return _verifyFn;
+    if (_verifyHttpServiceFn) return _verifyHttpServiceFn;
     try {
-        const mod = await import('achillesAgentLib/jwt/jwtVerify.mjs');
-        _verifyFn = mod.verifyInvocationToken;
-        return _verifyFn;
+        const mod = await import(pathToFileURL('/Agent/lib/invocationAuth.mjs').href);
+        if (typeof mod.verifyHttpServiceAuthInfoFromHeaders === 'function') {
+            _verifyHttpServiceFn = mod.verifyHttpServiceAuthInfoFromHeaders;
+            return _verifyHttpServiceFn;
+        }
     } catch {
-        throw new RouterAuthError('achillesAgentLib JWT verifier not available');
+        throw new RouterAuthError('Ploinky HTTP service verifier not available');
     }
+    throw new RouterAuthError('Ploinky HTTP service verifier not available');
 }
 
 async function resolveReplayCache(config = {}) {
@@ -58,18 +63,29 @@ async function resolveReplayCache(config = {}) {
     return _replayCache;
 }
 
-function resolveSecret(config) {
-    const derivedKey = config?.env?.PLOINKY_DERIVED_MASTER_KEY;
-    if (!derivedKey) {
-        throw new RouterAuthError('PLOINKY_DERIVED_MASTER_KEY not configured');
+function requestSurface(req, invocationBody = {}) {
+    const method = String(
+        req?.method || invocationBody.method || 'GET'
+    ).toUpperCase();
+    let path = String(invocationBody.path || '');
+    let query = String(invocationBody.search ?? '');
+    const rawUrl = String(req?.url || '').trim();
+    if (rawUrl) {
+        try {
+            const parsed = new URL(rawUrl, 'http://soul-gateway.local');
+            path = parsed.pathname || path;
+            query = parsed.search;
+        } catch {
+            // Fall back to the signed invocation body if a test double or unusual
+            // server adapter supplies a non-URL request target.
+        }
     }
-    const normalized = String(derivedKey).trim();
-    if (!/^[0-9a-fA-F]{64}$/.test(normalized)) {
-        throw new RouterAuthError(
-            'PLOINKY_DERIVED_MASTER_KEY must be a 64-character hex string'
-        );
-    }
-    return Buffer.from(normalized, 'hex');
+    return {
+        method,
+        path,
+        query,
+        bodyHash: String(invocationBody.bodyHash || ''),
+    };
 }
 
 export async function authenticateRouterAdmin(req, config) {
@@ -88,19 +104,23 @@ export async function authenticateRouterAdmin(req, config) {
         throw new RouterAuthError('Missing router invocation body');
     }
 
-    const verifyInvocationToken = await loadVerifier(config);
+    const verifyHttpServiceAuthInfo = await loadHttpServiceVerifier(config);
     const replayCache = await resolveReplayCache(config);
-    const secret = resolveSecret(config);
-    const principal = process.env.PLOINKY_AGENT_PRINCIPAL
-        || 'agent:proxies/soul-gateway';
+    const surface = requestSurface(req, authInfo.invocationBody);
 
-    await verifyInvocationToken(invocationToken, {
-        secret,
-        expectedAudience: principal,
-        expectedTool: EXPECTED_TOOL,
-        bodyObject: authInfo.invocationBody,
+    const verified = await verifyHttpServiceAuthInfo(req.headers || {}, {
+        env: config?.env || config || process.env,
         replayCache,
+        method: surface.method,
+        path: surface.path,
+        query: surface.query,
+        bodyHash: surface.bodyHash,
     });
+    if (!verified?.ok) {
+        throw new RouterAuthError(
+            verified?.reason || `Invalid ${EXPECTED_TOOL} router request`
+        );
+    }
 
     return {
         authenticated: true,

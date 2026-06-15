@@ -246,18 +246,21 @@ describe('extractBearerToken', () => {
 
 describe('router admin requireAdmin', () => {
     const config = {
-        PLOINKY_DERIVED_MASTER_KEY: '9'.repeat(64),
+        PLOINKY_AGENT_ID: 'agent:proxies/soul-gateway',
+        PLOINKY_AGENT_PRINCIPAL: 'agent:proxies/soul-gateway',
+        PLOINKY_AGENT_SECRET: '9'.repeat(64),
     };
     const invocationBody = {
-        tool: '__http_service__',
-        arguments: {
-            method: 'GET',
-            path: '/services/soul-gateway/management/providers',
-            search: '',
-        },
+        method: 'GET',
+        externalPath: '/services/soul-gateway/management/providers',
+        path: '/management/providers',
+        search: '',
+        routeKey: 'soul-gateway',
+        bodyHash: 'empty-body-hash',
     };
     const routerAuthOptions = {
-        verifyInvocationToken: mock.fn(() => ({
+        verifyHttpServiceAuthInfo: mock.fn(() => ({
+            ok: true,
             payload: { sub: 'local:admin' },
         })),
         replayCache: {
@@ -268,6 +271,8 @@ describe('router admin requireAdmin', () => {
 
     function makeReq(authInfo, extraHeaders = {}) {
         return {
+            method: authInfo?.invocationBody?.method || 'GET',
+            url: `${authInfo?.invocationBody?.path || '/management/providers'}${authInfo?.invocationBody?.search || ''}`,
             headers: {
                 ...extraHeaders,
                 'x-ploinky-auth-info': JSON.stringify(authInfo),
