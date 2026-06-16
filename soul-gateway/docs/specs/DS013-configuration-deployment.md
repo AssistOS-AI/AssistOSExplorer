@@ -32,6 +32,8 @@ Environment variables cover:
 
 The gateway opens its embedded SQLite database at `SQLITE_PATH` (default `/data/soul-gateway.sqlite3` inside the Ploinky-managed container). There is no external database connection to configure. `ENCRYPTION_KEY` is optional because the runtime auto-generates and persists `DATA_DIR/encryption.key` on first run if needed.
 
+Ploinky-managed containers run Soul Gateway from the repository checkout mounted at `/code`. The runtime image is not an application artifact and does not provide a fallback source tree. Startup fails closed when `/code/src` is missing so stale image content cannot mask an invalid Ploinky checkout.
+
 Pricing directory detail:
 
 - `PRICING_DIRECTORY_URL` overrides the external model directory source used for `external_directory` pricing and management-side metadata enrichment
@@ -180,7 +182,9 @@ If the grace period expires with requests still in flight, the remaining connect
 
 Soul Gateway declares one default Ploinky-agent profile:
 
-- It runs on the shared `docker.io/assistos/ploinky-node:24-bookworm-tools` image used by the Explorer dependency graph.
+- Runtime image: `docker.io/assistos/ploinky-node:24-bookworm-tools`.
+- `agent`, `cli`, and `install` commands point at `/code`.
+- The container image supplies Node and system dependencies only; application source comes from the enabled repository checkout mounted by Ploinky.
 - `PORT=7000`.
 - `ports: []` so the public interface is the Ploinky router, not the internal container port.
 - `PLOINKY_AGENT_API_KEY` and `SOUL_GATEWAY_API_KEY` (its alias) are injected by the Ploinky launcher as signed-subject keys; they are not manifest `sharedGeneratedSecret` fields.

@@ -4,6 +4,8 @@ Soul Gateway has one deployment model: it is a Ploinky-managed agent with HTTP s
 
 The old profile split is removed from active behavior. `SOUL_GATEWAY_MODE` and `TRUST_PLOINKY_ROUTER_AUTH` may be parsed for one release as deprecated no-op inputs, but they do not select behavior.
 
+Ploinky-managed startup uses the mounted `/code` checkout as the only runtime source. The manifest points `agent`, `cli`, and `install` to `/code`; startup rejects missing `/code/src` instead of falling back to source carried in the image.
+
 ## HTTP Services
 
 The manifest declares these service routes:

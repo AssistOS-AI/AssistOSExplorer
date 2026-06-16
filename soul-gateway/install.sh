@@ -1,16 +1,14 @@
 #!/bin/bash
 set -e
 
-IMAGE_APP_DIR="${SOUL_GATEWAY_IMAGE_APP_DIR:-/opt/soul-gateway}"
 CODE_DIR="${CODE_DIR:-/code}"
-APP_DIR="${APP_DIR:-/app}"
 DATA_DIR="${DATA_DIR:-/data}"
 CREDENTIALS_DIR="${CREDENTIALS_DIR:-$DATA_DIR/credentials}"
+AGENT_NODE_MODULES_DIR="${AGENT_NODE_MODULES_DIR:-/Agent/node_modules}"
 
 echo "=== Soul Gateway: Install ==="
 
-# Create durable storage (mounted volume) and app directory
-mkdir -p "$DATA_DIR" "$CREDENTIALS_DIR" "$APP_DIR"
+mkdir -p "$DATA_DIR" "$CREDENTIALS_DIR"
 
 ensure_browser_runtime() {
     case "${BROWSER_POOL_SIZE:-0}" in
@@ -34,32 +32,23 @@ ensure_browser_runtime() {
 }
 
 prepare_runtime_dependencies() {
-    # Production dependencies are baked into the image; only fall back to an
-    # in-place install when no prepared node_modules tree is available.
-    for candidate in "$IMAGE_APP_DIR/node_modules" /code/node_modules /Agent/node_modules; do
-        if [ -d "$candidate" ]; then
-            echo "Using prepared runtime dependencies from $candidate"
-            return
-        fi
-    done
-
-    if [ -d "$CODE_DIR/src" ]; then
-        rm -rf "$APP_DIR/src"
-        cp -r "$CODE_DIR/src" "$APP_DIR/src"
-        cp -f "$CODE_DIR/package.json" "$APP_DIR/package.json"
-        if [ -f "$CODE_DIR/package-lock.json" ]; then
-            cp -f "$CODE_DIR/package-lock.json" "$APP_DIR/package-lock.json"
-        else
-            rm -f "$APP_DIR/package-lock.json"
-        fi
-    fi
-
-    if [ ! -f "$APP_DIR/package.json" ]; then
+    if [ -d "$CODE_DIR/node_modules" ]; then
+        echo "Using prepared runtime dependencies from $CODE_DIR/node_modules"
         return
     fi
 
-    cd "$APP_DIR"
-    if [ -f "$APP_DIR/package-lock.json" ]; then
+    if [ -d "$AGENT_NODE_MODULES_DIR" ]; then
+        ln -s "$AGENT_NODE_MODULES_DIR" "$CODE_DIR/node_modules"
+        echo "Linked prepared runtime dependencies from $AGENT_NODE_MODULES_DIR to $CODE_DIR/node_modules"
+        return
+    fi
+
+    if [ ! -f "$CODE_DIR/package.json" ]; then
+        return
+    fi
+
+    cd "$CODE_DIR"
+    if [ -f "$CODE_DIR/package-lock.json" ]; then
         env NODE_OPTIONS= npm ci --omit=dev
     else
         env NODE_OPTIONS= npm install --omit=dev --no-package-lock

@@ -64,3 +64,21 @@ test('Manifest does not declare a workspace SOUL_GATEWAY_API_KEY secret', () => 
         assert.notEqual(provider.sharedGeneratedSecret, true, 'SOUL_GATEWAY_PROVIDER_API_KEY must not be a workspace shared secret');
     }
 });
+
+test('Ploinky manifest uses mounted source instead of baked app source', () => {
+    const manifest = readManifest();
+    const env = manifest.profiles?.default?.env || {};
+
+    assert.equal(
+        manifest.container,
+        'docker.io/assistos/ploinky-node:24-bookworm-tools',
+        'Soul Gateway should use the shared Ploinky Node runtime image, not an app-source image'
+    );
+    assert.equal(manifest.agent, 'bash /code/startup.sh');
+    assert.equal(manifest.cli, 'bash /code/cli.sh');
+    assert.equal(manifest.profiles?.default?.install, 'bash /code/install.sh');
+    assert.equal(manifest.readiness?.protocol, 'tcp');
+
+    assert.equal(env.SOUL_GATEWAY_USE_LIVE_SOURCE, undefined);
+    assert.equal(env.SOUL_GATEWAY_IMAGE_APP_DIR, undefined);
+});

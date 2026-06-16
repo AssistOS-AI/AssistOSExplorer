@@ -1,7 +1,7 @@
 {
-    "container": "docker.io/assistos/soul-gateway:node24-sqlite",
-    "agent": "bash /opt/soul-gateway/startup.sh",
-    "cli": "bash /opt/soul-gateway/cli.sh",
+    "container": "docker.io/assistos/ploinky-node:24-bookworm-tools",
+    "agent": "bash /code/startup.sh",
+    "cli": "bash /code/cli.sh",
     "about": "Soul Gateway — Ploinky-managed LLM proxy with Soul Family policies, full content logging, and AchillesIDE settings",
     "volumes": {
         ".ploinky/data/soul-gateway": "/data"
@@ -203,7 +203,7 @@
                 }
             },
             "ports": [],
-            "install": "bash /opt/soul-gateway/install.sh"
+            "install": "bash /code/install.sh"
         }
     }
 }
