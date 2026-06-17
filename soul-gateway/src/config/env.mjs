@@ -138,34 +138,12 @@ export function readEnv(processEnv = process.env) {
             false
         ),
         SOUL_GATEWAY_API_KEY: str(processEnv.SOUL_GATEWAY_API_KEY, null),
-        SOUL_GATEWAY_PROVIDER_API_KEY: str(
-            processEnv.SOUL_GATEWAY_PROVIDER_API_KEY,
-            null
-        ),
-        SOUL_GATEWAY_PROVIDER_BASE_URL: str(
-            processEnv.SOUL_GATEWAY_PROVIDER_BASE_URL,
-            'https://soul.axiologic.dev/v1'
-        ),
-        SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE: str(
-            processEnv.SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE,
-            'auto'
-        ),
-        SOUL_GATEWAY_PROVIDER_ALIASES: str(
-            processEnv.SOUL_GATEWAY_PROVIDER_ALIASES,
-            'fast,axl/fast,plan,code,write,deep,ultra'
-        ),
-        LOCAL_LLM_BASE_URL: str(processEnv.LOCAL_LLM_BASE_URL, null),
-        LOCAL_LLM_MODEL: str(processEnv.LOCAL_LLM_MODEL, null),
-        LOCAL_LLM_API_KEY: str(processEnv.LOCAL_LLM_API_KEY, null),
-        LOCAL_LLM_DISCOVERY_MODE: str(
-            processEnv.LOCAL_LLM_DISCOVERY_MODE,
-            'single'
-        ),
-        LOCAL_LLM_ALIASES: str(
-            processEnv.LOCAL_LLM_ALIASES,
-            'fast,axl/fast,plan,code,write,deep,ultra'
-        ),
         OAUTH_ADAPTERS_ENABLED: str(processEnv.OAUTH_ADAPTERS_ENABLED, null),
+        LLM_DEFAULT_AGENT: str(processEnv.LLM_DEFAULT_AGENT, null),
+        LLM_DEFAULT_TIERS: str(
+            processEnv.LLM_DEFAULT_TIERS,
+            'fast,plan,deep'
+        ),
 
         // Ploinky signed-subject auth (production path). Injected by the
         // Ploinky router/agent runtime. When ALLOW_UNAUTHENTICATED is not

@@ -29,6 +29,7 @@ import {
     isDiscoveryConfigured,
 } from './discovery-client.mjs';
 import { reconcilePloinkyAgents } from './reconcile-agents.mjs';
+import { seedDefaultTiers } from '../bootstrap/seed-default-tiers.mjs';
 
 export const PLOINKY_DISCOVERY_INTERVAL_MS = 60_000;
 
@@ -52,6 +53,7 @@ export async function runPloinkyReconcileOnce(appCtx, options = {}) {
     try {
         const discovery = await discoverPloinkyAgents(config, { log });
         const summary = await reconcilePloinkyAgents({ appCtx, discovery });
+        await seedDefaultTiers({ appCtx });
         return summary;
     } catch (err) {
         // Reconcile/discovery must never take down the gateway. Keep serving

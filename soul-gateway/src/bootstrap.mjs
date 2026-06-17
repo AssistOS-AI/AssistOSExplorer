@@ -21,10 +21,6 @@ import {
     installRuntimeCoordinationServices,
     installSnapshotServices,
 } from './bootstrap/service-installers.mjs';
-import { bootstrapLocalLlmProvider } from './bootstrap/local-llm-bootstrap.mjs';
-import {
-    bootstrapSoulGatewayProvider,
-} from './bootstrap/soul-gateway-provider-bootstrap.mjs';
 import {
     runInitialPloinkyReconcile,
     startPloinkyDiscoveryTimer,
@@ -72,8 +68,6 @@ export async function bootstrap() {
     await installBackendCatalogServices(appCtx);
     await installBrowserPoolService(appCtx);
     await installOAuthAdapters(appCtx);
-    await bootstrapSoulGatewayProvider(appCtx);
-    await bootstrapLocalLlmProvider(appCtx);
     // Reconcile discovered Ploinky agents into the provider/model catalog
     // BEFORE installSnapshotServices so the initial snapshot includes them.
     // No-ops cleanly outside Ploinky mode; never crashes startup on failure.

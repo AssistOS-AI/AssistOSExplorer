@@ -67,54 +67,20 @@
                     "default": "",
                     "description": "API key for authenticating with cliproxyapi upstream"
                 },
-                "SOUL_GATEWAY_PROVIDER_API_KEY": {
-                    "required": false,
-                    "default": "",
-                    "description": "Optional API key for bootstrapping the remote Soul Gateway as a normal provider"
-                },
-                "SOUL_GATEWAY_PROVIDER_BASE_URL": {
-                    "required": false,
-                    "default": "https://soul.axiologic.dev/v1",
-                    "description": "OpenAI-compatible base URL for the remote Soul Gateway provider"
-                },
-                "SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE": {
-                    "required": false,
-                    "default": "auto",
-                    "description": "Use auto to sync the remote Soul Gateway /models at startup, or off to create only the provider/account"
-                },
-                "SOUL_GATEWAY_PROVIDER_ALIASES": {
-                    "required": false,
-                    "default": "fast,axl/fast,plan,code,write,deep,ultra",
-                    "description": "Comma-separated aliases mirrored to same-named remote Soul Gateway provider models when discovered"
-                },
                 "ALLOW_UNAUTHENTICATED": {
                     "required": false,
                     "default": "false",
                     "description": "Development-only switch that disables /v1/* API key auth"
                 },
-                "LOCAL_LLM_BASE_URL": {
+                "LLM_DEFAULT_AGENT": {
                     "required": false,
-                    "default": "",
-                    "description": "OpenAI-compatible endpoint for explicitly enabled local LLM bootstrap"
+                    "default": "base-local",
+                    "description": "Local Ploinky agent whose discovered model seeds the basic tiers"
                 },
-                "LOCAL_LLM_MODEL": {
+                "LLM_DEFAULT_TIERS": {
                     "required": false,
-                    "default": ""
-                },
-                "LOCAL_LLM_API_KEY": {
-                    "required": false,
-                    "default": "",
-                    "description": "Optional bearer token or API key for the local LLM endpoint"
-                },
-                "LOCAL_LLM_DISCOVERY_MODE": {
-                    "required": false,
-                    "default": "single",
-                    "description": "Use single to register only LOCAL_LLM_MODEL, or auto to probe the endpoint model list"
-                },
-                "LOCAL_LLM_ALIASES": {
-                    "required": false,
-                    "default": "fast,axl/fast,plan,code,write,deep,ultra",
-                    "description": "Comma-separated aliases mapped to LOCAL_LLM_MODEL for legacy agent defaults"
+                    "default": "fast,plan,deep",
+                    "description": "Comma-separated tier aliases seeded to LLM_DEFAULT_AGENT's model"
                 },
                 "AXIOLOGIC_PROXY_API_KEY": {
                     "required": false,

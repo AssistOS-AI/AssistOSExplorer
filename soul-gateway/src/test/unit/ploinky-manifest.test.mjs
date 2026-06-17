@@ -10,6 +10,10 @@ const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
 const VALID_SERVICE_ACCESS = new Set(['public', 'guest', 'authenticated']);
 const REMOVED_SERVICE_FIELDS = ['auth', 'mode', 'forceGuest'];
+const LEGACY_ENV_PREFIXES = [
+    ['SOUL', 'GATEWAY', 'PROVIDER'].join('_') + '_',
+    ['LOCAL', 'LLM'].join('_') + '_',
+];
 
 function readManifest() {
     return JSON.parse(fs.readFileSync(path.join(repoRoot, 'manifest.json'), 'utf8'));
@@ -57,11 +61,14 @@ test('Manifest does not declare a workspace SOUL_GATEWAY_API_KEY secret', () => 
         }
     }
 
-    // A remote upstream provider key, if present, uses its own env name.
-    const provider = env.SOUL_GATEWAY_PROVIDER_API_KEY;
-    if (provider && typeof provider === 'object') {
-        assert.equal(provider.varName, undefined, 'SOUL_GATEWAY_PROVIDER_API_KEY must source from its own env name');
-        assert.notEqual(provider.sharedGeneratedSecret, true, 'SOUL_GATEWAY_PROVIDER_API_KEY must not be a workspace shared secret');
+    assert.equal(env.LLM_DEFAULT_AGENT?.default, 'base-local');
+    assert.equal(env.LLM_DEFAULT_TIERS?.default, 'fast,plan,deep');
+
+    for (const name of Object.keys(env)) {
+        assert.ok(
+            !LEGACY_ENV_PREFIXES.some((prefix) => name.startsWith(prefix)),
+            name + ' must not be declared after hub-only provider bootstrap'
+        );
     }
 });
 

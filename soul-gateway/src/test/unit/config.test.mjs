@@ -40,19 +40,8 @@ describe('readEnv', () => {
         assert.equal(env.DEFAULT_RPM_LIMIT, 60);
         assert.equal(env.DEFAULT_DAILY_BUDGET_USD, 2.0);
         assert.equal(env.SHUTDOWN_GRACE_MS, 30_000);
-        assert.equal(
-            env.LOCAL_LLM_ALIASES,
-            'fast,axl/fast,plan,code,write,deep,ultra'
-        );
-        assert.equal(
-            env.SOUL_GATEWAY_PROVIDER_BASE_URL,
-            'https://soul.axiologic.dev/v1'
-        );
-        assert.equal(env.SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE, 'auto');
-        assert.equal(
-            env.SOUL_GATEWAY_PROVIDER_ALIASES,
-            'fast,axl/fast,plan,code,write,deep,ultra'
-        );
+        assert.equal(env.LLM_DEFAULT_AGENT, null);
+        assert.equal(env.LLM_DEFAULT_TIERS, 'fast,plan,deep');
     });
 
     it('reads overrides from env', () => {
@@ -61,18 +50,15 @@ describe('readEnv', () => {
             HOST: '0.0.0.0',
             DEFAULT_RPM_LIMIT: '120',
             HTTP_RETRY_JITTER_PCT: '0.15',
-            SOUL_GATEWAY_PROVIDER_API_KEY: 'provider-secret',
-            SOUL_GATEWAY_PROVIDER_BASE_URL: 'https://example.test/v1',
+            LLM_DEFAULT_AGENT: 'base-local',
+            LLM_DEFAULT_TIERS: 'fast,deep',
         });
         assert.equal(env.PORT, 9000);
         assert.equal(env.HOST, '0.0.0.0');
         assert.equal(env.DEFAULT_RPM_LIMIT, 120);
         assert.equal(env.HTTP_RETRY_JITTER_PCT, 0.15);
-        assert.equal(env.SOUL_GATEWAY_PROVIDER_API_KEY, 'provider-secret');
-        assert.equal(
-            env.SOUL_GATEWAY_PROVIDER_BASE_URL,
-            'https://example.test/v1'
-        );
+        assert.equal(env.LLM_DEFAULT_AGENT, 'base-local');
+        assert.equal(env.LLM_DEFAULT_TIERS, 'fast,deep');
     });
 
     it('ignores invalid numbers', () => {
