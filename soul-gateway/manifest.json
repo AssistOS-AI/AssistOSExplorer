@@ -74,7 +74,7 @@
                 },
                 "LLM_DEFAULT_AGENT": {
                     "required": false,
-                    "default": "base-local",
+                    "default": "default-local-llm",
                     "description": "Local Ploinky agent whose discovered model seeds the basic tiers"
                 },
                 "LLM_DEFAULT_TIERS": {
