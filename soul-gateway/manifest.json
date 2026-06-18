@@ -36,6 +36,9 @@
             "adminOnly": true
         }
     ],
+    "enable": [
+        "default-local-llm no-wait"
+    ],
     "profiles": {
         "default": {
             "env": {

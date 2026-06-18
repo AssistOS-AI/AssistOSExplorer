@@ -61,7 +61,7 @@ test('Manifest does not declare a workspace SOUL_GATEWAY_API_KEY secret', () => 
         }
     }
 
-    assert.equal(env.LLM_DEFAULT_AGENT?.default, 'base-local');
+    assert.equal(env.LLM_DEFAULT_AGENT?.default, 'default-local-llm');
     assert.equal(env.LLM_DEFAULT_TIERS?.default, 'fast,plan,deep');
 
     for (const name of Object.keys(env)) {
