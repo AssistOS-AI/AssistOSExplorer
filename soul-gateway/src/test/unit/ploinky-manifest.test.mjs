@@ -41,7 +41,7 @@ test('Ploinky service exposure matches the gateway contract', () => {
     const manifest = readManifest();
     const services = new Map((manifest.httpServices || []).map((service) => [service.externalPrefix, service]));
 
-    assert.equal(services.get('/services/soul-gateway/v1/')?.access, 'public');
+    assert.equal(services.get('/services/soul-gateway/v1/')?.access, 'guest');
     assert.equal(services.get('/services/soul-gateway/management/')?.access, 'authenticated');
     assert.equal(services.get('/public-services/soul-gateway-health/')?.access, 'public');
 });
