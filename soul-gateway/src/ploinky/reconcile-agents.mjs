@@ -89,6 +89,7 @@ function buildMetadata(agent) {
         repo: agent.repo,
         agent: agent.agent,
         usesDefaultOpenAiResponder: agent.usesDefaultOpenAiResponder === true,
+        responderKind: typeof agent.responderKind === 'string' ? agent.responderKind : 'llm',
     };
 }
 

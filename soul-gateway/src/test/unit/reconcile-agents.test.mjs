@@ -226,6 +226,34 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         assert.equal(model.metadata.discoverySource, DISCOVERY_MARKER);
     });
 
+    it('buildMetadata persists responderKind (default llm)', async () => {
+        const providersFake = makeFakeProvidersDao();
+        const modelsFake = makeFakeModelsDao();
+        const appCtx = makeAppCtx();
+        const discoveredAgent = agent({ responderKind: 'inert' });
+
+        await reconcilePloinkyAgentRecords({
+            appCtx,
+            discovery: { complete: true, agents: [discoveredAgent] },
+            daos: { providersDao: providersFake, modelsDao: modelsFake },
+            refresh: spyRefresh(),
+        });
+
+        const provider = await providersFake.findByKey(
+            null,
+            providerKeyFor(discoveredAgent.subjectId)
+        );
+        assert.ok(provider);
+        assert.equal(provider.metadata.responderKind, 'inert');
+
+        const model = await modelsFake.findByKey(
+            null,
+            modelKeyFor(discoveredAgent.repo, discoveredAgent.agent)
+        );
+        assert.ok(model);
+        assert.equal(model.metadata.responderKind, 'inert');
+    });
+
     it('calls performRuntimeRefresh({ snapshot: true }) after row changes', async () => {
         const refresh = spyRefresh();
         await reconcilePloinkyAgentRecords({
