@@ -42,7 +42,6 @@ const BOOLEAN_COLUMNS = new Set([
 ]);
 
 const BLOB_COLUMNS = new Set([
-    'key_hash',
     'secret_ciphertext', 'secret_iv', 'secret_auth_tag',
 ]);
 

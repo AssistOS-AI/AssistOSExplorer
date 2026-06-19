@@ -26,9 +26,8 @@
  *     once (every signature fails against the new public key).
  */
 
-import { createHmac, createPublicKey, verify as cryptoVerify } from 'node:crypto';
+import { createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import * as apiKeysDao from '../../db/dao/api-keys-dao.mjs';
-import { ensureEncryptionKey } from './encryption.mjs';
 import {
     AuthenticationRequiredError,
     InvalidApiKeyError,
@@ -50,9 +49,6 @@ const ED25519_PUBLIC_KEY_BYTES = 32;
 const SEGMENT = '[A-Za-z0-9._:-]+';
 const AGENT_SUBJECT_RE = new RegExp(`^agent:(${SEGMENT})/(${SEGMENT})$`);
 const USER_SUBJECT_RE = new RegExp(`^user:(${SEGMENT})$`);
-
-const SIGNED_SUBJECT_DEFAULT_RPM_LIMIT = 60;
-const SIGNED_SUBJECT_DEFAULT_TPM_LIMIT = 100000;
 
 /**
  * Authenticate an incoming request by its signed-subject API key.
@@ -94,17 +90,12 @@ export async function authenticateApiKey(authHeader, appCtx) {
         throw new InvalidApiKeyError('Signed subject API key signature is invalid');
     }
 
-    // 6. Upsert the deterministic row for this subject. The key hash is computed
-    //    here (the pepper stays in the security layer) and passed to the DAO.
-    const pepper = derivePepper(env);
-    const keyHash = hashApiKey(token, pepper);
-    const row = await apiKeysDao.createSignedSubjectKeyRecord(appCtx.pool, {
-        keyHash,
+    // 6. Find-or-create the deterministic row for this subject, keyed on
+    //    subject_id. The signature check above is the security gate; no key
+    //    material is hashed or stored.
+    const row = await apiKeysDao.upsertSignedSubjectKey(appCtx.pool, {
         subjectId,
         subjectType,
-        keyHint: buildKeyHint(subjectId),
-        rpmLimit: SIGNED_SUBJECT_DEFAULT_RPM_LIMIT,
-        tpmLimit: SIGNED_SUBJECT_DEFAULT_TPM_LIMIT,
     });
 
     if (!row) {
@@ -263,39 +254,4 @@ export function extractBearerToken(authHeader) {
     }
 
     return token;
-}
-
-/**
- * HMAC-SHA256 hash an API key with the pepper.
- *
- * @param {string} token  The raw API key.
- * @param {string} pepper The HMAC pepper.
- * @returns {string} hex-encoded hash.
- */
-export function hashApiKey(token, pepper) {
-    return createHmac('sha256', pepper).update(token).digest('hex');
-}
-
-/**
- * Derive the pepper used for API key hashing.
- *
- * If API_KEY_HASH_PEPPER is explicitly set, use it. Otherwise fall back to
- * ENCRYPTION_KEY, then to the persisted encryption key under DATA_DIR.
- *
- * @param {{ API_KEY_HASH_PEPPER: string|null, ENCRYPTION_KEY: string|null, DATA_DIR?: string }} config
- * @returns {string}
- */
-export function derivePepper(config) {
-    if (config.API_KEY_HASH_PEPPER) return config.API_KEY_HASH_PEPPER;
-    if (config.ENCRYPTION_KEY) return config.ENCRYPTION_KEY;
-    if (config.DATA_DIR) return ensureEncryptionKey(config).toString('base64');
-    throw new Error(
-        'Neither API_KEY_HASH_PEPPER, ENCRYPTION_KEY, nor DATA_DIR encryption key is configured'
-    );
-}
-
-function buildKeyHint(value) {
-    const str = String(value || '');
-    if (str.length <= 12) return str;
-    return `${str.slice(0, 8)}...${str.slice(-4)}`;
 }

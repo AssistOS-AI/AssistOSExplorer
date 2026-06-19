@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 import {
     encrypt,
@@ -10,8 +10,6 @@ import {
 import { requireAdmin } from '../../runtime/security/dashboard-auth.mjs';
 import {
     extractBearerToken,
-    hashApiKey,
-    derivePepper,
 } from '../../runtime/security/api-key-auth.mjs';
 import {
     AuthenticationRequiredError,
@@ -128,61 +126,6 @@ describe('ensureEncryptionKey', () => {
             DATA_DIR: '/tmp',
         };
         assert.throws(() => ensureEncryptionKey(config), /32 bytes/);
-    });
-});
-
-// ── API Key HMAC Hash ───────────────────────────────────────────────
-
-describe('hashApiKey', () => {
-    it('produces a deterministic hex HMAC-SHA256', () => {
-        const token = 'sk-soul-abc123';
-        const pepper = 'my-pepper';
-        const expected = createHmac('sha256', pepper)
-            .update(token)
-            .digest('hex');
-        assert.equal(hashApiKey(token, pepper), expected);
-    });
-
-    it('produces different hashes for different tokens', () => {
-        const pepper = 'pepper';
-        assert.notEqual(
-            hashApiKey('token-a', pepper),
-            hashApiKey('token-b', pepper)
-        );
-    });
-
-    it('produces different hashes for different peppers', () => {
-        assert.notEqual(
-            hashApiKey('token', 'pepper-a'),
-            hashApiKey('token', 'pepper-b')
-        );
-    });
-});
-
-describe('derivePepper', () => {
-    it('prefers API_KEY_HASH_PEPPER when set', () => {
-        assert.equal(
-            derivePepper({ API_KEY_HASH_PEPPER: 'p', ENCRYPTION_KEY: 'e' }),
-            'p'
-        );
-    });
-
-    it('falls back to ENCRYPTION_KEY', () => {
-        assert.equal(
-            derivePepper({ API_KEY_HASH_PEPPER: null, ENCRYPTION_KEY: 'e' }),
-            'e'
-        );
-    });
-
-    it('throws when neither is set', () => {
-        assert.throws(
-            () =>
-                derivePepper({
-                    API_KEY_HASH_PEPPER: null,
-                    ENCRYPTION_KEY: null,
-                }),
-            /neither/i
-        );
     });
 });
 

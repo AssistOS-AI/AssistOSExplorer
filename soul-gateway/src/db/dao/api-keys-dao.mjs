@@ -4,9 +4,8 @@
  *
  * api_keys is signed-subject-only: every row is a deterministic, server-derived
  * record for a Ploinky-signed subject. Rows never store the plaintext key or any
- * ciphertext — only the HMAC `key_hash` (for fast lookup) plus the subject
- * identity, limits, budgets, and status. The subject_id column is UNIQUE, so a
- * given subject maps to exactly one row.
+ * ciphertext. The subject_id column is UNIQUE, so a given subject maps to
+ * exactly one row.
  */
 import { randomUUID } from 'node:crypto';
 import { updateRow } from './helpers/query-builder.mjs';
@@ -14,17 +13,14 @@ import { updateRow } from './helpers/query-builder.mjs';
 const TABLE = 'api_keys';
 
 /**
- * Insert a signed-subject api_keys row.
- *
- * No ciphertext columns exist on this table; callers pass the precomputed
- * `keyHash` (HMAC of the bearer token) and the classified subject identity.
+ * Insert a signed-subject api_keys row. No key material is stored; the row is
+ * the deterministic record for a subject, keyed uniquely by subject_id.
  */
 export async function create(
     pool,
     {
         id,
         label,
-        keyHash,
         keyHint,
         subjectId,
         subjectType,
@@ -41,17 +37,16 @@ export async function create(
     const rowId = id || randomUUID();
     const { rows } = await pool.query(
         `INSERT INTO ${TABLE}
-       (label, subject_id, subject_type, source, key_hash, key_hint,
+       (label, subject_id, subject_type, source, key_hint,
         rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
         expires_at, status, metadata, id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
         [
             label,
             subjectId,
             subjectType,
             source,
-            keyHash,
             keyHint,
             rpmLimit,
             tpmLimit,
@@ -67,73 +62,58 @@ export async function create(
 }
 
 /**
- * Idempotently create (or re-read) the signed-subject row for a key.
+ * Find-or-create the signed-subject row for a subject, keyed on subject_id.
  *
- * The bearer token is deterministic per subject, so two concurrent first uses
- * of the same key both try to INSERT and one loses the race on the
- * `subject_id` / `key_hash` UNIQUE indexes. On a unique violation we re-read the
- * row the winner inserted instead of failing the request, giving every caller
- * one logical row.
+ * - If a row already exists, return it UNCHANGED (operator-edited limits and
+ *   budgets are never overwritten by a later discovery pass or request).
+ * - Otherwise insert one with a derived key_hint and default limits.
+ * - On a concurrent first-use race, the loser re-reads the winner's row via the
+ *   subject_id UNIQUE index.
  *
- * Revocation semantics (see DS / api-key-auth):
- *   - Revoking the row blocks that deterministic key (caller denies on
- *     status === 'revoked'); this function never reactivates a revoked row.
+ * Revocation semantics (enforced by callers, see api-key-auth.mjs):
+ *   - A revoked row is never reactivated here.
  *   - Deleting the row permits recreation on the next valid signed request.
- *   - Per-subject rotation requires changing the subject id.
- *   - Rotating the Ploinky signing key invalidates all signed-subject keys.
- *
- * @param {object} pool
- * @param {object} params
- * @param {string} params.keyHash    HMAC of the raw bearer token (precomputed
- *                                    by the auth layer so the pepper stays out
- *                                    of the DAO).
- * @param {string} params.subjectId
- * @param {'agent'|'user'} params.subjectType
- * @param {string} params.keyHint
  */
-export async function createSignedSubjectKeyRecord(
+export async function upsertSignedSubjectKey(
     pool,
     {
-        keyHash,
         subjectId,
         subjectType,
-        keyHint,
+        label = subjectId,
         rpmLimit = 60,
         tpmLimit = 100000,
-        dailyBudgetUsd = null,
-        monthlyBudgetUsd = null,
-        metadata = {},
     }
 ) {
+    const existing = await findBySubjectId(pool, subjectId);
+    if (existing) return existing;
     try {
         return await create(pool, {
-            label: subjectId,
-            keyHash,
-            keyHint,
+            label,
+            keyHint: buildKeyHint(subjectId),
             subjectId,
             subjectType,
             source: 'signed-subject',
             status: 'active',
             rpmLimit,
             tpmLimit,
-            dailyBudgetUsd,
-            monthlyBudgetUsd,
-            metadata: { ...metadata, subjectId, subjectType, source: 'signed-subject' },
+            metadata: { subjectId, subjectType, source: 'signed-subject' },
         });
     } catch (error) {
         if (!isUniqueConstraintError(error)) throw error;
-        // A concurrent writer won the race; re-read the existing row. The
-        // caller is responsible for denying it when status === 'revoked'.
-        return await findByHash(pool, keyHash);
+        return await findBySubjectId(pool, subjectId);
     }
 }
 
+/** Short, non-secret display hint derived from the subject id. */
+function buildKeyHint(value) {
+    const str = String(value || '');
+    if (str.length <= 12) return str;
+    return `${str.slice(0, 8)}...${str.slice(-4)}`;
+}
+
 /**
- * Detect a SQLite UNIQUE-constraint violation surfaced by the embedded
- * node:sqlite facade. node:sqlite raises ERR_SQLITE_ERROR with the message
- * "UNIQUE constraint failed: ..." and the extended result code 2067
- * (SQLITE_CONSTRAINT_UNIQUE). We match on the SQLite shape only — not a
- * Postgres 23505 / "duplicate key" shape — since this deployment is SQLite.
+ * Detect a SQLite UNIQUE-constraint violation surfaced by node:sqlite
+ * (ERR_SQLITE_ERROR / "UNIQUE constraint failed" / extended code 2067).
  */
 export function isUniqueConstraintError(error) {
     if (!error) return false;
@@ -147,14 +127,6 @@ export function isUniqueConstraintError(error) {
         error.errcode === 1555 ||
         error.errcode === 19
     );
-}
-
-export async function findByHash(pool, keyHash) {
-    const { rows } = await pool.query(
-        `SELECT * FROM ${TABLE} WHERE key_hash = $1`,
-        [keyHash]
-    );
-    return rows[0] || null;
 }
 
 export async function findById(pool, id) {

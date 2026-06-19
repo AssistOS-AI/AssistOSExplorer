@@ -441,7 +441,7 @@ describe('signed-subject API key', () => {
             assert.equal(names.includes('key_ciphertext'), false);
             assert.equal(names.includes('key_iv'), false);
             assert.equal(names.includes('key_auth_tag'), false);
-            assert.equal(names.includes('key_hash'), true);
+            assert.equal(names.includes('key_hash'), false);
         });
     });
 

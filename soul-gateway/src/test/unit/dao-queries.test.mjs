@@ -11,8 +11,9 @@ describe('api-keys-dao', () => {
         const dao = await import('../../db/dao/api-keys-dao.mjs');
         const expected = [
             'create',
-            'findByHash',
+            'upsertSignedSubjectKey',
             'findById',
+            'findBySubjectId',
             'list',
             'update',
             'revoke',

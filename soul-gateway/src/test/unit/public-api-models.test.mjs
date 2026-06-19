@@ -155,31 +155,30 @@ function createPricingDirectory() {
 }
 
 function createApiKeyPool() {
-    // Signed-subject upsert: first lookup misses, the INSERT creates the row,
-    // and subsequent lookups return it. Column order matches the new
-    // api_keys INSERT in api-keys-dao.create().
+    // Signed-subject upsert: first lookup (by subject_id) misses, the INSERT
+    // creates the row, and subsequent lookups return it. Column order matches
+    // the new api_keys INSERT in api-keys-dao.create() (no key_hash).
     let subjectRow = null;
     return {
         async query(sql, params) {
-            if (sql.includes('WHERE key_hash = $1')) {
+            if (sql.includes('WHERE subject_id = $1')) {
                 return { rows: subjectRow ? [subjectRow] : [] };
             }
             if (sql.includes('INSERT INTO api_keys')) {
                 subjectRow = {
-                    id: '11111111-1111-1111-1111-111111111111',
+                    id: params[12],
                     label: params[0],
                     subject_id: params[1],
                     subject_type: params[2],
                     source: params[3],
-                    key_hash: params[4],
-                    key_hint: params[5],
-                    rpm_limit: params[6],
-                    tpm_limit: params[7],
-                    daily_budget_usd: params[8],
-                    monthly_budget_usd: params[9],
-                    expires_at: params[10],
-                    status: params[11],
-                    metadata: params[12],
+                    key_hint: params[4],
+                    rpm_limit: params[5],
+                    tpm_limit: params[6],
+                    daily_budget_usd: params[7],
+                    monthly_budget_usd: params[8],
+                    expires_at: params[9],
+                    status: params[10],
+                    metadata: params[11],
                 };
                 return { rows: [subjectRow] };
             }

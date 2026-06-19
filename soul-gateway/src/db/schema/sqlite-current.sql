@@ -20,18 +20,17 @@ PRAGMA foreign_keys = ON;
 
 -- ── api_keys ────────────────────────────────────────────────────────
 -- Signed-subject-only. Rows are deterministic, server-derived records for a
--- Ploinky-signed subject (agent:<repo>/<agent> or user:<userId>); they are
--- created on first valid signed request, never hold the plaintext key, and are
--- keyed uniquely by subject_id. There is no stored ciphertext: the bearer token
--- is `<subjectId>|<ed25519-signature>` and is verified against the Ploinky
--- public key on every request, so only the HMAC key_hash is persisted.
+-- Ploinky-signed subject (agent:<repo>/<agent> or user:<userId>), keyed
+-- uniquely by subject_id. Agent rows are provisioned at Ploinky discovery;
+-- user rows are created on the first valid signed request. No key material is
+-- stored: the bearer token is `<subjectId>|<ed25519-signature>` and is
+-- verified against the Ploinky public key on every request.
 CREATE TABLE IF NOT EXISTS api_keys (
     id                    TEXT PRIMARY KEY,
     label                 TEXT NOT NULL,
     subject_id            TEXT NOT NULL UNIQUE,
     subject_type          TEXT NOT NULL CHECK (subject_type IN ('agent', 'user')),
     source                TEXT NOT NULL DEFAULT 'signed-subject' CHECK (source = 'signed-subject'),
-    key_hash              BLOB NOT NULL UNIQUE,
     key_hint              TEXT NOT NULL,
     rpm_limit             INTEGER NOT NULL DEFAULT 60 CHECK (rpm_limit > 0),
     tpm_limit             INTEGER NOT NULL DEFAULT 100000 CHECK (tpm_limit > 0),
