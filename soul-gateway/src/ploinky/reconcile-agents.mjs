@@ -9,7 +9,7 @@
  * through the `ploinky-agent-openai` backend.
  *
  * Each discovered agent maps to exactly one provider (stable key
- * `ploinky:<subjectId>`) and one model (stable id `ploinky/<repo>/<agent>`).
+ * `<subjectId>`) and one model (stable id `<repo>/<agent>`).
  * The granular discovery marker is stored ONLY in each row's `metadata` JSON
  * (`metadata.discoverySource === 'ploinky-agent-discovery'`); the column
  * `discovery_source` carries the schema enum value `synced`. Stale-disable and
@@ -58,22 +58,22 @@ function readConfigField(config, key) {
 }
 
 /**
- * Stable provider key for a discovered agent.
+ * Stable provider key for a discovered agent: the subject id itself.
  * @param {string} subjectId
  * @returns {string}
  */
 export function providerKeyFor(subjectId) {
-    return `ploinky:${subjectId}`;
+    return subjectId;
 }
 
 /**
- * Stable model key for a discovered agent.
+ * Stable model key for a discovered agent: `<repo>/<agent>`.
  * @param {string} repo
  * @param {string} agent
  * @returns {string}
  */
 export function modelKeyFor(repo, agent) {
-    return `ploinky/${repo}/${agent}`;
+    return `${repo}/${agent}`;
 }
 
 /**

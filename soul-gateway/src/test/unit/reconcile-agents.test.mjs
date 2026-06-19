@@ -216,7 +216,7 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
 
         const model = await modelsFake.findByKey(null, modelKeyFor('demo', 'echo'));
         assert.ok(model);
-        assert.equal(model.model_key, 'ploinky/demo/echo');
+        assert.equal(model.model_key, 'demo/echo');
         assert.equal(model.display_name, 'Echo Agent');
         assert.equal(model.provider_id, provider.id);
         assert.equal(model.provider_model_id, 'agent:demo/echo');
@@ -369,7 +369,7 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         const modelsFake = makeFakeModelsDao([
             {
                 id: 'model-stale',
-                model_key: 'ploinky/old/gone',
+                model_key: 'old/gone',
                 display_name: 'Old Gone',
                 provider_id: stalePid,
                 provider_model_id: 'agent:old/gone',
@@ -530,7 +530,7 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         const modelsFake = makeFakeModelsDao([
             {
                 id: 'model-1',
-                model_key: 'ploinky/demo/echo',
+                model_key: 'demo/echo',
                 display_name: 'Echo Agent',
                 provider_id: pid,
                 provider_model_id: 'agent:demo/echo',
@@ -610,7 +610,7 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
             assert.equal(provider.auth_strategy, 'none');
             assert.equal(provider.metadata.discoverySource, DISCOVERY_MARKER);
 
-            const model = await modelsDao.findByKey(db, 'ploinky/demo/echo');
+            const model = await modelsDao.findByKey(db, 'demo/echo');
             assert.ok(model, 'model row persisted');
             assert.equal(model.strategy_kind, 'direct');
             assert.equal(model.discovery_source, 'synced');
@@ -643,7 +643,7 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
             // runtime (timer) path, where the snapshot is live.
             installRuntimeCoordinationServices(appCtx);
             assert.equal(
-                appCtx.services.snapshot.models.has('ploinky/demo/echo'),
+                appCtx.services.snapshot.models.has('demo/echo'),
                 false
             );
 
@@ -653,14 +653,14 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
             });
 
             // performRuntimeRefresh rebuilt appCtx.services.snapshot.
-            const model = appCtx.services.snapshot.models.get('ploinky/demo/echo');
+            const model = appCtx.services.snapshot.models.get('demo/echo');
             assert.ok(model, 'discovered model present in refreshed snapshot');
             assert.equal(model.providerModelId, 'agent:demo/echo');
             assert.equal(model.strategyKind, 'direct');
 
             // And an independent fresh load agrees.
             const fresh = await loadRuntimeSnapshot(appCtx);
-            assert.ok(fresh.models.has('ploinky/demo/echo'));
+            assert.ok(fresh.models.has('demo/echo'));
         });
     });
 
@@ -693,7 +693,7 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
 
             await installSnapshotServices(appCtx);
             assert.ok(
-                appCtx.services.snapshot.models.has('ploinky/demo/echo'),
+                appCtx.services.snapshot.models.has('demo/echo'),
                 'first snapshot includes the reconcile output'
             );
         });
