@@ -15,6 +15,7 @@ import {
 import { openDatabase, initializeSchema } from '../../db/sqlite-db.mjs';
 import * as providersDao from '../../db/dao/providers-dao.mjs';
 import * as modelsDao from '../../db/dao/models-dao.mjs';
+import * as apiKeysDao from '../../db/dao/api-keys-dao.mjs';
 import {
     installSnapshotServices,
     installRuntimeCoordinationServices,
@@ -158,6 +159,32 @@ function makeFakeModelsDao(seed = []) {
     };
 }
 
+function makeFakeApiKeysDao(seed = []) {
+    const bySubject = new Map(); // subject_id -> row
+    for (const r of seed) bySubject.set(r.subject_id, r);
+    return {
+        bySubject,
+        async findBySubjectId(_pool, subjectId) {
+            return bySubject.get(subjectId) || null;
+        },
+        async upsertSignedSubjectKey(_pool, { subjectId, subjectType }) {
+            const existing = bySubject.get(subjectId);
+            if (existing) return existing;
+            const row = {
+                id: randomUUID(),
+                subject_id: subjectId,
+                subject_type: subjectType,
+                source: 'signed-subject',
+                status: 'active',
+                rpm_limit: 60,
+                tpm_limit: 100000,
+            };
+            bySubject.set(subjectId, row);
+            return row;
+        },
+    };
+}
+
 function makeAppCtx({ env = {} } = {}) {
     return {
         pool: {},
@@ -193,7 +220,11 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         const summary = await reconcilePloinkyAgentRecords({
             appCtx,
             discovery: { complete: true, agents: [agent()] },
-            daos: { providersDao: providersFake, modelsDao: modelsFake },
+            daos: {
+                providersDao: providersFake,
+                modelsDao: modelsFake,
+                apiKeysDao: makeFakeApiKeysDao(),
+            },
             refresh,
         });
 
@@ -235,7 +266,7 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         await reconcilePloinkyAgentRecords({
             appCtx,
             discovery: { complete: true, agents: [discoveredAgent] },
-            daos: { providersDao: providersFake, modelsDao: modelsFake },
+            daos: { providersDao: providersFake, modelsDao: modelsFake, apiKeysDao: makeFakeApiKeysDao() },
             refresh: spyRefresh(),
         });
 
@@ -262,6 +293,7 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
             daos: {
                 providersDao: makeFakeProvidersDao(),
                 modelsDao: makeFakeModelsDao(),
+                apiKeysDao: makeFakeApiKeysDao(),
             },
             refresh,
         });
@@ -272,7 +304,11 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
     it('does NOT refresh when nothing changed (idempotent second pass)', async () => {
         const providersFake = makeFakeProvidersDao();
         const modelsFake = makeFakeModelsDao();
-        const daos = { providersDao: providersFake, modelsDao: modelsFake };
+        const daos = {
+            providersDao: providersFake,
+            modelsDao: modelsFake,
+            apiKeysDao: makeFakeApiKeysDao(),
+        };
         const discovery = { complete: true, agents: [agent()] };
 
         const first = spyRefresh();
@@ -313,7 +349,11 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
                     agent(),
                 ],
             },
-            daos: { providersDao: providersFake, modelsDao: modelsFake },
+            daos: {
+                providersDao: providersFake,
+                modelsDao: modelsFake,
+                apiKeysDao: makeFakeApiKeysDao(),
+            },
             refresh,
         });
 
@@ -395,7 +435,11 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         const summary = await reconcilePloinkyAgentRecords({
             appCtx: makeAppCtx(),
             discovery: { complete: true, agents: [agent()] },
-            daos: { providersDao: providersFake, modelsDao: modelsFake },
+            daos: {
+                providersDao: providersFake,
+                modelsDao: modelsFake,
+                apiKeysDao: makeFakeApiKeysDao(),
+            },
             refresh,
         });
 
@@ -446,7 +490,11 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
             appCtx: makeAppCtx(),
             // complete=false → do not disable missing rows.
             discovery: { complete: false, agents: [agent()] },
-            daos: { providersDao: providersFake, modelsDao: modelsFake },
+            daos: {
+                providersDao: providersFake,
+                modelsDao: modelsFake,
+                apiKeysDao: makeFakeApiKeysDao(),
+            },
             refresh,
         });
 
@@ -492,7 +540,11 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         const summary = await reconcilePloinkyAgentRecords({
             appCtx: makeAppCtx(),
             discovery: { complete: false, agents: [] },
-            daos: { providersDao: providersFake, modelsDao: modelsFake },
+            daos: {
+                providersDao: providersFake,
+                modelsDao: modelsFake,
+                apiKeysDao: makeFakeApiKeysDao(),
+            },
             refresh,
         });
 
@@ -552,7 +604,11 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         const summary = await reconcilePloinkyAgentRecords({
             appCtx: makeAppCtx(),
             discovery: { complete: true, agents: [agent()] },
-            daos: { providersDao: providersFake, modelsDao: modelsFake },
+            daos: {
+                providersDao: providersFake,
+                modelsDao: modelsFake,
+                apiKeysDao: makeFakeApiKeysDao(),
+            },
             refresh,
         });
 
@@ -560,6 +616,84 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         assert.equal(summary.refreshed, true);
         assert.equal(providersFake.rows.get(pid).enabled, true);
         assert.equal(modelsFake.rows.get('model-1').enabled, true);
+    });
+
+    it('provisions one agent api_keys row per discovered agent', async () => {
+        const apiKeysFake = makeFakeApiKeysDao();
+        const summary = await reconcilePloinkyAgentRecords({
+            appCtx: makeAppCtx(),
+            discovery: { complete: true, agents: [agent()] },
+            daos: {
+                providersDao: makeFakeProvidersDao(),
+                modelsDao: makeFakeModelsDao(),
+                apiKeysDao: apiKeysFake,
+            },
+            refresh: spyRefresh(),
+        });
+
+        // The key upsert must not change the provider/model tally.
+        assert.equal(summary.created, 2);
+
+        const key = await apiKeysFake.findBySubjectId(null, 'agent:demo/echo');
+        assert.ok(key, 'agent key provisioned at discovery');
+        assert.equal(key.subject_type, 'agent');
+        assert.equal(key.status, 'active');
+    });
+
+    it('does not overwrite an operator-edited agent key on a later pass', async () => {
+        const apiKeysFake = makeFakeApiKeysDao([
+            {
+                id: 'key-1',
+                subject_id: 'agent:demo/echo',
+                subject_type: 'agent',
+                source: 'signed-subject',
+                status: 'active',
+                rpm_limit: 5, // operator-tightened
+                tpm_limit: 100000,
+            },
+        ]);
+        await reconcilePloinkyAgentRecords({
+            appCtx: makeAppCtx(),
+            discovery: { complete: true, agents: [agent()] },
+            daos: {
+                providersDao: makeFakeProvidersDao(),
+                modelsDao: makeFakeModelsDao(),
+                apiKeysDao: apiKeysFake,
+            },
+            refresh: spyRefresh(),
+        });
+
+        const key = await apiKeysFake.findBySubjectId(null, 'agent:demo/echo');
+        assert.equal(key.rpm_limit, 5, 'edited limit preserved');
+    });
+
+    it('keeps the key row for an agent that is no longer discovered', async () => {
+        const apiKeysFake = makeFakeApiKeysDao([
+            {
+                id: 'key-gone',
+                subject_id: 'agent:old/gone',
+                subject_type: 'agent',
+                source: 'signed-subject',
+                status: 'active',
+                rpm_limit: 60,
+                tpm_limit: 100000,
+            },
+        ]);
+        await reconcilePloinkyAgentRecords({
+            appCtx: makeAppCtx(),
+            // Complete discovery without agent:old/gone.
+            discovery: { complete: true, agents: [agent()] },
+            daos: {
+                providersDao: makeFakeProvidersDao(),
+                modelsDao: makeFakeModelsDao(),
+                apiKeysDao: apiKeysFake,
+            },
+            refresh: spyRefresh(),
+        });
+
+        const key = await apiKeysFake.findBySubjectId(null, 'agent:old/gone');
+        assert.ok(key, 'stale agent key is preserved');
+        assert.equal(key.status, 'active');
     });
 });
 
@@ -616,6 +750,14 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
             assert.equal(model.discovery_source, 'synced');
             assert.equal(model.provider_id, provider.id);
             assert.equal(model.provider_model_id, 'agent:demo/echo');
+
+            const agentKey = await apiKeysDao.findBySubjectId(
+                db,
+                'agent:demo/echo'
+            );
+            assert.ok(agentKey, 'agent api_keys row provisioned during reconcile');
+            assert.equal(agentKey.subject_type, 'agent');
+            assert.equal(agentKey.status, 'active');
         });
     });
 

@@ -33,9 +33,10 @@
 
 import * as providersDao from '../db/dao/providers-dao.mjs';
 import * as modelsDao from '../db/dao/models-dao.mjs';
+import * as apiKeysDao from '../db/dao/api-keys-dao.mjs';
 import { performRuntimeRefresh } from '../runtime/registry/runtime-refresh.mjs';
 
-const DEFAULT_DAOS = Object.freeze({ providersDao, modelsDao });
+const DEFAULT_DAOS = Object.freeze({ providersDao, modelsDao, apiKeysDao });
 
 // The metadata marker tagging rows this reconciler owns. Stale-disable and
 // "ours vs admin" decisions key on this value, NOT on the `discovery_source`
@@ -251,7 +252,7 @@ function stableStringify(obj) {
  * @param {object} args
  * @param {object} args.appCtx
  * @param {{ complete: boolean, agents: object[] }} args.discovery
- * @param {{ providersDao: object, modelsDao: object }} [args.daos]
+ * @param {{ providersDao: object, modelsDao: object, apiKeysDao: object }} [args.daos]
  * @param {Function} [args.refresh] performRuntimeRefresh-compatible injection
  * @returns {Promise<object>} summary
  */
@@ -319,6 +320,16 @@ export async function reconcilePloinkyAgentRecords({
         if (modelResult.mode !== 'unchanged') {
             changed = true;
         }
+
+        // Provision the agent's signed-subject key row at discovery time so it
+        // appears on the Keys page before the agent ever makes a request.
+        // Insert-if-missing: never resets operator-edited limits. This does NOT
+        // affect the changed/refresh flag — keys are read from the DB at auth
+        // time, not from the routing snapshot.
+        await daos.apiKeysDao.upsertSignedSubjectKey(pool, {
+            subjectId: agent.subjectId,
+            subjectType: 'agent',
+        });
     }
 
     // Stale-disable ONLY when the discovery is complete. Never touch rows
@@ -454,7 +465,7 @@ async function listAll(dao, pool) {
  * @param {object} args
  * @param {object} args.appCtx
  * @param {{ complete: boolean, agents: object[] }} args.discovery
- * @param {{ providersDao: object, modelsDao: object }} [args.daos]
+ * @param {{ providersDao: object, modelsDao: object, apiKeysDao: object }} [args.daos]
  * @returns {Promise<object>}
  */
 export async function reconcilePloinkyAgents({ appCtx, discovery, daos = DEFAULT_DAOS }) {
