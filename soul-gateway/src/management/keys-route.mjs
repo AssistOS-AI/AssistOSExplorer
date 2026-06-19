@@ -2,7 +2,6 @@
  * Management key routes.
  *
  * GET    /management/keys
- * POST   /management/keys
  * GET    /management/keys/:keyId
  * PATCH  /management/keys/:keyId
  * POST   /management/keys/:keyId/revoke
@@ -35,29 +34,6 @@ export async function handleListKeys(ctx) {
     const data = keys.map(stripSensitiveFields);
 
     sendJson(res, 200, { data });
-}
-
-/**
- * POST /management/keys
- * Manual key creation is not supported.
- *
- * Soul Gateway API keys are signed-subject keys minted by Ploinky during
- * agent provisioning. They carry an Ed25519 signature over the subject
- * identifier and cannot be created here. To deny access to a key, use the
- * revoke endpoint instead.
- */
-export async function handleCreateKey(ctx) {
-    const { req, res } = ctx;
-    // Drain the body to avoid leaving the connection in a broken state.
-    await readJsonBody(req).catch(() => {});
-    sendJson(res, 405, {
-        error: {
-            message:
-                'Soul Gateway API keys are signed-subject keys issued by Ploinky and cannot be created via the management API. ' +
-                'To deny access, revoke the key via POST /management/keys/:keyId/revoke.',
-            type: 'method_not_allowed',
-        },
-    });
 }
 
 /**
@@ -114,10 +90,30 @@ export async function handleUpdateKey(ctx) {
 
 /**
  * POST /management/keys/:keyId/revoke
+ *
+ * Agent keys (subject_type === 'agent') are provisioned by Ploinky discovery
+ * and cannot be revoked; access is governed by limits/budget/expiry instead.
+ * User keys may be revoked.
  */
 export async function handleRevokeKey(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
+
+    const existing = await keysDao.findById(pool, params.keyId);
+    if (!existing) {
+        sendNotFound(res, 'Key');
+        return;
+    }
+    if (existing.subject_type === 'agent') {
+        sendJson(res, 409, {
+            error: {
+                message:
+                    'Agent keys cannot be revoked. Adjust limits, budget, or expiry instead.',
+                type: 'conflict',
+            },
+        });
+        return;
+    }
 
     const row = await keysDao.revoke(pool, params.keyId);
     if (!row) {

@@ -559,7 +559,6 @@ describe('management/auth-route', () => {
 
 describe('management/keys-route', () => {
     let handleListKeys,
-        handleCreateKey,
         handleGetKey,
         handleUpdateKey,
         handleRevokeKey;
@@ -567,7 +566,6 @@ describe('management/keys-route', () => {
     beforeEach(async () => {
         ({
             handleListKeys,
-            handleCreateKey,
             handleGetKey,
             handleUpdateKey,
             handleRevokeKey,
@@ -659,25 +657,6 @@ describe('management/keys-route', () => {
         assert.equal(res.statusCode, 404);
     });
 
-    it('handleCreateKey returns 405 and does not insert any row', async () => {
-        let insertCalled = false;
-        const pool = createMockPool(async (sql) => {
-            if (sql.includes('INSERT')) insertCalled = true;
-            return { rows: [], rowCount: 0 };
-        });
-        const appCtx = createMockAppCtx({ pool });
-        const req = createMockReq({ method: 'POST', body: { label: 'test-key' } });
-        const res = createMockRes();
-
-        await handleCreateKey({ req, res, params: {}, query: {}, appCtx });
-
-        assert.equal(res.statusCode, 405);
-        const body = parseJsonResponse(res);
-        assert.equal(body.error.type, 'method_not_allowed');
-        assert.match(body.error.message, /Ploinky/);
-        assert.equal(insertCalled, false, 'no DB INSERT must be issued');
-    });
-
     it('handleListKeys returns signed-subject row with subject_id, subject_type, source and no key_hash', async () => {
         const signedSubjectRow = {
             id: 'k-signed',
@@ -713,23 +692,23 @@ describe('management/keys-route', () => {
         assert.equal(row.key_hash, undefined, 'key_hash must be stripped');
     });
 
-    it('handleRevokeKey sets row status to revoked, denying future auth', async () => {
-        // Seed an active signed-subject row and revoke it; the returned row must
-        // have status 'revoked'. The auth layer (api-key-auth.mjs) denies any
-        // row whose status === 'revoked' — verified by that module's own tests.
-        const revokedRow = {
-            id: 'k-signed',
-            label: 'agent:proxies/soul-gateway',
-            subject_id: 'agent:proxies/soul-gateway',
-            subject_type: 'agent',
+    it('handleRevokeKey revokes a user key (status -> revoked)', async () => {
+        const userRow = {
+            id: 'k-user',
+            label: 'user:alice',
+            subject_id: 'user:alice',
+            subject_type: 'user',
             source: 'signed-subject',
-            status: 'revoked',
-            key_hash: 'h',
-            key_hint: 'agent:...way',
+            status: 'active',
+            key_hint: 'user:alice',
         };
+        const revokedRow = { ...userRow, status: 'revoked' };
         const pool = createMockPool(async (sql) => {
             if (sql.includes('UPDATE') && sql.includes("status = 'revoked'")) {
                 return { rows: [revokedRow], rowCount: 1 };
+            }
+            if (sql.includes('SELECT') && sql.includes('WHERE id = $1')) {
+                return { rows: [userRow], rowCount: 1 };
             }
             return { rows: [], rowCount: 0 };
         });
@@ -739,7 +718,7 @@ describe('management/keys-route', () => {
         await handleRevokeKey({
             req: createMockReq(),
             res,
-            params: { keyId: 'k-signed' },
+            params: { keyId: 'k-user' },
             query: {},
             appCtx,
         });
@@ -747,7 +726,44 @@ describe('management/keys-route', () => {
         assert.equal(res.statusCode, 200);
         const body = parseJsonResponse(res);
         assert.equal(body.key.status, 'revoked');
-        assert.equal(body.key.key_hash, undefined, 'key_hash must be stripped from revoke response');
+    });
+
+    it('handleRevokeKey returns 409 for agent keys and issues no UPDATE', async () => {
+        const agentRow = {
+            id: 'k-agent',
+            label: 'agent:demo/echo',
+            subject_id: 'agent:demo/echo',
+            subject_type: 'agent',
+            source: 'signed-subject',
+            status: 'active',
+            key_hint: 'agent:...echo',
+        };
+        let updateCalled = false;
+        const pool = createMockPool(async (sql) => {
+            if (sql.includes('UPDATE')) {
+                updateCalled = true;
+                return { rows: [], rowCount: 0 };
+            }
+            if (sql.includes('SELECT') && sql.includes('WHERE id = $1')) {
+                return { rows: [agentRow], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleRevokeKey({
+            req: createMockReq(),
+            res,
+            params: { keyId: 'k-agent' },
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 409);
+        const body = parseJsonResponse(res);
+        assert.match(body.error.message, /cannot be revoked/i);
+        assert.equal(updateCalled, false, 'agent keys must not be UPDATEd');
     });
 });
 
@@ -3334,7 +3350,7 @@ describe('management/router', () => {
     it('rejects management routes without router admin identity', async () => {
         const appCtx = createMockAppCtx();
         const { httpRouter } = buildManagementRouter(appCtx);
-        const match = httpRouter.match('POST', '/management/keys');
+        const match = httpRouter.match('POST', '/management/keys/k1/revoke');
         const req = createMockReq({ method: 'POST' });
         const res = createMockRes();
 
@@ -3430,8 +3446,21 @@ describe('management/router', () => {
                     return {
                         rows: [{
                             id: keyId,
-                            label: 'workspace-key',
+                            label: 'user:alice',
+                            subject_id: 'user:alice',
+                            subject_type: 'user',
                             status: 'revoked',
+                        }],
+                    };
+                }
+                if (/SELECT/.test(sql) && /WHERE id = \$1/.test(sql)) {
+                    return {
+                        rows: [{
+                            id: keyId,
+                            label: 'user:alice',
+                            subject_id: 'user:alice',
+                            subject_type: 'user',
+                            status: 'active',
                         }],
                     };
                 }
@@ -3463,7 +3492,6 @@ describe('management/router', () => {
         const { httpRouter } = buildManagementRouter(appCtx);
 
         assert.ok(httpRouter.match('GET', '/management/keys'));
-        assert.ok(httpRouter.match('POST', '/management/keys'));
         assert.ok(httpRouter.match('GET', '/management/keys/some-id'));
         assert.ok(httpRouter.match('PATCH', '/management/keys/some-id'));
         assert.ok(httpRouter.match('POST', '/management/keys/some-id/revoke'));

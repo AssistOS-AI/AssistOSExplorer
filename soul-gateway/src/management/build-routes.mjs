@@ -20,7 +20,6 @@ import { handleDashboard, handleStatic } from './dashboard-route.mjs';
 // Keys
 import {
     handleListKeys,
-    handleCreateKey,
     handleGetKey,
     handleUpdateKey,
     handleRevokeKey,
@@ -194,7 +193,6 @@ export function buildManagementRouter(appCtx) {
 
     // ── Keys ─────────────────────────────────────────────────────────
     httpRouter.add('GET', '/management/keys', admin(handleListKeys));
-    httpRouter.add('POST', '/management/keys', admin(handleCreateKey));
     httpRouter.add('GET', '/management/keys/:keyId', admin(handleGetKey));
     httpRouter.add('PATCH', '/management/keys/:keyId', admin(handleUpdateKey));
     httpRouter.add(
