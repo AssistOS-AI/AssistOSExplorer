@@ -2533,6 +2533,16 @@ function keysPage() {
             return k.daily_budget_usd ?? k.daily_budget;
         },
 
+        isRevoked(k) {
+            return (
+                k?.status === 'revoked' ||
+                k?.is_revoked === true ||
+                k?.is_revoked === 1 ||
+                k?.is_revoked === '1' ||
+                k?.is_revoked === 'true'
+            );
+        },
+
         edit(k) {
             this.editing = k;
             this.editForm = {
