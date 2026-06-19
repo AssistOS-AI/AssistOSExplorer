@@ -2307,7 +2307,7 @@
                                 <!-- Create Provider Modal -->
                                 <dialog
                                     class="modal"
-                                    :class="{'modal-open': showCreate}"
+                                    :class="{'modal-open': showProviderCreate}"
                                 >
                                     <div class="modal-box max-w-lg">
                                         <h3 class="font-bold text-lg mb-4">
@@ -2522,7 +2522,7 @@
                                         <div class="modal-action">
                                             <button
                                                 class="btn btn-ghost"
-                                                @click="showCreate = false"
+                                                @click="showProviderCreate = false"
                                             >
                                                 Cancel
                                             </button>
@@ -2536,7 +2536,7 @@
                                     </div>
                                     <div
                                         class="modal-backdrop"
-                                        @click="showCreate = false"
+                                        @click="showProviderCreate = false"
                                     ></div>
                                 </dialog>
 
@@ -4280,85 +4280,7 @@
                                     class="flex justify-between items-center mb-4"
                                 >
                                     <h2 class="text-lg font-bold">API Keys</h2>
-                                    <button
-                                        class="btn btn-primary btn-sm"
-                                        @click="showCreate = true"
-                                    >
-                                        Create Key
-                                    </button>
                                 </div>
-                                <dialog
-                                    class="modal"
-                                    :class="{'modal-open': showCreate}"
-                                >
-                                    <div class="modal-box">
-                                        <h3 class="font-bold text-lg">
-                                            Create API Key
-                                        </h3>
-                                        <div class="form-control">
-                                            <label class="label">API Key</label>
-                                            <div class="flex gap-2">
-                                                <input
-                                                    type="text"
-                                                    class="input input-bordered flex-1 font-mono text-sm"
-                                                    placeholder="Paste your API key or click Generate"
-                                                    x-model="form.key"
-                                                />
-                                                <button
-                                                    class="btn btn-outline btn-sm self-center"
-                                                    type="button"
-                                                    @click="generate()"
-                                                >
-                                                    Generate
-                                                </button>
-                                            </div>
-                                            <label class="label"
-                                                ><span
-                                                    class="label-text-alt opacity-60"
-                                                    >Leave empty to
-                                                    auto-generate a key</span
-                                                ></label
-                                            >
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label">Label</label
-                                            ><input
-                                                type="text"
-                                                class="input input-bordered"
-                                                x-model="form.label"
-                                            />
-                                        </div>
-                                        <div class="form-control">
-                                            <label class="label"
-                                                >Daily Budget ($)</label
-                                            ><input
-                                                type="number"
-                                                step="0.01"
-                                                class="input input-bordered"
-                                                x-model="form.daily_budget_usd"
-                                                placeholder="Leave empty for unlimited"
-                                            />
-                                        </div>
-                                        <div class="modal-action">
-                                            <button
-                                                class="btn btn-ghost"
-                                                @click="showCreate = false"
-                                            >
-                                                Cancel
-                                            </button>
-                                            <button
-                                                class="btn btn-primary"
-                                                @click="create()"
-                                            >
-                                                Create
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div
-                                        class="modal-backdrop"
-                                        @click="showCreate = false"
-                                    ></div>
-                                </dialog>
                                 <!-- Edit key modal -->
                                 <dialog
                                     class="modal"
@@ -4377,6 +4299,24 @@
                                             />
                                         </div>
                                         <div class="form-control">
+                                            <label class="label">RPM limit</label
+                                            ><input
+                                                type="number"
+                                                min="1"
+                                                class="input input-bordered"
+                                                x-model="editForm.rpm_limit"
+                                            />
+                                        </div>
+                                        <div class="form-control">
+                                            <label class="label">TPM limit</label
+                                            ><input
+                                                type="number"
+                                                min="1"
+                                                class="input input-bordered"
+                                                x-model="editForm.tpm_limit"
+                                            />
+                                        </div>
+                                        <div class="form-control">
                                             <label class="label"
                                                 >Daily Budget ($)</label
                                             ><input
@@ -4385,6 +4325,27 @@
                                                 class="input input-bordered"
                                                 x-model="editForm.daily_budget_usd"
                                                 placeholder="Leave empty for unlimited"
+                                            />
+                                        </div>
+                                        <div class="form-control">
+                                            <label class="label"
+                                                >Monthly Budget ($)</label
+                                            ><input
+                                                type="number"
+                                                step="0.01"
+                                                class="input input-bordered"
+                                                x-model="editForm.monthly_budget_usd"
+                                                placeholder="Leave empty for unlimited"
+                                            />
+                                        </div>
+                                        <div class="form-control">
+                                            <label class="label"
+                                                >Expires At (ISO 8601)</label
+                                            ><input
+                                                type="text"
+                                                class="input input-bordered"
+                                                x-model="editForm.expires_at"
+                                                placeholder="Leave empty for no expiry"
                                             />
                                         </div>
                                         <div class="modal-action">
@@ -4407,42 +4368,13 @@
                                         @click="showEdit = false; editing = null"
                                     ></div>
                                 </dialog>
-                                <!-- Show created key -->
-                                <div
-                                    x-show="newKey"
-                                    class="alert alert-info mb-4"
-                                >
-                                    <div class="flex-1">
-                                        <span class="font-bold"
-                                            >New API Key (copy now, it won't be
-                                            shown again):</span
-                                        >
-                                        <code
-                                            class="ml-2 select-all"
-                                            x-text="newKey"
-                                        ></code>
-                                    </div>
-                                    <div class="flex gap-1">
-                                        <button
-                                            class="btn btn-sm"
-                                            x-data="{copied: false}"
-                                            @click="navigator.clipboard.writeText(newKey); copied = true; setTimeout(() => copied = false, 2000)"
-                                            x-text="copied ? 'Copied!' : 'Copy'"
-                                        ></button>
-                                        <button
-                                            class="btn btn-ghost btn-sm"
-                                            @click="newKey = ''"
-                                        >
-                                            Dismiss
-                                        </button>
-                                    </div>
-                                </div>
                                 <div class="card bg-base-100 shadow">
                                     <div class="card-body p-0">
                                         <table class="table table-sm">
                                             <thead>
                                                 <tr>
                                                     <th>Label</th>
+                                                    <th>Type</th>
                                                     <th>Key</th>
                                                     <th>Daily Budget</th>
                                                     <th>Spent Today</th>
@@ -4464,6 +4396,12 @@
                                                         <td
                                                             x-text="k.label || '-'"
                                                         ></td>
+                                                        <td>
+                                                            <span
+                                                                class="badge badge-ghost badge-sm"
+                                                                x-text="k.subject_type === 'agent' ? 'Agent' : 'User'"
+                                                            ></span>
+                                                        </td>
                                                         <td
                                                             class="font-mono text-xs opacity-60"
                                                             x-text="k.key_hint || '-'"
@@ -4545,6 +4483,7 @@
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-error btn-xs"
+                                                                    x-show="k.subject_type !== 'agent'"
                                                                     :disabled="k.status === 'revoked' || k.is_revoked"
                                                                     @click="revoke(k)"
                                                                 >
@@ -4576,14 +4515,14 @@
                                     </h2>
                                     <button
                                         class="btn btn-primary btn-sm"
-                                        @click="showCreate = true"
+                                        @click="showRuleEditor = true"
                                     >
                                         Add Rule
                                     </button>
                                 </div>
                                 <dialog
                                     class="modal"
-                                    :class="{'modal-open': showCreate}"
+                                    :class="{'modal-open': showRuleEditor}"
                                 >
                                     <div class="modal-box">
                                         <h3
@@ -4623,7 +4562,7 @@
                                         <div class="modal-action">
                                             <button
                                                 class="btn btn-ghost"
-                                                @click="showCreate = false; editing = null"
+                                                @click="showRuleEditor = false; editing = null"
                                             >
                                                 Cancel
                                             </button>
@@ -4637,7 +4576,7 @@
                                     </div>
                                     <div
                                         class="modal-backdrop"
-                                        @click="showCreate = false; editing = null"
+                                        @click="showRuleEditor = false; editing = null"
                                     ></div>
                                 </dialog>
                                 <div class="card bg-base-100 shadow">

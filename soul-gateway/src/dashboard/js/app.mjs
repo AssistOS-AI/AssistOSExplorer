@@ -691,7 +691,7 @@ function providersPage() {
     return {
         providers: [],
         templates: {},
-        showCreate: false,
+        showProviderCreate: false,
         showEdit: false,
         editing: null,
         testing: null,
@@ -840,7 +840,7 @@ function providersPage() {
                 providerMode: 'external_api',
                 kind: 'external_api',
             };
-            this.showCreate = true;
+            this.showProviderCreate = true;
         },
 
         async create() {
@@ -868,7 +868,7 @@ function providersPage() {
                 alert(result.error.message || result.error);
                 return;
             }
-            this.showCreate = false;
+            this.showProviderCreate = false;
             this.providers = unwrapArray(
                 await api.get('/management/providers')
             );
@@ -2488,12 +2488,16 @@ function tiersPage() {
 function keysPage() {
     return {
         keys: [],
-        showCreate: false,
         showEdit: false,
         editing: null,
-        newKey: '',
-        form: { label: '', key: '', daily_budget_usd: '2' },
-        editForm: { label: '', daily_budget_usd: '' },
+        editForm: {
+            label: '',
+            rpm_limit: '',
+            tpm_limit: '',
+            daily_budget_usd: '',
+            monthly_budget_usd: '',
+            expires_at: '',
+        },
 
         async init() {
             const raw = unwrapArray(await api.get('/management/keys'));
@@ -2529,46 +2533,39 @@ function keysPage() {
             return k.daily_budget_usd ?? k.daily_budget;
         },
 
-        generate() {
-            const bytes = new Uint8Array(32);
-            crypto.getRandomValues(bytes);
-            this.form.key =
-                'sk-soul-' +
-                Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join(
-                    ''
-                );
-        },
-
-        async create() {
-            const payload = { ...this.form };
-            if (!payload.key) delete payload.key;
-            payload.daily_budget_usd =
-                payload.daily_budget_usd === ''
-                    ? null
-                    : Number(payload.daily_budget_usd);
-            const result = await api.post('/management/keys', payload);
-            this.newKey = result.key || '';
-            this.showCreate = false;
-            this.form.key = '';
-            this.form.daily_budget_usd = '';
-            this.keys = unwrapArray(await api.get('/management/keys'));
-        },
-
         edit(k) {
             this.editing = k;
             this.editForm = {
                 label: k.label || '',
+                rpm_limit: k.rpm_limit ?? '',
+                tpm_limit: k.tpm_limit ?? '',
                 daily_budget_usd: k.daily_budget_usd ?? k.daily_budget ?? '',
+                monthly_budget_usd: k.monthly_budget_usd ?? '',
+                expires_at: k.expires_at ?? '',
             };
             this.showEdit = true;
         },
 
         async saveEdit() {
-            const payload = { ...this.editForm };
-            payload.daily_budget_usd =
-                payload.daily_budget_usd === ''
+            // The PATCH route accepts camelCase fields; rpm/tpm must stay > 0
+            // (schema CHECK), so omit them when blank rather than sending null.
+            const payload = { label: this.editForm.label };
+            const rpm = Number(this.editForm.rpm_limit);
+            const tpm = Number(this.editForm.tpm_limit);
+            if (Number.isFinite(rpm) && rpm > 0) payload.rpmLimit = rpm;
+            if (Number.isFinite(tpm) && tpm > 0) payload.tpmLimit = tpm;
+            payload.dailyBudgetUsd =
+                this.editForm.daily_budget_usd === ''
                     ? null
-                    : Number(payload.daily_budget_usd);
+                    : Number(this.editForm.daily_budget_usd);
+            payload.monthlyBudgetUsd =
+                this.editForm.monthly_budget_usd === ''
+                    ? null
+                    : Number(this.editForm.monthly_budget_usd);
+            payload.expiresAt =
+                this.editForm.expires_at === ''
+                    ? null
+                    : this.editForm.expires_at;
             await api.patch(`/management/keys/${this.editing.id}`, payload);
             this.showEdit = false;
             this.editing = null;
@@ -2600,7 +2597,7 @@ function keysPage() {
 function blacklistPage() {
     return {
         rules: [],
-        showCreate: false,
+        showRuleEditor: false,
         editing: null,
         form: { pattern: '', match_type: 'substring', description: '' },
 
@@ -2617,7 +2614,7 @@ function blacklistPage() {
                 match_type: r.match_type,
                 description: r.description || '',
             };
-            this.showCreate = true;
+            this.showRuleEditor = true;
         },
 
         async save() {
@@ -2630,7 +2627,7 @@ function blacklistPage() {
             } else {
                 await api.post('/management/blacklist/rules', body);
             }
-            this.showCreate = false;
+            this.showRuleEditor = false;
             this.editing = null;
             this.form = {
                 pattern: '',
