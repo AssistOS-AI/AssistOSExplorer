@@ -98,7 +98,9 @@ export async function handleStatic(ctx) {
             [HEADER_NAMES.CONTENT_TYPE]: contentType,
             [HEADER_NAMES.CONTENT_LENGTH]: body.length,
             [HEADER_NAMES.CACHE_CONTROL]:
-                ext === '.html' ? 'no-cache' : 'public, max-age=86400',
+                ['.html', '.mjs', '.js', '.css'].includes(ext)
+                    ? 'no-cache'
+                    : 'public, max-age=86400',
         });
         res.end(body);
     } catch (err) {
