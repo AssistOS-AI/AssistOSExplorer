@@ -2170,6 +2170,8 @@ describe('BackendCatalog', () => {
                 'cohere',
                 'openrouter',
                 'deepinfra',
+                'opencode-zen',
+                'opencode-go',
             ]) {
                 assert.ok(templates[key], `missing preset: ${key}`);
                 assert.equal(templates[key].adapter_key, 'openai-api');
@@ -2314,7 +2316,7 @@ describe('BackendCatalog', () => {
         });
 
         it('total dropdown count: hidden dispatchers contribute zero, presets surface in full', () => {
-            // 3 dispatcher backends (all hidden) + 22 vendor presets = 22 entries.
+            // 3 dispatcher backends (all hidden) + 24 vendor presets = 24 entries.
             catalog.load([
                 openaiApiPlugin,
                 searchBuiltinPlugin,
@@ -2336,6 +2338,8 @@ describe('BackendCatalog', () => {
                 'codestral',
                 'xai',
                 'cohere',
+                'opencode-zen',
+                'opencode-go',
             ];
             const searchPresetKeys = [
                 'tavily',

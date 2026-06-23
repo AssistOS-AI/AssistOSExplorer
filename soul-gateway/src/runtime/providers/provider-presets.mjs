@@ -168,6 +168,25 @@ export const PROVIDER_PRESETS = Object.freeze([
         base_url: 'https://api.cohere.com/compatibility/v1',
         ...OPENAI_COMPAT_DEFAULTS,
     }),
+    Object.freeze({
+        // OpenCode Zen — curated multi-vendor coding-model gateway. The
+        // /zen/v1 base also exposes /messages and /responses for native
+        // clients, but /chat/completions is the universal OpenAI-compatible
+        // surface the openai-api backend targets.
+        key: 'opencode-zen',
+        display_name: 'OpenCode Zen',
+        base_url: 'https://opencode.ai/zen/v1',
+        ...OPENAI_COMPAT_DEFAULTS,
+    }),
+    Object.freeze({
+        // OpenCode Go — flat-rate subscription tier serving open coding
+        // models (GLM, Kimi, MiMo, Qwen, MiniMax, DeepSeek). Note the base
+        // lives under /zen/go/v1, NOT /go/v1.
+        key: 'opencode-go',
+        display_name: 'OpenCode Go',
+        base_url: 'https://opencode.ai/zen/go/v1',
+        ...OPENAI_COMPAT_DEFAULTS,
+    }),
 
     // ── Anthropic direct (api-key, not the claude.ai OAuth backend) ──
     Object.freeze({
