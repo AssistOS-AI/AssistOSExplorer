@@ -1,8 +1,6 @@
 // Quick smoke test for NVIDIA provider through Soul Gateway
 const BASE = 'https://soul.axiologic.dev';
-const API_KEY =
-    process.env.SOUL_GATEWAY_API_KEY ||
-    'sk-soul-36cc4ed4cc1bc16e6a49ac0739ba03a8fbd0b48b86137ce46da759bae857c01b';
+const API_KEY = process.env.PLOINKY_AGENT_API_KEY || '';
 const MODEL = 'nvidia/nemotron-3-super-120b-a12b';
 
 const headers = {

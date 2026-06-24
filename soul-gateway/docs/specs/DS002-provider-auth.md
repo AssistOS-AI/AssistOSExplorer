@@ -110,7 +110,7 @@ Custom gateway-side search adapters receive a curated gateway service surface fo
 
 ## Inbound API key authentication
 
-Soul Gateway authenticates incoming API calls using signed-subject keys issued by Ploinky. A signed-subject API key has the format `<subjectId>|<base64url-ed25519-signature>`, where the signature is over the exact UTF-8 bytes of `subjectId`. Subject ids take the form `agent:<repo>/<agentName>` for Ploinky-managed agents or `user:<userId>` for user-scoped keys. Soul Gateway verifies signatures with the Ed25519 public key in `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY`; Ploinky holds the corresponding private key and signs.
+Soul Gateway authenticates incoming API calls using signed-subject keys issued by Ploinky. A signed-subject API key has the format `<subjectId>|<base64url-ed25519-signature>`, where the signature is over the exact UTF-8 bytes of `subjectId`. Subject ids take the form `agent:<repo>/<agentName>` for Ploinky-managed agents or `user:<userId>` for user-scoped keys. Soul Gateway verifies signatures with the Ed25519 public key in `PLOINKY_AGENT_API_PUBLIC_KEY`; Ploinky holds the corresponding private key and signs.
 
 **Key format:** `<subjectId>|<base64url-ed25519-signature>`
 
@@ -120,11 +120,15 @@ Soul Gateway authenticates incoming API calls using signed-subject keys issued b
 - Per-subject rotation without changing the subject id is not available — the key is deterministic from `subjectId` and the signing key pair. To rotate a single subject's key, change the subject id.
 - Rotating Ploinky's Ed25519 signing key invalidates every signed key simultaneously.
 
-**No workspace default key:** There is no shared workspace-generated `SOUL_GATEWAY_API_KEY` secret. Each Ploinky agent receives its own `PLOINKY_AGENT_API_KEY` (signed-subject value) and a `SOUL_GATEWAY_API_KEY` compatibility alias (same signed value) injected by the Ploinky runtime at startup. These are not manifest-declared `sharedGeneratedSecret` fields; they are runtime-injected by the launcher.
+**No workspace default key:** There is no shared workspace-generated API-key secret. Each Ploinky agent receives its own `PLOINKY_AGENT_API_KEY` signed-subject value injected by the Ploinky runtime at startup. It is not a manifest-declared `sharedGeneratedSecret` field; it is runtime-injected by the launcher.
 
 **Legacy identity headers rejected:** Soul Gateway rejects requests carrying `x-soul-id`, `x-agent-name`, or `x-soul-agent` with HTTP 400. Identity is established exclusively from the signed-subject key.
 
 **Loop guard:** A call whose signed key resolves to the same subject as the model being invoked (the caller is the soul gateway model representing itself) is rejected with HTTP 400.
+
+## Decisions & Questions
+
+1. 2026-06-24: Signed-subject identity uses the generic Ploinky agent key names. Callers present `PLOINKY_AGENT_API_KEY`, and Soul Gateway verifies it with `PLOINKY_AGENT_API_PUBLIC_KEY`; the former Soul Gateway-named compatibility alias is removed.
 
 ## Related specs
 

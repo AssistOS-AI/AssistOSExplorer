@@ -376,7 +376,7 @@ describe('signed-subject API key', () => {
 
     function makeEnv(publicKeyBase64url) {
         return {
-            PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: publicKeyBase64url,
+            PLOINKY_AGENT_API_PUBLIC_KEY: publicKeyBase64url,
             API_KEY_HASH_PEPPER: 'test-pepper',
             ENCRYPTION_KEY: '8'.repeat(64),
         };
@@ -516,18 +516,18 @@ describe('signed-subject API key', () => {
         });
     });
 
-    it('does not accept a legacy workspace env key', async () => {
+    it('does not accept an injected agent env key as an auth bypass', async () => {
         await withSignedDb(async (db) => {
             const { publicKeyBase64url } = makeSignedSubjectKey('user:ignored');
             const env = {
                 ...makeEnv(publicKeyBase64url),
-                // Legacy workspace key var — must no longer grant access.
-                SOUL_GATEWAY_API_KEY: 'legacy-workspace-secret',
+                // The agent's own injected key is not an inbound auth bypass.
+                PLOINKY_AGENT_API_KEY: 'invalid-agent-key',
             };
             const appCtx = { config: { env }, pool: db };
 
             await assert.rejects(
-                () => authenticateApiKey('Bearer legacy-workspace-secret', appCtx),
+                () => authenticateApiKey('Bearer invalid-agent-key', appCtx),
                 (err) => err.errorType === 'invalid_api_key'
             );
         });
@@ -540,7 +540,7 @@ describe('signed-subject API key', () => {
             const appCtx = {
                 config: {
                     env: {
-                        PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: null,
+                        PLOINKY_AGENT_API_PUBLIC_KEY: null,
                         API_KEY_HASH_PEPPER: 'test-pepper',
                     },
                 },
@@ -551,7 +551,7 @@ describe('signed-subject API key', () => {
                 () => authenticateApiKey(`Bearer ${apiKey}`, appCtx),
                 (err) => {
                     assert.equal(err.errorType, 'invalid_api_key');
-                    assert.match(err.message, /PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY/);
+                    assert.match(err.message, /PLOINKY_AGENT_API_PUBLIC_KEY/);
                     return true;
                 }
             );

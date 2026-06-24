@@ -7,15 +7,14 @@ import {
 import { DEFAULTS } from '../../config/defaults.mjs';
 
 const PLOINKY_ENV = {
-    PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: 'pub-key-abc',
+    PLOINKY_AGENT_API_PUBLIC_KEY: 'pub-key-abc',
     PLOINKY_ROUTER_URL: 'http://127.0.0.1:8080',
     PLOINKY_AGENT_ID: 'soul-gateway',
     PLOINKY_AGENT_PRINCIPAL: 'agent:soul-gateway',
     PLOINKY_AGENT_SECRET: 'agent-secret-xyz',
     PLOINKY_AGENT_API_KEY: 'agent-api-key',
     PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY: 'workspace.secrets',
-    PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY: 'workspace.env',
-    PLOINKY_ENV_SOURCE_PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: 'router.config',
+    PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY: 'router.config',
 };
 
 function makeLogSpy() {
@@ -78,16 +77,15 @@ describe('readEnv', () => {
 
     it('defaults all Ploinky signed-subject fields to null', () => {
         const env = readEnv({});
-        assert.equal(env.PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY, null);
+        assert.equal(env.PLOINKY_AGENT_API_PUBLIC_KEY, null);
         assert.equal(env.PLOINKY_ROUTER_URL, null);
         assert.equal(env.PLOINKY_AGENT_ID, null);
         assert.equal(env.PLOINKY_AGENT_PRINCIPAL, null);
         assert.equal(env.PLOINKY_AGENT_SECRET, null);
         assert.equal(env.PLOINKY_AGENT_API_KEY, null);
         assert.equal(env.PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY, null);
-        assert.equal(env.PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY, null);
         assert.equal(
-            env.PLOINKY_ENV_SOURCE_PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY,
+            env.PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY,
             null
         );
     });
@@ -95,7 +93,7 @@ describe('readEnv', () => {
     it('parses all Ploinky signed-subject fields from env', () => {
         const env = readEnv({ ...PLOINKY_ENV });
         assert.equal(
-            env.PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY,
+            env.PLOINKY_AGENT_API_PUBLIC_KEY,
             'pub-key-abc'
         );
         assert.equal(env.PLOINKY_ROUTER_URL, 'http://127.0.0.1:8080');
@@ -108,11 +106,7 @@ describe('readEnv', () => {
             'workspace.secrets'
         );
         assert.equal(
-            env.PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY,
-            'workspace.env'
-        );
-        assert.equal(
-            env.PLOINKY_ENV_SOURCE_PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY,
+            env.PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY,
             'router.config'
         );
     });
@@ -139,12 +133,12 @@ describe('assertSignedSubjectAuthConfig', () => {
     it('throws and names the missing public key', () => {
         const config = readEnv({
             ...PLOINKY_ENV,
-            PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: undefined,
+            PLOINKY_AGENT_API_PUBLIC_KEY: undefined,
         });
         const spy = makeLogSpy();
         assert.throws(
             () => assertSignedSubjectAuthConfig(config, { log: spy.log }),
-            /PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY/
+            /PLOINKY_AGENT_API_PUBLIC_KEY/
         );
     });
 
@@ -181,7 +175,7 @@ describe('assertSignedSubjectAuthConfig', () => {
             thrown = err;
         }
         assert.ok(thrown, 'expected an error to be thrown');
-        assert.match(thrown.message, /PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY/);
+        assert.match(thrown.message, /PLOINKY_AGENT_API_PUBLIC_KEY/);
         assert.match(thrown.message, /PLOINKY_ROUTER_URL/);
         assert.match(thrown.message, /PLOINKY_AGENT_ID/);
         assert.match(thrown.message, /PLOINKY_AGENT_SECRET/);

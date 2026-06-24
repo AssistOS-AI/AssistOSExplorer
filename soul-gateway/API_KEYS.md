@@ -65,6 +65,6 @@ Configure via the dashboard "Add Provider" dropdown (search templates).
 
 | Key | Value |
 |-----|-------|
-| `SOUL_GATEWAY_API_KEY` | `sk-soul-36cc4ed4cc1bc16e6a49ac0739ba03a8fbd0b48b86137ce46da759bae857c01b` |
+| `PLOINKY_AGENT_API_KEY` | *(runtime-injected signed-subject key of shape `subjectId` + `\|` + signature; not a static secret)* |
 | Dashboard password | `soulpass!321` |
 | Default proxy API key | *(GitHub secret: `SG_DEFAULT_PROXY_API_KEY`)* |

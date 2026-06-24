@@ -2,10 +2,10 @@
  * Test fixture: mint Ploinky-compatible signed-subject API keys.
  *
  * Byte-compatible with the production signer
- * (ploinky/cli/services/soulGatewaySubjectKey.js): the key is
+ * (ploinky/cli/services/subjectIdentityKey.js): the key is
  * `<subjectId>|<base64url(ed25519(subjectId))>` and the public key is the raw
  * 32-byte Ed25519 key as base64url (no padding), exactly what the gateway
- * verifier expects in PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY.
+ * verifier expects in PLOINKY_AGENT_API_PUBLIC_KEY.
  */
 import { generateKeyPairSync, sign as edSign } from 'node:crypto';
 

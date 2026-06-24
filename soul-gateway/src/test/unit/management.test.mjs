@@ -604,12 +604,12 @@ describe('management/keys-route', () => {
         assert.equal(body.data[0].subject_id, 'agent:proxies/soul-gateway');
     });
 
-    it('handleListKeys no longer injects a synthetic workspace-default key', async () => {
-        // Signed-subject-only: with SOUL_GATEWAY_API_KEY set but no DB rows, the
-        // list is empty — there is no synthetic workspace-default row to add.
+    it('handleListKeys no longer injects a synthetic agent-default key', async () => {
+        // Signed-subject-only: with an injected agent key but no DB rows, the
+        // list is empty — there is no synthetic default row to add.
         const pool = createMockPool(async () => ({ rows: [] }));
         const appCtx = createMockAppCtx({ pool });
-        appCtx.config.env.SOUL_GATEWAY_API_KEY = 'derived-workspace-secret';
+        appCtx.config.env.PLOINKY_AGENT_API_KEY = 'agent:proxies/soul-gateway|sig';
         const res = createMockRes();
 
         await handleListKeys({

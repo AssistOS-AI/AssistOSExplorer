@@ -33,44 +33,51 @@ The removed `/management/auth/*` endpoints return HTTP 410 with instructions to 
 
 ## Signed-Subject API Key Authentication
 
-Soul Gateway verifies incoming bearer tokens as signed-subject keys. The format is `<subjectId>|<base64url-ed25519-signature>`, where the signature is over the exact UTF-8 bytes of `subjectId`. Subject ids are `agent:<repo>/<agentName>` or `user:<userId>`. Soul Gateway verifies signatures with `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY`; Ploinky signs with its Ed25519 private key, which never enters Soul Gateway or agent processes.
+Soul Gateway verifies incoming bearer tokens as signed-subject keys. The format is `<subjectId>|<base64url-ed25519-signature>`, where the signature is over the exact UTF-8 bytes of `subjectId`. Subject ids are `agent:<repo>/<agentName>` or `user:<userId>`. Soul Gateway verifies signatures with `PLOINKY_AGENT_API_PUBLIC_KEY`; Ploinky signs with its Ed25519 private key, which never enters Soul Gateway or agent processes.
 
-There is no shared workspace default key. The legacy `SOUL_GATEWAY_API_KEY` shared-generated workspace secret is removed. The manifest does not declare a `sharedGeneratedSecret` for Soul Gateway API keys. Instead, each Ploinky agent receives these injected env vars at startup:
+There is no shared workspace default key. The manifest does not declare a `sharedGeneratedSecret` for Soul Gateway API keys. Instead, each Ploinky agent receives these injected env vars at startup:
 
 | Variable | Value |
 |---|---|
 | `PLOINKY_AGENT_API_KEY` | The agent's signed-subject key: `<subjectId>|<base64url-sig>` |
-| `SOUL_GATEWAY_API_KEY` | Compatibility alias — same signed value as `PLOINKY_AGENT_API_KEY` |
-| `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY` | Ed25519 public key Soul Gateway uses to verify signed keys |
+| `PLOINKY_AGENT_API_PUBLIC_KEY` | Ed25519 public key Soul Gateway uses to verify signed keys |
 
-These names are reserved; any manifest-declared values with the same names are stripped before injection. Provenance markers `PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY=generated` and `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY=generated` are injected alongside them.
+These names are reserved; any manifest-declared values with the same names are stripped before injection. Provenance markers `PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY=generated` and `PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY=generated` are injected alongside them.
 
 **Legacy identity headers:** Soul Gateway rejects `x-soul-id`, `x-agent-name`, and `x-soul-agent` headers with HTTP 400. Identity is established exclusively from the signed-subject key.
 
 **Loop guard:** A request whose signed-subject key resolves to the same subject as the model being invoked (a self-recursive discovery call) is rejected with HTTP 400.
 
-## Local LLM Bootstrap
+## Local LLM Hub And Tier Seeding
 
-`bootstrapLocalLlmProvider` runs when the SQLite database is open and an explicit `LOCAL_LLM_BASE_URL` is present. It no longer depends on deployment mode, and the default manifest profile does not enable it implicitly.
+The local gateway is the LLM hub. The legacy local-provider and remote-provider
+bootstraps were removed (commit `c9ed615`, 2026-06-17).
 
-- `LOCAL_LLM_BASE_URL` sets the OpenAI-compatible endpoint.
-- `LOCAL_LLM_MODEL` selects the single-model fallback when set.
-- `LOCAL_LLM_DISCOVERY_MODE=single` registers only `LOCAL_LLM_MODEL`; `auto` probes the endpoint model list before fallback.
-- `LOCAL_LLM_ALIASES` maps compatibility aliases such as `fast`, `plan`, and `code`.
-- `LOCAL_LLM_API_KEY`, when present, is stored as an encrypted provider account and upgrades the provider auth strategy to `api_key`.
+- Local models are discovered from enabled Ploinky agents
+  (`runPloinkyReconcileOnce`), keyed `ploinky/<repo>/<agent-model>`.
+- `seedDefaultTiers` seeds the tier aliases named in `LLM_DEFAULT_TIERS`
+  (default `fast,plan,deep`) onto the model discovered for `LLM_DEFAULT_AGENT`
+  (default `default-local-llm`). It **skips** any alias that already exists, so
+  the local tiers are stable and owned locally.
 
-## Soul Gateway Provider Bootstrap
+## AXL Proxy Delegating Mirror
 
-Explorer deployments treat their local Ploinky-managed Soul Gateway as the reference gateway. If the deployment has a credential for `soul.axiologic.dev`, that remote gateway is registered as a normal provider inside the local gateway rather than replacing the agent's signed-subject `PLOINKY_AGENT_API_KEY`.
+When `AXL_PROXY_API_KEY` (and `AXL_PROXY_BASE_URL`) are present,
+`bootstrapAxlProxyProvider` runs at startup, before `installSnapshotServices`:
 
-`bootstrapSoulGatewayProvider` runs before the local LLM bootstrap when the SQLite database is open and `SOUL_GATEWAY_PROVIDER_API_KEY` is present. In the Ploinky agent manifest, `SOUL_GATEWAY_PROVIDER_API_KEY` is sourced from an operator-provided credential for the remote `soul.axiologic.dev` gateway.
-
-- It creates or reconciles provider key `soul-gateway` with display name `Soul Gateway`, backend `openai-api`, kind `external_api`, auth strategy `api_key`, and base URL `SOUL_GATEWAY_PROVIDER_BASE_URL` (default `https://soul.axiologic.dev/v1`).
-- It stores `SOUL_GATEWAY_PROVIDER_API_KEY` as an encrypted provider API-key account.
-- `SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE=auto` syncs the provider's `/models` response at startup; `off` creates only the provider/account.
-- `SOUL_GATEWAY_PROVIDER_ALIASES` mirrors same-named discovered provider models such as `soul-gateway/fast` into local aliases such as `fast`. During migration it may reassign configured aliases that still point at `local-llm/*` fallback models, but it does not take over aliases owned by other providers.
-
-The Soul Gateway agent's own `PLOINKY_AGENT_API_KEY` (and its `SOUL_GATEWAY_API_KEY` alias) are its signed-subject keys for calling other gateway instances. Remote credentials for `soul.axiologic.dev` are provider-account secrets inside the local gateway.
+- It creates or reconciles provider key `axl-proxy` (display name `AXL Proxy`,
+  backend `openai-api`, kind `external_api`, auth strategy `api_key`, base URL
+  `AXL_PROXY_BASE_URL`).
+- It stores `AXL_PROXY_API_KEY` as an encrypted provider API-key account.
+- `AXL_PROXY_DISCOVERY_MODE=auto` (default) syncs the upstream `/v1/models`
+  catalog via the openai-api backend's discovery; `off` registers only the
+  provider/account. The upstream's own tier entries (`fast`/`plan`/`deep`)
+  arrive as reachable `axl-proxy/<id>` models.
+- It does **not** create or reassign the bare `fast`/`plan`/`deep` aliases -
+  those stay locally owned by `seedDefaultTiers` (local tiers win).
+- `AXL_PROXY_API_KEY`/`AXL_PROXY_BASE_URL` are declared in the soul-gateway
+  manifest and injected by Ploinky from `.secrets`, `process.env`, or the
+  nearest ancestor `.env` (no agent-specific framework code).
 
 ## Ploinky Agent Discovery
 
@@ -148,6 +155,10 @@ The dashboard at `/services/soul-gateway/management/` is the canonical operator 
 
 The dashboard has no Soul Gateway login form, no dashboard session token flow, and no CSRF/dashboard-cookie contract.
 
+## Decisions & Questions
+
+1. 2026-06-24: Ploinky's router-signed subject identity credential is the only local agent API key. Agents present `PLOINKY_AGENT_API_KEY`, Soul Gateway verifies with `PLOINKY_AGENT_API_PUBLIC_KEY`, and the former Soul Gateway-named compatibility alias is removed.
+
 ## Migration Notes
 
 - Existing provider data and database API keys remain valid.
@@ -155,3 +166,7 @@ The dashboard has no Soul Gateway login form, no dashboard session token flow, a
 - Users authenticate through `/auth/login`.
 - Public `/v1/*` compatibility is preserved by reverse-proxy rewrites to the Ploinky router service.
 - Direct public container-port access is not a deployment contract.
+- 2026-06-17 (`c9ed615`): removed `LOCAL_LLM_*` and `SOUL_GATEWAY_PROVIDER_*`
+  bootstraps in favor of the local-hub + `seedDefaultTiers` model. The
+  delegate-to-a-remote-gateway capability is reintroduced under `AXL_PROXY_*`
+  as the AXL Proxy delegating mirror (models-only; local tiers retained).

@@ -16,7 +16,7 @@ Environment variables cover:
 |---|---|
 | Server | `PORT`, `HOST` |
 | Database | `SQLITE_PATH` |
-| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY`, `PLOINKY_AGENT_ID`, `PLOINKY_AGENT_SECRET` |
+| Security | `ENCRYPTION_KEY`, `API_KEY_HASH_PEPPER`, `PLOINKY_AGENT_API_PUBLIC_KEY`, `PLOINKY_AGENT_ID`, `PLOINKY_AGENT_SECRET` |
 | Directories | `DATA_DIR`, `CREDENTIALS_DIR`, `EXTENSIONS_DIR`, `DASHBOARD_STATIC_DIR` |
 | Observability | `LOG_RETENTION_DAYS`, `STREAM_HEARTBEAT_MS`, `WS_PING_INTERVAL_MS`, `PARTITION_AHEAD_DAYS`, `PARTITION_JOB_INTERVAL_MS`, `RETENTION_JOB_CRON_UTC_MINUTE` |
 | Cooldown | `COOLDOWN_DURATION_MS` |
@@ -24,7 +24,7 @@ Environment variables cover:
 | HTTP retry | `HTTP_RETRY_MAX_ATTEMPTS`, `HTTP_RETRY_BASE_DELAY_MS`, `HTTP_RETRY_MULTIPLIER`, `HTTP_RETRY_MAX_DELAY_MS`, `HTTP_RETRY_JITTER_PCT` |
 | Rate limiting & budgets | `DEFAULT_RPM_LIMIT`, `DEFAULT_TPM_LIMIT`, `DEFAULT_DAILY_BUDGET_USD` |
 | Auth/jobs | `SESSION_TIMEOUT_MINUTES`, `TOKEN_REFRESH_INTERVAL_MS`, `QUOTA_RESET_SWEEP_MS`, `ALLOW_UNAUTHENTICATED` (dev gate — bypasses signed-subject verification; never set in production), `OAUTH_ADAPTERS_ENABLED` |
-| Ploinky injection | `PLOINKY_AGENT_API_KEY` (signed-subject key for this agent), `SOUL_GATEWAY_API_KEY` (alias for `PLOINKY_AGENT_API_KEY`), `PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY` (Ed25519 public key for verifying incoming signed-subject keys) |
+| Ploinky injection | `PLOINKY_AGENT_API_KEY` (signed-subject key for this agent), `PLOINKY_AGENT_API_PUBLIC_KEY` (Ed25519 public key for verifying incoming signed-subject keys) |
 | Pricing/export/shutdown | `PRICING_DIRECTORY_URL`, `PRICING_REFRESH_INTERVAL_MS`, `EXPORT_BATCH_SIZE`, `SHUTDOWN_GRACE_MS`, `BODY_LIMIT_BYTES` |
 | Loop detection | `LOOP_MIN_RESPONSES`, `LOOP_WINDOW_SIZE`, `LOOP_SIMILARITY_THRESHOLD`, `LOOP_GROWTH_THRESHOLD_TOKENS`, `LOOP_REPETITIVE_RATIO_THRESHOLD`, `LOOP_INTERVENTION_MESSAGE` |
 | Search bootstrap / legacy inputs | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
@@ -93,17 +93,22 @@ The shared Achilles LLM layer supports two configuration modes:
 
 ### Soul Gateway discovery mode
 
-Driven by `SOUL_GATEWAY_API_KEY` and optionally `SOUL_GATEWAY_URL` / `SOUL_GATEWAY_BASE_URL`. Consumer agents authenticate with their Soul Gateway bearer and let the gateway handle provider selection, rate limiting, budgeting, and observability. A key-only setup uses the `LLMConfig.json` Soul Gateway URL; URL env vars override that default only for explicit or unmarked keys.
+Driven by `PLOINKY_AGENT_API_KEY` and optionally `SOUL_GATEWAY_URL` / `SOUL_GATEWAY_BASE_URL`. Consumer agents authenticate with their signed-subject bearer and let the gateway handle provider selection, rate limiting, budgeting, and observability. A key-only setup uses the `LLMConfig.json` Soul Gateway URL; URL env vars override that default only for unmarked keys.
 
 This is the production mode for everything that sits behind Soul Gateway. The consumer doesn't need to know which upstream provider is actually serving the request.
 
-For Ploinky workspaces, consumer agents start with a workspace-generated `SOUL_GATEWAY_API_KEY`, `PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY=generated`, and an empty `SOUL_GATEWAY_BASE_URL`, which makes Achilles discover the router service at `${PLOINKY_ROUTER_URL}/services/soul-gateway/v1`. While the key source is `generated`, Achilles ignores inherited public URL env vars so generated keys stay paired with the router service. Explorer-started consumer manifests do not opt into explicit `SOUL_GATEWAY_API_KEY` overrides; remote gateways belong in provider configuration inside the local gateway.
+For Ploinky workspaces, consumer agents start with a generated `PLOINKY_AGENT_API_KEY`, `PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY=generated`, and an empty `SOUL_GATEWAY_BASE_URL`, which makes Achilles discover the router service at `${PLOINKY_ROUTER_URL}/services/soul-gateway/v1`. While the key source is `generated`, Achilles ignores inherited public URL env vars so generated keys stay paired with the router service. Explorer-started consumer manifests do not opt into explicit API-key overrides; remote gateways belong in provider configuration inside the local gateway.
 
-Explorer production uses that generated-key path for local calls. If it needs the production gateway at `soul.axiologic.dev`, the remote gateway is configured as a normal `soul-gateway` provider inside the local Soul Gateway with `SOUL_GATEWAY_PROVIDER_API_KEY` and optional `SOUL_GATEWAY_PROVIDER_BASE_URL`. The Ploinky Soul Gateway manifest sources `SOUL_GATEWAY_PROVIDER_API_KEY` from an operator `SOUL_GATEWAY_API_KEY`, so existing deployment environments can keep that secret name while the container's local `SOUL_GATEWAY_API_KEY` remains generated. This keeps the Explorer-local gateway as the reference policy, logging, budget, and settings surface.
+Explorer production uses the generated-key path for local calls. To delegate to
+an upstream AXL Proxy (e.g. `soul.axiologic.dev`), set `AXL_PROXY_API_KEY` and
+`AXL_PROXY_BASE_URL`; the local gateway then registers a delegating `axl-proxy`
+provider and mirrors the upstream `/v1/models`. This keeps the Explorer-local
+gateway as the reference policy, logging, budget, and settings surface, with
+local `fast/plan/deep` tiers retained.
 
 ### Direct-provider mode
 
-Driven by canonical provider credentials: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `HUGGINGFACE_API_KEY`, `COPILOT_TOKEN`, `KIRO_ACCESS_TOKEN`, etc. When `SOUL_GATEWAY_API_KEY` is absent, `achillesAgentLib` falls back to direct-provider mode and speaks to each upstream using its canonical credentials. Used for local development, testing the achilles layer in isolation, and operating the gateway itself (which uses direct-provider mode internally to avoid bootstrapping through itself).
+Driven by canonical provider credentials: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `HUGGINGFACE_API_KEY`, `COPILOT_TOKEN`, `KIRO_ACCESS_TOKEN`, etc. When `PLOINKY_AGENT_API_KEY` is absent, `achillesAgentLib` falls back to direct-provider mode and speaks to each upstream using its canonical credentials. Used for local development, testing the achilles layer in isolation, and operating the gateway itself (which uses direct-provider mode internally to avoid bootstrapping through itself).
 
 Request-time provider credentials still come from the gateway credential lease. Provider/search credential environment variables are bootstrap or Achilles direct-provider inputs; gateway backend modules must not use them as ad hoc request-time credential lookups.
 
@@ -187,15 +192,16 @@ Soul Gateway declares one default Ploinky-agent profile:
 - The container image supplies Node and system dependencies only; application source comes from the enabled repository checkout mounted by Ploinky.
 - `PORT=7000`.
 - `ports: []` so the public interface is the Ploinky router, not the internal container port.
-- `PLOINKY_AGENT_API_KEY` and `SOUL_GATEWAY_API_KEY` (its alias) are injected by the Ploinky launcher as signed-subject keys; they are not manifest `sharedGeneratedSecret` fields.
-- `SOUL_GATEWAY_PROVIDER_API_KEY`, sourced from operator `SOUL_GATEWAY_API_KEY` when configured, bootstraps the remote `soul.axiologic.dev` gateway as the local gateway's `soul-gateway` provider.
-- `SOUL_GATEWAY_PROVIDER_BASE_URL` defaults to `https://soul.axiologic.dev/v1`.
-- `SOUL_GATEWAY_PROVIDER_DISCOVERY_MODE` controls provider model discovery (`auto` or `off`).
-- `SOUL_GATEWAY_PROVIDER_ALIASES` mirrors configured alias names to same-named discovered provider models and can migrate aliases away from `local-llm/*` fallback targets.
-- `/services/soul-gateway/v1/` uses router `access: "public"` because callers authenticate with the Soul Gateway API key.
+- `PLOINKY_AGENT_API_KEY` is injected by the Ploinky launcher as a signed-subject key; it is not a manifest `sharedGeneratedSecret` field.
+- `AXL_PROXY_API_KEY` activates the AXL Proxy delegating mirror (register the
+  `axl-proxy` provider + mirror its catalog). Resolved by Ploinky from
+  `.secrets`, `process.env`, or the nearest ancestor `.env`.
+- `AXL_PROXY_BASE_URL` is the upstream OpenAI-compatible base URL
+  (e.g. `https://soul.axiologic.dev/v1`); required for the mirror to activate.
+- `AXL_PROXY_DISCOVERY_MODE` controls model discovery (`auto` or `off`).
+- `/services/soul-gateway/v1/` uses router `access: "public"` because callers authenticate with a signed-subject API key.
 - `/services/soul-gateway/management/` uses router `access: "authenticated"` and requires Ploinky admin identity.
 - `/public-services/soul-gateway-health/` is unauthenticated for smoke checks.
-- `LOCAL_LLM_*` config controls local model bootstrap.
 - `TOKEN_REFRESH_INTERVAL_MS`, `PRICING_REFRESH_INTERVAL_MS`, and `OAUTH_ADAPTERS_ENABLED` explicitly control schedulers and OAuth behavior.
 
 Dedicated production workspaces should enable the agent with Ploinky local auth, for example:
@@ -205,6 +211,10 @@ ploinky enable agent proxies/soul-gateway --auth pwd --user admin --password "$P
 ```
 
 Public `/v1/*` compatibility is maintained by reverse-proxy rewrite rules that route `soul.axiologic.dev/v1/*` to `/services/soul-gateway/v1/*`.
+
+## Decisions & Questions
+
+1. 2026-06-24: Ploinky's router-signed subject identity credential is the only local agent API key. Agents present `PLOINKY_AGENT_API_KEY`, Soul Gateway requires `PLOINKY_AGENT_API_PUBLIC_KEY` for verification, and the former Soul Gateway-named compatibility alias is removed.
 
 ## Related specs
 

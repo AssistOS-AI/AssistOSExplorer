@@ -178,7 +178,7 @@ describe('authenticate accepts a clean signed-subject request', () => {
             const appCtx = makeAppCtx({
                 pool: db,
                 env: {
-                    PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: publicKeyBase64url,
+                    PLOINKY_AGENT_API_PUBLIC_KEY: publicKeyBase64url,
                     API_KEY_HASH_PEPPER: 'test-pepper',
                     ENCRYPTION_KEY: '8'.repeat(64),
                 },

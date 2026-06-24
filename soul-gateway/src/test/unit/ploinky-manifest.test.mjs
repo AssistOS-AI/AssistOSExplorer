@@ -46,18 +46,20 @@ test('Ploinky service exposure matches the gateway contract', () => {
     assert.equal(services.get('/public-services/soul-gateway-health/')?.access, 'public');
 });
 
-test('Manifest does not declare a workspace SOUL_GATEWAY_API_KEY secret', () => {
+test('Manifest does not declare runtime-injected agent identity keys', () => {
     const manifest = readManifest();
     const env = manifest.profiles?.default?.env || {};
 
-    // Inbound /v1/* auth is signed-subject; the gateway must not require a
-    // local workspace-generated SOUL_GATEWAY_API_KEY.
-    assert.equal(env.SOUL_GATEWAY_API_KEY, undefined, 'SOUL_GATEWAY_API_KEY must not be declared as a workspace env key');
+    // Inbound /v1/* auth is signed-subject; identity keys are injected by the
+    // Ploinky runtime and must not be declared by the manifest.
+    assert.equal(env.PLOINKY_AGENT_API_KEY, undefined, 'PLOINKY_AGENT_API_KEY must not be declared as a workspace env key');
+    assert.equal(env.PLOINKY_AGENT_API_PUBLIC_KEY, undefined, 'PLOINKY_AGENT_API_PUBLIC_KEY must not be declared as a workspace env key');
 
     for (const [name, spec] of Object.entries(env)) {
         if (spec && typeof spec === 'object') {
-            assert.notEqual(spec.sharedGeneratedSecret, true, name + ' must not be a sharedGeneratedSecret named SOUL_GATEWAY_API_KEY');
-            assert.notEqual(spec.varName, 'SOUL_GATEWAY_API_KEY', name + ' must not alias the SOUL_GATEWAY_API_KEY name via varName');
+            assert.notEqual(spec.sharedGeneratedSecret, true, name + ' must not be a sharedGeneratedSecret for runtime-injected identity');
+            assert.notEqual(spec.varName, 'PLOINKY_AGENT_API_KEY', name + ' must not alias the injected API key name via varName');
+            assert.notEqual(spec.varName, 'PLOINKY_AGENT_API_PUBLIC_KEY', name + ' must not alias the injected public key name via varName');
         }
     }
 

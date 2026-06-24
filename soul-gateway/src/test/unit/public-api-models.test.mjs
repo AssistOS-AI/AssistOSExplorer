@@ -193,7 +193,7 @@ function createAppCtx(snapshot, services = {}) {
             env: {
                 ENCRYPTION_KEY: 'test-encryption-key',
                 API_KEY_HASH_PEPPER: 'test-pepper',
-                PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: TEST_PUBLIC_KEY,
+                PLOINKY_AGENT_API_PUBLIC_KEY: TEST_PUBLIC_KEY,
                 DEFAULT_RPM_LIMIT: 60,
                 DEFAULT_TPM_LIMIT: 100000,
                 ALLOW_UNAUTHENTICATED: false,

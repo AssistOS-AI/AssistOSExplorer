@@ -5,9 +5,9 @@
  * exact shape `<subjectId>|<signature>`, where the signature is an Ed25519
  * signature over the *exact UTF-8 bytes of subjectId and nothing else*. This
  * verifier is independent of (but byte-compatible with) the Ploinky signer in
- * `ploinky/cli/services/soulGatewaySubjectKey.js`:
+ * `ploinky/cli/services/subjectIdentityKey.js`:
  *   - public key: raw 32-byte Ed25519 key, base64url (no padding), supplied via
- *     `config.env.PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY`;
+ *     `config.env.PLOINKY_AGENT_API_PUBLIC_KEY`;
  *   - subject ids: `agent:<repo>/<agentName>` or `user:<userId>`, validated with
  *     the same anchored regexes the signer uses.
  *
@@ -71,10 +71,10 @@ export async function authenticateApiKey(authHeader, appCtx) {
 
     // 2. Require the Ploinky public key. Without it signed-subject auth cannot
     //    verify anything, so reject rather than silently accepting.
-    const publicKeyB64 = env.PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY;
+    const publicKeyB64 = env.PLOINKY_AGENT_API_PUBLIC_KEY;
     if (!publicKeyB64) {
         throw new InvalidApiKeyError(
-            'Signed-subject auth is not configured: PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY is missing'
+            'Signed-subject auth is not configured: PLOINKY_AGENT_API_PUBLIC_KEY is missing'
         );
     }
 
@@ -188,7 +188,7 @@ export function publicKeyObjectFromBase64url(b64) {
     const raw = Buffer.from(String(b64 || ''), 'base64url');
     if (raw.length !== ED25519_PUBLIC_KEY_BYTES) {
         throw new InvalidApiKeyError(
-            'PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY must decode to 32 raw Ed25519 bytes'
+            'PLOINKY_AGENT_API_PUBLIC_KEY must decode to 32 raw Ed25519 bytes'
         );
     }
     try {
@@ -199,7 +199,7 @@ export function publicKeyObjectFromBase64url(b64) {
         });
     } catch {
         throw new InvalidApiKeyError(
-            'PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY could not be parsed as Ed25519'
+            'PLOINKY_AGENT_API_PUBLIC_KEY could not be parsed as Ed25519'
         );
     }
 }

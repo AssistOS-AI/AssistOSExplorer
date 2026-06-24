@@ -7,7 +7,7 @@
  *   GATEWAY_MANAGEMENT_BASE_URL=$GATEWAY_URL/services/soul-gateway/management
  *   GATEWAY_HEALTH_URL=$GATEWAY_URL/public-services/soul-gateway-health/
  *
- * Public API tests need SOUL_GATEWAY_API_KEY or SOUL_API_KEY.
+ * Public API tests need PLOINKY_AGENT_API_KEY or SOUL_API_KEY.
  * Management tests need either PLOINKY_AUTH_COOKIE for the router or
  * SG_TEST_PLOINKY_AUTH_INFO for direct protected-service header testing.
  */
@@ -21,7 +21,7 @@ const MANAGEMENT_BASE =
     process.env.GATEWAY_MANAGEMENT_BASE_URL || `${GATEWAY_URL}/services/soul-gateway/management`;
 const HEALTH_URL =
     process.env.GATEWAY_HEALTH_URL || `${GATEWAY_URL}/public-services/soul-gateway-health/`;
-const API_KEY = process.env.SOUL_GATEWAY_API_KEY || process.env.SOUL_API_KEY || '';
+const API_KEY = process.env.PLOINKY_AGENT_API_KEY || process.env.SOUL_API_KEY || '';
 const PLOINKY_AUTH_COOKIE = process.env.PLOINKY_AUTH_COOKIE || '';
 const TEST_PLOINKY_AUTH_INFO = process.env.SG_TEST_PLOINKY_AUTH_INFO || '';
 const HAS_MANAGEMENT_AUTH = Boolean(PLOINKY_AUTH_COOKIE || TEST_PLOINKY_AUTH_INFO);

@@ -3005,11 +3005,11 @@ function exportPage() {
             lines.push('[model_providers.soul-gateway]');
             lines.push('name = "Soul Gateway"');
             lines.push(`base_url = "${this.gatewayUrl}"`);
-            lines.push('env_key = "SOUL_GATEWAY_API_KEY"');
+            lines.push('env_key = "PLOINKY_AGENT_API_KEY"');
             if (this.apiKey) {
                 lines.push('');
                 lines.push('# Set this environment variable:');
-                lines.push(`# export SOUL_GATEWAY_API_KEY="${this.apiKey}"`);
+                lines.push(`# export PLOINKY_AGENT_API_KEY="${this.apiKey}"`);
             }
             return lines.join('\n');
         },

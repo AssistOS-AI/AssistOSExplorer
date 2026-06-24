@@ -137,7 +137,16 @@ export function readEnv(processEnv = process.env) {
             processEnv.TRUST_PLOINKY_ROUTER_AUTH,
             false
         ),
-        SOUL_GATEWAY_API_KEY: str(processEnv.SOUL_GATEWAY_API_KEY, null),
+        // AXL Proxy delegating mirror. When AXL_PROXY_API_KEY is set, the
+        // local gateway mirrors the upstream AXL Proxy /v1/models catalog as a
+        // single delegating 'axl-proxy' provider. Request-time inference still
+        // flows through achillesAgentLib; this only mirrors the catalog.
+        AXL_PROXY_API_KEY: str(processEnv.AXL_PROXY_API_KEY, null),
+        AXL_PROXY_BASE_URL: str(processEnv.AXL_PROXY_BASE_URL, null),
+        AXL_PROXY_DISCOVERY_MODE: str(
+            processEnv.AXL_PROXY_DISCOVERY_MODE,
+            'auto'
+        ),
         OAUTH_ADAPTERS_ENABLED: str(processEnv.OAUTH_ADAPTERS_ENABLED, null),
         LLM_DEFAULT_AGENT: str(processEnv.LLM_DEFAULT_AGENT, null),
         LLM_DEFAULT_TIERS: str(
@@ -149,8 +158,8 @@ export function readEnv(processEnv = process.env) {
         // Ploinky router/agent runtime. When ALLOW_UNAUTHENTICATED is not
         // true, the public key, router URL, agent id, and agent secret are
         // required at startup (see assertSignedSubjectAuthConfig).
-        PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: str(
-            processEnv.PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY,
+        PLOINKY_AGENT_API_PUBLIC_KEY: str(
+            processEnv.PLOINKY_AGENT_API_PUBLIC_KEY,
             null
         ),
         PLOINKY_ROUTER_URL: str(processEnv.PLOINKY_ROUTER_URL, null),
@@ -162,12 +171,8 @@ export function readEnv(processEnv = process.env) {
             processEnv.PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY,
             null
         ),
-        PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY: str(
-            processEnv.PLOINKY_ENV_SOURCE_SOUL_GATEWAY_API_KEY,
-            null
-        ),
-        PLOINKY_ENV_SOURCE_PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY: str(
-            processEnv.PLOINKY_ENV_SOURCE_PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY,
+        PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY: str(
+            processEnv.PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY,
             null
         ),
 
@@ -202,7 +207,7 @@ export function readEnv(processEnv = process.env) {
  * which is the production path for Soul Gateway.
  */
 const SIGNED_SUBJECT_AUTH_REQUIRED = Object.freeze([
-    'PLOINKY_SOUL_GATEWAY_API_PUBLIC_KEY',
+    'PLOINKY_AGENT_API_PUBLIC_KEY',
     'PLOINKY_ROUTER_URL',
     'PLOINKY_AGENT_ID',
     'PLOINKY_AGENT_SECRET',

@@ -2,7 +2,6 @@
 
 - **Date:** 2026-06-19
 - **Status:** Approved design; ready for implementation planning
-- **Branch:** `soul-gateway-local-integration`
 - **Scope:** `soul-gateway/`
 - **Type:** Forward-looking change spec. The repo's `docs/specs/` (DS001–DS016) documents
   *current* behavior, so the DS files are updated **after** this lands (see Follow-ups).
