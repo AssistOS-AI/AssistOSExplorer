@@ -559,6 +559,7 @@ describe('management/auth-route', () => {
 
 describe('management/keys-route', () => {
     let handleListKeys,
+        handleProvisionUserKey,
         handleGetKey,
         handleUpdateKey,
         handleRevokeKey;
@@ -566,6 +567,7 @@ describe('management/keys-route', () => {
     beforeEach(async () => {
         ({
             handleListKeys,
+            handleProvisionUserKey,
             handleGetKey,
             handleUpdateKey,
             handleRevokeKey,
@@ -602,6 +604,122 @@ describe('management/keys-route', () => {
         // The HMAC key_hash is the only sensitive column; it must be stripped.
         assert.equal(body.data[0].key_hash, undefined);
         assert.equal(body.data[0].subject_id, 'agent:proxies/soul-gateway');
+    });
+
+    it('handleProvisionUserKey provisions a user key row (201)', async () => {
+        const createdRow = {
+            id: 'k9',
+            label: 'alice/laptop',
+            subject_id: 'user:alice:laptop',
+            subject_type: 'user',
+            source: 'signed-subject',
+            status: 'active',
+            key_hint: 'user:...top',
+            rpm_limit: 30,
+        };
+        const pool = createMockPool(async (sql) =>
+            /INSERT INTO api_keys/i.test(sql)
+                ? { rows: [createdRow] }
+                : { rows: [] }
+        );
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+        await handleProvisionUserKey({
+            req: createMockReq({
+                method: 'POST',
+                body: {
+                    subjectId: 'user:alice:laptop',
+                    label: 'alice/laptop',
+                    rpmLimit: 30,
+                },
+            }),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+        assert.equal(res.statusCode, 201);
+        const body = parseJsonResponse(res);
+        assert.equal(body.key.subject_id, 'user:alice:laptop');
+        assert.equal(body.key.subject_type, 'user');
+    });
+
+    it('handleProvisionUserKey rejects non user:<owner>:<name> subjects (400)', async () => {
+        const pool = createMockPool(async () => ({ rows: [] }));
+        const appCtx = createMockAppCtx({ pool });
+        const bad = [
+            'agent:proxies/soul-gateway',
+            'user:alice',
+            'user:alice:laptop:extra',
+            'user:alice:',
+            'user::laptop',
+            'user:ali/ce:laptop',
+            'user:alice:lap top',
+            'user:alice:lap:top',
+        ];
+        for (const subjectId of bad) {
+            const res = createMockRes();
+            await assert.rejects(
+                handleProvisionUserKey({
+                    req: createMockReq({
+                        method: 'POST',
+                        body: { subjectId, label: 'x' },
+                    }),
+                    res,
+                    params: {},
+                    query: {},
+                    appCtx,
+                }),
+                (e) => e.name === 'BadRequestError' || e.statusCode === 400,
+                `expected 400 for ${subjectId}`
+            );
+        }
+    });
+
+    it('handleProvisionUserKey requires subjectId and label (400)', async () => {
+        const pool = createMockPool(async () => ({ rows: [] }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+        await assert.rejects(
+            handleProvisionUserKey({
+                req: createMockReq({
+                    method: 'POST',
+                    body: { subjectId: 'user:alice:laptop' },
+                }),
+                res,
+                params: {},
+                query: {},
+                appCtx,
+            }),
+            (e) => e.name === 'BadRequestError' || e.statusCode === 400
+        );
+    });
+
+    it('handleProvisionUserKey maps a duplicate subject to 409', async () => {
+        const dupErr = Object.assign(
+            new Error('UNIQUE constraint failed: api_keys.subject_id'),
+            { code: 'SQLITE_CONSTRAINT_UNIQUE' }
+        );
+        const pool = createMockPool(async (sql) => {
+            if (/INSERT INTO api_keys/i.test(sql)) throw dupErr;
+            return { rows: [] };
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+        await handleProvisionUserKey({
+            req: createMockReq({
+                method: 'POST',
+                body: {
+                    subjectId: 'user:alice:laptop',
+                    label: 'alice/laptop',
+                },
+            }),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+        assert.equal(res.statusCode, 409);
     });
 
     it('handleListKeys no longer injects a synthetic agent-default key', async () => {
@@ -3492,6 +3610,7 @@ describe('management/router', () => {
         const { httpRouter } = buildManagementRouter(appCtx);
 
         assert.ok(httpRouter.match('GET', '/management/keys'));
+        assert.ok(httpRouter.match('POST', '/management/keys'));
         assert.ok(httpRouter.match('GET', '/management/keys/some-id'));
         assert.ok(httpRouter.match('PATCH', '/management/keys/some-id'));
         assert.ok(httpRouter.match('POST', '/management/keys/some-id/revoke'));

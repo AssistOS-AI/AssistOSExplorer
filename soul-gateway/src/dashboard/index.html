@@ -4280,6 +4280,12 @@
                                     class="flex justify-between items-center mb-4"
                                 >
                                     <h2 class="text-lg font-bold">API Keys</h2>
+                                    <button
+                                        class="btn btn-primary"
+                                        @click="openCreateKey()"
+                                    >
+                                        Create user key
+                                    </button>
                                 </div>
                                 <!-- Edit key modal -->
                                 <dialog
@@ -4366,6 +4372,153 @@
                                     <div
                                         class="modal-backdrop"
                                         @click="showEdit = false; editing = null"
+                                    ></div>
+                                </dialog>
+                                <!-- Create key modal -->
+                                <dialog
+                                    class="modal"
+                                    :class="{'modal-open': showCreateKey}"
+                                >
+                                    <div class="modal-box">
+                                        <h3 class="font-bold text-lg">
+                                            Create user key
+                                        </h3>
+                                        <template x-if="!newUserKey">
+                                            <div>
+                                                <div class="form-control">
+                                                    <label class="label"
+                                                        >Owner</label
+                                                    ><input
+                                                        type="text"
+                                                        class="input input-bordered"
+                                                        x-model="createKeyForm.owner"
+                                                        placeholder="alice"
+                                                    />
+                                                </div>
+                                                <div class="form-control">
+                                                    <label class="label"
+                                                        >Key name</label
+                                                    ><input
+                                                        type="text"
+                                                        class="input input-bordered"
+                                                        x-model="createKeyForm.name"
+                                                        placeholder="laptop"
+                                                    />
+                                                </div>
+                                                <div class="form-control">
+                                                    <label class="label"
+                                                        >Label (optional)</label
+                                                    ><input
+                                                        type="text"
+                                                        class="input input-bordered"
+                                                        x-model="createKeyForm.label"
+                                                    />
+                                                </div>
+                                                <div class="form-control">
+                                                    <label class="label"
+                                                        >RPM limit
+                                                        (optional)</label
+                                                    ><input
+                                                        type="number"
+                                                        class="input input-bordered"
+                                                        x-model="createKeyForm.rpmLimit"
+                                                    />
+                                                </div>
+                                                <div class="form-control">
+                                                    <label class="label"
+                                                        >TPM limit
+                                                        (optional)</label
+                                                    ><input
+                                                        type="number"
+                                                        class="input input-bordered"
+                                                        x-model="createKeyForm.tpmLimit"
+                                                    />
+                                                </div>
+                                                <div class="form-control">
+                                                    <label class="label"
+                                                        >Daily budget USD
+                                                        (optional)</label
+                                                    ><input
+                                                        type="number"
+                                                        class="input input-bordered"
+                                                        x-model="createKeyForm.dailyBudgetUsd"
+                                                    />
+                                                </div>
+                                                <div class="form-control">
+                                                    <label class="label"
+                                                        >Monthly budget USD
+                                                        (optional)</label
+                                                    ><input
+                                                        type="number"
+                                                        class="input input-bordered"
+                                                        x-model="createKeyForm.monthlyBudgetUsd"
+                                                    />
+                                                </div>
+                                                <div class="form-control">
+                                                    <label class="label"
+                                                        >Expires at (optional,
+                                                        ISO)</label
+                                                    ><input
+                                                        type="text"
+                                                        class="input input-bordered"
+                                                        x-model="createKeyForm.expiresAt"
+                                                        placeholder="2027-01-01T00:00:00Z"
+                                                    />
+                                                </div>
+                                                <p
+                                                    class="error text-error text-sm mt-2"
+                                                    x-show="createKeyError"
+                                                    x-text="createKeyError"
+                                                ></p>
+                                                <div class="modal-action">
+                                                    <button
+                                                        class="btn btn-ghost"
+                                                        @click="showCreateKey = false"
+                                                    >
+                                                        Cancel
+                                                    </button>
+                                                    <button
+                                                        class="btn btn-primary"
+                                                        @click="submitCreateKey()"
+                                                    >
+                                                        Create
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </template>
+                                        <template x-if="newUserKey">
+                                            <div>
+                                                <p>
+                                                    <strong
+                                                        >Copy this key now — it
+                                                        will not be shown
+                                                        again.</strong
+                                                    >
+                                                </p>
+                                                <code
+                                                    class="key-reveal block bg-base-200 p-3 rounded font-mono text-xs break-all mt-3"
+                                                    x-text="newUserKey"
+                                                ></code>
+                                                <div class="modal-action">
+                                                    <button
+                                                        class="btn btn-ghost"
+                                                        @click="navigator.clipboard.writeText(newUserKey)"
+                                                    >
+                                                        Copy
+                                                    </button>
+                                                    <button
+                                                        class="btn btn-primary"
+                                                        @click="showCreateKey = false"
+                                                    >
+                                                        Done
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                    <div
+                                        class="modal-backdrop"
+                                        @click="showCreateKey = false"
                                     ></div>
                                 </dialog>
                                 <div class="card bg-base-100 shadow">

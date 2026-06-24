@@ -69,13 +69,17 @@ Models with `pricing_mode='external_directory'` resolve prices through the share
 
 The management API supports:
 
-- create
+- provision user keys
 - list
 - update
-- revoke
+- revoke user keys
 - reset daily budget state
 
-Keys are stored encrypted and also hashed for lookup. The plaintext key is only returned at creation time.
+All inbound API keys are Ploinky router-signed signed-subject values. The gateway stores only the `api_keys` policy row: subject id, subject type, `source='signed-subject'`, limits, budgets, expiry, status, and metadata. It does not store raw keys, encrypted keys, or secret hashes.
+
+Admins can provision user keys through `POST /management/keys`. The endpoint records a policy row for a router-signed `user:<owner>:<name>` subject with `subject_type='user'` and `source='signed-subject'`; the router mints the bearer key, and the gateway only enforces the stored policy when that signed subject is presented. User-key revocation sets the row to `status='revoked'` and blocks that deterministic subject. A revoked user `subject_id` cannot be reused, so per-user-key rotation is revoke plus a new name.
+
+Agent keys are unchanged: they are discovery-provisioned signed-subject rows, cannot be provisioned through `POST /management/keys`, and are not revocable through key management. Operators adjust agent-key limits, budgets, or expiry instead.
 
 ## Override scopes
 
@@ -90,6 +94,10 @@ The management API writes model-scoped bindings into unified `middleware_binding
 ## Management auth boundary
 
 Soul Gateway does not own management login attempts or session issuance. Browser login throttling belongs to Ploinky's default auth surface. The removed `/management/auth/*` compatibility endpoints return HTTP 410 and do not participate in rate-limit or budget policy.
+
+## Decisions & Questions
+
+1. 2026-06-24: Per `docs/superpowers/plans/2026-06-24-create-user-keys.md` and `docs/superpowers/specs/2026-06-24-create-user-keys-design.md`, key lifecycle distinguishes admin-provisioned user keys from discovery-provisioned agent keys. User keys are revocable router-signed `user:<owner>:<name>` subjects with burned names after revocation; agent keys remain discovery-owned and non-revocable.
 
 ## Related specs
 

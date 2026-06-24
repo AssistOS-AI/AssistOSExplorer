@@ -2498,6 +2498,19 @@ function keysPage() {
             monthly_budget_usd: '',
             expires_at: '',
         },
+        createKeyForm: {
+            owner: '',
+            name: '',
+            label: '',
+            rpmLimit: '',
+            tpmLimit: '',
+            dailyBudgetUsd: '',
+            monthlyBudgetUsd: '',
+            expiresAt: '',
+        },
+        showCreateKey: false,
+        newUserKey: '',
+        createKeyError: '',
 
         async init() {
             const raw = unwrapArray(await api.get('/management/keys'));
@@ -2554,6 +2567,87 @@ function keysPage() {
                 expires_at: k.expires_at ?? '',
             };
             this.showEdit = true;
+        },
+
+        openCreateKey() {
+            this.createKeyForm = {
+                owner: '',
+                name: '',
+                label: '',
+                rpmLimit: '',
+                tpmLimit: '',
+                dailyBudgetUsd: '',
+                monthlyBudgetUsd: '',
+                expiresAt: '',
+            };
+            this.newUserKey = '';
+            this.createKeyError = '';
+            this.showCreateKey = true;
+        },
+
+        async submitCreateKey() {
+            this.createKeyError = '';
+            const owner = this.createKeyForm.owner.trim();
+            const name = this.createKeyForm.name.trim();
+            const part = /^[A-Za-z0-9._-]+$/;
+            if (!part.test(owner) || !part.test(name)) {
+                this.createKeyError =
+                    'Owner and name must each be non-empty and use only letters, digits, dot, underscore, or hyphen.';
+                return;
+            }
+            const subjectId = `user:${owner}:${name}`;
+            const payload = {
+                subjectId,
+                label: this.createKeyForm.label.trim() || `${owner}/${name}`,
+            };
+            for (const f of [
+                'rpmLimit',
+                'tpmLimit',
+                'dailyBudgetUsd',
+                'monthlyBudgetUsd',
+            ]) {
+                const v = String(this.createKeyForm[f]).trim();
+                if (v !== '') payload[f] = Number(v);
+            }
+            const expiresAt = String(this.createKeyForm.expiresAt).trim();
+            if (expiresAt) payload.expiresAt = expiresAt;
+
+            try {
+                // 1) provision the policy row. api.post resolves with the JSON body even on
+                //    4xx (it only throws on 401/403), so we MUST inspect it — a 409 duplicate
+                //    or 400 returns { error: {...} } and must NOT fall through to mint (F1).
+                const provision = await api.post('/management/keys', payload);
+                if (provision?.error || !provision?.key) {
+                    this.createKeyError =
+                        provision?.error?.message ||
+                        'Could not provision the key row.';
+                    return;
+                }
+                // 2) only now mint the signed key via the router (admin browser session)
+                this.newUserKey = await this._mintUserKey(`${owner}:${name}`);
+                // 3) refresh the list — keysPage() has no loadKeys(); init() reloads this.keys
+                await this.init();
+            } catch (e) {
+                this.createKeyError = e?.message || 'Failed to create key.';
+            }
+        },
+
+        async _mintUserKey(userId) {
+            const res = await fetch('/api/router/identity/user-api-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ userId }),
+            });
+            if (res.status === 401 || res.status === 403) {
+                redirectToPloinkyLogin();
+                throw new Error('Ploinky admin session required.');
+            }
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data?.apiKey) {
+                throw new Error(data?.message || 'The router did not return a key.');
+            }
+            return data.apiKey;
         },
 
         async saveEdit() {

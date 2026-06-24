@@ -26,7 +26,7 @@ This document stays at the capability level: which data lives in which table and
 
 ### API keys and auth
 
-- **`api_keys`** — one row per signed-subject API key tracked by Soul Gateway. The schema is signed-subject-only: columns are `subject_id` (UNIQUE, e.g. `agent:<repo>/<agentName>` or `user:<userId>`), `subject_type` (`agent` | `user`), `source` (always `signed-subject`), `key_hash` (HMAC of the deterministic key for fast lookup), per-key RPM/TPM/daily/monthly limits, `status` (`active` | `revoked`), and a metadata JSON blob. The previous `key_ciphertext`, `key_iv`, and `key_auth_tag` columns are gone — no encrypted plaintext key is stored because the key is deterministic from the subject and Ploinky's signing key. Revoking a row blocks that subject's deterministic key; deleting the row permits recreation on the next valid signed request. Rotating Ploinky's Ed25519 signing key invalidates every signed key simultaneously.
+- **`api_keys`** — one row per signed-subject API key tracked by Soul Gateway. The schema is signed-subject-only: columns are `subject_id` (UNIQUE, e.g. `agent:<repo>/<agentName>` or `user:<owner>:<name>`), `subject_type` (`agent` | `user`), `source` (always `signed-subject`), `key_hint`, per-key RPM/TPM/daily/monthly limits, `status` (`active` | `revoked`), timestamps, and a metadata JSON blob. User keys provisioned through `POST /management/keys` insert a policy row for a router-signed `user:<owner>:<name>` subject with `subject_type='user'` and `source='signed-subject'`; the router mints the signed bearer value and the gateway stores no raw, encrypted, or hashed key material. Agent rows remain discovery-provisioned with `subject_type='agent'`. Revoking a user row blocks that subject's deterministic key, and a revoked user `subject_id` is burned: rotation means revoking the old row and provisioning a different `<name>`. Rotating Ploinky's Ed25519 signing key invalidates every signed key simultaneously.
 - **`sessions`** — persistent conversation-group rows used by the request path and dashboard session browsers. Rows are created for live traffic by the session resolver. Implicit-session creation holds an exclusive `BEGIN IMMEDIATE` write transaction around the find-or-create so two racing requests for the same `(api_key, agent)` pair cannot both insert: it rechecks for an existing open row inside the activity window, computes the next `sequence_no`, and inserts a new row only when none exists. Because the SQLite database is a single connection serialized by the runtime's database facade, concurrent creators deterministically reuse the existing open session or allocate one new `sequence_no`.
 
 ### Middleware and policy
@@ -45,7 +45,7 @@ This document stays at the capability level: which data lives in which table and
 
 Provider account encrypted columns (`provider_accounts.secret_ciphertext/iv/auth_tag`) are SQLite `BLOB` values holding raw bytes — not hex-encoded strings. The runtime normalizes SQLite `Uint8Array` values back to Node `Buffer` instances before decrypting so encryption callers continue to use raw bytes. This is a hard requirement: storing hex strings into these columns corrupts the auth tag length and fails every subsequent decryption.
 
-The `api_keys` table has no ciphertext columns. API keys are signed-subject values verified cryptographically; only a key hash is stored for lookup.
+The `api_keys` table has no ciphertext or secret-hash columns. API keys are signed-subject values verified cryptographically; only the non-secret subject, display hint, policy, status, and audit metadata are stored.
 
 ## Retention
 
@@ -54,6 +54,10 @@ SQLite stores audit logs in a single indexed `audit_logs` table. The retention j
 ## Historical import
 
 The SQLite cutover intentionally starts from an empty database. Old Postgres data and main-branch historical data are not imported.
+
+## Decisions & Questions
+
+1. 2026-06-24: Per `docs/superpowers/plans/2026-06-24-create-user-keys.md` and `docs/superpowers/specs/2026-06-24-create-user-keys-design.md`, admin-created user keys are represented only as `api_keys` policy rows for router-signed `user:<owner>:<name>` subjects. The row uses `subject_type='user'` and `source='signed-subject'`, stores no key material, and relies on the `subject_id` uniqueness invariant to enforce the burned-name rule for revoked user subjects.
 
 ## Related specs
 

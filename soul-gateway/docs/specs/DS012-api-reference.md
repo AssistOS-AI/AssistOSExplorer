@@ -111,7 +111,7 @@ Bindings write to unified `middleware_bindings` with `scope='model'` and `target
 
 ## Other management surfaces
 
-- API key management — the management API exposes read-only key listing and revocation/deletion; manual key creation via `POST /management/keys` returns HTTP 405. All keys are Ploinky-issued signed-subject keys; the dashboard does not create raw keys. The `status` field on each key row reflects `active` or `revoked`.
+- API key management — admins can provision user keys with `POST /management/keys`. The endpoint creates a policy row for a router-signed `user:<owner>:<name>` key with `subject_type='user'` and `source='signed-subject'`; the router mints the bearer value, and Soul Gateway stores no raw key material. Agent keys remain discovery-provisioned, cannot be provisioned through this endpoint, and are non-revocable through key management. User keys are revocable; a revoked user subject id cannot be reused, so rotation requires a new key name. The `status` field on each key row reflects `active` or `revoked`.
 - blacklist management
 - cooldown management
 - logs
@@ -119,6 +119,10 @@ Bindings write to unified `middleware_bindings` with `scope='model'` and `target
 - export
 
 Mutations that affect routing or policy trigger runtime refresh so later requests observe the new state.
+
+## Decisions & Questions
+
+1. 2026-06-24: Per `docs/superpowers/plans/2026-06-24-create-user-keys.md` and `docs/superpowers/specs/2026-06-24-create-user-keys-design.md`, `POST /management/keys` is the admin user-key provisioning endpoint, not an agent-key creation endpoint. It stores only signed-subject policy for `user:<owner>:<name>`, leaves minting to the Ploinky router, preserves non-revocable discovery-owned agent keys, and enforces the burned-name rule for revoked user subjects.
 
 ## Related specs
 

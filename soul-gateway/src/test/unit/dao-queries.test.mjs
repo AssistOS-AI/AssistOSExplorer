@@ -23,6 +23,37 @@ describe('api-keys-dao', () => {
             assert.equal(typeof dao[fn], 'function', `missing export: ${fn}`);
         }
     });
+
+    it('inserts a user signed-subject row with a derived key hint and no key material', async () => {
+        const keysDao = await import('../../db/dao/api-keys-dao.mjs');
+        let captured = null;
+        const pool = {
+            query: async (sql, params) => {
+                captured = { sql, params };
+                return {
+                    rows: [
+                        {
+                            id: 'x',
+                            subject_id: 'user:alice:laptop',
+                            subject_type: 'user',
+                            source: 'signed-subject',
+                            status: 'active',
+                        },
+                    ],
+                };
+            },
+        };
+        const row = await keysDao.provisionUserKey(pool, {
+            subjectId: 'user:alice:laptop',
+            label: 'alice/laptop',
+            rpmLimit: 30,
+        });
+        assert.equal(row.subject_type, 'user');
+        assert.ok(/INSERT INTO api_keys/i.test(captured.sql));
+        assert.ok(!/key_hash|key_ciphertext/i.test(captured.sql));
+        assert.ok(captured.params.includes('user:alice:laptop'));
+        assert.ok(captured.params.includes('user'));
+    });
 });
 
 describe('providers-dao', () => {

@@ -104,6 +104,40 @@ export async function upsertSignedSubjectKey(
     }
 }
 
+/**
+ * Provision a policy row for an admin-created user key. The signed-subject key
+ * itself is minted by the router; this records only the subject + limits so the
+ * key is listed, limited, and revocable. No key material is stored. Throws the
+ * unique-constraint error (see isUniqueConstraintError) if subject_id exists.
+ */
+export async function provisionUserKey(
+    pool,
+    {
+        subjectId,
+        label = subjectId,
+        rpmLimit = 60,
+        tpmLimit = 100000,
+        dailyBudgetUsd = null,
+        monthlyBudgetUsd = null,
+        expiresAt = null,
+    }
+) {
+    return create(pool, {
+        label,
+        keyHint: buildKeyHint(subjectId),
+        subjectId,
+        subjectType: 'user',
+        source: 'signed-subject',
+        status: 'active',
+        rpmLimit,
+        tpmLimit,
+        dailyBudgetUsd,
+        monthlyBudgetUsd,
+        expiresAt,
+        metadata: { subjectId, subjectType: 'user', source: 'signed-subject' },
+    });
+}
+
 /** Short, non-secret display hint derived from the subject id. */
 function buildKeyHint(value) {
     const str = String(value || '');

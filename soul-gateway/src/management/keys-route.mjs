@@ -15,6 +15,11 @@ import { BadRequestError } from '../core/errors.mjs';
 import * as keysDao from '../db/dao/api-keys-dao.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
 
+// Enforce EXACTLY user:<owner>:<name>, each part [A-Za-z0-9._-]+. The verifier's
+// classifySubjectType only checks the generic user:<seg> shape and would wrongly
+// accept user:alice or user:a:b:c, so validate explicitly.
+const USER_KEY_RE = /^user:([A-Za-z0-9._-]+):([A-Za-z0-9._-]+)$/;
+
 /**
  * GET /management/keys
  * List API keys with current spend info.
@@ -34,6 +39,63 @@ export async function handleListKeys(ctx) {
     const data = keys.map(stripSensitiveFields);
 
     sendJson(res, 200, { data });
+}
+
+/**
+ * POST /management/keys
+ * Provision a policy row for an admin-created user key. Does NOT mint or store
+ * key material — the signed-subject key is minted by the router; this records
+ * the subject + limits so the key is listed, limited, and revocable.
+ * Only user:<owner>:<name> subjects are accepted (agent rows come from discovery).
+ */
+export async function handleProvisionUserKey(ctx) {
+    const { req, res, appCtx } = ctx;
+    const { pool } = appCtx;
+    const body = await readJsonBody(req);
+
+    const subjectId = typeof body?.subjectId === 'string' ? body.subjectId.trim() : '';
+    const label = typeof body?.label === 'string' ? body.label.trim() : '';
+    if (!subjectId || !label) {
+        throw new BadRequestError('Missing required fields: subjectId and label');
+    }
+
+    // Enforce exactly user:<owner>:<name> — rejects agent:* and any non-two-part user id.
+    if (!USER_KEY_RE.test(subjectId)) {
+        throw new BadRequestError(
+            'subjectId must be user:<owner>:<name>, owner and name each matching [A-Za-z0-9._-]+ (no slash, whitespace, or extra segments)',
+        );
+    }
+
+    if (body.expiresAt) {
+        const t = Date.parse(body.expiresAt);
+        if (Number.isNaN(t) || t <= Date.now()) {
+            throw new BadRequestError('expiresAt must be a future ISO-8601 timestamp');
+        }
+    }
+
+    try {
+        const row = await keysDao.provisionUserKey(pool, {
+            subjectId,
+            label,
+            rpmLimit: body.rpmLimit,
+            tpmLimit: body.tpmLimit,
+            dailyBudgetUsd: body.dailyBudgetUsd ?? null,
+            monthlyBudgetUsd: body.monthlyBudgetUsd ?? null,
+            expiresAt: body.expiresAt ?? null,
+        });
+        sendJson(res, 201, { key: stripSensitiveFields(row) });
+    } catch (error) {
+        if (keysDao.isUniqueConstraintError(error)) {
+            sendJson(res, 409, {
+                error: {
+                    message: `Key '${subjectId}' already exists. A revoked subject id cannot be reused — choose a different name.`,
+                    type: 'conflict',
+                },
+            });
+            return;
+        }
+        throw error;
+    }
 }
 
 /**

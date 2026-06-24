@@ -48,6 +48,8 @@ These names are reserved; any manifest-declared values with the same names are s
 
 **Loop guard:** A request whose signed-subject key resolves to the same subject as the model being invoked (a self-recursive discovery call) is rejected with HTTP 400.
 
+**Admin-provisioned user keys:** Administrators can provision user keys from the protected management dashboard. The gateway endpoint `POST /management/keys` records a policy row for a router-signed `user:<owner>:<name>` subject with `subject_type='user'` and `source='signed-subject'`; Ploinky's existing router identity endpoint mints the bearer value, and the gateway stores no key material. User keys are revocable. A revoked user subject id is burned, so rotation is revoke plus a different name. Agent keys are unchanged: they are discovered from Ploinky agent registration, are not provisioned by this endpoint, and remain non-revocable in key management.
+
 ## Local LLM Hub And Tier Seeding
 
 The local gateway is the LLM hub. The legacy local-provider and remote-provider
@@ -158,6 +160,7 @@ The dashboard has no Soul Gateway login form, no dashboard session token flow, a
 ## Decisions & Questions
 
 1. 2026-06-24: Ploinky's router-signed subject identity credential is the only local agent API key. Agents present `PLOINKY_AGENT_API_KEY`, Soul Gateway verifies with `PLOINKY_AGENT_API_PUBLIC_KEY`, and the former Soul Gateway-named compatibility alias is removed.
+2. 2026-06-24: Per `docs/superpowers/plans/2026-06-24-create-user-keys.md` and `docs/superpowers/specs/2026-06-24-create-user-keys-design.md`, admin-created user keys reuse Ploinky router signing while Soul Gateway only provisions policy for `user:<owner>:<name>` subjects. This does not change agent discovery, agent-key injection, or the non-revocable agent-key contract.
 
 ## Migration Notes
 
