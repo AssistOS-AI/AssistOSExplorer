@@ -118,15 +118,35 @@ function makeAliasesDao(existing = []) {
     };
 }
 
-function makeModelChildrenDao() {
+function makeModelChildrenDao(existing = []) {
     const replacements = [];
+    const rowsByParent = new Map();
+
+    for (const row of existing) {
+        const parentModelId = row.parent_model_id || row.parentModelId;
+        if (!rowsByParent.has(parentModelId)) rowsByParent.set(parentModelId, []);
+        rowsByParent.get(parentModelId).push({ ...row });
+    }
+
     return {
         replacements,
+        async listForParent(_pool, parentModelId) {
+            return (rowsByParent.get(parentModelId) || [])
+                .map((row) => ({ ...row }));
+        },
         async replaceChildren(_pool, parentModelId, children) {
             replacements.push({
                 parentModelId,
                 children: children.map((child) => ({ ...child })),
             });
+            rowsByParent.set(parentModelId, children.map((child) => ({
+                parent_model_id: parentModelId,
+                parentModelId,
+                child_model_id: child.childModelId,
+                childModelId: child.childModelId,
+                priority: child.priority,
+                enabled: child.enabled ?? true,
+            })));
         },
     };
 }
@@ -135,10 +155,11 @@ function makeDaos({
     seed = [DISCOVERED_MODEL],
     existingModels = [],
     existingAliases = [],
+    existingChildren = [],
 } = {}) {
     const modelsDao = makeModelsDao(seed, existingModels);
     const aliasesDao = makeAliasesDao(existingAliases);
-    const modelChildrenDao = makeModelChildrenDao();
+    const modelChildrenDao = makeModelChildrenDao(existingChildren);
     return { modelsDao, aliasesDao, modelChildrenDao };
 }
 
@@ -503,6 +524,197 @@ describe('seedDefaultTiers', () => {
         });
         assert.deepEqual(daos.modelsDao.createdCascade, []);
         assert.deepEqual(daos.modelChildrenDao.replacements, []);
+        assert.deepEqual(daos.aliasesDao.deletedAliases, ['fast']);
+        assert.equal(daos.aliasesDao.rows.length, 0);
+        assert.equal(refresh.calls.length, 1);
+    });
+
+    it('second run after fresh seeding is quiet when the seeder-owned child is current', async () => {
+        const existingCascade = {
+            id: 'existing-tier-fast',
+            model_key: 'fast',
+            display_name: 'fast',
+            enabled: true,
+            strategy_kind: 'cascade',
+            metadata: {
+                seededBy: 'seed-default-tiers',
+                defaultAgent: 'default-local-llm',
+                childModelKey: DISCOVERED_MODEL.model_key,
+                tierKey: 'fast',
+            },
+        };
+        const daos = makeDaos({
+            existingModels: [existingCascade],
+            existingChildren: [{
+                parent_model_id: 'existing-tier-fast',
+                child_model_id: DISCOVERED_MODEL.id,
+                priority: 1,
+                enabled: 1,
+            }],
+        });
+        const refresh = spyRefresh();
+
+        const summary = await seedDefaultTiers({
+            appCtx: makeAppCtx({
+                LLM_DEFAULT_AGENT: 'default-local-llm',
+                LLM_DEFAULT_TIERS: 'fast',
+            }),
+            daos,
+            refresh,
+        });
+
+        assert.deepEqual(summary, {
+            seeded: 0,
+            promoted: 0,
+            skipped: 1,
+            aliasesDeleted: 0,
+            refreshed: false,
+        });
+        assert.deepEqual(daos.modelChildrenDao.replacements, []);
+        assert.equal(refresh.calls.length, 0);
+    });
+
+    it('second run after legacy alias promotion preserves the promoted child from metadata', async () => {
+        const existingCascade = {
+            id: 'existing-tier-fast',
+            model_key: 'fast',
+            display_name: 'fast',
+            enabled: true,
+            strategy_kind: 'cascade',
+            metadata: {
+                seededBy: 'seed-default-tiers',
+                defaultAgent: 'default-local-llm',
+                childModelKey: LEGACY_ALIAS_TARGET.model_key,
+                tierKey: 'fast',
+            },
+        };
+        const daos = makeDaos({
+            seed: [DISCOVERED_MODEL, LEGACY_ALIAS_TARGET],
+            existingModels: [existingCascade],
+            existingChildren: [{
+                parentModelId: 'existing-tier-fast',
+                childModelId: LEGACY_ALIAS_TARGET.id,
+                priority: 1,
+                enabled: true,
+            }],
+        });
+        const refresh = spyRefresh();
+
+        const summary = await seedDefaultTiers({
+            appCtx: makeAppCtx({
+                LLM_DEFAULT_AGENT: 'default-local-llm',
+                LLM_DEFAULT_TIERS: 'fast',
+            }),
+            daos,
+            refresh,
+        });
+
+        assert.deepEqual(summary, {
+            seeded: 0,
+            promoted: 0,
+            skipped: 1,
+            aliasesDeleted: 0,
+            refreshed: false,
+        });
+        assert.deepEqual(daos.modelChildrenDao.replacements, []);
+        assert.equal(refresh.calls.length, 0);
+    });
+
+    it('repairs a seeder-owned cascade tier that exists without children', async () => {
+        const existingCascade = {
+            id: 'existing-tier-fast',
+            model_key: 'fast',
+            display_name: 'fast',
+            enabled: true,
+            strategy_kind: 'cascade',
+            metadata: JSON.stringify({
+                seededBy: 'seed-default-tiers',
+                defaultAgent: 'default-local-llm',
+                childModelKey: DISCOVERED_MODEL.model_key,
+                tierKey: 'fast',
+            }),
+        };
+        const daos = makeDaos({ existingModels: [existingCascade] });
+        const refresh = spyRefresh();
+
+        const summary = await seedDefaultTiers({
+            appCtx: makeAppCtx({
+                LLM_DEFAULT_AGENT: 'default-local-llm',
+                LLM_DEFAULT_TIERS: 'fast',
+            }),
+            daos,
+            refresh,
+        });
+
+        assert.deepEqual(summary, {
+            seeded: 0,
+            promoted: 0,
+            skipped: 1,
+            aliasesDeleted: 0,
+            refreshed: true,
+        });
+        assert.deepEqual(daos.modelsDao.createdCascade, []);
+        assert.deepEqual(daos.modelChildrenDao.replacements, [{
+            parentModelId: 'existing-tier-fast',
+            children: [{
+                childModelId: DISCOVERED_MODEL.id,
+                priority: 1,
+                enabled: true,
+            }],
+        }]);
+        assert.equal(refresh.calls.length, 1);
+    });
+
+    it('repairs a seeder-owned cascade tier with the same-name legacy alias target', async () => {
+        const existingCascade = {
+            id: 'existing-tier-fast',
+            model_key: 'fast',
+            display_name: 'fast',
+            enabled: true,
+            strategy_kind: 'cascade',
+            metadata: {
+                seededBy: 'seed-default-tiers',
+                defaultAgent: 'default-local-llm',
+                childModelKey: DISCOVERED_MODEL.model_key,
+                tierKey: 'fast',
+            },
+        };
+        const daos = makeDaos({
+            seed: [DISCOVERED_MODEL, LEGACY_ALIAS_TARGET],
+            existingModels: [existingCascade],
+            existingAliases: [{
+                alias: 'fast',
+                model_id: LEGACY_ALIAS_TARGET.id,
+                model_key: LEGACY_ALIAS_TARGET.model_key,
+            }],
+        });
+        const refresh = spyRefresh();
+
+        const summary = await seedDefaultTiers({
+            appCtx: makeAppCtx({
+                LLM_DEFAULT_AGENT: 'default-local-llm',
+                LLM_DEFAULT_TIERS: 'fast',
+            }),
+            daos,
+            refresh,
+        });
+
+        assert.deepEqual(summary, {
+            seeded: 0,
+            promoted: 0,
+            skipped: 1,
+            aliasesDeleted: 1,
+            refreshed: true,
+        });
+        assert.deepEqual(daos.modelsDao.createdCascade, []);
+        assert.deepEqual(daos.modelChildrenDao.replacements, [{
+            parentModelId: 'existing-tier-fast',
+            children: [{
+                childModelId: LEGACY_ALIAS_TARGET.id,
+                priority: 1,
+                enabled: true,
+            }],
+        }]);
         assert.deepEqual(daos.aliasesDao.deletedAliases, ['fast']);
         assert.equal(daos.aliasesDao.rows.length, 0);
         assert.equal(refresh.calls.length, 1);
