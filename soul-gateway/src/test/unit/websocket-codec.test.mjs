@@ -77,10 +77,9 @@ describe('WebSocket frame codec', () => {
 describe('computeWebSocketAccept', () => {
     it('computes correct accept key per RFC 6455', () => {
         const key = 'dGhlIHNhbXBsZSBub25jZQ==';
-        // SHA-1(key + "258EAFA5-E914-47DA-95CA-5AB5DC11D65B") base64-encoded
         assert.equal(
             computeWebSocketAccept(key),
-            'oTYf8w8uN9dmWLQsgPa0ssJjDCY='
+            's3pPLMBiTxaQ9kYGzzhZRbK+xOo='
         );
     });
 });

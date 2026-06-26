@@ -4,7 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 
-const WS_GUID = '258EAFA5-E914-47DA-95CA-5AB5DC11D65B';
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const OPCODE_TEXT = 0x1;
 const OPCODE_CLOSE = 0x8;
 const OPCODE_PING = 0x9;
