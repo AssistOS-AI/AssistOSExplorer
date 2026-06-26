@@ -8,8 +8,8 @@ set -e
 
 WORKSPACE="$HOME/soulGateway"
 PLOINKY="$HOME/ploinky/bin/ploinky"
-PROXIES_REPO="https://github.com/PloinkyRepos/proxies.git"
-BASIC_REPO="https://github.com/PloinkyRepos/Basic.git"
+PROXIES_REPO="https://github.com/AssistOS-AI/proxies.git"
+BASIC_REPO="https://github.com/AssistOS-AI/Basic.git"
 CODE_DIR="$HOME/code"
 ROUTER_URL="${PLOINKY_ROUTER_URL:-http://localhost:${ROUTER_PORT:-8080}}"
 HEALTH_URL="${ROUTER_URL%/}/public-services/soul-gateway-health/"
