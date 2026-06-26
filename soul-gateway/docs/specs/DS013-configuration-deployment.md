@@ -101,8 +101,9 @@ For Ploinky workspaces, consumer agents start with a generated `PLOINKY_AGENT_AP
 
 Explorer production uses the generated-key path for local calls. The local
 gateway is the LLM hub and the reference policy, logging, budget, and settings
-surface, with local `fast/plan/deep` tiers owned locally; it does not delegate
-to a remote gateway.
+surface. Local `fast/plan/deep` defaults are owned locally as cascade tier
+models seeded from `LLM_DEFAULT_TIERS`; the gateway does not delegate those
+defaults to a remote gateway.
 
 ### Direct-provider mode
 

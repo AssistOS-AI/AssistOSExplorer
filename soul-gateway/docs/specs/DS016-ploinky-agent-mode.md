@@ -57,10 +57,19 @@ bootstraps were removed (commit `c9ed615`, 2026-06-17).
 
 - Local models are discovered from enabled Ploinky agents
   (`runPloinkyReconcileOnce`), keyed `ploinky/<repo>/<agent-model>`.
-- `seedDefaultTiers` seeds the tier aliases named in `LLM_DEFAULT_TIERS`
-  (default `fast,plan,deep`) onto the model discovered for `LLM_DEFAULT_AGENT`
-  (default `default-local-llm`). It **skips** any alias that already exists, so
-  the local tiers are stable and owned locally.
+- `seedDefaultTiers` reads the tier keys named in `LLM_DEFAULT_TIERS`
+  (default `fast,plan,deep`). When a configured key has no existing model row,
+  it creates a cascade model whose single child is the model discovered for
+  `LLM_DEFAULT_AGENT` (default `default-local-llm`).
+- When a legacy same-name alias row exists and no model owns that key, the alias
+  is promoted into a cascade tier whose single child is the alias's former
+  target; the alias row is then deleted.
+- Existing cascade tiers are kept. Same-name aliases are deleted, and
+  seeder-owned cascades are child-repaired only when their stored child list
+  differs from the expected single child. User-created/manual cascades are not
+  child-repaired.
+- If a non-cascade model already owns a configured tier key, seeding warns and
+  skips that key, leaving any same-name alias unchanged.
 
 ## Ploinky Agent Discovery
 
