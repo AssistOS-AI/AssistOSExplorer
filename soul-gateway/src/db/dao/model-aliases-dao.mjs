@@ -49,3 +49,11 @@ export async function deleteByModel(pool, modelId) {
     );
     return rowCount;
 }
+
+export async function deleteByAlias(pool, alias) {
+    const { rowCount } = await pool.query(
+        `DELETE FROM ${TABLE} WHERE alias = $1`,
+        [alias]
+    );
+    return rowCount > 0;
+}

@@ -97,11 +97,13 @@ describe('models-dao', () => {
         const dao = await import('../../db/dao/models-dao.mjs');
         const expected = [
             'create',
+            'createCascade',
             'findById',
             'findByKey',
             'list',
             'update',
             'del',
+            'delByProvider',
             'enable',
             'disable',
             'listByProvider',
@@ -118,8 +120,10 @@ describe('model-aliases-dao', () => {
         const expected = [
             'create',
             'findByAlias',
+            'updateModel',
             'listByModel',
             'deleteByModel',
+            'deleteByAlias',
         ];
         for (const fn of expected) {
             assert.equal(typeof dao[fn], 'function', `missing export: ${fn}`);

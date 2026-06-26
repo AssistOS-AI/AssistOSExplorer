@@ -75,6 +75,37 @@ export async function create(
     return rows[0];
 }
 
+export async function createCascade(
+    pool,
+    {
+        modelKey,
+        displayName,
+        enabled = true,
+        maxAttempts = 5,
+        discoverySource = 'manual',
+        metadata = {},
+    }
+) {
+    const id = randomUUID();
+    const { rows } = await pool.query(
+        `INSERT INTO ${TABLE}
+       (model_key, display_name, enabled, strategy_kind, max_attempts,
+        discovery_source, metadata, id)
+     VALUES ($1, $2, $3, 'cascade', $4, $5, $6, $7)
+     RETURNING *`,
+        [
+            modelKey,
+            displayName,
+            enabled,
+            maxAttempts,
+            discoverySource,
+            JSON.stringify(metadata),
+            id,
+        ]
+    );
+    return rows[0];
+}
+
 export async function findById(pool, id) {
     const { rows } = await pool.query(`SELECT * FROM ${TABLE} WHERE id = $1`, [
         id,
