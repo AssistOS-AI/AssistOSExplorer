@@ -116,20 +116,21 @@ export class BroadcastHub {
     /** Publish a completed audit log entry to all matching subscribers. */
     publish(logRow) {
         const redacted = redactLogEntry(logRow);
-        const redactedJson = JSON.stringify(redacted);
-        const fullJson = JSON.stringify(logRow);
+        const redactedMsg = JSON.stringify({ type: 'log', data: redacted });
+        const fullMsg = JSON.stringify({ type: 'log', data: logRow });
 
         for (const [, client] of this.sseClients) {
             if (!matchesFilters(logRow, client.filters, client.soulSpecific))
                 continue;
-            const payload = client.soulSpecific ? fullJson : redactedJson;
-            client.stream.send('log', payload);
+            const payload = client.soulSpecific ? fullMsg : redactedMsg;
+            // Default 'message' event so the dashboard's EventSource.onmessage fires.
+            client.stream.send('message', payload);
         }
 
         for (const [, client] of this.wsClients) {
             if (!matchesFilters(logRow, client.filters, client.soulSpecific))
                 continue;
-            const payload = client.soulSpecific ? fullJson : redactedJson;
+            const payload = client.soulSpecific ? fullMsg : redactedMsg;
             try {
                 sendTextFrame(client.socket, payload);
             } catch {}

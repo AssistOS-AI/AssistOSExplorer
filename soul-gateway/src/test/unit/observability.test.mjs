@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { BroadcastHub } from '../../observability/broadcast-hub.mjs';
+import { decodeFrame } from '../../core/websocket-frame-codec.mjs';
 import {
     redactLogEntry,
     redactPayload,
@@ -30,13 +31,48 @@ describe('BroadcastHub', () => {
         assert.equal(hub.subscriberCount, 0);
     });
 
+    it('publishes SSE logs on the default "message" event wrapped as {type:"log", data}', () => {
+        const hub = new BroadcastHub(createMockAppCtx());
+        const events = [];
+        const mockStream = {
+            onClose() {},
+            send(event, data) { events.push({ event, msg: JSON.parse(data) }); },
+            comment() {},
+            close() {},
+        };
+        hub.addSseSubscriber(mockStream, {});
+
+        hub.publish({ soul_id: 'u1', requested_model: 'gpt-4', status: 'succeeded' });
+
+        assert.equal(events.length, 1);
+        // EventSource.onmessage only fires for the default 'message' event.
+        assert.equal(events[0].event, 'message');
+        assert.equal(events[0].msg.type, 'log');
+        assert.equal(events[0].msg.data.requested_model, 'gpt-4');
+    });
+
+    it('publishes WS logs as a {type:"log", data} text frame', () => {
+        const hub = new BroadcastHub(createMockAppCtx());
+        const written = [];
+        const mockSocket = { on() {}, write(buf) { written.push(buf); return true; }, destroy() {} };
+        hub.addWsSubscriber(mockSocket, {});
+
+        hub.publish({ soul_id: 'u1', requested_model: 'gpt-4', status: 'succeeded' });
+
+        const frame = decodeFrame(Buffer.concat(written));
+        assert.ok(frame, 'a WS text frame should be written');
+        const msg = JSON.parse(frame.payload.toString());
+        assert.equal(msg.type, 'log');
+        assert.equal(msg.data.requested_model, 'gpt-4');
+    });
+
     it('filters by soul_id', () => {
         const hub = new BroadcastHub(createMockAppCtx());
         const received = [];
         const mockStream = {
             onClose() {},
             send(event, data) {
-                received.push(JSON.parse(data));
+                received.push(JSON.parse(data).data);
             },
             comment() {},
             close() {},
@@ -67,7 +103,7 @@ describe('BroadcastHub', () => {
         const mockStream = {
             onClose() {},
             send(event, data) {
-                received.push(JSON.parse(data));
+                received.push(JSON.parse(data).data);
             },
             comment() {},
             close() {},
@@ -95,7 +131,7 @@ describe('BroadcastHub', () => {
         const mockStream = {
             onClose() {},
             send(event, data) {
-                received.push(JSON.parse(data));
+                received.push(JSON.parse(data).data);
             },
             comment() {},
             close() {},
@@ -138,7 +174,7 @@ describe('BroadcastHub', () => {
         const mockStream = {
             onClose() {},
             send(event, data) {
-                received.push(JSON.parse(data));
+                received.push(JSON.parse(data).data);
             },
             comment() {},
             close() {},

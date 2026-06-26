@@ -120,4 +120,36 @@ describe('dashboard logs page', () => {
             )
         );
     });
+
+    it('renders a {type:"log", data} stream message into the logs list', async () => {
+        const { window } = await loadDashboard(async (path) => {
+            const p = String(path);
+            if (p.startsWith('/management/logs/keys?')) {
+                return { status: 200, async json() {
+                    return { data: [{ api_key_id: 'key-1', key_label: 'daniel', key_hint: 'sk-...', request_count: 4 }] };
+                } };
+            }
+            if (p.startsWith('/management/logs?')) {
+                return { status: 200, async json() {
+                    return { data: [{ request_id: 'chatcmpl-test', api_key_id: 'key-1', requested_model: 'plan', status: 'succeeded', http_status: 200 }], total: 4, limit: 50, offset: 0 };
+                } };
+            }
+            throw new Error(`unexpected dashboard fetch: ${p}`);
+        });
+
+        const page = window.logsPage();
+        await page.init();                       // selectedKey.list_id === 'key-1'; registers the 'soul-log' listener
+        assert.equal(page.selectedKey.list_id, 'key-1');
+        const before = page.selectedLogs.length;
+
+        // Drive the EXACT server wire format through the client's handler.
+        const raw = JSON.stringify({
+            type: 'log',
+            data: { request_id: 'live-1', api_key_id: 'key-1', requested_model: 'fast', status: 'succeeded', http_status: 200 },
+        });
+        window.app()._handleLogMessage(raw);     // parses envelope → dispatches 'soul-log' → logsPage inserts
+
+        assert.equal(page.selectedLogs.length, before + 1);
+        assert.equal(page.selectedLogs[0].request_id, 'live-1');
+    });
 });
