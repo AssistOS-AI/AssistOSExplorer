@@ -586,11 +586,16 @@ function app() {
         ws: null,
         sse: null,
         authenticated: true,
+        _authRequiredHandler: null,
+        _wsReconnectTimer: null,
 
         init() {
-            window.addEventListener('sg-auth-required', () => {
-                this.authenticated = false;
-            });
+            if (!this._authRequiredHandler) {
+                this._authRequiredHandler = () => {
+                    this.authenticated = false;
+                };
+                window.addEventListener('sg-auth-required', this._authRequiredHandler);
+            }
 
             // Read page from URL hash
             const hash = window.location.hash.slice(1);
@@ -626,6 +631,9 @@ function app() {
         },
 
         connectWs() {
+            if (this.ws || this.sse || this._wsReconnectTimer) {
+                return;
+            }
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${proto}//${location.host}${managementUrl('/management/ws/logs')}`;
             const ws = new WebSocket(wsUrl);
@@ -664,7 +672,12 @@ function app() {
                 }
                 this.wsConnected = false;
                 this.streamMode = '';
-                setTimeout(() => this.connectWs(), 3000);
+                if (!this._wsReconnectTimer) {
+                    this._wsReconnectTimer = setTimeout(() => {
+                        this._wsReconnectTimer = null;
+                        this.connectWs();
+                    }, 3000);
+                }
             };
             ws.onmessage = (e) => this._handleLogMessage(e.data);
             this.ws = ws;
