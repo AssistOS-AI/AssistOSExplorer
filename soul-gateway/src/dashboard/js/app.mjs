@@ -630,15 +630,35 @@ function app() {
             const wsUrl = `${proto}//${location.host}${managementUrl('/management/ws/logs')}`;
             const ws = new WebSocket(wsUrl);
             let opened = false;
+            let fellBack = false;
+            const openTimer = setTimeout(() => {
+                if (!opened && !fellBack) {
+                    fellBack = true;
+                    try {
+                        ws.close();
+                    } catch {}
+                    this.connectSse();
+                }
+            }, 4000);
             ws.onopen = () => {
                 opened = true;
+                clearTimeout(openTimer);
+                if (fellBack) {
+                    try {
+                        ws.close();
+                    } catch {}
+                    return;
+                }
                 this.wsConnected = true;
                 this.streamMode = 'ws';
             };
             ws.onclose = () => {
+                clearTimeout(openTimer);
                 this.ws = null;
+                if (fellBack) return;
                 if (!opened) {
                     // WebSocket never connected -- fall back to SSE
+                    fellBack = true;
                     this.connectSse();
                     return;
                 }
