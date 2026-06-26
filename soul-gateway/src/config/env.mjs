@@ -137,16 +137,6 @@ export function readEnv(processEnv = process.env) {
             processEnv.TRUST_PLOINKY_ROUTER_AUTH,
             false
         ),
-        // AXL Proxy delegating mirror. When AXL_PROXY_API_KEY is set, the
-        // local gateway mirrors the upstream AXL Proxy /v1/models catalog as a
-        // single delegating 'axl-proxy' provider. Request-time inference still
-        // flows through achillesAgentLib; this only mirrors the catalog.
-        AXL_PROXY_API_KEY: str(processEnv.AXL_PROXY_API_KEY, null),
-        AXL_PROXY_BASE_URL: str(processEnv.AXL_PROXY_BASE_URL, null),
-        AXL_PROXY_DISCOVERY_MODE: str(
-            processEnv.AXL_PROXY_DISCOVERY_MODE,
-            'auto'
-        ),
         OAUTH_ADAPTERS_ENABLED: str(processEnv.OAUTH_ADAPTERS_ENABLED, null),
         LLM_DEFAULT_AGENT: str(processEnv.LLM_DEFAULT_AGENT, null),
         LLM_DEFAULT_TIERS: str(

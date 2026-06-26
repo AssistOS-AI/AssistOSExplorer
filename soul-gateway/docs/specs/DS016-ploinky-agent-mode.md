@@ -62,25 +62,6 @@ bootstraps were removed (commit `c9ed615`, 2026-06-17).
   (default `default-local-llm`). It **skips** any alias that already exists, so
   the local tiers are stable and owned locally.
 
-## AXL Proxy Delegating Mirror
-
-When `AXL_PROXY_API_KEY` (and `AXL_PROXY_BASE_URL`) are present,
-`bootstrapAxlProxyProvider` runs at startup, before `installSnapshotServices`:
-
-- It creates or reconciles provider key `axl-proxy` (display name `AXL Proxy`,
-  backend `openai-api`, kind `external_api`, auth strategy `api_key`, base URL
-  `AXL_PROXY_BASE_URL`).
-- It stores `AXL_PROXY_API_KEY` as an encrypted provider API-key account.
-- `AXL_PROXY_DISCOVERY_MODE=auto` (default) syncs the upstream `/v1/models`
-  catalog via the openai-api backend's discovery; `off` registers only the
-  provider/account. The upstream's own tier entries (`fast`/`plan`/`deep`)
-  arrive as reachable `axl-proxy/<id>` models.
-- It does **not** create or reassign the bare `fast`/`plan`/`deep` aliases -
-  those stay locally owned by `seedDefaultTiers` (local tiers win).
-- `AXL_PROXY_API_KEY`/`AXL_PROXY_BASE_URL` are declared in the soul-gateway
-  manifest and injected by Ploinky from `.secrets`, `process.env`, or the
-  nearest ancestor `.env` (no agent-specific framework code).
-
 ## Ploinky Agent Discovery
 
 Soul Gateway discovers enabled Ploinky agents by calling the router discovery endpoint. The call is agent-only and requires an HTTP Agent Assertion (`Authorization: Bearer <jwt>`) bound via `computeRchHttp()` (NOT `computeRchTool()`), tool `__openai_agent_discovery__`, target `ploinky-router`, and a replay-protected `jti`.
@@ -170,6 +151,5 @@ The dashboard has no Soul Gateway login form, no dashboard session token flow, a
 - Public `/v1/*` compatibility is preserved by reverse-proxy rewrites to the Ploinky router service.
 - Direct public container-port access is not a deployment contract.
 - 2026-06-17 (`c9ed615`): removed `LOCAL_LLM_*` and `SOUL_GATEWAY_PROVIDER_*`
-  bootstraps in favor of the local-hub + `seedDefaultTiers` model. The
-  delegate-to-a-remote-gateway capability is reintroduced under `AXL_PROXY_*`
-  as the AXL Proxy delegating mirror (models-only; local tiers retained).
+  bootstraps in favor of the local-hub + `seedDefaultTiers` model. The local
+  gateway is the LLM hub and does not delegate to a remote gateway.

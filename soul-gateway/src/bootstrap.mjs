@@ -25,7 +25,6 @@ import {
     runInitialPloinkyReconcile,
     startPloinkyDiscoveryTimer,
 } from './ploinky/discovery-scheduler.mjs';
-import { bootstrapAxlProxyProvider } from './bootstrap/axl-proxy-bootstrap.mjs';
 
 /**
  * Full boot sequence.
@@ -74,11 +73,6 @@ export async function bootstrap() {
     // No-ops cleanly outside Ploinky mode; never crashes startup on failure.
     await runInitialPloinkyReconcile(appCtx);
     await reconcileProvidersOnStartup(appCtx);
-    // Mirror an upstream AXL Proxy catalog when AXL_PROXY_API_KEY is set.
-    // No-op when unset. Runs before installSnapshotServices so the initial
-    // snapshot includes the mirrored provider/models. Never throws on a
-    // failed upstream (autoProvisionModels is strict:false).
-    await bootstrapAxlProxyProvider({ appCtx });
     await installSnapshotServices(appCtx);
     try {
         installExtensionSdkServices(appCtx);

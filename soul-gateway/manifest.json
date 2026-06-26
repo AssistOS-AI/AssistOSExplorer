@@ -85,21 +85,6 @@
                     "default": "fast,plan,deep",
                     "description": "Comma-separated tier aliases seeded to LLM_DEFAULT_AGENT's model"
                 },
-                "AXL_PROXY_API_KEY": {
-                    "required": false,
-                    "default": "",
-                    "description": "API key for an upstream AXL Proxy (remote soul-gateway). When set, the local gateway mirrors the upstream /v1/models catalog as a delegating 'axl-proxy' provider. Resolved from .secrets, process.env, or the nearest ancestor .env."
-                },
-                "AXL_PROXY_BASE_URL": {
-                    "required": false,
-                    "default": "",
-                    "description": "Base URL of the upstream AXL Proxy OpenAI-compatible API (e.g. https://soul.axiologic.dev/v1). Required for the mirror to activate."
-                },
-                "AXL_PROXY_DISCOVERY_MODE": {
-                    "required": false,
-                    "default": "auto",
-                    "description": "auto = sync the upstream /v1/models at startup; off = register the provider/account only."
-                },
                 "AXIOLOGIC_PROXY_API_KEY": {
                     "required": false,
                     "default": "",

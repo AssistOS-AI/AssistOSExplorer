@@ -17,7 +17,7 @@ Soul Gateway has one deployment model: a Ploinky-managed agent with HTTP service
 
 Management UI is the router-protected dashboard at `/services/soul-gateway/management/`. Explorer exposes an admin-only `soul-gateway-settings` plugin entry whose Settings action opens that local dashboard directly; do not reintroduce a separate settings modal. See `docs/specs/DS016-ploinky-agent-mode.md` for the full contract.
 
-In Explorer deployments, the local Ploinky-managed Soul Gateway is the reference gateway. Agents present their generated signed-subject `PLOINKY_AGENT_API_KEY`, and the gateway verifies it with `PLOINKY_AGENT_API_PUBLIC_KEY`. To delegate to an upstream AXL Proxy (remote `soul.axiologic.dev`), set `AXL_PROXY_API_KEY` (and `AXL_PROXY_BASE_URL`); the local gateway registers a delegating `axl-proxy` provider and mirrors the upstream `/v1/models`, while the generated local agent identity and locally-owned `fast/plan/deep` tiers are retained.
+In Explorer deployments, the local Ploinky-managed Soul Gateway is the reference gateway. Agents present their generated signed-subject `PLOINKY_AGENT_API_KEY`, and the gateway verifies it with `PLOINKY_AGENT_API_PUBLIC_KEY`. The local gateway is the LLM hub with locally-owned `fast/plan/deep` tiers; it does not delegate to a remote gateway.
 
 ## Provider Boundary
 

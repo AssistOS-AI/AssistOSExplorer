@@ -99,12 +99,10 @@ This is the production mode for everything that sits behind Soul Gateway. The co
 
 For Ploinky workspaces, consumer agents start with a generated `PLOINKY_AGENT_API_KEY`, `PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY=generated`, and an empty `SOUL_GATEWAY_BASE_URL`, which makes Achilles discover the router service at `${PLOINKY_ROUTER_URL}/services/soul-gateway/v1`. While the key source is `generated`, Achilles ignores inherited public URL env vars so generated keys stay paired with the router service. Explorer-started consumer manifests do not opt into explicit API-key overrides; remote gateways belong in provider configuration inside the local gateway.
 
-Explorer production uses the generated-key path for local calls. To delegate to
-an upstream AXL Proxy (e.g. `soul.axiologic.dev`), set `AXL_PROXY_API_KEY` and
-`AXL_PROXY_BASE_URL`; the local gateway then registers a delegating `axl-proxy`
-provider and mirrors the upstream `/v1/models`. This keeps the Explorer-local
-gateway as the reference policy, logging, budget, and settings surface, with
-local `fast/plan/deep` tiers retained.
+Explorer production uses the generated-key path for local calls. The local
+gateway is the LLM hub and the reference policy, logging, budget, and settings
+surface, with local `fast/plan/deep` tiers owned locally; it does not delegate
+to a remote gateway.
 
 ### Direct-provider mode
 
@@ -193,12 +191,6 @@ Soul Gateway declares one default Ploinky-agent profile:
 - `PORT=7000`.
 - `ports: []` so the public interface is the Ploinky router, not the internal container port.
 - `PLOINKY_AGENT_API_KEY` is injected by the Ploinky launcher as a signed-subject key; it is not a manifest `sharedGeneratedSecret` field.
-- `AXL_PROXY_API_KEY` activates the AXL Proxy delegating mirror (register the
-  `axl-proxy` provider + mirror its catalog). Resolved by Ploinky from
-  `.secrets`, `process.env`, or the nearest ancestor `.env`.
-- `AXL_PROXY_BASE_URL` is the upstream OpenAI-compatible base URL
-  (e.g. `https://soul.axiologic.dev/v1`); required for the mirror to activate.
-- `AXL_PROXY_DISCOVERY_MODE` controls model discovery (`auto` or `off`).
 - `/services/soul-gateway/v1/` uses router `access: "public"` because callers authenticate with a signed-subject API key.
 - `/services/soul-gateway/management/` uses router `access: "authenticated"` and requires Ploinky admin identity.
 - `/public-services/soul-gateway-health/` is unauthenticated for smoke checks.
