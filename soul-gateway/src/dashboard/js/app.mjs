@@ -407,7 +407,7 @@ function normalizeAuditLog(log) {
 
     return {
         ...log,
-        id: log.id || log.request_id || log.log_id,
+        id: log.id || log.log_id || log.request_id,
         resolved_model:
             log.resolved_model ||
             metadata.sourceResolvedModel ||
