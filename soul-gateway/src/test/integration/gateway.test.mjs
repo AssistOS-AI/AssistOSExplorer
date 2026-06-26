@@ -59,19 +59,6 @@ describe('Health', () => {
     });
 });
 
-describe('Management auth compatibility', () => {
-    it('does not create Soul Gateway dashboard sessions', { skip: !HAS_MANAGEMENT_AUTH }, async () => {
-        const { status, data } = await jsonFetch(`${MANAGEMENT_BASE}/auth/login`, {
-            method: 'POST',
-            headers: managementHeaders({ password: 'unused' }),
-            body: JSON.stringify({ password: 'unused' }),
-        });
-        assert.equal(status, 410);
-        assert.equal(data.ok, false);
-        assert.equal(data.error.type, 'ploinky_auth_required');
-    });
-});
-
 describe('Public API', () => {
     it('POST /chat/completions without API key returns 401', async () => {
         const { status } = await jsonFetch(`${PUBLIC_BASE}/chat/completions`, {

@@ -153,3 +153,6 @@ The dashboard has no Soul Gateway login form, no dashboard session token flow, a
 - 2026-06-17 (`c9ed615`): removed `LOCAL_LLM_*` and `SOUL_GATEWAY_PROVIDER_*`
   bootstraps in favor of the local-hub + `seedDefaultTiers` model. The local
   gateway is the LLM hub and does not delegate to a remote gateway.
+- 2026-06-26: removed the `/management/auth/login|logout|session` 410 compatibility
+  stubs and the dashboard Logout button / connection-status badge. The dashboard
+  authenticates solely through the Ploinky router `/auth/login` and `/auth/logout`.

@@ -11,9 +11,6 @@
 import { createRouter } from '../core/path-router.mjs';
 import { requireAdmin } from '../runtime/security/dashboard-auth.mjs';
 
-// Auth (no admin required)
-import { handleLogin, handleLogout, handleSession } from './auth-route.mjs';
-
 // Dashboard
 import { handleDashboard, handleStatic } from './dashboard-route.mjs';
 
@@ -180,11 +177,6 @@ export function buildManagementRouter(appCtx) {
             return handler(ctx);
         };
     }
-
-    // ── Auth routes (no admin required) ──────────────────────────────
-    httpRouter.add('POST', '/management/auth/login', handleLogin);
-    httpRouter.add('POST', '/management/auth/logout', handleLogout);
-    httpRouter.add('GET', '/management/auth/session', handleSession);
 
     // ── Dashboard ────────────────────────────────────────────────────
     httpRouter.add('GET', '/management', admin(handleDashboard));

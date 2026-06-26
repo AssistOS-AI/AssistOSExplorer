@@ -503,58 +503,6 @@ function addRouterAdminAuth(
     });
 }
 
-// ── Auth route tests ────────────────────────────────────────────────
-
-describe('management/auth-route', () => {
-    let handleLogin, handleLogout, handleSession;
-
-    beforeEach(async () => {
-        ({ handleLogin, handleLogout, handleSession } = await import(
-            '../../management/auth-route.mjs'
-        ));
-    });
-
-    it('handleLogin returns 410 with Ploinky login semantics', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq({ method: 'POST', body: {} });
-        const res = createMockRes();
-
-        await handleLogin({ req, res, params: {}, query: {}, appCtx });
-
-        assert.equal(res.statusCode, 410);
-        const body = parseJsonResponse(res);
-        assert.equal(body.ok, false);
-        assert.equal(body.error.type, 'ploinky_auth_required');
-        assert.match(body.error.message, /Ploinky login/i);
-    });
-
-    it('handleSession returns 410 and never validates Soul Gateway sessions', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq();
-        const res = createMockRes();
-
-        await handleSession({ req, res, params: {}, query: {}, appCtx });
-
-        assert.equal(res.statusCode, 410);
-        const body = parseJsonResponse(res);
-        assert.equal(body.ok, false);
-        assert.match(body.error.message, /Ploinky login/i);
-    });
-
-    it('handleLogout returns 410 without clearing Soul Gateway cookies', async () => {
-        const appCtx = createMockAppCtx();
-        const req = createMockReq({ method: 'POST' });
-        const res = createMockRes();
-
-        await handleLogout({ req, res, params: {}, query: {}, appCtx });
-
-        assert.equal(res.statusCode, 410);
-        assert.equal(res.headers['Set-Cookie'], undefined);
-        const body = parseJsonResponse(res);
-        assert.match(body.error.message, /Ploinky login/i);
-    });
-});
-
 // ── Keys route tests ────────────────────────────────────────────────
 
 describe('management/keys-route', () => {
@@ -3455,14 +3403,6 @@ describe('management/router', () => {
         assert.ok(wsRouter);
         assert.ok(typeof httpRouter.match === 'function');
         assert.ok(typeof wsRouter.match === 'function');
-    });
-
-    it('matches auth login route without admin guard', () => {
-        const appCtx = createMockAppCtx();
-        const { httpRouter } = buildManagementRouter(appCtx);
-        const match = httpRouter.match('POST', '/management/auth/login');
-        assert.ok(match);
-        assert.ok(typeof match.handler === 'function');
     });
 
     it('rejects management routes without router admin identity', async () => {
