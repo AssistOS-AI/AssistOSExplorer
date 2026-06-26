@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-async function loadDashboard(fetchImpl) {
+async function loadDashboard(fetchImpl, contextOverrides = {}) {
     const source = await readFile(
         new URL('../../dashboard/js/app.mjs', import.meta.url),
         'utf8'
@@ -11,7 +11,12 @@ async function loadDashboard(fetchImpl) {
     const storage = new Map();
     const listeners = new Map();
     const window = {
-        location: { hash: '#logs', protocol: 'http:', host: 'localhost:7000' },
+        location: {
+            hash: '#logs',
+            protocol: 'http:',
+            host: 'localhost:7000',
+            pathname: '/management/',
+        },
         addEventListener(type, handler) {
             const handlers = listeners.get(type) || [];
             handlers.push(handler);
@@ -50,7 +55,10 @@ async function loadDashboard(fetchImpl) {
         renderMarkdown(value) {
             return String(value ?? '');
         },
+        setTimeout: (...args) => setTimeout(...args),
+        clearTimeout: (...args) => clearTimeout(...args),
         console,
+        ...contextOverrides,
     };
     context.globalThis = context;
     window.window = window;
@@ -58,7 +66,7 @@ async function loadDashboard(fetchImpl) {
     vm.runInNewContext(source, context, {
         filename: 'src/dashboard/js/app.mjs',
     });
-    return { window };
+    return { window, listeners };
 }
 
 describe('dashboard logs page', () => {
@@ -121,6 +129,68 @@ describe('dashboard logs page', () => {
         );
     });
 
+    it('uses audit log_id as table identity when request_id is shared', async () => {
+        const { window } = await loadDashboard(async (path) => {
+            const p = String(path);
+            if (p.startsWith('/management/logs/keys?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return {
+                            data: [
+                                {
+                                    api_key_id: 'key-1',
+                                    key_label: 'daniel',
+                                    key_hint: 'sk...',
+                                    request_count: 2,
+                                },
+                            ],
+                        };
+                    },
+                };
+            }
+            if (p.startsWith('/management/logs?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return {
+                            data: [
+                                {
+                                    log_id: 'audit-row-new',
+                                    request_id: 'chatcmpl-shared',
+                                    api_key_id: 'key-1',
+                                    requested_model: 'fast',
+                                    status: 'succeeded',
+                                    http_status: 200,
+                                },
+                                {
+                                    log_id: 'audit-row-old',
+                                    request_id: 'chatcmpl-shared',
+                                    api_key_id: 'key-1',
+                                    requested_model: 'fast',
+                                    status: 'succeeded',
+                                    http_status: 200,
+                                },
+                            ],
+                            total: 2,
+                            limit: 50,
+                            offset: 0,
+                        };
+                    },
+                };
+            }
+            throw new Error(`unexpected dashboard fetch: ${p}`);
+        });
+
+        const page = window.logsPage();
+        await page.init();
+
+        assert.deepEqual(
+            page.selectedLogs.map((log) => log.id),
+            ['audit-row-new', 'audit-row-old']
+        );
+    });
+
     it('renders a {type:"log", data} stream message into the logs list', async () => {
         const { window } = await loadDashboard(async (path) => {
             const p = String(path);
@@ -151,5 +221,112 @@ describe('dashboard logs page', () => {
 
         assert.equal(page.selectedLogs.length, before + 1);
         assert.equal(page.selectedLogs[0].request_id, 'live-1');
+    });
+
+    it('handles one streamed log once when logs page init runs repeatedly', async () => {
+        const { window, listeners } = await loadDashboard(async (path) => {
+            const p = String(path);
+            if (p.startsWith('/management/logs/keys?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return {
+                            data: [
+                                {
+                                    api_key_id: 'key-1',
+                                    key_label: 'daniel',
+                                    key_hint: 'sk...',
+                                    request_count: 1,
+                                    total_cost: 0,
+                                },
+                            ],
+                        };
+                    },
+                };
+            }
+            if (p.startsWith('/management/logs?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return {
+                            data: [
+                                {
+                                    log_id: 'old-log-id',
+                                    request_id: 'old-request',
+                                    api_key_id: 'key-1',
+                                    requested_model: 'fast',
+                                    status: 'succeeded',
+                                    http_status: 200,
+                                },
+                            ],
+                            total: 1,
+                            limit: 50,
+                            offset: 0,
+                        };
+                    },
+                };
+            }
+            throw new Error(`unexpected dashboard fetch: ${p}`);
+        });
+
+        const page = window.logsPage();
+        await page.init();
+        await page.init();
+        await page.init();
+
+        assert.equal((listeners.get('soul-log') || []).length, 1);
+
+        const raw = JSON.stringify({
+            type: 'log',
+            data: {
+                log_id: 'live-log-id',
+                request_id: 'live-request',
+                api_key_id: 'key-1',
+                requested_model: 'fast',
+                status: 'succeeded',
+                http_status: 200,
+            },
+        });
+        window.app()._handleLogMessage(raw);
+
+        assert.equal(page.keys[0].request_count, 2);
+        assert.equal(page.logsTotal, 2);
+        assert.deepEqual(
+            page.selectedLogs.map((log) => log.id),
+            ['live-log-id', 'old-log-id']
+        );
+    });
+
+    it('does not open duplicate stream connections when app init runs repeatedly', async () => {
+        const sockets = [];
+        class FakeWebSocket {
+            constructor(url) {
+                this.url = url;
+                sockets.push(this);
+            }
+            close() {
+                this.closed = true;
+            }
+        }
+
+        const { window } = await loadDashboard(
+            async (path) => {
+                throw new Error(`unexpected dashboard fetch: ${path}`);
+            },
+            {
+                WebSocket: FakeWebSocket,
+                setTimeout() {
+                    return 123;
+                },
+                clearTimeout() {},
+            }
+        );
+
+        const dashboard = window.app();
+        dashboard.init();
+        dashboard.init();
+
+        assert.equal(sockets.length, 1);
+        assert.equal(sockets[0].url, 'ws://localhost:7000/management/ws/logs');
     });
 });
