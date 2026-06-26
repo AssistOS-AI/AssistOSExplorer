@@ -76,26 +76,6 @@
                                 </template>
                             </ul>
                         </div>
-                        <div class="navbar-end">
-                            <div class="flex items-center gap-2">
-                                <div
-                                    class="badge badge-sm"
-                                    :class="wsConnected ? 'badge-success' : 'badge-error'"
-                                    x-text="wsConnected ? 'Live' : 'Offline'"
-                                ></div>
-                                <div
-                                    class="text-xs opacity-50"
-                                    x-show="streamMode"
-                                    x-text="streamMode === 'ws' ? 'WS' : 'SSE'"
-                                ></div>
-                                <button
-                                    class="btn btn-ghost btn-xs"
-                                    @click="logout()"
-                                >
-                                    Logout
-                                </button>
-                            </div>
-                        </div>
                     </div>
 
                     <!-- Main content -->

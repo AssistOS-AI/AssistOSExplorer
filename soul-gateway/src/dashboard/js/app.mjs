@@ -614,21 +614,6 @@ function app() {
             window.dispatchEvent(new CustomEvent('page-change', { detail: p }));
         },
 
-        logout() {
-            const returnTo = encodeURIComponent('/auth/login');
-            if (this.ws) {
-                this.ws.close();
-                this.ws = null;
-            }
-            if (this.sse) {
-                this.sse.close();
-                this.sse = null;
-            }
-            this.wsConnected = false;
-            this.streamMode = '';
-            window.location.href = `/auth/logout?returnTo=${returnTo}`;
-        },
-
         _handleLogMessage(raw) {
             try {
                 const msg = JSON.parse(raw);
