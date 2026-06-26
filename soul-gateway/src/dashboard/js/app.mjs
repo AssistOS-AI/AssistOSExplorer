@@ -1359,7 +1359,32 @@ function logsPage() {
             this._seenLiveLogIds.add(log.id);
 
             const keyId = log.api_key_id || '__unknown__';
-            const summary = this.keys.find((entry) => entry.list_id === keyId);
+            let summary = this.keys.find((entry) => entry.list_id === keyId);
+            if (!summary) {
+                summary = normalizeLogKeySummaries([
+                    {
+                        api_key_id: keyId === '__unknown__' ? null : keyId,
+                        key_label:
+                            log.key_label ||
+                            log.label ||
+                            log.key_hint ||
+                            (keyId === '__unknown__'
+                                ? 'Unknown key'
+                                : keyId.slice(0, 8)),
+                        key_hint: log.key_hint || '',
+                        request_count: 0,
+                        error_count: 0,
+                        total_cost: 0,
+                    },
+                ])[0];
+                this.keys = [...this.keys, summary];
+            }
+            if (!this.selectedKey) {
+                this.selectedKey = summary;
+                this.selectedLogs = [];
+                this.logsTotal = 0;
+                this.logsOffset = 0;
+            }
             if (summary) {
                 summary.request_count += 1;
                 summary.last_activity = log.started_at || new Date().toISOString();

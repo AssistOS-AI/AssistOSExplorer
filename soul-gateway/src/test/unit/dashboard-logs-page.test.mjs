@@ -223,6 +223,58 @@ describe('dashboard logs page', () => {
         assert.equal(page.selectedLogs[0].request_id, 'live-1');
     });
 
+    it('renders the first streamed log when the key list was initially empty', async () => {
+        const { window } = await loadDashboard(async (path) => {
+            const p = String(path);
+            if (p.startsWith('/management/logs/keys?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return { data: [] };
+                    },
+                };
+            }
+            if (p.startsWith('/management/logs?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return { data: [], total: 0, limit: 50, offset: 0 };
+                    },
+                };
+            }
+            throw new Error(`unexpected dashboard fetch: ${p}`);
+        });
+
+        const page = window.logsPage();
+        await page.init();
+
+        assert.equal(page.keys.length, 0);
+        assert.equal(page.selectedKey, null);
+        assert.equal(page.selectedLogs.length, 0);
+
+        const raw = JSON.stringify({
+            type: 'log',
+            data: {
+                log_id: 'live-new-key-log',
+                request_id: 'live-new-key-request',
+                api_key_id: 'new-key-1',
+                requested_model: 'fast',
+                status: 'succeeded',
+                http_status: 200,
+                total_cost: 0,
+            },
+        });
+        window.app()._handleLogMessage(raw);
+
+        assert.equal(page.keys.length, 1);
+        assert.equal(page.keys[0].list_id, 'new-key-1');
+        assert.equal(page.keys[0].request_count, 1);
+        assert.equal(page.selectedKey.list_id, 'new-key-1');
+        assert.equal(page.logsTotal, 1);
+        assert.equal(page.selectedLogs.length, 1);
+        assert.equal(page.selectedLogs[0].id, 'live-new-key-log');
+    });
+
     it('handles one streamed log once when logs page init runs repeatedly', async () => {
         const { window, listeners } = await loadDashboard(async (path) => {
             const p = String(path);
