@@ -101,8 +101,10 @@ describe('management/account-view', () => {
             assert.equal(active.needsReauth, false);
         });
 
-        it('flags expiryWarning when token expires within 30 days and daysUntilExpiry is positive', () => {
-            const soonMs = Date.now() + 5 * 86400000;
+        it('flags expiryWarning when token expires within 30 days and daysUntilExpiry is positive', (t) => {
+            const nowMs = Date.UTC(2026, 0, 1);
+            t.mock.method(Date, 'now', () => nowMs);
+            const soonMs = nowMs + 5 * 86400000;
             const view = toAccountView({
                 id: '1',
                 status: 'active',
