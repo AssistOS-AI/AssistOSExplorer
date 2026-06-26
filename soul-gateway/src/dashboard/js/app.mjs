@@ -1326,6 +1326,8 @@ function logsPage() {
         },
         _resizing: null,
         _logsLoadSeq: 0,
+        _liveLogHandler: null,
+        _seenLiveLogIds: new Set(),
 
         async init() {
             await this.loadKeys();
@@ -1335,30 +1337,44 @@ function logsPage() {
                 await this.loadLogs();
             }
 
-            window.addEventListener('soul-log', (e) => {
-                const log = normalizeAuditLog(e.detail);
-                if (!log) {
-                    return;
+            if (!this._liveLogHandler) {
+                this._liveLogHandler = (e) => this.handleLiveLog(e.detail);
+                window.addEventListener('soul-log', this._liveLogHandler);
+            }
+        },
+
+        handleLiveLog(rawLog) {
+            const log = normalizeAuditLog(rawLog);
+            if (!log || !log.id) {
+                return;
+            }
+
+            const alreadyVisible = this.selectedLogs.some(
+                (entry) => entry.id === log.id
+            );
+            if (this._seenLiveLogIds.has(log.id) || alreadyVisible) {
+                this._seenLiveLogIds.add(log.id);
+                return;
+            }
+            this._seenLiveLogIds.add(log.id);
+
+            const keyId = log.api_key_id || '__unknown__';
+            const summary = this.keys.find((entry) => entry.list_id === keyId);
+            if (summary) {
+                summary.request_count += 1;
+                summary.last_activity = log.started_at || new Date().toISOString();
+                if (log.status && log.status !== 'succeeded') {
+                    summary.error_count += 1;
                 }
-                const keyId = log.api_key_id || '__unknown__';
-                const summary = this.keys.find((entry) => entry.list_id === keyId);
-                if (summary) {
-                    summary.request_count += 1;
-                    summary.last_activity = log.started_at || new Date().toISOString();
-                    if (log.status && log.status !== 'succeeded') {
-                        summary.error_count += 1;
-                    }
-                    summary.total_cost += Number(log.total_cost || 0);
-                    this.keys = sortLogKeySummaries(this.keys);
-                }
-                if (!this.selectedKey || this.selectedKey.list_id !== keyId) {
-                    return;
-                }
-                this.selectedLogs.unshift(log);
-                if (this.selectedLogs.length > this.logsLimit)
-                    this.selectedLogs.pop();
-                this.logsTotal++;
-            });
+                summary.total_cost += Number(log.total_cost || 0);
+                this.keys = sortLogKeySummaries(this.keys);
+            }
+            if (!this.selectedKey || this.selectedKey.list_id !== keyId) {
+                return;
+            }
+            this.selectedLogs.unshift(log);
+            if (this.selectedLogs.length > this.logsLimit) this.selectedLogs.pop();
+            this.logsTotal++;
         },
 
         async loadKeys() {
@@ -1486,6 +1502,11 @@ function logsPage() {
                     );
                 }
                 this.selectedLogs = rows;
+                for (const row of rows) {
+                    if (row.id) {
+                        this._seenLiveLogIds.add(row.id);
+                    }
+                }
                 this.logsTotal = result.total || 0;
             } finally {
                 if (loadSeq === this._logsLoadSeq) {
