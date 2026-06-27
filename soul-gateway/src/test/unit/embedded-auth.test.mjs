@@ -17,6 +17,8 @@ import { ensureEncryptionKey } from '../../runtime/security/encryption.mjs';
 import { authenticateMiddleware } from '../../runtime/route/authenticate.mjs';
 import { openDatabase, initializeSchema } from '../../db/sqlite-db.mjs';
 import {
+    encodeUserApiKey,
+    makeEncodedUserKey,
     makeSignedSubjectKey,
     makeSignedSubjectSigner,
 } from '../fixtures/signed-subject-key.mjs';
@@ -409,7 +411,7 @@ describe('signed-subject API key', () => {
     it('authenticates a valid user key and creates a DB row', async () => {
         await withSignedDb(async (db) => {
             const subjectId = 'user:alice';
-            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const { apiKey, publicKeyBase64url } = makeEncodedUserKey(subjectId);
             const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
 
             const result = await authenticateApiKey(`Bearer ${apiKey}`, appCtx);
@@ -424,6 +426,107 @@ describe('signed-subject API key', () => {
             );
             assert.equal(stored.rows.length, 1);
             assert.equal(stored.rows[0].subject_type, 'user');
+        });
+    });
+
+    it('rejects raw user signed-subject bearer tokens', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'user:alice';
+            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${apiKey}`, appCtx),
+                (err) => err.errorType === 'invalid_api_key'
+            );
+
+            const stored = await db.query(
+                'SELECT id FROM api_keys WHERE subject_id = $1',
+                [subjectId]
+            );
+            assert.equal(stored.rows.length, 0);
+        });
+    });
+
+    it('rejects encoded keys whose decoded payload is an agent subject', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'agent:AssistOSExplorer/llmAssistant';
+            const { apiKey: rawAgentKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const encodedAgentKey = encodeUserApiKey(rawAgentKey);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${encodedAgentKey}`, appCtx),
+                (err) => err.errorType === 'invalid_api_key'
+            );
+
+            const stored = await db.query(
+                'SELECT id FROM api_keys WHERE subject_id = $1',
+                [subjectId]
+            );
+            assert.equal(stored.rows.length, 0);
+        });
+    });
+
+    it('rejects encoded user keys signed by a different keypair', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'user:mallory';
+            const { apiKey: rawApiKey } = makeSignedSubjectKey(subjectId);
+            const { publicKeyBase64url: otherPub } = makeSignedSubjectKey('user:unused');
+            const encodedApiKey = encodeUserApiKey(rawApiKey);
+            const appCtx = { config: { env: makeEnv(otherPub) }, pool: db };
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${encodedApiKey}`, appCtx),
+                (err) => err.errorType === 'invalid_api_key'
+            );
+
+            const stored = await db.query(
+                'SELECT id FROM api_keys WHERE subject_id = $1',
+                [subjectId]
+            );
+            assert.equal(stored.rows.length, 0);
+        });
+    });
+
+    it('rejects encoded user keys whose decoded signature is not canonical base64url', async () => {
+        await withSignedDb(async (db) => {
+            const subjectId = 'user:junked-signature';
+            const { apiKey: rawApiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const encodedApiKey = encodeUserApiKey(`${rawApiKey}$`);
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+
+            await assert.rejects(
+                () => authenticateApiKey(`Bearer ${encodedApiKey}`, appCtx),
+                (err) => err.errorType === 'invalid_api_key'
+            );
+
+            const stored = await db.query(
+                'SELECT id FROM api_keys WHERE subject_id = $1',
+                [subjectId]
+            );
+            assert.equal(stored.rows.length, 0);
+        });
+    });
+
+    it('rejects malformed encoded user API keys', async () => {
+        await withSignedDb(async (db) => {
+            const { publicKeyBase64url } = makeSignedSubjectKey('user:ignored');
+            const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
+            const badKeys = [
+                'sk-soul-',
+                'sk-soul-not+base64url',
+                `sk-soul-${Buffer.from('not-a-signed-key', 'utf8').toString('base64url')}`,
+                `sk-soul-${Buffer.from('user:alice|', 'utf8').toString('base64url')}`,
+            ];
+
+            for (const badKey of badKeys) {
+                await assert.rejects(
+                    () => authenticateApiKey(`Bearer ${badKey}`, appCtx),
+                    (err) => err.errorType === 'invalid_api_key',
+                    `expected invalid API key for ${badKey}`
+                );
+            }
         });
     });
 
@@ -468,7 +571,7 @@ describe('signed-subject API key', () => {
     it('denies a revoked signed key and does not reactivate it', async () => {
         await withSignedDb(async (db) => {
             const subjectId = 'user:bob';
-            const { apiKey, publicKeyBase64url } = makeSignedSubjectKey(subjectId);
+            const { apiKey, publicKeyBase64url } = makeEncodedUserKey(subjectId);
             const appCtx = { config: { env: makeEnv(publicKeyBase64url) }, pool: db };
 
             const first = await authenticateApiKey(`Bearer ${apiKey}`, appCtx);
@@ -536,7 +639,7 @@ describe('signed-subject API key', () => {
     it('fails signed-subject auth when the public key is missing', async () => {
         await withSignedDb(async (db) => {
             const subjectId = 'user:carol';
-            const { apiKey } = makeSignedSubjectKey(subjectId);
+            const { apiKey } = makeEncodedUserKey(subjectId);
             const appCtx = {
                 config: {
                     env: {

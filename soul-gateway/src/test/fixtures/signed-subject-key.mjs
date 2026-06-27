@@ -9,6 +9,12 @@
  */
 import { generateKeyPairSync, sign as edSign } from 'node:crypto';
 
+export const ENCODED_USER_API_KEY_PREFIX = 'sk-soul-';
+
+export function encodeUserApiKey(rawApiKey) {
+    return `${ENCODED_USER_API_KEY_PREFIX}${Buffer.from(rawApiKey, 'utf8').toString('base64url')}`;
+}
+
 /**
  * Generate an Ed25519 keypair and return a signer plus the encoded public key.
  *
@@ -49,5 +55,14 @@ export function makeSignedSubjectKey(subjectId) {
         subjectId,
         publicKeyBase64url: signer.publicKeyBase64url,
         sign: signer.sign,
+    };
+}
+
+export function makeEncodedUserKey(subjectId) {
+    const signed = makeSignedSubjectKey(subjectId);
+    return {
+        ...signed,
+        rawApiKey: signed.apiKey,
+        apiKey: encodeUserApiKey(signed.apiKey),
     };
 }

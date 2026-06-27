@@ -41,6 +41,8 @@ import {
 // this prefix. Must stay byte-identical to the Ploinky signer's encoding.
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const ED25519_PUBLIC_KEY_BYTES = 32;
+const ENCODED_USER_API_KEY_PREFIX = 'sk-soul-';
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
 // Subject validators — anchored end-to-end, identical to the Ploinky signer so
 // a key minted there classifies the same way here. The segment alphabet
@@ -78,11 +80,9 @@ export async function authenticateApiKey(authHeader, appCtx) {
         );
     }
 
-    // 3. Parse <subjectId>|<signature>.
-    const { subjectId, signature } = parseSignedSubjectApiKey(token);
-
-    // 4. Classify the subject BEFORE doing signature math.
-    const subjectType = classifySubjectType(subjectId);
+    // 3. Parse the inbound public token. User keys must be encoded as
+    //    sk-soul-<base64url(raw signed-subject key)>; agent keys remain raw.
+    const { subjectId, signature, subjectType } = parseInboundApiKeyToken(token);
 
     // 5. Verify the Ed25519 signature over the exact subject bytes.
     const publicKeyObject = publicKeyObjectFromBase64url(publicKeyB64);
@@ -130,6 +130,59 @@ export async function authenticateApiKey(authHeader, appCtx) {
 // ── Parsing ─────────────────────────────────────────────────────────
 
 /**
+ * Parse the inbound public bearer token.
+ *
+ * User keys are public wrappers: sk-soul-<base64url(user:<id>|<sig>)>.
+ * Agent keys keep the raw signed-subject format because they are injected into
+ * agent runtime env by Ploinky.
+ *
+ * @param {string} token
+ * @returns {{ subjectId: string, signature: string, subjectType: 'agent'|'user' }}
+ * @throws {InvalidApiKeyError}
+ */
+export function parseInboundApiKeyToken(token) {
+    if (String(token || '').startsWith(ENCODED_USER_API_KEY_PREFIX)) {
+        const decoded = decodeEncodedUserApiKey(token);
+        const parsed = parseSignedSubjectApiKey(decoded);
+        const subjectType = classifySubjectType(parsed.subjectId);
+        if (subjectType !== 'user') {
+            throw new InvalidApiKeyError(
+                'Encoded API keys must contain a user signed-subject key'
+            );
+        }
+        return { ...parsed, subjectType };
+    }
+
+    const parsed = parseSignedSubjectApiKey(token);
+    const subjectType = classifySubjectType(parsed.subjectId);
+    if (subjectType === 'user') {
+        throw new InvalidApiKeyError(
+            'Raw user signed-subject API keys are not accepted'
+        );
+    }
+    return { ...parsed, subjectType };
+}
+
+export function decodeEncodedUserApiKey(token) {
+    const payload = String(token || '').slice(ENCODED_USER_API_KEY_PREFIX.length);
+    const decoded = decodeCanonicalBase64url(payload);
+    if (!decoded) {
+        throw new InvalidApiKeyError('Encoded user API key payload is malformed');
+    }
+    return decoded.toString('utf8');
+}
+
+function decodeCanonicalBase64url(value) {
+    const text = String(value || '');
+    if (!text || !BASE64URL_RE.test(text)) return null;
+    const decoded = Buffer.from(text, 'base64url');
+    if (decoded.length === 0 || decoded.toString('base64url') !== text) {
+        return null;
+    }
+    return decoded;
+}
+
+/**
  * Parse a signed-subject API key of the form `<subjectId>|<signature>`.
  *
  * Rejects a missing/empty subject, a missing/empty signature, and any key with
@@ -151,9 +204,15 @@ export function parseSignedSubjectApiKey(rawKey) {
             'Signed subject API key must contain exactly one delimiter'
         );
     }
+    const signature = rawKey.slice(delimiter + 1);
+    if (!decodeCanonicalBase64url(signature)) {
+        throw new InvalidApiKeyError(
+            'Signed subject API key signature must be canonical base64url'
+        );
+    }
     return {
         subjectId: rawKey.slice(0, delimiter),
-        signature: rawKey.slice(delimiter + 1),
+        signature,
     };
 }
 
@@ -214,8 +273,8 @@ export function publicKeyObjectFromBase64url(b64) {
  * @returns {boolean}
  */
 export function verifySignedSubject(subjectId, signatureB64url, publicKeyObject) {
-    const signature = Buffer.from(String(signatureB64url || ''), 'base64url');
-    if (signature.length === 0) return false;
+    const signature = decodeCanonicalBase64url(signatureB64url);
+    if (!signature) return false;
     try {
         return cryptoVerify(
             null,
