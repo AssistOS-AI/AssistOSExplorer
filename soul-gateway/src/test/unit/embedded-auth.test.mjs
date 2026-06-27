@@ -421,11 +421,15 @@ describe('signed-subject API key', () => {
             assert.equal(result.apiKeySource, 'signed-subject');
 
             const stored = await db.query(
-                'SELECT subject_type FROM api_keys WHERE subject_id = $1',
+                'SELECT subject_type, key_hint FROM api_keys WHERE subject_id = $1',
                 [subjectId]
             );
             assert.equal(stored.rows.length, 1);
             assert.equal(stored.rows[0].subject_type, 'user');
+            assert.match(stored.rows[0].key_hint, /^sk-soul-/);
+            assert.doesNotMatch(stored.rows[0].key_hint, /user:/);
+            assert.doesNotMatch(stored.rows[0].key_hint, /alice/);
+            assert.notEqual(stored.rows[0].key_hint, subjectId);
         });
     });
 

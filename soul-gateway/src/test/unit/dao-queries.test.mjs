@@ -54,6 +54,43 @@ describe('api-keys-dao', () => {
         assert.ok(captured.params.includes('user:alice:laptop'));
         assert.ok(captured.params.includes('user'));
     });
+
+    it('provisions user keys with an opaque sk-soul key hint that omits subject details', async () => {
+        const keysDao = await import('../../db/dao/api-keys-dao.mjs');
+        let captured = null;
+        const owner = 'bob';
+        const name = 'mac';
+        const subjectId = `user:${owner}:${name}`;
+        const pool = {
+            query: async (sql, params) => {
+                captured = { sql, params };
+                return {
+                    rows: [
+                        {
+                            id: 'x',
+                            subject_id: subjectId,
+                            subject_type: 'user',
+                            source: 'signed-subject',
+                            key_hint: params[4],
+                            status: 'active',
+                        },
+                    ],
+                };
+            },
+        };
+
+        const row = await keysDao.provisionUserKey(pool, {
+            subjectId,
+            label: `${owner}/${name}`,
+        });
+
+        assert.equal(row.key_hint, captured.params[4]);
+        assert.match(row.key_hint, /^sk-soul-/);
+        assert.doesNotMatch(row.key_hint, /user:/);
+        assert.doesNotMatch(row.key_hint, new RegExp(owner));
+        assert.doesNotMatch(row.key_hint, new RegExp(name));
+        assert.notEqual(row.key_hint, subjectId);
+    });
 });
 
 describe('providers-dao', () => {

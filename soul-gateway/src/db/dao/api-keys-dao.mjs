@@ -7,10 +7,11 @@
  * ciphertext. The subject_id column is UNIQUE, so a given subject maps to
  * exactly one row.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { updateRow } from './helpers/query-builder.mjs';
 
 const TABLE = 'api_keys';
+const USER_KEY_HINT_PREFIX = 'sk-soul-';
 
 /**
  * Insert a signed-subject api_keys row. No key material is stored; the row is
@@ -87,9 +88,12 @@ export async function upsertSignedSubjectKey(
     const existing = await findBySubjectId(pool, subjectId);
     if (existing) return existing;
     try {
+        const keyHint = subjectType === 'user'
+            ? buildUserKeyHint(subjectId)
+            : buildKeyHint(subjectId);
         return await create(pool, {
             label,
-            keyHint: buildKeyHint(subjectId),
+            keyHint,
             subjectId,
             subjectType,
             source: 'signed-subject',
@@ -124,7 +128,7 @@ export async function provisionUserKey(
 ) {
     return create(pool, {
         label,
-        keyHint: buildKeyHint(subjectId),
+        keyHint: buildUserKeyHint(subjectId),
         subjectId,
         subjectType: 'user',
         source: 'signed-subject',
@@ -143,6 +147,14 @@ function buildKeyHint(value) {
     const str = String(value || '');
     if (str.length <= 12) return str;
     return `${str.slice(0, 8)}...${str.slice(-4)}`;
+}
+
+/** Opaque display hint for dashboard-visible user keys. */
+export function buildUserKeyHint(value) {
+    const digest = createHash('sha256')
+        .update(String(value || ''), 'utf8')
+        .digest('base64url');
+    return `${USER_KEY_HINT_PREFIX}${digest.slice(0, 12)}...${digest.slice(-6)}`;
 }
 
 /**

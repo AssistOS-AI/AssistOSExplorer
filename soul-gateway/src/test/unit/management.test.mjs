@@ -758,6 +758,89 @@ describe('management/keys-route', () => {
         assert.equal(row.key_hash, undefined, 'key_hash must be stripped');
     });
 
+    it('handleListKeys sanitizes legacy stored user key hints without changing agent hints', async () => {
+        const legacyUserRow = {
+            id: 'k-user',
+            label: 'alice/laptop',
+            subject_id: 'user:alice:laptop',
+            subject_type: 'user',
+            source: 'signed-subject',
+            status: 'active',
+            key_hash: 'secret-hash-must-be-stripped',
+            key_hint: 'user:alice:laptop',
+            rpm_limit: 60,
+            tpm_limit: 100000,
+        };
+        const agentRow = {
+            id: 'k-agent',
+            label: 'agent:demo/echo',
+            subject_id: 'agent:demo/echo',
+            subject_type: 'agent',
+            source: 'signed-subject',
+            status: 'active',
+            key_hint: 'agent:...echo',
+            rpm_limit: 60,
+            tpm_limit: 100000,
+        };
+        const pool = createMockPool(async () => ({ rows: [legacyUserRow, agentRow] }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListKeys({
+            req: createMockReq(),
+            res,
+            params: {},
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.data.length, 2);
+        const userRow = body.data.find((row) => row.id === 'k-user');
+        const returnedAgentRow = body.data.find((row) => row.id === 'k-agent');
+        assert.match(userRow.key_hint, /^sk-soul-/);
+        assert.doesNotMatch(userRow.key_hint, /user:/);
+        assert.doesNotMatch(userRow.key_hint, /alice/);
+        assert.doesNotMatch(userRow.key_hint, /laptop/);
+        assert.equal(userRow.key_hash, undefined, 'key_hash must be stripped');
+        assert.equal(returnedAgentRow.key_hint, 'agent:...echo');
+    });
+
+    it('handleGetKey sanitizes abbreviated legacy stored user key hints', async () => {
+        const legacyUserRow = {
+            id: 'k-user',
+            label: 'alice/laptop',
+            subject_id: 'user:alice:laptop',
+            subject_type: 'user',
+            source: 'signed-subject',
+            status: 'active',
+            key_hash: 'secret-hash-must-be-stripped',
+            key_hint: 'user:ali...ptop',
+            rpm_limit: 60,
+            tpm_limit: 100000,
+        };
+        const pool = createMockPool(async () => ({ rows: [legacyUserRow] }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleGetKey({
+            req: createMockReq(),
+            res,
+            params: { keyId: 'k-user' },
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.match(body.key.key_hint, /^sk-soul-/);
+        assert.doesNotMatch(body.key.key_hint, /user:/);
+        assert.doesNotMatch(body.key.key_hint, /alice/);
+        assert.doesNotMatch(body.key.key_hint, /laptop/);
+        assert.equal(body.key.key_hash, undefined, 'key_hash must be stripped');
+    });
+
     it('handleRevokeKey revokes a user key (status -> revoked)', async () => {
         const userRow = {
             id: 'k-user',
@@ -2971,6 +3054,50 @@ describe('management/logs-route', () => {
         const body = parseJsonResponse(res);
         assert.equal(body.data.length, 1);
         assert.equal(body.data[0].api_key_id, 'k1');
+    });
+
+    it('handleListLogKeys masks stale user key hints without changing agent hints', async () => {
+        const userRow = {
+            api_key_id: 'k-user',
+            key_label: 'alice/laptop',
+            subject_id: 'user:alice:laptop',
+            subject_type: 'user',
+            key_hint: 'user:ali...ptop',
+            key_status: 'active',
+            request_count: 2,
+        };
+        const agentRow = {
+            api_key_id: 'k-agent',
+            key_label: 'agent:demo/echo',
+            subject_id: 'agent:demo/echo',
+            subject_type: 'agent',
+            key_hint: 'agent:...echo',
+            key_status: 'active',
+            request_count: 1,
+        };
+        const pool = createMockPool(async () => ({ rows: [userRow, agentRow] }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListLogKeys({
+            req: createMockReq(),
+            res,
+            params: {},
+            appCtx,
+            query: {},
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        const returnedUserRow = body.data.find((row) => row.api_key_id === 'k-user');
+        const returnedAgentRow = body.data.find((row) => row.api_key_id === 'k-agent');
+        assert.match(returnedUserRow.key_hint, /^sk-soul-/);
+        assert.doesNotMatch(returnedUserRow.key_hint, /user:/);
+        assert.doesNotMatch(returnedUserRow.key_hint, /alice/);
+        assert.doesNotMatch(returnedUserRow.key_hint, /laptop/);
+        assert.equal(returnedUserRow.subject_id, undefined);
+        assert.equal(returnedUserRow.subject_type, undefined);
+        assert.equal(returnedAgentRow.key_hint, 'agent:...echo');
     });
 
     it('handleGetLog returns 404 for missing log', async () => {

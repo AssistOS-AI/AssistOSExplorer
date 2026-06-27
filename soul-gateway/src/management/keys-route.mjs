@@ -229,5 +229,10 @@ export async function handleGetSpend(ctx) {
 function stripSensitiveFields(row) {
     if (!row) return row;
     const { key_hash, ...safe } = row;
+    if (safe.subject_type === 'user' || String(safe.subject_id || '').startsWith('user:')) {
+        safe.key_hint = keysDao.buildUserKeyHint(
+            safe.subject_id || safe.id || safe.key_hint,
+        );
+    }
     return safe;
 }

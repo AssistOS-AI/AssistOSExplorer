@@ -278,6 +278,8 @@ export async function summarizeByApiKey(pool, filters = {}) {
                ELSE 'Missing key'
              END
            ) AS key_label,
+           keys.subject_id,
+           keys.subject_type,
            COALESCE(keys.key_hint, '') AS key_hint,
            COALESCE(keys.status, 'unknown') AS key_status,
            COUNT(*) AS request_count,
@@ -288,7 +290,13 @@ export async function summarizeByApiKey(pool, filters = {}) {
          LEFT JOIN api_keys keys
            ON keys.id = logs.api_key_id
          ${where}
-         GROUP BY logs.api_key_id, keys.label, keys.key_hint, keys.status
+         GROUP BY
+           logs.api_key_id,
+           keys.label,
+           keys.subject_id,
+           keys.subject_type,
+           keys.key_hint,
+           keys.status
          ORDER BY last_activity DESC NULLS LAST, request_count DESC, key_label ASC`,
         params
     );

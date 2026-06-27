@@ -7,6 +7,7 @@
  */
 
 import { sendJson } from '../core/responses.mjs';
+import * as keysDao from '../db/dao/api-keys-dao.mjs';
 import * as auditDao from '../db/dao/audit-logs-dao.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
 
@@ -81,7 +82,7 @@ export async function handleListLogKeys(ctx) {
     if (hasValue(query.agent_name)) filters.agentName = query.agent_name;
 
     const rows = await auditDao.summarizeByApiKey(pool, filters);
-    sendJson(res, 200, { data: rows });
+    sendJson(res, 200, { data: rows.map(stripInternalKeySummaryFields) });
 }
 
 /**
@@ -99,4 +100,15 @@ export async function handleGetLog(ctx) {
     }
 
     sendJson(res, 200, { log: rows[0] });
+}
+
+function stripInternalKeySummaryFields(row) {
+    if (!row) return row;
+    const { subject_id, subject_type, ...safe } = row;
+    if (subject_type === 'user' || String(subject_id || '').startsWith('user:')) {
+        safe.key_hint = keysDao.buildUserKeyHint(
+            subject_id || safe.api_key_id || safe.key_hint,
+        );
+    }
+    return safe;
 }
