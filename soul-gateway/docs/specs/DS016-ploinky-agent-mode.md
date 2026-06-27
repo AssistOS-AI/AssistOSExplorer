@@ -33,13 +33,13 @@ The removed `/management/auth/*` endpoints return HTTP 410 with instructions to 
 
 ## Signed-Subject API Key Authentication
 
-Soul Gateway verifies incoming bearer tokens as signed-subject keys. The format is `<subjectId>|<base64url-ed25519-signature>`, where the signature is over the exact UTF-8 bytes of `subjectId`. Subject ids are `agent:<repo>/<agentName>` or `user:<userId>`. Soul Gateway verifies signatures with `PLOINKY_AGENT_API_PUBLIC_KEY`; Ploinky signs with its Ed25519 private key, which never enters Soul Gateway or agent processes.
+Soul Gateway verifies incoming bearer tokens as Ploinky-signed subject identity. Agent runtime keys are raw signed-subject values with the format `<subjectId>|<base64url-ed25519-signature>`, where the signature is over the exact UTF-8 bytes of `subjectId`. User-facing API keys use an encoded wrapper around the generic user subject form `user:<userId>`, with the format `sk-soul-<base64url(user:<userId>|<base64url-ed25519-signature>)>`; admin-created user keys use `user:<owner>:<name>` as their inner subject. Soul Gateway decodes user wrappers before verifying the inner signature with `PLOINKY_AGENT_API_PUBLIC_KEY`; Ploinky signs with its Ed25519 private key, which never enters Soul Gateway or agent processes. Raw user signed-subject bearer tokens are rejected.
 
 There is no shared workspace default key. The manifest does not declare a `sharedGeneratedSecret` for Soul Gateway API keys. Instead, each Ploinky agent receives these injected env vars at startup:
 
 | Variable | Value |
 |---|---|
-| `PLOINKY_AGENT_API_KEY` | The agent's signed-subject key: `<subjectId>|<base64url-sig>` |
+| `PLOINKY_AGENT_API_KEY` | The agent's raw signed-subject key: `<subjectId>|<base64url-sig>` |
 | `PLOINKY_AGENT_API_PUBLIC_KEY` | Ed25519 public key Soul Gateway uses to verify signed keys |
 
 These names are reserved; any manifest-declared values with the same names are stripped before injection. Provenance markers `PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY=generated` and `PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY=generated` are injected alongside them.
@@ -48,7 +48,7 @@ These names are reserved; any manifest-declared values with the same names are s
 
 **Loop guard:** A request whose signed-subject key resolves to the same subject as the model being invoked (a self-recursive discovery call) is rejected with HTTP 400.
 
-**Admin-provisioned user keys:** Administrators can provision user keys from the protected management dashboard. The gateway endpoint `POST /management/keys` records a policy row for a router-signed `user:<owner>:<name>` subject with `subject_type='user'` and `source='signed-subject'`; Ploinky's existing router identity endpoint mints the bearer value, and the gateway stores no key material. User keys are revocable. A revoked user subject id is burned, so rotation is revoke plus a different name. Agent keys are unchanged: they are discovered from Ploinky agent registration, are not provisioned by this endpoint, and remain non-revocable in key management.
+**Admin-provisioned user keys:** Administrators can provision user keys from the protected management dashboard. The gateway endpoint `POST /management/keys` records a policy row for a router-signed `user:<owner>:<name>` subject with `subject_type='user'` and `source='signed-subject'`; Ploinky's router identity endpoint mints the copied bearer value as `sk-soul-<base64url(user:<owner>:<name>|<signature>)>`, and the gateway stores no key material. User keys are revocable. A revoked user subject id is burned, so rotation is revoke plus a different name. Agent keys are unchanged: they are discovered from Ploinky agent registration, are not provisioned by this endpoint, remain raw runtime-injected signed-subject values, and remain non-revocable in key management.
 
 ## Local LLM Hub And Tier Seeding
 
@@ -151,6 +151,7 @@ The dashboard has no Soul Gateway login form, no dashboard session token flow, a
 
 1. 2026-06-24: Ploinky's router-signed subject identity credential is the only local agent API key. Agents present `PLOINKY_AGENT_API_KEY`, Soul Gateway verifies with `PLOINKY_AGENT_API_PUBLIC_KEY`, and the former Soul Gateway-named compatibility alias is removed.
 2. 2026-06-24: Per `docs/superpowers/plans/2026-06-24-create-user-keys.md` and `docs/superpowers/specs/2026-06-24-create-user-keys-design.md`, admin-created user keys reuse Ploinky router signing while Soul Gateway only provisions policy for `user:<owner>:<name>` subjects. This does not change agent discovery, agent-key injection, or the non-revocable agent-key contract.
+3. 2026-06-27: Admin-created user keys are copied and accepted only as encoded `sk-soul-...` bearer tokens. The encoded payload contains the existing signed-subject key, but the visible copied key string no longer displays the literal `user:<owner>:<name>` text or a version marker. Base64url is reversible and is not a privacy boundary. Raw user signed-subject bearer tokens are rejected.
 
 ## Migration Notes
 

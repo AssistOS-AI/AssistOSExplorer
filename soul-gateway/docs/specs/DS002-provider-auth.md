@@ -110,9 +110,13 @@ Custom gateway-side search adapters receive a curated gateway service surface fo
 
 ## Inbound API key authentication
 
-Soul Gateway authenticates incoming API calls using signed-subject keys issued by Ploinky. A signed-subject API key has the format `<subjectId>|<base64url-ed25519-signature>`, where the signature is over the exact UTF-8 bytes of `subjectId`. Subject ids take the form `agent:<repo>/<agentName>` for Ploinky-managed agents or `user:<userId>` for user-scoped keys. Soul Gateway verifies signatures with the Ed25519 public key in `PLOINKY_AGENT_API_PUBLIC_KEY`; Ploinky holds the corresponding private key and signs.
+Soul Gateway authenticates incoming API calls using Ploinky-issued signed-subject identity. Agent runtime keys are raw signed-subject tokens with the format `<subjectId>|<base64url-ed25519-signature>`, where the signature is over the exact UTF-8 bytes of `subjectId`. User-facing keys use an encoded wrapper around the generic user subject form `user:<userId>`, with the format `sk-soul-<base64url(user:<userId>|<base64url-ed25519-signature>)>`; admin-created user keys use `user:<owner>:<name>` as their inner subject. Soul Gateway decodes the wrapper, then verifies the inner signed-subject value with the Ed25519 public key in `PLOINKY_AGENT_API_PUBLIC_KEY`; Ploinky holds the corresponding private key and signs.
 
-**Key format:** `<subjectId>|<base64url-ed25519-signature>`
+**Agent key format:** `<subjectId>|<base64url-ed25519-signature>`
+
+**User key format:** `sk-soul-<base64url(user:<userId>|<base64url-ed25519-signature>)>` for the generic user subject form; admin-created keys use `sk-soul-<base64url(user:<owner>:<name>|<base64url-ed25519-signature>)>`.
+
+Raw user signed-subject bearer tokens are rejected. User keys must use the `sk-soul-` wrapper so the visible copied key string displays the base64url wrapper instead of the literal user/admin subject text; base64url is reversible and is not a privacy boundary. Agent keys remain raw because they are runtime-injected into Ploinky-managed agents rather than shown to dashboard users.
 
 **Revocation semantics:**
 - Revoking the database row (setting `status='revoked'`) blocks all calls from that subject until the row is removed or re-enabled.
@@ -129,6 +133,7 @@ Soul Gateway authenticates incoming API calls using signed-subject keys issued b
 ## Decisions & Questions
 
 1. 2026-06-24: Signed-subject identity uses the generic Ploinky agent key names. Callers present `PLOINKY_AGENT_API_KEY`, and Soul Gateway verifies it with `PLOINKY_AGENT_API_PUBLIC_KEY`; the former Soul Gateway-named compatibility alias is removed.
+2. 2026-06-27: Admin-created user API keys are shown to admins and accepted only as `sk-soul-<base64url(user:<owner>:<name>|<signature>)>`; raw `user:<owner>:<name>|<signature>` bearer tokens are rejected. Agent runtime keys remain raw signed-subject values.
 
 ## Related specs
 

@@ -75,9 +75,9 @@ The management API supports:
 - revoke user keys
 - reset daily budget state
 
-All inbound API keys are Ploinky router-signed signed-subject values. The gateway stores only the `api_keys` policy row: subject id, subject type, `source='signed-subject'`, limits, budgets, expiry, status, and metadata. It does not store raw keys, encrypted keys, or secret hashes.
+All inbound API keys are backed by Ploinky router-signed subjects. Agent runtime keys are raw signed-subject values. User-facing keys are encoded as `sk-soul-<base64url(raw signed-subject key)>` before they are shown or accepted. The gateway stores only the `api_keys` policy row: subject id, subject type, `source='signed-subject'`, limits, budgets, expiry, status, and metadata. It does not store raw keys, encrypted keys, or secret hashes.
 
-Admins can provision user keys through `POST /management/keys`. The endpoint records a policy row for a router-signed `user:<owner>:<name>` subject with `subject_type='user'` and `source='signed-subject'`; the router mints the bearer key, and the gateway only enforces the stored policy when that signed subject is presented. User-key revocation sets the row to `status='revoked'` and blocks that deterministic subject. A revoked user `subject_id` cannot be reused, so per-user-key rotation is revoke plus a new name.
+Admins can provision user keys through `POST /management/keys`. The endpoint records a policy row for a router-signed `user:<owner>:<name>` subject with `subject_type='user'` and `source='signed-subject'`; the router mints the encoded `sk-soul-...` bearer key, and the gateway decodes that bearer value before enforcing the stored policy. Raw `user:<owner>:<name>|<signature>` bearer tokens are rejected. User-key revocation sets the row to `status='revoked'` and blocks that deterministic subject. A revoked user `subject_id` cannot be reused, so per-user-key rotation is revoke plus a new name.
 
 Agent keys are unchanged: they are discovery-provisioned signed-subject rows, cannot be provisioned through `POST /management/keys`, and are not revocable through key management. Operators adjust agent-key limits, budgets, or expiry instead.
 
@@ -98,6 +98,7 @@ Soul Gateway does not own management login attempts or session issuance. Browser
 ## Decisions & Questions
 
 1. 2026-06-24: Per `docs/superpowers/plans/2026-06-24-create-user-keys.md` and `docs/superpowers/specs/2026-06-24-create-user-keys-design.md`, key lifecycle distinguishes admin-provisioned user keys from discovery-provisioned agent keys. User keys are revocable router-signed `user:<owner>:<name>` subjects with burned names after revocation; agent keys remain discovery-owned and non-revocable.
+2. 2026-06-27: User-facing API keys use the encoded `sk-soul-...` wrapper. Soul Gateway rejects raw user signed-subject bearer tokens while continuing to accept raw agent runtime keys.
 
 ## Related specs
 
