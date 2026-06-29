@@ -1761,6 +1761,7 @@ describe('management/providers-route', () => {
     let handleListAccounts;
     let handleTestConnection;
     let handleDiscoverModels;
+    let handleSyncModels;
 
     beforeEach(async () => {
         ({
@@ -1773,6 +1774,7 @@ describe('management/providers-route', () => {
             handleListAccounts,
             handleTestConnection,
             handleDiscoverModels,
+            handleSyncModels,
         } = await import('../../management/providers-route.mjs'));
     });
 
@@ -2836,6 +2838,89 @@ describe('management/providers-route', () => {
                     },
                 },
             ]);
+        });
+    });
+
+    describe('handleSyncModels', () => {
+        it('uses upstream discovery and auto-provisions models for manual sync', async () => {
+            const providerRow = {
+                id: 'p1',
+                provider_key: 'codex',
+                adapter_key: 'codex-api',
+                auth_strategy: 'oauth',
+                provider_mode: 'external_api',
+                oauth_adapter_key: null,
+                settings: {},
+                metadata: {},
+            };
+            const pool = createMockPool(async (sql, params) => {
+                if (sql.includes('FROM providers') && sql.includes('WHERE id')) {
+                    assert.equal(params[0], 'p1');
+                    return { rows: [providerRow] };
+                }
+                return { rows: [], rowCount: 0 };
+            });
+            const appCtx = createMockAppCtx({ pool });
+            const res = createMockRes();
+            let autoProvisionCalls = 0;
+            const autoProvisionerMock = mock.module(
+                '../../runtime/providers/auto-provisioner.mjs',
+                {
+                    namedExports: {
+                        async autoProvisionModels(
+                            receivedAppCtx,
+                            provider,
+                            oauthAdapterKey,
+                            options
+                        ) {
+                            autoProvisionCalls += 1;
+                            assert.equal(receivedAppCtx, appCtx);
+                            assert.equal(provider.id, 'p1');
+                            assert.equal(oauthAdapterKey, null);
+                            assert.deepEqual(options, {
+                                strict: true,
+                                discoverySource: 'synced',
+                                disableMissing: true,
+                                refreshReason: 'provider.sync-models',
+                            });
+                            return {
+                                discovered: 3,
+                                created: 2,
+                                updated: 1,
+                                disabled: 1,
+                                models: [{ id: 'm1' }, { id: 'm2' }],
+                            };
+                        },
+                        async syncProviderModels() {
+                            throw new Error(
+                                'syncProviderModels should not run without request-body discoveries'
+                            );
+                        },
+                    },
+                }
+            );
+
+            try {
+                await handleSyncModels({
+                    req: createMockReq({ method: 'POST', body: {} }),
+                    res,
+                    params: { providerId: 'p1' },
+                    query: {},
+                    appCtx,
+                });
+            } finally {
+                autoProvisionerMock.restore();
+            }
+
+            assert.equal(autoProvisionCalls, 1);
+            assert.equal(res.statusCode, 200);
+            const body = parseJsonResponse(res);
+            assert.equal(body.discovered, 3);
+            assert.equal(body.created, 2);
+            assert.equal(body.updated, 1);
+            assert.equal(body.disabled, 1);
+            assert.equal(body.synced, 3);
+            assert.deepEqual(body.models, [{ id: 'm1' }, { id: 'm2' }]);
         });
     });
 });
