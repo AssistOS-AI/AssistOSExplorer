@@ -125,6 +125,36 @@ export function startBackgroundJobs(appCtx) {
         }
     });
 
+    const providerModelRefreshIntervalMs =
+        env.PROVIDER_MODEL_REFRESH_INTERVAL_MS ?? 900_000;
+    if (providerModelRefreshIntervalMs > 0) {
+        schedule(
+            'provider-model-refresh',
+            providerModelRefreshIntervalMs,
+            async () => {
+                if (!appCtx.pool) return;
+                if (!appCtx.services.backendCatalog) return;
+                try {
+                    const { refreshProviderModelCatalog } = await import(
+                        '../runtime/providers/provider-catalog-refresh.mjs'
+                    );
+                    await refreshProviderModelCatalog(appCtx, {
+                        phase: 'timer',
+                        discoverySource: 'synced',
+                        disableMissing: true,
+                        refreshReason: 'provider.timer-refresh',
+                        skipEmptyExistingCatalog: true,
+                    });
+                } catch (err) {
+                    log.warn('provider model refresh failed', {
+                        phase: 'timer',
+                        error: err.message,
+                    });
+                }
+            }
+        );
+    }
+
     return {
         stop() {
             for (const { name, timer } of jobs) {
