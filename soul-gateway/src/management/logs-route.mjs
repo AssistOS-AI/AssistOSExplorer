@@ -105,10 +105,27 @@ export async function handleGetLog(ctx) {
 function stripInternalKeySummaryFields(row) {
     if (!row) return row;
     const { subject_id, subject_type, ...safe } = row;
-    if (subject_type === 'user' || String(subject_id || '').startsWith('user:')) {
-        safe.key_hint = keysDao.buildUserKeyHint(
-            subject_id || safe.api_key_id || safe.key_hint,
-        );
-    }
-    return safe;
+    const missingLabel = safe.key_label || (
+        safe.api_key_id ? 'Missing key' : 'Unknown key'
+    );
+    const missingJoinedKey = (
+        !subject_id &&
+        !subject_type &&
+        !safe.key_hint &&
+        safe.key_status === 'unknown' &&
+        (safe.key_label === 'Missing key' || safe.key_label === 'Unknown key')
+    );
+    const display = keysDao.buildSafeKeyDisplay(missingJoinedKey ? null : {
+        id: safe.api_key_id,
+        label: safe.key_label,
+        key_label: safe.key_label,
+        key_hint: safe.key_hint,
+        status: safe.key_status,
+        key_status: safe.key_status,
+        subject_id,
+        subject_type,
+    }, {
+        missingLabel,
+    });
+    return { ...safe, ...display };
 }

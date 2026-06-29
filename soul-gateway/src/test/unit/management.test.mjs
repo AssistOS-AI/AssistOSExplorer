@@ -3101,6 +3101,37 @@ describe('management/logs-route', () => {
         assert.equal(returnedAgentRow.key_hint, 'agent:...echo');
     });
 
+    it('handleListLogKeys labels audit rows whose key row is missing', async () => {
+        const mockRow = {
+            api_key_id: 'deleted-key-id',
+            key_label: 'Missing key',
+            subject_id: null,
+            subject_type: null,
+            key_hint: '',
+            key_status: 'unknown',
+            request_count: 1,
+        };
+        const pool = createMockPool(async () => ({ rows: [mockRow] }));
+        const appCtx = createMockAppCtx({ pool });
+        const res = createMockRes();
+
+        await handleListLogKeys({
+            req: createMockReq(),
+            res,
+            params: {},
+            appCtx,
+            query: {},
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.equal(body.data[0].api_key_id, 'deleted-key-id');
+        assert.equal(body.data[0].key_label, 'Missing key');
+        assert.equal(body.data[0].key_hint, '');
+        assert.equal(body.data[0].subject_id, undefined);
+        assert.equal(body.data[0].subject_type, undefined);
+    });
+
     it('handleGetLog returns 404 for missing log', async () => {
         const pool = createMockPool(async () => ({ rows: [] }));
         const appCtx = createMockAppCtx({ pool });
