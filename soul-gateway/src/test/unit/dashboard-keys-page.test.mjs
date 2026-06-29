@@ -3,7 +3,20 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-async function loadDashboard() {
+function jsonResponse(body, status = 200) {
+    return {
+        ok: status >= 200 && status < 300,
+        status,
+        redirected: false,
+        async json() {
+            return body;
+        },
+    };
+}
+
+async function loadDashboard(fetchImpl = async () => {
+    throw new Error('unexpected fetch');
+}) {
     const source = await readFile(
         new URL('../../dashboard/js/app.mjs', import.meta.url),
         'utf8'
@@ -24,9 +37,7 @@ async function loadDashboard() {
             setItem() {},
             removeItem() {},
         },
-        fetch: async () => {
-            throw new Error('unexpected fetch');
-        },
+        fetch: fetchImpl,
         URLSearchParams,
         CustomEvent: class CustomEvent {
             constructor(type, init = {}) {
@@ -102,9 +113,16 @@ describe('dashboard keys page', () => {
             },
             fetch: async (url, options = {}) => {
                 calls.push({ url: String(url), options });
+                if (String(url).endsWith('/management/me')) {
+                    return jsonResponse({
+                        authenticated: true,
+                        user: { keyOwner: 'alice' },
+                    });
+                }
                 if (String(url).endsWith('/management/keys')) {
                     return {
                         status: 200,
+                        ok: true,
                         redirected: false,
                         async json() {
                             if (options.method === 'POST') {
@@ -156,5 +174,61 @@ describe('dashboard keys page', () => {
         assert.equal(page.newUserKey.startsWith('sk-soul-v1'), false);
         assert.equal(page.createKeyError, '');
         assert.equal(calls.some((call) => String(call.url) === '/api/router/identity/user-api-key'), true);
+    });
+
+    it('prefills the create-key owner from the current management user and falls back on submit', async () => {
+        const calls = [];
+        const { window } = await loadDashboard(async (url, options = {}) => {
+            calls.push({ url: String(url), options });
+
+            if (String(url).endsWith('/management/me')) {
+                return jsonResponse({
+                    authenticated: true,
+                    user: { keyOwner: 'admin' },
+                });
+            }
+
+            if (
+                String(url).endsWith('/management/keys') &&
+                (options.method || 'GET') === 'GET'
+            ) {
+                return jsonResponse({ keys: [] });
+            }
+
+            if (
+                String(url).endsWith('/management/keys') &&
+                options.method === 'POST'
+            ) {
+                return jsonResponse({ key: { id: 'key-1' } }, 201);
+            }
+
+            if (String(url).endsWith('/api/router/identity/user-api-key')) {
+                return jsonResponse({ apiKey: 'sk-user-admin-laptop' });
+            }
+
+            throw new Error(`unexpected fetch ${url}`);
+        });
+
+        const page = window.keysPage();
+        await page.init();
+        page.openCreateKey();
+
+        assert.equal(page.createKeyForm.owner, 'admin');
+
+        page.createKeyForm.owner = '';
+        page.createKeyForm.name = 'laptop';
+        await page.submitCreateKey();
+
+        const createCall = calls.find(
+            (call) =>
+                call.url.endsWith('/management/keys') &&
+                call.options.method === 'POST'
+        );
+        const mintCall = calls.find((call) =>
+            call.url.endsWith('/api/router/identity/user-api-key')
+        );
+
+        assert.equal(JSON.parse(createCall.options.body).subjectId, 'user:admin:laptop');
+        assert.equal(JSON.parse(mintCall.options.body).userId, 'admin:laptop');
     });
 });

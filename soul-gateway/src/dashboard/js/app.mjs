@@ -2552,6 +2552,8 @@ function tiersPage() {
 function keysPage() {
     return {
         keys: [],
+        currentUser: null,
+        currentOwner: '',
         showEdit: false,
         editing: null,
         editForm: {
@@ -2577,11 +2579,28 @@ function keysPage() {
         createKeyError: '',
 
         async init() {
+            await this.loadCurrentUser();
             const raw = unwrapArray(await api.get('/management/keys'));
             this.keys = raw.map((k) => ({
                 ...k,
                 daily_spent: Number(k.daily_spent || 0),
             }));
+        },
+
+        async loadCurrentUser() {
+            try {
+                const payload = await api.get('/management/me');
+                const user =
+                    payload?.user && typeof payload.user === 'object'
+                        ? payload.user
+                        : null;
+                this.currentUser = user;
+                this.currentOwner = String(user?.keyOwner || '').trim();
+            } catch (err) {
+                this.currentUser = null;
+                this.currentOwner = '';
+                console.warn('Unable to load management user', err);
+            }
         },
 
         budgetPct(k) {
@@ -2635,7 +2654,7 @@ function keysPage() {
 
         openCreateKey() {
             this.createKeyForm = {
-                owner: '',
+                owner: this.currentOwner || '',
                 name: '',
                 label: '',
                 rpmLimit: '',
@@ -2651,7 +2670,9 @@ function keysPage() {
 
         async submitCreateKey() {
             this.createKeyError = '';
-            const owner = this.createKeyForm.owner.trim();
+            const owner = String(
+                this.createKeyForm.owner || this.currentOwner || ''
+            ).trim();
             const name = this.createKeyForm.name.trim();
             const part = /^[A-Za-z0-9._-]+$/;
             if (!part.test(owner) || !part.test(name)) {
