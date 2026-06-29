@@ -7,6 +7,58 @@ import { performRuntimeRefresh } from '../registry/runtime-refresh.mjs';
 import { enrichModelMetadata } from '../policy/model-metadata-classifier.mjs';
 
 const MAX_DB_NUMERIC_14_8_ABS = 1_000_000;
+const SYNC_DISABLED_METADATA_KEY = 'syncDisabled';
+const OPERATOR_DISABLED_METADATA_KEYS = ['disabledBy'];
+
+function hasSyncDisabledMarker(row) {
+    return Boolean(row?.metadata?.[SYNC_DISABLED_METADATA_KEY]);
+}
+
+function clearSyncDisabledMarker(metadata = {}) {
+    const next = { ...(metadata || {}) };
+    delete next[SYNC_DISABLED_METADATA_KEY];
+    return next;
+}
+
+function markSyncDisabledMetadata(metadata = {}, source) {
+    return {
+        ...(metadata || {}),
+        [SYNC_DISABLED_METADATA_KEY]: {
+            reason: 'missing-from-discovery',
+            source,
+            at: new Date().toISOString(),
+        },
+    };
+}
+
+function mergeOperatorDisabledMetadata(existingMetadata = {}, incomingMetadata = {}) {
+    const existing = existingMetadata || {};
+    const next = {
+        ...existing,
+        ...(incomingMetadata || {}),
+    };
+    for (const key of OPERATOR_DISABLED_METADATA_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(existing, key)) {
+            next[key] = existing[key];
+        }
+    }
+    return clearSyncDisabledMarker(next);
+}
+
+function mergeDiscoveryMetadata(existing, normalizedDiscovery) {
+    const incoming = normalizedDiscovery.metadata || {};
+    if (existing?.enabled === false && !hasSyncDisabledMarker(existing)) {
+        return mergeOperatorDisabledMetadata(existing.metadata, incoming);
+    }
+    return clearSyncDisabledMarker(incoming);
+}
+
+function shouldEnableDiscoveredRow(existing) {
+    if (existing?.enabled !== false) {
+        return true;
+    }
+    return hasSyncDisabledMarker(existing);
+}
 
 function normalizeDbPricingNumber(value) {
     if (value === undefined || value === null || value === '') return null;
@@ -468,7 +520,8 @@ export async function syncProviderModels(
             isFree: normalizedDiscovery.isFree,
             capabilities: normalizedDiscovery.capabilities,
             tags: normalizedDiscovery.tags,
-            metadata: normalizedDiscovery.metadata,
+            enabled: shouldEnableDiscoveredRow(existing),
+            metadata: mergeDiscoveryMetadata(existing, normalizedDiscovery),
             discoverySource,
         });
         syncedModels.push(updatedRow || existing);
@@ -486,7 +539,13 @@ export async function syncProviderModels(
             if (existing.enabled === false) {
                 continue;
             }
-            await modelsDao.disable(appCtx.pool, existing.id);
+            await modelsDao.update(appCtx.pool, existing.id, {
+                enabled: false,
+                metadata: markSyncDisabledMetadata(
+                    existing.metadata || {},
+                    refreshReason
+                ),
+            });
             disabled++;
         }
     }

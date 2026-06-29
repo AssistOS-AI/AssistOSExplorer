@@ -304,18 +304,201 @@ describe('auto-provisioner.autoProvisionModels', () => {
         assert.equal(created[0].discoverySource, 'auto_provisioned');
         assert.equal(created[0].enabled, true);
         assert.equal(created[0].providerId, 'p1');
-        assert.equal(updated.length, 1);
-        assert.equal(updated[0].id, 'existing-auto');
-        assert.equal(updated[0].fields.discoverySource, 'auto_provisioned');
+        assert.equal(updated.length, 2);
+        const existingAutoUpdate = updated.find((entry) => entry.id === 'existing-auto');
+        assert.ok(existingAutoUpdate, 'existing auto row should be refreshed');
+        assert.equal(existingAutoUpdate.fields.discoverySource, 'auto_provisioned');
         assert.equal(
-            updated[0].fields.capabilities.contextWindow,
+            existingAutoUpdate.fields.capabilities.contextWindow,
             128000
         );
         assert.equal(
-            updated[0].fields.capabilities.supportsTools,
+            existingAutoUpdate.fields.capabilities.supportsTools,
             false
         );
-        assert.deepEqual(disabled, ['missing-auto']);
+        const missingAutoUpdate = updated.find((entry) => entry.id === 'missing-auto');
+        assert.ok(missingAutoUpdate, 'missing row should be sync-disabled via update');
+        assert.equal(missingAutoUpdate.fields.enabled, false);
+        assert.equal(
+            missingAutoUpdate.fields.metadata.syncDisabled.reason,
+            'missing-from-discovery'
+        );
+        assert.deepEqual(disabled, []);
+    });
+
+    it('marks missing discovered rows as sync-disabled instead of plain disabling them', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [{ modelId: 'current-model', displayName: 'Current Model' }];
+            },
+        };
+
+        const updates = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [
+                {
+                    id: 'existing-current',
+                    model_key: 'codex-api/current-model',
+                    discovery_source: 'synced',
+                    enabled: true,
+                    metadata: { existing: true },
+                },
+                {
+                    id: 'missing-synced',
+                    model_key: 'codex-api/old-model',
+                    discovery_source: 'synced',
+                    enabled: true,
+                    metadata: { kept: 'value' },
+                },
+            ],
+            create: async () => {
+                throw new Error('should not create rows');
+            },
+            update: async (_pool, id, fields) => {
+                updates.push({ id, fields });
+                return { id, ...fields };
+            },
+            disable: async () => {
+                throw new Error('sync disable should update metadata and enabled together');
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        const result = await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(
+                appCtx,
+                {
+                    id: 'p1',
+                    provider_key: 'codex-api',
+                    adapter_key: 'codex-api',
+                },
+                null,
+                {
+                    discoverySource: 'synced',
+                    refreshReason: 'provider.model-refresh',
+                }
+            )
+        );
+
+        assert.equal(result.disabled, 1);
+        const missingUpdate = updates.find((entry) => entry.id === 'missing-synced');
+        assert.ok(missingUpdate, 'missing row should be updated');
+        assert.equal(missingUpdate.fields.enabled, false);
+        assert.equal(missingUpdate.fields.metadata.kept, 'value');
+        assert.equal(
+            missingUpdate.fields.metadata.syncDisabled.reason,
+            'missing-from-discovery'
+        );
+        assert.equal(
+            missingUpdate.fields.metadata.syncDisabled.source,
+            'provider.model-refresh'
+        );
+        assert.match(
+            missingUpdate.fields.metadata.syncDisabled.at,
+            /^\d{4}-\d{2}-\d{2}T/
+        );
+    });
+
+    it('re-enables returning sync-disabled rows but preserves operator-disabled rows', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [
+                    { modelId: 'returned-model', displayName: 'Returned Model' },
+                    {
+                        modelId: 'operator-disabled',
+                        displayName: 'Operator Disabled',
+                        metadata: {
+                            refreshedFromDiscovery: true,
+                            openrouter: { matchedBy: 'id' },
+                        },
+                    },
+                ];
+            },
+        };
+
+        const updates = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [
+                {
+                    id: 'returned',
+                    model_key: 'codex-api/returned-model',
+                    discovery_source: 'synced',
+                    enabled: false,
+                    metadata: {
+                        syncDisabled: {
+                            reason: 'missing-from-discovery',
+                            source: 'provider.model-refresh',
+                            at: '2026-06-29T00:00:00.000Z',
+                        },
+                    },
+                },
+                {
+                    id: 'operator',
+                    model_key: 'codex-api/operator-disabled',
+                    discovery_source: 'synced',
+                    enabled: false,
+                    metadata: {
+                        disabledBy: 'operator',
+                        openrouter: { matchedBy: 'old' },
+                    },
+                },
+            ],
+            create: async () => {
+                throw new Error('should not create rows');
+            },
+            update: async (_pool, id, fields) => {
+                updates.push({ id, fields });
+                return { id, ...fields };
+            },
+            disable: async () => {
+                throw new Error('should not disable rows');
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(
+                appCtx,
+                {
+                    id: 'p1',
+                    provider_key: 'codex-api',
+                    adapter_key: 'codex-api',
+                },
+                null,
+                {
+                    discoverySource: 'synced',
+                    refreshReason: 'provider.model-refresh',
+                }
+            )
+        );
+
+        const returnedUpdate = updates.find((entry) => entry.id === 'returned');
+        assert.ok(returnedUpdate, 'returned model should be updated');
+        assert.equal(returnedUpdate.fields.enabled, true);
+        assert.equal(
+            returnedUpdate.fields.metadata.syncDisabled,
+            undefined,
+            'syncDisabled marker should be removed after re-enable'
+        );
+
+        const operatorUpdate = updates.find((entry) => entry.id === 'operator');
+        assert.ok(operatorUpdate, 'operator-disabled model should still receive metadata refresh');
+        assert.equal(operatorUpdate.fields.enabled, false);
+        assert.equal(operatorUpdate.fields.metadata.refreshedFromDiscovery, true);
+        assert.equal(operatorUpdate.fields.metadata.openrouter.matchedBy, 'id');
+        assert.equal(operatorUpdate.fields.metadata.disabledBy, 'operator');
     });
 
     it('enriches missing discovery pricing, context, and tags from the pricing directory before persisting', async () => {
