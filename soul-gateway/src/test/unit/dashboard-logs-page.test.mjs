@@ -382,3 +382,85 @@ describe('dashboard logs page', () => {
         assert.equal(sockets[0].url, 'ws://localhost:7000/management/ws/logs');
     });
 });
+
+describe('dashboard usage page', () => {
+    it('unwraps API key data and consumes dashboard usage metrics', async () => {
+        const calls = [];
+        const { window } = await loadDashboard(async (path) => {
+            const p = String(path);
+            calls.push(p);
+            if (p === '/management/keys') {
+                return {
+                    status: 200,
+                    async json() {
+                        return {
+                            data: [
+                                {
+                                    id: 'key-1',
+                                    label: 'Primary key',
+                                    key_hint: 'sk-prim...0001',
+                                },
+                            ],
+                        };
+                    },
+                };
+            }
+            if (p.startsWith('/management/metrics/usage?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return {
+                            data: [
+                                {
+                                    period: '2026-06-26T00:00:00.000Z',
+                                    resolved_model: 'fast',
+                                    request_count: 2,
+                                },
+                            ],
+                            total: {
+                                total_cost: 0.04,
+                                total_tokens: 20,
+                                request_count: 2,
+                            },
+                            models: ['fast'],
+                            daily_by_model: [
+                                {
+                                    period: '2026-06-26T00:00:00.000Z',
+                                    resolved_model: 'fast',
+                                    total_cost: 0.04,
+                                },
+                            ],
+                            model_requests: [
+                                {
+                                    resolved_model: 'fast',
+                                    api_key_id: 'key-1',
+                                    key_label: 'Primary key',
+                                    key_hint: 'sk-prim...0001',
+                                    total: 2,
+                                    cached: 1,
+                                    non_cached: 1,
+                                },
+                            ],
+                        };
+                    },
+                };
+            }
+            throw new Error(`unexpected dashboard fetch: ${p}`);
+        });
+
+        const page = window.costsPage();
+        page.$refs = { usageChart: { clientWidth: 0 } };
+        page.$nextTick = (fn) => fn();
+
+        await page.init();
+
+        assert.deepEqual(page.availableKeys.map((key) => key.id), ['key-1']);
+        assert.equal(page.totalCost, 0.04);
+        assert.equal(page.totalTokens, 20);
+        assert.equal(page.totalRequests, 2);
+        assert.deepEqual(page.availableModels, ['fast']);
+        assert.equal(page._dailyData.length, 1);
+        assert.equal(page.modelRequestRows[0].model, 'fast');
+        assert.ok(calls.some((path) => path.startsWith('/management/metrics/usage?')));
+    });
+});

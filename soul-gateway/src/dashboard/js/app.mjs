@@ -1626,7 +1626,7 @@ function costsPage() {
         },
 
         async init() {
-            this.availableKeys = await api.get('/management/keys');
+            this.availableKeys = unwrapArray(await api.get('/management/keys'));
             await this.load();
         },
 

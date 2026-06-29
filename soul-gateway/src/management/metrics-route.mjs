@@ -35,8 +35,14 @@ export async function handleUsageMetrics(ctx) {
     const { from, to } = requireDateRange(query);
     const groupBy = query.groupBy || 'day';
 
-    const data = await appCtx.services.metricsService.getUsageMetrics({ from, to, groupBy });
-    sendJson(res, 200, { data });
+    const data = await appCtx.services.metricsService.getUsageDashboardMetrics({
+        from,
+        to,
+        groupBy,
+        model: query.model || null,
+        apiKeyId: query.api_key_id || null,
+    });
+    sendMetricPayload(res, data);
 }
 
 /**
@@ -60,8 +66,12 @@ export async function handleActivityMetrics(ctx) {
     const { from, to } = requireDateRange(query);
     const bucket = query.bucket || 'minute';
 
-    const data = await appCtx.services.metricsService.getActivityMetrics({ from, to, bucket });
-    sendJson(res, 200, { data });
+    const data = await appCtx.services.metricsService.getActivityDashboardMetrics({
+        from,
+        to,
+        bucket,
+    });
+    sendMetricPayload(res, data);
 }
 
 /**
@@ -87,4 +97,16 @@ function requireDateRange(query) {
         from: query.from,
         to: query.to || new Date().toISOString(),
     };
+}
+
+function sendMetricPayload(res, data) {
+    if (Array.isArray(data)) {
+        sendJson(res, 200, { data });
+        return;
+    }
+    if (data && typeof data === 'object' && Array.isArray(data.data)) {
+        sendJson(res, 200, data);
+        return;
+    }
+    sendJson(res, 200, { data });
 }

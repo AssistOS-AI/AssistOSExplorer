@@ -115,7 +115,7 @@ Bindings write to unified `middleware_bindings` with `scope='model'` and `target
 - blacklist management
 - cooldown management
 - logs
-- metrics dashboards
+- metrics dashboards — `/management/metrics/usage` returns the compatibility `data` bucket rows plus dashboard fields `total`, `models`, `daily_by_model`, and `model_requests`; `/management/metrics/activity` returns compatibility time-bucket `data` plus `by_key` per-key aggregates. Both are derived from `audit_logs`, and usage accepts `model` and `api_key_id` filters.
 - export
 
 Mutations that affect routing or policy trigger runtime refresh so later requests observe the new state.

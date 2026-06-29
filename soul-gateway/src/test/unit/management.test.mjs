@@ -3177,11 +3177,16 @@ describe('observability/metrics-service', () => {
 });
 
 describe('management/metrics-route', () => {
-    let handleCostMetrics, handleUsageMetrics, handleErrorMetrics;
+    let handleCostMetrics, handleUsageMetrics, handleErrorMetrics,
+        handleActivityMetrics;
 
     beforeEach(async () => {
-        ({ handleCostMetrics, handleUsageMetrics, handleErrorMetrics } =
-            await import('../../management/metrics-route.mjs'));
+        ({
+            handleCostMetrics,
+            handleUsageMetrics,
+            handleErrorMetrics,
+            handleActivityMetrics,
+        } = await import('../../management/metrics-route.mjs'));
     });
 
     it('handleCostMetrics rejects missing date range', async () => {
@@ -3268,6 +3273,84 @@ describe('management/metrics-route', () => {
         assert.equal(res.statusCode, 200);
         const body = parseJsonResponse(res);
         assert.deepEqual(body.data, expected);
+    });
+
+    it('handleUsageMetrics returns dashboard usage fields and compatibility rows', async () => {
+        const expected = {
+            data: [{ period: '2026-04-01T00:00:00.000Z', resolved_model: 'fast' }],
+            total: { total_cost: 0.25, total_tokens: 42, request_count: 2 },
+            models: ['fast'],
+            daily_by_model: [{ period: '2026-04-01T00:00:00.000Z', resolved_model: 'fast' }],
+            model_requests: [{ resolved_model: 'fast', total: 2 }],
+        };
+        const appCtx = createMockAppCtx({
+            services: {
+                metricsService: {
+                    getUsageDashboardMetrics: async ({ from, to, groupBy, model, apiKeyId }) => {
+                        assert.equal(from, '2026-04-01');
+                        assert.equal(to, '2026-04-02');
+                        assert.equal(groupBy, 'day');
+                        assert.equal(model, 'fast');
+                        assert.equal(apiKeyId, 'key-1');
+                        return expected;
+                    },
+                },
+            },
+        });
+        const res = createMockRes();
+
+        await handleUsageMetrics({
+            req: createMockReq(),
+            res,
+            params: {},
+            appCtx,
+            query: {
+                from: '2026-04-01',
+                to: '2026-04-02',
+                model: 'fast',
+                api_key_id: 'key-1',
+            },
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.deepEqual(body, expected);
+        assert.equal(body.data.length, 1);
+        assert.equal(body.total.request_count, 2);
+    });
+
+    it('handleActivityMetrics returns dashboard key activity and compatibility buckets', async () => {
+        const expected = {
+            data: [{ period: '2026-04-01T10:00:00.000Z', total: 1 }],
+            by_key: [{ api_key_id: 'key-1', request_count: 1 }],
+        };
+        const appCtx = createMockAppCtx({
+            services: {
+                metricsService: {
+                    getActivityDashboardMetrics: async ({ from, to, bucket }) => {
+                        assert.equal(from, '2026-04-01');
+                        assert.equal(to, '2026-04-02');
+                        assert.equal(bucket, 'hour');
+                        return expected;
+                    },
+                },
+            },
+        });
+        const res = createMockRes();
+
+        await handleActivityMetrics({
+            req: createMockReq(),
+            res,
+            params: {},
+            appCtx,
+            query: { from: '2026-04-01', to: '2026-04-02', bucket: 'hour' },
+        });
+
+        assert.equal(res.statusCode, 200);
+        const body = parseJsonResponse(res);
+        assert.deepEqual(body, expected);
+        assert.equal(body.data.length, 1);
+        assert.equal(body.by_key.length, 1);
     });
 });
 
