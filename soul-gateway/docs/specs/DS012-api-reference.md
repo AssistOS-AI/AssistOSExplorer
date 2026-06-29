@@ -18,6 +18,28 @@ The dashboard shell served at `/management` loads its frontend entrypoint from `
 - state-changing management requests do not require Soul Gateway CSRF tokens; the protected-service invocation JWT is the request binding
 - live-refresh behavior on data-backed tabs
 
+## Current management session
+
+`GET /management/me` returns the current management session as verified by Ploinky router auth. The response is non-secret and is used by the dashboard to prefill API key ownership fields.
+
+Response:
+
+```json
+{
+  "authenticated": true,
+  "source": "router-sso",
+  "user": {
+    "id": "local:admin",
+    "username": "admin",
+    "email": "admin@example.test",
+    "roles": ["admin"],
+    "keyOwner": "admin"
+  }
+}
+```
+
+`keyOwner` is derived from the verified user in this order: `username`, `name`, `id`, `email`. It is normalized to Soul Gateway's owner grammar `[A-Za-z0-9._-]+`; colon-prefixed local ids such as `local:admin` become `admin`.
+
 ## Provider management
 
 The dashboard and API support:
@@ -111,7 +133,7 @@ Bindings write to unified `middleware_bindings` with `scope='model'` and `target
 
 ## Other management surfaces
 
-- API key management — admins can provision user keys with `POST /management/keys`. The endpoint creates a policy row for a router-signed `user:<owner>:<name>` subject with `subject_type='user'` and `source='signed-subject'`; the router mints the copied bearer value as `sk-soul-<base64url(user:<owner>:<name>|<signature>)>`, and Soul Gateway stores no raw key material. Agent keys remain discovery-provisioned, cannot be provisioned through this endpoint, and are non-revocable through key management. User keys are revocable; a revoked user subject id cannot be reused, so rotation requires a new key name. The `status` field on each key row reflects `active` or `revoked`.
+- API key management — admins can provision user keys with `POST /management/keys`. The dashboard defaults the owner field from `GET /management/me`'s `user.keyOwner`, but this is only an editable dashboard default: `POST /management/keys` still requires a valid `subjectId` shaped `user:<owner>:<name>`, and admins may intentionally override the owner before creating a key. The endpoint creates a policy row for a router-signed user subject with `subject_type='user'` and `source='signed-subject'`; the router mints the copied bearer value as `sk-soul-<base64url(user:<owner>:<name>|<signature>)>`, and Soul Gateway stores no raw key material. Agent keys remain discovery-provisioned, cannot be provisioned through this endpoint, and are non-revocable through key management. User keys are revocable; a revoked user subject id cannot be reused, so rotation requires a new key name. The `status` field on each key row reflects `active` or `revoked`.
 - blacklist management
 - cooldown management
 - logs
@@ -124,6 +146,7 @@ Mutations that affect routing or policy trigger runtime refresh so later request
 
 1. 2026-06-24: Per `docs/superpowers/plans/2026-06-24-create-user-keys.md` and `docs/superpowers/specs/2026-06-24-create-user-keys-design.md`, `POST /management/keys` is the admin user-key provisioning endpoint, not an agent-key creation endpoint. It stores only signed-subject policy for `user:<owner>:<name>`, leaves minting to the Ploinky router, preserves non-revocable discovery-owned agent keys, and enforces the burned-name rule for revoked user subjects.
 2. 2026-06-27: The dashboard shows admin-created user keys only in the encoded `sk-soul-...` form returned by Ploinky. The gateway decodes that wrapper for verification and rejects raw user signed-subject bearer tokens.
+3. 2026-06-29: The management dashboard may prefill user-key ownership only from the server-verified `/management/me` response. Browser state is not an identity source, and the create-key API remains responsible for validating the explicit `subjectId`.
 
 ## Related specs
 
