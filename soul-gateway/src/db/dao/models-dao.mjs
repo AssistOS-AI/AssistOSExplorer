@@ -229,7 +229,12 @@ export async function delByProvider(pool, providerId) {
 
 export async function enable(pool, id) {
     const { rows } = await pool.query(
-        `UPDATE ${TABLE} SET enabled = true, updated_at = now() WHERE id = $1 RETURNING *`,
+        `UPDATE ${TABLE}
+       SET enabled = true,
+           metadata = json_remove(metadata, '$.syncDisabled'),
+           updated_at = now()
+     WHERE id = $1
+     RETURNING *`,
         [id]
     );
     return rows[0] || null;
@@ -237,7 +242,12 @@ export async function enable(pool, id) {
 
 export async function disable(pool, id) {
     const { rows } = await pool.query(
-        `UPDATE ${TABLE} SET enabled = false, updated_at = now() WHERE id = $1 RETURNING *`,
+        `UPDATE ${TABLE}
+       SET enabled = false,
+           metadata = json_remove(metadata, '$.syncDisabled'),
+           updated_at = now()
+     WHERE id = $1
+     RETURNING *`,
         [id]
     );
     return rows[0] || null;

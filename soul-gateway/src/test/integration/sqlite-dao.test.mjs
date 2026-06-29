@@ -204,6 +204,55 @@ describe('SQLite DAO integration', () => {
         });
     });
 
+    it('clears syncDisabled metadata when models are operator toggled', async () => {
+        await withDb(async (db) => {
+            const provider = await providersDao.create(db, {
+                providerKey: 'sync-provider',
+                displayName: 'Sync Provider',
+                kind: 'external_api',
+                adapterKey: 'openai-api',
+                authStrategy: 'api_key',
+            });
+            const model = await modelsDao.create(db, {
+                modelKey: 'sync-provider/model',
+                displayName: 'Sync Model',
+                providerId: provider.id,
+                providerModelId: 'model',
+                metadata: {
+                    syncDisabled: {
+                        reason: 'missing-from-discovery',
+                        source: 'provider.timer-refresh',
+                        at: '2026-06-29T00:00:00.000Z',
+                    },
+                    kept: 'value',
+                },
+            });
+
+            const disabled = await modelsDao.disable(db, model.id);
+
+            assert.equal(disabled.enabled, false);
+            assert.equal(disabled.metadata.syncDisabled, undefined);
+            assert.equal(disabled.metadata.kept, 'value');
+
+            await modelsDao.update(db, model.id, {
+                metadata: {
+                    ...disabled.metadata,
+                    syncDisabled: {
+                        reason: 'missing-from-discovery',
+                        source: 'provider.timer-refresh',
+                        at: '2026-06-29T00:01:00.000Z',
+                    },
+                },
+            });
+
+            const enabled = await modelsDao.enable(db, model.id);
+
+            assert.equal(enabled.enabled, true);
+            assert.equal(enabled.metadata.syncDisabled, undefined);
+            assert.equal(enabled.metadata.kept, 'value');
+        });
+    });
+
     it('loads middleware default settings from SQLite snapshots as objects', async () => {
         await withDb(async (db) => {
             await middlewaresDao.create(db, {

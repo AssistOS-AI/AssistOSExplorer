@@ -309,6 +309,46 @@ describe('models-dao', () => {
             assert.equal(typeof dao[fn], 'function', `missing export: ${fn}`);
         }
     });
+
+    it('clears syncDisabled in atomic toggle updates without pre-reading metadata', async () => {
+        const dao = await import('../../db/dao/models-dao.mjs');
+
+        for (const [fnName, enabledSql] of [
+            ['enable', 'true'],
+            ['disable', 'false'],
+        ]) {
+            const calls = [];
+            const id = `${fnName}-model-id`;
+            const pool = {
+                async query(sql, params) {
+                    calls.push({ sql, params });
+                    return {
+                        rows: [
+                            {
+                                id,
+                                enabled: fnName === 'enable',
+                                metadata: { kept: 'value' },
+                            },
+                        ],
+                    };
+                },
+            };
+
+            const row = await dao[fnName](pool, id);
+
+            assert.equal(row.id, id);
+            assert.equal(calls.length, 1);
+            assert.match(calls[0].sql, /^UPDATE models\s+SET enabled = (true|false),/);
+            assert.match(calls[0].sql, new RegExp(`enabled = ${enabledSql}`));
+            assert.match(
+                calls[0].sql,
+                /metadata = json_remove\(metadata, '\$\.syncDisabled'\)/
+            );
+            assert.doesNotMatch(calls[0].sql, /^SELECT/i);
+            assert.deepEqual(calls[0].params, [id]);
+            assert.ok(!calls[0].params.some((param) => typeof param === 'object'));
+        }
+    });
 });
 
 describe('model-aliases-dao', () => {
