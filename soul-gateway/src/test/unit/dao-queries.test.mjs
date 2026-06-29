@@ -304,6 +304,8 @@ describe('models-dao', () => {
             'enable',
             'disable',
             'listByProvider',
+            'updateProviderSyncedModel',
+            'disableMissingProviderSyncedModel',
         ];
         for (const fn of expected) {
             assert.equal(typeof dao[fn], 'function', `missing export: ${fn}`);
@@ -348,6 +350,89 @@ describe('models-dao', () => {
             assert.deepEqual(calls[0].params, [id]);
             assert.ok(!calls[0].params.some((param) => typeof param === 'object'));
         }
+    });
+
+    it('updates provider-synced models without forcing enabled true from stale state', async () => {
+        const dao = await import('../../db/dao/models-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return {
+                    rows: [
+                        {
+                            id: 'model-id',
+                            enabled: false,
+                            metadata: { refreshed: true },
+                        },
+                    ],
+                };
+            },
+        };
+
+        const row = await dao.updateProviderSyncedModel(pool, 'model-id', {
+            displayName: 'Fresh Name',
+            providerModelId: 'fresh-model',
+            metadata: { refreshed: true },
+            discoverySource: 'synced',
+        });
+
+        assert.equal(row.id, 'model-id');
+        assert.equal(calls.length, 1);
+        assert.match(calls[0].sql, /UPDATE models/);
+        assert.match(
+            calls[0].sql,
+            /enabled = CASE\s+WHEN json_type\(metadata, '\$\.syncDisabled'\) IS NOT NULL THEN true\s+ELSE enabled\s+END/s
+        );
+        assert.match(
+            calls[0].sql,
+            /metadata = CASE\s+WHEN json_type\(metadata, '\$\.syncDisabled'\) IS NOT NULL THEN json_remove\(\$4, '\$\.syncDisabled'\)\s+ELSE \$4\s+END/s
+        );
+        assert.doesNotMatch(calls[0].sql, /enabled = \$\d/);
+        assert.match(calls[0].sql, /WHERE id = \$1/);
+        assert.match(calls[0].sql, /discovery_source != 'manual'/);
+        assert.deepEqual(calls[0].params, [
+            'model-id',
+            'Fresh Name',
+            'fresh-model',
+            JSON.stringify({ refreshed: true }),
+            'synced',
+        ]);
+    });
+
+    it('sync-disables missing provider rows only when the current row is enabled', async () => {
+        const dao = await import('../../db/dao/models-dao.mjs');
+        const calls = [];
+        const marker = {
+            reason: 'missing-from-discovery',
+            source: 'provider.model-refresh',
+            at: '2026-06-29T00:00:00.000Z',
+        };
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return { rows: [] };
+            },
+        };
+
+        const row = await dao.disableMissingProviderSyncedModel(
+            pool,
+            'model-id',
+            marker
+        );
+
+        assert.equal(row, null);
+        assert.equal(calls.length, 1);
+        assert.match(calls[0].sql, /UPDATE models/);
+        assert.match(calls[0].sql, /SET enabled = false/);
+        assert.match(
+            calls[0].sql,
+            /metadata = json_set\(COALESCE\(metadata, '\{\}'\), '\$\.syncDisabled', json\(\$2\)\)/
+        );
+        assert.match(calls[0].sql, /WHERE id = \$1/);
+        assert.match(calls[0].sql, /enabled = true/);
+        assert.match(calls[0].sql, /discovery_source != 'manual'/);
+        assert.deepEqual(calls[0].params, ['model-id', JSON.stringify(marker)]);
     });
 });
 

@@ -20,14 +20,11 @@ function clearSyncDisabledMarker(metadata = {}) {
     return next;
 }
 
-function markSyncDisabledMetadata(metadata = {}, source) {
+function createSyncDisabledMarker(source) {
     return {
-        ...(metadata || {}),
-        [SYNC_DISABLED_METADATA_KEY]: {
-            reason: 'missing-from-discovery',
-            source,
-            at: new Date().toISOString(),
-        },
+        reason: 'missing-from-discovery',
+        source,
+        at: new Date().toISOString(),
     };
 }
 
@@ -51,13 +48,6 @@ function mergeDiscoveryMetadata(existing, normalizedDiscovery) {
         return mergeOperatorDisabledMetadata(existing.metadata, incoming);
     }
     return clearSyncDisabledMarker(incoming);
-}
-
-function shouldEnableDiscoveredRow(existing) {
-    if (existing?.enabled !== false) {
-        return true;
-    }
-    return hasSyncDisabledMarker(existing);
 }
 
 function normalizeDbPricingNumber(value) {
@@ -509,21 +499,24 @@ export async function syncProviderModels(
             continue;
         }
 
-        const updatedRow = await modelsDao.update(appCtx.pool, existing.id, {
-            displayName: normalizedDiscovery.displayName,
-            providerModelId: normalizedDiscovery.providerModelId,
-            executionKind: normalizedDiscovery.executionKind,
-            pricingMode: normalizedDiscovery.pricingMode,
-            inputPricePerMillion: normalizedDiscovery.inputPricePerMillion,
-            outputPricePerMillion: normalizedDiscovery.outputPricePerMillion,
-            requestPriceUsd: normalizedDiscovery.requestPriceUsd,
-            isFree: normalizedDiscovery.isFree,
-            capabilities: normalizedDiscovery.capabilities,
-            tags: normalizedDiscovery.tags,
-            enabled: shouldEnableDiscoveredRow(existing),
-            metadata: mergeDiscoveryMetadata(existing, normalizedDiscovery),
-            discoverySource,
-        });
+        const updatedRow = await modelsDao.updateProviderSyncedModel(
+            appCtx.pool,
+            existing.id,
+            {
+                displayName: normalizedDiscovery.displayName,
+                providerModelId: normalizedDiscovery.providerModelId,
+                executionKind: normalizedDiscovery.executionKind,
+                pricingMode: normalizedDiscovery.pricingMode,
+                inputPricePerMillion: normalizedDiscovery.inputPricePerMillion,
+                outputPricePerMillion: normalizedDiscovery.outputPricePerMillion,
+                requestPriceUsd: normalizedDiscovery.requestPriceUsd,
+                isFree: normalizedDiscovery.isFree,
+                capabilities: normalizedDiscovery.capabilities,
+                tags: normalizedDiscovery.tags,
+                metadata: mergeDiscoveryMetadata(existing, normalizedDiscovery),
+                discoverySource,
+            }
+        );
         syncedModels.push(updatedRow || existing);
         updated++;
     }
@@ -539,14 +532,14 @@ export async function syncProviderModels(
             if (existing.enabled === false) {
                 continue;
             }
-            await modelsDao.update(appCtx.pool, existing.id, {
-                enabled: false,
-                metadata: markSyncDisabledMetadata(
-                    existing.metadata || {},
-                    refreshReason
-                ),
-            });
-            disabled++;
+            const disabledRow = await modelsDao.disableMissingProviderSyncedModel(
+                appCtx.pool,
+                existing.id,
+                createSyncDisabledMarker(refreshReason)
+            );
+            if (disabledRow) {
+                disabled++;
+            }
         }
     }
 
