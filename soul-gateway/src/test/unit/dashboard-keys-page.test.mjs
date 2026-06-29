@@ -231,4 +231,115 @@ describe('dashboard keys page', () => {
         assert.equal(JSON.parse(createCall.options.body).subjectId, 'user:admin:laptop');
         assert.equal(JSON.parse(mintCall.options.body).userId, 'admin:laptop');
     });
+
+    it('uses an admin-entered owner instead of the current user default', async () => {
+        const calls = [];
+        const { window } = await loadDashboard(async (url, options = {}) => {
+            calls.push({ url: String(url), options });
+
+            if (String(url).endsWith('/management/me')) {
+                return jsonResponse({
+                    authenticated: true,
+                    user: { keyOwner: 'admin' },
+                });
+            }
+
+            if (
+                String(url).endsWith('/management/keys') &&
+                (options.method || 'GET') === 'GET'
+            ) {
+                return jsonResponse({ keys: [] });
+            }
+
+            if (
+                String(url).endsWith('/management/keys') &&
+                options.method === 'POST'
+            ) {
+                return jsonResponse({ key: { id: 'key-1' } }, 201);
+            }
+
+            if (String(url).endsWith('/api/router/identity/user-api-key')) {
+                return jsonResponse({ apiKey: 'sk-user-bob-laptop' });
+            }
+
+            throw new Error(`unexpected fetch ${url}`);
+        });
+
+        const page = window.keysPage();
+        await page.init();
+        page.openCreateKey();
+
+        assert.equal(page.createKeyForm.owner, 'admin');
+
+        page.createKeyForm.owner = 'bob';
+        page.createKeyForm.name = 'laptop';
+        await page.submitCreateKey();
+
+        const createCall = calls.find(
+            (call) =>
+                call.url.endsWith('/management/keys') &&
+                call.options.method === 'POST'
+        );
+        const mintCall = calls.find((call) =>
+            call.url.endsWith('/api/router/identity/user-api-key')
+        );
+
+        assert.equal(JSON.parse(createCall.options.body).subjectId, 'user:bob:laptop');
+        assert.equal(JSON.parse(mintCall.options.body).userId, 'bob:laptop');
+    });
+
+    it('treats whitespace-only owner input as blank and falls back to current owner', async () => {
+        const calls = [];
+        const { window } = await loadDashboard(async (url, options = {}) => {
+            calls.push({ url: String(url), options });
+
+            if (String(url).endsWith('/management/me')) {
+                return jsonResponse({
+                    authenticated: true,
+                    user: { keyOwner: 'admin' },
+                });
+            }
+
+            if (
+                String(url).endsWith('/management/keys') &&
+                (options.method || 'GET') === 'GET'
+            ) {
+                return jsonResponse({ keys: [] });
+            }
+
+            if (
+                String(url).endsWith('/management/keys') &&
+                options.method === 'POST'
+            ) {
+                return jsonResponse({ key: { id: 'key-1' } }, 201);
+            }
+
+            if (String(url).endsWith('/api/router/identity/user-api-key')) {
+                return jsonResponse({ apiKey: 'sk-user-admin-laptop' });
+            }
+
+            throw new Error(`unexpected fetch ${url}`);
+        });
+
+        const page = window.keysPage();
+        await page.init();
+        page.openCreateKey();
+
+        page.createKeyForm.owner = '   ';
+        page.createKeyForm.name = 'laptop';
+        await page.submitCreateKey();
+
+        const createCall = calls.find(
+            (call) =>
+                call.url.endsWith('/management/keys') &&
+                call.options.method === 'POST'
+        );
+        const mintCall = calls.find((call) =>
+            call.url.endsWith('/api/router/identity/user-api-key')
+        );
+
+        assert.equal(page.createKeyError, '');
+        assert.equal(JSON.parse(createCall.options.body).subjectId, 'user:admin:laptop');
+        assert.equal(JSON.parse(mintCall.options.body).userId, 'admin:laptop');
+    });
 });

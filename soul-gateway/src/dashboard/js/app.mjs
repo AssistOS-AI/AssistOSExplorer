@@ -2670,9 +2670,9 @@ function keysPage() {
 
         async submitCreateKey() {
             this.createKeyError = '';
-            const owner = String(
-                this.createKeyForm.owner || this.currentOwner || ''
-            ).trim();
+            const explicitOwner = String(this.createKeyForm.owner || '').trim();
+            const fallbackOwner = String(this.currentOwner || '').trim();
+            const owner = explicitOwner || fallbackOwner;
             const name = this.createKeyForm.name.trim();
             const part = /^[A-Za-z0-9._-]+$/;
             if (!part.test(owner) || !part.test(name)) {
