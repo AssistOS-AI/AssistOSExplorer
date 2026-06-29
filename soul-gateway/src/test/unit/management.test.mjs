@@ -11,6 +11,7 @@ import { EventEmitter } from 'node:events';
 import { MetricsService } from '../../observability/metrics-service.mjs';
 import { ExportService } from '../../observability/export-service.mjs';
 import { AuthenticationRequiredError } from '../../core/errors.mjs';
+import { handleManagementMe } from '../../management/session-route.mjs';
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -3594,6 +3595,42 @@ describe('management/middlewares-route', () => {
     });
 });
 
+// ── Management session route tests ──────────────────────────────────
+
+describe('management current session route', () => {
+    it('returns the verified management user with a derived key owner', async () => {
+        const req = createMockReq({ method: 'GET' });
+        const res = createMockRes();
+
+        await handleManagementMe({
+            req,
+            res,
+            managementAuth: {
+                source: 'router-sso',
+                user: {
+                    id: 'local:admin',
+                    username: 'admin',
+                    email: 'admin@example.test',
+                    roles: ['admin'],
+                },
+            },
+        });
+
+        assert.equal(res.statusCode, 200);
+        assert.deepEqual(parseJsonResponse(res), {
+            authenticated: true,
+            source: 'router-sso',
+            user: {
+                id: 'local:admin',
+                username: 'admin',
+                email: 'admin@example.test',
+                roles: ['admin'],
+                keyOwner: 'admin',
+            },
+        });
+    });
+});
+
 // ── Router integration tests ────────────────────────────────────────
 
 describe('management/router', () => {
@@ -3704,6 +3741,31 @@ describe('management/router', () => {
         });
 
         assert.equal(res.statusCode, 200);
+    });
+
+    it('registers the current management session route', async () => {
+        const appCtx = createMockAppCtx();
+        const { httpRouter } = buildManagementRouter(appCtx);
+        const match = httpRouter.match('GET', '/management/me');
+        const req = createMockReq({ method: 'GET' });
+        const res = createMockRes();
+
+        assert.ok(match);
+        addRouterAdminAuth(req, {
+            method: 'GET',
+            path: '/management/me',
+        });
+
+        await match.handler({
+            req,
+            res,
+            params: match.params,
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+        assert.equal(parseJsonResponse(res).user.keyOwner, 'admin');
     });
 
     it('does not require Soul Gateway CSRF on admin writes with verified router identity', async () => {

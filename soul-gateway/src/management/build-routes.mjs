@@ -14,6 +14,9 @@ import { requireAdmin } from '../runtime/security/dashboard-auth.mjs';
 // Dashboard
 import { handleDashboard, handleStatic } from './dashboard-route.mjs';
 
+// Session
+import { handleManagementMe } from './session-route.mjs';
+
 // Keys
 import {
     handleListKeys,
@@ -169,14 +172,18 @@ export function buildManagementRouter(appCtx) {
     // ── Helper: wrap handler with Ploinky router admin auth ───────────
     function admin(handler) {
         return async (ctx) => {
-            await requireAdmin(
+            const managementAuth = await requireAdmin(
                 ctx.req,
                 appCtx.config.env,
                 appCtx.routerAuth || appCtx
             );
+            ctx.managementAuth = managementAuth;
             return handler(ctx);
         };
     }
+
+    // ── Session ──────────────────────────────────────────────────────
+    httpRouter.add('GET', '/management/me', admin(handleManagementMe));
 
     // ── Dashboard ────────────────────────────────────────────────────
     httpRouter.add('GET', '/management', admin(handleDashboard));
