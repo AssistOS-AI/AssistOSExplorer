@@ -1368,9 +1368,7 @@ function logsPage() {
                             log.key_label ||
                             log.label ||
                             log.key_hint ||
-                            (keyId === '__unknown__'
-                                ? 'Unknown key'
-                                : keyId.slice(0, 8)),
+                            (keyId === '__unknown__' ? 'Unknown key' : 'Missing key'),
                         key_hint: log.key_hint || '',
                         request_count: 0,
                         error_count: 0,

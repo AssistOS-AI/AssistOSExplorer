@@ -268,11 +268,61 @@ describe('dashboard logs page', () => {
 
         assert.equal(page.keys.length, 1);
         assert.equal(page.keys[0].list_id, 'new-key-1');
+        assert.equal(page.keys[0].key_label, 'Missing key');
+        assert.notEqual(page.keys[0].key_label, 'new-key');
+        assert.equal(page.keys[0].key_hint, '');
         assert.equal(page.keys[0].request_count, 1);
         assert.equal(page.selectedKey.list_id, 'new-key-1');
         assert.equal(page.logsTotal, 1);
         assert.equal(page.selectedLogs.length, 1);
         assert.equal(page.selectedLogs[0].id, 'live-new-key-log');
+    });
+
+    it('uses safe key display fields from streamed logs', async () => {
+        const { window } = await loadDashboard(async (path) => {
+            const p = String(path);
+            if (p.startsWith('/management/logs/keys?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return { data: [] };
+                    },
+                };
+            }
+            if (p.startsWith('/management/logs?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return { data: [], total: 0, limit: 50, offset: 0 };
+                    },
+                };
+            }
+            throw new Error(`unexpected dashboard fetch: ${p}`);
+        });
+
+        const page = window.logsPage();
+        await page.init();
+
+        window.app()._handleLogMessage(JSON.stringify({
+            type: 'log',
+            data: {
+                log_id: 'live-enriched-log',
+                request_id: 'live-enriched-request',
+                api_key_id: 'agent-key-id',
+                key_label: 'agent:demo/echoAgent',
+                key_hint: 'agent:de...gent',
+                key_status: 'active',
+                requested_model: 'fast',
+                status: 'succeeded',
+                http_status: 200,
+                total_cost: 0,
+            },
+        }));
+
+        assert.equal(page.keys.length, 1);
+        assert.equal(page.keys[0].list_id, 'agent-key-id');
+        assert.equal(page.keys[0].key_label, 'agent:demo/echoAgent');
+        assert.equal(page.keys[0].key_hint, 'agent:de...gent');
     });
 
     it('handles one streamed log once when logs page init runs repeatedly', async () => {
