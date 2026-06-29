@@ -227,6 +227,56 @@ export async function update(pool, id, fields) {
     });
 }
 
+export async function updateOperatorModel(pool, id, fields) {
+    const keys = Object.keys(fields).filter((key) =>
+        ALLOWED_UPDATE_FIELDS.has(key)
+    );
+    if (keys.length === 0) return null;
+
+    const values = [];
+    const setClauses = [];
+    for (const key of keys) {
+        const value =
+            key === 'metadata' &&
+            fields.metadata &&
+            typeof fields.metadata === 'object' &&
+            !Array.isArray(fields.metadata)
+                ? { ...fields.metadata }
+                : fields[key];
+        if (
+            key === 'metadata' &&
+            value &&
+            typeof value === 'object' &&
+            !Array.isArray(value)
+        ) {
+            delete value.syncDisabled;
+        }
+        values.push(JSON_FIELDS.has(key) ? JSON.stringify(value) : value);
+        const param = `$${values.length + 1}`;
+        if (key === 'metadata') {
+            setClauses.push(
+                `metadata = json_remove(COALESCE(${param}, json_remove(metadata, '$.syncDisabled')), '$.syncDisabled')`
+            );
+        } else {
+            setClauses.push(`${toSnake(key)} = ${param}`);
+        }
+    }
+
+    if (!keys.includes('metadata')) {
+        setClauses.push(`metadata = json_remove(metadata, '$.syncDisabled')`);
+    }
+
+    const { rows } = await pool.query(
+        `UPDATE ${TABLE}
+       SET ${setClauses.join(', ')},
+           updated_at = now()
+     WHERE id = $1
+     RETURNING *`,
+        [id, ...values]
+    );
+    return rows[0] || null;
+}
+
 export async function updateProviderSyncedModel(pool, id, fields) {
     const keys = Object.keys(fields).filter((key) =>
         ALLOWED_PROVIDER_SYNC_UPDATE_FIELDS.has(key)

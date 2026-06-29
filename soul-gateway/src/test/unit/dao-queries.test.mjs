@@ -299,6 +299,7 @@ describe('models-dao', () => {
             'findByKey',
             'list',
             'update',
+            'updateOperatorModel',
             'del',
             'delByProvider',
             'enable',
@@ -310,6 +311,50 @@ describe('models-dao', () => {
         for (const fn of expected) {
             assert.equal(typeof dao[fn], 'function', `missing export: ${fn}`);
         }
+    });
+
+    it('updates operator-patched enabled state while atomically clearing syncDisabled metadata', async () => {
+        const dao = await import('../../db/dao/models-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return {
+                    rows: [
+                        {
+                            id: 'model-id',
+                            enabled: true,
+                            metadata: { preserved: 'value' },
+                        },
+                    ],
+                };
+            },
+        };
+
+        const row = await dao.updateOperatorModel(pool, 'model-id', {
+            enabled: true,
+            metadata: {
+                preserved: 'value',
+                syncDisabled: { reason: 'missing-from-discovery' },
+            },
+        });
+
+        assert.equal(row.id, 'model-id');
+        assert.equal(calls.length, 1);
+        assert.match(calls[0].sql, /UPDATE models/);
+        assert.match(calls[0].sql, /enabled = \$2/);
+        assert.match(
+            calls[0].sql,
+            /metadata = json_remove\(COALESCE\(\$3, json_remove\(metadata, '\$\.syncDisabled'\)\), '\$\.syncDisabled'\)/
+        );
+        assert.match(calls[0].sql, /WHERE id = \$1/);
+        assert.doesNotMatch(calls[0].sql, /^SELECT/i);
+        assert.deepEqual(calls[0].params, [
+            'model-id',
+            true,
+            JSON.stringify({ preserved: 'value' }),
+        ]);
+        assert.doesNotMatch(calls[0].params[2], /syncDisabled/);
     });
 
     it('clears syncDisabled in atomic toggle updates without pre-reading metadata', async () => {

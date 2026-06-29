@@ -1098,6 +1098,51 @@ describe('management/models-route', () => {
         );
     });
 
+    it('handleUpdateModel clears stale syncDisabled when enabled is patched', async () => {
+        const pool = createMockPool(async (sql, params) => {
+            assert.match(sql, /json_remove\(metadata, '\$\.syncDisabled'\)/);
+            assert.equal(
+                params.some((param) => String(param).includes('syncDisabled')),
+                false
+            );
+            return {
+                rows: [
+                    {
+                        id: 'm1',
+                        enabled: false,
+                        metadata: { operatorNote: 'keep' },
+                    },
+                ],
+                rowCount: 1,
+            };
+        });
+        const appCtx = createMockAppCtx({ pool });
+        const req = createMockReq({
+            method: 'PATCH',
+            body: {
+                enabled: false,
+                metadata: {
+                    operatorNote: 'keep',
+                    syncDisabled: {
+                        reason: 'missing-from-discovery',
+                        source: 'provider-refresh',
+                    },
+                },
+            },
+        });
+        const res = createMockRes();
+
+        await handleUpdateModel({
+            req,
+            res,
+            params: { modelId: 'm1' },
+            query: {},
+            appCtx,
+        });
+
+        assert.equal(res.statusCode, 200);
+    });
+
     it('handleDeleteModel returns 404 for missing model', async () => {
         const pool = createMockPool(async () => ({ rows: [], rowCount: 0 }));
         const appCtx = createMockAppCtx({ pool });
