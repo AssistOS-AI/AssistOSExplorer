@@ -1,4 +1,5 @@
 import * as auditDao from '../db/dao/audit-logs-dao.mjs';
+import * as keysDao from '../db/dao/api-keys-dao.mjs';
 
 /**
  * AuditLogWriter — durable request logging.
@@ -22,7 +23,7 @@ export class AuditLogWriter {
             await this.ensurePartition(entry.startedAt);
             const row = await auditDao.insertCompleted(this.pool, entry);
             if (row && this.broadcastHub) {
-                this.broadcastHub.publish(row);
+                await this.publishLiveRow(row);
             }
             return row;
         } catch (err) {
@@ -52,7 +53,7 @@ export class AuditLogWriter {
         try {
             const row = await auditDao.finalize(this.pool, startedAt, logId, fields);
             if (row && this.broadcastHub) {
-                this.broadcastHub.publish(row);
+                await this.publishLiveRow(row);
             }
             return row;
         } catch (err) {
@@ -61,6 +62,38 @@ export class AuditLogWriter {
                 error: err.message,
             });
             return null;
+        }
+    }
+
+    async publishLiveRow(row) {
+        const subscriberCount = Number(this.broadcastHub?.subscriberCount ?? 1);
+        if (subscriberCount <= 0) {
+            this.broadcastHub.publish(row);
+            return;
+        }
+        this.broadcastHub.publish(await this.withSafeKeyDisplay(row));
+    }
+
+    async withSafeKeyDisplay(row) {
+        try {
+            const display = await keysDao.findSafeDisplayById(
+                this.pool,
+                row.api_key_id
+            );
+            return { ...row, ...display };
+        } catch (err) {
+            this.log.warn?.('audit live key display lookup failed', {
+                logId: row.log_id,
+                apiKeyId: row.api_key_id,
+                error: err.message,
+            });
+            const fallback = row.api_key_id ? 'Missing key' : 'Unknown key';
+            return {
+                ...row,
+                key_label: row.key_label || fallback,
+                key_hint: row.key_hint || '',
+                key_status: row.key_status || 'unknown',
+            };
         }
     }
 
