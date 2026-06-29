@@ -157,6 +157,55 @@ export function buildUserKeyHint(value) {
     return `${USER_KEY_HINT_PREFIX}${digest.slice(0, 12)}...${digest.slice(-6)}`;
 }
 
+export function buildSafeKeyDisplay(row, { missingLabel = 'Missing key' } = {}) {
+    if (!row) {
+        return {
+            key_label: missingLabel,
+            key_hint: '',
+            key_status: 'unknown',
+        };
+    }
+
+    const subjectId = String(row.subject_id || '');
+    const subjectType = String(row.subject_type || '');
+    const label = String(row.label || '');
+    const fallbackLabel = String(row.key_label || '');
+    const existingHint = String(row.key_hint || '');
+    const rawUserValue = [
+        subjectId,
+        label,
+        fallbackLabel,
+        existingHint,
+        String(row.id || ''),
+    ].find((value) => value.startsWith('user:'));
+    const isUserSubject = subjectType === 'user' || Boolean(rawUserValue);
+    const keyHint = isUserSubject
+        ? buildUserKeyHint(rawUserValue || subjectId || row.id || existingHint)
+        : existingHint || buildKeyHint(
+            subjectId || row.label || row.key_label || row.id
+        );
+    const existingLabel = label || fallbackLabel;
+    const keyLabel = isUserSubject && (
+        !existingLabel || existingLabel.startsWith('user:')
+    )
+        ? 'User key'
+        : existingLabel || missingLabel;
+
+    return {
+        key_label: keyLabel,
+        key_hint: keyHint || '',
+        key_status: row.status || row.key_status || 'unknown',
+    };
+}
+
+export async function findSafeDisplayById(pool, id) {
+    if (!id) {
+        return buildSafeKeyDisplay(null, { missingLabel: 'Unknown key' });
+    }
+    const row = await findById(pool, id);
+    return buildSafeKeyDisplay(row, { missingLabel: 'Missing key' });
+}
+
 /**
  * Detect a SQLite UNIQUE-constraint violation surfaced by node:sqlite
  * (ERR_SQLITE_ERROR / "UNIQUE constraint failed" / extended code 2067).

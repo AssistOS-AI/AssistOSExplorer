@@ -18,6 +18,8 @@ describe('api-keys-dao', () => {
             'update',
             'revoke',
             'updateLastUsed',
+            'buildSafeKeyDisplay',
+            'findSafeDisplayById',
         ];
         for (const fn of expected) {
             assert.equal(typeof dao[fn], 'function', `missing export: ${fn}`);
@@ -90,6 +92,164 @@ describe('api-keys-dao', () => {
         assert.doesNotMatch(row.key_hint, new RegExp(owner));
         assert.doesNotMatch(row.key_hint, new RegExp(name));
         assert.notEqual(row.key_hint, subjectId);
+    });
+
+    it('builds safe display fields for agent keys without hiding the subject label', async () => {
+        const keysDao = await import('../../db/dao/api-keys-dao.mjs');
+
+        const display = keysDao.buildSafeKeyDisplay({
+            id: 'agent-key-id',
+            label: 'agent:demo/echoAgent',
+            subject_id: 'agent:demo/echoAgent',
+            subject_type: 'agent',
+            key_hint: 'agent:de...gent',
+            status: 'active',
+        });
+
+        assert.deepEqual(display, {
+            key_label: 'agent:demo/echoAgent',
+            key_hint: 'agent:de...gent',
+            key_status: 'active',
+        });
+    });
+
+    it('builds opaque safe display fields for user keys', async () => {
+        const keysDao = await import('../../db/dao/api-keys-dao.mjs');
+
+        const display = keysDao.buildSafeKeyDisplay({
+            id: 'user-key-id',
+            label: 'alice/laptop',
+            subject_id: 'user:alice:laptop',
+            subject_type: 'user',
+            key_hint: 'user:ali...ptop',
+            status: 'active',
+        });
+
+        assert.equal(display.key_label, 'alice/laptop');
+        assert.match(display.key_hint, /^sk-soul-/);
+        assert.doesNotMatch(display.key_hint, /user:/);
+        assert.doesNotMatch(display.key_hint, /alice/);
+        assert.doesNotMatch(display.key_hint, /laptop/);
+        assert.equal(display.key_status, 'active');
+    });
+
+    it('uses a generic label for raw user subject labels', async () => {
+        const keysDao = await import('../../db/dao/api-keys-dao.mjs');
+        const subjectId = 'user:alice:laptop';
+
+        const display = keysDao.buildSafeKeyDisplay({
+            id: 'user-key-id',
+            label: subjectId,
+            subject_id: subjectId,
+            subject_type: 'user',
+            key_hint: 'user:ali...ptop',
+            status: 'active',
+        });
+
+        assert.equal(display.key_label, 'User key');
+        assert.notEqual(display.key_label, subjectId);
+        assert.doesNotMatch(display.key_label, /^user:/);
+
+        const keyLabelDisplay = keysDao.buildSafeKeyDisplay({
+            id: 'user-key-id',
+            key_label: subjectId,
+            subject_id: subjectId,
+            subject_type: 'user',
+            key_hint: 'user:ali...ptop',
+            status: 'active',
+        });
+
+        assert.equal(keyLabelDisplay.key_label, 'User key');
+        assert.notEqual(keyLabelDisplay.key_label, subjectId);
+        assert.doesNotMatch(keyLabelDisplay.key_label, /^user:/);
+    });
+
+    it('infers user-safe display from raw display fields without subject metadata', async () => {
+        const keysDao = await import('../../db/dao/api-keys-dao.mjs');
+        const subjectId = 'user:alice:laptop';
+
+        const labelDisplay = keysDao.buildSafeKeyDisplay({
+            id: 'user-key-id',
+            label: subjectId,
+            key_hint: 'legacy-key-hint',
+            status: 'active',
+        });
+
+        assert.equal(labelDisplay.key_label, 'User key');
+        assert.notEqual(labelDisplay.key_label, subjectId);
+        assert.doesNotMatch(labelDisplay.key_label, /^user:/);
+
+        const keyLabelDisplay = keysDao.buildSafeKeyDisplay({
+            id: 'user-key-id',
+            key_label: subjectId,
+            key_hint: 'legacy-key-hint',
+            status: 'active',
+        });
+
+        assert.equal(keyLabelDisplay.key_label, 'User key');
+        assert.notEqual(keyLabelDisplay.key_label, subjectId);
+        assert.doesNotMatch(keyLabelDisplay.key_label, /^user:/);
+
+        const hintDisplay = keysDao.buildSafeKeyDisplay({
+            id: 'user-key-id',
+            key_hint: subjectId,
+            status: 'active',
+        });
+
+        assert.match(hintDisplay.key_hint, /^sk-soul-/);
+        assert.doesNotMatch(hintDisplay.key_hint, /user:/);
+        assert.doesNotMatch(hintDisplay.key_hint, /alice/);
+        assert.doesNotMatch(hintDisplay.key_hint, /laptop/);
+    });
+
+    it('looks up safe display fields by internal key id', async () => {
+        const keysDao = await import('../../db/dao/api-keys-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return {
+                    rows: [
+                        {
+                            id: 'agent-key-id',
+                            label: 'agent:demo/echoAgent',
+                            subject_id: 'agent:demo/echoAgent',
+                            subject_type: 'agent',
+                            key_hint: 'agent:de...gent',
+                            status: 'active',
+                        },
+                    ],
+                };
+            },
+        };
+
+        const display = await keysDao.findSafeDisplayById(pool, 'agent-key-id');
+
+        assert.match(calls[0].sql, /SELECT \* FROM api_keys WHERE id = \$1/);
+        assert.deepEqual(calls[0].params, ['agent-key-id']);
+        assert.equal(display.key_label, 'agent:demo/echoAgent');
+        assert.equal(display.key_hint, 'agent:de...gent');
+        assert.equal(display.key_status, 'active');
+    });
+
+    it('returns stable display fields for unknown and missing key ids', async () => {
+        const keysDao = await import('../../db/dao/api-keys-dao.mjs');
+        const pool = {
+            async query() {
+                return { rows: [] };
+            },
+        };
+
+        assert.deepEqual(await keysDao.findSafeDisplayById(pool, null), {
+            key_label: 'Unknown key',
+            key_hint: '',
+            key_status: 'unknown',
+        });
+        assert.deepEqual(await keysDao.findSafeDisplayById(pool, 'deleted-key-id'), {
+            key_label: 'Missing key',
+            key_hint: '',
+            key_status: 'unknown',
+        });
     });
 });
 
