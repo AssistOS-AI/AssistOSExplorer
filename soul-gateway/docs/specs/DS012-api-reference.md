@@ -62,6 +62,7 @@ Current contract details:
 - provider delete removes provider-seeded direct models (`discovery_source != 'manual'`) before deleting the provider row; delete still rejects when manual models remain attached to the provider
 - `POST /management/providers/:providerId/test` returns `{ ok, detail, latencyMs }`; `detail` is passed through from the backend module without translation to `message`/`error`
 - `POST /management/providers/:providerId/discover-models` returns the raw backend discovery descriptors (`modelId`, `displayName`, `contextWindow`, `supportsTools`, `supportsStreaming`, `supportsVision`, optional `pricing`, ...)
+- the live provider View/Models modal uses discovery for inspection and manual-add fallback; persisted provider catalog maintenance belongs to the shared sync path
 - provider create/update/delete performs a synchronous runtime snapshot refresh before returning success
 
 `provider_mode` exposes:
@@ -117,8 +118,10 @@ Current contract details:
 
 Provider model sync semantics:
 
-- `POST /management/providers/:providerId/sync-models` uses the same discovery-and-sync path as provider create and OAuth completion
-- sync inserts new discovered rows, updates previously auto-discovered rows, preserves `discovery_source='manual'` rows, and disables missing previously-discovered rows instead of deleting them
+- `POST /management/providers/:providerId/sync-models` is the manual management entrypoint that invokes the shared upstream discovery/sync path also used by provider create/update, OAuth completion, startup refresh, and background refresh
+- when the request body omits `discoveries`, the endpoint runs live upstream discovery before syncing; when descriptors are provided, it syncs those descriptors through the same normalization and enrichment pipeline
+- sync inserts new discovered rows, updates previously discovered non-manual rows, disables missing synced rows with `metadata.syncDisabled`, re-enables returning sync-disabled rows, preserves operator-disabled rows as disabled, and preserves `discovery_source='manual'` rows
+- the dashboard exposes this endpoint as a persistent Sync action; the live View/Models modal remains an inspection/manual-add fallback rather than the primary catalog refresh control
 
 ## Middleware management
 
