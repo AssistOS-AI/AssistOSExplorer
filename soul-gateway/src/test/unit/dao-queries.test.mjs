@@ -749,6 +749,46 @@ describe('audit-logs-dao', () => {
         }
     });
 
+    it('serializes response payloads when inserting completed logs', async () => {
+        const dao = await import('../../db/dao/audit-logs-dao.mjs');
+        let captured = null;
+        const pool = {
+            async query(sql, values) {
+                captured = { sql, values };
+                return { rows: [{ log_id: 'l1' }] };
+            },
+        };
+
+        await dao.insertCompleted(pool, {
+            startedAt: new Date('2026-06-17T00:00:00Z'),
+            requestId: 'r1',
+            requestFormat: 'openai_chat',
+            status: 'succeeded',
+            apiKeyId: '00000000-0000-0000-0000-000000000000',
+            requestedModel: 'm',
+            responseExcerpt: 'hello',
+            responsePayload: {
+                choices: [
+                    {
+                        index: 0,
+                        message: { role: 'assistant', content: 'hello' },
+                        finish_reason: 'stop',
+                    },
+                ],
+            },
+        });
+
+        assert.match(captured.sql, /response_payload/);
+        assert.match(captured.sql, /response_excerpt/);
+        assert.ok(captured.values.includes('hello'));
+        const payloadValue = captured.values.find(
+            (value) =>
+                typeof value === 'string' &&
+                value.includes('"finish_reason":"stop"')
+        );
+        assert.ok(payloadValue, 'responsePayload should be JSON-stringified');
+    });
+
     it('orders log queries deterministically with tie breakers', async () => {
         const dao = await import('../../db/dao/audit-logs-dao.mjs');
         const calls = [];

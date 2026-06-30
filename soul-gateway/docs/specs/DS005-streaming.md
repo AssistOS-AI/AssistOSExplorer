@@ -34,6 +34,8 @@ Inside a provider attempt:
 
 If the client requested buffered output, `bufferingMiddleware()` drains the canonical stream into the buffered completion shape. If the client requested streaming, the provider chain skips that outer buffer and leaves the canonical stream on `ctx.response`.
 
+For audit logging, route-level streaming egress accumulates canonical events as they are written to the client. Text deltas, tool calls, usage, finish reason, and stream errors are captured into `ctx.metadata.responseCapture`, so streamed responses are recorded with the same capped excerpt and normalized payload shape as buffered responses. If the client disconnects mid-stream, the partial response is stored and the completed audit row is marked `status='aborted'`; if the provider emits an error mid-stream, the partial response is kept and the row is marked `status='failed'`.
+
 ## Route egress
 
 `respondMiddleware` branches on the response shape:
@@ -47,6 +49,7 @@ While route egress drains the response, it also records observability metadata:
 
 - streaming responses update `ctx.metadata.usage` from canonical `usage` events
 - streaming responses set `ctx.metadata.ttfbMs` on the first SSE write
+- streaming responses store response-capture metadata after the stream finishes, aborts, or errors
 - buffered responses normalize `ctx.response.usage` onto the same usage shape and set `ttfbMs` to the total buffered duration when no earlier first-byte timing exists
 
 ### SSE wire formats
