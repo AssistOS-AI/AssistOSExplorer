@@ -714,6 +714,8 @@ function providersPage() {
         editing: null,
         testing: null,
         testResult: null,
+        syncing: null,
+        syncResult: null,
         discoverProvider: null,
         discoveredModels: [],
         showDiscover: false,
@@ -821,6 +823,27 @@ function providersPage() {
                 return result?.ok ? 'Connected' : 'Connection failed';
             }
             return JSON.stringify(result.detail);
+        },
+
+        formatSyncDetail(result) {
+            if (!result) return '';
+            const providerName =
+                result.providerName ||
+                result.providerKey ||
+                result.providerId ||
+                'Provider';
+            const counts = [
+                ['discovered', 'discovered'],
+                ['created', 'created'],
+                ['updated', 'updated'],
+                ['disabled', 'disabled'],
+                ['synced', 'synced'],
+            ]
+                .filter(([key]) => result[key] != null)
+                .map(([key, label]) => `${label}: ${result[key]}`);
+            return `${providerName} sync complete: ${
+                counts.length ? counts.join(', ') : 'no count details returned'
+            }`;
         },
 
         onTemplateChange() {
@@ -948,6 +971,43 @@ function providersPage() {
                 this.testResult = { ok: false, detail: e.message };
             }
             this.testing = null;
+        },
+
+        async syncModels(p) {
+            this.syncing = p.id;
+            this.syncResult = null;
+            try {
+                const result = await api.post(
+                    `/management/providers/${p.id}/sync-models`,
+                    {}
+                );
+                if (result.error) {
+                    alert(result.error.message || result.error);
+                    return;
+                }
+                this.providers = unwrapArray(
+                    await api.get('/management/providers')
+                );
+                window.dispatchEvent(
+                    new CustomEvent('provider-models-synced', {
+                        detail: {
+                            providerId: p.id,
+                            providerKey: p.provider_key,
+                        },
+                    })
+                );
+                this.syncResult = {
+                    ...result,
+                    providerId: p.id,
+                    providerKey: p.provider_key,
+                    providerName:
+                        p.display_name || p.provider_key || String(p.id),
+                };
+            } catch (e) {
+                alert(e.message || 'Failed to sync provider models');
+            } finally {
+                this.syncing = null;
+            }
         },
 
         async discoverModels(p) {

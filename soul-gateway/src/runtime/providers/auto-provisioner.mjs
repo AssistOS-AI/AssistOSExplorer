@@ -7,6 +7,49 @@ import { performRuntimeRefresh } from '../registry/runtime-refresh.mjs';
 import { enrichModelMetadata } from '../policy/model-metadata-classifier.mjs';
 
 const MAX_DB_NUMERIC_14_8_ABS = 1_000_000;
+const SYNC_DISABLED_METADATA_KEY = 'syncDisabled';
+const OPERATOR_DISABLED_METADATA_KEYS = ['disabledBy'];
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000;
+
+function hasSyncDisabledMarker(row) {
+    return Boolean(row?.metadata?.[SYNC_DISABLED_METADATA_KEY]);
+}
+
+function clearSyncDisabledMarker(metadata = {}) {
+    const next = { ...(metadata || {}) };
+    delete next[SYNC_DISABLED_METADATA_KEY];
+    return next;
+}
+
+function createSyncDisabledMarker(source) {
+    return {
+        reason: 'missing-from-discovery',
+        source,
+        at: new Date().toISOString(),
+    };
+}
+
+function mergeOperatorDisabledMetadata(existingMetadata = {}, incomingMetadata = {}) {
+    const existing = existingMetadata || {};
+    const next = {
+        ...existing,
+        ...(incomingMetadata || {}),
+    };
+    for (const key of OPERATOR_DISABLED_METADATA_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(existing, key)) {
+            next[key] = existing[key];
+        }
+    }
+    return clearSyncDisabledMarker(next);
+}
+
+function mergeDiscoveryMetadata(existing, normalizedDiscovery) {
+    const incoming = normalizedDiscovery.metadata || {};
+    if (existing?.enabled === false && !hasSyncDisabledMarker(existing)) {
+        return mergeOperatorDisabledMetadata(existing.metadata, incoming);
+    }
+    return clearSyncDisabledMarker(incoming);
+}
 
 function normalizeDbPricingNumber(value) {
     if (value === undefined || value === null || value === '') return null;
@@ -16,6 +59,49 @@ function normalizeDbPricingNumber(value) {
         return null;
     }
     return numeric;
+}
+
+function isModelKeyUniqueConstraintError(err) {
+    const message = String(err?.message || '');
+    return /UNIQUE constraint failed:\s*models\.model_key/i.test(message);
+}
+
+function modelRowBelongsToProvider(row, provider) {
+    const rowProviderId = row?.provider_id ?? row?.providerId ?? null;
+    return (
+        rowProviderId != null &&
+        provider?.id != null &&
+        String(rowProviderId) === String(provider.id)
+    );
+}
+
+function createDiscoveryTimeout(timeoutMs, backendKey) {
+    return new Error(
+        `Provider backend '${backendKey}' model discovery timed out after ${timeoutMs}ms`
+    );
+}
+
+async function updateSyncedDiscoveredModel(
+    modelsDao,
+    appCtx,
+    existing,
+    normalizedDiscovery,
+    discoverySource
+) {
+    return modelsDao.updateProviderSyncedModel(appCtx.pool, existing.id, {
+        displayName: normalizedDiscovery.displayName,
+        providerModelId: normalizedDiscovery.providerModelId,
+        executionKind: normalizedDiscovery.executionKind,
+        pricingMode: normalizedDiscovery.pricingMode,
+        inputPricePerMillion: normalizedDiscovery.inputPricePerMillion,
+        outputPricePerMillion: normalizedDiscovery.outputPricePerMillion,
+        requestPriceUsd: normalizedDiscovery.requestPriceUsd,
+        isFree: normalizedDiscovery.isFree,
+        capabilities: normalizedDiscovery.capabilities,
+        tags: normalizedDiscovery.tags,
+        metadata: mergeDiscoveryMetadata(existing, normalizedDiscovery),
+        discoverySource,
+    });
 }
 
 function getDiscoveryPricing(discovery) {
@@ -350,7 +436,10 @@ export function normalizeDiscoveryDescriptor(providerRecord, discovery) {
 export async function discoverProviderModels(
     appCtx,
     provider,
-    { oauthAdapterKey = null } = {}
+    {
+        oauthAdapterKey = null,
+        discoveryTimeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS,
+    } = {}
 ) {
     const log = appCtx.log;
     const normalizedProvider = normalizeProviderRecord(provider);
@@ -373,13 +462,31 @@ export async function discoverProviderModels(
         credentialLease = await credentialManager.getCredentials(provider.id);
     }
 
+    const timeoutMs = Number(discoveryTimeoutMs);
+    const shouldTimeOut = Number.isFinite(timeoutMs) && timeoutMs > 0;
+    const abortController = shouldTimeOut ? new AbortController() : null;
+    let timeoutId = null;
+
     try {
         const lifecycleCtx = createBackendLifecycleContext({
             providerRecord: normalizedProvider,
             credentialLease,
+            signal: abortController?.signal,
             logger: log,
         });
-        const result = await backendModule.discoverModels(lifecycleCtx);
+        const discoveryPromise = backendModule.discoverModels(lifecycleCtx);
+        const result = shouldTimeOut
+            ? await Promise.race([
+                  discoveryPromise,
+                  new Promise((_, reject) => {
+                      timeoutId = setTimeout(() => {
+                          abortController.abort();
+                          reject(createDiscoveryTimeout(timeoutMs, backendKey));
+                      }, timeoutMs);
+                      timeoutId.unref?.();
+                  }),
+              ])
+            : await discoveryPromise;
         if (!Array.isArray(result)) {
             throw new Error(
                 `Provider backend '${backendKey}' returned a non-array discovery result`
@@ -387,6 +494,7 @@ export async function discoverProviderModels(
         }
         return result;
     } finally {
+        if (timeoutId) clearTimeout(timeoutId);
         if (credentialLease && credentialManager) {
             credentialManager.release(credentialLease);
         }
@@ -442,13 +550,49 @@ export async function syncProviderModels(
         const existing = existingByModelKey.get(normalizedDiscovery.modelKey) || null;
 
         if (!existing) {
-            const createdRow = await modelsDao.create(appCtx.pool, {
-                ...normalizedDiscovery,
-                enabled: true,
-                discoverySource,
-            });
-            syncedModels.push(createdRow);
-            created++;
+            try {
+                const createdRow = await modelsDao.create(appCtx.pool, {
+                    ...normalizedDiscovery,
+                    enabled: true,
+                    discoverySource,
+                });
+                syncedModels.push(createdRow);
+                created++;
+            } catch (err) {
+                if (!isModelKeyUniqueConstraintError(err)) {
+                    throw err;
+                }
+                const racedExisting = await modelsDao.findByKey(
+                    appCtx.pool,
+                    normalizedDiscovery.modelKey
+                );
+                if (
+                    !racedExisting ||
+                    !modelRowBelongsToProvider(
+                        racedExisting,
+                        normalizedProvider
+                    )
+                ) {
+                    throw err;
+                }
+                existingByModelKey.set(
+                    normalizedDiscovery.modelKey,
+                    racedExisting
+                );
+                if (racedExisting.discovery_source === 'manual') {
+                    syncedModels.push(racedExisting);
+                    continue;
+                }
+                const updatedRow = await updateSyncedDiscoveredModel(
+                    modelsDao,
+                    appCtx,
+                    racedExisting,
+                    normalizedDiscovery,
+                    discoverySource
+                );
+                syncedModels.push(updatedRow || racedExisting);
+                updated++;
+            }
             continue;
         }
 
@@ -457,20 +601,13 @@ export async function syncProviderModels(
             continue;
         }
 
-        const updatedRow = await modelsDao.update(appCtx.pool, existing.id, {
-            displayName: normalizedDiscovery.displayName,
-            providerModelId: normalizedDiscovery.providerModelId,
-            executionKind: normalizedDiscovery.executionKind,
-            pricingMode: normalizedDiscovery.pricingMode,
-            inputPricePerMillion: normalizedDiscovery.inputPricePerMillion,
-            outputPricePerMillion: normalizedDiscovery.outputPricePerMillion,
-            requestPriceUsd: normalizedDiscovery.requestPriceUsd,
-            isFree: normalizedDiscovery.isFree,
-            capabilities: normalizedDiscovery.capabilities,
-            tags: normalizedDiscovery.tags,
-            metadata: normalizedDiscovery.metadata,
-            discoverySource,
-        });
+        const updatedRow = await updateSyncedDiscoveredModel(
+            modelsDao,
+            appCtx,
+            existing,
+            normalizedDiscovery,
+            discoverySource
+        );
         syncedModels.push(updatedRow || existing);
         updated++;
     }
@@ -486,8 +623,14 @@ export async function syncProviderModels(
             if (existing.enabled === false) {
                 continue;
             }
-            await modelsDao.disable(appCtx.pool, existing.id);
-            disabled++;
+            const disabledRow = await modelsDao.disableMissingProviderSyncedModel(
+                appCtx.pool,
+                existing.id,
+                createSyncDisabledMarker(refreshReason)
+            );
+            if (disabledRow) {
+                disabled++;
+            }
         }
     }
 

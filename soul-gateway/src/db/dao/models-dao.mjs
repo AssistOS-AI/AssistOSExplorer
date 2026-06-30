@@ -3,6 +3,7 @@
  * Pure data-access functions — no business logic.
  */
 import { randomUUID } from 'node:crypto';
+import { toSnake } from './helpers/case-convert.mjs';
 import { updateRow } from './helpers/query-builder.mjs';
 
 const TABLE = 'models';
@@ -204,11 +205,135 @@ const JSON_FIELDS = new Set([
     'metadata',
 ]);
 
+const ALLOWED_PROVIDER_SYNC_UPDATE_FIELDS = new Set([
+    'displayName',
+    'providerModelId',
+    'executionKind',
+    'pricingMode',
+    'inputPricePerMillion',
+    'outputPricePerMillion',
+    'requestPriceUsd',
+    'isFree',
+    'capabilities',
+    'tags',
+    'metadata',
+    'discoverySource',
+]);
+
 export async function update(pool, id, fields) {
     return updateRow(pool, TABLE, id, fields, {
         allowedFields: ALLOWED_UPDATE_FIELDS,
         jsonFields: JSON_FIELDS,
     });
+}
+
+export async function updateOperatorModel(pool, id, fields) {
+    const keys = Object.keys(fields).filter((key) =>
+        ALLOWED_UPDATE_FIELDS.has(key)
+    );
+    if (keys.length === 0) return null;
+
+    const values = [];
+    const setClauses = [];
+    for (const key of keys) {
+        const value =
+            key === 'metadata' &&
+            fields.metadata &&
+            typeof fields.metadata === 'object' &&
+            !Array.isArray(fields.metadata)
+                ? { ...fields.metadata }
+                : fields[key];
+        if (
+            key === 'metadata' &&
+            value &&
+            typeof value === 'object' &&
+            !Array.isArray(value)
+        ) {
+            delete value.syncDisabled;
+        }
+        values.push(JSON_FIELDS.has(key) ? JSON.stringify(value) : value);
+        const param = `$${values.length + 1}`;
+        if (key === 'metadata') {
+            setClauses.push(
+                `metadata = json_remove(COALESCE(${param}, json_remove(metadata, '$.syncDisabled')), '$.syncDisabled')`
+            );
+        } else {
+            setClauses.push(`${toSnake(key)} = ${param}`);
+        }
+    }
+
+    if (!keys.includes('metadata')) {
+        setClauses.push(`metadata = json_remove(metadata, '$.syncDisabled')`);
+    }
+
+    const { rows } = await pool.query(
+        `UPDATE ${TABLE}
+       SET ${setClauses.join(', ')},
+           updated_at = now()
+     WHERE id = $1
+     RETURNING *`,
+        [id, ...values]
+    );
+    return rows[0] || null;
+}
+
+export async function updateProviderSyncedModel(pool, id, fields) {
+    const keys = Object.keys(fields).filter((key) =>
+        ALLOWED_PROVIDER_SYNC_UPDATE_FIELDS.has(key)
+    );
+    if (keys.length === 0) return null;
+
+    const values = [];
+    const setClauses = [
+        `enabled = CASE
+            WHEN json_type(metadata, '$.syncDisabled') IS NOT NULL THEN true
+            ELSE enabled
+        END`,
+    ];
+
+    for (const key of keys) {
+        const value = JSON_FIELDS.has(key)
+            ? JSON.stringify(fields[key])
+            : fields[key];
+        values.push(value);
+        const param = `$${values.length + 1}`;
+        if (key === 'metadata') {
+            setClauses.push(
+                `metadata = CASE
+                    WHEN json_type(metadata, '$.syncDisabled') IS NOT NULL THEN json_remove(${param}, '$.syncDisabled')
+                    ELSE ${param}
+                END`
+            );
+        } else {
+            setClauses.push(`${toSnake(key)} = ${param}`);
+        }
+    }
+
+    const { rows } = await pool.query(
+        `UPDATE ${TABLE}
+       SET ${setClauses.join(', ')},
+           updated_at = now()
+     WHERE id = $1
+       AND discovery_source != 'manual'
+     RETURNING *`,
+        [id, ...values]
+    );
+    return rows[0] || null;
+}
+
+export async function disableMissingProviderSyncedModel(pool, id, syncDisabled) {
+    const { rows } = await pool.query(
+        `UPDATE ${TABLE}
+       SET enabled = false,
+           metadata = json_set(COALESCE(metadata, '{}'), '$.syncDisabled', json($2)),
+           updated_at = now()
+     WHERE id = $1
+       AND enabled = true
+       AND discovery_source != 'manual'
+     RETURNING *`,
+        [id, JSON.stringify(syncDisabled)]
+    );
+    return rows[0] || null;
 }
 
 export async function del(pool, id) {
@@ -229,7 +354,12 @@ export async function delByProvider(pool, providerId) {
 
 export async function enable(pool, id) {
     const { rows } = await pool.query(
-        `UPDATE ${TABLE} SET enabled = true, updated_at = now() WHERE id = $1 RETURNING *`,
+        `UPDATE ${TABLE}
+       SET enabled = true,
+           metadata = json_remove(metadata, '$.syncDisabled'),
+           updated_at = now()
+     WHERE id = $1
+     RETURNING *`,
         [id]
     );
     return rows[0] || null;
@@ -237,7 +367,12 @@ export async function enable(pool, id) {
 
 export async function disable(pool, id) {
     const { rows } = await pool.query(
-        `UPDATE ${TABLE} SET enabled = false, updated_at = now() WHERE id = $1 RETURNING *`,
+        `UPDATE ${TABLE}
+       SET enabled = false,
+           metadata = json_remove(metadata, '$.syncDisabled'),
+           updated_at = now()
+     WHERE id = $1
+     RETURNING *`,
         [id]
     );
     return rows[0] || null;

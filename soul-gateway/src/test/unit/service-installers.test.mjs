@@ -176,30 +176,12 @@ async function writeModule(filePath, source) {
     await writeFile(filePath, source.trim() + '\n', 'utf8');
 }
 
-async function withStartupReconcileMocks(stubs, fn) {
-    const providerDaoMock = mock.module('../../db/dao/providers-dao.mjs', {
-        namedExports: {
-            list: stubs.listProviders,
-        },
-    });
-    const accountsDaoMock = mock.module(
-        '../../db/dao/provider-accounts-dao.mjs',
+async function withStartupRefreshMock(stub, fn) {
+    const refreshMock = mock.module(
+        '../../runtime/providers/provider-catalog-refresh.mjs',
         {
             namedExports: {
-                listByProvider: stubs.listAccountsByProvider,
-            },
-        }
-    );
-    const modelsDaoMock = mock.module('../../db/dao/models-dao.mjs', {
-        namedExports: {
-            listByProvider: stubs.listModelsByProvider,
-        },
-    });
-    const autoProvisionerMock = mock.module(
-        '../../runtime/providers/auto-provisioner.mjs',
-        {
-            namedExports: {
-                autoProvisionModels: stubs.autoProvisionModels,
+                refreshProviderModelCatalog: stub.refreshProviderModelCatalog,
             },
         }
     );
@@ -207,20 +189,15 @@ async function withStartupReconcileMocks(stubs, fn) {
     try {
         return await fn();
     } finally {
-        providerDaoMock.restore();
-        accountsDaoMock.restore();
-        modelsDaoMock.restore();
-        autoProvisionerMock.restore();
+        refreshMock.restore();
     }
 }
 
 describe('reconcileProvidersOnStartup', () => {
-    it('reconciles only enabled providers that have an active stored credential and zero model rows', async () => {
+    it('delegates startup provider model refresh to the catalog refresh service', async () => {
         const calls = [];
         const appCtx = {
-            config: {
-                env: {},
-            },
+            config: { env: {} },
             pool: {},
             services: {},
             log: {
@@ -231,106 +208,44 @@ describe('reconcileProvidersOnStartup', () => {
             },
         };
 
-        const summary = await withStartupReconcileMocks(
+        const refreshSummary = {
+            scanned: 2,
+            eligible: 2,
+            refreshed: 2,
+            discovered: 4,
+            created: 1,
+            updated: 3,
+            disabled: 0,
+            skipped: 0,
+            emptySkipped: 0,
+            failed: 0,
+        };
+        const summary = await withStartupRefreshMock(
             {
-                listProviders: async (_pool, { limit, offset }) => {
-                    assert.equal(limit, 200);
-                    if (offset === 0) {
-                        return [
-                            {
-                                id: 'provider-sync',
-                                provider_key: 'openai',
-                                oauth_adapter_key: null,
-                            },
-                            {
-                                id: 'provider-no-creds',
-                                provider_key: 'copilot',
-                                oauth_adapter_key: 'github-copilot',
-                            },
-                            {
-                                id: 'provider-has-models',
-                                provider_key: 'anthropic',
-                                oauth_adapter_key: null,
-                            },
-                        ];
-                    }
-                    return [];
-                },
-                listAccountsByProvider: async (_pool, providerId) => {
-                    if (providerId === 'provider-sync') {
-                        return [
-                            {
-                                id: 'acc-1',
-                                status: 'active',
-                                secret_ciphertext: Buffer.from('secret'),
-                            },
-                        ];
-                    }
-                    if (providerId === 'provider-no-creds') {
-                        return [];
-                    }
-                    return [
-                        {
-                            id: 'acc-2',
-                            status: 'active',
-                            credentials_path: '/tmp/oauth.json',
-                        },
-                    ];
-                },
-                listModelsByProvider: async (_pool, providerId) => {
-                    if (providerId === 'provider-has-models') {
-                        return [{ id: 'model-1' }];
-                    }
-                    return [];
-                },
-                autoProvisionModels: async (
-                    _appCtx,
-                    provider,
-                    oauthAdapterKey,
-                    options
-                ) => {
-                    calls.push({
-                        providerId: provider.id,
-                        oauthAdapterKey,
-                        options,
-                    });
-                    return {
-                        created: 2,
-                        updated: 1,
-                        disabled: 0,
-                    };
+                refreshProviderModelCatalog: async (receivedAppCtx, options) => {
+                    calls.push({ receivedAppCtx, options });
+                    return refreshSummary;
                 },
             },
             () => reconcileProvidersOnStartup(appCtx)
         );
 
-        assert.deepEqual(summary, {
-            scanned: 3,
-            reconciled: 1,
-            created: 2,
-            updated: 1,
-            disabled: 0,
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].receivedAppCtx, appCtx);
+        assert.deepEqual(calls[0].options, {
+            phase: 'startup',
+            discoverySource: 'synced',
+            disableMissing: true,
+            refreshReason: 'provider.startup-refresh',
+            skipEmptyExistingCatalog: true,
         });
-        assert.deepEqual(calls, [
-            {
-                providerId: 'provider-sync',
-                oauthAdapterKey: null,
-                options: {
-                    strict: true,
-                    discoverySource: 'auto_provisioned',
-                    disableMissing: true,
-                    refreshReason: 'provider.startup-reconcile',
-                },
-            },
-        ]);
+        assert.deepEqual(summary, refreshSummary);
     });
 
-    it('fails startup when reconciliation cannot seed an eligible provider', async () => {
+    it('no-ops without a database pool', async () => {
         const appCtx = {
-            config: {
-                env: {},
-            },
-            pool: {},
+            config: { env: {} },
+            pool: null,
             services: {},
             log: {
                 info() {},
@@ -340,32 +255,18 @@ describe('reconcileProvidersOnStartup', () => {
             },
         };
 
-        await assert.rejects(
-            () =>
-                withStartupReconcileMocks(
-                    {
-                        listProviders: async () => [
-                            {
-                                id: 'provider-sync',
-                                provider_key: 'openai',
-                                oauth_adapter_key: null,
-                            },
-                        ],
-                        listAccountsByProvider: async () => [
-                            {
-                                id: 'acc-1',
-                                status: 'active',
-                                secret_ciphertext: Buffer.from('secret'),
-                            },
-                        ],
-                        listModelsByProvider: async () => [],
-                        autoProvisionModels: async () => {
-                            throw new Error('upstream /models failed');
-                        },
-                    },
-                    () => reconcileProvidersOnStartup(appCtx)
-                ),
-            /upstream \/models failed/
-        );
+        const summary = await reconcileProvidersOnStartup(appCtx);
+        assert.deepEqual(summary, {
+            scanned: 0,
+            eligible: 0,
+            refreshed: 0,
+            discovered: 0,
+            created: 0,
+            updated: 0,
+            disabled: 0,
+            skipped: 0,
+            emptySkipped: 0,
+            failed: 0,
+        });
     });
 });

@@ -204,6 +204,179 @@ describe('SQLite DAO integration', () => {
         });
     });
 
+    it('clears syncDisabled metadata when models are operator toggled', async () => {
+        await withDb(async (db) => {
+            const provider = await providersDao.create(db, {
+                providerKey: 'sync-provider',
+                displayName: 'Sync Provider',
+                kind: 'external_api',
+                adapterKey: 'openai-api',
+                authStrategy: 'api_key',
+            });
+            const model = await modelsDao.create(db, {
+                modelKey: 'sync-provider/model',
+                displayName: 'Sync Model',
+                providerId: provider.id,
+                providerModelId: 'model',
+                metadata: {
+                    syncDisabled: {
+                        reason: 'missing-from-discovery',
+                        source: 'provider.timer-refresh',
+                        at: '2026-06-29T00:00:00.000Z',
+                    },
+                    kept: 'value',
+                },
+            });
+
+            const disabled = await modelsDao.disable(db, model.id);
+
+            assert.equal(disabled.enabled, false);
+            assert.equal(disabled.metadata.syncDisabled, undefined);
+            assert.equal(disabled.metadata.kept, 'value');
+
+            await modelsDao.update(db, model.id, {
+                metadata: {
+                    ...disabled.metadata,
+                    syncDisabled: {
+                        reason: 'missing-from-discovery',
+                        source: 'provider.timer-refresh',
+                        at: '2026-06-29T00:01:00.000Z',
+                    },
+                },
+            });
+
+            const enabled = await modelsDao.enable(db, model.id);
+
+            assert.equal(enabled.enabled, true);
+            assert.equal(enabled.metadata.syncDisabled, undefined);
+            assert.equal(enabled.metadata.kept, 'value');
+        });
+    });
+
+    it('guards provider sync writes against concurrent operator disables', async () => {
+        await withDb(async (db) => {
+            const provider = await providersDao.create(db, {
+                providerKey: 'race-provider',
+                displayName: 'Race Provider',
+                kind: 'external_api',
+                adapterKey: 'openai-api',
+                authStrategy: 'api_key',
+            });
+
+            const operatorDisabled = await modelsDao.create(db, {
+                modelKey: 'race-provider/operator-disabled',
+                displayName: 'Operator Disabled',
+                providerId: provider.id,
+                providerModelId: 'operator-disabled',
+                enabled: false,
+                discoverySource: 'synced',
+                metadata: { disabledBy: 'operator' },
+            });
+
+            const stillDisabled = await modelsDao.updateProviderSyncedModel(
+                db,
+                operatorDisabled.id,
+                {
+                    displayName: 'Operator Disabled Refreshed',
+                    providerModelId: 'operator-disabled',
+                    metadata: { refreshed: true },
+                    discoverySource: 'synced',
+                }
+            );
+
+            assert.equal(stillDisabled.enabled, false);
+            assert.equal(stillDisabled.metadata.refreshed, true);
+            assert.equal(stillDisabled.metadata.syncDisabled, undefined);
+
+            const syncDisabled = await modelsDao.create(db, {
+                modelKey: 'race-provider/sync-disabled',
+                displayName: 'Sync Disabled',
+                providerId: provider.id,
+                providerModelId: 'sync-disabled',
+                enabled: false,
+                discoverySource: 'synced',
+                metadata: {
+                    syncDisabled: {
+                        reason: 'missing-from-discovery',
+                        source: 'provider.model-refresh',
+                        at: '2026-06-29T00:00:00.000Z',
+                    },
+                },
+            });
+
+            const reenabled = await modelsDao.updateProviderSyncedModel(
+                db,
+                syncDisabled.id,
+                {
+                    displayName: 'Sync Disabled Returned',
+                    providerModelId: 'sync-disabled',
+                    metadata: { refreshed: true },
+                    discoverySource: 'synced',
+                }
+            );
+
+            assert.equal(reenabled.enabled, true);
+            assert.equal(reenabled.metadata.refreshed, true);
+            assert.equal(reenabled.metadata.syncDisabled, undefined);
+
+            const missing = await modelsDao.create(db, {
+                modelKey: 'race-provider/missing',
+                displayName: 'Missing',
+                providerId: provider.id,
+                providerModelId: 'missing',
+                enabled: true,
+                discoverySource: 'synced',
+                metadata: { kept: 'value' },
+            });
+
+            const operatorRace = await modelsDao.disable(db, missing.id);
+            assert.equal(operatorRace.enabled, false);
+
+            const skipped = await modelsDao.disableMissingProviderSyncedModel(
+                db,
+                missing.id,
+                {
+                    reason: 'missing-from-discovery',
+                    source: 'provider.model-refresh',
+                    at: '2026-06-29T00:01:00.000Z',
+                }
+            );
+
+            assert.equal(skipped, null);
+            const missingAfterRace = await modelsDao.findById(db, missing.id);
+            assert.equal(missingAfterRace.enabled, false);
+            assert.equal(missingAfterRace.metadata.kept, 'value');
+            assert.equal(missingAfterRace.metadata.syncDisabled, undefined);
+
+            const stale = await modelsDao.create(db, {
+                modelKey: 'race-provider/stale',
+                displayName: 'Stale',
+                providerId: provider.id,
+                providerModelId: 'stale',
+                enabled: true,
+                discoverySource: 'synced',
+                metadata: { kept: 'value' },
+            });
+
+            const disabledBySync = await modelsDao.disableMissingProviderSyncedModel(
+                db,
+                stale.id,
+                {
+                    reason: 'missing-from-discovery',
+                    source: 'provider.model-refresh',
+                    at: '2026-06-29T00:02:00.000Z',
+                }
+            );
+
+            assert.equal(disabledBySync.enabled, false);
+            assert.equal(disabledBySync.metadata.kept, 'value');
+            assert.equal(
+                disabledBySync.metadata.syncDisabled.reason,
+                'missing-from-discovery'
+            );
+        });
+    });
+
     it('loads middleware default settings from SQLite snapshots as objects', async () => {
         await withDb(async (db) => {
             await middlewaresDao.create(db, {

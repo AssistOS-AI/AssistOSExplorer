@@ -144,7 +144,10 @@ export async function handleUpdateModel(ctx) {
         if (body[k] !== undefined) fields[k] = body[k];
     }
 
-    const row = await modelsDao.update(pool, params.modelId, fields);
+    const row =
+        fields.enabled === undefined
+            ? await modelsDao.update(pool, params.modelId, fields)
+            : await modelsDao.updateOperatorModel(pool, params.modelId, fields);
     if (!row) {
         sendNotFound(res, 'Model');
         return;

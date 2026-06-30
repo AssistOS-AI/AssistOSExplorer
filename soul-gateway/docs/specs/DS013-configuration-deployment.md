@@ -25,7 +25,7 @@ Environment variables cover:
 | Rate limiting & budgets | `DEFAULT_RPM_LIMIT`, `DEFAULT_TPM_LIMIT`, `DEFAULT_DAILY_BUDGET_USD` |
 | Auth/jobs | `SESSION_TIMEOUT_MINUTES`, `TOKEN_REFRESH_INTERVAL_MS`, `QUOTA_RESET_SWEEP_MS`, `ALLOW_UNAUTHENTICATED` (dev gate — bypasses signed-subject verification; never set in production), `OAUTH_ADAPTERS_ENABLED` |
 | Ploinky injection | `PLOINKY_AGENT_API_KEY` (signed-subject key for this agent), `PLOINKY_AGENT_API_PUBLIC_KEY` (Ed25519 public key for verifying incoming signed-subject keys) |
-| Pricing/export/shutdown | `PRICING_DIRECTORY_URL`, `PRICING_REFRESH_INTERVAL_MS`, `EXPORT_BATCH_SIZE`, `SHUTDOWN_GRACE_MS`, `BODY_LIMIT_BYTES` |
+| Pricing/catalog/export/shutdown | `PRICING_DIRECTORY_URL`, `PRICING_REFRESH_INTERVAL_MS`, `PROVIDER_MODEL_REFRESH_INTERVAL_MS`, `EXPORT_BATCH_SIZE`, `SHUTDOWN_GRACE_MS`, `BODY_LIMIT_BYTES` |
 | Loop detection | `LOOP_MIN_RESPONSES`, `LOOP_WINDOW_SIZE`, `LOOP_SIMILARITY_THRESHOLD`, `LOOP_GROWTH_THRESHOLD_TOKENS`, `LOOP_REPETITIVE_RATIO_THRESHOLD`, `LOOP_INTERVENTION_MESSAGE` |
 | Search bootstrap / legacy inputs | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
 | Deep research | `DEEP_RESEARCH_PROVIDERS`, `DEEP_RESEARCH_MAX_RESULTS` |
@@ -39,6 +39,12 @@ Pricing directory detail:
 - `PRICING_DIRECTORY_URL` overrides the external model directory source used for `external_directory` pricing and management-side metadata enrichment
 - when `PRICING_DIRECTORY_URL` is unset, the runtime defaults that service to OpenRouter's public `https://openrouter.ai/api/v1/models`
 - `PRICING_REFRESH_INTERVAL_MS` controls the cache refresh interval for that shared directory
+
+Provider catalog refresh detail:
+
+- startup performs a best-effort provider model catalog refresh before the initial runtime snapshot is loaded; each provider discovery attempt is time-boxed so a slow upstream cannot block startup indefinitely
+- `PROVIDER_MODEL_REFRESH_INTERVAL_MS` controls the background provider catalog refresh interval; the default is `900000` ms
+- setting `PROVIDER_MODEL_REFRESH_INTERVAL_MS=0` disables the background provider model catalog refresh timer
 
 ### Application defaults
 
@@ -66,9 +72,9 @@ The runtime performs self-initialization on startup so there's no manual provisi
 5. **Install execution services** — creates the concurrency controller, spend cache, encryption key, and the shared cached pricing/model directory service. That directory is used for `external_directory` pricing lookups plus missing pricing/context/tag enrichment in management flows, and the runtime kicks off an initial best-effort background refresh.
 6. **Discover backend modules** — loads built-in backend modules from `runtime/backends/builtin/` and any configured backend extensions from `extensions/backends/`. Backend modules and provider-scope middleware extensions are registered into the unified `BackendCatalog` and the `providerMiddlewareRegistry` respectively.
 7. **Register OAuth adapters** — the five OAuth adapters are registered into the OAuth manager.
-8. **Reconcile providers** — any enabled provider with at least one active stored credential and zero model rows gets its auto-provision pass re-run to catch up before the initial snapshot is built.
+8. **Refresh provider model catalogs** — enabled discoverable providers with usable credentials are refreshed best-effort through the shared provider model catalog refresh path before the initial snapshot is built.
 9. **Load the runtime snapshot** — providers, models, model children, middleware bindings, and API keys are loaded into the in-memory runtime state used by the request path. Snapshot load validates enabled providers against the loaded backend catalog and enabled provider-scoped bindings against the loaded provider middleware registry; invalid composition aborts startup/refresh.
-10. **Start background jobs** — token refresh loop, cooldown cleanup, audit-log retention, quota reset sweep, spend cache cleanup.
+10. **Start background jobs** — token refresh loop, provider model catalog refresh, cooldown cleanup, audit-log retention, quota reset sweep, spend cache cleanup.
 11. **Start the HTTP server** — the public and management routes are registered and the server begins accepting requests.
 
 Each step logs a structured event so the operator can see the initialization sequence in the startup log.
@@ -166,7 +172,7 @@ The removed Soul Gateway dashboard login/session endpoints return HTTP 410 with 
 On `SIGTERM` / `SIGINT` the runtime shuts down gracefully:
 
 1. The HTTP server stops accepting new connections and `appCtx.draining` is set to `true`.
-2. Background jobs (token refresh, cleanup tasks, audit-log retention, quota reset sweep) are stopped.
+2. Background jobs are stopped, including token refresh, provider-model-refresh (provider model catalog refresh), cleanup tasks, audit-log retention, and quota reset sweep.
 3. SSE and WebSocket subscriber connections are closed via the broadcast hub.
 4. In-flight requests are allowed to complete, up to a configurable grace period (`SHUTDOWN_GRACE_MS`, default 30 seconds).
 5. Pending audit log writes are flushed.
@@ -195,7 +201,7 @@ Soul Gateway declares one default Ploinky-agent profile:
 - `/services/soul-gateway/v1/` uses router `access: "public"` because callers authenticate with a signed-subject API key.
 - `/services/soul-gateway/management/` uses router `access: "authenticated"` and requires Ploinky admin identity.
 - `/public-services/soul-gateway-health/` is unauthenticated for smoke checks.
-- `TOKEN_REFRESH_INTERVAL_MS`, `PRICING_REFRESH_INTERVAL_MS`, and `OAUTH_ADAPTERS_ENABLED` explicitly control schedulers and OAuth behavior.
+- `TOKEN_REFRESH_INTERVAL_MS`, `PRICING_REFRESH_INTERVAL_MS`, `PROVIDER_MODEL_REFRESH_INTERVAL_MS`, and `OAUTH_ADAPTERS_ENABLED` explicitly control schedulers and OAuth behavior.
 
 Dedicated production workspaces should enable the agent with Ploinky local auth, for example:
 

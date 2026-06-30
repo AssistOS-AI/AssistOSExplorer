@@ -179,11 +179,15 @@ export const backendModule = {
             );
         }
 
-        const body = await httpGet(baseUrl + '/models', {
-            Authorization: `Bearer ${token}`,
-            'User-Agent': VSCODE_USER_AGENT,
-            'Copilot-Integration-Id': COPILOT_INTEGRATION_ID,
-        });
+        const body = await httpGet(
+            baseUrl + '/models',
+            {
+                Authorization: `Bearer ${token}`,
+                'User-Agent': VSCODE_USER_AGENT,
+                'Copilot-Integration-Id': COPILOT_INTEGRATION_ID,
+            },
+            { signal: ctx?.signal }
+        );
         const parsed = JSON.parse(body);
         return (parsed.data || []).map((m) => ({
             modelId: m.id,
@@ -205,11 +209,15 @@ export const backendModule = {
         if (!token) return { ok: false, detail: 'No Copilot token configured' };
 
         try {
-            await httpGet(baseUrl + '/models', {
-                Authorization: `Bearer ${token}`,
-                'User-Agent': VSCODE_USER_AGENT,
-                'Copilot-Integration-Id': COPILOT_INTEGRATION_ID,
-            });
+            await httpGet(
+                baseUrl + '/models',
+                {
+                    Authorization: `Bearer ${token}`,
+                    'User-Agent': VSCODE_USER_AGENT,
+                    'Copilot-Integration-Id': COPILOT_INTEGRATION_ID,
+                },
+                { signal: ctx?.signal }
+            );
             return { ok: true, detail: 'Connected to GitHub Copilot API' };
         } catch (err) {
             return { ok: false, detail: err.message };
@@ -388,8 +396,13 @@ function collectBody(res) {
     });
 }
 
-function httpGet(urlStr, headers) {
+function httpGet(urlStr, headers, { signal } = {}) {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(signal.reason || new Error('Aborted'));
+            return;
+        }
+
         const url = new URL(urlStr);
         const isHttps = url.protocol === 'https:';
         const reqFn = isHttps ? httpsRequest : httpRequest;
@@ -400,6 +413,7 @@ function httpGet(urlStr, headers) {
             path: url.pathname + url.search,
             method: 'GET',
             headers,
+            signal,
         };
 
         const req = reqFn(opts, (res) => {

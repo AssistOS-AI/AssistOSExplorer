@@ -94,6 +94,12 @@ export function readEnv(processEnv = process.env) {
             21_600_000
         ),
 
+        // Provider catalog refresh
+        PROVIDER_MODEL_REFRESH_INTERVAL_MS: int(
+            processEnv.PROVIDER_MODEL_REFRESH_INTERVAL_MS,
+            900_000
+        ),
+
         // Safety / loop detection
         LOOP_MIN_RESPONSES: int(processEnv.LOOP_MIN_RESPONSES, 3),
         LOOP_WINDOW_SIZE: int(processEnv.LOOP_WINDOW_SIZE, 7),

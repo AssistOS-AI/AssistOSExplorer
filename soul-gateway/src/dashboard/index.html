@@ -2141,6 +2141,23 @@
                                     </button>
                                 </div>
 
+                                <!-- Sync result alert -->
+                                <div
+                                    x-show="syncResult"
+                                    x-transition
+                                    class="alert alert-success mb-4"
+                                >
+                                    <span
+                                        x-text="formatSyncDetail(syncResult)"
+                                    ></span>
+                                    <button
+                                        class="btn btn-ghost btn-xs"
+                                        @click="syncResult = null"
+                                    >
+                                        Dismiss
+                                    </button>
+                                </div>
+
                                 <!-- Providers table -->
                                 <div class="card bg-base-100 shadow">
                                     <div class="card-body p-0">
@@ -2244,9 +2261,23 @@
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-ghost btn-xs"
+                                                                    @click="syncModels(p)"
+                                                                    :disabled="syncing === p.id"
+                                                                >
+                                                                    <span
+                                                                        x-show="syncing !== p.id"
+                                                                        >Sync</span
+                                                                    >
+                                                                    <span
+                                                                        x-show="syncing === p.id"
+                                                                        class="loading loading-spinner loading-xs"
+                                                                    ></span>
+                                                                </button>
+                                                                <button
+                                                                    class="btn btn-ghost btn-xs"
                                                                     @click="discoverModels(p)"
                                                                 >
-                                                                    Models
+                                                                    View
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-ghost btn-xs"
@@ -2737,7 +2768,7 @@
                                                                     class="btn btn-primary btn-xs"
                                                                     @click="addDiscoveredModel(m)"
                                                                     :disabled="m._added"
-                                                                    x-text="m._added ? 'Added' : 'Add'"
+                                                                    x-text="m._added ? 'Added' : 'Add manual'"
                                                                 ></button>
                                                             </td>
                                                         </tr>
@@ -3306,6 +3337,7 @@
                                 x-data="modelsPage()"
                                 x-init="init()"
                                 @page-change.window="$event.detail === 'models' && init()"
+                                @provider-models-synced.window="init()"
                             >
                                 <div
                                     class="flex justify-between items-center mb-4"

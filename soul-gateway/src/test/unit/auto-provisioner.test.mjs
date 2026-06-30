@@ -53,6 +53,15 @@ function createMockAppCtx({ catalog, credentialManager, log, pool }) {
 // already enabled in the package.json test script) lets us install a
 // per-test stub without touching the real module.
 async function withStubbedModelsDao(stub, fn) {
+    const updateProviderSyncedModel =
+        stub.updateProviderSyncedModel || stub.update;
+    const disableMissingProviderSyncedModel =
+        stub.disableMissingProviderSyncedModel ||
+        (async (pool, id, marker) =>
+            stub.update(pool, id, {
+                enabled: false,
+                metadata: { syncDisabled: marker },
+            }));
     const mocked = mock.module('../../db/dao/models-dao.mjs', {
         namedExports: {
             findByKey: stub.findByKey,
@@ -60,6 +69,8 @@ async function withStubbedModelsDao(stub, fn) {
             create: stub.create,
             update: stub.update,
             disable: stub.disable,
+            updateProviderSyncedModel,
+            disableMissingProviderSyncedModel,
         },
     });
     // Re-import the auto-provisioner so its dynamic import picks up the mock.
@@ -304,18 +315,390 @@ describe('auto-provisioner.autoProvisionModels', () => {
         assert.equal(created[0].discoverySource, 'auto_provisioned');
         assert.equal(created[0].enabled, true);
         assert.equal(created[0].providerId, 'p1');
-        assert.equal(updated.length, 1);
-        assert.equal(updated[0].id, 'existing-auto');
-        assert.equal(updated[0].fields.discoverySource, 'auto_provisioned');
+        assert.equal(updated.length, 2);
+        const existingAutoUpdate = updated.find((entry) => entry.id === 'existing-auto');
+        assert.ok(existingAutoUpdate, 'existing auto row should be refreshed');
+        assert.equal(existingAutoUpdate.fields.discoverySource, 'auto_provisioned');
         assert.equal(
-            updated[0].fields.capabilities.contextWindow,
+            existingAutoUpdate.fields.capabilities.contextWindow,
             128000
         );
         assert.equal(
-            updated[0].fields.capabilities.supportsTools,
+            existingAutoUpdate.fields.capabilities.supportsTools,
             false
         );
-        assert.deepEqual(disabled, ['missing-auto']);
+        const missingAutoUpdate = updated.find((entry) => entry.id === 'missing-auto');
+        assert.ok(missingAutoUpdate, 'missing row should be sync-disabled via update');
+        assert.equal(missingAutoUpdate.fields.enabled, false);
+        assert.equal(
+            missingAutoUpdate.fields.metadata.syncDisabled.reason,
+            'missing-from-discovery'
+        );
+        assert.deepEqual(disabled, []);
+    });
+
+    it('marks missing discovered rows as sync-disabled instead of plain disabling them', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [{ modelId: 'current-model', displayName: 'Current Model' }];
+            },
+        };
+
+        const updates = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [
+                {
+                    id: 'existing-current',
+                    model_key: 'codex-api/current-model',
+                    discovery_source: 'synced',
+                    enabled: true,
+                    metadata: { existing: true },
+                },
+                {
+                    id: 'missing-synced',
+                    model_key: 'codex-api/old-model',
+                    discovery_source: 'synced',
+                    enabled: true,
+                    metadata: { kept: 'value' },
+                },
+            ],
+            create: async () => {
+                throw new Error('should not create rows');
+            },
+            update: async (_pool, id, fields) => {
+                updates.push({ id, fields });
+                return { id, ...fields };
+            },
+            disable: async () => {
+                throw new Error('sync disable should update metadata and enabled together');
+            },
+            disableMissingProviderSyncedModel: async (_pool, id, marker) => {
+                const fields = {
+                    enabled: false,
+                    metadata: {
+                        kept: 'value',
+                        syncDisabled: marker,
+                    },
+                };
+                updates.push({ id, fields });
+                return { id, ...fields };
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        const result = await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(
+                appCtx,
+                {
+                    id: 'p1',
+                    provider_key: 'codex-api',
+                    adapter_key: 'codex-api',
+                },
+                null,
+                {
+                    discoverySource: 'synced',
+                    refreshReason: 'provider.model-refresh',
+                }
+            )
+        );
+
+        assert.equal(result.disabled, 1);
+        const missingUpdate = updates.find((entry) => entry.id === 'missing-synced');
+        assert.ok(missingUpdate, 'missing row should be updated');
+        assert.equal(missingUpdate.fields.enabled, false);
+        assert.equal(missingUpdate.fields.metadata.kept, 'value');
+        assert.equal(
+            missingUpdate.fields.metadata.syncDisabled.reason,
+            'missing-from-discovery'
+        );
+        assert.equal(
+            missingUpdate.fields.metadata.syncDisabled.source,
+            'provider.model-refresh'
+        );
+        assert.match(
+            missingUpdate.fields.metadata.syncDisabled.at,
+            /^\d{4}-\d{2}-\d{2}T/
+        );
+    });
+
+    it('re-enables returning sync-disabled rows but preserves operator-disabled rows', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [
+                    { modelId: 'returned-model', displayName: 'Returned Model' },
+                    {
+                        modelId: 'operator-disabled',
+                        displayName: 'Operator Disabled',
+                        metadata: {
+                            refreshedFromDiscovery: true,
+                            openrouter: { matchedBy: 'id' },
+                        },
+                    },
+                ];
+            },
+        };
+
+        const updates = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [
+                {
+                    id: 'returned',
+                    model_key: 'codex-api/returned-model',
+                    discovery_source: 'synced',
+                    enabled: false,
+                    metadata: {
+                        syncDisabled: {
+                            reason: 'missing-from-discovery',
+                            source: 'provider.model-refresh',
+                            at: '2026-06-29T00:00:00.000Z',
+                        },
+                    },
+                },
+                {
+                    id: 'operator',
+                    model_key: 'codex-api/operator-disabled',
+                    discovery_source: 'synced',
+                    enabled: false,
+                    metadata: {
+                        disabledBy: 'operator',
+                        openrouter: { matchedBy: 'old' },
+                    },
+                },
+            ],
+            create: async () => {
+                throw new Error('should not create rows');
+            },
+            update: async (_pool, id, fields) => {
+                updates.push({ id, fields });
+                return { id, ...fields };
+            },
+            disable: async () => {
+                throw new Error('should not disable rows');
+            },
+            updateProviderSyncedModel: async (_pool, id, fields) => {
+                const row = {
+                    id,
+                    ...fields,
+                    enabled: id === 'returned' ? true : false,
+                };
+                updates.push({ id, fields: row });
+                return row;
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(
+                appCtx,
+                {
+                    id: 'p1',
+                    provider_key: 'codex-api',
+                    adapter_key: 'codex-api',
+                },
+                null,
+                {
+                    discoverySource: 'synced',
+                    refreshReason: 'provider.model-refresh',
+                }
+            )
+        );
+
+        const returnedUpdate = updates.find((entry) => entry.id === 'returned');
+        assert.ok(returnedUpdate, 'returned model should be updated');
+        assert.equal(returnedUpdate.fields.enabled, true);
+        assert.equal(
+            returnedUpdate.fields.metadata.syncDisabled,
+            undefined,
+            'syncDisabled marker should be removed after re-enable'
+        );
+
+        const operatorUpdate = updates.find((entry) => entry.id === 'operator');
+        assert.ok(operatorUpdate, 'operator-disabled model should still receive metadata refresh');
+        assert.equal(operatorUpdate.fields.enabled, false);
+        assert.equal(operatorUpdate.fields.metadata.refreshedFromDiscovery, true);
+        assert.equal(operatorUpdate.fields.metadata.openrouter.matchedBy, 'id');
+        assert.equal(operatorUpdate.fields.metadata.disabledBy, 'operator');
+    });
+
+    it('does not re-enable a discovered row that an operator disabled after the sync snapshot', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [{ modelId: 'racy-model', displayName: 'Racy Model' }];
+            },
+        };
+
+        const genericUpdates = [];
+        const conditionalUpdates = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [
+                {
+                    id: 'racy',
+                    model_key: 'codex-api/racy-model',
+                    discovery_source: 'synced',
+                    enabled: true,
+                    metadata: {
+                        syncDisabled: {
+                            reason: 'missing-from-discovery',
+                            source: 'provider.model-refresh',
+                            at: '2026-06-29T00:00:00.000Z',
+                        },
+                    },
+                },
+            ],
+            create: async () => {
+                throw new Error('should not create rows');
+            },
+            update: async (_pool, id, fields) => {
+                genericUpdates.push({ id, fields });
+                return { id, ...fields };
+            },
+            disable: async () => {
+                throw new Error('should not call generic disable');
+            },
+            updateProviderSyncedModel: async (_pool, id, fields) => {
+                conditionalUpdates.push({ id, fields });
+                return {
+                    id,
+                    ...fields,
+                    enabled: false,
+                    metadata: {
+                        refreshedFromDiscovery: true,
+                    },
+                };
+            },
+            disableMissingProviderSyncedModel: async () => {
+                throw new Error('should not disable discovered rows');
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        const result = await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(
+                appCtx,
+                {
+                    id: 'p1',
+                    provider_key: 'codex-api',
+                    adapter_key: 'codex-api',
+                },
+                null,
+                {
+                    discoverySource: 'synced',
+                    refreshReason: 'provider.model-refresh',
+                }
+            )
+        );
+
+        assert.equal(result.updated, 1);
+        assert.deepEqual(
+            genericUpdates,
+            [],
+            'sync must not write enabled:true through a stale generic update'
+        );
+        assert.equal(conditionalUpdates.length, 1);
+        assert.equal(conditionalUpdates[0].id, 'racy');
+        assert.equal(
+            conditionalUpdates[0].fields.enabled,
+            undefined,
+            'ordinary discovered updates must leave enabled conditional to the DAO'
+        );
+        assert.equal(result.models[0].enabled, false);
+    });
+
+    it('does not mark a missing row sync-disabled when an operator disabled it after the sync snapshot', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [];
+            },
+        };
+
+        const genericUpdates = [];
+        const missingDisableAttempts = [];
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [
+                {
+                    id: 'missing-racy',
+                    model_key: 'codex-api/missing-racy',
+                    discovery_source: 'synced',
+                    enabled: true,
+                    metadata: { kept: 'value' },
+                },
+            ],
+            create: async () => {
+                throw new Error('should not create rows');
+            },
+            update: async (_pool, id, fields) => {
+                genericUpdates.push({ id, fields });
+                return { id, ...fields };
+            },
+            disable: async () => {
+                throw new Error('should not call generic disable');
+            },
+            updateProviderSyncedModel: async () => {
+                throw new Error('should not update missing rows');
+            },
+            disableMissingProviderSyncedModel: async (_pool, id, marker) => {
+                missingDisableAttempts.push({ id, marker });
+                return null;
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        const result = await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(
+                appCtx,
+                {
+                    id: 'p1',
+                    provider_key: 'codex-api',
+                    adapter_key: 'codex-api',
+                },
+                null,
+                {
+                    discoverySource: 'synced',
+                    refreshReason: 'provider.model-refresh',
+                }
+            )
+        );
+
+        assert.equal(result.disabled, 0);
+        assert.deepEqual(
+            genericUpdates,
+            [],
+            'sync must not apply syncDisabled through a stale generic update'
+        );
+        assert.equal(missingDisableAttempts.length, 1);
+        assert.equal(missingDisableAttempts[0].id, 'missing-racy');
+        assert.equal(
+            missingDisableAttempts[0].marker.reason,
+            'missing-from-discovery'
+        );
+        assert.equal(
+            missingDisableAttempts[0].marker.source,
+            'provider.model-refresh'
+        );
     });
 
     it('enriches missing discovery pricing, context, and tags from the pricing directory before persisting', async () => {
@@ -566,6 +949,148 @@ describe('auto-provisioner.autoProvisionModels', () => {
         );
         assert.equal(created[0].displayName, 'Nemotron Duplicate');
         assert.equal(created[0].capabilities.supportsTools, false);
+    });
+
+    it('recovers when another sync creates a discovered model before insert', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [{ modelId: 'racy-new', displayName: 'Racy New' }];
+            },
+        };
+
+        const updates = [];
+        const uniqueError = new Error(
+            'UNIQUE constraint failed: models.model_key'
+        );
+        uniqueError.code = 'SQLITE_CONSTRAINT_UNIQUE';
+        const stub = {
+            findByKey: async (_pool, modelKey) => ({
+                id: 'raced-row',
+                provider_id: 'p1',
+                model_key: modelKey,
+                discovery_source: 'synced',
+                enabled: true,
+                metadata: { raced: true },
+            }),
+            listByProvider: async () => [],
+            create: async () => {
+                throw uniqueError;
+            },
+            update: async () => {
+                throw new Error('should use provider sync update helper');
+            },
+            updateProviderSyncedModel: async (_pool, id, fields) => {
+                updates.push({ id, fields });
+                return {
+                    id,
+                    model_key: 'codex-api/racy-new',
+                    discovery_source: 'synced',
+                    enabled: true,
+                    ...fields,
+                };
+            },
+            disable: async () => {
+                throw new Error('should not disable rows');
+            },
+            disableMissingProviderSyncedModel: async () => {
+                throw new Error('should not disable rows');
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        const result = await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(
+                appCtx,
+                {
+                    id: 'p1',
+                    provider_key: 'codex-api',
+                    adapter_key: 'codex-api',
+                },
+                null,
+                {
+                    discoverySource: 'synced',
+                    refreshReason: 'provider.model-refresh',
+                }
+            )
+        );
+
+        assert.equal(result.discovered, 1);
+        assert.equal(result.created, 0);
+        assert.equal(result.updated, 1);
+        assert.equal(updates.length, 1);
+        assert.equal(updates[0].id, 'raced-row');
+        assert.equal(updates[0].fields.displayName, 'Racy New');
+    });
+
+    it('does not recover duplicate model keys owned by another provider', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [
+                    {
+                        modelKey: 'shared-explicit-key',
+                        modelId: 'remote-shared',
+                        displayName: 'Shared Explicit Key',
+                    },
+                ];
+            },
+        };
+
+        const uniqueError = new Error(
+            'UNIQUE constraint failed: models.model_key'
+        );
+        uniqueError.code = 'SQLITE_CONSTRAINT_UNIQUE';
+        const stub = {
+            findByKey: async (_pool, modelKey) => ({
+                id: 'other-provider-row',
+                provider_id: 'other-provider',
+                model_key: modelKey,
+                discovery_source: 'synced',
+                enabled: true,
+                metadata: {},
+            }),
+            listByProvider: async () => [],
+            create: async () => {
+                throw uniqueError;
+            },
+            updateProviderSyncedModel: async () => {
+                throw new Error('should not update another provider row');
+            },
+            disableMissingProviderSyncedModel: async () => {
+                throw new Error('should not disable rows');
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'headless-search': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        await assert.rejects(
+            () =>
+                withStubbedModelsDao(stub, (mod) =>
+                    mod.autoProvisionModels(
+                        appCtx,
+                        {
+                            id: 'current-provider',
+                            provider_key: 'headless-search-alt',
+                            adapter_key: 'headless-search',
+                        },
+                        null,
+                        {
+                            strict: true,
+                            discoverySource: 'synced',
+                            refreshReason: 'provider.model-refresh',
+                        }
+                    )
+                ),
+            /UNIQUE constraint failed: models\.model_key/
+        );
     });
 
     it('returns early (and does not throw) when the catalog is not installed', async () => {

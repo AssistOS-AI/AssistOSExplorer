@@ -57,6 +57,8 @@ These names are reserved; any manifest-declared values with the same names are s
 The local gateway is the LLM hub. The legacy local-provider and remote-provider
 bootstraps were removed (commit `c9ed615`, 2026-06-17).
 
+The local gateway also keeps upstream provider catalogs fresh. Provider create/update, OAuth completion, and manual sync use the strict shared sync path, while startup and interval refresh use the same path best-effort across eligible providers. Newly discovered upstream models become local direct model rows. Upstream models that disappear are disabled but preserved so history, metadata, and operator context remain available.
+
 - Local models are discovered from enabled Ploinky agents
   (`runPloinkyReconcileOnce`), keyed `ploinky/<repo>/<agent-model>`.
 - `seedDefaultTiers` reads the tier keys named in `LLM_DEFAULT_TIERS`
@@ -135,9 +137,10 @@ Schedulers and OAuth adapters are controlled by explicit env config, not deploym
 
 - `TOKEN_REFRESH_INTERVAL_MS`
 - `PRICING_REFRESH_INTERVAL_MS`
+- `PROVIDER_MODEL_REFRESH_INTERVAL_MS`
 - `OAUTH_ADAPTERS_ENABLED`
 
-Deployments that want those jobs disabled set the intervals to `0` and leave OAuth adapters empty.
+Deployments that want the provider model catalog refresh job disabled set `PROVIDER_MODEL_REFRESH_INTERVAL_MS=0`; deployments that want OAuth adapters disabled leave `OAUTH_ADAPTERS_ENABLED` empty.
 
 ## Settings Entry
 
