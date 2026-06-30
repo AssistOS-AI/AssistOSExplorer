@@ -695,4 +695,46 @@ describe('dashboard models page', () => {
             globals.restore();
         }
     });
+
+    it('keeps tag-filtered model tree matches visible under collapsed groups', async () => {
+        const { globals, page } = await initModelsPage();
+
+        try {
+            page.modelTreeExpanded = new Set();
+            page.tagFilter = 'coding';
+
+            assert.equal(page.hasActiveModelFilters, true);
+            assert.deepEqual(
+                page.modelTreeRows.map((row) => ({
+                    type: row.rowType,
+                    key: row.key,
+                    expanded: row.expanded,
+                })),
+                [
+                    {
+                        type: 'group',
+                        key: 'axl-proxy',
+                        expanded: true,
+                    },
+                    {
+                        type: 'group',
+                        key: 'axl-proxy/mistral',
+                        expanded: true,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'axl-proxy/mistral/codestral-2508',
+                        expanded: undefined,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'axl-proxy/mistral/codestral-latest',
+                        expanded: undefined,
+                    },
+                ]
+            );
+        } finally {
+            globals.restore();
+        }
+    });
 });

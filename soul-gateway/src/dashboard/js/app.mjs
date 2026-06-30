@@ -2304,11 +2304,20 @@ function modelsPage() {
             return list;
         },
 
+        get hasActiveModelFilters() {
+            return (
+                Boolean(this.modelEnabledOnly) ||
+                Boolean(this.freeOnly) ||
+                Boolean(this.billingFilter) ||
+                Boolean(this.tagFilter) ||
+                String(this.modelFilter || '').trim().length > 0
+            );
+        },
+
         get modelTreeRows() {
             return this.treeView.buildModelTreeRows(this.filteredModels, {
                 expanded: this.modelTreeExpanded,
-                forceExpanded:
-                    String(this.modelFilter || '').trim().length > 0,
+                forceExpanded: this.hasActiveModelFilters,
             });
         },
 
