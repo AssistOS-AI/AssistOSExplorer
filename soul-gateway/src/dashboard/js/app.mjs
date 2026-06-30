@@ -589,6 +589,7 @@ function app() {
         sse: null,
         authenticated: true,
         _authRequiredHandler: null,
+        _hashChangeHandler: null,
         _wsReconnectTimer: null,
 
         init() {
@@ -598,13 +599,32 @@ function app() {
                 };
                 window.addEventListener('sg-auth-required', this._authRequiredHandler);
             }
+            if (!this._hashChangeHandler) {
+                this._hashChangeHandler = () => {
+                    this._syncPageFromHash({ notify: true });
+                };
+                window.addEventListener('hashchange', this._hashChangeHandler);
+            }
 
-            // Read page from URL hash
+            this._syncPageFromHash();
+            this.connectWs();
+        },
+
+        _pageFromHash() {
             const hash = window.location.hash.slice(1);
             const validPages = this.pages.map((p) => p.id);
-            if (hash && validPages.includes(hash)) this.page = hash;
+            return hash && validPages.includes(hash) ? hash : null;
+        },
 
-            this.connectWs();
+        _syncPageFromHash({ notify = false } = {}) {
+            const nextPage = this._pageFromHash();
+            if (!nextPage || nextPage === this.page) return;
+            this.page = nextPage;
+            if (notify) {
+                window.dispatchEvent(
+                    new CustomEvent('page-change', { detail: nextPage })
+                );
+            }
         },
 
         navigate(p) {

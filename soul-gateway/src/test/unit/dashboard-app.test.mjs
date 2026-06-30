@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 function installDashboardGlobals(fetchImpl) {
     const events = [];
+    const listeners = new Map();
     const storage = new Map();
     const previous = {
         window: globalThis.window,
@@ -28,9 +29,24 @@ function installDashboardGlobals(fetchImpl) {
             hash: '',
             origin: 'http://127.0.0.1',
         },
-        addEventListener() {},
+        addEventListener(type, handler) {
+            const handlers = listeners.get(type) || [];
+            handlers.push(handler);
+            listeners.set(type, handlers);
+        },
+        removeEventListener(type, handler) {
+            const handlers = listeners.get(type) || [];
+            listeners.set(
+                type,
+                handlers.filter((candidate) => candidate !== handler)
+            );
+        },
         dispatchEvent(event) {
             events.push(event);
+            for (const handler of listeners.get(event.type) || []) {
+                handler(event);
+            }
+            return true;
         },
         localStorage: {
             getItem(key) {
@@ -47,6 +63,7 @@ function installDashboardGlobals(fetchImpl) {
 
     return {
         events,
+        listeners,
         storage,
         restore() {
             if (previous.window === undefined) {
@@ -83,6 +100,45 @@ function jsonResponse(payload) {
         },
     };
 }
+
+describe('dashboard app shell', () => {
+    it('syncs external hash changes into the visible page', async () => {
+        const globals = installDashboardGlobals(async (url) => {
+            throw new Error(`unexpected request: ${url}`);
+        });
+
+        try {
+            const cacheKey = `${Date.now()}${Math.random()}`;
+            await import(`../../dashboard/js/app.mjs?test=${cacheKey}`);
+
+            const shell = globalThis.window.app();
+            shell.connectWs = () => {};
+            shell.init();
+
+            assert.equal(shell.page, 'providers');
+            assert.equal(
+                globals.listeners.get('hashchange')?.length,
+                1,
+                'app should register one hashchange listener'
+            );
+
+            globalThis.window.location.hash = '#models';
+            globalThis.window.dispatchEvent(new CustomEvent('hashchange'));
+
+            assert.equal(shell.page, 'models');
+            assert.ok(
+                globals.events.some(
+                    (event) =>
+                        event.type === 'page-change' &&
+                        event.detail === 'models'
+                ),
+                'external hash changes should notify mounted tab components'
+            );
+        } finally {
+            globals.restore();
+        }
+    });
+});
 
 describe('dashboard providers page', () => {
     it('uses tree rows with display labels while preserving raw provider items', async () => {
