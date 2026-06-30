@@ -951,6 +951,148 @@ describe('auto-provisioner.autoProvisionModels', () => {
         assert.equal(created[0].capabilities.supportsTools, false);
     });
 
+    it('recovers when another sync creates a discovered model before insert', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [{ modelId: 'racy-new', displayName: 'Racy New' }];
+            },
+        };
+
+        const updates = [];
+        const uniqueError = new Error(
+            'UNIQUE constraint failed: models.model_key'
+        );
+        uniqueError.code = 'SQLITE_CONSTRAINT_UNIQUE';
+        const stub = {
+            findByKey: async (_pool, modelKey) => ({
+                id: 'raced-row',
+                provider_id: 'p1',
+                model_key: modelKey,
+                discovery_source: 'synced',
+                enabled: true,
+                metadata: { raced: true },
+            }),
+            listByProvider: async () => [],
+            create: async () => {
+                throw uniqueError;
+            },
+            update: async () => {
+                throw new Error('should use provider sync update helper');
+            },
+            updateProviderSyncedModel: async (_pool, id, fields) => {
+                updates.push({ id, fields });
+                return {
+                    id,
+                    model_key: 'codex-api/racy-new',
+                    discovery_source: 'synced',
+                    enabled: true,
+                    ...fields,
+                };
+            },
+            disable: async () => {
+                throw new Error('should not disable rows');
+            },
+            disableMissingProviderSyncedModel: async () => {
+                throw new Error('should not disable rows');
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'codex-api': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        const result = await withStubbedModelsDao(stub, (mod) =>
+            mod.autoProvisionModels(
+                appCtx,
+                {
+                    id: 'p1',
+                    provider_key: 'codex-api',
+                    adapter_key: 'codex-api',
+                },
+                null,
+                {
+                    discoverySource: 'synced',
+                    refreshReason: 'provider.model-refresh',
+                }
+            )
+        );
+
+        assert.equal(result.discovered, 1);
+        assert.equal(result.created, 0);
+        assert.equal(result.updated, 1);
+        assert.equal(updates.length, 1);
+        assert.equal(updates[0].id, 'raced-row');
+        assert.equal(updates[0].fields.displayName, 'Racy New');
+    });
+
+    it('does not recover duplicate model keys owned by another provider', async () => {
+        const backendModule = {
+            async discoverModels() {
+                return [
+                    {
+                        modelKey: 'shared-explicit-key',
+                        modelId: 'remote-shared',
+                        displayName: 'Shared Explicit Key',
+                    },
+                ];
+            },
+        };
+
+        const uniqueError = new Error(
+            'UNIQUE constraint failed: models.model_key'
+        );
+        uniqueError.code = 'SQLITE_CONSTRAINT_UNIQUE';
+        const stub = {
+            findByKey: async (_pool, modelKey) => ({
+                id: 'other-provider-row',
+                provider_id: 'other-provider',
+                model_key: modelKey,
+                discovery_source: 'synced',
+                enabled: true,
+                metadata: {},
+            }),
+            listByProvider: async () => [],
+            create: async () => {
+                throw uniqueError;
+            },
+            updateProviderSyncedModel: async () => {
+                throw new Error('should not update another provider row');
+            },
+            disableMissingProviderSyncedModel: async () => {
+                throw new Error('should not disable rows');
+            },
+        };
+
+        const appCtx = createMockAppCtx({
+            catalog: createMockCatalog({ 'headless-search': backendModule }),
+            credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
+            log,
+        });
+
+        await assert.rejects(
+            () =>
+                withStubbedModelsDao(stub, (mod) =>
+                    mod.autoProvisionModels(
+                        appCtx,
+                        {
+                            id: 'current-provider',
+                            provider_key: 'headless-search-alt',
+                            adapter_key: 'headless-search',
+                        },
+                        null,
+                        {
+                            strict: true,
+                            discoverySource: 'synced',
+                            refreshReason: 'provider.model-refresh',
+                        }
+                    )
+                ),
+            /UNIQUE constraint failed: models\.model_key/
+        );
+    });
+
     it('returns early (and does not throw) when the catalog is not installed', async () => {
         const appCtx = createMockAppCtx({ catalog: null, log });
         const result = await autoProvisionModels(appCtx, {

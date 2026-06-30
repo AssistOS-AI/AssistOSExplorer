@@ -115,7 +115,7 @@ describe('background scheduler provider model refresh', () => {
             phase: 'timer',
             discoverySource: 'synced',
             disableMissing: true,
-            refreshReason: 'provider.timer-refresh',
+            refreshReason: 'provider.model-refresh',
             skipEmptyExistingCatalog: true,
         });
         scheduler.stop();

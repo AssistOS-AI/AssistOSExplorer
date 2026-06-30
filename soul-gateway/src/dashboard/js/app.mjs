@@ -988,6 +988,14 @@ function providersPage() {
                 this.providers = unwrapArray(
                     await api.get('/management/providers')
                 );
+                window.dispatchEvent(
+                    new CustomEvent('provider-models-synced', {
+                        detail: {
+                            providerId: p.id,
+                            providerKey: p.provider_key,
+                        },
+                    })
+                );
                 this.syncResult = {
                     ...result,
                     providerId: p.id,

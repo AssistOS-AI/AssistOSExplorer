@@ -258,6 +258,72 @@ describe('refreshProviderModelCatalog', () => {
         );
     });
 
+    it('bounds slow startup discovery so one provider cannot block refresh forever', async () => {
+        let syncCalls = 0;
+        const appCtx = {
+            pool: {},
+            services: {
+                backendCatalog: {
+                    getBackend() {
+                        return { discoverModels() {} };
+                    },
+                },
+            },
+            log: createLog(),
+        };
+
+        const result = await withRefreshMocks(
+            {
+                listProviders: async (_pool, { offset }) =>
+                    offset === 0
+                        ? [
+                              {
+                                  id: 'slow',
+                                  provider_key: 'slow-provider',
+                                  adapter_key: 'openai-api',
+                                  auth_strategy: 'none',
+                                  enabled: true,
+                              },
+                          ]
+                        : [],
+                listAccountsByProvider: async () => [],
+                listModelsByProvider: async () => [],
+                discoverProviderModels: async () => {
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                    return [{ modelId: 'eventual-model' }];
+                },
+                syncProviderModels: async () => {
+                    syncCalls++;
+                    return {
+                        discovered: 1,
+                        created: 1,
+                        updated: 0,
+                        disabled: 0,
+                        models: [],
+                    };
+                },
+            },
+            (mod) =>
+                mod.refreshProviderModelCatalog(appCtx, {
+                    phase: 'startup',
+                    discoveryTimeoutMs: 1,
+                })
+        );
+
+        assert.equal(syncCalls, 0);
+        assert.equal(result.eligible, 1);
+        assert.equal(result.refreshed, 0);
+        assert.equal(result.failed, 1);
+        assert.ok(
+            appCtx.log._entries.warn.some(
+                (entry) =>
+                    entry.msg === 'provider model refresh failed' &&
+                    entry.meta.provider === 'slow-provider' &&
+                    entry.meta.error.includes('timed out')
+            )
+        );
+    });
+
     it('skips authenticated discoverable providers without usable credentials and logs the reason', async () => {
         let discoveryCalls = 0;
         let syncCalls = 0;

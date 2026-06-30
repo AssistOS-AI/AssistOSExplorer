@@ -2739,8 +2739,8 @@ import { backendModule as openaiApiPlugin } from '../../runtime/backends/builtin
  * fixture mirrors what a real OpenAI-compatible vendor exposes so
  * the backend module can be exercised end-to-end without mocking node:http.
  *
- * @param {{ models?: { status: number, body?: string }|null,
- *           completions?: { status: number, body?: string }|null }} opts
+ * @param {{ models?: { status: number, body?: string, hang?: boolean }|null,
+ *           completions?: { status: number, body?: string, hang?: boolean }|null }} opts
  */
 async function spinUpFakeOpenAI(opts = {}) {
     const seen = [];
@@ -2756,6 +2756,11 @@ async function spinUpFakeOpenAI(opts = {}) {
         if (!route) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
             res.end('{"error":"not found"}');
+            return;
+        }
+
+        if (route.hang) {
+            req.on('data', () => {});
             return;
         }
 
@@ -2847,6 +2852,37 @@ describe('openai-api discoverModels metadata parsing', () => {
                 },
             ]);
         } finally {
+            await fake.close();
+        }
+    });
+
+    it('aborts hanging upstream model discovery through the lifecycle signal', async () => {
+        const fake = await spinUpFakeOpenAI({
+            models: {
+                status: 200,
+                hang: true,
+            },
+        });
+        const abortController = new AbortController();
+        const abortTimer = setTimeout(
+            () => abortController.abort(new Error('discovery aborted by test')),
+            5
+        );
+
+        try {
+            await assert.rejects(
+                () =>
+                    openaiApiPlugin.discoverModels({
+                        ...makeOpenAITestCtx(fake.baseUrl),
+                        signal: abortController.signal,
+                    }),
+                (err) => {
+                    assert.match(String(err.message), /abort/i);
+                    return true;
+                }
+            );
+        } finally {
+            clearTimeout(abortTimer);
             await fake.close();
         }
     });

@@ -3337,6 +3337,7 @@
                                 x-data="modelsPage()"
                                 x-init="init()"
                                 @page-change.window="$event.detail === 'models' && init()"
+                                @provider-models-synced.window="init()"
                             >
                                 <div
                                     class="flex justify-between items-center mb-4"

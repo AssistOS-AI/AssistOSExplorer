@@ -142,7 +142,7 @@ export function startBackgroundJobs(appCtx) {
                         phase: 'timer',
                         discoverySource: 'synced',
                         disableMissing: true,
-                        refreshReason: 'provider.timer-refresh',
+                        refreshReason: 'provider.model-refresh',
                         skipEmptyExistingCatalog: true,
                     });
                 } catch (err) {

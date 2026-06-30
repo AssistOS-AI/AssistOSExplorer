@@ -42,7 +42,7 @@ Pricing directory detail:
 
 Provider catalog refresh detail:
 
-- startup performs a best-effort provider model catalog refresh before the initial runtime snapshot is loaded
+- startup performs a best-effort provider model catalog refresh before the initial runtime snapshot is loaded; each provider discovery attempt is time-boxed so a slow upstream cannot block startup indefinitely
 - `PROVIDER_MODEL_REFRESH_INTERVAL_MS` controls the background provider catalog refresh interval; the default is `900000` ms
 - setting `PROVIDER_MODEL_REFRESH_INTERVAL_MS=0` disables the background provider model catalog refresh timer
 

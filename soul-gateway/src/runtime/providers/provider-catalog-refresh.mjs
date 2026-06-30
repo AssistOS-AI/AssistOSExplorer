@@ -3,6 +3,7 @@ import { requireBackendModuleForProvider } from './provider-composition-validato
 
 export const PROVIDER_MODEL_REFRESH_REASON = 'provider.model-refresh';
 const PROVIDER_PAGE_SIZE = 200;
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000;
 
 function accountHasUsableStoredCredential(account) {
     if (!account) return false;
@@ -82,6 +83,39 @@ function createSummary(scanned = 0) {
     };
 }
 
+function createDiscoveryTimeout(timeoutMs, providerKey) {
+    return new Error(
+        `Provider model discovery for '${providerKey}' timed out after ${timeoutMs}ms`
+    );
+}
+
+async function withDiscoveryTimeout(discover, { timeoutMs, providerKey }) {
+    const normalizedTimeoutMs = Number(timeoutMs);
+    if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs <= 0) {
+        return discover();
+    }
+
+    let timeoutId = null;
+    try {
+        return await Promise.race([
+            discover(),
+            new Promise((_, reject) => {
+                timeoutId = setTimeout(() => {
+                    reject(
+                        createDiscoveryTimeout(
+                            normalizedTimeoutMs,
+                            providerKey
+                        )
+                    );
+                }, normalizedTimeoutMs);
+                timeoutId.unref?.();
+            }),
+        ]);
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+    }
+}
+
 export async function refreshProviderModelCatalog(appCtx, options = {}) {
     const {
         phase = 'manual',
@@ -89,6 +123,7 @@ export async function refreshProviderModelCatalog(appCtx, options = {}) {
         disableMissing = true,
         refreshReason = PROVIDER_MODEL_REFRESH_REASON,
         skipEmptyExistingCatalog = true,
+        discoveryTimeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS,
     } = options;
 
     if (!appCtx.pool || !appCtx.services?.backendCatalog) {
@@ -136,7 +171,16 @@ export async function refreshProviderModelCatalog(appCtx, options = {}) {
 
             const [existingRows, discoveries] = await Promise.all([
                 modelsDao.listByProvider(appCtx.pool, provider.id),
-                discoverProviderModels(appCtx, provider),
+                withDiscoveryTimeout(
+                    () =>
+                        discoverProviderModels(appCtx, provider, {
+                            discoveryTimeoutMs,
+                        }),
+                    {
+                        timeoutMs: discoveryTimeoutMs,
+                        providerKey: normalizedProvider.providerKey,
+                    }
+                ),
             ]);
             const existingDiscoveredRows = existingRows.filter(
                 (row) => row.discovery_source !== 'manual'

@@ -268,7 +268,9 @@ export const backendModule = {
         }
 
         try {
-            const body = await httpGet(baseUrl + '/models', authHeaders);
+            const body = await httpGet(baseUrl + '/models', authHeaders, {
+                signal: ctx?.signal,
+            });
             const parsed = JSON.parse(body);
             return (parsed.data || [])
                 .filter((model) => Boolean(model?.id))
@@ -284,7 +286,8 @@ export const backendModule = {
                     ...authHeaders,
                     'Content-Type': 'application/json',
                 },
-                '{}'
+                '{}',
+                { signal: ctx?.signal }
             );
 
             if (status === 401 || status === 403) {
@@ -317,7 +320,9 @@ export const backendModule = {
         // first — a 200 is the strongest signal we can get ("auth works,
         // base URL is right, and the vendor speaks the listing dialect").
         try {
-            await httpGet(baseUrl + '/models', authHeaders);
+            await httpGet(baseUrl + '/models', authHeaders, {
+                signal: ctx?.signal,
+            });
             return { ok: true, detail: 'Connected to OpenAI API' };
         } catch (modelsErr) {
             // 401/403 → credential is wrong. Falling back here would just
@@ -348,7 +353,8 @@ export const backendModule = {
                 probeStatus = await httpProbeStatus(
                     baseUrl + '/chat/completions',
                     { ...authHeaders, 'Content-Type': 'application/json' },
-                    '{}'
+                    '{}',
+                    { signal: ctx?.signal }
                 );
             } catch (probeErr) {
                 return { ok: false, detail: probeErr.message };
@@ -615,8 +621,13 @@ async function* parseSSE(res) {
     }
 }
 
-function httpGet(urlStr, headers) {
+function httpGet(urlStr, headers, { signal } = {}) {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(signal.reason || new Error('Aborted'));
+            return;
+        }
+
         const url = new URL(urlStr);
         const isHttps = url.protocol === 'https:';
         const reqFn = isHttps ? httpsRequest : httpRequest;
@@ -627,6 +638,7 @@ function httpGet(urlStr, headers) {
             path: url.pathname + url.search,
             method: 'GET',
             headers,
+            signal,
         };
 
         const req = reqFn(opts, (res) => {
@@ -661,8 +673,13 @@ function httpGet(urlStr, headers) {
  * @param {string} body
  * @returns {Promise<number>} HTTP status code
  */
-function httpProbeStatus(urlStr, headers, body) {
+function httpProbeStatus(urlStr, headers, body, { signal } = {}) {
     return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(signal.reason || new Error('Aborted'));
+            return;
+        }
+
         const url = new URL(urlStr);
         const isHttps = url.protocol === 'https:';
         const reqFn = isHttps ? httpsRequest : httpRequest;
@@ -673,6 +690,7 @@ function httpProbeStatus(urlStr, headers, body) {
             path: url.pathname + url.search,
             method: 'POST',
             headers: { ...headers, 'Content-Length': Buffer.byteLength(body) },
+            signal,
         };
 
         const req = reqFn(opts, (res) => {
