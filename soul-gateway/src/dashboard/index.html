@@ -147,7 +147,7 @@
                                                     <input
                                                         type="text"
                                                         class="input input-bordered input-xs w-48"
-                                                        placeholder="Search tier, model, agent..."
+                                                        placeholder="Search tier, model..."
                                                         x-model="keyword"
                                                         @keydown.enter="onSearch()"
                                                         @input="if (!keyword.trim()) onSearch()"
@@ -253,7 +253,7 @@
                                                         >
                                                             <tr>
                                                                 <th
-                                                                    colspan="11"
+                                                                    colspan="10"
                                                                     class="p-0"
                                                                 >
                                                                     <div
@@ -311,16 +311,6 @@
                                                                                 <div
                                                                                     class="col-resize-handle"
                                                                                     @mousedown="startResize('model', $event)"
-                                                                                ></div>
-                                                                            </div>
-                                                                            <div
-                                                                                class="resizable-col text-xs flex items-center"
-                                                                                :style="{width: cw('agent')}"
-                                                                            >
-                                                                                Agent
-                                                                                <div
-                                                                                    class="col-resize-handle"
-                                                                                    @mousedown="startResize('agent', $event)"
                                                                                 ></div>
                                                                             </div>
                                                                             <div
@@ -409,7 +399,7 @@
                                                             >
                                                                 <tr>
                                                                     <td
-                                                                        colspan="11"
+                                                                        colspan="10"
                                                                         class="p-0"
                                                                     >
                                                                         <div
@@ -451,12 +441,6 @@
                                                                                     class="font-mono text-xs truncate flex-shrink-0"
                                                                                     :style="{width: cw('model')}"
                                                                                     x-text="log.model || '-'"
-                                                                                ></div>
-                                                                                <div
-                                                                                    class="text-xs truncate flex-shrink-0 cursor-pointer hover:underline"
-                                                                                    :style="{width: cw('agent')}"
-                                                                                    x-text="log.agent_name || '-'"
-                                                                                    @click.stop="log.agent_name && addFilter('agent_name', log.agent_name)"
                                                                                 ></div>
                                                                                 <div
                                                                                     class="text-xs font-mono opacity-50 truncate flex-shrink-0 cursor-pointer hover:underline"

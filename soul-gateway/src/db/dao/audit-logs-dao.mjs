@@ -223,7 +223,7 @@ export async function findByRequestId(pool, requestId) {
 /**
  * Flexible query with filters for the logs listing API.
  * Supported filters: soulId, model, from, to, status, errorType,
- * keyword, sessionId, agentName, apiKeyId
+ * keyword, sessionId, apiKeyId
  */
 export async function query(
     pool,
@@ -392,7 +392,6 @@ function buildFilterClauses(filters, options = {}) {
             column('response_excerpt'),
             column('error_message'),
             column('requested_model'),
-            column('agent_name'),
             column('session_id'),
             column('request_id'),
         ];
@@ -412,10 +411,6 @@ function buildFilterClauses(filters, options = {}) {
     if (filters.sessionId) {
         conditions.push(`${column('session_id')} = $${idx++}`);
         params.push(filters.sessionId);
-    }
-    if (filters.agentName) {
-        conditions.push(`${column('agent_name')} = $${idx++}`);
-        params.push(filters.agentName);
     }
     if (filters.apiKeyId) {
         conditions.push(`${column('api_key_id')} = $${idx++}`);

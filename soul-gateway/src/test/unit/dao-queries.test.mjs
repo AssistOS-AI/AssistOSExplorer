@@ -855,7 +855,7 @@ describe('audit-logs-dao', () => {
         assert.match(calls[0].sql, /logs\.response_excerpt LIKE \$3 COLLATE NOCASE/);
         assert.match(calls[0].sql, /logs\.error_message LIKE \$3 COLLATE NOCASE/);
         assert.match(calls[0].sql, /logs\.requested_model LIKE \$3 COLLATE NOCASE/);
-        assert.match(calls[0].sql, /logs\.agent_name LIKE \$3 COLLATE NOCASE/);
+        assert.doesNotMatch(calls[0].sql, /logs\.agent_name LIKE \$3 COLLATE NOCASE/);
         assert.match(calls[0].sql, /logs\.session_id LIKE \$3 COLLATE NOCASE/);
         assert.match(calls[0].sql, /logs\.request_id LIKE \$3 COLLATE NOCASE/);
         assert.match(calls[0].sql, /resolved\.model_key LIKE \$3 COLLATE NOCASE/);

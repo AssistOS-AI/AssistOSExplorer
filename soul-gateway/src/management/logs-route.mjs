@@ -26,7 +26,7 @@ function hasValue(value) {
  * Search audit logs with filters.
  *
  * Query params: soul_id, model, from, to, status, error_type, keyword,
- *               session_id, agent_name, api_key_id, limit, offset, sort, order
+ *               session_id, api_key_id, limit, offset, sort, order
  */
 export async function handleListLogs(ctx) {
     const { res, query, appCtx } = ctx;
@@ -41,7 +41,6 @@ export async function handleListLogs(ctx) {
     if (hasValue(query.error_type)) filters.errorType = query.error_type;
     if (hasValue(query.keyword)) filters.keyword = query.keyword;
     if (hasValue(query.session_id)) filters.sessionId = query.session_id;
-    if (hasValue(query.agent_name)) filters.agentName = query.agent_name;
     if (hasValue(query.api_key_id)) filters.apiKeyId = query.api_key_id;
 
     const limit = Math.min(parseInt(query.limit, 10) || 50, 500);
@@ -79,7 +78,6 @@ export async function handleListLogKeys(ctx) {
     if (hasValue(query.error_type)) filters.errorType = query.error_type;
     if (hasValue(query.keyword)) filters.keyword = query.keyword;
     if (hasValue(query.session_id)) filters.sessionId = query.session_id;
-    if (hasValue(query.agent_name)) filters.agentName = query.agent_name;
 
     const rows = await auditDao.summarizeByApiKey(pool, filters);
     sendJson(res, 200, { data: rows.map(stripInternalKeySummaryFields) });

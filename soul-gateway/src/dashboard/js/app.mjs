@@ -1477,7 +1477,7 @@ function logsPage() {
         sortCol: 'started_at',
         sortDir: 'desc',
         // Filters (clickable cell values)
-        filters: {}, // { agent_name: 'claude-code', cache_hit: true, session_id: 'abc...' }
+        filters: {}, // { cache_hit: true, session_id: 'abc...' }
         keyword: '',
         // Time filtering
         timeRange: 'day',
@@ -1488,7 +1488,6 @@ function logsPage() {
             time: 144,
             tier: 80,
             model: 168,
-            agent: 96,
             session: 80,
             latency: 80,
             tokens: 80,
@@ -1626,16 +1625,17 @@ function logsPage() {
         },
 
         get activeFilters() {
-            return Object.entries(this.filters).map(([key, value]) => {
-                let label;
-                if (key === 'agent_name') label = `Agent: ${value}`;
-                else if (key === 'session_id')
-                    label = `Session: ${String(value).slice(0, 8)}`;
-                else if (key === 'cache_hit')
-                    label = `Cache: ${value ? 'HIT' : 'MISS'}`;
-                else label = `${key}: ${value}`;
-                return { key, label };
-            });
+            return Object.entries(this.filters)
+                .filter(([key]) => key !== 'agent_name')
+                .map(([key, value]) => {
+                    let label;
+                    if (key === 'session_id')
+                        label = `Session: ${String(value).slice(0, 8)}`;
+                    else if (key === 'cache_hit')
+                        label = `Cache: ${value ? 'HIT' : 'MISS'}`;
+                    else label = `${key}: ${value}`;
+                    return { key, label };
+                });
         },
 
         async selectKey(key, { force = false } = {}) {
@@ -1677,7 +1677,6 @@ function logsPage() {
             if (this.selectedKey?.api_key_id) p.api_key_id = this.selectedKey.api_key_id;
             if (this.keyword) p.keyword = this.keyword;
             // Apply cell filters
-            if (this.filters.agent_name) p.agent_name = this.filters.agent_name;
             if (this.filters.session_id) p.session_id = this.filters.session_id;
             // cache_hit filter needs backend support -- filter client-side for now
             const params = new URLSearchParams(p);

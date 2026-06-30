@@ -70,6 +70,24 @@ async function loadDashboard(fetchImpl, contextOverrides = {}) {
 }
 
 describe('dashboard logs page', () => {
+    it('does not expose an Agent column in the logs table shell', async () => {
+        const html = await readFile(
+            new URL('../../dashboard/index.html', import.meta.url),
+            'utf8'
+        );
+        const start = html.indexOf('<!-- Logs Page -->');
+        const end = html.indexOf('<!-- Activity Page (Per-Key) -->');
+        const logsSection = html.slice(start, end);
+
+        assert.match(
+            logsSection,
+            /placeholder="Search tier, model\.\.\."/,
+        );
+        assert.equal(logsSection.includes("cw('agent')"), false);
+        assert.equal(logsSection.includes("startResize('agent'"), false);
+        assert.equal(logsSection.includes("addFilter('agent_name'"), false);
+    });
+
     it('loads the first selected key logs during initialization', async () => {
         const calls = [];
         const { window } = await loadDashboard(async (path) => {
@@ -130,6 +148,49 @@ describe('dashboard logs page', () => {
                 path.includes('api_key_id=key-1')
             )
         );
+    });
+
+    it('ignores stale agent filters when loading logs', async () => {
+        const calls = [];
+        const { window } = await loadDashboard(async (path) => {
+            calls.push(String(path));
+            if (String(path).startsWith('/management/logs/keys?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return {
+                            data: [
+                                {
+                                    api_key_id: 'key-1',
+                                    key_label: 'daniel',
+                                    key_hint: 'sk...',
+                                    request_count: 1,
+                                },
+                            ],
+                        };
+                    },
+                };
+            }
+            if (String(path).startsWith('/management/logs?')) {
+                return {
+                    status: 200,
+                    async json() {
+                        return { data: [], total: 0, limit: 50, offset: 0 };
+                    },
+                };
+            }
+            throw new Error(`unexpected dashboard fetch: ${path}`);
+        });
+
+        const page = window.logsPage();
+        await page.init();
+        calls.length = 0;
+
+        page.filters.agent_name = 'claude-code';
+        await page.loadLogs();
+
+        assert.equal(page.activeFilters.length, 0);
+        assert.equal(calls.at(-1).includes('agent_name='), false);
     });
 
     it('uses audit log_id as table identity when request_id is shared', async () => {

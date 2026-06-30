@@ -3187,6 +3187,36 @@ describe('management/logs-route', () => {
         assert.equal(body.data[0].api_key_id, 'k1');
     });
 
+    it('ignores agent_name query params for logs listings', async () => {
+        const calls = [];
+        const pool = createMockPool(async (sql) => {
+            calls.push(sql);
+            if (sql.includes('COUNT')) return { rows: [{ total: 0 }] };
+            return { rows: [] };
+        });
+        const appCtx = createMockAppCtx({ pool });
+
+        await handleListLogs({
+            req: createMockReq(),
+            res: createMockRes(),
+            params: {},
+            appCtx,
+            query: { agent_name: 'claude-code' },
+        });
+        await handleListLogKeys({
+            req: createMockReq(),
+            res: createMockRes(),
+            params: {},
+            appCtx,
+            query: { agent_name: 'claude-code' },
+        });
+
+        assert.equal(
+            calls.some((sql) => /logs\.agent_name\s*=/.test(sql)),
+            false
+        );
+    });
+
     it('handleListLogKeys masks stale user key hints without changing agent hints', async () => {
         const userRow = {
             api_key_id: 'k-user',
