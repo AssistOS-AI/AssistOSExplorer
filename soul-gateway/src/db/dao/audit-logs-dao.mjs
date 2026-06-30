@@ -6,6 +6,15 @@ import { randomUUID } from 'node:crypto';
 import { toSnake } from './helpers/case-convert.mjs';
 
 const TABLE = 'audit_logs';
+const LOG_SELECT_COLUMNS = `
+       logs.*,
+       resolved.model_key AS resolved_model,
+       resolved.display_name AS resolved_model_display_name,
+       resolved.provider_model_id AS resolved_provider_model_id`;
+const LOG_SELECT_FROM = `
+     FROM ${TABLE} logs
+     LEFT JOIN models resolved
+       ON resolved.id = logs.resolved_model_id`;
 
 const INSERTABLE_FIELDS = [
     'startedAt',
@@ -202,7 +211,10 @@ export async function finalize(pool, startedAt, logId, fields) {
 
 export async function findByRequestId(pool, requestId) {
     const { rows } = await pool.query(
-        `SELECT * FROM ${TABLE} WHERE request_id = $1 ORDER BY started_at DESC`,
+        `SELECT ${LOG_SELECT_COLUMNS}
+     ${LOG_SELECT_FROM}
+     WHERE logs.request_id = $1
+     ORDER BY logs.started_at DESC`,
         [requestId]
     );
     return rows;
@@ -218,29 +230,32 @@ export async function query(
     filters = {},
     { limit = 50, offset = 0, sort = 'started_at', order = 'DESC' } = {}
 ) {
-    const { conditions, params, idx } = buildFilterClauses(filters);
+    const { conditions, params, idx } = buildFilterClauses(filters, 'logs');
 
-    const allowedSorts = new Set([
-        'started_at',
-        'latency_ms',
-        'total_cost_usd',
-        'total_tokens',
-        'requested_model',
+    const sortExpressions = new Map([
+        ['started_at', 'logs.started_at'],
+        ['latency_ms', 'logs.latency_ms'],
+        ['total_cost_usd', 'logs.total_cost_usd'],
+        ['total_tokens', 'logs.total_tokens'],
+        ['requested_model', 'logs.requested_model'],
+        ['resolved_model', 'resolved_model'],
     ]);
-    const sortCol = allowedSorts.has(sort) ? sort : 'started_at';
+    const sortExpression = sortExpressions.get(sort) || 'logs.started_at';
     const sortDir = order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-    const orderBy = [`${sortCol} ${sortDir}`];
-    if (sortCol !== 'started_at') {
-        orderBy.push(`started_at ${sortDir}`);
+    const orderBy = [`${sortExpression} ${sortDir}`];
+    if (sortExpression !== 'logs.started_at') {
+        orderBy.push(`logs.started_at ${sortDir}`);
     }
-    orderBy.push(`log_id ${sortDir}`);
+    orderBy.push(`logs.log_id ${sortDir}`);
 
     const where =
         conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     params.push(limit, offset);
 
     const { rows } = await pool.query(
-        `SELECT * FROM ${TABLE} ${where}
+        `SELECT ${LOG_SELECT_COLUMNS}
+     ${LOG_SELECT_FROM}
+     ${where}
      ORDER BY ${orderBy.join(', ')}
      LIMIT $${idx} OFFSET $${idx + 1}`,
         params
@@ -264,7 +279,7 @@ export async function countByFilters(pool, filters = {}) {
 }
 
 export async function summarizeByApiKey(pool, filters = {}) {
-    const { conditions, params } = buildFilterClauses(filters);
+    const { conditions, params } = buildFilterClauses(filters, 'logs');
     const where =
         conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -327,52 +342,53 @@ export async function dropExpiredPartitions(pool, cutoffDate) {
 
 // ── internal helpers ─────────────────────────────────────────────────
 
-function buildFilterClauses(filters) {
+function buildFilterClauses(filters, tableAlias = '') {
     const conditions = [];
     const params = [];
     let idx = 1;
+    const column = (name) => tableAlias ? `${tableAlias}.${name}` : name;
 
     if (filters.soulId) {
-        conditions.push(`soul_id = $${idx++}`);
+        conditions.push(`${column('soul_id')} = $${idx++}`);
         params.push(filters.soulId);
     }
     if (filters.model) {
-        conditions.push(`requested_model = $${idx++}`);
+        conditions.push(`${column('requested_model')} = $${idx++}`);
         params.push(filters.model);
     }
     if (filters.from) {
-        conditions.push(`started_at >= $${idx++}`);
+        conditions.push(`${column('started_at')} >= $${idx++}`);
         params.push(filters.from);
     }
     if (filters.to) {
-        conditions.push(`started_at <= $${idx++}`);
+        conditions.push(`${column('started_at')} <= $${idx++}`);
         params.push(filters.to);
     }
     if (filters.status) {
-        conditions.push(`status = $${idx++}`);
+        conditions.push(`${column('status')} = $${idx++}`);
         params.push(filters.status);
     }
     if (filters.errorType) {
-        conditions.push(`error_type = $${idx++}`);
+        conditions.push(`${column('error_type')} = $${idx++}`);
         params.push(filters.errorType);
     }
     if (filters.keyword) {
         conditions.push(
-            `(response_excerpt LIKE $${idx} COLLATE NOCASE OR error_message LIKE $${idx} COLLATE NOCASE)`
+            `(${column('response_excerpt')} LIKE $${idx} COLLATE NOCASE OR ${column('error_message')} LIKE $${idx} COLLATE NOCASE)`
         );
         params.push(`%${filters.keyword}%`);
         idx++;
     }
     if (filters.sessionId) {
-        conditions.push(`session_id = $${idx++}`);
+        conditions.push(`${column('session_id')} = $${idx++}`);
         params.push(filters.sessionId);
     }
     if (filters.agentName) {
-        conditions.push(`agent_name = $${idx++}`);
+        conditions.push(`${column('agent_name')} = $${idx++}`);
         params.push(filters.agentName);
     }
     if (filters.apiKeyId) {
-        conditions.push(`api_key_id = $${idx++}`);
+        conditions.push(`${column('api_key_id')} = $${idx++}`);
         params.push(filters.apiKeyId);
     }
 

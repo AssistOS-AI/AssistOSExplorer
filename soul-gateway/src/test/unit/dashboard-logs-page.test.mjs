@@ -101,6 +101,7 @@ describe('dashboard logs page', () => {
                                     request_id: 'chatcmpl-test',
                                     api_key_id: 'key-1',
                                     requested_model: 'plan',
+                                    resolved_model: 'proxies/default-local-llm',
                                     status: 'succeeded',
                                     http_status: 200,
                                 },
@@ -121,6 +122,8 @@ describe('dashboard logs page', () => {
         assert.equal(page.selectedKey.key_label, 'daniel');
         assert.equal(page.logsTotal, 4);
         assert.equal(page.selectedLogs.length, 1);
+        assert.equal(page.selectedLogs[0].tier, 'plan');
+        assert.equal(page.selectedLogs[0].model, 'proxies/default-local-llm');
         assert.ok(
             calls.some((path) =>
                 path.includes('/management/logs?') &&
@@ -221,6 +224,44 @@ describe('dashboard logs page', () => {
 
         assert.equal(page.selectedLogs.length, before + 1);
         assert.equal(page.selectedLogs[0].request_id, 'live-1');
+        assert.equal(page.selectedLogs[0].tier, 'fast');
+        assert.equal(page.selectedLogs[0].model, null);
+    });
+
+    it('uses sourceResolvedModel metadata for streamed actual model display', async () => {
+        const { window } = await loadDashboard(async (path) => {
+            const p = String(path);
+            if (p.startsWith('/management/logs/keys?')) {
+                return { status: 200, async json() {
+                    return { data: [] };
+                } };
+            }
+            if (p.startsWith('/management/logs?')) {
+                return { status: 200, async json() {
+                    return { data: [], total: 0, limit: 50, offset: 0 };
+                } };
+            }
+            throw new Error(`unexpected dashboard fetch: ${p}`);
+        });
+
+        const page = window.logsPage();
+        await page.init();
+
+        window.app()._handleLogMessage(JSON.stringify({
+            type: 'log',
+            data: {
+                log_id: 'live-model-log',
+                request_id: 'live-model-request',
+                api_key_id: 'key-1',
+                requested_model: 'fast',
+                metadata: { sourceResolvedModel: 'proxies/default-local-llm' },
+                status: 'succeeded',
+                http_status: 200,
+            },
+        }));
+
+        assert.equal(page.selectedLogs[0].tier, 'fast');
+        assert.equal(page.selectedLogs[0].model, 'proxies/default-local-llm');
     });
 
     it('renders the first streamed log when the key list was initially empty', async () => {

@@ -223,7 +223,6 @@ function unwrapObject(payload, fallback = {}) {
 
 function toLogSortColumn(sortCol) {
     if (sortCol === 'total_cost') return 'total_cost_usd';
-    if (sortCol === 'resolved_model') return 'requested_model';
     return sortCol;
 }
 
@@ -404,15 +403,18 @@ function normalizeAuditLog(log) {
         responsePayload?.choices?.[0]?.finish_reason ??
         responsePayload?.stop_reason ??
         null;
+    const actualModel =
+        log.model ??
+        log.resolved_model ??
+        metadata.sourceResolvedModel ??
+        null;
 
     return {
         ...log,
         id: log.id || log.log_id || log.request_id,
-        resolved_model:
-            log.resolved_model ||
-            metadata.sourceResolvedModel ||
-            log.requested_model ||
-            null,
+        tier: log.tier ?? log.requested_model ?? null,
+        model: actualModel,
+        resolved_model: actualModel,
         total_cost:
             log.total_cost ??
             log.total_cost_usd ??
@@ -1375,7 +1377,8 @@ function logsPage() {
         // Column widths (resizable)
         colWidths: {
             time: 144,
-            model: 128,
+            tier: 80,
+            model: 168,
             agent: 96,
             session: 80,
             latency: 80,

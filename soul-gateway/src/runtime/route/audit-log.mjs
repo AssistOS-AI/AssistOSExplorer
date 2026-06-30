@@ -93,6 +93,9 @@ export function auditLogMiddleware() {
                 ctx.metadata.cascadeTrace.length > 0,
             cacheHit: !!ctx.metadata?.cacheHit,
             blocked: !!ctx.metadata?.blocked,
+            metadata: {
+                sourceResolvedModel: getModelKey(resolvedModel),
+            },
             completedAt: new Date(),
         });
 
@@ -219,6 +222,10 @@ function getResolvedExecutionModel(ctx) {
         null;
     if (typeof model !== 'string') return model;
     return ctx.snapshot?.models?.get?.(model) || null;
+}
+
+function getModelKey(model) {
+    return model?.modelKey || model?.model_key || null;
 }
 
 function calculateCompletedCost(ctx, usage) {

@@ -147,7 +147,7 @@
                                                     <input
                                                         type="text"
                                                         class="input input-bordered input-xs w-48"
-                                                        placeholder="Search model, agent, content..."
+                                                        placeholder="Search tier, model, agent..."
                                                         x-model="keyword"
                                                         @keydown.enter="onSearch()"
                                                         @input="if (!keyword.trim()) onSearch()"
@@ -253,7 +253,7 @@
                                                         >
                                                             <tr>
                                                                 <th
-                                                                    colspan="10"
+                                                                    colspan="11"
                                                                     class="p-0"
                                                                 >
                                                                     <div
@@ -279,6 +279,22 @@
                                                                                 <div
                                                                                     class="col-resize-handle"
                                                                                     @mousedown="startResize('time', $event)"
+                                                                                ></div>
+                                                                            </div>
+                                                                            <div
+                                                                                class="resizable-col text-xs cursor-pointer select-none flex items-center gap-1"
+                                                                                :style="{width: cw('tier')}"
+                                                                                @click="setSort('requested_model')"
+                                                                            >
+                                                                                Tier
+                                                                                <span
+                                                                                    x-show="sortCol === 'requested_model'"
+                                                                                    x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'"
+                                                                                    class="text-primary text-[10px]"
+                                                                                ></span>
+                                                                                <div
+                                                                                    class="col-resize-handle"
+                                                                                    @mousedown="startResize('tier', $event)"
                                                                                 ></div>
                                                                             </div>
                                                                             <div
@@ -393,7 +409,7 @@
                                                             >
                                                                 <tr>
                                                                     <td
-                                                                        colspan="10"
+                                                                        colspan="11"
                                                                         class="p-0"
                                                                     >
                                                                         <div
@@ -428,8 +444,13 @@
                                                                                 ></div>
                                                                                 <div
                                                                                     class="font-mono text-xs truncate flex-shrink-0"
+                                                                                    :style="{width: cw('tier')}"
+                                                                                    x-text="log.tier || '-'"
+                                                                                ></div>
+                                                                                <div
+                                                                                    class="font-mono text-xs truncate flex-shrink-0"
                                                                                     :style="{width: cw('model')}"
-                                                                                    x-text="log.resolved_model || log.requested_model || '-'"
+                                                                                    x-text="log.model || '-'"
                                                                                 ></div>
                                                                                 <div
                                                                                     class="text-xs truncate flex-shrink-0 cursor-pointer hover:underline"
@@ -1017,7 +1038,7 @@
                                                                         ></td>
                                                                         <td
                                                                             class="font-mono text-xs"
-                                                                            x-text="log.resolved_model || log.requested_model || '-'"
+                                                                            x-text="log.model || '-'"
                                                                         ></td>
                                                                         <td>
                                                                             <span
@@ -1863,7 +1884,7 @@
                                                                         ></div>
                                                                         <div
                                                                             class="w-36 text-xs font-mono truncate"
-                                                                            x-text="log.resolved_model || log.requested_model || '-'"
+                                                                            x-text="log.model || '-'"
                                                                         ></div>
                                                                         <div
                                                                             class="w-28 text-xs truncate"

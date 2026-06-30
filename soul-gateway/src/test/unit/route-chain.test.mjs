@@ -740,6 +740,7 @@ describe('full route chain integration', () => {
         assert.equal(calls.write.totalTokens, 7);
         assert.equal(calls.write.totalCostUsd, 0.012);
         assert.equal(calls.write.status, 'succeeded');
+        assert.equal(calls.write.metadata.sourceResolvedModel, 'stub-model');
     });
 
     it('records cache hits in audit logs and avoids a second backend call', async () => {

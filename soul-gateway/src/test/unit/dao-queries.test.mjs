@@ -763,8 +763,63 @@ describe('audit-logs-dao', () => {
 
         assert.match(
             calls[0].sql,
-            /ORDER BY requested_model DESC, started_at DESC, log_id DESC/
+            /ORDER BY logs\.requested_model DESC, logs\.started_at DESC, logs\.log_id DESC/
         );
+    });
+
+    it('enriches log queries with the resolved model key', async () => {
+        const dao = await import('../../db/dao/audit-logs-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return { rows: [] };
+            },
+        };
+
+        await dao.query(pool, {}, { sort: 'resolved_model', order: 'ASC' });
+
+        assert.match(
+            calls[0].sql,
+            /resolved\.model_key AS resolved_model/
+        );
+        assert.match(
+            calls[0].sql,
+            /LEFT JOIN models resolved\s+ON resolved\.id = logs\.resolved_model_id/
+        );
+        assert.match(
+            calls[0].sql,
+            /ORDER BY resolved_model ASC, logs\.started_at ASC, logs\.log_id ASC/
+        );
+    });
+
+    it('qualifies log filters when querying with the resolved model join', async () => {
+        const dao = await import('../../db/dao/audit-logs-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return { rows: [] };
+            },
+        };
+
+        await dao.query(pool, {
+            model: 'fast',
+            status: 'succeeded',
+            keyword: 'hello',
+            apiKeyId: 'key-1',
+        });
+
+        assert.match(
+            calls[0].sql,
+            /WHERE logs\.requested_model = \$1 AND logs\.status = \$2 AND \(logs\.response_excerpt LIKE \$3 COLLATE NOCASE OR logs\.error_message LIKE \$3 COLLATE NOCASE\) AND logs\.api_key_id = \$4/
+        );
+        assert.deepEqual(calls[0].params.slice(0, 4), [
+            'fast',
+            'succeeded',
+            '%hello%',
+            'key-1',
+        ]);
     });
 
     it('orders key summaries by last activity before request count', async () => {
