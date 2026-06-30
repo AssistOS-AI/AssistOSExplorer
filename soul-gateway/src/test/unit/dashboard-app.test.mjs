@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 function installDashboardGlobals(fetchImpl) {
     const events = [];
+    const storage = new Map();
     const previous = {
         window: globalThis.window,
         CustomEvent: globalThis.CustomEvent,
@@ -31,10 +32,22 @@ function installDashboardGlobals(fetchImpl) {
         dispatchEvent(event) {
             events.push(event);
         },
+        localStorage: {
+            getItem(key) {
+                return storage.has(key) ? storage.get(key) : null;
+            },
+            setItem(key, value) {
+                storage.set(key, String(value));
+            },
+            removeItem(key) {
+                storage.delete(key);
+            },
+        },
     };
 
     return {
         events,
+        storage,
         restore() {
             if (previous.window === undefined) {
                 delete globalThis.window;
@@ -72,6 +85,118 @@ function jsonResponse(payload) {
 }
 
 describe('dashboard providers page', () => {
+    it('uses tree rows with display labels while preserving raw provider items', async () => {
+        const providers = [
+            {
+                id: 'p1',
+                provider_key: 'agent:AchillesIDE/explorer',
+                display_name: 'Ploinky agent agent:AchillesIDE/explorer',
+                enabled: true,
+            },
+            {
+                id: 'p2',
+                provider_key: 'agent:AchillesIDE/gitAgent',
+                display_name: 'Ploinky agent agent:AchillesIDE/gitAgent',
+                enabled: false,
+            },
+            {
+                id: 'p3',
+                provider_key: 'axl-proxy',
+                display_name: 'AXL Proxy',
+                enabled: true,
+            },
+        ];
+        const requests = [];
+        const globals = installDashboardGlobals(async (url) => {
+            requests.push(url);
+            if (url === '/management/providers') {
+                return jsonResponse({ data: providers });
+            }
+            if (url === '/management/providers/templates') {
+                return jsonResponse({ templates: {} });
+            }
+            throw new Error(`unexpected request: ${url}`);
+        });
+
+        try {
+            const cacheKey = `${Date.now()}${Math.random()}`;
+            await import(`../../dashboard/js/tree-view.js?test=${cacheKey}`);
+            await import(`../../dashboard/js/app.mjs?test=${cacheKey}`);
+
+            const page = globalThis.window.providersPage();
+            await page.init();
+
+            assert.deepEqual(requests, [
+                '/management/providers',
+                '/management/providers/templates',
+            ]);
+            assert.equal(
+                page.providerDisplayKey(providers[0]),
+                'AchillesIDE/explorer'
+            );
+            assert.equal(
+                page.providerDisplayName(providers[0]),
+                'Ploinky agent AchillesIDE/explorer'
+            );
+
+            const rows = page.providerTreeRows;
+            assert.deepEqual(
+                rows.map((row) => ({
+                    type: row.rowType,
+                    label: row.label,
+                    depth: row.depth,
+                    key: row.key,
+                })),
+                [
+                    {
+                        type: 'group',
+                        label: 'AchillesIDE',
+                        depth: 0,
+                        key: 'AchillesIDE',
+                    },
+                    {
+                        type: 'leaf',
+                        label: 'explorer',
+                        depth: 1,
+                        key: 'agent:AchillesIDE/explorer',
+                    },
+                    {
+                        type: 'leaf',
+                        label: 'gitAgent',
+                        depth: 1,
+                        key: 'agent:AchillesIDE/gitAgent',
+                    },
+                    {
+                        type: 'leaf',
+                        label: 'AXL Proxy',
+                        depth: 0,
+                        key: 'axl-proxy',
+                    },
+                ]
+            );
+            assert.equal(rows[1].item, providers[0]);
+            assert.equal(
+                rows[1].item.provider_key,
+                'agent:AchillesIDE/explorer'
+            );
+            assert.equal(rows[0].count, 2);
+            assert.equal(rows[0].enabledCount, 1);
+
+            page.providerFilter = 'agent:AchillesIDE';
+            assert.deepEqual(
+                page.filteredProviders.map((provider) => provider.id),
+                ['p1', 'p2']
+            );
+            page.providerFilter = 'AXL';
+            assert.deepEqual(
+                page.filteredProviders.map((provider) => provider.id),
+                ['p3']
+            );
+        } finally {
+            globals.restore();
+        }
+    });
+
     it('notifies mounted model tables to refresh after provider model sync', async () => {
         const requests = [];
         const globals = installDashboardGlobals(async (url, options = {}) => {

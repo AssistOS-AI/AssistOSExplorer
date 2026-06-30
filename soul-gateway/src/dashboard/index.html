@@ -2136,12 +2136,19 @@
                                     <h2 class="text-lg font-bold">
                                         LLM Providers
                                     </h2>
-                                    <button
-                                        class="btn btn-primary btn-sm"
-                                        @click="openCreate()"
-                                    >
-                                        Add Provider
-                                    </button>
+                                    <div class="flex items-center gap-2">
+                                        <input
+                                            class="input input-bordered input-sm w-56"
+                                            placeholder="Filter providers..."
+                                            x-model="providerFilter"
+                                        />
+                                        <button
+                                            class="btn btn-primary btn-sm"
+                                            @click="openCreate()"
+                                        >
+                                            Add Provider
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <!-- Test result alert -->
@@ -2198,62 +2205,103 @@
                                             </thead>
                                             <tbody>
                                                 <template
-                                                    x-for="p in providers"
-                                                    :key="p.id"
+                                                    x-for="row in providerTreeRows"
+                                                    :key="row.key"
                                                 >
                                                     <tr
-                                                        :class="{'opacity-40': !p.enabled}"
+                                                        :class="row.rowType === 'group' ? 'sg-tree-group-row bg-base-200/60 cursor-pointer' : (row.item?.enabled ? 'sg-tree-leaf-row' : 'sg-tree-leaf-row opacity-40')"
+                                                        @click="row.rowType === 'group' ? toggleProviderGroup(row) : null"
                                                     >
                                                         <td
+                                                            x-show="row.rowType === 'group'"
+                                                            colspan="9"
+                                                        >
+                                                            <div
+                                                                class="flex items-center gap-2"
+                                                            >
+                                                                <span
+                                                                    class="font-mono text-xs w-4"
+                                                                    x-text="row.expanded ? 'v' : '>'"
+                                                                ></span>
+                                                                <span
+                                                                    class="font-bold"
+                                                                    x-text="row.label"
+                                                                ></span>
+                                                                <span
+                                                                    class="badge badge-ghost badge-sm"
+                                                                    x-text="`${row.count} providers`"
+                                                                ></span>
+                                                                <span
+                                                                    class="text-xs opacity-60"
+                                                                    x-text="providerGroupSummary(row)"
+                                                                ></span>
+                                                            </div>
+                                                        </td>
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
                                                             class="font-mono font-bold"
-                                                            x-text="p.provider_key"
+                                                            :style="providerIndentStyle(row)"
+                                                            :title="row.item?.provider_key"
+                                                            x-text="row.label"
                                                         ></td>
                                                         <td
-                                                            x-text="p.display_name || '-'"
+                                                            x-show="row.rowType === 'leaf'"
+                                                            x-text="providerDisplayName(row.item)"
+                                                            :title="row.item?.display_name || ''"
                                                         ></td>
-                                                        <td>
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                        >
                                                             <span
                                                                 class="badge badge-ghost badge-sm"
-                                                                x-text="p.adapter_key"
+                                                                x-text="row.item?.adapter_key"
                                                             ></span>
                                                         </td>
-                                                        <td>
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                        >
                                                             <span
                                                                 class="badge badge-sm"
-                                                                :class="sgAuthBadge(p).classes"
-                                                                x-text="sgAuthBadge(p).label"
+                                                                :class="sgAuthBadge(row.item).classes"
+                                                                x-text="sgAuthBadge(row.item).label"
                                                             ></span>
                                                         </td>
                                                         <td
+                                                            x-show="row.rowType === 'leaf'"
                                                             class="text-xs font-mono max-w-[300px] truncate"
-                                                            x-text="p.base_url"
-                                                            :title="p.base_url"
+                                                            x-text="row.item?.base_url"
+                                                            :title="row.item?.base_url"
                                                         ></td>
                                                         <td
+                                                            x-show="row.rowType === 'leaf'"
                                                             class="text-xs font-mono opacity-60"
-                                                            x-text="p.key_hint || '-'"
+                                                            x-text="row.item?.key_hint || '-'"
                                                         ></td>
-                                                        <td>
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                        >
                                                                 <input
                                                                     type="checkbox"
                                                                     class="toggle toggle-sm"
-                                                                    :checked="p.enabled"
+                                                                    :checked="row.item?.enabled"
                                                                     disabled
                                                                 />
                                                         </td>
-                                                        <td>
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                        >
                                                             <template
-                                                                x-if="p.auth_strategy === 'oauth'"
+                                                                x-if="row.rowType === 'leaf' && row.item?.auth_strategy === 'oauth'"
                                                             >
                                                                 <button
                                                                     class="btn btn-xs btn-outline"
-                                                                    @click="viewAuth(p)"
+                                                                    @click="viewAuth(row.item)"
                                                                 >
                                                                     Manage
                                                                 </button>
                                                             </template>
                                                             <template
-                                                                x-if="p.auth_strategy !== 'oauth'"
+                                                                x-if="row.rowType === 'leaf' && row.item?.auth_strategy !== 'oauth'"
                                                             >
                                                                 <span
                                                                     class="badge badge-xs badge-ghost"
@@ -2262,59 +2310,61 @@
                                                                 >
                                                             </template>
                                                         </td>
-                                                        <td>
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                        >
                                                             <div
                                                                 class="flex gap-1"
                                                             >
                                                                 <button
                                                                     class="btn btn-ghost btn-xs"
-                                                                    @click="testConnection(p)"
-                                                                    :disabled="testing === p.id"
+                                                                    @click="testConnection(row.item)"
+                                                                    :disabled="testing === row.item?.id"
                                                                 >
                                                                     <span
-                                                                        x-show="testing !== p.id"
+                                                                        x-show="testing !== row.item?.id"
                                                                         >Test</span
                                                                     >
                                                                     <span
-                                                                        x-show="testing === p.id"
+                                                                        x-show="testing === row.item?.id"
                                                                         class="loading loading-spinner loading-xs"
                                                                     ></span>
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-ghost btn-xs"
-                                                                    @click="syncModels(p)"
-                                                                    :disabled="syncing === p.id"
+                                                                    @click="syncModels(row.item)"
+                                                                    :disabled="syncing === row.item?.id"
                                                                 >
                                                                     <span
-                                                                        x-show="syncing !== p.id"
+                                                                        x-show="syncing !== row.item?.id"
                                                                         >Sync</span
                                                                     >
                                                                     <span
-                                                                        x-show="syncing === p.id"
+                                                                        x-show="syncing === row.item?.id"
                                                                         class="loading loading-spinner loading-xs"
                                                                     ></span>
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-ghost btn-xs"
-                                                                    @click="discoverModels(p)"
+                                                                    @click="discoverModels(row.item)"
                                                                 >
                                                                     View
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-ghost btn-xs"
-                                                                    @click="openComposer(p)"
+                                                                    @click="openComposer(row.item)"
                                                                 >
                                                                     Pipeline
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-ghost btn-xs"
-                                                                    @click="edit(p)"
+                                                                    @click="edit(row.item)"
                                                                 >
                                                                     Edit
                                                                 </button>
                                                                 <button
                                                                     class="btn btn-error btn-xs"
-                                                                    @click="remove(p)"
+                                                                    @click="remove(row.item)"
                                                                 >
                                                                     Delete
                                                                 </button>
@@ -2323,7 +2373,7 @@
                                                     </tr>
                                                 </template>
                                                 <tr
-                                                    x-show="providers.length === 0"
+                                                    x-show="filteredProviders.length === 0"
                                                 >
                                                     <td
                                                         colspan="9"
@@ -5463,6 +5513,7 @@
         </div>
 
         <script src="./js/markdown.js"></script>
+        <script src="./js/tree-view.js"></script>
         <script src="./js/app.mjs"></script>
     </body>
 </html>

@@ -707,10 +707,22 @@ function app() {
 }
 
 // ---- Providers Page ----
+const PROVIDER_TREE_EXPANDED_STORAGE_KEY =
+    'soulGateway.providers.tree.expanded';
+
 function providersPage() {
     return {
         providers: [],
         templates: {},
+        providerFilter: '',
+        providerTreeExpanded: new Set([
+            'AchillesCLI',
+            'AchillesIDE',
+            'proxies',
+            'basic',
+            'webmeetInfra',
+            'UmamiAgent',
+        ]),
         showProviderCreate: false,
         showEdit: false,
         editing: null,
@@ -765,6 +777,23 @@ function providersPage() {
         bindingSettingsJson: '',
         bindingSettingsError: '',
 
+        get treeView() {
+            return window.SoulGatewayTreeView;
+        },
+
+        get filteredProviders() {
+            return this.treeView.filterProvidersForTree(
+                this.providers,
+                this.providerFilter
+            );
+        },
+
+        get providerTreeRows() {
+            return this.treeView.buildProviderTreeRows(this.filteredProviders, {
+                expanded: this.providerTreeExpanded,
+            });
+        },
+
         /** Derive OAuth adapter options from loaded templates — no hardcoded list. */
         get oauthAdapterOptions() {
             const options = [];
@@ -817,6 +846,41 @@ function providersPage() {
             ]);
             this.providers = unwrapArray(providers);
             this.templates = unwrapObject(templates);
+            this.providerTreeExpanded = this.treeView.loadExpandedSet(
+                window.localStorage,
+                PROVIDER_TREE_EXPANDED_STORAGE_KEY,
+                Array.from(this.providerTreeExpanded)
+            );
+        },
+
+        providerDisplayKey(provider) {
+            return this.treeView.providerDisplayKey(provider);
+        },
+
+        providerDisplayName(provider) {
+            return this.treeView.providerDisplayName(provider) || '-';
+        },
+
+        providerIndentStyle(row) {
+            const depth = Number.isFinite(row?.depth) ? row.depth : 0;
+            return `padding-left: ${0.75 + depth * 1.25}rem`;
+        },
+
+        providerGroupSummary(row) {
+            return `${row.enabledCount}/${row.count} enabled`;
+        },
+
+        toggleProviderGroup(row) {
+            if (!row?.path) return;
+            this.providerTreeExpanded = this.treeView.toggleExpandedPath(
+                this.providerTreeExpanded,
+                row.path
+            );
+            this.treeView.saveExpandedSet(
+                window.localStorage,
+                PROVIDER_TREE_EXPANDED_STORAGE_KEY,
+                this.providerTreeExpanded
+            );
         },
 
         formatTestDetail(result) {
