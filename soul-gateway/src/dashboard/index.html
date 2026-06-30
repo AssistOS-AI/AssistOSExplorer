@@ -795,7 +795,7 @@
                                                     @click="toggleKey(k)"
                                                 >
                                                     <svg
-                                                        :class="{'rotate-90': expandedKey === k.api_key_id}"
+                                                        :class="{'rotate-90': k._expanded}"
                                                         class="w-4 h-4 transition-transform flex-shrink-0 opacity-50"
                                                         fill="none"
                                                         viewBox="0 0 24 24"
@@ -896,7 +896,7 @@
                                                 </div>
                                                 <!-- Expanded: request logs for this key -->
                                                 <div
-                                                    x-show="expandedKey === k.api_key_id"
+                                                    x-show="k._expanded"
                                                     x-transition
                                                     class="border-t border-base-300 bg-base-200/30"
                                                 >
@@ -913,28 +913,28 @@
                                                                     ></th>
                                                                     <th
                                                                         class="w-40 cursor-pointer select-none"
-                                                                        @click="setSort('started_at')"
+                                                                        @click="setSort(k, 'started_at')"
                                                                     >
                                                                         <span
                                                                             class="flex items-center gap-1"
                                                                             >Time
                                                                             <span
-                                                                                x-show="sortCol === 'started_at'"
-                                                                                x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'"
+                                                                                x-show="k._sortCol === 'started_at'"
+                                                                                x-text="k._sortDir === 'asc' ? '\u25B2' : '\u25BC'"
                                                                                 class="text-primary text-[10px]"
                                                                             ></span
                                                                         ></span>
                                                                     </th>
                                                                     <th
                                                                         class="w-36 cursor-pointer select-none"
-                                                                        @click="setSort('resolved_model')"
+                                                                        @click="setSort(k, 'resolved_model')"
                                                                     >
                                                                         <span
                                                                             class="flex items-center gap-1"
                                                                             >Model
                                                                             <span
-                                                                                x-show="sortCol === 'resolved_model'"
-                                                                                x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'"
+                                                                                x-show="k._sortCol === 'resolved_model'"
+                                                                                x-text="k._sortDir === 'asc' ? '\u25B2' : '\u25BC'"
                                                                                 class="text-primary text-[10px]"
                                                                             ></span
                                                                         ></span>
@@ -946,56 +946,56 @@
                                                                     </th>
                                                                     <th
                                                                         class="w-24 text-right cursor-pointer select-none"
-                                                                        @click="setSort('latency_ms')"
+                                                                        @click="setSort(k, 'latency_ms')"
                                                                     >
                                                                         <span
                                                                             class="flex items-center justify-end gap-1"
                                                                             >Latency
                                                                             <span
-                                                                                x-show="sortCol === 'latency_ms'"
-                                                                                x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'"
+                                                                                x-show="k._sortCol === 'latency_ms'"
+                                                                                x-text="k._sortDir === 'asc' ? '\u25B2' : '\u25BC'"
                                                                                 class="text-primary text-[10px]"
                                                                             ></span
                                                                         ></span>
                                                                     </th>
                                                                     <th
                                                                         class="w-24 text-right cursor-pointer select-none"
-                                                                        @click="setSort('prompt_tokens')"
+                                                                        @click="setSort(k, 'prompt_tokens')"
                                                                     >
                                                                         <span
                                                                             class="flex items-center justify-end gap-1"
                                                                             >Input
                                                                             <span
-                                                                                x-show="sortCol === 'prompt_tokens'"
-                                                                                x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'"
+                                                                                x-show="k._sortCol === 'prompt_tokens'"
+                                                                                x-text="k._sortDir === 'asc' ? '\u25B2' : '\u25BC'"
                                                                                 class="text-primary text-[10px]"
                                                                             ></span
                                                                         ></span>
                                                                     </th>
                                                                     <th
                                                                         class="w-24 text-right cursor-pointer select-none"
-                                                                        @click="setSort('completion_tokens')"
+                                                                        @click="setSort(k, 'completion_tokens')"
                                                                     >
                                                                         <span
                                                                             class="flex items-center justify-end gap-1"
                                                                             >Output
                                                                             <span
-                                                                                x-show="sortCol === 'completion_tokens'"
-                                                                                x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'"
+                                                                                x-show="k._sortCol === 'completion_tokens'"
+                                                                                x-text="k._sortDir === 'asc' ? '\u25B2' : '\u25BC'"
                                                                                 class="text-primary text-[10px]"
                                                                             ></span
                                                                         ></span>
                                                                     </th>
                                                                     <th
                                                                         class="w-24 text-right cursor-pointer select-none"
-                                                                        @click="setSort('total_cost')"
+                                                                        @click="setSort(k, 'total_cost')"
                                                                     >
                                                                         <span
                                                                             class="flex items-center justify-end gap-1"
                                                                             >Cost
                                                                             <span
-                                                                                x-show="sortCol === 'total_cost'"
-                                                                                x-text="sortDir === 'asc' ? '\u25B2' : '\u25BC'"
+                                                                                x-show="k._sortCol === 'total_cost'"
+                                                                                x-text="k._sortDir === 'asc' ? '\u25B2' : '\u25BC'"
                                                                                 class="text-primary text-[10px]"
                                                                             ></span
                                                                         ></span>
@@ -1009,16 +1009,16 @@
                                                             </thead>
                                                             <tbody>
                                                                 <template
-                                                                    x-for="log in keyLogs"
+                                                                    x-for="log in k._logs"
                                                                     :key="log.id"
                                                                 >
                                                                     <tr
                                                                         class="cursor-pointer hover:bg-base-200"
-                                                                        @click="toggleDetail(log)"
+                                                                        @click="toggleDetail(k, log)"
                                                                     >
                                                                         <td>
                                                                             <svg
-                                                                                :class="{'rotate-90': expandedDetail === log.id}"
+                                                                                :class="{'rotate-90': k._expandedDetail === log.id}"
                                                                                 class="w-3 h-3 transition-transform opacity-40"
                                                                                 fill="none"
                                                                                 viewBox="0 0 24 24"
@@ -1083,7 +1083,7 @@
                                                                     </tr>
                                                                     <!-- Expanded log detail -->
                                                                     <template
-                                                                        x-if="expandedDetail === log.id"
+                                                                        x-if="k._expandedDetail === log.id"
                                                                     >
                                                                         <tr>
                                                                             <td
@@ -1295,7 +1295,7 @@
                                                                     </template>
                                                                 </template>
                                                                 <template
-                                                                    x-if="keyLogs.length === 0"
+                                                                    x-if="k._logs.length === 0"
                                                                 >
                                                                     <tr>
                                                                         <td
@@ -1314,24 +1314,24 @@
                                                     <!-- Pagination -->
                                                     <div
                                                         class="flex justify-between items-center px-4 py-2 border-t border-base-300"
-                                                        x-show="keyLogsTotal > keyLogsLimit"
+                                                        x-show="k._logsTotal > keyLogsLimit"
                                                     >
                                                         <div
                                                             class="text-xs"
-                                                            x-text="'Showing ' + (keyLogsOffset+1) + '-' + Math.min(keyLogsOffset+keyLogsLimit, keyLogsTotal) + ' of ' + keyLogsTotal"
+                                                            x-text="'Showing ' + (k._logsOffset+1) + '-' + Math.min(k._logsOffset+keyLogsLimit, k._logsTotal) + ' of ' + k._logsTotal"
                                                         ></div>
                                                         <div class="join">
                                                             <button
                                                                 class="join-item btn btn-xs"
-                                                                :disabled="keyLogsOffset === 0"
-                                                                @click="keyLogsOffset -= keyLogsLimit; loadKeyLogs()"
+                                                                :disabled="k._logsOffset === 0"
+                                                                @click="k._logsOffset -= keyLogsLimit; loadKeyLogs(k)"
                                                             >
                                                                 Prev
                                                             </button>
                                                             <button
                                                                 class="join-item btn btn-xs"
-                                                                :disabled="keyLogsOffset + keyLogsLimit >= keyLogsTotal"
-                                                                @click="keyLogsOffset += keyLogsLimit; loadKeyLogs()"
+                                                                :disabled="k._logsOffset + keyLogsLimit >= k._logsTotal"
+                                                                @click="k._logsOffset += keyLogsLimit; loadKeyLogs(k)"
                                                             >
                                                                 Next
                                                             </button>
@@ -2219,10 +2219,20 @@
                                                             <div
                                                                 class="flex items-center gap-2"
                                                             >
-                                                                <span
-                                                                    class="font-mono text-xs w-4"
-                                                                    x-text="row.expanded ? 'v' : '>'"
-                                                                ></span>
+                                                                <svg
+                                                                    :class="{'rotate-90': row.expanded}"
+                                                                    class="w-4 h-4 transition-transform flex-shrink-0 opacity-50"
+                                                                    fill="none"
+                                                                    viewBox="0 0 24 24"
+                                                                    stroke="currentColor"
+                                                                >
+                                                                    <path
+                                                                        stroke-linecap="round"
+                                                                        stroke-linejoin="round"
+                                                                        stroke-width="2"
+                                                                        d="M9 5l7 7-7 7"
+                                                                    />
+                                                                </svg>
                                                                 <span
                                                                     class="font-bold"
                                                                     x-text="row.label"
@@ -3515,10 +3525,20 @@
                                                             <div
                                                                 class="flex items-center gap-2"
                                                             >
-                                                                <span
-                                                                    class="font-mono text-xs w-4"
-                                                                    x-text="row.expanded ? 'v' : '>'"
-                                                                ></span>
+                                                                <svg
+                                                                    :class="{'rotate-90': row.expanded}"
+                                                                    class="w-4 h-4 transition-transform flex-shrink-0 opacity-50"
+                                                                    fill="none"
+                                                                    viewBox="0 0 24 24"
+                                                                    stroke="currentColor"
+                                                                >
+                                                                    <path
+                                                                        stroke-linecap="round"
+                                                                        stroke-linejoin="round"
+                                                                        stroke-width="2"
+                                                                        d="M9 5l7 7-7 7"
+                                                                    />
+                                                                </svg>
                                                                 <span
                                                                     class="font-bold"
                                                                     x-text="row.label"

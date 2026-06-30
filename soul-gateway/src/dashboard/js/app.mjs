@@ -1936,14 +1936,7 @@ function costsPage() {
 function activityPage() {
     return {
         keyData: [],
-        expandedKey: null,
-        keyLogs: [],
-        keyLogsTotal: 0,
-        keyLogsOffset: 0,
         keyLogsLimit: 50,
-        expandedDetail: null,
-        sortCol: 'started_at',
-        sortDir: 'desc',
         timeRange: 'month',
         customFrom: '',
         customTo: '',
@@ -1973,6 +1966,13 @@ function activityPage() {
                 request_count: Number(k.request_count || 0),
                 error_count: Number(k.error_count || 0),
                 key_budget: k.key_budget != null ? Number(k.key_budget) : null,
+                _expanded: false,
+                _logs: [],
+                _logsTotal: 0,
+                _logsOffset: 0,
+                _sortCol: 'started_at',
+                _sortDir: 'desc',
+                _expandedDetail: null,
             }));
         },
 
@@ -1986,47 +1986,46 @@ function activityPage() {
             return Math.min(100, (row.total_cost / budget) * 100);
         },
 
-        setSort(col) {
-            if (this.sortCol === col) {
-                this.sortDir = this.sortDir === 'desc' ? 'asc' : 'desc';
+        setSort(k, col) {
+            if (k._sortCol === col) {
+                k._sortDir = k._sortDir === 'desc' ? 'asc' : 'desc';
             } else {
-                this.sortCol = col;
-                this.sortDir = 'desc';
+                k._sortCol = col;
+                k._sortDir = 'desc';
             }
-            this.keyLogsOffset = 0;
-            this.loadKeyLogs();
+            k._logsOffset = 0;
+            this.loadKeyLogs(k);
         },
 
         async toggleKey(k) {
-            if (this.expandedKey === k.api_key_id) {
-                this.expandedKey = null;
-                this.keyLogs = [];
-                return;
+            k._expanded = !k._expanded;
+            if (k._expanded) {
+                k._logsOffset = 0;
+                k._expandedDetail = null;
+                k._sortCol = 'started_at';
+                k._sortDir = 'desc';
+                await this.loadKeyLogs(k);
+            } else {
+                k._logs = [];
             }
-            this.expandedKey = k.api_key_id;
-            this.keyLogsOffset = 0;
-            this.expandedDetail = null;
-            this.sortCol = 'started_at';
-            this.sortDir = 'desc';
-            await this.loadKeyLogs();
         },
 
-        async loadKeyLogs() {
+        async loadKeyLogs(k) {
             const params = new URLSearchParams({
-                api_key_id: this.expandedKey,
+                api_key_id: k.api_key_id,
                 limit: this.keyLogsLimit,
-                offset: this.keyLogsOffset,
-                sort: toLogSortColumn(this.sortCol),
-                order: this.sortDir,
+                offset: k._logsOffset,
+                sort: toLogSortColumn(k._sortCol),
+                order: k._sortDir,
             });
             const result = await api.get(`/management/logs?${params}`);
-            this.keyLogs = normalizeAuditLogs(result);
-            this.keyLogsTotal = result.total || 0;
+            k._logs = normalizeAuditLogs(result);
+            k._logsTotal = result.total || 0;
         },
 
-        async toggleDetail(log) {
-            if (this.expandedDetail === log.id) {
-                this.expandedDetail = null;
+        async toggleDetail(k, log) {
+            if (k._expandedDetail === log.id) {
+                k._expandedDetail = null;
                 return;
             }
             if (!log._detail) {
@@ -2036,7 +2035,7 @@ function activityPage() {
                     )
                 );
             }
-            this.expandedDetail = log.id;
+            k._expandedDetail = log.id;
         },
 
         formatTime,

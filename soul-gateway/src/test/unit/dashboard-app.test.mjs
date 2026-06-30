@@ -228,6 +228,148 @@ describe('dashboard tree persistence', () => {
     });
 });
 
+describe('dashboard activity page', () => {
+    it('keeps expanded logs and details independent for each API key', async () => {
+        const requests = [];
+        const globals = installDashboardGlobals(async (url) => {
+            requests.push(String(url));
+            if (String(url).startsWith('/management/metrics/activity?')) {
+                return jsonResponse({
+                    by_key: [
+                        {
+                            api_key_id: 'key-a',
+                            key_label: 'Key A',
+                            key_hint: 'a',
+                            request_count: 2,
+                        },
+                        {
+                            api_key_id: 'key-b',
+                            key_label: 'Key B',
+                            key_hint: 'b',
+                            request_count: 3,
+                        },
+                    ],
+                });
+            }
+
+            if (String(url).startsWith('/management/logs?')) {
+                const params = new URLSearchParams(String(url).split('?')[1]);
+                const keyId = params.get('api_key_id');
+                return jsonResponse({
+                    total: 1,
+                    data: [
+                        {
+                            id: `${keyId}-log`,
+                            request_id: `${keyId}-request`,
+                            started_at: '2026-06-30T12:00:00Z',
+                            resolved_model: 'fast',
+                        },
+                    ],
+                });
+            }
+
+            if (String(url).startsWith('/management/logs/key-a-request')) {
+                return jsonResponse({
+                    log: {
+                        id: 'key-a-log',
+                        request_id: 'key-a-request',
+                        request_payload: {
+                            messages: [{ role: 'user', content: 'A' }],
+                        },
+                        response_payload: {
+                            choices: [
+                                {
+                                    message: { content: 'A response' },
+                                    finish_reason: 'stop',
+                                },
+                            ],
+                        },
+                    },
+                });
+            }
+
+            if (String(url).startsWith('/management/logs/key-b-request')) {
+                return jsonResponse({
+                    log: {
+                        id: 'key-b-log',
+                        request_id: 'key-b-request',
+                        request_payload: {
+                            messages: [{ role: 'user', content: 'B' }],
+                        },
+                        response_payload: {
+                            choices: [
+                                {
+                                    message: { content: 'B response' },
+                                    finish_reason: 'stop',
+                                },
+                            ],
+                        },
+                    },
+                });
+            }
+
+            throw new Error(`unexpected request: ${url}`);
+        });
+
+        try {
+            const cacheKey = `${Date.now()}${Math.random()}`;
+            await import(`../../dashboard/js/app.mjs?test=${cacheKey}`);
+
+            const page = globalThis.window.activityPage();
+            await page.init();
+
+            const [keyA, keyB] = page.keyData;
+            await page.toggleKey(keyA);
+            await page.toggleKey(keyB);
+
+            assert.equal(keyA._expanded, true);
+            assert.equal(keyB._expanded, true);
+            assert.deepEqual(
+                keyA._logs.map((log) => log.id),
+                ['key-a-log']
+            );
+            assert.deepEqual(
+                keyB._logs.map((log) => log.id),
+                ['key-b-log']
+            );
+
+            await page.toggleDetail(keyA, keyA._logs[0]);
+            await page.toggleDetail(keyB, keyB._logs[0]);
+
+            assert.equal(keyA._expandedDetail, 'key-a-log');
+            assert.equal(keyB._expandedDetail, 'key-b-log');
+            assert.match(
+                keyA._logs[0]._detail.response_content,
+                /A response/
+            );
+            assert.match(
+                keyB._logs[0]._detail.response_content,
+                /B response/
+            );
+
+            await page.toggleKey(keyA);
+
+            assert.equal(keyA._expanded, false);
+            assert.deepEqual(keyA._logs, []);
+            assert.equal(keyB._expanded, true);
+            assert.deepEqual(
+                keyB._logs.map((log) => log.id),
+                ['key-b-log']
+            );
+            assert.equal(keyB._expandedDetail, 'key-b-log');
+            assert.deepEqual(
+                requests.filter((url) => url.startsWith('/management/logs?')),
+                [
+                    '/management/logs?api_key_id=key-a&limit=50&offset=0&sort=started_at&order=desc',
+                    '/management/logs?api_key_id=key-b&limit=50&offset=0&sort=started_at&order=desc',
+                ]
+            );
+        } finally {
+            globals.restore();
+        }
+    });
+});
+
 describe('dashboard providers page', () => {
     it('uses tree rows with display labels while preserving raw provider items', async () => {
         const providers = [
