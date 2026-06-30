@@ -810,16 +810,45 @@ describe('audit-logs-dao', () => {
             apiKeyId: 'key-1',
         });
 
-        assert.match(
-            calls[0].sql,
-            /WHERE logs\.requested_model = \$1 AND logs\.status = \$2 AND \(logs\.response_excerpt LIKE \$3 COLLATE NOCASE OR logs\.error_message LIKE \$3 COLLATE NOCASE\) AND logs\.api_key_id = \$4/
-        );
+        assert.match(calls[0].sql, /WHERE logs\.requested_model = \$1/);
+        assert.match(calls[0].sql, /logs\.status = \$2/);
+        assert.match(calls[0].sql, /logs\.response_excerpt LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /logs\.error_message LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /logs\.requested_model LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /logs\.agent_name LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /logs\.session_id LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /logs\.request_id LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /resolved\.model_key LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /resolved\.display_name LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /resolved\.provider_model_id LIKE \$3 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /logs\.api_key_id = \$4/);
         assert.deepEqual(calls[0].params.slice(0, 4), [
             'fast',
             'succeeded',
             '%hello%',
             'key-1',
         ]);
+    });
+
+    it('counts logs with the same resolved model keyword search as the list query', async () => {
+        const dao = await import('../../db/dao/audit-logs-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return { rows: [{ total: 0 }] };
+            },
+        };
+
+        await dao.countByFilters(pool, { keyword: 'codestral' });
+
+        assert.match(
+            calls[0].sql,
+            /SELECT COUNT\(\*\) AS total\s+FROM audit_logs logs\s+LEFT JOIN models resolved\s+ON resolved\.id = logs\.resolved_model_id/
+        );
+        assert.match(calls[0].sql, /logs\.requested_model LIKE \$1 COLLATE NOCASE/);
+        assert.match(calls[0].sql, /resolved\.model_key LIKE \$1 COLLATE NOCASE/);
+        assert.deepEqual(calls[0].params, ['%codestral%']);
     });
 
     it('orders key summaries by last activity before request count', async () => {
@@ -838,5 +867,25 @@ describe('audit-logs-dao', () => {
             calls[0].sql,
             /ORDER BY last_activity DESC NULLS LAST, request_count DESC, key_label ASC/
         );
+    });
+
+    it('searches key summaries with the resolved model join available', async () => {
+        const dao = await import('../../db/dao/audit-logs-dao.mjs');
+        const calls = [];
+        const pool = {
+            async query(sql, params) {
+                calls.push({ sql, params });
+                return { rows: [] };
+            },
+        };
+
+        await dao.summarizeByApiKey(pool, { keyword: 'codestral' });
+
+        assert.match(
+            calls[0].sql,
+            /LEFT JOIN api_keys keys\s+ON keys\.id = logs\.api_key_id\s+LEFT JOIN models resolved\s+ON resolved\.id = logs\.resolved_model_id/
+        );
+        assert.match(calls[0].sql, /resolved\.model_key LIKE \$1 COLLATE NOCASE/);
+        assert.deepEqual(calls[0].params, ['%codestral%']);
     });
 });

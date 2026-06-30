@@ -230,7 +230,10 @@ export async function query(
     filters = {},
     { limit = 50, offset = 0, sort = 'started_at', order = 'DESC' } = {}
 ) {
-    const { conditions, params, idx } = buildFilterClauses(filters, 'logs');
+    const { conditions, params, idx } = buildFilterClauses(filters, {
+        tableAlias: 'logs',
+        resolvedAlias: 'resolved',
+    });
 
     const sortExpressions = new Map([
         ['started_at', 'logs.started_at'],
@@ -267,19 +270,27 @@ export async function query(
  * Count matching rows for the same filters as query().
  */
 export async function countByFilters(pool, filters = {}) {
-    const { conditions, params } = buildFilterClauses(filters);
+    const { conditions, params } = buildFilterClauses(filters, {
+        tableAlias: 'logs',
+        resolvedAlias: 'resolved',
+    });
     const where =
         conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const { rows } = await pool.query(
-        `SELECT COUNT(*) AS total FROM ${TABLE} ${where}`,
+        `SELECT COUNT(*) AS total
+     ${LOG_SELECT_FROM}
+     ${where}`,
         params
     );
     return rows[0].total;
 }
 
 export async function summarizeByApiKey(pool, filters = {}) {
-    const { conditions, params } = buildFilterClauses(filters, 'logs');
+    const { conditions, params } = buildFilterClauses(filters, {
+        tableAlias: 'logs',
+        resolvedAlias: 'resolved',
+    });
     const where =
         conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -304,6 +315,8 @@ export async function summarizeByApiKey(pool, filters = {}) {
          FROM ${TABLE} logs
          LEFT JOIN api_keys keys
            ON keys.id = logs.api_key_id
+         LEFT JOIN models resolved
+           ON resolved.id = logs.resolved_model_id
          ${where}
          GROUP BY
            logs.api_key_id,
@@ -342,10 +355,12 @@ export async function dropExpiredPartitions(pool, cutoffDate) {
 
 // ── internal helpers ─────────────────────────────────────────────────
 
-function buildFilterClauses(filters, tableAlias = '') {
+function buildFilterClauses(filters, options = {}) {
     const conditions = [];
     const params = [];
     let idx = 1;
+    const tableAlias = typeof options === 'string' ? options : options.tableAlias || '';
+    const resolvedAlias = typeof options === 'string' ? '' : options.resolvedAlias || '';
     const column = (name) => tableAlias ? `${tableAlias}.${name}` : name;
 
     if (filters.soulId) {
@@ -373,8 +388,23 @@ function buildFilterClauses(filters, tableAlias = '') {
         params.push(filters.errorType);
     }
     if (filters.keyword) {
+        const keywordColumns = [
+            column('response_excerpt'),
+            column('error_message'),
+            column('requested_model'),
+            column('agent_name'),
+            column('session_id'),
+            column('request_id'),
+        ];
+        if (resolvedAlias) {
+            keywordColumns.push(
+                `${resolvedAlias}.model_key`,
+                `${resolvedAlias}.display_name`,
+                `${resolvedAlias}.provider_model_id`
+            );
+        }
         conditions.push(
-            `(${column('response_excerpt')} LIKE $${idx} COLLATE NOCASE OR ${column('error_message')} LIKE $${idx} COLLATE NOCASE)`
+            `(${keywordColumns.map((name) => `${name} LIKE $${idx} COLLATE NOCASE`).join(' OR ')})`
         );
         params.push(`%${filters.keyword}%`);
         idx++;
