@@ -12,6 +12,11 @@
  */
 
 import { calculateRequestCost } from '../policy/cost-calculator.mjs';
+import {
+    buildBufferedCapture,
+    shapeStoredPayload,
+} from '../../observability/response-capture.mjs';
+import { isCanonicalStream } from '../kernel/index.mjs';
 
 /**
  * @returns {(ctx: object, next: () => Promise<void>) => Promise<void>}
@@ -63,12 +68,17 @@ export function auditLogMiddleware() {
             ctx.metadata?.cascadeQueueWaitMs ?? ctx.metadata?.queueWaitMs ?? null;
         const retryTrace =
             ctx.metadata?.cascadeRetryTrace || ctx.metadata?.retryTrace || [];
-        const responseExcerpt = extractResponseExcerpt(ctx.response);
+        const { responseExcerpt, responsePayload, truncated } =
+            resolveResponseCapture(ctx);
 
         await writer.write({
             ...requestFields,
             sessionId: ctx.session?.id || requestFields.sessionId,
-            status: failed ? 'failed' : 'succeeded',
+            status: failed
+                ? 'failed'
+                : ctx.metadata?.aborted
+                  ? 'aborted'
+                  : 'succeeded',
             httpStatus: failed
                 ? (caughtError.httpStatus || 500)
                 : (ctx.metadata?.httpStatus || 200),
@@ -89,6 +99,8 @@ export function auditLogMiddleware() {
             budgetExempt: cost.budgetExempt,
             retryTrace,
             responseExcerpt,
+            responsePayload,
+            truncated,
             cascaded: Array.isArray(ctx.metadata?.cascadeTrace) &&
                 ctx.metadata.cascadeTrace.length > 0,
             cacheHit: !!ctx.metadata?.cacheHit,
@@ -260,14 +272,33 @@ function calculateCompletedCost(ctx, usage) {
     return pricing;
 }
 
-function extractResponseExcerpt(response) {
-    if (!response) return null;
+function resolveResponseCapture(ctx) {
+    const maxExcerptChars =
+        ctx.appCtx?.config?.defaults?.responseExcerptChars ?? 2000;
+    const maxPayloadBytes =
+        ctx.appCtx?.config?.defaults?.maxResponsePayloadBytes ?? 131_072;
 
-    const message = response.choices?.[0]?.message || response.message || null;
-    const content = message?.content;
-    if (typeof content === 'string' && content.length > 0) {
-        return content;
+    let excerpt = null;
+    let payload = null;
+
+    const captured = ctx.metadata?.responseCapture;
+    if (captured) {
+        excerpt = captured.excerpt ?? null;
+        payload = captured.payload ?? null;
+    } else if (
+        ctx.response &&
+        !isCanonicalStream(ctx.response) &&
+        !isCanonicalStream(ctx.response?.stream)
+    ) {
+        const built = buildBufferedCapture(ctx.response, { maxExcerptChars });
+        excerpt = built.excerpt;
+        payload = built.payload;
     }
 
-    return null;
+    const shaped = shapeStoredPayload(payload, { maxPayloadBytes });
+    return {
+        responseExcerpt: excerpt,
+        responsePayload: shaped.payload,
+        truncated: shaped.truncated,
+    };
 }

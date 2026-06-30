@@ -334,6 +334,12 @@ describe('respondMiddleware: branching', () => {
         assert.ok(body.startsWith('data: '));
         assert.ok(body.endsWith('data: [DONE]\n\n'));
         assert.ok(res.writableEnded);
+        assert.equal(ctx.metadata.responseCapture.excerpt, 'quick');
+        assert.equal(
+            ctx.metadata.responseCapture.payload.choices[0].message.content,
+            'quick'
+        );
+        assert.equal(ctx.metadata.aborted, false);
     });
 
     it('streams SSE when ctx.response has a .stream that is a CanonicalStream', async () => {
@@ -387,6 +393,8 @@ describe('respondMiddleware: branching', () => {
             produced < 100,
             `expected early stop on client close, produced ${produced}`
         );
+        assert.equal(ctx.metadata.aborted, true);
+        assert.match(ctx.metadata.responseCapture.excerpt || '', /^chunk-/);
     });
 });
 

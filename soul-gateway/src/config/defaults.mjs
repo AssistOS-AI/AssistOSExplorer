@@ -6,6 +6,7 @@ export const DEFAULTS = Object.freeze({
     sseEventName: 'log',
     maxRetryTraceEntries: 32,
     responseExcerptChars: 2000,
+    maxResponsePayloadBytes: 131_072,
     middlewareGenerationGcGraceMs: 60_000,
     providerGenerationGcGraceMs: 60_000,
     defaultBlacklistPriority: 100,

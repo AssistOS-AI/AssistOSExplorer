@@ -33,6 +33,7 @@ import { sendJson } from '../../core/responses.mjs';
 import { serializeBufferedResponse } from '../../request/format-serializers.mjs';
 import { isCanonicalStream, tapStream } from '../kernel/index.mjs';
 import { canonicalStreamToSse } from './canonical-stream-to-sse.mjs';
+import { createStreamCapture } from '../../observability/response-capture.mjs';
 import { CONTENT_TYPES, HEADER_NAMES } from '../../core/constants.mjs';
 import { InternalServerError } from '../../core/errors.mjs';
 
@@ -71,14 +72,20 @@ export function respondMiddleware() {
             const canonicalStream = isCanonicalStream(candidate)
                 ? candidate
                 : candidate.stream;
+            const capture = createStreamCapture({
+                maxExcerptChars:
+                    ctx.appCtx?.config?.defaults?.responseExcerptChars ?? 2000,
+            });
             await streamSseResponse(
                 res,
-                tapStream(canonicalStream, (event) =>
-                    observeStreamEvent(ctx, event)
-                ),
+                tapStream(canonicalStream, (event) => {
+                    observeStreamEvent(ctx, event);
+                    capture.observe(event);
+                }),
                 routeKind,
                 ctx.requestId,
-                ctx
+                ctx,
+                capture
             );
             return;
         }
@@ -107,7 +114,8 @@ async function streamSseResponse(
     canonicalStream,
     routeKind,
     requestId,
-    ctx
+    ctx,
+    capture
 ) {
     res.writeHead(200, {
         [HEADER_NAMES.CONTENT_TYPE]: CONTENT_TYPES.EVENT_STREAM,
@@ -117,10 +125,12 @@ async function streamSseResponse(
     });
 
     let clientAborted = false;
+    let finishedNaturally = false;
     const onClose = () => {
         clientAborted = true;
     };
     res.once('close', onClose);
+    let captured = null;
 
     try {
         for await (const chunk of canonicalStreamToSse(
@@ -139,9 +149,19 @@ async function streamSseResponse(
                 await new Promise((resolve) => res.once('drain', resolve));
             }
         }
+        finishedNaturally = !clientAborted;
     } finally {
         res.off?.('close', onClose);
+        if (capture) {
+            captured = capture.result();
+            ctx.metadata.responseCapture = captured;
+            ctx.metadata.aborted = clientAborted && !finishedNaturally;
+        }
         if (!res.writableEnded) res.end();
+    }
+
+    if (captured?.error) {
+        throw captured.error;
     }
 }
 

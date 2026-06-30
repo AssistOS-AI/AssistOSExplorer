@@ -21,6 +21,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import { EventEmitter } from 'node:events';
 
 import {
     buildRouteChain,
@@ -51,6 +52,7 @@ function makeFakeReq(body, { headers = {} } = {}) {
 }
 
 function makeFakeRes() {
+    const emitter = new EventEmitter();
     const captured = { status: null, headers: {}, body: null, ended: false };
     return {
         captured,
@@ -68,9 +70,20 @@ function makeFakeRes() {
             if (chunk) captured.body = chunk;
             this.writableEnded = true;
             captured.ended = true;
+            emitter.emit('close');
         },
         write(chunk) {
             captured.body = (captured.body || '') + (chunk || '');
+            return true;
+        },
+        once(event, fn) {
+            emitter.once(event, fn);
+        },
+        off(event, fn) {
+            emitter.off(event, fn);
+        },
+        emit(event, ...args) {
+            emitter.emit(event, ...args);
         },
     };
 }
@@ -740,7 +753,180 @@ describe('full route chain integration', () => {
         assert.equal(calls.write.totalTokens, 7);
         assert.equal(calls.write.totalCostUsd, 0.012);
         assert.equal(calls.write.status, 'succeeded');
+        assert.equal(calls.write.responseExcerpt, 'audited response');
+        assert.equal(
+            calls.write.responsePayload.choices[0].message.content,
+            'audited response'
+        );
+        assert.equal(calls.write.truncated, false);
         assert.equal(calls.write.metadata.sourceResolvedModel, 'stub-model');
+    });
+
+    it('captures streamed response text and payload in the audit log', async () => {
+        async function* events() {
+            yield {
+                type: 'message_start',
+                data: { id: 'm1', model: 'stub-model', role: 'assistant' },
+            };
+            yield { type: 'text_delta', data: { text: 'streamed ' } };
+            yield { type: 'text_delta', data: { text: 'answer' } };
+            yield {
+                type: 'usage',
+                data: { input_tokens: 2, output_tokens: 5, total_tokens: 7 },
+            };
+            yield {
+                type: 'done',
+                data: { finish_reason: 'stop', model: 'stub-model' },
+            };
+        }
+
+        const stubBackend = {
+            manifest: {
+                key: 'stub-backend',
+                kind: 'external_api',
+                authStrategy: 'api_key',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
+            async execute() {
+                return {
+                    accountId: 'acct-1',
+                    stream: events(),
+                    abort: async () => {},
+                };
+            },
+            classifyError(e) {
+                return e;
+            },
+        };
+
+        const model = Object.freeze({
+            id: 'model-1',
+            modelKey: 'stub-model',
+            providerId: 'provider-1',
+            providerKey: 'stub-provider',
+            providerModelId: 'stub-model',
+            requestTimeoutMs: 1000,
+            queueTimeoutMs: 1000,
+            concurrencyLimit: 1,
+            retryPolicy: {},
+        });
+
+        const calls = { write: null };
+        const auditLogWriter = {
+            async write(entry) {
+                calls.write = entry;
+                return { log_id: 'log-1' };
+            },
+        };
+
+        const snapshot = buildSnapshot(model);
+        const backendCatalog = buildBackendCatalog(stubBackend);
+        const appCtx = makeAppCtx({
+            snapshot,
+            services: { auditLogWriter, backendCatalog },
+        });
+
+        const req = makeFakeReq({
+            model: 'stub-model',
+            messages: [{ role: 'user', content: 'hi' }],
+            stream: true,
+        });
+        const res = makeFakeRes();
+
+        await buildRouteChain()(makeKernelCtx({ req, res, appCtx }));
+
+        assert.equal(res.captured.status, 200);
+        assert.match(res.captured.body, /streamed/);
+        assert.equal(calls.write.streaming, true);
+        assert.equal(calls.write.status, 'succeeded');
+        assert.equal(calls.write.responseExcerpt, 'streamed answer');
+        assert.equal(
+            calls.write.responsePayload.choices[0].message.content,
+            'streamed answer'
+        );
+        assert.equal(
+            calls.write.responsePayload.choices[0].finish_reason,
+            'stop'
+        );
+        assert.equal(calls.write.totalTokens, 7);
+        assert.equal(calls.write.metadata.sourceResolvedModel, 'stub-model');
+    });
+
+    it('marks stream error logs as failed with partial response text', async () => {
+        async function* events() {
+            yield {
+                type: 'message_start',
+                data: { id: 'm1', model: 'stub-model', role: 'assistant' },
+            };
+            yield { type: 'text_delta', data: { text: 'partial before error' } };
+            yield {
+                type: 'error',
+                error: { message: 'upstream exploded', type: 'provider_error' },
+            };
+        }
+
+        const stubBackend = {
+            manifest: {
+                key: 'stub-backend',
+                kind: 'external_api',
+                authStrategy: 'api_key',
+                supportsStreaming: true,
+                supportsTools: false,
+                supportedFormats: ['openai_chat'],
+            },
+            async execute() {
+                return {
+                    accountId: 'acct-1',
+                    stream: events(),
+                    abort: async () => {},
+                };
+            },
+            classifyError(e) {
+                return e;
+            },
+        };
+
+        const model = Object.freeze({
+            id: 'model-1',
+            modelKey: 'stub-model',
+            providerId: 'provider-1',
+            providerKey: 'stub-provider',
+            providerModelId: 'stub-model',
+            requestTimeoutMs: 1000,
+            queueTimeoutMs: 1000,
+            concurrencyLimit: 1,
+            retryPolicy: {},
+        });
+
+        const calls = { write: null };
+        const auditLogWriter = {
+            async write(entry) {
+                calls.write = entry;
+                return { log_id: 'log-1' };
+            },
+        };
+
+        const snapshot = buildSnapshot(model);
+        const backendCatalog = buildBackendCatalog(stubBackend);
+        const appCtx = makeAppCtx({
+            snapshot,
+            services: { auditLogWriter, backendCatalog },
+        });
+
+        const req = makeFakeReq({
+            model: 'stub-model',
+            messages: [{ role: 'user', content: 'hi' }],
+            stream: true,
+        });
+        const res = makeFakeRes();
+
+        await buildRouteChain()(makeKernelCtx({ req, res, appCtx }));
+
+        assert.equal(calls.write.status, 'failed');
+        assert.equal(calls.write.responseExcerpt, 'partial before error');
+        assert.match(calls.write.errorMessage || '', /upstream exploded/);
     });
 
     it('records cache hits in audit logs and avoids a second backend call', async () => {
