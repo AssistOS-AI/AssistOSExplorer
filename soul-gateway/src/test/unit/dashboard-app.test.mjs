@@ -105,6 +105,12 @@ describe('dashboard providers page', () => {
                 display_name: 'AXL Proxy',
                 enabled: true,
             },
+            {
+                id: 'p4',
+                provider_key: 'AchillesIDE',
+                display_name: 'AchillesIDE',
+                enabled: true,
+            },
         ];
         const requests = [];
         const globals = installDashboardGlobals(async (url) => {
@@ -168,6 +174,12 @@ describe('dashboard providers page', () => {
                     },
                     {
                         type: 'leaf',
+                        label: 'AchillesIDE',
+                        depth: 0,
+                        key: 'AchillesIDE',
+                    },
+                    {
+                        type: 'leaf',
                         label: 'AXL Proxy',
                         depth: 0,
                         key: 'axl-proxy',
@@ -181,6 +193,20 @@ describe('dashboard providers page', () => {
             );
             assert.equal(rows[0].count, 2);
             assert.equal(rows[0].enabledCount, 1);
+            assert.deepEqual(rows.map((row) => row.key), [
+                'AchillesIDE',
+                'agent:AchillesIDE/explorer',
+                'agent:AchillesIDE/gitAgent',
+                'AchillesIDE',
+                'axl-proxy',
+            ]);
+            assert.deepEqual(rows.map((row) => page.providerTreeRowKey(row)), [
+                'group:AchillesIDE',
+                'provider:agent:AchillesIDE/explorer',
+                'provider:agent:AchillesIDE/gitAgent',
+                'provider:AchillesIDE',
+                'provider:axl-proxy',
+            ]);
 
             page.providerFilter = 'agent:AchillesIDE';
             assert.deepEqual(
@@ -191,6 +217,18 @@ describe('dashboard providers page', () => {
             assert.deepEqual(
                 page.filteredProviders.map((provider) => provider.id),
                 ['p3']
+            );
+            page.providerFilter = 'missing';
+            assert.deepEqual(page.filteredProviders, []);
+            assert.equal(
+                page.providerEmptyMessage(),
+                'No providers match filter'
+            );
+            page.providers = [];
+            page.providerFilter = '';
+            assert.equal(
+                page.providerEmptyMessage(),
+                'No providers configured. Click "Add Provider" to get started.'
             );
         } finally {
             globals.restore();

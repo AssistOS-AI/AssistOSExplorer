@@ -2206,7 +2206,7 @@
                                             <tbody>
                                                 <template
                                                     x-for="row in providerTreeRows"
-                                                    :key="row.key"
+                                                    :key="providerTreeRowKey(row)"
                                                 >
                                                     <tr
                                                         :class="row.rowType === 'group' ? 'sg-tree-group-row bg-base-200/60 cursor-pointer' : (row.item?.enabled ? 'sg-tree-leaf-row' : 'sg-tree-leaf-row opacity-40')"
@@ -2378,10 +2378,8 @@
                                                     <td
                                                         colspan="9"
                                                         class="text-center opacity-50 py-6"
+                                                        x-text="providerEmptyMessage()"
                                                     >
-                                                        No providers configured.
-                                                        Click "Add Provider" to
-                                                        get started.
                                                     </td>
                                                 </tr>
                                             </tbody>

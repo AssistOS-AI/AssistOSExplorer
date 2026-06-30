@@ -794,6 +794,21 @@ function providersPage() {
             });
         },
 
+        providerTreeRowKey(row) {
+            if (row?.rowType === 'group') {
+                return `group:${row.path || row.key || ''}`;
+            }
+            return `provider:${row?.item?.provider_key || row?.key || ''}`;
+        },
+
+        providerEmptyMessage() {
+            const hasFilter = String(this.providerFilter || '').trim().length > 0;
+            if (this.providers.length > 0 && hasFilter) {
+                return 'No providers match filter';
+            }
+            return 'No providers configured. Click "Add Provider" to get started.';
+        },
+
         /** Derive OAuth adapter options from loaded templates — no hardcoded list. */
         get oauthAdapterOptions() {
             const options = [];
