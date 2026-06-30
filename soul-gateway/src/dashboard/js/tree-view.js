@@ -126,6 +126,7 @@
 
     function buildProviderTreeRows(providers, options = {}) {
         const expanded = normalizeExpanded(options.expanded);
+        const forceExpanded = options.forceExpanded === true;
         const groups = new Map();
         const singles = [];
 
@@ -179,7 +180,7 @@
             const leaves = entry.leaves.sort((left, right) =>
                 compareText(left.label, right.label)
             );
-            const isExpanded = expanded.has(entry.path);
+            const isExpanded = forceExpanded || expanded.has(entry.path);
             rows.push({
                 rowType: 'group',
                 key: entry.path,
@@ -281,7 +282,7 @@
             : asText(entry.item?.display_name) || entry.displayPath;
     }
 
-    function appendModelChildren(rows, node, depth, expanded) {
+    function appendModelChildren(rows, node, depth, expanded, forceExpanded) {
         const parentDepth = node.pathSegments.length;
         const entries = [
             ...node.leaves.map((leaf) => ({
@@ -315,13 +316,13 @@
                 continue;
             }
 
-            appendModelGroup(rows, entry.node, depth, expanded);
+            appendModelGroup(rows, entry.node, depth, expanded, forceExpanded);
         }
     }
 
-    function appendModelGroup(rows, node, depth, expanded) {
+    function appendModelGroup(rows, node, depth, expanded, forceExpanded) {
         const path = node.pathSegments.join('/');
-        const isExpanded = expanded.has(path);
+        const isExpanded = forceExpanded || expanded.has(path);
 
         rows.push({
             rowType: 'group',
@@ -335,12 +336,19 @@
         });
 
         if (isExpanded) {
-            appendModelChildren(rows, node, depth + 1, expanded);
+            appendModelChildren(
+                rows,
+                node,
+                depth + 1,
+                expanded,
+                forceExpanded
+            );
         }
     }
 
     function buildModelTreeRows(models, options = {}) {
         const expanded = normalizeExpanded(options.expanded);
+        const forceExpanded = options.forceExpanded === true;
         const rootNode = createModelNode('', []);
         const singleLeaves = [];
 
@@ -381,7 +389,7 @@
                 rows.push(modelLeafRow(entry.leaf, entry.label, 0));
                 continue;
             }
-            appendModelGroup(rows, entry.node, 0, expanded);
+            appendModelGroup(rows, entry.node, 0, expanded, forceExpanded);
         }
 
         return rows;

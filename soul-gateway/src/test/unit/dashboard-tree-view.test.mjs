@@ -368,6 +368,96 @@ describe('dashboard tree view helpers', () => {
         });
     });
 
+    it('force-expands grouped rows so filtered matches remain visible', async () => {
+        await withTreeView((tree) => {
+            const providers = [
+                {
+                    provider_key: 'agent:AchillesIDE/explorer',
+                    display_name: 'Ploinky agent agent:AchillesIDE/explorer',
+                    enabled: true,
+                },
+            ];
+            const models = [
+                {
+                    model_key: 'axl-proxy/mistral/codestral-2508',
+                    display_name: 'Codestral 2508',
+                    tags: ['coding'],
+                    enabled: true,
+                },
+                {
+                    model_key: 'axl-proxy/mistral/codestral-latest',
+                    display_name: 'Codestral Latest',
+                    tags: ['coding'],
+                    enabled: true,
+                },
+            ];
+
+            const providerRows = tree.buildProviderTreeRows(
+                tree.filterProvidersForTree(providers, 'agent:AchillesIDE'),
+                {
+                    expanded: new Set(),
+                    forceExpanded: true,
+                }
+            );
+            assert.deepEqual(
+                providerRows.map((row) => ({
+                    type: row.rowType,
+                    key: row.key,
+                    expanded: row.expanded,
+                })),
+                [
+                    {
+                        type: 'group',
+                        key: 'AchillesIDE',
+                        expanded: true,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'agent:AchillesIDE/explorer',
+                        expanded: undefined,
+                    },
+                ]
+            );
+
+            const modelRows = tree.buildModelTreeRows(
+                tree.filterModelsForTree(models, 'codestral'),
+                {
+                    expanded: new Set(),
+                    forceExpanded: true,
+                }
+            );
+            assert.deepEqual(
+                modelRows.map((row) => ({
+                    type: row.rowType,
+                    key: row.key,
+                    expanded: row.expanded,
+                })),
+                [
+                    {
+                        type: 'group',
+                        key: 'axl-proxy',
+                        expanded: true,
+                    },
+                    {
+                        type: 'group',
+                        key: 'axl-proxy/mistral',
+                        expanded: true,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'axl-proxy/mistral/codestral-2508',
+                        expanded: undefined,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'axl-proxy/mistral/codestral-latest',
+                        expanded: undefined,
+                    },
+                ]
+            );
+        });
+    });
+
     it('persists expanded paths through a provided storage adapter', async () => {
         await withTreeView((tree) => {
             const writes = [];

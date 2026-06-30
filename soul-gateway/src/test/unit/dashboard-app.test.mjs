@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-function installDashboardGlobals(fetchImpl) {
+function installDashboardGlobals(fetchImpl, options = {}) {
     const events = [];
     const listeners = new Map();
     const storage = new Map();
@@ -22,7 +22,18 @@ function installDashboardGlobals(fetchImpl) {
     globalThis.CustomEvent = TestCustomEvent;
     globalThis.alert = () => {};
     globalThis.fetch = fetchImpl;
-    globalThis.window = {
+    const storageApi = {
+        getItem(key) {
+            return storage.has(key) ? storage.get(key) : null;
+        },
+        setItem(key, value) {
+            storage.set(key, String(value));
+        },
+        removeItem(key) {
+            storage.delete(key);
+        },
+    };
+    const testWindow = {
         location: {
             pathname: '/management/',
             search: '',
@@ -48,18 +59,17 @@ function installDashboardGlobals(fetchImpl) {
             }
             return true;
         },
-        localStorage: {
-            getItem(key) {
-                return storage.has(key) ? storage.get(key) : null;
-            },
-            setItem(key, value) {
-                storage.set(key, String(value));
-            },
-            removeItem(key) {
-                storage.delete(key);
-            },
-        },
     };
+    Object.defineProperty(testWindow, 'localStorage', {
+        configurable: true,
+        get() {
+            if (options.localStorageThrows) {
+                throw new Error('blocked storage');
+            }
+            return storageApi;
+        },
+    });
+    globalThis.window = testWindow;
 
     return {
         events,
@@ -133,6 +143,84 @@ describe('dashboard app shell', () => {
                         event.detail === 'models'
                 ),
                 'external hash changes should notify mounted tab components'
+            );
+        } finally {
+            globals.restore();
+        }
+    });
+});
+
+describe('dashboard tree persistence', () => {
+    it('initializes providers and models when localStorage is unavailable', async () => {
+        const globals = installDashboardGlobals(
+            async (url) => {
+                if (url === '/management/providers') {
+                    return jsonResponse({
+                        data: [
+                            {
+                                id: 'p1',
+                                provider_key: 'agent:AchillesIDE/explorer',
+                                display_name:
+                                    'Ploinky agent agent:AchillesIDE/explorer',
+                                enabled: true,
+                            },
+                        ],
+                    });
+                }
+                if (url === '/management/providers/templates') {
+                    return jsonResponse({ templates: {} });
+                }
+                if (url === '/management/models') {
+                    return jsonResponse({
+                        data: [
+                            {
+                                id: 'm1',
+                                model_key: 'AchillesIDE/explorer',
+                                display_name: 'Explorer Default',
+                                enabled: true,
+                                tags: [],
+                            },
+                        ],
+                    });
+                }
+                if (url === '/management/models/providers') {
+                    return jsonResponse({ data: [] });
+                }
+                if (url === '/management/models/tags') {
+                    return jsonResponse({ data: [] });
+                }
+                throw new Error(`unexpected request: ${url}`);
+            },
+            { localStorageThrows: true }
+        );
+
+        try {
+            const cacheKey = `${Date.now()}${Math.random()}`;
+            await import(`../../dashboard/js/tree-view.js?test=${cacheKey}`);
+            await import(`../../dashboard/js/app.mjs?test=${cacheKey}`);
+
+            const providers = globalThis.window.providersPage();
+            await providers.init();
+            assert.equal(providers.providers.length, 1);
+            assert.equal(
+                providers.providerTreeRows.some(
+                    (row) =>
+                        row.rowType === 'leaf' &&
+                        row.key === 'agent:AchillesIDE/explorer'
+                ),
+                true
+            );
+
+            const models = globalThis.window.modelsPage();
+            await models.init();
+            assert.equal(models.models.length, 1);
+            assert.equal(
+                models.modelTreeRows.some(
+                    (row) =>
+                        row.rowType === 'leaf' &&
+                        row.key === 'AchillesIDE/explorer'
+                ),
+                true
             );
         } finally {
             globals.restore();
@@ -268,6 +356,31 @@ describe('dashboard providers page', () => {
             assert.deepEqual(
                 page.filteredProviders.map((provider) => provider.id),
                 ['p1', 'p2']
+            );
+            page.providerTreeExpanded = new Set();
+            assert.deepEqual(
+                page.providerTreeRows.map((row) => ({
+                    type: row.rowType,
+                    key: row.key,
+                    expanded: row.expanded,
+                })),
+                [
+                    {
+                        type: 'group',
+                        key: 'AchillesIDE',
+                        expanded: true,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'agent:AchillesIDE/explorer',
+                        expanded: undefined,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'agent:AchillesIDE/gitAgent',
+                        expanded: undefined,
+                    },
+                ]
             );
             page.providerFilter = 'AXL';
             assert.deepEqual(
@@ -541,6 +654,36 @@ describe('dashboard models page', () => {
             assert.deepEqual(
                 page.filteredModels.map((model) => model.id),
                 ['m1', 'm2']
+            );
+            page.modelTreeExpanded = new Set();
+            assert.deepEqual(
+                page.modelTreeRows.map((row) => ({
+                    type: row.rowType,
+                    key: row.key,
+                    expanded: row.expanded,
+                })),
+                [
+                    {
+                        type: 'group',
+                        key: 'axl-proxy',
+                        expanded: true,
+                    },
+                    {
+                        type: 'group',
+                        key: 'axl-proxy/mistral',
+                        expanded: true,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'axl-proxy/mistral/codestral-2508',
+                        expanded: undefined,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'axl-proxy/mistral/codestral-latest',
+                        expanded: undefined,
+                    },
+                ]
             );
 
             page.modelFilter = 'AchillesIDE';

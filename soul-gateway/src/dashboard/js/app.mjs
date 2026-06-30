@@ -144,6 +144,14 @@ function managementUrl(path) {
     return suffix ? `${MANAGEMENT_BASE_PATH}/${suffix}` : MANAGEMENT_BASE_PATH;
 }
 
+function safeLocalStorage() {
+    try {
+        return window.localStorage;
+    } catch {
+        return null;
+    }
+}
+
 function redirectToPloinkyLogin() {
     const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     window.location.href = `/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
@@ -811,6 +819,8 @@ function providersPage() {
         get providerTreeRows() {
             return this.treeView.buildProviderTreeRows(this.filteredProviders, {
                 expanded: this.providerTreeExpanded,
+                forceExpanded:
+                    String(this.providerFilter || '').trim().length > 0,
             });
         },
 
@@ -882,7 +892,7 @@ function providersPage() {
             this.providers = unwrapArray(providers);
             this.templates = unwrapObject(templates);
             this.providerTreeExpanded = this.treeView.loadExpandedSet(
-                window.localStorage,
+                safeLocalStorage(),
                 PROVIDER_TREE_EXPANDED_STORAGE_KEY,
                 Array.from(this.providerTreeExpanded)
             );
@@ -912,7 +922,7 @@ function providersPage() {
                 row.path
             );
             this.treeView.saveExpandedSet(
-                window.localStorage,
+                safeLocalStorage(),
                 PROVIDER_TREE_EXPANDED_STORAGE_KEY,
                 this.providerTreeExpanded
             );
@@ -2252,7 +2262,7 @@ function modelsPage() {
             this.providers = unwrapArray(providers);
             this.predefinedTags = unwrapArray(predefinedTags);
             this.modelTreeExpanded = this.treeView.loadExpandedSet(
-                window.localStorage,
+                safeLocalStorage(),
                 MODEL_TREE_EXPANDED_STORAGE_KEY,
                 Array.from(this.modelTreeExpanded)
             );
@@ -2297,6 +2307,8 @@ function modelsPage() {
         get modelTreeRows() {
             return this.treeView.buildModelTreeRows(this.filteredModels, {
                 expanded: this.modelTreeExpanded,
+                forceExpanded:
+                    String(this.modelFilter || '').trim().length > 0,
             });
         },
 
@@ -2316,7 +2328,7 @@ function modelsPage() {
                 row.path
             );
             this.treeView.saveExpandedSet(
-                window.localStorage,
+                safeLocalStorage(),
                 MODEL_TREE_EXPANDED_STORAGE_KEY,
                 this.modelTreeExpanded
             );
