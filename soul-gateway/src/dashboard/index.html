@@ -3501,59 +3501,99 @@
                                             </thead>
                                             <tbody>
                                                 <template
-                                                    x-for="m in filteredModels"
-                                                    :key="m.id"
+                                                    x-for="row in modelTreeRows"
+                                                    :key="modelTreeRowKey(row)"
                                                 >
                                                     <tr
-                                                        :class="{'opacity-40': !m.enabled, 'hover cursor-pointer': true}"
-                                                        @click="editModel(m)"
+                                                        :class="row.rowType === 'group' ? 'sg-tree-group-row bg-base-200/60 cursor-pointer' : (row.item?.enabled ? 'sg-tree-leaf-row hover cursor-pointer' : 'sg-tree-leaf-row opacity-40 hover cursor-pointer')"
+                                                        @click="row.rowType === 'group' ? toggleModelGroup(row) : editModel(row.item)"
                                                     >
                                                         <td
+                                                            x-show="row.rowType === 'group'"
+                                                            colspan="6"
+                                                        >
+                                                            <div
+                                                                class="flex items-center gap-2"
+                                                            >
+                                                                <span
+                                                                    class="font-mono text-xs w-4"
+                                                                    x-text="row.expanded ? 'v' : '>'"
+                                                                ></span>
+                                                                <span
+                                                                    class="font-bold"
+                                                                    x-text="row.label"
+                                                                ></span>
+                                                                <span
+                                                                    class="badge badge-ghost badge-sm"
+                                                                    x-text="`${row.count} models`"
+                                                                ></span>
+                                                                <span
+                                                                    class="text-xs opacity-60"
+                                                                    x-text="modelGroupSummary(row)"
+                                                                ></span>
+                                                            </div>
+                                                        </td>
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
                                                             class="font-mono text-sm"
-                                                            x-text="m.model_key"
-                                                            :title="m.model_key"
+                                                            :style="modelIndentStyle(row)"
+                                                            x-text="row.label"
+                                                            :title="row.item?.model_key"
                                                         ></td>
-                                                        <td class="text-xs">
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                            class="text-xs"
+                                                        >
                                                             <span
                                                                 class="badge badge-xs"
-                                                                :class="sgAuthBadge(m).classes"
-                                                                x-text="sgAuthBadge(m).label"
+                                                                :class="sgAuthBadge(row.item).classes"
+                                                                x-text="sgAuthBadge(row.item).label"
                                                             ></span>
                                                         </td>
-                                                        <td class="text-xs">
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                            class="text-xs"
+                                                        >
                                                             <div
                                                                 class="flex flex-wrap gap-0.5 max-w-[200px]"
                                                             >
                                                                 <template
-                                                                    x-for="tag in (m.tags || [])"
+                                                                    x-for="tag in (row.item?.tags || [])"
                                                                     :key="tag"
                                                                     ><span
                                                                         class="badge badge-xs badge-outline"
                                                                         x-text="tag"
                                                                     ></span></template
                                                                 ><span
-                                                                    x-show="!m.tags || m.tags.length === 0"
+                                                                    x-show="!row.item?.tags || row.item.tags.length === 0"
                                                                     class="opacity-30"
                                                                     >-</span
                                                                 >
                                                             </div>
                                                         </td>
-                                                        <td class="text-xs">
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                            class="text-xs"
+                                                        >
                                                             <span
-                                                                :class="getModelPricingView(m).classes"
-                                                                x-text="getModelPricingView(m).text"
+                                                                :class="getModelPricingView(row.item).classes"
+                                                                x-text="getModelPricingView(row.item).text"
                                                             ></span>
                                                         </td>
                                                         <td
+                                                            x-show="row.rowType === 'leaf'"
                                                             class="text-xs"
-                                                            x-text="formatModelContextWindow(m)"
+                                                            x-text="formatModelContextWindow(row.item)"
                                                         ></td>
-                                                        <td @click.stop>
+                                                        <td
+                                                            x-show="row.rowType === 'leaf'"
+                                                            @click.stop
+                                                        >
                                                             <input
                                                                 type="checkbox"
                                                                 class="toggle toggle-xs"
-                                                                :checked="m.enabled"
-                                                                @change="toggleModel(m)"
+                                                                :checked="row.item?.enabled"
+                                                                @change="toggleModel(row.item)"
                                                             />
                                                         </td>
                                                     </tr>

@@ -284,3 +284,216 @@ describe('dashboard providers page', () => {
         }
     });
 });
+
+describe('dashboard models page', () => {
+    function modelFixtures() {
+        return [
+            {
+                id: 'm1',
+                model_key: 'axl-proxy/mistral/codestral-2508',
+                display_name: 'Codestral 2508',
+                enabled: true,
+                is_free: false,
+                tags: ['coding'],
+            },
+            {
+                id: 'm2',
+                model_key: 'axl-proxy/mistral/codestral-latest',
+                display_name: 'Codestral Latest',
+                enabled: true,
+                is_free: true,
+                tags: ['coding'],
+            },
+            {
+                id: 'm3',
+                model_key: 'axl-proxy/copilot-agents/codexAgent',
+                display_name: 'Codex Agent',
+                enabled: false,
+                is_free: false,
+                tags: ['agentic'],
+            },
+            {
+                id: 'm4',
+                model_key: 'AchillesIDE/explorer',
+                display_name: 'AchillesIDE Explorer',
+                enabled: true,
+                is_free: false,
+                tags: [],
+            },
+        ];
+    }
+
+    async function initModelsPage(models = modelFixtures()) {
+        const requests = [];
+        const globals = installDashboardGlobals(async (url) => {
+            requests.push(url);
+            if (url === '/management/models') {
+                return jsonResponse({ data: models });
+            }
+            if (url === '/management/models/providers') {
+                return jsonResponse({ data: [] });
+            }
+            if (url === '/management/models/tags') {
+                return jsonResponse({ data: ['agentic', 'coding'] });
+            }
+            throw new Error(`unexpected request: ${url}`);
+        });
+
+        const cacheKey = `${Date.now()}${Math.random()}`;
+        await import(`../../dashboard/js/tree-view.js?test=${cacheKey}`);
+        await import(`../../dashboard/js/app.mjs?test=${cacheKey}`);
+
+        const page = globalThis.window.modelsPage();
+        await page.init();
+
+        return { globals, models, page, requests };
+    }
+
+    it('keeps filtered model counts flat after model filters', async () => {
+        const { globals, page, requests } = await initModelsPage();
+
+        try {
+            assert.deepEqual(requests, [
+                '/management/models',
+                '/management/models/providers',
+                '/management/models/tags',
+            ]);
+
+            assert.equal(page.filteredModels.length, 4);
+
+            page.modelEnabledOnly = true;
+            assert.equal(page.filteredModels.length, 3);
+            assert.deepEqual(
+                page.filteredModels.map((model) => model.id),
+                ['m1', 'm2', 'm4']
+            );
+
+            page.modelEnabledOnly = false;
+            page.freeOnly = true;
+            assert.equal(page.filteredModels.length, 1);
+            assert.deepEqual(
+                page.filteredModels.map((model) => model.id),
+                ['m2']
+            );
+
+            page.freeOnly = false;
+            page.tagFilter = 'coding';
+            assert.equal(page.filteredModels.length, 2);
+            assert.deepEqual(
+                page.filteredModels.map((model) => model.id),
+                ['m1', 'm2']
+            );
+        } finally {
+            globals.restore();
+        }
+    });
+
+    it('builds model tree rows while preserving raw model objects and namespaced keys', async () => {
+        const { globals, models, page } = await initModelsPage();
+
+        try {
+            const rows = page.modelTreeRows;
+            assert.deepEqual(
+                rows.map((row) => ({
+                    type: row.rowType,
+                    label: row.label,
+                    depth: row.depth,
+                    key: row.key,
+                    modelKey: row.item?.model_key,
+                })),
+                [
+                    {
+                        type: 'group',
+                        label: 'AchillesIDE',
+                        depth: 0,
+                        key: 'AchillesIDE',
+                        modelKey: undefined,
+                    },
+                    {
+                        type: 'leaf',
+                        label: 'explorer',
+                        depth: 1,
+                        key: 'AchillesIDE/explorer',
+                        modelKey: 'AchillesIDE/explorer',
+                    },
+                    {
+                        type: 'group',
+                        label: 'axl-proxy',
+                        depth: 0,
+                        key: 'axl-proxy',
+                        modelKey: undefined,
+                    },
+                    {
+                        type: 'leaf',
+                        label: 'copilot-agents/codexAgent',
+                        depth: 1,
+                        key: 'axl-proxy/copilot-agents/codexAgent',
+                        modelKey: 'axl-proxy/copilot-agents/codexAgent',
+                    },
+                    {
+                        type: 'group',
+                        label: 'mistral',
+                        depth: 1,
+                        key: 'axl-proxy/mistral',
+                        modelKey: undefined,
+                    },
+                    {
+                        type: 'leaf',
+                        label: 'codestral-2508',
+                        depth: 2,
+                        key: 'axl-proxy/mistral/codestral-2508',
+                        modelKey: 'axl-proxy/mistral/codestral-2508',
+                    },
+                    {
+                        type: 'leaf',
+                        label: 'codestral-latest',
+                        depth: 2,
+                        key: 'axl-proxy/mistral/codestral-latest',
+                        modelKey: 'axl-proxy/mistral/codestral-latest',
+                    },
+                ]
+            );
+            assert.equal(rows[1].item, models[3]);
+            assert.equal(rows[3].item, models[2]);
+            assert.equal(rows[5].item, models[0]);
+            assert.equal(rows[6].item, models[1]);
+
+            assert.equal(
+                page.modelTreeRowKey({ rowType: 'group', path: 'axl-proxy' }),
+                'group:axl-proxy'
+            );
+            assert.deepEqual(rows.map((row) => page.modelTreeRowKey(row)), [
+                'group:AchillesIDE',
+                'model:AchillesIDE/explorer',
+                'group:axl-proxy',
+                'model:axl-proxy/copilot-agents/codexAgent',
+                'group:axl-proxy/mistral',
+                'model:axl-proxy/mistral/codestral-2508',
+                'model:axl-proxy/mistral/codestral-latest',
+            ]);
+            assert.ok(page.modelTreeRowKey(rows[1]).startsWith('model:'));
+        } finally {
+            globals.restore();
+        }
+    });
+
+    it('matches model tree filters against tags and raw or display text', async () => {
+        const { globals, page } = await initModelsPage();
+
+        try {
+            page.modelFilter = 'coding';
+            assert.deepEqual(
+                page.filteredModels.map((model) => model.id),
+                ['m1', 'm2']
+            );
+
+            page.modelFilter = 'AchillesIDE';
+            assert.deepEqual(
+                page.filteredModels.map((model) => model.id),
+                ['m4']
+            );
+        } finally {
+            globals.restore();
+        }
+    });
+});

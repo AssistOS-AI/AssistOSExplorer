@@ -2173,6 +2173,8 @@ function errorsPage() {
 }
 
 // ---- Models Page ----
+const MODEL_TREE_EXPANDED_STORAGE_KEY = 'soulGateway.models.tree.expanded';
+
 function modelsPage() {
     return {
         models: [],
@@ -2184,6 +2186,13 @@ function modelsPage() {
         freeOnly: false,
         billingFilter: '',
         tagFilter: '',
+        modelTreeExpanded: new Set([
+            'AchillesCLI',
+            'AchillesIDE',
+            'axl-proxy',
+            'axl-proxy/mistral',
+            'proxies',
+        ]),
         // Model edit state
         showModelEdit: false,
         editingModel: null,
@@ -2222,12 +2231,21 @@ function modelsPage() {
             this.models = this.normalizeModels(models);
             this.providers = unwrapArray(providers);
             this.predefinedTags = unwrapArray(predefinedTags);
+            this.modelTreeExpanded = this.treeView.loadExpandedSet(
+                window.localStorage,
+                MODEL_TREE_EXPANDED_STORAGE_KEY,
+                Array.from(this.modelTreeExpanded)
+            );
         },
 
         normalizeModels(payload) {
             return unwrapArray(payload).filter(
                 (model) => model.strategy_kind !== 'cascade'
             );
+        },
+
+        get treeView() {
+            return window.SoulGatewayTreeView;
         },
 
         get allTags() {
@@ -2251,20 +2269,44 @@ function modelsPage() {
                 list = list.filter((m) =>
                     (m.tags || []).includes(this.tagFilter)
                 );
-            const q = this.modelFilter.trim().toLowerCase();
-            if (q)
-                list = list.filter((m) => {
-                    if ((m.model_key || '').toLowerCase().includes(q)) return true;
-                    if ((m.display_name || '').toLowerCase().includes(q)) return true;
-                    if ((m.provider_key || '').toLowerCase().includes(q)) return true;
-                    if ((m.provider_model_id || '').toLowerCase().includes(q))
-                        return true;
-                    const tags = Array.isArray(m.tags) ? m.tags : [];
-                    return tags.some((t) =>
-                        String(t).toLowerCase().includes(q)
-                    );
-                });
+            const q = this.modelFilter.trim();
+            if (q) list = this.treeView.filterModelsForTree(list, q);
             return list;
+        },
+
+        get modelTreeRows() {
+            return this.treeView.buildModelTreeRows(this.filteredModels, {
+                expanded: this.modelTreeExpanded,
+            });
+        },
+
+        modelIndentStyle(row) {
+            const depth = Number.isFinite(row?.depth) ? row.depth : 0;
+            return `padding-left: ${0.75 + depth * 1.25}rem`;
+        },
+
+        modelGroupSummary(row) {
+            return `${row.enabledCount}/${row.count} enabled`;
+        },
+
+        toggleModelGroup(row) {
+            if (!row?.path) return;
+            this.modelTreeExpanded = this.treeView.toggleExpandedPath(
+                this.modelTreeExpanded,
+                row.path
+            );
+            this.treeView.saveExpandedSet(
+                window.localStorage,
+                MODEL_TREE_EXPANDED_STORAGE_KEY,
+                this.modelTreeExpanded
+            );
+        },
+
+        modelTreeRowKey(row) {
+            if (row?.rowType === 'group') {
+                return `group:${row.path || row.key || ''}`;
+            }
+            return `model:${row?.item?.model_key || row?.key || ''}`;
         },
 
         async toggleModel(m) {
