@@ -95,24 +95,6 @@ function isSeederOwnedTier(tier, alias) {
     );
 }
 
-function childRefOf(row) {
-    return row?.child_model_id || row?.childModelId || null;
-}
-
-function isEnabledChild(row) {
-    return row?.enabled === true || row?.enabled === 1;
-}
-
-function isExpectedSingleChild(children, childModel) {
-    if (children.length !== 1) return false;
-    const [child] = children;
-    return (
-        childRefOf(child) === childModel.id &&
-        child.priority === 1 &&
-        isEnabledChild(child)
-    );
-}
-
 async function resolveExpectedChildModel({
     pool,
     daos,
@@ -165,7 +147,7 @@ async function createCascadeTier({
 
 async function ensureCascadeTierChildren({ pool, daos, tier, childModel }) {
     const children = await daos.modelChildrenDao.listForParent(pool, tier.id);
-    if (isExpectedSingleChild(children, childModel)) return false;
+    if (children.length > 0) return false;
 
     await daos.modelChildrenDao.replaceChildren(pool, tier.id, [{
         childModelId: childModel.id,

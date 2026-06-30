@@ -35,6 +35,16 @@ const LEGACY_ALIAS_TARGET = {
     },
 };
 
+const OPERATOR_FAST_MODEL = {
+    id: 'operator-fast-model',
+    model_key: 'openai/gpt-4o-mini',
+    enabled: true,
+    metadata: {
+        discoverySource: 'manual',
+        agent: 'operator-added',
+    },
+};
+
 function makeModelsDao(seed = [DISCOVERED_MODEL], existingModels = []) {
     const existingByKey = new Map(
         seed.map((model) => [model.model_key, { ...model }])
@@ -551,6 +561,59 @@ describe('seedDefaultTiers', () => {
                 priority: 1,
                 enabled: 1,
             }],
+        });
+        const refresh = spyRefresh();
+
+        const summary = await seedDefaultTiers({
+            appCtx: makeAppCtx({
+                LLM_DEFAULT_AGENT: 'default-local-llm',
+                LLM_DEFAULT_TIERS: 'fast',
+            }),
+            daos,
+            refresh,
+        });
+
+        assert.deepEqual(summary, {
+            seeded: 0,
+            promoted: 0,
+            skipped: 1,
+            aliasesDeleted: 0,
+            refreshed: false,
+        });
+        assert.deepEqual(daos.modelChildrenDao.replacements, []);
+        assert.equal(refresh.calls.length, 0);
+    });
+
+    it('preserves operator-added children on an existing seeder-owned tier', async () => {
+        const existingCascade = {
+            id: 'existing-tier-fast',
+            model_key: 'fast',
+            display_name: 'fast',
+            enabled: true,
+            strategy_kind: 'cascade',
+            metadata: {
+                seededBy: 'seed-default-tiers',
+                defaultAgent: 'default-local-llm',
+                childModelKey: DISCOVERED_MODEL.model_key,
+                tierKey: 'fast',
+            },
+        };
+        const daos = makeDaos({
+            existingModels: [existingCascade, OPERATOR_FAST_MODEL],
+            existingChildren: [
+                {
+                    parent_model_id: 'existing-tier-fast',
+                    child_model_id: DISCOVERED_MODEL.id,
+                    priority: 1,
+                    enabled: 1,
+                },
+                {
+                    parent_model_id: 'existing-tier-fast',
+                    child_model_id: OPERATOR_FAST_MODEL.id,
+                    priority: 2,
+                    enabled: 1,
+                },
+            ],
         });
         const refresh = spyRefresh();
 

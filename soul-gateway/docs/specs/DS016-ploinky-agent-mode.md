@@ -69,9 +69,8 @@ The local gateway also keeps upstream provider catalogs fresh. Provider create/u
   is promoted into a cascade tier whose single child is the alias's former
   target; the alias row is then deleted.
 - Existing cascade tiers are kept. Same-name aliases are deleted, and
-  seeder-owned cascades are child-repaired only when their stored child list
-  differs from the expected single child. User-created/manual cascades are not
-  child-repaired.
+  seeder-owned cascades are child-repaired only when their stored child list is
+  empty. Operator-added children on seeded tiers are preserved.
 - If a non-cascade model already owns a configured tier key, seeding warns and
   skips that key, leaving any same-name alias unchanged.
 
