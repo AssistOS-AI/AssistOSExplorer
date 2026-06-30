@@ -17,6 +17,30 @@
     vertical-align: middle;
 }
 
+.sg-tree-group-row {
+    transition: background-color 0.12s ease;
+}
+
+.sg-tree-group-row:hover {
+    background: color-mix(in oklch, currentColor 8%, transparent);
+}
+
+.sg-tree-toggle {
+    min-height: 1.25rem;
+    height: 1.25rem;
+    width: 1.25rem;
+    padding: 0;
+}
+
+.sg-tree-group-row td,
+.sg-tree-leaf-row td {
+    white-space: nowrap;
+}
+
+.sg-tree-path-muted {
+    opacity: 0.55;
+}
+
 .log-row-error {
     background: oklch(0.25 0.05 25) !important;
 }
