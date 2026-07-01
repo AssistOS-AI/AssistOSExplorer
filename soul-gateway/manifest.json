@@ -171,7 +171,6 @@
                     "description": "Set a positive interval to enable pricing refresh scheduling"
                 }
             },
-            "ports": [],
             "install": "bash /code/install.sh"
         }
     }
