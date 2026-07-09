@@ -398,46 +398,6 @@ export async function installOAuthAdapters(appCtx) {
     }
 }
 
-export async function installBrowserPoolService(appCtx) {
-    const { config, log } = appCtx;
-    const poolSize = config.env.BROWSER_POOL_SIZE;
-
-    if (!poolSize || poolSize <= 0) {
-        appCtx.services.browserPool = null;
-        log.info('browser pool disabled (BROWSER_POOL_SIZE=0)');
-        return;
-    }
-
-    let BrowserPool;
-    try {
-        const mod = await import('../runtime/backends/browser-pool.mjs');
-        BrowserPool = mod.BrowserPool;
-    } catch (err) {
-        appCtx.services.browserPool = null;
-        log.warn('browser pool module load failed', { error: err.message });
-        return;
-    }
-
-    try {
-        const pool = new BrowserPool({
-            poolSize,
-            executablePath: config.env.BROWSER_EXECUTABLE_PATH,
-            headlessMode: config.env.BROWSER_HEADLESS_MODE,
-            proxyUrl: config.env.BROWSER_PROXY_URL,
-            userDataDir: config.env.BROWSER_USER_DATA_DIR,
-            log,
-        });
-        await pool.warmUp();
-        appCtx.services.browserPool = pool;
-        log.info('browser pool service installed', { size: poolSize });
-    } catch (err) {
-        appCtx.services.browserPool = null;
-        log.warn('browser pool warmup failed (puppeteer-core may not be installed)', {
-            error: err.message,
-        });
-    }
-}
-
 export function installExtensionSdkServices(appCtx) {
     appCtx.services.extensionServices = createExtensionContext(appCtx).services;
 }

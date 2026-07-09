@@ -2,10 +2,8 @@
  * Extension SDK surface — services available to backend modules and extensions.
  *
  * invokeModel: route a sub-request through the gateway pipeline
- * invokeSearch: dispatch a search query to a search-type model
  * credentials: access provider credential material
  * tokenEstimator: estimate token counts for messages
- * browserPool: acquire/release headless browser instances (placeholder until actual browser pool)
  */
 import { estimatePromptTokens } from '../policy/token-estimator.mjs';
 import { ConfigurationError, ModelNotFoundError } from '../../core/errors.mjs';
@@ -87,20 +85,6 @@ export function createExtensionContext(appCtx) {
         invokeModel,
 
         /**
-         * Dispatch a search query to a specific search model.
-         *
-         * @param {string} searchModel - search model key (e.g., 'search/tavily-search')
-         * @param {string} query - the search query
-         * @returns {Promise<object>} search results as collected response
-         */
-        async invokeSearch(searchModel, query) {
-            return invokeModel(searchModel, {
-                messages: [{ role: 'user', content: query }],
-                stream: false,
-            });
-        },
-
-        /**
          * Access provider credentials.
          */
         credentials: Object.freeze({
@@ -141,33 +125,6 @@ export function createExtensionContext(appCtx) {
             },
         }),
 
-        /**
-         * Browser pool for headless browser automation (e.g., Google AI Mode search).
-         * Delegates to the bootstrap-installed BrowserPool service when available.
-         */
-        browserPool: Object.freeze({
-            async acquire(signal) {
-                const pool = appCtx.services?.browserPool;
-                if (!pool) {
-                    throw new ConfigurationError(
-                        'browserPool.acquire() requires a browser runtime. ' +
-                            'Set BROWSER_POOL_SIZE > 0 and install puppeteer-core.'
-                    );
-                }
-                return pool.acquire(signal);
-            },
-            async release(handle) {
-                const pool = appCtx.services?.browserPool;
-                if (pool) return pool.release(handle);
-            },
-            status() {
-                const pool = appCtx.services?.browserPool;
-                if (pool && typeof pool.status === 'function') {
-                    return pool.status();
-                }
-                return { total: 0, available: 0, busy: 0 };
-            },
-        }),
     });
 
     return { services };

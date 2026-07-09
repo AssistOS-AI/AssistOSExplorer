@@ -105,56 +105,6 @@
                     "default": "no-auth-needed",
                     "description": "Dummy key for kiro provider (kiro-gateway handles its own auth)"
                 },
-                "TAVILY_API_KEY": {
-                    "required": false,
-                    "default": "",
-                    "description": "API key for Tavily web search"
-                },
-                "BRAVE_API_KEY": {
-                    "required": false,
-                    "default": "",
-                    "description": "API key for Brave web search"
-                },
-                "EXA_API_KEY": {
-                    "required": false,
-                    "default": "",
-                    "description": "API key for Exa web search"
-                },
-                "SERPER_API_KEY": {
-                    "required": false,
-                    "default": "",
-                    "description": "API key for Serper (Google) web search"
-                },
-                "JINA_API_KEY": {
-                    "required": false,
-                    "default": "",
-                    "description": "API key for Jina web search (optional)"
-                },
-                "BROWSER_POOL_SIZE": {
-                    "required": false,
-                    "default": "0",
-                    "description": "Number of Chromium browser instances for headless search"
-                },
-                "BROWSER_EXECUTABLE_PATH": {
-                    "required": false,
-                    "default": "",
-                    "description": "Path to Chrome/Chromium inside the container"
-                },
-                "BROWSER_HEADLESS_MODE": {
-                    "required": false,
-                    "default": "new",
-                    "description": "Puppeteer headless mode for browser search"
-                },
-                "BROWSER_PROXY_URL": {
-                    "required": false,
-                    "default": "",
-                    "description": "Optional proxy server for browser search"
-                },
-                "BROWSER_USER_DATA_DIR": {
-                    "required": false,
-                    "default": "",
-                    "description": "Optional persistent Chromium user data directory"
-                },
                 "OAUTH_ADAPTERS_ENABLED": {
                     "required": false,
                     "default": "",

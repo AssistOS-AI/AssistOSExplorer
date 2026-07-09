@@ -10,7 +10,5 @@
         "test": "node --experimental-test-module-mocks --test 'src/test/**/*.test.mjs'",
         "test:unit": "node --experimental-test-module-mocks --test 'src/test/unit/*.test.mjs'"
     },
-    "dependencies": {
-        "puppeteer-core": "^24.0.0"
-    }
+    "dependencies": {}
 }

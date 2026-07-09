@@ -25,13 +25,13 @@
  *                       at creation time
  *  - `adapter_key`      MUST exactly match a loaded backend module's
  *                       `manifest.key` (e.g. `openai-api`,
- *                       `anthropic-api`, `search-builtin`); the
+ *                       `anthropic-api`); the
  *                       catalog looks backend modules up by direct key
  *                       lookup
  *  - `kind`             matches the backend kind (`external_api`,
- *                       `search`, `custom`)
+ *                       `local_model`, `custom`)
  *  - `auth_strategy`    `api_key` | `oauth` | `subscription` |
- *                       `managed` | `search`
+ *                       `managed`
  *  - `auth_type`        `api_key` | `managed` — dashboard-facing auth label
  *  - `base_url`         vendor's canonical base URL (the backend module
  *                       appends `/chat/completions`, `/responses`,
@@ -51,28 +51,6 @@ const OPENAI_COMPAT_DEFAULTS = Object.freeze({
     supported_formats: ['openai_chat'],
 });
 
-const HEADLESS_SEARCH_DEFAULTS = Object.freeze({
-    adapter_key: 'headless-search',
-    kind: 'search',
-    auth_strategy: 'none',
-    auth_type: 'none',
-    oauth_adapter_key: null,
-    supports_streaming: true,
-    supports_tools: false,
-    supported_formats: ['openai_chat'],
-});
-
-const SEARCH_DEFAULTS = Object.freeze({
-    adapter_key: 'search-builtin',
-    kind: 'search',
-    auth_strategy: 'api_key',
-    auth_type: 'api_key',
-    oauth_adapter_key: null,
-    supports_streaming: true,
-    supports_tools: false,
-    supported_formats: ['openai_chat'],
-});
-
 /**
  * Static list of known provider presets. Extend here — no code
  * changes needed elsewhere; the dashboard dropdown updates on next
@@ -80,7 +58,7 @@ const SEARCH_DEFAULTS = Object.freeze({
  *
  * Presets are listed in roughly user-facing priority order: the most
  * popular general-purpose vendors first, then specialized ones,
- * then search. `Object.freeze` makes the array and every entry
+ * then specialized providers. `Object.freeze` makes the array and every entry
  * immutable so callers can't mutate catalog state at runtime.
  */
 export const PROVIDER_PRESETS = Object.freeze([
@@ -203,67 +181,6 @@ export const PROVIDER_PRESETS = Object.freeze([
         supported_formats: ['anthropic_messages'],
     }),
 
-    // ── Search engines (all use the `search-builtin` backend) ────────
-    Object.freeze({
-        key: 'tavily',
-        display_name: 'Tavily',
-        base_url: 'https://api.tavily.com/search',
-        ...SEARCH_DEFAULTS,
-    }),
-    Object.freeze({
-        key: 'brave',
-        display_name: 'Brave Search',
-        base_url: 'https://api.search.brave.com/res/v1/web/search',
-        ...SEARCH_DEFAULTS,
-    }),
-    Object.freeze({
-        key: 'exa',
-        display_name: 'Exa',
-        base_url: 'https://api.exa.ai/search',
-        ...SEARCH_DEFAULTS,
-    }),
-    Object.freeze({
-        key: 'serper',
-        display_name: 'Serper',
-        base_url: 'https://google.serper.dev/search',
-        ...SEARCH_DEFAULTS,
-    }),
-    Object.freeze({
-        key: 'jina',
-        display_name: 'Jina',
-        base_url: 'https://s.jina.ai/',
-        ...SEARCH_DEFAULTS,
-    }),
-    Object.freeze({
-        key: 'duckduckgo',
-        display_name: 'DuckDuckGo',
-        // DuckDuckGo has no API key requirement; the backend knows to
-        // treat this as unauthenticated.
-        base_url: 'https://html.duckduckgo.com/html/',
-        ...SEARCH_DEFAULTS,
-    }),
-    Object.freeze({
-        key: 'searxng',
-        display_name: 'SearXNG',
-        // SearXNG is self-hosted — base URL is left blank so the user
-        // fills in their own instance.
-        base_url: '',
-        ...SEARCH_DEFAULTS,
-    }),
-    Object.freeze({
-        key: 'gemini-search',
-        display_name: 'Gemini Search (grounding)',
-        base_url: 'https://generativelanguage.googleapis.com/v1beta/models/',
-        ...SEARCH_DEFAULTS,
-    }),
-
-    // ── Headless browser search (uses the `headless-search` backend) ──
-    Object.freeze({
-        key: 'google-ai-mode',
-        display_name: 'Google AI Mode (headless)',
-        base_url: 'https://www.google.com',
-        ...HEADLESS_SEARCH_DEFAULTS,
-    }),
 ]);
 
 /**

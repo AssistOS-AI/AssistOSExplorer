@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS providers (
     id                     TEXT PRIMARY KEY,
     provider_key           TEXT NOT NULL UNIQUE,
     display_name           TEXT NOT NULL,
-    kind                   TEXT NOT NULL CHECK (kind IN ('external_api', 'search', 'local_model', 'custom')),
+    kind                   TEXT NOT NULL CHECK (kind IN ('external_api', 'local_model', 'custom')),
     adapter_key            TEXT NOT NULL,
     auth_strategy          TEXT NOT NULL CHECK (auth_strategy IN ('none', 'api_key', 'oauth', 'hybrid', 'custom')),
     oauth_adapter_key      TEXT,

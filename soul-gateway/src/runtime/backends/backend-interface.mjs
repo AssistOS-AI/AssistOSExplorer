@@ -30,7 +30,6 @@ import { ConfigurationError } from '../../core/errors.mjs';
  */
 const VALID_KINDS = new Set([
     'external_api',
-    'search',
     'local_model',
     'custom',
 ]);
@@ -40,7 +39,7 @@ const VALID_AUTH = new Set(['none', 'api_key', 'oauth', 'hybrid', 'custom']);
 /**
  * @typedef {Object} BackendManifest
  * @property {string} key                 Unique backend module key (e.g. 'openai-api')
- * @property {'external_api'|'search'|'local_model'|'custom'} kind
+ * @property {'external_api'|'local_model'|'custom'} kind
  * @property {'none'|'api_key'|'oauth'|'hybrid'|'custom'} authStrategy
  * @property {boolean} supportsStreaming
  * @property {boolean} supportsTools

@@ -652,17 +652,17 @@ describe('modelExecutionMiddleware (direct model)', () => {
             requestId: 'req-hooked',
             resolvedModel: {
                 id: 'model-1',
-                modelKey: 'custom/browser-search',
+                modelKey: 'custom/external-fetch',
                 providerId: 'provider-1',
                 providerKey: 'custom-provider',
-                providerModelId: 'browser-search',
+                providerModelId: 'external-fetch',
                 requestTimeoutMs: 1000,
                 queueTimeoutMs: 1000,
                 concurrencyLimit: 1,
                 retryPolicy: {},
                 strategyKind: 'direct',
             },
-            request: { model: 'custom/browser-search', messages: [] },
+            request: { model: 'custom/external-fetch', messages: [] },
             snapshot: {
                 providers: new Map([
                     [

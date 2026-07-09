@@ -261,7 +261,7 @@ export async function handleUpdateProvider(ctx) {
     if (fields.providerMode !== undefined) {
         fields.kind = fields.providerMode === 'custom'
             ? 'custom'
-            : (body.kind ?? (existing.kind === 'search' ? 'search' : 'external_api'));
+            : (body.kind ?? 'external_api');
     }
 
     const apiKey = body.apiKey ?? null;

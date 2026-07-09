@@ -61,17 +61,17 @@ describe('service installers extension integration', () => {
       `
         );
         await writeModule(
-            join(tmpDir, 'backends', 'browser-search.backend.mjs'),
+            join(tmpDir, 'backends', 'external-fetch.backend.mjs'),
             `
         export const backendModule = {
             manifest: {
-                key: 'browser-search',
-                kind: 'search',
+                key: 'external-fetch',
+                kind: 'external_api',
                 authStrategy: 'api_key',
                 supportsStreaming: false,
                 supportsTools: false,
                 supportedFormats: ['openai_chat'],
-                displayName: 'Browser Search'
+                displayName: 'External Fetch'
             },
             async execute() {
                 return { accountId: null, stream: (async function* () { yield { type: 'done', data: { finish_reason: 'stop' } }; })(), abort: async () => {} };
@@ -110,13 +110,13 @@ describe('service installers extension integration', () => {
 
         // Backend extension is registered in the backend catalog.
         const backend =
-            appCtx.services.backendCatalog.getBackend('browser-search');
+            appCtx.services.backendCatalog.getBackend('external-fetch');
         assert.ok(backend);
-        assert.equal(backend.manifest.kind, 'search');
+        assert.equal(backend.manifest.kind, 'external_api');
 
         // The catalog also exposes a precompiled terminal.
         const terminal =
-            appCtx.services.backendCatalog.getTerminal('browser-search');
+            appCtx.services.backendCatalog.getTerminal('external-fetch');
         assert.equal(typeof terminal, 'function');
 
         assert.ok(appCtx.services.extensionCatalog);

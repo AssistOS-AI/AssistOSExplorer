@@ -27,8 +27,6 @@ Environment variables cover:
 | Ploinky injection | `PLOINKY_AGENT_API_KEY` (signed-subject key for this agent), `PLOINKY_AGENT_API_PUBLIC_KEY` (Ed25519 public key for verifying incoming signed-subject keys) |
 | Pricing/catalog/export/shutdown | `PRICING_DIRECTORY_URL`, `PRICING_REFRESH_INTERVAL_MS`, `PROVIDER_MODEL_REFRESH_INTERVAL_MS`, `EXPORT_BATCH_SIZE`, `SHUTDOWN_GRACE_MS`, `BODY_LIMIT_BYTES` |
 | Loop detection | `LOOP_MIN_RESPONSES`, `LOOP_WINDOW_SIZE`, `LOOP_SIMILARITY_THRESHOLD`, `LOOP_GROWTH_THRESHOLD_TOKENS`, `LOOP_REPETITIVE_RATIO_THRESHOLD`, `LOOP_INTERVENTION_MESSAGE` |
-| Search bootstrap / legacy inputs | `SEARCH_TAVILY_API_KEY`, `SEARCH_BRAVE_API_KEY`, `SEARCH_EXA_API_KEY`, `SEARCH_SERPER_API_KEY`, `SEARCH_JINA_API_KEY`, `SEARCH_SEARXNG_BASE_URL` |
-| Deep research | `DEEP_RESEARCH_PROVIDERS`, `DEEP_RESEARCH_MAX_RESULTS` |
 
 The gateway opens its embedded SQLite database at `SQLITE_PATH` (default `/data/soul-gateway.sqlite3` inside the Ploinky-managed container). There is no external database connection to configure. `ENCRYPTION_KEY` is optional because the runtime auto-generates and persists `DATA_DIR/encryption.key` on first run if needed.
 
@@ -91,7 +89,7 @@ This schema change removes the `key_ciphertext`, `key_iv`, and `key_auth_tag` co
 
 The src-based runtime package includes `achillesAgentLib` as an installed deployment dependency, so built-in backend modules and any backend / provider-middleware extensions may depend on it without requiring per-deployment manual installation.
 
-Request-time LLM inference must go through `achillesAgentLib`. Soul Gateway may use Achilles in direct-provider mode while serving a request, passing the credential leased from the gateway account store and the provider settings resolved from the runtime snapshot. LLM backend `execute()` paths must not add vendor-specific completion/generation transports; those belong in Achilles. Search providers are normal OpenAI-compatible models; Soul Gateway search backends own their vendor-specific execution (HTTP search APIs, browser automation) behind the standard model interface. External callers use `achillesAgentLib.callSearch()` to call search models through the auto-configured `soul_gateway` provider.
+Request-time LLM inference must go through `achillesAgentLib`. Soul Gateway may use Achilles in direct-provider mode while serving a request, passing the credential leased from the gateway account store and the provider settings resolved from the runtime snapshot. LLM backend `execute()` paths must not add vendor-specific completion/generation transports; those belong in Achilles.
 
 Lifecycle probes and model discovery may use direct vendor HTTP when they are only validating provider connectivity or syncing catalog metadata. They must use leased credentials and must not become an alternate request-time LLM completion path. Prefer Achilles lifecycle helpers when the relevant provider module exposes them.
 
@@ -115,7 +113,7 @@ defaults to a remote gateway.
 
 Driven by canonical provider credentials: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `HUGGINGFACE_API_KEY`, `COPILOT_TOKEN`, `KIRO_ACCESS_TOKEN`, etc. When `PLOINKY_AGENT_API_KEY` is absent, `achillesAgentLib` falls back to direct-provider mode and speaks to each upstream using its canonical credentials. Used for local development, testing the achilles layer in isolation, and operating the gateway itself (which uses direct-provider mode internally to avoid bootstrapping through itself).
 
-Request-time provider credentials still come from the gateway credential lease. Provider/search credential environment variables are bootstrap or Achilles direct-provider inputs; gateway backend modules must not use them as ad hoc request-time credential lookups.
+Request-time provider credentials still come from the gateway credential lease. Provider credential environment variables are bootstrap or Achilles direct-provider inputs; gateway backend modules must not use them as ad hoc request-time credential lookups.
 
 ## Production deployment
 

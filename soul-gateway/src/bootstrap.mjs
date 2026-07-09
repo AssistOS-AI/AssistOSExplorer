@@ -10,7 +10,6 @@ import { requireAdmin } from './runtime/security/dashboard-auth.mjs';
 import { startBackgroundJobs } from './background/scheduler.mjs';
 import {
     installBackendCatalogServices,
-    installBrowserPoolService,
     installExecutionServices,
     installExtensionSdkServices,
     installMiddlewareServices,
@@ -68,7 +67,6 @@ export async function bootstrap() {
     await installProviderAuthServices(appCtx);
     await installMiddlewareServices(appCtx);
     await installBackendCatalogServices(appCtx);
-    await installBrowserPoolService(appCtx);
     await installOAuthAdapters(appCtx);
     // Reconcile discovered Ploinky agents into the provider/model catalog
     // BEFORE installSnapshotServices so the initial snapshot includes them.

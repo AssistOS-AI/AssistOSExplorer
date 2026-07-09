@@ -172,27 +172,6 @@ export function readEnv(processEnv = process.env) {
             null
         ),
 
-        // Built-in search provider keys
-        SEARCH_TAVILY_API_KEY: str(processEnv.SEARCH_TAVILY_API_KEY, null),
-        SEARCH_BRAVE_API_KEY: str(processEnv.SEARCH_BRAVE_API_KEY, null),
-        SEARCH_EXA_API_KEY: str(processEnv.SEARCH_EXA_API_KEY, null),
-        SEARCH_SERPER_API_KEY: str(processEnv.SEARCH_SERPER_API_KEY, null),
-        SEARCH_JINA_API_KEY: str(processEnv.SEARCH_JINA_API_KEY, null),
-        SEARCH_SEARXNG_BASE_URL: str(processEnv.SEARCH_SEARXNG_BASE_URL, null),
-
-        // Deep research
-        DEEP_RESEARCH_PROVIDERS: str(processEnv.DEEP_RESEARCH_PROVIDERS, null),
-        DEEP_RESEARCH_MAX_RESULTS: int(
-            processEnv.DEEP_RESEARCH_MAX_RESULTS,
-            20
-        ),
-
-        // Browser pool (headless search)
-        BROWSER_POOL_SIZE: int(processEnv.BROWSER_POOL_SIZE, 0),
-        BROWSER_EXECUTABLE_PATH: str(processEnv.BROWSER_EXECUTABLE_PATH, null),
-        BROWSER_HEADLESS_MODE: str(processEnv.BROWSER_HEADLESS_MODE, 'new'),
-        BROWSER_PROXY_URL: str(processEnv.BROWSER_PROXY_URL, null),
-        BROWSER_USER_DATA_DIR: str(processEnv.BROWSER_USER_DATA_DIR, null),
     };
 
     return Object.freeze(env);

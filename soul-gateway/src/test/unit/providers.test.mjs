@@ -10,11 +10,8 @@ describe('Extension SDK stubs', () => {
         const ctx = createExtensionContext({});
         assert.ok(ctx.services, 'should have services');
         assert.ok(typeof ctx.services.invokeModel === 'function');
-        assert.ok(typeof ctx.services.invokeSearch === 'function');
         assert.ok(typeof ctx.services.credentials.get === 'function');
         assert.ok(typeof ctx.services.credentials.signRequest === 'function');
-        assert.ok(typeof ctx.services.browserPool.acquire === 'function');
-        assert.ok(typeof ctx.services.browserPool.release === 'function');
         assert.ok(typeof ctx.services.tokenEstimator.estimate === 'function');
         assert.ok(
             typeof ctx.services.tokenEstimator.countTokens === 'function'
@@ -25,14 +22,6 @@ describe('Extension SDK stubs', () => {
         const ctx = createExtensionContext({});
         await assert.rejects(
             () => ctx.services.invokeModel('test', { messages: [] }),
-            /snapshot/i
-        );
-    });
-
-    it('invokeSearch rejects without snapshot', async () => {
-        const ctx = createExtensionContext({});
-        await assert.rejects(
-            () => ctx.services.invokeSearch('test', 'query'),
             /snapshot/i
         );
     });
@@ -79,14 +68,6 @@ describe('Extension SDK stubs', () => {
         assert.equal(headers.Authorization, 'Bearer oauth-token');
         assert.equal(headers['X-Test'], '1');
         assert.equal(releasedLease.leaseId, 'lease-1');
-    });
-
-    it('browserPool.acquire rejects with helpful message', async () => {
-        const ctx = createExtensionContext({});
-        await assert.rejects(
-            () => ctx.services.browserPool.acquire(),
-            /browser runtime/i
-        );
     });
 
     it('tokenEstimator.estimate returns a number', () => {
@@ -141,7 +122,6 @@ describe('Provider manifest validation', () => {
     it('accepts all valid kinds', () => {
         for (const kind of [
             'external_api',
-            'search',
             'local_model',
             'custom',
         ]) {
@@ -479,248 +459,6 @@ describe('Kiro error classification', () => {
 
     it('manifest uses oauth auth strategy', () => {
         assert.equal(kiroPlugin.manifest.authStrategy, 'oauth');
-    });
-});
-
-// ── Error classification: Search ────────────────────────────────────
-
-import { backendModule as searchPlugin } from '../../runtime/backends/builtin/search-builtin.backend.mjs';
-
-describe('Search error classification', () => {
-    it('classifies 401 as ProviderAuthError', () => {
-        const err = searchPlugin.classifyError({ status: 401 });
-        assert.equal(err.errorType, 'provider_auth_error');
-    });
-
-    it('classifies 429 as ProviderRateLimitError', () => {
-        const err = searchPlugin.classifyError({ status: 429 });
-        assert.equal(err.errorType, 'provider_rate_limited');
-    });
-
-    it('manifest is search kind', () => {
-        assert.equal(searchPlugin.manifest.kind, 'search');
-        assert.equal(searchPlugin.manifest.supportsStreaming, true);
-    });
-});
-
-// ── search-builtin testConnection engine resolution ─────────────────
-
-describe('search-builtin testConnection engine resolution', () => {
-    // The lifecycle path (Test button in the dashboard / POST
-    // /management/providers/:id/test) calls testConnection() WITHOUT
-    // a resolved model in scope, so the backend can't read the engine
-    // off ctx.resolvedModel. The previous implementation hardcoded
-    // 'tavily' as the fallback, which made every search provider's
-    // Test button report "Tavily Search credentials present" — even
-    // for an Exa, Brave, Serper, etc. provider. The fix walks
-    // providerRecord (settings → providerKey → baseUrl hostname)
-    // to figure out which engine the row actually represents.
-
-    function makeCtx(providerRecord, secret = 'fake-secret') {
-        return {
-            providerRecord,
-            credentialLease: { secret },
-            // resolvedModel deliberately omitted — this is the lifecycle case
-        };
-    }
-
-    it('reports the right engine name for an Exa provider via providerKey', async () => {
-        const result = await searchPlugin.testConnection(
-            makeCtx({
-                providerKey: 'exa',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://api.exa.ai/search',
-            })
-        );
-        assert.equal(result.ok, true);
-        assert.match(result.detail, /Exa Search/);
-        assert.doesNotMatch(result.detail, /Tavily/);
-    });
-
-    it('reports the right engine name for a Brave provider via providerKey', async () => {
-        const result = await searchPlugin.testConnection(
-            makeCtx({
-                providerKey: 'brave',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://api.search.brave.com/res/v1/web/search',
-            })
-        );
-        assert.equal(result.ok, true);
-        assert.match(result.detail, /Brave Search/);
-    });
-
-    it('reports the right engine name for a Tavily provider', async () => {
-        const result = await searchPlugin.testConnection(
-            makeCtx({
-                providerKey: 'tavily',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://api.tavily.com/search',
-            })
-        );
-        assert.equal(result.ok, true);
-        assert.match(result.detail, /Tavily Search/);
-    });
-
-    it('reports DuckDuckGo as credential-free even with no secret', async () => {
-        const result = await searchPlugin.testConnection({
-            providerRecord: {
-                providerKey: 'duckduckgo',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://html.duckduckgo.com/html/',
-            },
-            credentialLease: null,
-        });
-        assert.equal(result.ok, true);
-        assert.match(result.detail, /DuckDuckGo/);
-        assert.match(result.detail, /does not require authentication/);
-    });
-
-    it('falls back to baseUrl hostname when providerKey was renamed', async () => {
-        // User renamed the provider but the base URL still points at
-        // the canonical Exa endpoint — the backend should still resolve
-        // to "Exa Search", not the literal hardcoded fallback.
-        const result = await searchPlugin.testConnection(
-            makeCtx({
-                providerKey: 'my-search-provider',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://api.exa.ai/search',
-            })
-        );
-        assert.equal(result.ok, true);
-        assert.match(result.detail, /Exa Search/);
-    });
-
-    it('honours an explicit settings.engine override', async () => {
-        // settings.engine wins over providerKey + baseUrl so users
-        // running a forked endpoint can still pin the engine they meant.
-        const result = await searchPlugin.testConnection(
-            makeCtx({
-                providerKey: 'mystery',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://forked.example.com/search',
-                settings: { engine: 'serper' },
-            })
-        );
-        assert.equal(result.ok, true);
-        assert.match(result.detail, /Serper Search/);
-    });
-
-    it('keeps using the resolved model when the execution path passes one in', async () => {
-        // execute() / discoverModels() pass ctx.resolvedModel; that
-        // remains the most specific signal and beats providerKey.
-        const result = await searchPlugin.testConnection({
-            providerRecord: {
-                providerKey: 'exa',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://api.exa.ai/search',
-            },
-            resolvedModel: { providerModelId: 'brave' },
-            credentialLease: { secret: 'fake' },
-        });
-        assert.equal(result.ok, true);
-        assert.match(result.detail, /Brave Search/);
-    });
-
-    it('reports a generic credential-present message when no engine can be identified', async () => {
-        const result = await searchPlugin.testConnection(
-            makeCtx({
-                providerKey: 'totally-custom',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://unknown.example.com/api',
-            })
-        );
-        assert.equal(result.ok, true);
-        assert.match(result.detail, /credentials present/);
-        assert.doesNotMatch(result.detail, /Tavily/);
-    });
-
-    it('reports missing credentials with the engine name when secret is absent', async () => {
-        const result = await searchPlugin.testConnection({
-            providerRecord: {
-                providerKey: 'exa',
-                adapterKey: 'search-builtin',
-                baseUrl: 'https://api.exa.ai/search',
-            },
-            credentialLease: null,
-        });
-        assert.equal(result.ok, false);
-        assert.match(result.detail, /Exa Search/);
-        assert.match(result.detail, /API key/i);
-    });
-});
-
-// ── search provider invariant ───────────────────────────────────────
-
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
-
-describe('search provider invariant', () => {
-    const backendPath = path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        '../../runtime/backends/builtin/search-builtin.backend.mjs'
-    );
-    const backendSource = readFileSync(backendPath, 'utf8');
-
-    it('search-builtin does not import from Achilles SearchProviders', () => {
-        assert.doesNotMatch(
-            backendSource,
-            /from\s+['"]achillesAgentLib\/utils\/SearchProviders/
-        );
-    });
-
-    it('search-builtin owns API search dispatch (has SEARCH_PROVIDERS table)', () => {
-        assert.match(backendSource, /\bSEARCH_PROVIDERS\b/);
-    });
-
-    it('search-builtin owns vendor HTTP transport (doSearchRequest)', () => {
-        assert.match(backendSource, /\bdoSearchRequest\b/);
-    });
-
-    it('Achilles search helper has no vendor HTTP code', () => {
-        const achillesPath = path.resolve(
-            path.dirname(fileURLToPath(import.meta.url)),
-            '../../../node_modules/achillesAgentLib/utils/SearchProviders/search.mjs'
-        );
-        const achillesSource = readFileSync(achillesPath, 'utf8');
-        assert.doesNotMatch(achillesSource, /api\.tavily\.com/);
-        assert.doesNotMatch(achillesSource, /api\.search\.brave\.com/);
-        assert.doesNotMatch(achillesSource, /\bfetch\s*\(/);
-        assert.match(achillesSource, /from\s+['"]\.\.\/LLMClient\.mjs['"]/);
-    });
-
-    it('headless-search is a valid kind: "search" backend', async () => {
-        const { backendModule: headless } = await import(
-            '../../runtime/backends/builtin/headless-search.backend.mjs'
-        );
-        assert.equal(headless.manifest.kind, 'search');
-        assert.deepEqual(headless.manifest.supportedFormats, ['openai_chat']);
-    });
-
-    it('search-builtin and headless-search share the same output format', () => {
-        assert.deepEqual(
-            searchPlugin.manifest.supportedFormats,
-            ['openai_chat']
-        );
-    });
-
-    it('built-in search backends advertise streaming support', async () => {
-        const { backendModule: headless } = await import(
-            '../../runtime/backends/builtin/headless-search.backend.mjs'
-        );
-        assert.equal(searchPlugin.manifest.supportsStreaming, true);
-        assert.equal(headless.manifest.supportsStreaming, true);
-
-        const [searchModels, headlessModels] = await Promise.all([
-            searchPlugin.discoverModels(),
-            headless.discoverModels(),
-        ]);
-        assert.ok(
-            searchModels.every((model) => model.supportsStreaming === true)
-        );
-        assert.ok(
-            headlessModels.every((model) => model.supportsStreaming === true)
-        );
     });
 });
 
@@ -1234,164 +972,6 @@ describe('Kiro converter', () => {
 
         it('returns null for null input', () => {
             assert.equal(kiroConverter.parseBinaryFrame(null), null);
-        });
-    });
-});
-
-// ── Search converter ────────────────────────────────────────────────
-
-import * as searchConverter from '../../runtime/backends/converters/search-converter.mjs';
-
-describe('Search converter', () => {
-    describe('formatSearchResults', () => {
-        it('formats results as markdown with citations', () => {
-            const results = [
-                {
-                    title: 'Page 1',
-                    url: 'https://example.com/1',
-                    snippet: 'First result',
-                },
-                {
-                    title: 'Page 2',
-                    url: 'https://example.com/2',
-                    snippet: 'Second result',
-                },
-            ];
-            const formatted = searchConverter.formatSearchResults(
-                results,
-                'test query'
-            );
-
-            assert.match(formatted, /Search results for/);
-            assert.match(formatted, /Page 1/);
-            assert.match(formatted, /Page 2/);
-            assert.match(formatted, /Sources/);
-            assert.match(formatted, /\[1\]/);
-            assert.match(formatted, /\[2\]/);
-        });
-
-        it('handles empty results', () => {
-            const formatted = searchConverter.formatSearchResults([], 'test');
-            assert.match(formatted, /No search results found/);
-        });
-
-        it('respects maxResults option', () => {
-            const results = Array.from({ length: 20 }, (_, i) => ({
-                title: `Page ${i}`,
-                url: `https://example.com/${i}`,
-                snippet: `Result ${i}`,
-            }));
-            const formatted = searchConverter.formatSearchResults(
-                results,
-                'test',
-                { maxResults: 3 }
-            );
-            // Should only contain [1], [2], [3] in sources
-            assert.match(formatted, /\[3\]/);
-            assert.doesNotMatch(formatted, /\[4\]/);
-        });
-    });
-
-    describe('toNormalizedChunks', () => {
-        it('produces message_start, text_delta, usage, done', () => {
-            const results = [
-                { title: 'Page 1', url: 'https://x.com', snippet: 'Test' },
-            ];
-            const chunks = searchConverter.toNormalizedChunks(
-                results,
-                'query',
-                {
-                    requestId: 'r1',
-                    model: 'search-tavily',
-                }
-            );
-
-            assert.equal(chunks.length, 4);
-            assert.equal(chunks[0].type, 'message_start');
-            assert.equal(chunks[1].type, 'text_delta');
-            assert.equal(chunks[2].type, 'usage');
-            assert.equal(chunks[3].type, 'done');
-        });
-    });
-
-    describe('per-provider extractors', () => {
-        it('extractTavilyResults handles tavily format', () => {
-            const results = searchConverter.extractTavilyResults({
-                results: [
-                    {
-                        title: 'T',
-                        url: 'https://t.com',
-                        content: 'Snippet',
-                        score: 0.9,
-                    },
-                ],
-            });
-            assert.equal(results.length, 1);
-            assert.equal(results[0].title, 'T');
-            assert.equal(results[0].snippet, 'Snippet');
-        });
-
-        it('extractBraveResults handles brave format', () => {
-            const results = searchConverter.extractBraveResults({
-                web: {
-                    results: [
-                        {
-                            title: 'B',
-                            url: 'https://b.com',
-                            description: 'Brave snippet',
-                        },
-                    ],
-                },
-            });
-            assert.equal(results.length, 1);
-            assert.equal(results[0].snippet, 'Brave snippet');
-        });
-
-        it('extractSerperResults handles serper format', () => {
-            const results = searchConverter.extractSerperResults({
-                organic: [
-                    {
-                        title: 'S',
-                        link: 'https://s.com',
-                        snippet: 'Serper snippet',
-                        position: 1,
-                    },
-                ],
-            });
-            assert.equal(results.length, 1);
-            assert.equal(results[0].url, 'https://s.com');
-        });
-
-        it('extractDuckDuckGoResults handles DDG format', () => {
-            const results = searchConverter.extractDuckDuckGoResults({
-                AbstractText: 'DDG answer',
-                AbstractURL: 'https://ddg.com',
-                Heading: 'DDG',
-                RelatedTopics: [],
-            });
-            assert.equal(results.length, 1);
-            assert.equal(results[0].snippet, 'DDG answer');
-        });
-
-        it('extractSearxngResults handles searxng format', () => {
-            const results = searchConverter.extractSearxngResults({
-                results: [
-                    { title: 'SX', url: 'https://sx.com', content: 'SearXNG' },
-                ],
-            });
-            assert.equal(results.length, 1);
-        });
-
-        it('extractResults routes to correct extractor', () => {
-            const results = searchConverter.extractResults('tavily', {
-                results: [{ title: 'T', url: 'https://t.com', content: 'X' }],
-            });
-            assert.equal(results.length, 1);
-        });
-
-        it('extractResults returns empty for unknown provider', () => {
-            const results = searchConverter.extractResults('unknown', {});
-            assert.equal(results.length, 0);
         });
     });
 });
@@ -2092,14 +1672,12 @@ describe('BackendCatalog', () => {
         //                     vendor preset (nvidia, groq, fireworks, …)
         //   anthropic-api   → generic Anthropic API client behind the
         //                     `anthropic-direct` preset
-        //   search-builtin  → multi-engine search dispatcher behind the
-        //                     tavily/brave/exa/… presets
         //
         // Each carries `hidden: true` so getTemplates() does not surface
         // the dispatcher key itself in the dropdown — the only way to
         // configure them is via a preset (which fills in the vendor-specific
         // base_url, display_name, etc.). Without `hidden`, the dropdown
-        // would show meaningless raw entries like "search-builtin" with no
+        // would show meaningless raw entries like "openai-api" with no
         // base_url, and a user picking one would have nothing to point at.
         const openaiApiPlugin = {
             manifest: {
@@ -2110,23 +1688,6 @@ describe('BackendCatalog', () => {
                 supportsTools: true,
                 supportedFormats: ['openai_chat'],
                 displayName: 'OpenAI-Compatible API',
-                hidden: true,
-            },
-            async init() {},
-            async shutdown() {},
-            async execute() {},
-            classifyError() {},
-        };
-
-        const searchBuiltinPlugin = {
-            manifest: {
-                key: 'search-builtin',
-                kind: 'search',
-                authStrategy: 'api_key',
-                supportsStreaming: true,
-                supportsTools: false,
-                supportedFormats: ['openai_chat'],
-                displayName: 'Web Search (Built-in)',
                 hidden: true,
             },
             async init() {},
@@ -2202,29 +1763,6 @@ describe('BackendCatalog', () => {
             );
         });
 
-        it('includes all 8 search presets when search-builtin is loaded', () => {
-            catalog.load([searchBuiltinPlugin]);
-            const templates = catalog.getTemplates();
-
-            for (const key of [
-                'tavily',
-                'brave',
-                'exa',
-                'serper',
-                'jina',
-                'duckduckgo',
-                'searxng',
-                'gemini-search',
-            ]) {
-                assert.ok(templates[key], `missing search preset: ${key}`);
-                assert.equal(templates[key].adapter_key, 'search-builtin');
-                assert.equal(templates[key].kind, 'search');
-                assert.equal(templates[key].supports_streaming, true);
-            }
-            // SearXNG ships with an empty base_url (self-hosted) — user fills it in.
-            assert.equal(templates['searxng'].base_url, '');
-        });
-
         it('includes the anthropic-direct preset only when anthropic-api is loaded', () => {
             // No backends → no preset
             const emptyCatalog = new BackendCatalog({
@@ -2251,7 +1789,7 @@ describe('BackendCatalog', () => {
         });
 
         it('filters out presets whose backend is not loaded', () => {
-            // Load only anthropic-api — openai-compat + search presets should be absent
+            // Load only anthropic-api — openai-compat presets should be absent
             catalog.load([anthropicApiPlugin]);
             const templates = catalog.getTemplates();
             assert.equal(templates['nvidia'], undefined);
@@ -2264,25 +1802,22 @@ describe('BackendCatalog', () => {
             // Regression: before this fix, getTemplates() unconditionally
             // surfaced every loaded backend key — including the protocol-
             // family dispatchers — which polluted the dropdown with raw
-            // `openai-api`, `anthropic-api`, `search-builtin` entries that
+            // `openai-api`, `anthropic-api` entries that
             // had no base_url and no meaningful display name. Vendors are
             // configured exclusively through presets; the dispatcher keys
             // are an implementation detail and must stay out of the dropdown.
             catalog.load([
                 openaiApiPlugin,
                 anthropicApiPlugin,
-                searchBuiltinPlugin,
             ]);
             const templates = catalog.getTemplates();
 
             assert.equal(templates['openai-api'], undefined);
             assert.equal(templates['anthropic-api'], undefined);
-            assert.equal(templates['search-builtin'], undefined);
 
             // …and yet the presets routed through them still appear.
             assert.ok(templates['nvidia']);
             assert.ok(templates['anthropic-direct']);
-            assert.ok(templates['tavily']);
         });
 
         it('OAuth-backed backends remain visible alongside the presets', () => {
@@ -2316,10 +1851,9 @@ describe('BackendCatalog', () => {
         });
 
         it('total dropdown count: hidden dispatchers contribute zero, presets surface in full', () => {
-            // 3 dispatcher backends (all hidden) + 24 vendor presets = 24 entries.
+            // 2 dispatcher backends (both hidden) + 16 vendor presets = 16 entries.
             catalog.load([
                 openaiApiPlugin,
-                searchBuiltinPlugin,
                 anthropicApiPlugin,
             ]);
             const templates = catalog.getTemplates();
@@ -2341,29 +1875,16 @@ describe('BackendCatalog', () => {
                 'opencode-zen',
                 'opencode-go',
             ];
-            const searchPresetKeys = [
-                'tavily',
-                'brave',
-                'exa',
-                'serper',
-                'jina',
-                'duckduckgo',
-                'searxng',
-                'gemini-search',
-            ];
             const anthropicPresetKeys = ['anthropic-direct'];
 
             for (const k of openaiPresetKeys)
                 assert.ok(templates[k], `missing openai preset: ${k}`);
-            for (const k of searchPresetKeys)
-                assert.ok(templates[k], `missing search preset: ${k}`);
             for (const k of anthropicPresetKeys)
                 assert.ok(templates[k], `missing anthropic preset: ${k}`);
 
             assert.equal(
                 Object.keys(templates).length,
                 openaiPresetKeys.length +
-                    searchPresetKeys.length +
                     anthropicPresetKeys.length
             );
         });

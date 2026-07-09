@@ -211,9 +211,9 @@ export class BackendCatalog {
      *
      *   1. Vendor presets from `provider-presets.mjs`, filtered to
      *      those whose backend module is currently loaded.  This is
-     *      how generic dispatchers (`openai-api`, `anthropic-api`,
-     *      `search-builtin`) surface as multiple vendor-labelled
-     *      dropdown entries (NVIDIA, Groq, Tavily, …) without code
+     *      how generic dispatchers (`openai-api`, `anthropic-api`)
+     *      surface as multiple vendor-labelled dropdown entries
+     *      (NVIDIA, Groq, …) without code
      *      duplication.
      *
      *   2. Module-derived templates for non-hidden backend modules.

@@ -39,7 +39,6 @@ describe('validateBackendManifest', () => {
     it('accepts every canonical kind', () => {
         for (const kind of [
             'external_api',
-            'search',
             'local_model',
             'custom',
         ]) {
@@ -107,7 +106,6 @@ describe('validateBackendManifest', () => {
 describe('isBackendKind', () => {
     it('returns true for canonical kinds', () => {
         assert.equal(isBackendKind('external_api'), true);
-        assert.equal(isBackendKind('search'), true);
         assert.equal(isBackendKind('local_model'), true);
         assert.equal(isBackendKind('custom'), true);
     });

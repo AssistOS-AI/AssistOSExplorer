@@ -152,10 +152,10 @@ describe('ExtensionLoader — canonical paths', () => {
     it('preserves canonical backend kinds on bare execute-style extensions', async () => {
         await writeExtension(
             join(tmpDir, 'backends'),
-            'web-search.backend.mjs',
+            'external-fetch.backend.mjs',
             {
-                key: 'web-search',
-                kind: 'search',
+                key: 'external-fetch',
+                kind: 'external_api',
                 authStrategy: 'api_key',
                 supportsStreaming: false,
                 supportsTools: false,
@@ -168,8 +168,8 @@ describe('ExtensionLoader — canonical paths', () => {
 
         assert.equal(catalog.backends.length, 1);
         const entry = catalog.backends[0];
-        assert.equal(entry.manifest.key, 'web-search');
-        assert.equal(entry.manifest.kind, 'search');
+        assert.equal(entry.manifest.key, 'external-fetch');
+        assert.equal(entry.manifest.kind, 'external_api');
     });
 
     it('skips files that do not match the suffix', async () => {

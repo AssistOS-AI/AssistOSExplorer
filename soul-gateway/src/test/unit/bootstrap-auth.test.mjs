@@ -30,7 +30,6 @@ describe('bootstrap auth environment', () => {
                 SQLITE_PATH: join(dir, 'soul-gateway.sqlite3'),
                 ENCRYPTION_KEY: '8'.repeat(64),
                 API_KEY_HASH_PEPPER: 'test-pepper',
-                BROWSER_POOL_SIZE: '0',
                 OAUTH_ADAPTERS_ENABLED: '',
                 PLOINKY_AGENT_API_PUBLIC_KEY: 'test-public-key',
                 PLOINKY_ROUTER_URL: 'http://127.0.0.1:9',

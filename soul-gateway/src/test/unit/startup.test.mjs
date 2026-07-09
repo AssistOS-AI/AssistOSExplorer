@@ -60,7 +60,6 @@ describe('startup.sh', () => {
                 DATA_DIR: dataDir,
                 SQLITE_PATH: join(dataDir, 'gateway.sqlite3'),
                 STARTUP_MARKER_OUTPUT: markerPath,
-                BROWSER_POOL_SIZE: '0',
             });
 
             assert.equal(
@@ -89,7 +88,6 @@ describe('startup.sh', () => {
                 DATA_DIR: dataDir,
                 SQLITE_PATH: join(dataDir, 'gateway.sqlite3'),
                 STARTUP_MARKER_OUTPUT: markerPath,
-                BROWSER_POOL_SIZE: '0',
             });
 
             assert.notEqual(result.code, 0);
@@ -121,7 +119,6 @@ describe('startup.sh', () => {
                 SQLITE_PATH: join(dataDir, 'gateway.sqlite3'),
                 STARTUP_MARKER_OUTPUT: markerPath,
                 AGENT_NODE_MODULES_DIR: agentNodeModulesDir,
-                BROWSER_POOL_SIZE: '0',
             });
 
             assert.equal(

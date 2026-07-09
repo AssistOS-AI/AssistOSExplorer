@@ -1104,7 +1104,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
         };
 
         const appCtx = createMockAppCtx({
-            catalog: createMockCatalog({ 'headless-search': backendModule }),
+            catalog: createMockCatalog({ 'openai-api': backendModule }),
             credentialManager: createMockCredentialManager({ secret: 'sk-test' }),
             log,
         });
@@ -1116,8 +1116,8 @@ describe('auto-provisioner.autoProvisionModels', () => {
                         appCtx,
                         {
                             id: 'current-provider',
-                            provider_key: 'headless-search-alt',
-                            adapter_key: 'headless-search',
+                            provider_key: 'openai-alt',
+                            adapter_key: 'openai-api',
                         },
                         null,
                         {

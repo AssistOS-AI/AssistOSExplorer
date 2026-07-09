@@ -185,8 +185,8 @@ describe('dashboard tree view helpers', () => {
                     enabled: false,
                 },
                 {
-                    model_key: 'search/tavily',
-                    display_name: 'Tavily',
+                    model_key: 'vendor/general',
+                    display_name: 'General',
                     enabled: true,
                 },
                 {
@@ -197,7 +197,7 @@ describe('dashboard tree view helpers', () => {
             ];
 
             const rows = tree.buildModelTreeRows(models, {
-                expanded: new Set(['repo', 'repo/agent', 'search']),
+                expanded: new Set(['repo', 'repo/agent', 'vendor']),
             });
 
             assert.deepEqual(
@@ -253,16 +253,16 @@ describe('dashboard tree view helpers', () => {
                     },
                     {
                         type: 'group',
-                        key: 'search',
-                        path: 'search',
-                        label: 'search',
+                        key: 'vendor',
+                        path: 'vendor',
+                        label: 'vendor',
                         depth: 0,
                     },
                     {
                         type: 'leaf',
-                        key: 'search/tavily',
-                        path: 'search/tavily',
-                        label: 'tavily',
+                        key: 'vendor/general',
+                        path: 'vendor/general',
+                        label: 'general',
                         depth: 1,
                     },
                 ]
@@ -270,7 +270,7 @@ describe('dashboard tree view helpers', () => {
 
             const repoGroup = rows.find((row) => row.path === 'repo');
             const agentGroup = rows.find((row) => row.path === 'repo/agent');
-            const searchGroup = rows.find((row) => row.path === 'search');
+            const vendorGroup = rows.find((row) => row.path === 'vendor');
 
             assert.equal(repoGroup.count, 3);
             assert.equal(repoGroup.enabledCount, 2);
@@ -278,8 +278,8 @@ describe('dashboard tree view helpers', () => {
             assert.equal(agentGroup.count, 2);
             assert.equal(agentGroup.enabledCount, 2);
             assert.equal(agentGroup.expanded, true);
-            assert.equal(searchGroup.count, 1);
-            assert.equal(searchGroup.expanded, true);
+            assert.equal(vendorGroup.count, 1);
+            assert.equal(vendorGroup.expanded, true);
         });
     });
 
@@ -503,13 +503,13 @@ describe('dashboard tree view helpers', () => {
             );
 
             const original = new Set(['repo']);
-            const added = tree.toggleExpandedPath(original, 'search');
+            const added = tree.toggleExpandedPath(original, 'vendor');
             const removed = tree.toggleExpandedPath(added, 'repo');
 
             assert.notEqual(added, original);
             assert.deepEqual([...original], ['repo']);
-            assert.deepEqual([...added].sort(), ['repo', 'search']);
-            assert.deepEqual([...removed], ['search']);
+            assert.deepEqual([...added].sort(), ['repo', 'vendor']);
+            assert.deepEqual([...removed], ['vendor']);
 
             tree.saveExpandedSet(storage, 'expanded', added);
             tree.saveExpandedSet(
@@ -525,7 +525,7 @@ describe('dashboard tree view helpers', () => {
             assert.deepEqual(writes, [
                 {
                     key: 'expanded',
-                    value: JSON.stringify(['repo', 'search']),
+                    value: JSON.stringify(['repo', 'vendor']),
                 },
             ]);
         });

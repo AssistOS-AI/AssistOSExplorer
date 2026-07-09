@@ -259,7 +259,6 @@ function createMockAppCtx(overrides = {}) {
             'openai-api',
             'anthropic-api',
             'gemini-openai',
-            'search-builtin',
             'codex-api',
             'copilot-api',
             'custom-backend',
