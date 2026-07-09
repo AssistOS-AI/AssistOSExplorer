@@ -65,14 +65,34 @@ async function withStubbedModelsDao(stub, fn) {
     const mocked = mock.module('../../db/dao/models-dao.mjs', {
         namedExports: {
             findByKey: stub.findByKey,
+            list: stub.list || (async () => []),
             listByProvider: stub.listByProvider,
             create: stub.create,
+            createCascade:
+                stub.createCascade ||
+                (async (_pool, fields) => ({
+                    id: `tier-${fields.modelKey}`,
+                    model_key: fields.modelKey,
+                    display_name: fields.displayName,
+                    enabled: fields.enabled ?? true,
+                    strategy_kind: 'cascade',
+                    max_attempts: fields.maxAttempts ?? 5,
+                    discovery_source: fields.discoverySource ?? 'manual',
+                    metadata: fields.metadata ?? {},
+                })),
             update: stub.update,
             disable: stub.disable,
             updateProviderSyncedModel,
             disableMissingProviderSyncedModel,
         },
     });
+    const tagTierMock = stub.appendNewModelsToTagTiers
+        ? mock.module('../../bootstrap/reconcile-tag-tiers.mjs', {
+            namedExports: {
+                appendNewModelsToTagTiers: stub.appendNewModelsToTagTiers,
+            },
+        })
+        : null;
     // Re-import the auto-provisioner so its dynamic import picks up the mock.
     const mod = await import(
         `../../runtime/providers/auto-provisioner.mjs?mock=${Date.now()}${Math.random()}`
@@ -80,6 +100,7 @@ async function withStubbedModelsDao(stub, fn) {
     try {
         return await fn(mod);
     } finally {
+        tagTierMock?.restore();
         mocked.restore();
     }
 }
@@ -235,6 +256,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
                 modelId: 'gpt-5.2-codex',
                 displayName: 'gpt-5.2-codex',
                 contextWindow: 272000,
+                tags: ['coding'],
             },
             {
                 modelId: 'gpt-5-codex',
@@ -253,6 +275,7 @@ describe('auto-provisioner.autoProvisionModels', () => {
         const created = [];
         const updated = [];
         const disabled = [];
+        let appendedModels = null;
         const stub = {
             findByKey: async () => null,
             listByProvider: async () => [
@@ -287,6 +310,15 @@ describe('auto-provisioner.autoProvisionModels', () => {
                 disabled.push(id);
                 return { id, enabled: false };
             },
+            appendNewModelsToTagTiers: async ({ models }) => {
+                appendedModels = models;
+                return {
+                    scannedModels: models.length,
+                    updatedTiers: 1,
+                    appended: 1,
+                    fallbackRemoved: 0,
+                };
+            },
         };
 
         const appCtx = createMockAppCtx({
@@ -309,6 +341,8 @@ describe('auto-provisioner.autoProvisionModels', () => {
         assert.equal(result.created, 1);
         assert.equal(result.updated, 1);
         assert.equal(result.disabled, 1);
+        assert.equal(result.tagTierModelsAppended, 1);
+        assert.equal(result.tagTiersUpdated, 1);
         assert.deepEqual(created.map((c) => c.modelKey), [
             'codex-api/gpt-5.2-codex',
         ]);
@@ -335,6 +369,10 @@ describe('auto-provisioner.autoProvisionModels', () => {
             'missing-from-discovery'
         );
         assert.deepEqual(disabled, []);
+        assert.deepEqual(
+            appendedModels.map((model) => model.modelKey),
+            ['codex-api/gpt-5.2-codex']
+        );
     });
 
     it('marks missing discovered rows as sync-disabled instead of plain disabling them', async () => {

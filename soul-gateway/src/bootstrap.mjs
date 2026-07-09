@@ -25,6 +25,8 @@ import {
     runInitialPloinkyReconcile,
     startPloinkyDiscoveryTimer,
 } from './ploinky/discovery-scheduler.mjs';
+import { seedDefaultTiers } from './bootstrap/seed-default-tiers.mjs';
+import { bootstrapInitialTagTiers } from './bootstrap/reconcile-tag-tiers.mjs';
 
 /**
  * Full boot sequence.
@@ -73,6 +75,11 @@ export async function bootstrap() {
     // No-ops cleanly outside Ploinky mode; never crashes startup on failure.
     await runInitialPloinkyReconcile(appCtx);
     await reconcileProvidersOnStartup(appCtx);
+    if (pool.isNewDatabase) {
+        await seedDefaultTiers({ appCtx });
+        await bootstrapInitialTagTiers({ appCtx });
+        log.info('initial tier bootstrap completed');
+    }
     await installSnapshotServices(appCtx);
     try {
         installExtensionSdkServices(appCtx);

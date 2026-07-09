@@ -26,14 +26,6 @@ async function withSchedulerMocks(stubs, fn) {
             reconcilePloinkyAgents: stubs.reconcilePloinkyAgents,
         },
     });
-    const seedTiersMock = mock.module(
-        '../../bootstrap/seed-default-tiers.mjs',
-        {
-            namedExports: {
-                seedDefaultTiers: stubs.seedDefaultTiers,
-            },
-        }
-    );
 
     try {
         const mod = await import(
@@ -43,12 +35,11 @@ async function withSchedulerMocks(stubs, fn) {
     } finally {
         discoveryMock.restore();
         reconcileMock.restore();
-        seedTiersMock.restore();
     }
 }
 
 describe('runPloinkyReconcileOnce', () => {
-    it('seeds default tiers after reconcile and returns the reconcile summary', async () => {
+    it('discovers agents, reconciles them, and returns the reconcile summary', async () => {
         const calls = [];
         const appCtx = { config: {}, log: makeLog() };
         const discovery = { complete: true, agents: [] };
@@ -68,30 +59,24 @@ describe('runPloinkyReconcileOnce', () => {
                     calls.push('reconcile');
                     return summary;
                 },
-                seedDefaultTiers: async (input) => {
-                    assert.deepEqual(input, { appCtx });
-                    calls.push('seed');
-                    return { seeded: 1, skipped: 0, refreshed: true };
-                },
             },
             async ({ runPloinkyReconcileOnce }) =>
                 runPloinkyReconcileOnce(appCtx, { phase: 'startup' })
         );
 
         assert.equal(result, summary);
-        assert.deepEqual(calls, ['discover', 'reconcile', 'seed']);
+        assert.deepEqual(calls, ['discover', 'reconcile']);
     });
 
-    it('returns null and logs a warning when default-tier seeding fails', async () => {
+    it('returns null and logs a warning when reconcile fails', async () => {
         const appCtx = { config: {}, log: makeLog() };
 
         const result = await withSchedulerMocks(
             {
                 isDiscoveryConfigured: () => true,
                 discoverPloinkyAgents: async () => ({ complete: true, agents: [] }),
-                reconcilePloinkyAgents: async () => ({ created: 0 }),
-                seedDefaultTiers: async () => {
-                    throw new Error('seed boom');
+                reconcilePloinkyAgents: async () => {
+                    throw new Error('reconcile boom');
                 },
             },
             async ({ runPloinkyReconcileOnce }) =>
@@ -104,7 +89,7 @@ describe('runPloinkyReconcileOnce', () => {
             message: 'ploinky agent reconcile pass failed',
             metadata: {
                 phase: 'timer',
-                error: 'seed boom',
+                error: 'reconcile boom',
             },
         });
     });

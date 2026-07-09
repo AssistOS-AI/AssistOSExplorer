@@ -81,7 +81,6 @@ export async function handleCreateModel(ctx) {
         metadata: body.metadata ?? {},
     });
 
-    // Refresh runtime snapshot after mutation
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'model.create' });
 
     sendJson(res, 201, { model: row });
@@ -153,7 +152,6 @@ export async function handleUpdateModel(ctx) {
         return;
     }
 
-    // Refresh runtime snapshot after mutation
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'model.update' });
 
     sendJson(res, 200, { model: row });
@@ -176,7 +174,6 @@ export async function handleDeleteModel(ctx) {
     const aliasDao = await import('../db/dao/model-aliases-dao.mjs');
     await aliasDao.deleteByModel(pool, params.modelId);
 
-    // Refresh runtime snapshot after mutation
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'model.delete' });
 
     sendJson(res, 200, { ok: true });
@@ -195,7 +192,6 @@ export async function handleEnableModel(ctx) {
         return;
     }
 
-    // Refresh runtime snapshot after mutation
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'model.enable' });
 
     sendJson(res, 200, { model: row });
@@ -214,7 +210,6 @@ export async function handleDisableModel(ctx) {
         return;
     }
 
-    // Refresh runtime snapshot after mutation
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'model.disable' });
 
     sendJson(res, 200, { model: row });

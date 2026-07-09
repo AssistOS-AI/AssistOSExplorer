@@ -1100,6 +1100,12 @@ describe('management/models-route', () => {
 
     it('handleUpdateModel clears stale syncDisabled when enabled is patched', async () => {
         const pool = createMockPool(async (sql, params) => {
+            if (sql.includes('FROM models m')) {
+                return { rows: [] };
+            }
+            if (sql.includes('INSERT INTO models')) {
+                return { rows: [] };
+            }
             assert.match(sql, /json_remove\(metadata, '\$\.syncDisabled'\)/);
             assert.equal(
                 params.some((param) => String(param).includes('syncDisabled')),

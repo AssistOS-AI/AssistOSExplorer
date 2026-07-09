@@ -20,7 +20,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 const JSON_COLUMNS = new Set([
@@ -50,6 +50,7 @@ const ROW_RETURNING_PREFIX_RE = /^(SELECT|WITH|PRAGMA|VALUES|EXPLAIN)\b/i;
 
 export async function openDatabase(env) {
     const sqlitePath = env.SQLITE_PATH || './data/soul-gateway.sqlite3';
+    const isNewDatabase = await databaseFileIsMissing(sqlitePath);
     await mkdir(dirname(sqlitePath), { recursive: true });
     const raw = new DatabaseSync(sqlitePath, { timeout: 5000 });
     raw.exec('PRAGMA foreign_keys = ON');
@@ -61,7 +62,7 @@ export async function openDatabase(env) {
     // with the schema's strftime ISO defaults and application-supplied
     // (new Date().toISOString()) timestamps so comparisons and sorts agree.
     raw.function('now', () => new Date().toISOString());
-    return new SqliteDb(raw);
+    return new SqliteDb(raw, { isNewDatabase, path: sqlitePath });
 }
 
 export async function initializeSchema(db) {
@@ -71,8 +72,10 @@ export async function initializeSchema(db) {
 }
 
 export class SqliteDb {
-    constructor(raw) {
+    constructor(raw, { isNewDatabase = false, path = null } = {}) {
         this.raw = raw;
+        this.isNewDatabase = isNewDatabase;
+        this.path = path;
         // Promise-chain mutex serializing all access to the single connection.
         this._lock = Promise.resolve();
     }
@@ -141,6 +144,17 @@ export class SqliteDb {
         } finally {
             release();
         }
+    }
+}
+
+async function databaseFileIsMissing(sqlitePath) {
+    if (sqlitePath === ':memory:') return true;
+    try {
+        await stat(sqlitePath);
+        return false;
+    } catch (err) {
+        if (err?.code === 'ENOENT') return true;
+        throw err;
     }
 }
 

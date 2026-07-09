@@ -5,6 +5,7 @@ import {
 } from './provider-composition-validator.mjs';
 import { performRuntimeRefresh } from '../registry/runtime-refresh.mjs';
 import { enrichModelMetadata } from '../policy/model-metadata-classifier.mjs';
+import { appendNewModelsToTagTiers } from '../../bootstrap/reconcile-tag-tiers.mjs';
 
 const MAX_DB_NUMERIC_14_8_ABS = 1_000_000;
 const SYNC_DISABLED_METADATA_KEY = 'syncDisabled';
@@ -541,6 +542,7 @@ export async function syncProviderModels(
     );
     const discoveredModelKeys = new Set();
     const syncedModels = [];
+    const createdModels = [];
     let created = 0;
     let updated = 0;
     let disabled = 0;
@@ -557,6 +559,7 @@ export async function syncProviderModels(
                     discoverySource,
                 });
                 syncedModels.push(createdRow);
+                createdModels.push(createdRow);
                 created++;
             } catch (err) {
                 if (!isModelKeyUniqueConstraintError(err)) {
@@ -634,7 +637,17 @@ export async function syncProviderModels(
         }
     }
 
-    if (created > 0 || updated > 0 || disabled > 0) {
+    const tagTierResult = await appendNewModelsToTagTiers({
+        appCtx,
+        models: createdModels,
+    });
+
+    if (
+        created > 0 ||
+        updated > 0 ||
+        disabled > 0 ||
+        tagTierResult.updatedTiers > 0
+    ) {
         await performRuntimeRefresh(appCtx, {
             snapshot: true,
             reason: refreshReason,
@@ -649,6 +662,8 @@ export async function syncProviderModels(
         created,
         updated,
         disabled,
+        tagTierModelsAppended: tagTierResult.appended,
+        tagTiersUpdated: tagTierResult.updatedTiers,
     });
 
     return {
@@ -656,6 +671,8 @@ export async function syncProviderModels(
         created,
         updated,
         disabled,
+        tagTierModelsAppended: tagTierResult.appended,
+        tagTiersUpdated: tagTierResult.updatedTiers,
         models: syncedModels,
     };
 }
