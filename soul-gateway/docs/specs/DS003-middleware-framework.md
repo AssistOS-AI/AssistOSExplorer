@@ -135,7 +135,7 @@ It reads:
 
 It writes `ctx.response` as a canonical stream (or a stream envelope) and does not call `next()`.
 
-A backend module is loaded from `src/runtime/backends/builtin/*.backend.mjs` (or extension `backends/*.backend.mjs`) and exports a `backendModule` object whose shape is declared in `src/runtime/backends/backend-interface.mjs`. Required: `manifest`, `execute(executionCtx)`, `classifyError(err, ctx)`. Optional: `init`, `shutdown`, `validateProviderRecord`, `validateModelRecord`, `discoverModels`, `testConnection`.
+A backend module is loaded from `src/runtime/backends/builtin/*.backend.mjs` (or extension `backends/*.backend.mjs`) and exports a `backendModule` object whose shape is declared in `src/runtime/backends/backend-interface.mjs`. Required: `manifest`, `execute(executionCtx)`, `classifyError(err, ctx)`. Optional: `init`, `shutdown`, `validateProviderRecord`, `validateModelRecord`, `discoverModels`, `testConnection`, and `embed(executionCtx)` for OpenAI-compatible embeddings dispatch.
 
 The runtime registers each module in the unified `BackendCatalog`. At register time the catalog wraps the module's `execute()` once via `createBackendTerminal(module)` and stores the resulting kernel terminal middleware. There is no per-request adapter step. Lookups:
 
@@ -149,6 +149,10 @@ The request hot path pins one backend-catalog generation before terminal lookup.
 The backend terminal classifies late stream failures through the same backend `classifyError()` hook as execute-time failures. If a backend stream throws while draining, or yields a canonical `{ type: 'error' }` event, the terminal converts that failure into the backend's typed `GatewayError` before the buffering middleware or route error boundary sees it.
 
 There is no separate `ProviderCatalog` / `TransportCatalog` split, no `ProviderPlugin` / `TransportPlugin` interfaces, and no `adaptProviderToTransport` / `adaptProviderPluginToTransport` adapter — those concepts collapsed into the single backend catalog during the middleware-first cleanup pass.
+
+### Embeddings backend capability
+
+`POST /v1/embeddings` is not a text completion route and does not use `execute()` or canonical streams. The public embeddings handler resolves the requested model or cascade tier, filters cascade children to direct models tagged `embeddings`, leases the selected provider credentials, and calls the backend module's optional `embed(executionCtx)` function. OpenAI-compatible providers implement this capability through `achillesAgentLib`'s OpenAI embeddings helper. Backends without `embed()` reject embeddings requests as unsupported.
 
 ## Model execution chain
 

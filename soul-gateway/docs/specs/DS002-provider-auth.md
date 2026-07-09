@@ -54,13 +54,13 @@ Whenever a provider first obtains a usable credential — either by completing a
 
 Not all upstream providers speak OpenAI's chat completion format natively. Format converters translate between the gateway's OpenAI-compatible interface and provider-specific protocols. The shared upstream LLM dispatch layer (`achillesAgentLib`) covers the protocol families needed by the shipped backends: OpenAI-compatible Chat Completions, OpenAI-compatible Responses, OpenAI-compatible classic Completions, Anthropic-compatible Messages, Google Gemini, GitHub Copilot's mixed Completions/Responses API, AWS Kiro's binary event-stream API, and Hugging Face's OpenAI-compatible chat API.
 
-For providers that share a protocol family, configuration is primarily the provider base URL, credential material, model identifier, and any provider-specific headers or request parameters. Adding another provider in an already-supported family does not require a new core request pipeline — for OpenAI-compatible vendors, adding a preset to the preset catalog is enough.
+For providers that share a protocol family, configuration is primarily the provider base URL, credential material, model identifier, and any provider-specific headers or request parameters. Adding another provider in an already-supported family does not require a new core request pipeline — for OpenAI-compatible vendors, adding a preset to the preset catalog is enough. OpenAI-compatible embeddings use the same leased credential and provider base URL, dispatching through `achillesAgentLib`'s OpenAI provider helper for `/embeddings`.
 
 All converters produce a uniform typed chunk stream: text deltas, tool-call deltas, completion signals, and errors. This abstraction lets new providers plug into the request pipeline without changing the pipeline itself.
 
 ## Provider transport ownership invariant
 
-Request-time LLM inference must go through `achillesAgentLib`. Soul Gateway owns routing, provider/account selection, credential leasing, middleware policy, quota/budget enforcement, observability, and conversion from Achilles output into gateway canonical streams. It must not own vendor-specific completion/generation transports for LLM protocol families (OpenAI, Anthropic, Gemini, Copilot, Kiro, etc.).
+Request-time LLM inference and embedding provider calls must go through `achillesAgentLib`. Soul Gateway owns routing, provider/account selection, credential leasing, middleware policy, quota/budget enforcement, observability, and conversion from Achilles output into gateway canonical streams. It must not own vendor-specific completion/generation transports for LLM protocol families (OpenAI, Anthropic, Gemini, Copilot, Kiro, etc.) or OpenAI-compatible embeddings transport.
 
 The canonical Achilles source for this workspace is `/Users/danielsava/work/file-parser/ploinky/node_modules/achillesAgentLib`.
 

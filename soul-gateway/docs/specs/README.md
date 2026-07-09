@@ -1,10 +1,10 @@
 # Soul Gateway — Specification Index
 
-Soul Gateway is a multi-provider LLM proxy under `soul-gateway/src/`. It accepts OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses requests, normalizes them to a canonical request shape, applies gateway policy, dispatches through provider middleware and a backend terminal, and returns either buffered JSON or streamed SSE.
+Soul Gateway is a multi-provider LLM proxy under `soul-gateway/src/`. It accepts OpenAI Chat Completions, Anthropic Messages, OpenAI Responses, and OpenAI-compatible Embeddings requests. Completion-style requests normalize to a canonical request shape, apply gateway policy, dispatch through provider middleware and a backend terminal, and return either buffered JSON or streamed SSE. Embeddings requests use their own `/v1/embeddings` route and dispatch to embedding-capable backend modules while preserving the same authentication, model registry, tier, and credential lease boundaries.
 
 This directory documents the current behavior of the code on this branch. Forward-looking refactor notes and migration plans live outside `docs/specs/`.
 
-Project invariant: request-time LLM inference must go through `achillesAgentLib`. Lifecycle probes and model discovery may use direct vendor HTTP only for provider validation and catalog sync. Soul Gateway owns gateway policy, credential leasing, routing, and canonical stream normalization.
+Project invariant: request-time provider inference, including OpenAI-compatible embeddings, must go through `achillesAgentLib`. Lifecycle probes and model discovery may use direct vendor HTTP only for provider validation and catalog sync. Soul Gateway owns gateway policy, credential leasing, routing, and canonical stream normalization.
 
 ## Runtime model
 

@@ -2,19 +2,26 @@
 
 ## Summary
 
-Soul Gateway runs every public completion request through one kernel-composed route chain. The same chain handles `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` after ingress normalization.
+Soul Gateway runs every public completion request through one kernel-composed route chain. The same chain handles `/v1/chat/completions`, `/v1/messages`, and `/v1/responses` after ingress normalization. OpenAI-compatible embeddings are exposed separately at `/v1/embeddings` because they use an `input` payload and return vector data instead of chat/message `choices`.
 
 The route handler in `src/public-api/register-routes.mjs` calls `runRouteRequest({ req, res, appCtx, routeKind })` from `src/runtime/route/run-route-request.mjs`. That function builds the route chain and runs it against a unified kernel context.
 
 ## Accepted request formats
 
-The gateway accepts three public request formats:
+The gateway accepts three public completion request formats:
 
 - OpenAI Chat Completions
 - Anthropic Messages
 - OpenAI Responses
 
 `normalizeIngressMiddleware` converts each route kind to the canonical internal request shape before validation and dispatch.
+
+The gateway also accepts OpenAI-compatible embeddings requests at `POST /v1/embeddings`:
+
+- request body: `model`, `input`, and optional OpenAI-compatible `encoding_format`, `dimensions`, and `user`
+- response body: OpenAI-compatible embedding list payload from the selected upstream provider
+
+The embeddings route authenticates with the same API-key middleware, resolves the requested model through `snapshot.models`, supports cascade tiers whose children are embeddings-tagged direct models, leases provider credentials for the request, and dispatches through a backend embedding capability. It intentionally does not enter the completion route chain because completion validation requires `messages` and completion egress serializes `choices`.
 
 ## Authentication and identity
 
@@ -52,7 +59,7 @@ Gateway post-phase middleware still runs in both modes. In streaming mode `ctx.r
 
 ## Route chain
 
-`buildRouteChain()` in `src/runtime/route/run-route-request.mjs` composes this chain:
+`buildRouteChain()` in `src/runtime/route/run-route-request.mjs` composes this chain for completion-style routes:
 
 ```text
 errorBoundary
@@ -123,6 +130,8 @@ HTTP response
 ```
 
 Any middleware can short-circuit before dispatch by setting `ctx.response` or throwing a classified gateway error.
+
+`src/public-api/embeddings-route.mjs` owns the embeddings route. It shares authentication, snapshot model resolution, provider credential leasing, and backend error classification with the rest of the gateway, but it returns the upstream embeddings JSON directly instead of converting through canonical text streams.
 
 ## Related specs
 

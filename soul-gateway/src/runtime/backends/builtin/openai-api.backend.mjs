@@ -37,7 +37,7 @@ const manifest = {
     authStrategy: 'api_key',
     supportsStreaming: true,
     supportsTools: true,
-    supportedFormats: ['openai_chat'],
+    supportedFormats: ['openai_chat', 'openai_embeddings'],
     displayName: 'OpenAI-Compatible API',
     defaultBaseUrl: 'https://api.openai.com/v1',
     // Dispatcher backend: every OpenAI-compatible vendor (NVIDIA, Groq,
@@ -427,6 +427,72 @@ export const backendModule = {
             params,
             headers,
         });
+    },
+
+    async embed(ctx) {
+        const {
+            request: normalizedReq,
+            resolvedModel,
+            providerRecord,
+            credentialLease,
+            signal,
+        } = ctx;
+        const baseUrl = providerRecord.baseUrl || 'https://api.openai.com/v1';
+        const modelId = resolvedModel.providerModelId || resolvedModel.modelKey;
+        const settings = providerRecord.settings || {};
+        const token = getCredentialToken(credentialLease);
+        const authHeaders = buildOptionalAuthHeaders(
+            token,
+            allowsNoAuth(providerRecord)
+        );
+        if (!authHeaders) {
+            throw new ProviderAuthError(
+                providerRecord.providerKey || 'openai',
+                'OpenAI embeddings require configured credentials'
+            );
+        }
+
+        const params = {};
+        if (normalizedReq.encoding_format != null) {
+            params.encoding_format = normalizedReq.encoding_format;
+        }
+        if (normalizedReq.dimensions != null) {
+            params.dimensions = normalizedReq.dimensions;
+        }
+        if (normalizedReq.user != null) {
+            params.user = normalizedReq.user;
+        }
+
+        const headers = {
+            ...authHeaders,
+            'Content-Type': 'application/json',
+        };
+        if (settings.openrouter_referer) {
+            headers['HTTP-Referer'] = settings.openrouter_referer;
+        }
+        if (settings.openrouter_title) {
+            headers['X-Title'] = settings.openrouter_title;
+        }
+        if (settings.extra_headers) {
+            Object.assign(headers, settings.extra_headers);
+        }
+
+        const parsed = await achillesOpenAI.callEmbeddings(
+            normalizedReq.input,
+            {
+                model: modelId,
+                apiKey: token,
+                allowNoAuth: allowsNoAuth(providerRecord),
+                baseURL: baseUrl,
+                signal,
+                params,
+                headers,
+            }
+        );
+        if (parsed && typeof parsed === 'object' && !parsed.model) {
+            parsed.model = normalizedReq.model;
+        }
+        return parsed;
     },
 
     classifyError(error, _ctx) {

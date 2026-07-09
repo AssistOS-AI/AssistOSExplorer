@@ -15,6 +15,7 @@ import { runRouteRequest } from '../runtime/route/run-route-request.mjs';
 import { sendJson } from '../core/responses.mjs';
 import { enrichModelMetadata } from '../runtime/policy/model-metadata-classifier.mjs';
 import { authenticateMiddleware } from '../runtime/route/authenticate.mjs';
+import { handleEmbeddingsRoute } from './embeddings-route.mjs';
 
 /**
  * Register public API routes on an existing path router.
@@ -32,6 +33,9 @@ export function registerPublicApiRoutes(router, appCtx) {
     );
     router.add('POST', '/v1/responses', (ctx) =>
         handleCompletionRoute(ctx, 'openai_responses')
+    );
+    router.add('POST', '/v1/embeddings', (ctx) =>
+        handleEmbeddingsRoute(ctx)
     );
     router.add('GET', '/v1/models', (ctx) =>
         handleAuthenticatedListModels(ctx)

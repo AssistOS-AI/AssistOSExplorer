@@ -13,6 +13,8 @@ The runtime no longer has a separate tier execution path. A tier is just a casca
 
 The dashboard still exposes a dedicated `Tiers` page and `/management/tiers` management surface, but that UI edits the same cascade model records in `models` + `model_children`; it is not a separate runtime subsystem.
 
+The embeddings route also resolves models through `snapshot.models`. For cascade models on `POST /v1/embeddings`, candidate children are restricted to enabled direct models tagged `embeddings`, so a general chat tier such as `fast` is not accidentally used for vector generation.
+
 ## Model registry
 
 The snapshot loader reads models from the unified schema:
@@ -140,6 +142,8 @@ The enrichment pipeline is strict-precedence:
 2. **Pricing directory fills remaining gaps.** `src/runtime/policy/pricing-directory.mjs` keeps an OpenRouter-backed model catalog in memory and matches by exact id, canonical slug, curated provider-alias rewrite (NVIDIA `meta/` → `meta-llama/`, Codex models → `openai/`, Copilot vendor prefixes), and finally unique leaf slug. Matching is deterministic; there is no fuzzy search, so adversarial inputs stay unresolved. Directory-sourced fields are stamped in `row.metadata.openrouter` for provenance.
 3. **Curated static overrides apply exact gateway billing semantics and gap-fills.** `src/runtime/policy/curated-model-metadata.mjs` ships a small static table of exact-model overrides plus provider-level free-model rules. It can fill missing token prices or context when neither the provider nor OpenRouter supplied them, and it can set gateway billing semantics like `isFree:true` for catalogs such as NVIDIA even when the upstream directory still reports nonzero token prices. Curated fields never replace provider/directory price or context values that already exist. Curated provenance is stamped in `row.metadata.curated`.
 4. **Classifier adds curated family/domain tags.** The classifier owns `PREDEFINED_MODEL_TAGS`, the family rule set (coding, reasoning, agentic, fast, long-context, instruction-following, multilingual, multimodal, creative, writing, research, finance, medical, etc.), and `TOOL_CALLING_PROVIDER_KEYS` for augmenting `tool-calling` on trusted providers (with explicit opt-outs such as `copilot/gpt-4o`). The classifier is pure and has no side effects. It **never** emits capability-signal tags (`vision`, `audio`, `tool-calling` from direct signal, `structured-outputs`, `moderated`, `free`) — those come from provider or directory data only. Classifier-sourced tags are stamped in `row.metadata.classifier`.
+
+Embedding models are identified by the existing `embeddings` tag. The classifier adds that tag for embedding-family names such as `embed`, `e5-`, and `bge-`. Tag-tier bootstrap creates the `embeddings` tier like every other predefined tag tier, so callers use `model: "embeddings"` for the default embedding cascade.
 
 Persisted model rows only reflect whatever the last discovery/sync pass wrote. For older sparse rows, the management list and public `/v1/models` surfaces run the same in-memory enrichment helper on top of the stored row so the dashboard and public model list can show enriched metadata without mutating the DB or issuing DB/network calls from the route.
 

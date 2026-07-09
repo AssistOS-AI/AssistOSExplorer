@@ -183,6 +183,29 @@ describe('bootstrapInitialTagTiers', () => {
         );
     });
 
+    it('populates the embeddings tier from embeddings-tagged models', async () => {
+        const embeddingModel = directModel({
+            id: 'embed-model',
+            key: 'provider/text-embed',
+            providerId: 'provider-embed',
+            tags: ['embeddings'],
+        });
+        const daos = makeDaos([DEFAULT_MODEL, embeddingModel, tier('embeddings')]);
+
+        await bootstrapInitialTagTiers({
+            appCtx: makeAppCtx(),
+            daos,
+        });
+
+        const embeddingReplacement = daos.replacements.find(
+            (replacement) => replacement.parentModelId === 'tier-embeddings'
+        );
+        assert.deepEqual(
+            embeddingReplacement.children.map((child) => child.childModelId),
+            ['embed-model']
+        );
+    });
+
     it('does not overwrite a direct model whose key matches a tag', async () => {
         const directFast = directModel({
             id: 'direct-fast-key',
@@ -328,5 +351,31 @@ describe('appendNewModelsToTagTiers', () => {
 
         assert.equal(summary.appended, 0);
         assert.deepEqual(daos.createdBindings, []);
+    });
+
+    it('appends embeddings-tagged models to the embeddings tier', async () => {
+        const model = directModel({
+            id: 'new-embed',
+            key: 'provider/new-embed',
+            providerId: 'provider-new',
+            tags: ['embeddings'],
+        });
+        const daos = makeDaos([DEFAULT_MODEL, model, tier('embeddings')]);
+
+        const summary = await appendNewModelsToTagTiers({
+            appCtx: makeAppCtx(),
+            daos,
+            models: [model],
+        });
+
+        assert.equal(summary.appended, 1);
+        assert.deepEqual(daos.createdBindings, [
+            {
+                parentModelId: 'tier-embeddings',
+                childModelId: 'new-embed',
+                priority: 1,
+                enabled: true,
+            },
+        ]);
     });
 });

@@ -65,6 +65,9 @@ The local gateway also keeps upstream provider catalogs fresh. Provider create/u
   (default `fast,plan,deep`). When a configured key has no existing model row,
   it creates a cascade model whose single child is the model discovered for
   `LLM_DEFAULT_AGENT` (default `default-local-llm`).
+- Tag-tier bootstrap also creates purpose tiers for predefined model tags. The
+  `embeddings` tag is sourced from model metadata/classification, and the
+  `embeddings` tier is maintained like every other predefined tag tier.
 - When a legacy same-name alias row exists and no model owns that key, the alias
   is promoted into a cascade tier whose single child is the alias's former
   target; the alias row is then deleted.
