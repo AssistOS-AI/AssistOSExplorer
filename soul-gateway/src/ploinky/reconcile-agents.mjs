@@ -4,12 +4,14 @@
  *
  * The discovery client (`discovery-client.mjs`) returns the set of Ploinky
  * agents that speak the OpenAI chat-completions surface. This module mirrors
- * that set into the `providers` and `models` tables so request routing — which
- * resolves only against `appCtx.services.snapshot` — can reach those agents
- * through the `ploinky-agent-openai` backend.
+ * that set into the `providers` table, then asks each agent provider for its
+ * `/v1/models` catalog so request routing — which resolves only against
+ * `appCtx.services.snapshot` — can reach those agent-owned models through the
+ * `ploinky-agent-openai` backend.
  *
  * Each discovered agent maps to exactly one provider (stable key
- * `<subjectId>`) and one model (stable id `<repo>/<agent>`).
+ * `<subjectId>`). Its models are discovered through that provider's `/v1/models`
+ * endpoint and synchronized by the shared provider model sync path.
  * The granular discovery marker is stored ONLY in each row's `metadata` JSON
  * (`metadata.discoverySource === 'ploinky-agent-discovery'`); the column
  * `discovery_source` carries the schema enum value `synced`. Stale-disable and
@@ -103,6 +105,97 @@ function isDiscoveredRow(row) {
     return row?.metadata?.discoverySource === DISCOVERY_MARKER;
 }
 
+function fallbackModelKeyFor(agent) {
+    const subjectId = providerKeyFor(agent.subjectId);
+    const agentPath = subjectId.startsWith('agent:')
+        ? subjectId.slice('agent:'.length)
+        : subjectId;
+    return `${agentPath}/default`;
+}
+
+async function upsertFallbackModel({ pool, daos, provider, agent, error }) {
+    const modelKey = fallbackModelKeyFor(agent);
+    const metadata = {
+        ...buildMetadata(agent),
+        fallback: true,
+        modelSyncFallback: true,
+        modelSyncError: error?.message || 'model sync failed',
+    };
+    const desired = {
+        modelKey,
+        displayName: agent.name || agent.agent || modelKey,
+        providerId: provider.id,
+        providerModelId: 'default',
+        strategyKind: 'direct',
+        discoverySource: 'synced',
+        enabled: true,
+        metadata,
+    };
+
+    const existing = await daos.modelsDao.findByKey(pool, modelKey);
+    if (!existing) {
+        const row = await daos.modelsDao.create(pool, desired);
+        return { row, mode: 'created' };
+    }
+
+    if (existing.discovery_source === 'manual') {
+        return { row: existing, mode: 'unchanged' };
+    }
+
+    const update = fallbackModelUpdateDiff(existing, desired);
+    if (Object.keys(update).length === 0) {
+        return { row: existing, mode: 'unchanged' };
+    }
+    const row = await daos.modelsDao.update(pool, existing.id, update);
+    return { row: row || existing, mode: 'updated' };
+}
+
+async function deleteFallbackModelAfterSuccessfulSync({ pool, daos, agent }) {
+    if (typeof daos.modelsDao?.del !== 'function') {
+        return false;
+    }
+    const modelKey = fallbackModelKeyFor(agent);
+    const existing = await daos.modelsDao.findByKey(pool, modelKey);
+    if (!existing) {
+        return false;
+    }
+    const metadata = existing.metadata || {};
+    if (
+        metadata.discoverySource !== DISCOVERY_MARKER ||
+        metadata.modelSyncFallback !== true ||
+        metadata.subjectId !== agent.subjectId
+    ) {
+        return false;
+    }
+    return await daos.modelsDao.del(pool, existing.id);
+}
+
+function fallbackModelUpdateDiff(existing, desired) {
+    const update = {};
+    if (existing.display_name !== desired.displayName) {
+        update.displayName = desired.displayName;
+    }
+    if (existing.provider_id !== desired.providerId) {
+        update.providerId = desired.providerId;
+    }
+    if (existing.provider_model_id !== desired.providerModelId) {
+        update.providerModelId = desired.providerModelId;
+    }
+    if (existing.strategy_kind !== desired.strategyKind) {
+        update.strategyKind = desired.strategyKind;
+    }
+    if (existing.discovery_source !== desired.discoverySource) {
+        update.discoverySource = desired.discoverySource;
+    }
+    if (!existing.enabled) {
+        update.enabled = true;
+    }
+    if (!metadataEqual(existing.metadata, desired.metadata)) {
+        update.metadata = desired.metadata;
+    }
+    return update;
+}
+
 /**
  * Upsert the provider row for a discovered agent. Returns
  * `{ row, mode }` where `mode` is `'created' | 'updated' | 'unchanged'`.
@@ -172,65 +265,6 @@ function providerUpdateDiff(existing, desired) {
 }
 
 /**
- * Upsert the model row for a discovered agent. Returns
- * `{ row, mode }` where `mode` is `'created' | 'updated' | 'unchanged'`.
- */
-async function upsertModel({ pool, daos, agent, providerId }) {
-    const modelKey = modelKeyFor(agent.repo, agent.agent);
-    const desired = {
-        displayName: agent.name || agent.agent,
-        providerId,
-        providerModelId: agent.subjectId,
-        strategyKind: 'direct',
-        discoverySource: 'synced',
-        enabled: true,
-        metadata: buildMetadata(agent),
-    };
-
-    const existing = await daos.modelsDao.findByKey(pool, modelKey);
-    if (!existing) {
-        const row = await daos.modelsDao.create(pool, {
-            modelKey,
-            ...desired,
-        });
-        return { row, mode: 'created' };
-    }
-
-    const update = modelUpdateDiff(existing, desired);
-    if (Object.keys(update).length === 0) {
-        return { row: existing, mode: 'unchanged' };
-    }
-    const row = await daos.modelsDao.update(pool, existing.id, update);
-    return { row: row || existing, mode: 'updated' };
-}
-
-function modelUpdateDiff(existing, desired) {
-    const update = {};
-    if (existing.display_name !== desired.displayName) {
-        update.displayName = desired.displayName;
-    }
-    if (existing.provider_id !== desired.providerId) {
-        update.providerId = desired.providerId;
-    }
-    if (existing.provider_model_id !== desired.providerModelId) {
-        update.providerModelId = desired.providerModelId;
-    }
-    if ((existing.strategy_kind || 'direct') !== desired.strategyKind) {
-        update.strategyKind = desired.strategyKind;
-    }
-    if (existing.discovery_source !== desired.discoverySource) {
-        update.discoverySource = desired.discoverySource;
-    }
-    if (!existing.enabled) {
-        update.enabled = true;
-    }
-    if (!metadataEqual(existing.metadata, desired.metadata)) {
-        update.metadata = desired.metadata;
-    }
-    return update;
-}
-
-/**
  * Stable-stringify comparison of two metadata objects. Both are plain JSON
  * objects written by `buildMetadata`, so key order is the only volatile
  * dimension; sort keys before comparing.
@@ -261,6 +295,7 @@ export async function reconcilePloinkyAgentRecords({
     discovery,
     daos = DEFAULT_DAOS,
     refresh = performRuntimeRefresh,
+    syncAgentModels = syncAgentProviderModels,
 }) {
     const { pool, log } = appCtx;
     const summary = {
@@ -268,7 +303,9 @@ export async function reconcilePloinkyAgentRecords({
         created: 0,
         updated: 0,
         disabled: 0,
+        deleted: 0,
         skipped: 0,
+        modelSyncFailed: 0,
         refreshed: false,
     };
 
@@ -286,7 +323,6 @@ export async function reconcilePloinkyAgentRecords({
     let changed = false;
     // Keys we touched this pass — used to compute stale rows when complete.
     const seenProviderKeys = new Set();
-    const seenModelKeys = new Set();
 
     for (const agent of agents) {
         summary.scanned += 1;
@@ -309,18 +345,6 @@ export async function reconcilePloinkyAgentRecords({
             changed = true;
         }
 
-        const modelResult = await upsertModel({
-            pool,
-            daos,
-            agent,
-            providerId: providerResult.row.id,
-        });
-        seenModelKeys.add(modelKeyFor(agent.repo, agent.agent));
-        applyTally(summary, modelResult.mode);
-        if (modelResult.mode !== 'unchanged') {
-            changed = true;
-        }
-
         // Provision the agent's signed-subject key row at discovery time so it
         // appears on the Keys page before the agent ever makes a request.
         // Insert-if-missing: never resets operator-edited limits. This does NOT
@@ -330,6 +354,61 @@ export async function reconcilePloinkyAgentRecords({
             subjectId: agent.subjectId,
             subjectType: 'agent',
         });
+
+        try {
+            const modelSync = await syncAgentModels({
+                appCtx,
+                provider: providerResult.row,
+                agent,
+            });
+            if (modelSync) {
+                const created = Number(modelSync.created || 0);
+                const updated = Number(modelSync.updated || 0);
+                const disabled = Number(modelSync.disabled || 0);
+                const discovered = Number(modelSync.discovered || 0);
+                const tagTiersUpdated = Number(modelSync.tagTiersUpdated || 0);
+                summary.created += created;
+                summary.updated += updated;
+                summary.disabled += disabled;
+                if (discovered > 0) {
+                    const deletedFallback = await deleteFallbackModelAfterSuccessfulSync({
+                        pool,
+                        daos,
+                        agent,
+                    });
+                    if (deletedFallback) {
+                        summary.deleted += 1;
+                    }
+                }
+                if (
+                    created > 0 ||
+                    updated > 0 ||
+                    disabled > 0 ||
+                    summary.deleted > 0 ||
+                    tagTiersUpdated > 0
+                ) {
+                    changed = true;
+                }
+            }
+        } catch (err) {
+            summary.modelSyncFailed += 1;
+            log?.warn?.('ploinky agent model sync failed', {
+                subjectId: agent.subjectId,
+                routeKey: agent.routeKey,
+                error: err.message,
+            });
+            const fallbackResult = await upsertFallbackModel({
+                pool,
+                daos,
+                provider: providerResult.row,
+                agent,
+                error: err,
+            });
+            applyTally(summary, fallbackResult.mode);
+            if (fallbackResult.mode !== 'unchanged') {
+                changed = true;
+            }
+        }
     }
 
     // Stale-disable ONLY when the discovery is complete. Never touch rows
@@ -339,7 +418,6 @@ export async function reconcilePloinkyAgentRecords({
             pool,
             daos,
             seenProviderKeys,
-            seenModelKeys,
             log,
         });
         if (disabledCount > 0) {
@@ -358,7 +436,9 @@ export async function reconcilePloinkyAgentRecords({
         created: summary.created,
         updated: summary.updated,
         disabled: summary.disabled,
+        deleted: summary.deleted,
         skipped: summary.skipped,
+        modelSyncFailed: summary.modelSyncFailed,
         complete,
         refreshed: summary.refreshed,
     });
@@ -384,7 +464,6 @@ async function disableStaleRows({
     pool,
     daos,
     seenProviderKeys,
-    seenModelKeys,
     log,
 }) {
     let disabled = 0;
@@ -396,7 +475,7 @@ async function disableStaleRows({
         if (!isDiscoveredRow(model)) {
             continue;
         }
-        if (seenModelKeys.has(model.model_key)) {
+        if (seenProviderKeys.has(model.metadata?.subjectId)) {
             continue;
         }
         if (model.enabled === false) {
@@ -456,6 +535,25 @@ async function listAll(dao, pool) {
         offset += pageSize;
     }
     return out;
+}
+
+async function syncAgentProviderModels({ appCtx, provider }) {
+    if (!appCtx?.services?.backendCatalog) {
+        appCtx?.log?.debug?.('ploinky agent model sync skipped: backend catalog unavailable', {
+            provider: provider?.provider_key || provider?.providerKey || null,
+        });
+        return null;
+    }
+    const {
+        discoverProviderModels,
+        syncProviderModels,
+    } = await import('../runtime/providers/auto-provisioner.mjs');
+    const discoveries = await discoverProviderModels(appCtx, provider);
+    return syncProviderModels(appCtx, provider, discoveries, {
+        discoverySource: 'synced',
+        disableMissing: true,
+        refreshReason: REFRESH_REASON,
+    });
 }
 
 /**

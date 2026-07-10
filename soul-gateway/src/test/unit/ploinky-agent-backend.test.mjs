@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 
-import { backendModule, buildRouterUrl } from '../../runtime/backends/builtin/ploinky-agent-openai.backend.mjs';
+import { backendModule, buildModelsUrl, buildRouterUrl } from '../../runtime/backends/builtin/ploinky-agent-openai.backend.mjs';
 import {
     canonicalJson,
     computeRchHttp,
@@ -27,6 +27,7 @@ import {
 } from '../../runtime/backends/ploinky/request-hash.mjs';
 import {
     signOpenAiAgentAssertion,
+    signOpenAiModelsAssertion,
     readAgentSecretBuffer,
 } from '../../runtime/backends/ploinky/agent-assertion.mjs';
 
@@ -44,9 +45,24 @@ const SUBJECT_ID = 'agent:somerepo/someagent';
  * headers, raw body bytes) and replies with a minimal OpenAI SSE stream so the
  * backend's stream consumer terminates cleanly.
  */
-async function startCaptureServer() {
+async function startCaptureServer(options = {}) {
     const captured = {};
     const server = createServer((req, res) => {
+        if (req.method === 'GET' && req.url === `/${ROUTE_KEY}/v1/models`) {
+            captured.method = req.method;
+            captured.url = req.url;
+            captured.headers = req.headers;
+            const body = Buffer.from(JSON.stringify(options.modelsResponse || {
+                object: 'list',
+                data: [],
+            }));
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Content-Length': body.length,
+            });
+            res.end(body);
+            return;
+        }
         const chunks = [];
         req.on('data', (c) => chunks.push(c));
         req.on('end', () => {
@@ -206,6 +222,31 @@ describe('ploinky agent-assertion signer', () => {
         assert.equal(readAgentSecretBuffer('abc'), null); // odd length
         assert.ok(Buffer.isBuffer(readAgentSecretBuffer('00ff')));
     });
+
+    it('signs the GET /v1/models surface with an empty body hash', () => {
+        const { assertion, bodyHash, rch } = signOpenAiModelsAssertion({
+            targetAgent: ROUTE_KEY,
+            secret: readAgentSecretBuffer(SECRET_HEX),
+            self: AGENT_ID,
+            nowSeconds: 1700000000,
+        });
+        const payload = decodeJwtPayload(assertion);
+        assert.equal(payload.typ, 'agent-assertion');
+        assert.equal(payload.iss, AGENT_ID);
+        assert.equal(payload.sub, AGENT_ID);
+        assert.equal(payload.aud, 'ploinky-router');
+        assert.equal(payload.targetAgent, ROUTE_KEY);
+        assert.equal(payload.method, 'GET');
+        assert.equal(payload.path, '/v1/models');
+        assert.equal(payload.tool, '__openai_models__');
+        assert.equal(payload.rch, rch);
+        assert.equal(rch, computeRchHttp({
+            method: 'GET',
+            path: '/v1/models',
+            query: '',
+            bodyHash,
+        }));
+    });
 });
 
 // ── buildRouterUrl ──────────────────────────────────────────────────
@@ -221,6 +262,15 @@ describe('buildRouterUrl', () => {
         assert.equal(
             buildRouterUrl('https://router.example/', '/foo/').href,
             'https://router.example/foo/v1/chat/completions'
+        );
+    });
+});
+
+describe('buildModelsUrl', () => {
+    it('joins origin + routeKey + /v1/models', () => {
+        assert.equal(
+            buildModelsUrl('https://router.example', 'foo').href,
+            'https://router.example/foo/v1/models'
         );
     });
 });
@@ -385,6 +435,87 @@ describe('ploinky-agent-openai backend execute()', () => {
             () => backendModule.execute(ctx),
             /hex PLOINKY_AGENT_SECRET/
         );
+    });
+});
+
+describe('ploinky-agent-openai backend discoverModels()', () => {
+    it('targets <base>/<routeKey>/v1/models and normalizes Soul model descriptors', async () => {
+        const { server, captured, baseUrl } = await startCaptureServer({
+            modelsResponse: {
+                object: 'list',
+                data: [
+                    {
+                        modelId: 'fast',
+                        displayName: 'Fast Agent',
+                        contextWindow: 128000,
+                        maxOutputTokens: 8192,
+                        supportsTools: true,
+                        supportsStreaming: true,
+                        supportsVision: false,
+                        pricing: {
+                            mode: 'token',
+                            inputPricePerMillion: 0.15,
+                            outputPricePerMillion: 0.60,
+                        },
+                        tags: ['fast', 'chat'],
+                    },
+                ],
+            },
+        });
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [],
+                env: {
+                    PLOINKY_AGENT_ID: AGENT_ID,
+                    PLOINKY_AGENT_SECRET: SECRET_HEX,
+                },
+            });
+            const models = await backendModule.discoverModels(ctx);
+            assert.equal(captured.method, 'GET');
+            assert.equal(captured.url, `/${ROUTE_KEY}/v1/models`);
+            assert.ok(/^Bearer\s+\S+\.\S+\.\S+$/.test(captured.headers.authorization));
+            const payload = decodeJwtPayload(captured.headers.authorization.replace(/^Bearer\s+/, ''));
+            assert.equal(payload.method, 'GET');
+            assert.equal(payload.path, '/v1/models');
+            assert.equal(payload.tool, '__openai_models__');
+
+            assert.deepEqual(models, [
+                {
+                    modelId: 'fast',
+                    providerModelId: 'fast',
+                    modelKey: 'somerepo/someagent/fast',
+                    displayName: 'Fast Agent',
+                    contextWindow: 128000,
+                    maxOutputTokens: 8192,
+                    supportsTools: true,
+                    supportsStreaming: true,
+                    supportsVision: false,
+                    pricing: {
+                        mode: 'token',
+                        inputPricePerMillion: 0.15,
+                        outputPricePerMillion: 0.60,
+                    },
+                    pricingMode: undefined,
+                    inputPricePerMillion: undefined,
+                    outputPricePerMillion: undefined,
+                    requestPriceUsd: undefined,
+                    isFree: undefined,
+                    capabilities: {},
+                    tags: ['fast', 'chat'],
+                    metadata: {
+                        discoverySource: 'ploinky-agent-discovery',
+                        subjectId: SUBJECT_ID,
+                        routeKey: ROUTE_KEY,
+                        repo: null,
+                        agent: null,
+                    },
+                },
+            ]);
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
     });
 });
 

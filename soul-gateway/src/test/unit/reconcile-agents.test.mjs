@@ -6,10 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
-    reconcilePloinkyAgentRecords,
-    reconcilePloinkyAgents,
+    reconcilePloinkyAgentRecords as rawReconcilePloinkyAgentRecords,
     providerKeyFor,
-    modelKeyFor,
     DISCOVERY_MARKER,
 } from '../../ploinky/reconcile-agents.mjs';
 import { openDatabase, initializeSchema } from '../../db/sqlite-db.mjs';
@@ -29,6 +27,8 @@ const SILENT_LOG = {
     warn() {},
     error() {},
 };
+
+const DEFAULT_AGENT_MODEL_KEY = 'demo/echo/default';
 
 function agent(overrides = {}) {
     return {
@@ -153,6 +153,13 @@ function makeFakeModelsDao(seed = []) {
             row.enabled = false;
             return row;
         },
+        async del(_pool, id) {
+            const row = rows.get(id);
+            if (!row) return false;
+            rows.delete(id);
+            byKey.delete(row.model_key);
+            return true;
+        },
         async list(_pool) {
             return [...rows.values()];
         },
@@ -210,6 +217,75 @@ function spyRefresh() {
     return fn;
 }
 
+function defaultModelKeyForAgent(agentRow) {
+    return `${agentRow.repo}/${agentRow.agent}/default`;
+}
+
+function makeSyncAgentModels(daos) {
+    return async ({ appCtx, provider, agent: agentRow }) => {
+        const key = defaultModelKeyForAgent(agentRow);
+        const existing = await daos.modelsDao.findByKey(appCtx.pool, key);
+        const metadata = {
+            discoverySource: DISCOVERY_MARKER,
+            subjectId: agentRow.subjectId,
+            routeKey: agentRow.routeKey,
+            repo: agentRow.repo,
+            agent: agentRow.agent,
+            responderKind: agentRow.responderKind || 'llm',
+        };
+        if (!existing) {
+            await daos.modelsDao.create(appCtx.pool, {
+                modelKey: key,
+                displayName: `${agentRow.name || agentRow.agent} Default`,
+                providerId: provider.id,
+                providerModelId: 'default',
+                strategyKind: 'direct',
+                discoverySource: 'synced',
+                enabled: true,
+                metadata,
+            });
+            return { discovered: 1, created: 1, updated: 0, disabled: 0 };
+        }
+        const update = {};
+        if (existing.enabled === false) update.enabled = true;
+        if (existing.provider_id !== provider.id) update.providerId = provider.id;
+        if (existing.provider_model_id !== 'default') update.providerModelId = 'default';
+        if (existing.display_name !== `${agentRow.name || agentRow.agent} Default`) {
+            update.displayName = `${agentRow.name || agentRow.agent} Default`;
+        }
+        update.metadata = metadata;
+        const shouldUpdate = Object.keys(update).some((keyName) => keyName !== 'metadata')
+            || JSON.stringify(existing.metadata || {}) !== JSON.stringify(metadata);
+        if (shouldUpdate) {
+            await daos.modelsDao.update(appCtx.pool, existing.id, update);
+            return { discovered: 1, created: 0, updated: 1, disabled: 0 };
+        }
+        return { discovered: 1, created: 0, updated: 0, disabled: 0 };
+    };
+}
+
+function reconcilePloinkyAgentRecords(args) {
+    const daos = args.daos || { modelsDao };
+    return rawReconcilePloinkyAgentRecords({
+        ...args,
+        syncAgentModels: args.syncAgentModels || makeSyncAgentModels(daos),
+    });
+}
+
+function reconcilePloinkyAgents(args) {
+    const daos = args.daos || { modelsDao };
+    return rawReconcilePloinkyAgentRecords({
+        ...args,
+        daos: {
+            providersDao,
+            modelsDao,
+            apiKeysDao,
+            ...(args.daos || {}),
+        },
+        syncAgentModels: args.syncAgentModels || makeSyncAgentModels(daos),
+    });
+}
+
 describe('reconcilePloinkyAgentRecords (fake daos)', () => {
     it('creates provider + model rows for a discovered agent (no chatCompletions needed)', async () => {
         const providersFake = makeFakeProvidersDao();
@@ -245,12 +321,12 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         assert.equal(provider.metadata.discoverySource, DISCOVERY_MARKER);
         assert.equal(provider.metadata.routeKey, 'demo-echo');
 
-        const model = await modelsFake.findByKey(null, modelKeyFor('demo', 'echo'));
+        const model = await modelsFake.findByKey(null, DEFAULT_AGENT_MODEL_KEY);
         assert.ok(model);
-        assert.equal(model.model_key, 'demo/echo');
-        assert.equal(model.display_name, 'Echo Agent');
+        assert.equal(model.model_key, DEFAULT_AGENT_MODEL_KEY);
+        assert.equal(model.display_name, 'Echo Agent Default');
         assert.equal(model.provider_id, provider.id);
-        assert.equal(model.provider_model_id, 'agent:demo/echo');
+        assert.equal(model.provider_model_id, 'default');
         assert.equal(model.strategy_kind, 'direct');
         assert.equal(model.discovery_source, 'synced');
         assert.equal(model.enabled, true);
@@ -277,10 +353,7 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         assert.ok(provider);
         assert.equal(provider.metadata.responderKind, 'inert');
 
-        const model = await modelsFake.findByKey(
-            null,
-            modelKeyFor(discoveredAgent.repo, discoveredAgent.agent)
-        );
+        const model = await modelsFake.findByKey(null, DEFAULT_AGENT_MODEL_KEY);
         assert.ok(model);
         assert.equal(model.metadata.responderKind, 'inert');
     });
@@ -299,6 +372,105 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         });
         assert.equal(refresh.calls.length, 1);
         assert.equal(refresh.calls[0].snapshot, true);
+    });
+
+    it('keeps a fallback default model when agent model sync fails', async () => {
+        const providersFake = makeFakeProvidersDao();
+        const modelsFake = makeFakeModelsDao();
+        const refresh = spyRefresh();
+        const appCtx = makeAppCtx();
+
+        const summary = await reconcilePloinkyAgentRecords({
+            appCtx,
+            discovery: { complete: true, agents: [agent()] },
+            daos: {
+                providersDao: providersFake,
+                modelsDao: modelsFake,
+                apiKeysDao: makeFakeApiKeysDao(),
+            },
+            refresh,
+            syncAgentModels: async () => {
+                throw new Error('models endpoint unavailable');
+            },
+        });
+
+        assert.equal(summary.modelSyncFailed, 1);
+        assert.equal(summary.created, 2);
+        assert.equal(summary.refreshed, true);
+
+        const provider = await providersFake.findByKey(
+            null,
+            providerKeyFor('agent:demo/echo')
+        );
+        assert.ok(provider);
+
+        const model = await modelsFake.findByKey(
+            null,
+            'demo/echo/default'
+        );
+        assert.ok(model);
+        assert.equal(model.display_name, 'Echo Agent');
+        assert.equal(model.provider_id, provider.id);
+        assert.equal(model.provider_model_id, 'default');
+        assert.equal(model.discovery_source, 'synced');
+        assert.equal(model.enabled, true);
+        assert.equal(model.metadata.discoverySource, DISCOVERY_MARKER);
+        assert.equal(model.metadata.fallback, true);
+        assert.equal(model.metadata.modelSyncFallback, true);
+        assert.match(model.metadata.modelSyncError, /models endpoint unavailable/);
+    });
+
+    it('deletes the temporary fallback model after real agent models sync', async () => {
+        const providersFake = makeFakeProvidersDao();
+        const modelsFake = makeFakeModelsDao();
+        const daos = {
+            providersDao: providersFake,
+            modelsDao: modelsFake,
+            apiKeysDao: makeFakeApiKeysDao(),
+        };
+        const appCtx = makeAppCtx();
+        const discovery = { complete: true, agents: [agent()] };
+
+        await reconcilePloinkyAgentRecords({
+            appCtx,
+            discovery,
+            daos,
+            refresh: spyRefresh(),
+            syncAgentModels: async () => {
+                throw new Error('models endpoint unavailable');
+            },
+        });
+        assert.ok(await modelsFake.findByKey(null, 'demo/echo/default'));
+
+        const summary = await reconcilePloinkyAgentRecords({
+            appCtx,
+            discovery,
+            daos,
+            refresh: spyRefresh(),
+            syncAgentModels: async ({ appCtx, provider, agent: agentRow }) => {
+                await modelsFake.create(appCtx.pool, {
+                    modelKey: 'demo/echo/search',
+                    displayName: 'Search',
+                    providerId: provider.id,
+                    providerModelId: 'search',
+                    strategyKind: 'direct',
+                    discoverySource: 'synced',
+                    enabled: true,
+                    metadata: {
+                        discoverySource: DISCOVERY_MARKER,
+                        subjectId: agentRow.subjectId,
+                        routeKey: agentRow.routeKey,
+                        repo: agentRow.repo,
+                        agent: agentRow.agent,
+                    },
+                });
+                return { discovered: 1, created: 1, updated: 0, disabled: 0 };
+            },
+        });
+
+        assert.equal(summary.deleted, 1);
+        assert.equal(await modelsFake.findByKey(null, 'demo/echo/default'), null);
+        assert.ok(await modelsFake.findByKey(null, 'demo/echo/search'));
     });
 
     it('does NOT refresh when nothing changed (idempotent second pass)', async () => {
@@ -582,10 +754,10 @@ describe('reconcilePloinkyAgentRecords (fake daos)', () => {
         const modelsFake = makeFakeModelsDao([
             {
                 id: 'model-1',
-                model_key: 'demo/echo',
+                model_key: DEFAULT_AGENT_MODEL_KEY,
                 display_name: 'Echo Agent',
                 provider_id: pid,
-                provider_model_id: 'agent:demo/echo',
+                provider_model_id: 'default',
                 strategy_kind: 'direct',
                 discovery_source: 'synced',
                 enabled: false,
@@ -744,12 +916,12 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
             assert.equal(provider.auth_strategy, 'none');
             assert.equal(provider.metadata.discoverySource, DISCOVERY_MARKER);
 
-            const model = await modelsDao.findByKey(db, 'demo/echo');
+            const model = await modelsDao.findByKey(db, DEFAULT_AGENT_MODEL_KEY);
             assert.ok(model, 'model row persisted');
             assert.equal(model.strategy_kind, 'direct');
             assert.equal(model.discovery_source, 'synced');
             assert.equal(model.provider_id, provider.id);
-            assert.equal(model.provider_model_id, 'agent:demo/echo');
+            assert.equal(model.provider_model_id, 'default');
 
             const agentKey = await apiKeysDao.findBySubjectId(
                 db,
@@ -785,7 +957,7 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
             // runtime (timer) path, where the snapshot is live.
             installRuntimeCoordinationServices(appCtx);
             assert.equal(
-                appCtx.services.snapshot.models.has('demo/echo'),
+                appCtx.services.snapshot.models.has(DEFAULT_AGENT_MODEL_KEY),
                 false
             );
 
@@ -795,14 +967,14 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
             });
 
             // performRuntimeRefresh rebuilt appCtx.services.snapshot.
-            const model = appCtx.services.snapshot.models.get('demo/echo');
+            const model = appCtx.services.snapshot.models.get(DEFAULT_AGENT_MODEL_KEY);
             assert.ok(model, 'discovered model present in refreshed snapshot');
-            assert.equal(model.providerModelId, 'agent:demo/echo');
+            assert.equal(model.providerModelId, 'default');
             assert.equal(model.strategyKind, 'direct');
 
             // And an independent fresh load agrees.
             const fresh = await loadRuntimeSnapshot(appCtx);
-            assert.ok(fresh.models.has('demo/echo'));
+            assert.ok(fresh.models.has(DEFAULT_AGENT_MODEL_KEY));
         });
     });
 
@@ -835,7 +1007,7 @@ describe('reconcilePloinkyAgents (real SQLite + snapshot)', () => {
 
             await installSnapshotServices(appCtx);
             assert.ok(
-                appCtx.services.snapshot.models.has('demo/echo'),
+                appCtx.services.snapshot.models.has(DEFAULT_AGENT_MODEL_KEY),
                 'first snapshot includes the reconcile output'
             );
         });

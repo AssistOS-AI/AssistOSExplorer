@@ -35,12 +35,14 @@ import { sha256RawBodyHash, computeRchHttp } from './request-hash.mjs';
 // Tool name the router binds into the assertion for an agent-to-agent OpenAI
 // call. Single source of truth shared with the router/agent verifiers.
 export const OPENAI_CHAT_COMPLETIONS_TOOL = '__openai_chat_completions__';
+export const OPENAI_MODELS_TOOL = '__openai_models__';
 
 // The agent-internal HTTP path of an OpenAI chat completion. This is the path
 // the router/AgentServer verify against AFTER stripping the `/<routeKey>` mount
 // prefix, so it is the path the assertion signs — never the route-key-prefixed
 // URL path.
 export const OPENAI_CHAT_COMPLETIONS_PATH = '/v1/chat/completions';
+export const OPENAI_MODELS_PATH = '/v1/models';
 
 const ASSERTION_TTL_SECONDS = 60;
 
@@ -192,11 +194,51 @@ export function signOpenAiAgentAssertion({
     return { assertion, bodyHash, rch };
 }
 
+/**
+ * Sign an HTTP Agent Assertion for a router-mediated OpenAI models-list call.
+ * The surface is GET /v1/models with an empty body and empty query.
+ *
+ * @param {object} args
+ * @param {string} args.targetAgent
+ * @param {Buffer} args.secret
+ * @param {string} args.self
+ * @param {number} [args.nowSeconds]
+ * @returns {{ assertion: string, bodyHash: string, rch: string }}
+ */
+export function signOpenAiModelsAssertion({
+    targetAgent,
+    secret,
+    self,
+    nowSeconds,
+}) {
+    const bodyHash = sha256RawBodyHash('');
+    const rch = computeRchHttp({
+        method: 'GET',
+        path: OPENAI_MODELS_PATH,
+        query: '',
+        bodyHash,
+    });
+    const assertion = signAgentAssertionWithRch({
+        secret,
+        self,
+        method: 'GET',
+        path: OPENAI_MODELS_PATH,
+        targetAgent,
+        tool: OPENAI_MODELS_TOOL,
+        rch,
+        nowSeconds,
+    });
+    return { assertion, bodyHash, rch };
+}
+
 export default {
     OPENAI_CHAT_COMPLETIONS_TOOL,
     OPENAI_CHAT_COMPLETIONS_PATH,
+    OPENAI_MODELS_TOOL,
+    OPENAI_MODELS_PATH,
     readAgentSecretBuffer,
     signHmacJwt,
     signAgentAssertionWithRch,
     signOpenAiAgentAssertion,
+    signOpenAiModelsAssertion,
 };

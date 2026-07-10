@@ -283,6 +283,100 @@ describe('dashboard tree view helpers', () => {
         });
     });
 
+    it('groups Ploinky agent models by repo and agent before listing model names', async () => {
+        await withTreeView((tree) => {
+            const models = [
+                {
+                    model_key: 'proxies/searchAgent/duckduckgo',
+                    display_name: 'DuckDuckGo',
+                    provider_key: 'agent:proxies/searchAgent',
+                    provider_model_id: 'duckduckgo',
+                    enabled: true,
+                    metadata: {
+                        discoverySource: 'ploinky-agent-discovery',
+                        repo: 'proxies',
+                        agent: 'searchAgent',
+                    },
+                },
+                {
+                    model_key: 'proxies/searchAgent/tavily',
+                    display_name: 'Tavily',
+                    provider_key: 'agent:proxies/searchAgent',
+                    provider_model_id: 'tavily',
+                    enabled: true,
+                    metadata: {
+                        discoverySource: 'ploinky-agent-discovery',
+                        repo: 'proxies',
+                        agent: 'searchAgent',
+                    },
+                },
+                {
+                    model_key: 'AchillesCLI/codexAgent/default',
+                    display_name: 'codexAgent',
+                    provider_key: 'agent:AchillesCLI/codexAgent',
+                    provider_model_id: 'default',
+                    enabled: true,
+                    metadata: {
+                        discoverySource: 'ploinky-agent-discovery',
+                        repo: 'AchillesCLI',
+                        agent: 'codexAgent',
+                    },
+                },
+            ];
+
+            const rows = tree.buildModelTreeRows(models, {
+                expanded: new Set(['proxies/searchAgent', 'AchillesCLI/codexAgent']),
+            });
+
+            assert.deepEqual(
+                rows.map((row) => ({
+                    type: row.rowType,
+                    key: row.key,
+                    path: row.path,
+                    label: row.label,
+                    depth: row.depth,
+                })),
+                [
+                    {
+                        type: 'group',
+                        key: 'AchillesCLI/codexAgent',
+                        path: 'AchillesCLI/codexAgent',
+                        label: 'AchillesCLI/codexAgent',
+                        depth: 0,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'AchillesCLI/codexAgent/default',
+                        path: 'AchillesCLI/codexAgent/default',
+                        label: 'default',
+                        depth: 1,
+                    },
+                    {
+                        type: 'group',
+                        key: 'proxies/searchAgent',
+                        path: 'proxies/searchAgent',
+                        label: 'proxies/searchAgent',
+                        depth: 0,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'proxies/searchAgent/duckduckgo',
+                        path: 'proxies/searchAgent/duckduckgo',
+                        label: 'duckduckgo',
+                        depth: 1,
+                    },
+                    {
+                        type: 'leaf',
+                        key: 'proxies/searchAgent/tavily',
+                        path: 'proxies/searchAgent/tavily',
+                        label: 'tavily',
+                        depth: 1,
+                    },
+                ]
+            );
+        });
+    });
+
     it('matches search against raw keys, display paths, names, and tags', async () => {
         await withTreeView((tree) => {
             const providers = [

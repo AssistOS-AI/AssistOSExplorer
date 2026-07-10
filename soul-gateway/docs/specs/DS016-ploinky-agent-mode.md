@@ -59,8 +59,10 @@ bootstraps were removed (commit `c9ed615`, 2026-06-17).
 
 The local gateway also keeps upstream provider catalogs fresh. Provider create/update, OAuth completion, and manual sync use the strict shared sync path, while startup and interval refresh use the same path best-effort across eligible providers. Newly discovered upstream models become local direct model rows. Upstream models that disappear are disabled but preserved so history, metadata, and operator context remain available.
 
-- Local models are discovered from enabled Ploinky agents
-  (`runPloinkyReconcileOnce`), keyed `ploinky/<repo>/<agent-model>`.
+- Local providers are discovered from enabled Ploinky agents
+  (`runPloinkyReconcileOnce`). Each agent is a provider, and that provider's
+  models are discovered from the agent's router-mediated `GET /v1/models`
+  endpoint.
 - `seedDefaultTiers` reads the tier keys named in `LLM_DEFAULT_TIERS`
   (default `fast,plan,deep`). When a configured key has no existing model row,
   it creates a cascade model whose single child is the model discovered for
@@ -112,9 +114,60 @@ Response paths are router-relative; no container-internal `127.0.0.1` URLs appea
 Reconciliation runs at startup (before the initial runtime snapshot is installed) and on a ~60-second timer. Each pass:
 
 1. Calls the discovery endpoint (see above) with the Soul Gateway agent's own signed-subject key.
-2. For each discovered agent, upserts one provider row (`ploinky:<subjectId>`, kind `external_api`, auth_strategy `none`, adapter_key `ploinky-agent-openai`) and one model row (`ploinky/<repo>/<agent>`, discovery_source `synced`, strategy_kind `direct`). The `ploinky-agent-discovery` marker is stored in row metadata only.
-3. After any DB change, calls `performRuntimeRefresh(appCtx, { snapshot: true })` so routing sees the updated rows immediately. This refresh call is mandatory; omitting it leaves the runtime snapshot stale.
-4. Stale-disables previously-discovered rows that are absent from the latest discovery response, BUT ONLY when `complete === true`. An incomplete discovery pass must not disable any rows.
+2. For each discovered agent, upserts one provider row keyed by `<subjectId>` (`agent:<repo>/<agent>`, kind `external_api`, auth_strategy `none`, adapter_key `ploinky-agent-openai`). The provider is the agent boundary.
+3. For each discovered provider, calls `GET /<routeKey>/v1/models` through the Ploinky router with an HTTP Agent Assertion for tool `__openai_models__`. The returned model descriptors are synchronized through the normal provider model sync path, so cost, limit, tag, capability, stale-disable, tag-tier, and runtime snapshot behavior matches other providers. If the model sync fails, reconciliation keeps a discovered fallback `default` model for that agent so the agent provider remains visible. The fallback is temporary: the first later sync that discovers one or more real agent models deletes the fallback row instead of leaving a disabled non-real model behind.
+4. The `ploinky-agent-discovery` marker is stored in row metadata only. The `models.discovery_source` column remains the schema enum value `synced`.
+5. After any DB change, calls `performRuntimeRefresh(appCtx, { snapshot: true })` so routing sees the updated rows immediately. This refresh call is mandatory; omitting it leaves the runtime snapshot stale.
+6. Stale-disables previously-discovered providers that are absent from the latest discovery response, BUT ONLY when `complete === true`. An incomplete discovery pass must not disable any rows. Per-provider model disappearance is handled by the provider model sync path.
+
+## Ploinky Agent Model Catalog
+
+Every Ploinky agent is treated as an LLM provider. Its model catalog is read
+from `GET /v1/models` on the target AgentServer through the router path
+`GET /<routeKey>/v1/models`. The request is agent-to-agent control traffic, not a
+browser route and not direct container access.
+
+The response may be a plain array or an OpenAI-style wrapper:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "modelId": "fast",
+      "displayName": "Fast",
+      "contextWindow": 128000,
+      "maxOutputTokens": 8192,
+      "supportsTools": true,
+      "supportsStreaming": true,
+      "supportsVision": false,
+      "pricing": {
+        "mode": "token",
+        "inputPricePerMillion": 0.15,
+        "outputPricePerMillion": 0.60
+      },
+      "tags": ["fast", "chat", "tool-calling"],
+      "capabilities": {},
+      "metadata": {}
+    }
+  ]
+}
+```
+
+`modelId` is required. `providerModelId` may be supplied; otherwise it defaults
+to `modelId`. For Ploinky agent providers, Soul Gateway creates persisted model
+keys as `<repo>/<agent>/<providerModelId>` and never exposes the internal
+`agent:` provider prefix as part of the model name. Missing costs, limits, tags,
+and capabilities are allowed and are filled only by existing classifier/directory
+fallbacks. AgentServer returns one fallback `default` model when the manifest
+does not declare `endpoints.models`, preserving existing agents while allowing
+new agents to expose richer catalogs.
+
+In the management dashboard Models tab, Ploinky agent models are displayed under
+the agent provider path `<repo>/<agent>`, never under a top-level `agent:<repo>`
+group. Expanding that group shows the provider model ids returned by the agent,
+for example `default`, `duckduckgo`, or `tavily`, while the raw model keys remain
+unchanged for routing.
 
 ## Default OpenAI Responder
 
@@ -124,14 +177,19 @@ Manifest `endpoints.chatCompletions` is the only way to provide real chat behavi
 
 The `usesDefaultOpenAiResponder: true` field in discovery responses identifies agents relying on this default so Soul Gateway can set appropriate capability metadata on the model row.
 
-## Delegated Agent-to-Agent OpenAI Route
+## Delegated Agent-to-Agent OpenAI Routes
 
-Agent-to-agent OpenAI calls are router-mediated. The router accepts a delegated HTTP Agent Assertion only on the path-exact route `POST /<routeKey>/v1/chat/completions`. For that path the router:
+Agent-to-agent OpenAI calls are router-mediated. The router accepts delegated HTTP Agent Assertions only on path-exact OpenAI-compatible agent routes:
+
+- `POST /<routeKey>/v1/chat/completions`, tool `__openai_chat_completions__`, body hash over the exact JSON bytes.
+- `GET /<routeKey>/v1/models`, tool `__openai_models__`, empty query, empty body hash.
+
+For those paths the router:
 
 1. Verifies the Agent Assertion against the buffered request body using `computeRchHttp()`.
 2. Strips the caller-supplied `x-ploinky-auth-info` header.
 3. Mints a Router Request token bound to the exact body bytes.
-4. Proxies to the target AgentServer, which verifies the Router Request before running its `/v1/chat/completions` handler.
+4. Proxies to the target AgentServer, which verifies the Router Request before running its `/v1/chat/completions` or `/v1/models` handler.
 
 ## Scheduler And OAuth Behavior
 

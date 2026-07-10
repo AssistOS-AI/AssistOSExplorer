@@ -95,6 +95,7 @@
         return rows.filter((model) =>
             matchesQuery(query, [
                 model?.model_key,
+                modelDisplayPath(model),
                 model?.display_name,
                 model?.provider_key,
                 model?.provider_model_id,
@@ -260,6 +261,70 @@
         };
     }
 
+    function isPloinkyAgentModel(model) {
+        return asText(model?.provider_key).startsWith(AGENT_PREFIX)
+            || asText(model?.metadata?.discoverySource) === 'ploinky-agent-discovery';
+    }
+
+    function ploinkyAgentPath(model) {
+        const metadataRepo = asText(model?.metadata?.repo).trim();
+        const metadataAgent = asText(model?.metadata?.agent).trim();
+        if (metadataRepo && metadataAgent) {
+            return `${metadataRepo}/${metadataAgent}`;
+        }
+
+        const providerKey = stripPloinkyAgentPrefix(model?.provider_key);
+        const providerSegments = splitPath(providerKey);
+        if (providerSegments.length >= 2) {
+            return providerSegments.slice(0, 2).join('/');
+        }
+
+        return providerKey || 'unknown';
+    }
+
+    function ploinkyModelName(model, agentPath) {
+        const providerModelId = asText(model?.provider_model_id).trim();
+        if (providerModelId) {
+            return providerModelId;
+        }
+
+        const modelKey = asText(model?.model_key);
+        const prefix = `${agentPath}/`;
+        if (modelKey.startsWith(prefix)) {
+            return modelKey.slice(prefix.length) || 'default';
+        }
+
+        const segments = splitPath(modelKey);
+        if (segments.length >= 3) {
+            return segments.slice(2).join('/');
+        }
+
+        return asText(model?.display_name).trim() || 'default';
+    }
+
+    function modelDisplayEntry(model) {
+        if (!isPloinkyAgentModel(model)) {
+            const displayPath = asText(model?.model_key);
+            const segments = splitPath(displayPath);
+            return {
+                segments,
+                displayPath: segments.join('/'),
+            };
+        }
+
+        const agentPath = ploinkyAgentPath(model);
+        const modelName = ploinkyModelName(model, agentPath);
+        const segments = [agentPath, modelName].filter(Boolean);
+        return {
+            segments,
+            displayPath: segments.join('/'),
+        };
+    }
+
+    function modelDisplayPath(model) {
+        return modelDisplayEntry(model).displayPath;
+    }
+
     function onlyModelLeaf(node) {
         if (node.leaves.length > 0) {
             return node.leaves[0];
@@ -353,12 +418,11 @@
         const singleLeaves = [];
 
         for (const model of Array.isArray(models) ? models : []) {
-            const displayPath = asText(model?.model_key);
-            const segments = splitPath(displayPath);
+            const { displayPath, segments } = modelDisplayEntry(model);
             const entry = {
                 item: model,
                 segments,
-                displayPath: segments.join('/'),
+                displayPath,
             };
 
             if (segments.length === 1) {

@@ -44,6 +44,7 @@ import {
 } from '../error-helpers.mjs';
 import {
     signOpenAiAgentAssertion,
+    signOpenAiModelsAssertion,
     readAgentSecretBuffer,
 } from '../ploinky/agent-assertion.mjs';
 
@@ -178,6 +179,55 @@ export const backendModule = {
         }
     },
 
+    async discoverModels(ctx) {
+        const { routerUrl, agentId, secretHex } = readPloinkyConfig(
+            ctx?.env
+        );
+        const { routeKey, subjectId } = readProviderMetadata(
+            ctx?.providerRecord
+        );
+        const baseUrl = String(
+            ctx?.providerRecord?.baseUrl || routerUrl || ''
+        ).trim();
+        if (!baseUrl) {
+            throw new Error(
+                'Ploinky agent model discovery requires PLOINKY_ROUTER_URL (or provider base_url)'
+            );
+        }
+        if (!routeKey) {
+            throw new Error(
+                'Ploinky agent model discovery requires provider metadata.routeKey'
+            );
+        }
+        if (!agentId) {
+            throw new Error(
+                'Ploinky agent model discovery requires PLOINKY_AGENT_ID'
+            );
+        }
+        const secret = readAgentSecretBuffer(secretHex);
+        if (!secret) {
+            throw new Error(
+                'Ploinky agent model discovery requires a hex PLOINKY_AGENT_SECRET'
+            );
+        }
+
+        const { assertion } = signOpenAiModelsAssertion({
+            targetAgent: routeKey,
+            secret,
+            self: agentId,
+        });
+        const url = buildModelsUrl(baseUrl, routeKey);
+        const parsed = await requestJson(url, 'GET', {
+            Authorization: `Bearer ${assertion}`,
+            Accept: 'application/json',
+        }, null, ctx?.signal);
+        return normalizeModelsResponse(parsed, {
+            providerMetadata: ctx?.providerRecord?.metadata || {},
+            subjectId,
+            routeKey,
+        });
+    },
+
     async execute(ctx) {
         const {
             request: normalizedReq,
@@ -307,6 +357,80 @@ export function buildRouterUrl(baseUrl, routeKey) {
     return new URL(`${origin}/${key}/v1/chat/completions`);
 }
 
+export function buildModelsUrl(baseUrl, routeKey) {
+    const origin = String(baseUrl).replace(/\/+$/, '');
+    const key = String(routeKey).replace(/^\/+|\/+$/g, '');
+    return new URL(`${origin}/${key}/v1/models`);
+}
+
+function normalizeModelsResponse(parsed, meta = {}) {
+    const rows = Array.isArray(parsed)
+        ? parsed
+        : (Array.isArray(parsed?.data) ? parsed.data : []);
+    return rows
+        .map((row) => normalizeModelDescriptor(row, meta))
+        .filter(Boolean);
+}
+
+function agentPathFromSubjectId(value) {
+    const text = String(value || '').trim();
+    return text.startsWith('agent:') ? text.slice('agent:'.length) : text;
+}
+
+function discoveredAgentModelKey(providerMetadata, subjectId, providerModelId) {
+    const repo = String(providerMetadata?.repo || '').trim();
+    const agent = String(providerMetadata?.agent || '').trim();
+    const model = String(providerModelId || '').trim();
+    if (repo && agent && model) {
+        return `${repo}/${agent}/${model}`;
+    }
+    const subjectPath = agentPathFromSubjectId(subjectId);
+    return subjectPath && model ? `${subjectPath}/${model}` : undefined;
+}
+
+function normalizeModelDescriptor(row, meta) {
+    if (!row || typeof row !== 'object') {
+        return null;
+    }
+    const modelId = String(row.modelId || row.providerModelId || row.id || '').trim();
+    if (!modelId) {
+        return null;
+    }
+    const providerMetadata = meta.providerMetadata || {};
+    const metadata = {
+        ...(row.metadata && typeof row.metadata === 'object' ? row.metadata : {}),
+        discoverySource: 'ploinky-agent-discovery',
+        subjectId: meta.subjectId || providerMetadata.subjectId || null,
+        routeKey: meta.routeKey || providerMetadata.routeKey || null,
+        repo: providerMetadata.repo || null,
+        agent: providerMetadata.agent || null,
+    };
+    return {
+        modelId,
+        providerModelId: String(row.providerModelId || modelId),
+        modelKey: discoveredAgentModelKey(
+            providerMetadata,
+            meta.subjectId || providerMetadata.subjectId || null,
+            row.providerModelId || modelId
+        ),
+        displayName: row.displayName || row.name || modelId,
+        contextWindow: row.contextWindow ?? row.context_window ?? row.contextLength ?? null,
+        maxOutputTokens: row.maxOutputTokens ?? row.max_output_tokens ?? row.maxCompletionTokens ?? null,
+        supportsTools: row.supportsTools ?? row.supports_tools ?? row.capabilities?.supportsTools ?? true,
+        supportsStreaming: row.supportsStreaming ?? row.supports_streaming ?? row.capabilities?.supportsStreaming ?? true,
+        supportsVision: row.supportsVision ?? row.supports_vision ?? row.capabilities?.supportsVision ?? false,
+        pricing: row.pricing || {},
+        pricingMode: row.pricingMode,
+        inputPricePerMillion: row.inputPricePerMillion,
+        outputPricePerMillion: row.outputPricePerMillion,
+        requestPriceUsd: row.requestPriceUsd,
+        isFree: row.isFree,
+        capabilities: row.capabilities || {},
+        tags: Array.isArray(row.tags) ? row.tags : [],
+        metadata,
+    };
+}
+
 // ── SSE streaming ───────────────────────────────────────────────────
 
 async function* makeSSEStream(url, headers, payload, signal, meta) {
@@ -422,6 +546,27 @@ function doRequest(url, method, headers, body, signal) {
         req.write(body);
         req.end();
     });
+}
+
+async function requestJson(url, method, headers, body, signal) {
+    const payload = body == null ? null : Buffer.from(body);
+    const response = await doRequest(url, method, headers, payload || Buffer.alloc(0), signal);
+    const text = await collectBody(response);
+    if (response.statusCode >= 400) {
+        const err = new Error(`Ploinky agent models error: ${response.statusCode}`);
+        err.status = response.statusCode;
+        try {
+            err.body = JSON.parse(text);
+        } catch {
+            err.body = {};
+        }
+        throw err;
+    }
+    try {
+        return JSON.parse(text || '{}');
+    } catch (err) {
+        throw new Error(`Ploinky agent models returned invalid JSON: ${err.message}`);
+    }
 }
 
 function collectBody(res) {
