@@ -38,12 +38,12 @@ const AGENT_ID = 'agent:test/soulgateway';
 const ROUTE_KEY = 'routekey1';
 const SUBJECT_ID = 'agent:somerepo/someagent';
 
-// ── A capturing SSE upstream ────────────────────────────────────────
+// ── A capturing OpenAI-compatible upstream ──────────────────────────
 
 /**
  * Start a one-shot HTTP server that records the inbound request (method, url,
- * headers, raw body bytes) and replies with a minimal OpenAI SSE stream so the
- * backend's stream consumer terminates cleanly.
+ * headers, raw body bytes) and replies with a minimal OpenAI JSON completion so
+ * the backend's stream consumer terminates cleanly.
  */
 async function startCaptureServer(options = {}) {
     const captured = {};
@@ -70,12 +70,28 @@ async function startCaptureServer(options = {}) {
             captured.url = req.url;
             captured.headers = req.headers;
             captured.bodyBytes = Buffer.concat(chunks);
-            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-            res.write(
-                'data: {"id":"x","model":"m","choices":[{"delta":{"content":"hi"}}]}\n\n'
-            );
-            res.write('data: [DONE]\n\n');
-            res.end();
+            const body = Buffer.from(JSON.stringify({
+                id: 'x',
+                object: 'chat.completion',
+                model: 'm',
+                choices: [
+                    {
+                        index: 0,
+                        message: { role: 'assistant', content: 'hi' },
+                        finish_reason: 'stop',
+                    },
+                ],
+                usage: {
+                    prompt_tokens: 1,
+                    completion_tokens: 1,
+                    total_tokens: 2,
+                },
+            }));
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Content-Length': body.length,
+            });
+            res.end(body);
         });
     });
     server.listen(0, '127.0.0.1');
@@ -84,11 +100,15 @@ async function startCaptureServer(options = {}) {
     return { server, captured, baseUrl: `http://127.0.0.1:${port}` };
 }
 
-function makeCtx({ baseUrl, messages, env }) {
+function makeCtx({ baseUrl, messages, env, supportsStreaming = false }) {
     return {
         requestId: 'req-1',
         request: { messages },
-        resolvedModel: { providerModelId: 'agent-model', modelKey: 'agent-model' },
+        resolvedModel: {
+            providerModelId: 'agent-model',
+            modelKey: 'agent-model',
+            capabilities: { supportsStreaming },
+        },
         providerRecord: {
             baseUrl,
             authStrategy: 'none',
@@ -346,13 +366,33 @@ describe('ploinky-agent-openai backend execute()', () => {
             });
             assert.equal(payload.rch, expectedRch);
 
-            // And the body really is the OpenAI payload we expect (stream + model).
+            // And the body really is the OpenAI payload we expect (non-stream + model).
             const sent = JSON.parse(captured.bodyBytes.toString('utf8'));
             assert.equal(sent.model, 'agent-model');
-            assert.equal(sent.stream, true);
+            assert.equal(sent.stream, false);
             assert.deepEqual(sent.messages, [
                 { role: 'user', content: 'bind these bytes' },
             ]);
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+    });
+
+    it('sends stream=true when the discovered agent model supports streaming', async () => {
+        const { server, captured, baseUrl } = await startCaptureServer();
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [{ role: 'user', content: 'stream upstream' }],
+                env: ctxEnv,
+                supportsStreaming: true,
+            });
+            const handle = await backendModule.execute(ctx);
+            await drain(handle.stream);
+
+            const sent = JSON.parse(captured.bodyBytes.toString('utf8'));
+            assert.equal(sent.stream, true);
         } finally {
             server.close();
             await once(server, 'close');
@@ -405,7 +445,7 @@ describe('ploinky-agent-openai backend execute()', () => {
         }
     });
 
-    it('emits a normalized stream (message_start → text_delta → done)', async () => {
+    it('emits a normalized stream from a non-streaming JSON completion', async () => {
         const { server, baseUrl } = await startCaptureServer();
         try {
             const ctx = makeCtx({
@@ -418,6 +458,7 @@ describe('ploinky-agent-openai backend execute()', () => {
             const types = events.map((e) => e.type);
             assert.ok(types.includes('message_start'));
             assert.ok(types.includes('text_delta'));
+            assert.ok(types.includes('usage'));
             assert.equal(types[types.length - 1], 'done');
         } finally {
             server.close();

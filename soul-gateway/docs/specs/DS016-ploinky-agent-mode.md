@@ -191,6 +191,18 @@ For those paths the router:
 3. Mints a Router Request token bound to the exact body bytes.
 4. Proxies to the target AgentServer, which verifies the Router Request before running its `/v1/chat/completions` or `/v1/models` handler.
 
+Soul Gateway chooses the upstream chat-completions streaming mode from the
+discovered model catalog. AgentServer exposes `supportsStreaming` in each
+`GET /<routeKey>/v1/models` descriptor, Soul Gateway persists it under the model
+capabilities, and the `ploinky-agent-openai` backend sends `stream: true` only
+when the resolved model declares streaming support. Otherwise the signed request
+body sent to `POST /<routeKey>/v1/chat/completions` sets `stream: false`, because
+many command-backed AgentServer handlers declare `supportsStream: false` and
+reject streaming requests. The backend accepts either the agent's
+OpenAI-compatible JSON completion response or SSE response and converts it into
+Soul Gateway's normalized internal stream so the rest of the gateway pipeline
+remains unchanged.
+
 ## Scheduler And OAuth Behavior
 
 Schedulers and OAuth adapters are controlled by explicit env config, not deployment mode:

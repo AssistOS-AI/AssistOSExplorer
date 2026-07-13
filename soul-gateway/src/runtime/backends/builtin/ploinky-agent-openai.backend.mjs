@@ -23,8 +23,8 @@
  * `callLLMStreaming`) serializes the body internally, so it cannot expose the
  * exact bytes for signing. This backend therefore owns serialization, signing,
  * and the `node:http`/`node:https` POST so the bytes it hashes are the bytes it
- * sends. The SSE parsing and error classification mirror the OpenAI backend's
- * normalized-stream contract.
+ * sends. The response parser accepts both non-streaming OpenAI JSON and SSE,
+ * then emits the gateway's normalized-stream contract.
  */
 
 import { request as httpsRequest } from 'node:https';
@@ -118,11 +118,11 @@ function readProviderMetadata(providerRecord) {
  * @param {object} settings
  * @returns {object}
  */
-function buildPayload(normalizedReq, modelId, settings) {
+function buildPayload(normalizedReq, modelId, settings, { stream = false } = {}) {
     const payload = {
         model: modelId,
         messages: normalizedReq.messages || [],
-        stream: true,
+        stream,
     };
 
     if (normalizedReq.max_tokens != null)
@@ -141,6 +141,15 @@ function buildPayload(normalizedReq, modelId, settings) {
         Object.assign(payload, settings.extra_body);
 
     return payload;
+}
+
+function modelSupportsStreaming(model) {
+    return (
+        model?.supportsStreaming === true ||
+        model?.supports_streaming === true ||
+        model?.capabilities?.supportsStreaming === true ||
+        model?.capabilities?.supports_streaming === true
+    );
 }
 
 // ── Backend module ──────────────────────────────────────────────────
@@ -266,7 +275,9 @@ export const backendModule = {
 
         const modelId = resolvedModel.providerModelId || resolvedModel.modelKey;
         const settings = providerRecord.settings || {};
-        const payload = buildPayload(normalizedReq, modelId, settings);
+        const payload = buildPayload(normalizedReq, modelId, settings, {
+            stream: modelSupportsStreaming(resolvedModel),
+        });
 
         // Serialize ONCE. The exact Buffer we hash is the exact Buffer we send;
         // nothing re-serializes between signing and the POST.
@@ -285,7 +296,7 @@ export const backendModule = {
             Authorization: `Bearer ${assertion}`,
         };
 
-        const stream = makeSSEStream(url, headers, bodyBytes, signal, {
+        const stream = makeOpenAiCompletionStream(url, headers, bodyBytes, signal, {
             requestId: ctx.requestId,
             model: modelId,
             subjectId,
@@ -431,9 +442,9 @@ function normalizeModelDescriptor(row, meta) {
     };
 }
 
-// ── SSE streaming ───────────────────────────────────────────────────
+// ── OpenAI response streaming ────────────────────────────────────────
 
-async function* makeSSEStream(url, headers, payload, signal, meta) {
+async function* makeOpenAiCompletionStream(url, headers, payload, signal, meta) {
     const response = await doRequest(url, 'POST', headers, payload, signal);
 
     if (response.statusCode >= 400) {
@@ -450,6 +461,24 @@ async function* makeSSEStream(url, headers, payload, signal, meta) {
         err.status = response.statusCode;
         err.body = parsed;
         throw err;
+    }
+
+    const contentType = String(response.headers?.['content-type'] || '');
+    if (!contentType.includes('text/event-stream')) {
+        const body = await collectBody(response);
+        let parsed;
+        try {
+            parsed = JSON.parse(body || '{}');
+        } catch (err) {
+            const parseError = new Error(
+                `Ploinky agent OpenAI returned invalid JSON: ${err.message}`
+            );
+            parseError.status = HTTP_STATUS.BAD_GATEWAY;
+            parseError.body = {};
+            throw parseError;
+        }
+        yield* completionJsonToEvents(parsed, meta);
+        return;
     }
 
     const state = {};
@@ -523,6 +552,60 @@ async function* makeSSEStream(url, headers, payload, signal, meta) {
             };
         }
     }
+}
+
+function* completionJsonToEvents(parsed, meta) {
+    const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] || {} : {};
+    const message = choice.message || {};
+    const content = typeof message.content === 'string' ? message.content : '';
+    const model = parsed?.model || meta.model || null;
+
+    yield {
+        type: 'message_start',
+        data: {
+            id: parsed?.id || meta.requestId || null,
+            model,
+            role: message.role || 'assistant',
+        },
+    };
+
+    if (content) {
+        yield { type: 'text_delta', data: { text: content } };
+    }
+
+    if (Array.isArray(message.tool_calls)) {
+        for (let index = 0; index < message.tool_calls.length; index += 1) {
+            const toolCall = message.tool_calls[index] || {};
+            yield {
+                type: 'tool_call_delta',
+                data: {
+                    index,
+                    id: toolCall.id || undefined,
+                    name: toolCall.function?.name || undefined,
+                    arguments: toolCall.function?.arguments || undefined,
+                },
+            };
+        }
+    }
+
+    if (parsed?.usage) {
+        yield {
+            type: 'usage',
+            data: {
+                input_tokens: parsed.usage.prompt_tokens || 0,
+                output_tokens: parsed.usage.completion_tokens || 0,
+                total_tokens: parsed.usage.total_tokens || 0,
+            },
+        };
+    }
+
+    yield {
+        type: 'done',
+        data: {
+            finish_reason: choice.finish_reason || 'stop',
+            model,
+        },
+    };
 }
 
 // ── HTTP helpers (node:http / node:https only) ──────────────────────
