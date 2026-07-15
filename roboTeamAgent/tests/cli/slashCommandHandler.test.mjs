@@ -193,17 +193,24 @@ describe('SlashCommandHandler', () => {
             executeSkill: async () => {},
             getUserSkills: () => [],
             getSkills: () => [],
+            loadModels: async () => [
+                { name: 'fast' },
+                { name: 'anthropic/claude-sonnet' },
+            ],
         });
 
         const noArgs = await handler.executeSlashCommand('model', '');
         assert.strictEqual(noArgs.handled, true);
         assert.ok(noArgs.showModelPicker === true || noArgs.error, 'Should show picker or error');
 
+        const selected = await handler.executeSlashCommand('model', 'anthropic/claude-sonnet');
+        assert.deepStrictEqual(selected, {
+            handled: true,
+            modelChange: 'anthropic/claude-sonnet',
+        });
+
         const clear = await handler.executeSlashCommand('model', 'clear');
-        assert.strictEqual(clear.handled, true);
-        if (!clear.error) {
-            assert.strictEqual(clear.modelChange, null, '/model clear should set modelChange to null');
-        }
+        assert.match(clear.error, /Unknown model "clear"/);
     });
 
     it('should include commands in completions', async () => {
@@ -236,9 +243,9 @@ describe('SlashCommandHandler', () => {
         assert.ok(hint, 'Should return a hint for /model');
         assert.ok(hint.includes('model'), 'Hint should mention model');
 
-        const clearHint = handler.getInputHint('/model clear');
-        assert.ok(clearHint, 'Should return a hint for /model clear');
-        assert.ok(clearHint.toLowerCase().includes('clear'), 'Hint should mention clear');
+        const selectedHint = handler.getInputHint('/model anthropic/claude-sonnet');
+        assert.ok(selectedHint, 'Should return a hint for a model selection');
+        assert.ok(selectedHint.toLowerCase().includes('model'), 'Hint should describe model selection');
     });
 
     it('should provide sub-option hint for hierarchical commands', async () => {
@@ -262,24 +269,29 @@ describe('SlashCommandHandler', () => {
             executeSkill: async () => {},
             getUserSkills: () => [],
             getSkills: () => [],
+            loadModels: async () => [{ name: 'fast' }, { name: 'provider/model' }],
         });
 
         assert.strictEqual(typeof handler.getAvailableModels, 'function');
-        const models = handler.getAvailableModels();
+        const models = await handler.getAvailableModels();
         assert.ok(Array.isArray(models), 'Should return an array');
+        assert.deepStrictEqual(models, ['fast', 'provider/model']);
     });
 
-    it('should complete /model with model names and clear', async () => {
+    it('should complete /model with cached model names and no clear command', async () => {
         const { SlashCommandHandler } = await import('../achilles-cli/src/repl/SlashCommandHandler.mjs');
 
         const handler = new SlashCommandHandler({
             executeSkill: async () => {},
             getUserSkills: () => [],
             getSkills: () => [],
+            loadModels: async () => [{ name: 'provider/claude-sonnet' }],
         });
 
-        const [completions] = handler.getCompletions('/model ');
-        assert.ok(completions.some(c => c.includes('clear')), 'Model completions should include clear');
+        await handler.getAvailableModels();
+        const [completions] = handler.getCompletions('/model sonnet');
+        assert.deepStrictEqual(completions, ['/model provider/claude-sonnet']);
+        assert.equal(completions.some(c => c.includes('clear')), false);
     });
 
     it('should route /list skills to list-skills skill', async () => {

@@ -50,8 +50,9 @@ describe('HelpSystem', () => {
         const modelHelp = showHelp('model');
         assert.ok(modelHelp, 'Should return help for model');
         assert.ok(modelHelp.includes('model'), 'Model help should mention model');
-        assert.ok(modelHelp.includes('clear'), 'Model help should mention clear');
-        assert.ok(modelHelp.includes('pin'), 'Model help should mention pinning');
+        assert.ok(modelHelp.includes('Soul Gateway'), 'Model help should mention the catalog source');
+        assert.ok(modelHelp.includes('.achilles-cli/settings.json'), 'Model help should mention persistence');
+        assert.equal(modelHelp.includes('/model clear'), false, 'Model help should not advertise /model clear');
     });
 
     it('should include /model in command reference', async () => {
