@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_BASE = path.join(__dirname, '../../achilles-cli/src/skills');
@@ -29,9 +29,15 @@ describe('main orchestrator prompt', () => {
 
     it('should include concise communication and skill ambiguity guidance', async () => {
         const promptPath = path.join(PROMPTS_BASE, 'orchestrator-prompt.mjs');
-        const content = fs.readFileSync(promptPath, 'utf8');
+        const { buildOrchestratorSystemPrompt } = await import(pathToFileURL(promptPath).href);
+        const content = buildOrchestratorSystemPrompt();
 
         assert.ok(content.includes('concise'), 'Should include concise communication guidance');
+        assert.ok(
+            content.includes('User-facing responses are better when they are short and to the point.'),
+            'Should prefer short, direct user-facing responses without requiring one-word answers',
+        );
+        assert.ok(!content.includes('One word answers are best'), 'Should not prefer one-word answers');
         assert.ok(content.includes('skill type'), 'Should mention skill type ambiguity');
         assert.ok(!content.includes('list-skills, read-skill, write-skill'), 'Should not hard-code hidden skill-management tool lists');
     });
