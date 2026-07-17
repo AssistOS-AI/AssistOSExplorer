@@ -24,6 +24,15 @@ Transports emit `CanonicalStream` events such as:
 
 Provider protocols are normalized into that shared event stream before route egress or buffering.
 
+For OpenAI Responses-compatible providers, the provider adapter accumulates
+`response.output_text.delta` events for normal live delivery. Finalized text in
+`response.output_text.done`, `response.output_item.done`, or
+`response.completed` is also inspected before the canonical `done` event. If
+the finalized text extends the streamed prefix, only the missing text is
+emitted as one final `text_delta`; text already delivered through deltas must
+not be duplicated. This is response normalization only and does not introduce
+an additional provider request or retry.
+
 ## Provider-chain streaming
 
 Inside a provider attempt:
@@ -104,6 +113,17 @@ In streaming mode:
 - route-level SSE still works because `respondMiddleware` consumes the stream directly
 
 In buffered mode those same middlewares run against the buffered/OpenAI-style response as usual.
+
+## Decisions & Questions
+
+### Question #1: Why is finalized Responses API text used as a fallback?
+
+Response: A Responses-compatible upstream can expose the same generated text
+incrementally and in finalized events. The adapter preserves incremental
+delivery as the primary path, then uses the finalized representation only to
+recover a missing suffix or a response for which no text deltas arrived. This
+keeps the canonical stream complete without duplicating output or changing the
+gateway retry policy.
 
 ## Real-time log streaming
 
