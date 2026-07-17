@@ -830,12 +830,24 @@ describe('Copilot converter', () => {
 
         it('returns responses endpoint for o1-preview', () => {
             const result = copilotConverter.toProviderRequest(
-                { messages: [{ role: 'user', content: 'hi' }], stream: true },
+                {
+                    messages: [
+                        { role: 'system', content: 'Planner rules' },
+                        { role: 'user', content: 'Earlier request' },
+                        { role: 'assistant', content: 'Earlier answer' },
+                        { role: 'user', content: 'Current request' },
+                    ],
+                    stream: true,
+                },
                 { providerModelId: 'o1-preview' },
                 {}
             );
             assert.equal(result.endpoint, 'responses');
             assert.match(result.path, /\/models\/o1-preview\/responses/);
+            assert.deepEqual(
+                result.body.input.map((message) => message.role),
+                ['developer', 'user', 'assistant', 'user']
+            );
         });
     });
 
@@ -881,8 +893,11 @@ describe('Kiro converter', () => {
         it('builds conversationState with turns', () => {
             const req = {
                 messages: [
+                    { role: 'system', content: 'Planner rules' },
                     { role: 'system', content: 'Be helpful' },
                     { role: 'user', content: 'Hello' },
+                    { role: 'assistant', content: 'Hi' },
+                    { role: 'user', content: 'Continue' },
                 ],
                 max_tokens: 2048,
                 temperature: 0.7,
@@ -896,10 +911,12 @@ describe('Kiro converter', () => {
             assert.equal(result.modelId, 'claude-sonnet-4');
             assert.equal(
                 result.conversationState.systemInstruction,
-                'Be helpful'
+                'Planner rules\nBe helpful'
             );
-            assert.equal(result.conversationState.turns.length, 1);
-            assert.equal(result.conversationState.turns[0].role, 'user');
+            assert.deepEqual(
+                result.conversationState.turns.map((turn) => turn.role),
+                ['user', 'assistant', 'user']
+            );
             assert.equal(result.inferenceConfig.maxTokens, 2048);
             assert.equal(result.inferenceConfig.temperature, 0.7);
         });

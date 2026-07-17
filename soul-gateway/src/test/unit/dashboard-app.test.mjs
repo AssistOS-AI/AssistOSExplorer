@@ -274,7 +274,12 @@ describe('dashboard activity page', () => {
                         id: 'key-a-log',
                         request_id: 'key-a-request',
                         request_payload: {
-                            messages: [{ role: 'user', content: 'A' }],
+                            messages: [
+                                { role: 'system', content: 'Planner rules' },
+                                { role: 'user', content: 'Earlier request' },
+                                { role: 'assistant', content: 'Earlier answer' },
+                                { role: 'user', content: 'A' },
+                            ],
                         },
                         response_payload: {
                             choices: [
@@ -341,6 +346,15 @@ describe('dashboard activity page', () => {
             assert.match(
                 keyA._logs[0]._detail.response_content,
                 /A response/
+            );
+            assert.deepEqual(
+                keyA._logs[0]._detail.request_messages,
+                [
+                    { role: 'system', content: 'Planner rules' },
+                    { role: 'user', content: 'Earlier request' },
+                    { role: 'assistant', content: 'Earlier answer' },
+                    { role: 'user', content: 'A' },
+                ]
             );
             assert.match(
                 keyB._logs[0]._detail.response_content,

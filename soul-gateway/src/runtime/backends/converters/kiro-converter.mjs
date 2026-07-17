@@ -21,14 +21,17 @@ export function toProviderRequest(normalizedReq, modelRecord, providerRecord) {
     const modelId = modelRecord.providerModelId || modelRecord.modelKey;
 
     const turns = [];
-    let systemInstruction = null;
+    const systemInstructions = [];
 
     for (const msg of normalizedReq.messages || []) {
         if (msg.role === 'system') {
-            systemInstruction =
+            const systemInstruction =
                 typeof msg.content === 'string'
                     ? msg.content
                     : extractText(msg.content);
+            if (systemInstruction) {
+                systemInstructions.push(systemInstruction);
+            }
             continue;
         }
 
@@ -46,8 +49,8 @@ export function toProviderRequest(normalizedReq, modelRecord, providerRecord) {
         inferenceConfig: {},
     };
 
-    if (systemInstruction) {
-        body.conversationState.systemInstruction = systemInstruction;
+    if (systemInstructions.length) {
+        body.conversationState.systemInstruction = systemInstructions.join('\n');
     }
 
     if (normalizedReq.max_tokens != null) {

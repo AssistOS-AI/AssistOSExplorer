@@ -58,6 +58,8 @@ For providers that share a protocol family, configuration is primarily the provi
 
 All converters produce a uniform typed chunk stream: text deltas, tool-call deltas, completion signals, and errors. This abstraction lets new providers plug into the request pipeline without changing the pipeline itself.
 
+Conversation order and roles are preserved across that boundary. OpenAI-compatible chat keeps `system`, `user`, and `assistant`; Responses-style transports map `system` to `developer`; Anthropic extracts system instructions; Gemini maps assistant turns to `model`; and Kiro builds `conversationState.systemInstruction` plus ordered user/assistant turns. Soul Gateway's Kiro AWS signature is computed from the same exported Achilles request builder that sends the body, preventing role conversion or serialization changes from invalidating the signature.
+
 ## Provider transport ownership invariant
 
 Request-time LLM inference and embedding provider calls must go through `achillesAgentLib`. Soul Gateway owns routing, provider/account selection, credential leasing, middleware policy, quota/budget enforcement, observability, and conversion from Achilles output into gateway canonical streams. It must not own vendor-specific completion/generation transports for LLM protocol families (OpenAI, Anthropic, Gemini, Copilot, Kiro, etc.) or OpenAI-compatible embeddings transport.

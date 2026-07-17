@@ -16,6 +16,8 @@ The gateway accepts three public completion request formats:
 
 `normalizeIngressMiddleware` converts each route kind to the canonical internal request shape before validation and dispatch.
 
+For conversational requests, the canonical shape preserves the complete ordered `messages` array. System, user, and assistant turns remain separate records through model resolution and backend dispatch. Backends translate those roles only where the upstream protocol requires a native equivalent, such as `developer` for Responses-style system instructions or `model` for Gemini assistant turns.
+
 The gateway also accepts OpenAI-compatible embeddings requests at `POST /v1/embeddings`:
 
 - request body: `model`, `input`, and optional OpenAI-compatible `encoding_format`, `dimensions`, and `user`

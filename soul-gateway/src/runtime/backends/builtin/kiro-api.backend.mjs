@@ -188,6 +188,14 @@ export const backendModule = {
         const awsSessionToken = credentialLease?.metadata?.aws_session_token;
         const region = providerRecord.settings?.kiro_region || 'us-east-1';
         params.region = region;
+        const achillesOptions = {
+            model: resolvedModel.providerModelId || resolvedModel.modelKey,
+            apiKey: token,
+            baseURL: baseUrl,
+            signal,
+            params,
+            headers,
+        };
 
         if (awsAccessKey && awsSecretKey) {
             const now = new Date();
@@ -200,10 +208,9 @@ export const backendModule = {
                     ...(token ? { Authorization: `Bearer ${token}` } : {}),
                 },
                 body: JSON.stringify(
-                    kiroConverter.toProviderRequest(
-                        normalizedReq,
-                        resolvedModel,
-                        providerRecord
+                    achillesKiro.buildKiroRequest(
+                        normalizedReq.messages || [],
+                        achillesOptions
                     )
                 ),
                 accessKey: awsAccessKey,
@@ -219,14 +226,7 @@ export const backendModule = {
             Object.assign(headers, providerRecord.settings.extra_headers);
         }
 
-        return createAchillesExecutionHandle(ctx, achillesKiro, {
-            model: resolvedModel.providerModelId || resolvedModel.modelKey,
-            apiKey: token,
-            baseURL: baseUrl,
-            signal,
-            params,
-            headers,
-        });
+        return createAchillesExecutionHandle(ctx, achillesKiro, achillesOptions);
     },
 
     classifyError(error, _ctx) {

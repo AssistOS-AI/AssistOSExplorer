@@ -25,6 +25,8 @@ Log entries include:
 
 The hot path persists `request_payload`, a capped `response_excerpt`, and a normalized `response_payload`. Buffered responses derive these fields from the completed response envelope. Streaming responses accumulate canonical events while `respondMiddleware` writes SSE frames, then store the captured response after the stream finishes, aborts, or errors. Client-disconnected streams keep the partial response and are marked `status='aborted'`; provider errors keep the partial response and are marked `status='failed'`.
 
+`request_payload` retains the canonical request's complete ordered message array. The dashboard detail view renders those records individually with their system, user, and assistant roles; it does not reconstruct the conversation from one aggregated prompt string. This means role-aware session calls remain inspectable after the caller separates planner instructions, earlier conversation turns, and the current user request.
+
 `response_excerpt` is the broadcast-safe preview used by keyword filters. `response_payload` is the full OpenAI-shaped completion used by the log detail view. Oversized stored payloads are truncated and flagged with the existing `truncated` column, governed by `maxResponsePayloadBytes` (default 128 KB). General live log streams redact request and response payloads; soul-specific streams and the log detail endpoint can return the full row.
 
 `ttfb_ms` records the time from `ctx.startedAt` to the first SSE chunk written for streaming responses. For buffered responses, where nothing is written to the socket until the full body is serialized, `ttfb_ms` is set equal to `latency_ms` — there is no earlier "first byte" to record on that code path.

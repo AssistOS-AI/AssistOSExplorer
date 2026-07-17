@@ -91,7 +91,7 @@ export function toResponsesRequest(
     const input = [];
     for (const msg of normalizedReq.messages || []) {
         input.push({
-            role: msg.role,
+            role: msg.role === 'system' ? 'developer' : msg.role,
             content:
                 typeof msg.content === 'string'
                     ? msg.content
