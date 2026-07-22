@@ -101,6 +101,10 @@ export const backendModule = {
             baseURL,
             apiKey: token,
             signal: ctx?.signal,
+            // `supported_in_api: false` means ChatGPT-only, not unavailable.
+            // Codex OAuth must retain those models (for example Spark); only
+            // API-key callers should filter them from the picker.
+            includeChatGPTOnly: true,
             headers: {
                 'User-Agent': 'codex-cli/1.0.0',
             },

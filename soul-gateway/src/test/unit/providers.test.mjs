@@ -2188,7 +2188,8 @@ describe('codex-api payload builder', () => {
                                 input_modalities: ['text'],
                             },
                             {
-                                slug: 'legacy',
+                                slug: 'gpt-5.3-codex-spark',
+                                display_name: 'GPT-5.3-Codex-Spark',
                                 visibility: 'list',
                                 supported_in_api: false,
                             },
@@ -2210,14 +2211,19 @@ describe('codex-api payload builder', () => {
                 });
                 assert.equal(
                     discovered.length,
-                    2,
-                    'supported_in_api=false entries should be filtered out'
+                    3,
+                    'ChatGPT OAuth discovery should retain ChatGPT-only models'
                 );
                 assert.equal(discovered[0].modelId, 'gpt-5.2-codex');
                 assert.equal(discovered[0].contextWindow, 272000);
                 assert.equal(discovered[0].supportsVision, true);
                 assert.equal(discovered[1].modelId, 'gpt-5');
                 assert.equal(discovered[1].visibility, 'hide');
+                assert.equal(
+                    discovered[2].modelId,
+                    'gpt-5.3-codex-spark'
+                );
+                assert.equal(discovered[2].metadata.supportedInApi, false);
             } finally {
                 restoreFetch();
             }
@@ -2246,7 +2252,12 @@ describe('codex-api payload builder', () => {
                 }
                 assert.ok(caught);
                 assert.equal(caught.status, 403);
-                assert.ok(/scope denied/.test(caught.message));
+                assert.equal(
+                    caught.message,
+                    'OpenAI Responses model-list request failed: 403 - Forbidden.'
+                );
+                assert.doesNotMatch(caught.message, /scope denied/);
+                assert.deepEqual(caught.body, { detail: 'scope denied' });
             } finally {
                 restoreFetch();
             }
