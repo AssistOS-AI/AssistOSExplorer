@@ -64,7 +64,7 @@ These live in the application config module and can be overridden by environment
 The runtime performs self-initialization on startup so there's no manual provisioning step required in a fresh environment:
 
 1. **Create required storage structures** — data directory, credential directory, extensions directory.
-2. **Open SQLite and initialize schema** — the database file is created under `/data` and schema objects are created if missing.
+2. **Open SQLite and initialize schema** — the database file is created under `/data` and schema objects are created if missing. Initialization also disables persisted providers, models, and middleware bindings for the retired `search-builtin` and `headless-search` backends so an existing database cannot prevent startup after those backends move out of Soul Gateway.
 3. **Generate encryption key** if not provided — a random 32-byte key is written to `DATA_DIR/encryption.key` with 0600 permissions.
 4. **Discover middlewares** — scans built-in and extension middleware directories and syncs the middleware catalog rows into the database.
 5. **Install execution services** — creates the concurrency controller, spend cache, encryption key, and the shared cached pricing/model directory service. That directory is used for `external_directory` pricing lookups plus missing pricing/context/tag enrichment in management flows, and the runtime kicks off an initial best-effort background refresh.
@@ -79,7 +79,7 @@ Each step logs a structured event so the operator can see the initialization seq
 
 ## Historical data import
 
-The SQLite cutover intentionally starts from an empty database. Old Postgres data and `main`-branch historical data are not imported, and there is no importer in the SQLite deployment.
+The SQLite cutover intentionally starts from an empty database. Old Postgres data and `main`-branch historical data are not imported, and there is no broad importer in the SQLite deployment. The one targeted compatibility cleanup preserves but disables rows owned by the retired built-in search backends; search is now exposed through Ploinky agent discovery.
 
 ## Local and development DB reset
 

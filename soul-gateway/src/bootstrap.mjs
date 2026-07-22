@@ -57,8 +57,11 @@ export async function bootstrap() {
 
     // 2. Database — embedded SQLite inside the agent container
     const pool = await openDatabase(env);
-    await initializeSchema(pool);
-    log.info('sqlite database initialized', { path: env.SQLITE_PATH });
+    const schemaResult = await initializeSchema(pool);
+    log.info('sqlite database initialized', {
+        path: env.SQLITE_PATH,
+        ...schemaResult,
+    });
 
     // 3. Application context
     const appCtx = createAppContext({ config, pool, log });

@@ -69,6 +69,68 @@ export async function initializeSchema(db) {
     const schemaPath = new URL('./schema/sqlite-current.sql', import.meta.url);
     const sql = await readFile(schemaPath, 'utf8');
     await db.exec(sql);
+    return disableRetiredSearchProviders(db);
+}
+
+async function disableRetiredSearchProviders(db) {
+    const client = await db.connect();
+    try {
+        await client.query('BEGIN IMMEDIATE');
+        const bindings = await client.query(`
+            UPDATE middleware_bindings
+            SET enabled = false,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE enabled = true
+              AND (
+                  (scope = 'provider' AND target_id IN (
+                      SELECT id FROM providers
+                      WHERE kind = 'search'
+                         OR adapter_key IN ('search-builtin', 'headless-search')
+                  ))
+                  OR
+                  (scope = 'model' AND target_id IN (
+                      SELECT id FROM models
+                      WHERE provider_id IN (
+                          SELECT id FROM providers
+                          WHERE kind = 'search'
+                             OR adapter_key IN ('search-builtin', 'headless-search')
+                      )
+                  ))
+              )
+        `);
+        const models = await client.query(`
+            UPDATE models
+            SET enabled = false,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE enabled = true
+              AND provider_id IN (
+                  SELECT id FROM providers
+                  WHERE kind = 'search'
+                     OR adapter_key IN ('search-builtin', 'headless-search')
+              )
+        `);
+        const providers = await client.query(`
+            UPDATE providers
+            SET enabled = false,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE enabled = true
+              AND (
+                  kind = 'search'
+                  OR adapter_key IN ('search-builtin', 'headless-search')
+              )
+        `);
+        await client.query('COMMIT');
+        return {
+            retiredProviderCount: providers.rowCount,
+            retiredModelCount: models.rowCount,
+            retiredBindingCount: bindings.rowCount,
+        };
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+    } finally {
+        client.release();
+    }
 }
 
 export class SqliteDb {
