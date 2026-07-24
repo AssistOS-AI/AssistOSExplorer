@@ -81,7 +81,7 @@ describe('webchat references', () => {
             const uploadDir = path.join(root, 'uploads', 'sessionA');
             fs.mkdirSync(uploadDir, { recursive: true });
             fs.writeFileSync(path.join(uploadDir, 'notes.md'), 'uploaded note');
-            const { resources, warnings } = materializeWebchatAttachments([
+            const { resources, paths, warnings } = materializeWebchatAttachments([
                 {
                     filename: 'notes.md',
                     mime: 'text/markdown',
@@ -95,6 +95,73 @@ describe('webchat references', () => {
             assert.equal(resources[0].mime, 'text/markdown');
             assert.equal(resources[0].content, 'uploaded note');
             assert.equal(resources[0].localPath, 'uploads/sessionA/notes.md');
+            assert.deepEqual(paths, []);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('materializeWebchatAttachments accepts direct files under the active working directory', () => {
+        const root = makeWorkingDir('direct-attachment');
+        try {
+            fs.mkdirSync(path.join(root, 'documents'), { recursive: true });
+            fs.writeFileSync(path.join(root, 'documents', 'report.md'), 'direct upload');
+            const { resources, paths, warnings } = materializeWebchatAttachments([
+                {
+                    filename: 'report.md',
+                    mime: 'text/markdown',
+                    localPath: 'documents/report.md',
+                    downloadUrl: '/workspace-files/project/documents/report.md'
+                }
+            ], { workingDir: root, sharedRoot: path.join(root, 'shared') });
+            assert.deepEqual(warnings, []);
+            assert.equal(resources.length, 1);
+            assert.equal(resources[0].content, 'direct upload');
+            assert.equal(resources[0].localPath, 'documents/report.md');
+            assert.deepEqual(paths, []);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('materializeWebchatAttachments keeps large direct uploads available by path', () => {
+        const root = makeWorkingDir('large-direct-attachment');
+        try {
+            fs.mkdirSync(path.join(root, 'datasets'), { recursive: true });
+            fs.writeFileSync(path.join(root, 'datasets', 'large.bin'), Buffer.alloc((128 * 1024) + 1));
+            const { resources, paths, warnings } = materializeWebchatAttachments([
+                {
+                    filename: 'large.bin',
+                    mime: 'application/octet-stream',
+                    localPath: 'datasets/large.bin'
+                }
+            ], { workingDir: root, sharedRoot: path.join(root, 'shared') });
+            assert.equal(resources.length, 0);
+            assert.deepEqual(paths, [{
+                path: 'datasets/large.bin',
+                type: 'file',
+                label: 'large.bin'
+            }]);
+            assert.ok(warnings.some((entry) => entry.includes('inline limit') && entry.includes('datasets/large.bin')));
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('materializeWebchatAttachments rejects unsafe direct workspace paths', () => {
+        const root = makeWorkingDir('unsafe-direct-attachment');
+        try {
+            fs.writeFileSync(path.join(root, 'visible.txt'), 'visible');
+            const { resources, paths, warnings } = materializeWebchatAttachments([
+                { filename: 'absolute.txt', mime: 'text/plain', localPath: '/etc/passwd' },
+                { filename: 'traversal.txt', mime: 'text/plain', localPath: '../visible.txt' },
+                { filename: 'secret.txt', mime: 'text/plain', localPath: 'private/app.secrets' },
+                { filename: 'nested-secret.txt', mime: 'text/plain', localPath: 'private/app.secrets/token.txt' }
+            ], { workingDir: root, sharedRoot: path.join(root, 'shared') });
+            assert.equal(resources.length, 0);
+            assert.deepEqual(paths, []);
+            assert.equal(warnings.length, 4);
+            assert.ok(warnings.every((entry) => entry.includes('not a safe file')));
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }
@@ -121,7 +188,7 @@ describe('webchat references', () => {
                 }
             ], { workingDir: root, sharedRoot: path.join(root, 'shared') });
             assert.equal(resources.length, 0);
-            assert.ok(warnings.some((entry) => entry.includes('leak.txt') && entry.includes('not in supported')));
+            assert.ok(warnings.some((entry) => entry.includes('leak.txt') && entry.includes('not a safe file')));
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
             fs.rmSync(outside, { recursive: true, force: true });
