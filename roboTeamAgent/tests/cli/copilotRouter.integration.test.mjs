@@ -480,7 +480,7 @@ describe('copilot-router launcher integration', () => {
                         ok: true,
                         backend: BROWSER_USE_BACKEND,
                         provider: args.provider,
-                        viewerUrl: '/services/browser-use/sessions/sess_router_test',
+                        viewerUrl: '/base-agent-additional-server/browserUseAgent/7000/browser-use/sessions/sess_router_test',
                         sessionId: 'sess_router_test',
                         requires_user_action: true,
                     });
