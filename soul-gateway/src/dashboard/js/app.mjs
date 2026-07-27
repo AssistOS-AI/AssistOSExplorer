@@ -126,7 +126,7 @@ window.getModelPricingView = getModelPricingView;
 
 // ---- Ploinky-routed management helpers ----
 function resolveManagementBasePath() {
-    const marker = '/services/soul-gateway/management';
+    const marker = '/base-agent-additional-server/soul-gateway/7000/management';
     const pathname = window.location.pathname || '/management/';
     const markerIndex = pathname.indexOf(marker);
     if (markerIndex >= 0) {

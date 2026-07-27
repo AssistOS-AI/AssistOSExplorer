@@ -12,7 +12,7 @@ PROXIES_REPO="https://github.com/AssistOS-AI/proxies.git"
 BASIC_REPO="https://github.com/AssistOS-AI/Basic.git"
 CODE_DIR="$HOME/code"
 ROUTER_URL="${PLOINKY_ROUTER_URL:-http://localhost:${ROUTER_PORT:-8080}}"
-HEALTH_URL="${ROUTER_URL%/}/public-services/soul-gateway-health/"
+HEALTH_URL="${ROUTER_URL%/}/base-agent-additional-server/soul-gateway/7000/healthz/"
 PLOINKY_ADMIN_USER="${PLOINKY_ADMIN_USER:-admin}"
 
 echo "=== Soul Gateway Deploy ==="

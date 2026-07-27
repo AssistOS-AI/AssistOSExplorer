@@ -6,5 +6,5 @@
     "tooltip": "Configure Soul Gateway providers and models",
     "type": "global",
     "adminOnly": true,
-    "settingsUrl": "/services/soul-gateway/management/"
+    "settingsUrl": "/base-agent-additional-server/soul-gateway/7000/management/"
 }

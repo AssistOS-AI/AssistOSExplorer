@@ -8,8 +8,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
 
-const VALID_SERVICE_ACCESS = new Set(['public', 'guest', 'authenticated']);
-const REMOVED_SERVICE_FIELDS = ['auth', 'mode', 'forceGuest'];
 const LEGACY_ENV_PREFIXES = [
     ['SOUL', 'GATEWAY', 'PROVIDER'].join('_') + '_',
     ['LOCAL', 'LLM'].join('_') + '_',
@@ -19,33 +17,18 @@ function readManifest() {
     return JSON.parse(fs.readFileSync(path.join(repoRoot, 'manifest.json'), 'utf8'));
 }
 
-function assertModernHttpService(service, label) {
-    assert.ok(VALID_SERVICE_ACCESS.has(service.access), `${label} must declare access: public | guest | authenticated`);
-    assert.equal(service.port, 7000, `${label} must select the private Soul Gateway target`);
-    assert.match(service.slug, /^soul-gateway-(?:v1|management|health)$/);
-
-    for (const field of REMOVED_SERVICE_FIELDS) {
-        assert.equal(service[field], undefined, `${label} must not declare removed ${field} field`);
-    }
-}
-
-test('Ploinky HTTP services use the access schema', () => {
+test('Ploinky uses only the Router agent-port convention', () => {
     const manifest = readManifest();
-    const services = manifest.httpServices || [];
-    assert.equal(services.length, 3);
-
-    for (const service of services) {
-        assertModernHttpService(service, service.externalPrefix || 'http service');
-    }
+    assert.equal(Object.prototype.hasOwnProperty.call(manifest, 'httpServices'), false);
 });
 
-test('Ploinky service exposure matches the gateway contract', () => {
+test('Ploinky route policy matches the gateway contract', () => {
     const manifest = readManifest();
-    const services = new Map((manifest.httpServices || []).map((service) => [service.externalPrefix, service]));
+    const routes = new Map((manifest.routerAccess?.httpRoutes || []).map((route) => [route.path, route]));
 
-    assert.equal(services.get('/services/soul-gateway/v1/')?.access, 'public');
-    assert.equal(services.get('/services/soul-gateway/management/')?.access, 'authenticated');
-    assert.equal(services.get('/public-services/soul-gateway-health/')?.access, 'public');
+    assert.equal(routes.get('/base-agent-additional-server/soul-gateway/7000/v1/*')?.access, 'guest');
+    assert.equal(routes.get('/base-agent-additional-server/soul-gateway/7000/management/*')?.access, 'authenticated');
+    assert.equal(routes.get('/base-agent-additional-server/soul-gateway/7000/healthz/*')?.access, 'public');
 });
 
 test('Manifest does not declare runtime-injected agent identity keys', () => {

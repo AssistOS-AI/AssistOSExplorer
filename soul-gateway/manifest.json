@@ -9,36 +9,29 @@
     "readiness": {
         "protocol": "tcp"
     },
-    "httpServices": [
-        {
-            "slug": "soul-gateway-v1",
-            "port": 7000,
-            "externalPrefix": "/services/soul-gateway/v1/",
-            "internalPrefix": "/v1/",
-            "access": "public"
-        },
-        {
-            "slug": "soul-gateway-management",
-            "port": 7000,
-            "externalPrefix": "/services/soul-gateway/management/",
-            "internalPrefix": "/management/",
-            "access": "authenticated"
-        },
-        {
-            "slug": "soul-gateway-health",
-            "port": 7000,
-            "externalPrefix": "/public-services/soul-gateway-health/",
-            "internalPrefix": "/healthz/",
-            "access": "public"
-        }
-    ],
+    "routerAccess": {
+        "httpRoutes": [
+            {
+                "path": "/base-agent-additional-server/soul-gateway/7000/v1/*",
+                "access": "guest"
+            },
+            {
+                "path": "/base-agent-additional-server/soul-gateway/7000/management/*",
+                "access": "authenticated"
+            },
+            {
+                "path": "/base-agent-additional-server/soul-gateway/7000/healthz/*",
+                "access": "public"
+            }
+        ]
+    },
     "ideSettings": [
         {
             "key": "soul-gateway",
             "label": "Soul Gateway",
             "scope": "workspace",
             "pluginKey": "soul-gateway/soul-gateway",
-            "settingsUrl": "/services/soul-gateway/management/",
+            "settingsUrl": "/base-agent-additional-server/soul-gateway/7000/management/",
             "adminOnly": true
         }
     ],

@@ -16,8 +16,8 @@ if [ $# -eq 0 ]; then
 fi
 
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
-HEALTH_URL="$GATEWAY_URL/public-services/soul-gateway-health/"
-MANAGEMENT_BASE="$GATEWAY_URL/services/soul-gateway/management"
+HEALTH_URL="$GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/healthz/"
+MANAGEMENT_BASE="$GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/management"
 
 pretty_json() {
     node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)))"

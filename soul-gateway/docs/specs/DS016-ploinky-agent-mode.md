@@ -1,34 +1,39 @@
 # DS016 - Ploinky Agent Mode
 
-Soul Gateway has one deployment model: it is a Ploinky-managed agent with HTTP services. Browser-facing management access is protected by Ploinky's default login and protected-service identity. Public inference traffic still uses Soul Gateway API-key auth on `/v1/*`.
+Soul Gateway has one deployment model: it is a Ploinky-managed agent behind Router agent-port convention paths. Browser-facing management access is protected by Ploinky's default login and protected-service identity. Public inference traffic still uses Soul Gateway API-key auth on `/v1/*`.
 
 The old profile split is removed from active behavior. `SOUL_GATEWAY_MODE` and `TRUST_PLOINKY_ROUTER_AUTH` may be parsed for one release as deprecated no-op inputs, but they do not select behavior.
 
 Ploinky-managed startup uses the mounted `/code` checkout as the only runtime source. The manifest points `agent`, `cli`, and `install` to `/code`; startup rejects missing `/code/src` instead of falling back to source carried in the image.
 
-## HTTP Services
+## Router paths
 
-The manifest declares these service routes:
+The manifest declares these Router policy paths:
 
 | Slug | Private target | External Prefix | Internal Prefix | Access |
 |---|---:|---|---|---|
-| `soul-gateway-v1` | 7000 | `/services/soul-gateway/v1/` | `/v1/` | public |
-| `soul-gateway-management` | 7000 | `/services/soul-gateway/management/` | `/management/` | authenticated |
-| `soul-gateway-health` | 7000 | `/public-services/soul-gateway-health/` | `/healthz/` | public |
+| `soul-gateway-v1` | 7000 | `/base-agent-additional-server/soul-gateway/7000/v1/` | `/v1/` | guest |
+| `soul-gateway-management` | 7000 | `/base-agent-additional-server/soul-gateway/7000/management/` | `/management/` | authenticated |
+| `soul-gateway-health` | 7000 | `/base-agent-additional-server/soul-gateway/7000/healthz/` | `/healthz/` | public |
 
 The target is a Router-private loopback mapping inside the Box. It is not an
 outer Box publication or a directly supported host endpoint.
 
-The `/v1/` service is not protected by router login because sibling agents and external clients authenticate with `Authorization: Bearer <Soul Gateway API key>`. Requests without a valid Soul Gateway key fail before model execution. The management service is router-protected and receives authoritative identity from Ploinky. The health service is public for deployment smoke checks.
+The `/v1/` route is admitted as a Router guest route so POST requests do not
+require a Router login; sibling agents and external clients still authenticate
+with `Authorization: Bearer <Soul Gateway API key>`. Requests without a valid
+Soul Gateway key fail before model execution. The management route is
+router-protected and receives authoritative identity from Ploinky. The health
+route is public and read-only for deployment smoke checks.
 
-Production compatibility for `https://soul.axiologic.dev/v1/*` is provided by the reverse proxy rewriting to `/services/soul-gateway/v1/*`; direct publication of Soul Gateway's internal container port is not part of the contract.
+Production compatibility for `https://soul.axiologic.dev/v1/*` is provided by the reverse proxy rewriting to `/base-agent-additional-server/soul-gateway/7000/v1/*`; direct publication of Soul Gateway's internal container port is not part of the contract.
 
 ## Management Auth
 
 Management auth accepts only verified Ploinky protected-service identity:
 
 1. Read `x-ploinky-auth-info`, which contains the authenticated Ploinky user, `invocationToken`, and `invocationBody`.
-2. Verify the router-request JWT with this agent's injected `PLOINKY_AGENT_SECRET` for audience `agent:proxies/soul-gateway`, tool `__http_service__`, the signed request hash, and replay-protected `jti`.
+2. Verify the router-request JWT with this agent's injected `PLOINKY_AGENT_SECRET` for audience `agent:proxies/soul-gateway`, tool `__http_route__`, the signed request hash, and replay-protected `jti`.
 3. Require `admin` in the Ploinky user's roles.
 4. Reject requests that rely only on Soul Gateway cookies, bearer dashboard tokens, or caller-supplied identity headers.
 
@@ -221,9 +226,9 @@ Deployments that want the provider model catalog refresh job disabled set `PROVI
 
 `IDE-plugins/soul-gateway-settings/` is an AchillesIDE application plugin entry with policy key `soul-gateway/soul-gateway`. It remains `adminOnly: true`, so non-admin Explorer users do not see it.
 
-The entry declares `settingsUrl: "/services/soul-gateway/management/"`. Explorer's Settings button opens that local router-protected dashboard directly instead of loading a Soul Gateway settings modal. It relies on Ploinky auth cookies and protected-service forwarding. It does not implement Soul Gateway-specific auth.
+The entry declares `settingsUrl: "/base-agent-additional-server/soul-gateway/7000/management/"`. Explorer's Settings button opens that local router-protected dashboard directly instead of loading a Soul Gateway settings modal. It relies on Ploinky auth cookies and protected-service forwarding. It does not implement Soul Gateway-specific auth.
 
-The dashboard at `/services/soul-gateway/management/` is the canonical operator UI for providers, models, API keys, and observability. The settings entry must not point Explorer users at a direct container port or a remote Soul Gateway deployment.
+The dashboard at `/base-agent-additional-server/soul-gateway/7000/management/` is the canonical operator UI for providers, models, API keys, and observability. The settings entry must not point Explorer users at a direct container port or a remote Soul Gateway deployment.
 
 The dashboard has no Soul Gateway login form, no dashboard session token flow, and no CSRF/dashboard-cookie contract.
 

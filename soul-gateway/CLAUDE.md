@@ -13,9 +13,9 @@ Read the project specs before changing behavior:
 
 ## Deployment Model
 
-Soul Gateway has one deployment model: a Ploinky-managed agent with HTTP services. Public inference traffic enters through `/services/soul-gateway/v1/` and still requires Soul Gateway API-key auth. Browser-facing management enters through `/services/soul-gateway/management/`, protected by Ploinky login and verified protected-service identity. Health checks use `/public-services/soul-gateway-health/`.
+Soul Gateway has one deployment model: a Ploinky-managed agent behind Router agent-port convention paths. Public inference traffic enters through `/base-agent-additional-server/soul-gateway/7000/v1/` and still requires Soul Gateway API-key auth. Browser-facing management enters through `/base-agent-additional-server/soul-gateway/7000/management/`, protected by Ploinky login and verified protected-service identity. Health checks use `/base-agent-additional-server/soul-gateway/7000/healthz/`.
 
-Management UI is the router-protected dashboard at `/services/soul-gateway/management/`. Explorer exposes an admin-only `soul-gateway-settings` plugin entry whose Settings action opens that local dashboard directly; do not reintroduce a separate settings modal. See `docs/specs/DS016-ploinky-agent-mode.md` for the full contract.
+Management UI is the router-protected dashboard at `/base-agent-additional-server/soul-gateway/7000/management/`. Explorer exposes an admin-only `soul-gateway-settings` plugin entry whose Settings action opens that local dashboard directly; do not reintroduce a separate settings modal. See `docs/specs/DS016-ploinky-agent-mode.md` for the full contract.
 
 In Explorer deployments, the local Ploinky-managed Soul Gateway is the reference gateway. Agents present their generated signed-subject `PLOINKY_AGENT_API_KEY`, and the gateway verifies it with `PLOINKY_AGENT_API_PUBLIC_KEY`. The local gateway is the LLM hub with locally-owned `fast/plan/deep` tiers; it does not delegate to a remote gateway.
 
@@ -61,7 +61,7 @@ For provider transport changes, also run the relevant `achillesAgentLib` tests f
 Production runs at:
 
 - Public URL: `https://soul.axiologic.dev`
-- Health check: `https://soul.axiologic.dev/public-services/soul-gateway-health/`
+- Health check: `https://soul.axiologic.dev/base-agent-additional-server/soul-gateway/7000/healthz/`
 - Remote SSH target: `admin@45.136.70.141`
 - SSH key: `~/proxies_server_private_key.pem`
 - Remote workspace: `~/soulGateway`
@@ -74,7 +74,7 @@ Read-only SSH examples:
 
 ```bash
 ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'cd ~/soulGateway && ploinky status'
-ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'curl -s http://localhost:${ROUTER_PORT:-8080}/public-services/soul-gateway-health/'
+ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'curl -s http://localhost:${ROUTER_PORT:-8080}/base-agent-additional-server/soul-gateway/7000/healthz/'
 ssh -i ~/proxies_server_private_key.pem admin@45.136.70.141 'podman ps --format "table {{.Names}}\t{{.Status}}"'
 ```
 
@@ -84,4 +84,4 @@ Deployment and admin workflows live under `../.github/workflows/`:
 - `destroy-soul-gateway.yml` (`Destroy Soul Gateway`)
 - `soul-gateway-admin.yml` (`Soul Gateway Admin`)
 
-Prefer GitHub Actions for deploy/restart/status tasks. After any deploy or restart, verify `/public-services/soul-gateway-health/` through the Ploinky router and container status, and confirm the SQLite file exists at `${SQLITE_PATH:-/data/soul-gateway.sqlite3}` inside the Soul Gateway container.
+Prefer GitHub Actions for deploy/restart/status tasks. After any deploy or restart, verify `/base-agent-additional-server/soul-gateway/7000/healthz/` through the Ploinky router and container status, and confirm the SQLite file exists at `${SQLITE_PATH:-/data/soul-gateway.sqlite3}` inside the Soul Gateway container.

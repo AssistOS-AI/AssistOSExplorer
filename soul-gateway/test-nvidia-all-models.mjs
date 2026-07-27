@@ -10,8 +10,8 @@
  * Environment variables (only SOUL_API_KEY is required):
  *
  *   GATEWAY_URL          router base URL                default http://localhost:8080
- *   PUBLIC_BASE_URL      /v1 service URL                default $GATEWAY_URL/services/soul-gateway/v1
- *   MANAGEMENT_BASE_URL  management service URL         default $GATEWAY_URL/services/soul-gateway/management
+ *   PUBLIC_BASE_URL      /v1 service URL                default $GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/v1
+ *   MANAGEMENT_BASE_URL  management service URL         default $GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/management
  *   SOUL_API_KEY         sk-soul-... bearer for /v1     REQUIRED
  *   PLOINKY_AUTH_COOKIE  authenticated admin cookie     REQUIRED for management
  *   CONCURRENCY          parallel test workers          default 5
@@ -28,7 +28,7 @@
  *
  * Flow
  * ----
- *   1. GET  /services/soul-gateway/management/providers
+ *   1. GET  /base-agent-additional-server/soul-gateway/7000/management/providers
  *      with Ploinky admin auth               → find provider_key === 'nvidia'
  *   3. POST .../discover-models              → live NVIDIA NIM catalog
  *   4. Register all models in parallel       -> POST management /models
@@ -64,9 +64,9 @@
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
 const PUBLIC_BASE_URL =
-    process.env.PUBLIC_BASE_URL || `${GATEWAY_URL}/services/soul-gateway/v1`;
+    process.env.PUBLIC_BASE_URL || `${GATEWAY_URL}/base-agent-additional-server/soul-gateway/7000/v1`;
 const MANAGEMENT_BASE_URL =
-    process.env.MANAGEMENT_BASE_URL || `${GATEWAY_URL}/services/soul-gateway/management`;
+    process.env.MANAGEMENT_BASE_URL || `${GATEWAY_URL}/base-agent-additional-server/soul-gateway/7000/management`;
 const SOUL_API_KEY = process.env.SOUL_API_KEY || '';
 const PLOINKY_AUTH_COOKIE = process.env.PLOINKY_AUTH_COOKIE || '';
 const TEST_PLOINKY_AUTH_INFO = process.env.SG_TEST_PLOINKY_AUTH_INFO || '';

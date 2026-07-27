@@ -195,14 +195,14 @@ describe('router admin requireAdmin', () => {
     };
     const invocationBody = {
         method: 'GET',
-        externalPath: '/services/soul-gateway/management/providers',
+        externalPath: '/base-agent-additional-server/soul-gateway/7000/management/providers',
         path: '/management/providers',
         search: '',
         routeKey: 'soul-gateway',
         bodyHash: 'empty-body-hash',
     };
     const routerAuthOptions = {
-        verifyHttpServiceAuthInfo: mock.fn(() => ({
+        verifyHttpRouteAuthInfo: mock.fn(() => ({
             ok: true,
             payload: { sub: 'local:admin' },
         })),

@@ -3,7 +3,7 @@
  *
  * Soul Gateway management is protected by the Ploinky router. The router strips
  * caller-supplied identity headers, forwards authenticated user metadata, and
- * signs each protected HTTP service invocation. This module only accepts that
+ * signs each protected HTTP route invocation. This module only accepts that
  * verified router identity; the legacy dashboard password/session flow is gone.
  */
 

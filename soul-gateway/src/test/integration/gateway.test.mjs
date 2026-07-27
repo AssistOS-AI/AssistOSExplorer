@@ -3,9 +3,9 @@
  *
  * Defaults target the router service prefixes:
  *   GATEWAY_URL=http://localhost:8080
- *   GATEWAY_PUBLIC_BASE_URL=$GATEWAY_URL/services/soul-gateway/v1
- *   GATEWAY_MANAGEMENT_BASE_URL=$GATEWAY_URL/services/soul-gateway/management
- *   GATEWAY_HEALTH_URL=$GATEWAY_URL/public-services/soul-gateway-health/
+ *   GATEWAY_PUBLIC_BASE_URL=$GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/v1
+ *   GATEWAY_MANAGEMENT_BASE_URL=$GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/management
+ *   GATEWAY_HEALTH_URL=$GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/healthz/
  *
  * Public API tests need PLOINKY_AGENT_API_KEY or SOUL_API_KEY.
  * Management tests need either PLOINKY_AUTH_COOKIE for the router or
@@ -16,11 +16,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:8080';
-const PUBLIC_BASE = process.env.GATEWAY_PUBLIC_BASE_URL || `${GATEWAY_URL}/services/soul-gateway/v1`;
+const PUBLIC_BASE = process.env.GATEWAY_PUBLIC_BASE_URL || `${GATEWAY_URL}/base-agent-additional-server/soul-gateway/7000/v1`;
 const MANAGEMENT_BASE =
-    process.env.GATEWAY_MANAGEMENT_BASE_URL || `${GATEWAY_URL}/services/soul-gateway/management`;
+    process.env.GATEWAY_MANAGEMENT_BASE_URL || `${GATEWAY_URL}/base-agent-additional-server/soul-gateway/7000/management`;
 const HEALTH_URL =
-    process.env.GATEWAY_HEALTH_URL || `${GATEWAY_URL}/public-services/soul-gateway-health/`;
+    process.env.GATEWAY_HEALTH_URL || `${GATEWAY_URL}/base-agent-additional-server/soul-gateway/7000/healthz/`;
 const API_KEY = process.env.PLOINKY_AGENT_API_KEY || process.env.SOUL_API_KEY || '';
 const PLOINKY_AUTH_COOKIE = process.env.PLOINKY_AUTH_COOKIE || '';
 const TEST_PLOINKY_AUTH_INFO = process.env.SG_TEST_PLOINKY_AUTH_INFO || '';

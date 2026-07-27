@@ -16,7 +16,7 @@ export function readEnv(processEnv = process.env) {
         API_KEY_HASH_PEPPER: str(processEnv.API_KEY_HASH_PEPPER, null),
         // Deprecated dashboard-session settings. Parsed for one release so
         // old deployments do not fail env loading, but management auth ignores
-        // them and relies on Ploinky protected HTTP services.
+        // them and relies on Ploinky protected HTTP routes.
         ADMIN_SESSION_SIGNING_KEY: str(processEnv.ADMIN_SESSION_SIGNING_KEY, null),
         DASHBOARD_PASSWORD: str(processEnv.DASHBOARD_PASSWORD, null),
 

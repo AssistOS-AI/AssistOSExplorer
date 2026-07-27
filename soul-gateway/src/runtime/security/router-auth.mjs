@@ -1,8 +1,8 @@
 import { pathToFileURL } from 'node:url';
 
-const EXPECTED_TOOL = '__http_service__';
+const EXPECTED_TOOL = '__http_route__';
 
-let _verifyHttpServiceFn = null;
+let _verifyHttpRouteFn = null;
 let _replayCache = null;
 
 export class RouterAuthError extends Error {
@@ -27,21 +27,21 @@ function hasAdminRole(authInfo) {
     return Array.isArray(roles) && roles.includes('admin');
 }
 
-async function loadHttpServiceVerifier(config = {}) {
-    if (typeof config.verifyHttpServiceAuthInfo === 'function') {
-        return config.verifyHttpServiceAuthInfo;
+async function loadHttpRouteVerifier(config = {}) {
+    if (typeof config.verifyHttpRouteAuthInfo === 'function') {
+        return config.verifyHttpRouteAuthInfo;
     }
-    if (_verifyHttpServiceFn) return _verifyHttpServiceFn;
+    if (_verifyHttpRouteFn) return _verifyHttpRouteFn;
     try {
         const mod = await import(pathToFileURL('/Agent/lib/invocationAuth.mjs').href);
-        if (typeof mod.verifyHttpServiceAuthInfoFromHeaders === 'function') {
-            _verifyHttpServiceFn = mod.verifyHttpServiceAuthInfoFromHeaders;
-            return _verifyHttpServiceFn;
+        if (typeof mod.verifyHttpRouteAuthInfoFromHeaders === 'function') {
+            _verifyHttpRouteFn = mod.verifyHttpRouteAuthInfoFromHeaders;
+            return _verifyHttpRouteFn;
         }
     } catch {
-        throw new RouterAuthError('Ploinky HTTP service verifier not available');
+        throw new RouterAuthError('Ploinky HTTP route verifier not available');
     }
-    throw new RouterAuthError('Ploinky HTTP service verifier not available');
+    throw new RouterAuthError('Ploinky HTTP route verifier not available');
 }
 
 async function resolveReplayCache(config = {}) {
@@ -104,11 +104,11 @@ export async function authenticateRouterAdmin(req, config) {
         throw new RouterAuthError('Missing router invocation body');
     }
 
-    const verifyHttpServiceAuthInfo = await loadHttpServiceVerifier(config);
+    const verifyHttpRouteAuthInfo = await loadHttpRouteVerifier(config);
     const replayCache = await resolveReplayCache(config);
     const surface = requestSurface(req, authInfo.invocationBody);
 
-    const verified = await verifyHttpServiceAuthInfo(req.headers || {}, {
+    const verified = await verifyHttpRouteAuthInfo(req.headers || {}, {
         env: config?.env || config || process.env,
         replayCache,
         method: surface.method,

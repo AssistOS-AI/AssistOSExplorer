@@ -85,7 +85,7 @@ function computeRchHttp({ method, path, query, bodyHash }) {
         .digest('base64url');
 }
 
-function verifyHttpServiceAuthInfo(headers, {
+function verifyHttpRouteAuthInfo(headers, {
     env,
     replayCache,
     method,
@@ -137,7 +137,7 @@ function verifyHttpServiceAuthInfo(headers, {
     if (String(payload.aud || '') !== String(expectedAudience)) {
         return { ok: false, reason: 'jwtVerify: audience mismatch' };
     }
-    if (String(payload.tool || '') !== '__http_service__') {
+    if (String(payload.tool || '') !== '__http_route__') {
         return { ok: false, reason: 'jwtVerify: tool mismatch' };
     }
     if (String(payload.method || '') !== String(method || '').toUpperCase()) {
@@ -172,7 +172,7 @@ describe('authenticateRouterAdmin', () => {
     const agentSecret = '7'.repeat(64);
     const invocationBody = {
         method: 'GET',
-        externalPath: '/services/soul-gateway/management/providers',
+        externalPath: '/base-agent-additional-server/soul-gateway/7000/management/providers',
         path: '/management/providers',
         search: '',
         routeKey: 'soul-gateway',
@@ -184,7 +184,7 @@ describe('authenticateRouterAdmin', () => {
             PLOINKY_AGENT_PRINCIPAL: 'agent:proxies/soul-gateway',
             PLOINKY_AGENT_SECRET: agentSecret,
         },
-        verifyHttpServiceAuthInfo,
+        verifyHttpRouteAuthInfo,
         replayCache: createMemoryReplayCache(),
     };
 
@@ -214,7 +214,7 @@ describe('authenticateRouterAdmin', () => {
                 },
                 method: bodyObject.method,
                 path: bodyObject.path,
-                tool: '__http_service__',
+                tool: '__http_route__',
                 usr: {
                     sub: 'local:admin',
                     id: 'local:admin',
