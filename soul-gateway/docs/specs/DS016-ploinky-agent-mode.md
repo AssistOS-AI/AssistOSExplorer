@@ -10,11 +10,14 @@ Ploinky-managed startup uses the mounted `/code` checkout as the only runtime so
 
 The manifest declares these service routes:
 
-| External Prefix | Internal Prefix | Access |
-|---|---|---|
-| `/services/soul-gateway/v1/` | `/v1/` | public |
-| `/services/soul-gateway/management/` | `/management/` | authenticated |
-| `/public-services/soul-gateway-health/` | `/healthz/` | public |
+| Slug | Private target | External Prefix | Internal Prefix | Access |
+|---|---:|---|---|---|
+| `soul-gateway-v1` | 7000 | `/services/soul-gateway/v1/` | `/v1/` | public |
+| `soul-gateway-management` | 7000 | `/services/soul-gateway/management/` | `/management/` | authenticated |
+| `soul-gateway-health` | 7000 | `/public-services/soul-gateway-health/` | `/healthz/` | public |
+
+The target is a Router-private loopback mapping inside the Box. It is not an
+outer Box publication or a directly supported host endpoint.
 
 The `/v1/` service is not protected by router login because sibling agents and external clients authenticate with `Authorization: Bearer <Soul Gateway API key>`. Requests without a valid Soul Gateway key fail before model execution. The management service is router-protected and receives authoritative identity from Ploinky. The health service is public for deployment smoke checks.
 

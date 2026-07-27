@@ -11,16 +11,22 @@
     },
     "httpServices": [
         {
+            "slug": "soul-gateway-v1",
+            "port": 7000,
             "externalPrefix": "/services/soul-gateway/v1/",
             "internalPrefix": "/v1/",
-            "access": "guest"
+            "access": "public"
         },
         {
+            "slug": "soul-gateway-management",
+            "port": 7000,
             "externalPrefix": "/services/soul-gateway/management/",
             "internalPrefix": "/management/",
             "access": "authenticated"
         },
         {
+            "slug": "soul-gateway-health",
+            "port": 7000,
             "externalPrefix": "/public-services/soul-gateway-health/",
             "internalPrefix": "/healthz/",
             "access": "public"

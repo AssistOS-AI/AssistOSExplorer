@@ -21,6 +21,8 @@ function readManifest() {
 
 function assertModernHttpService(service, label) {
     assert.ok(VALID_SERVICE_ACCESS.has(service.access), `${label} must declare access: public | guest | authenticated`);
+    assert.equal(service.port, 7000, `${label} must select the private Soul Gateway target`);
+    assert.match(service.slug, /^soul-gateway-(?:v1|management|health)$/);
 
     for (const field of REMOVED_SERVICE_FIELDS) {
         assert.equal(service[field], undefined, `${label} must not declare removed ${field} field`);
@@ -41,7 +43,7 @@ test('Ploinky service exposure matches the gateway contract', () => {
     const manifest = readManifest();
     const services = new Map((manifest.httpServices || []).map((service) => [service.externalPrefix, service]));
 
-    assert.equal(services.get('/services/soul-gateway/v1/')?.access, 'guest');
+    assert.equal(services.get('/services/soul-gateway/v1/')?.access, 'public');
     assert.equal(services.get('/services/soul-gateway/management/')?.access, 'authenticated');
     assert.equal(services.get('/public-services/soul-gateway-health/')?.access, 'public');
 });

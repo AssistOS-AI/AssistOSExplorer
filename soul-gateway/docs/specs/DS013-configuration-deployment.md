@@ -194,7 +194,8 @@ Soul Gateway declares one default Ploinky-agent profile:
 - `agent`, `cli`, and `install` commands point at `/code`.
 - The container image supplies Node and system dependencies only; application source comes from the enabled repository checkout mounted by Ploinky.
 - `PORT=7000`.
-- `ports: []` so the public interface is the Ploinky router, not the internal container port.
+- All three `httpServices` select private target TCP `7000`; Ploinky assigns the
+  loopback-only inner mapping and the Box publishes no Soul Gateway port.
 - `PLOINKY_AGENT_API_KEY` is injected by the Ploinky launcher as a signed-subject key; it is not a manifest `sharedGeneratedSecret` field.
 - `/services/soul-gateway/v1/` uses router `access: "public"` because callers authenticate with a signed-subject API key.
 - `/services/soul-gateway/management/` uses router `access: "authenticated"` and requires Ploinky admin identity.
