@@ -465,6 +465,72 @@ describe('auto-provisioner.autoProvisionModels', () => {
         );
     });
 
+    it('reconciles updated Ploinky-agent model tags against their previous rows', async () => {
+        const existing = {
+            id: 'agent-model',
+            model_key: 'AchillesCLI/opencodeAgent/openai/gpt-5',
+            display_name: 'GPT-5',
+            provider_id: 'agent-provider',
+            provider_model_id: 'openai/gpt-5',
+            strategy_kind: 'direct',
+            discovery_source: 'synced',
+            enabled: true,
+            capabilities: {},
+            tags: ['coding', 'agentic'],
+            metadata: {
+                discoverySource: 'ploinky-agent-discovery',
+            },
+        };
+        let tierInput = null;
+        const stub = {
+            findByKey: async () => null,
+            listByProvider: async () => [existing],
+            create: async () => null,
+            update: async (_pool, id, fields) => ({ id, ...fields }),
+            disable: async () => null,
+            appendNewModelsToTagTiers: async (input) => {
+                tierInput = input;
+                return {
+                    scannedModels: input.models.length,
+                    updatedTiers: 3,
+                    appended: 1,
+                    removed: 2,
+                    createdTiers: 1,
+                    fallbackRemoved: 0,
+                };
+            },
+        };
+        const appCtx = createMockAppCtx({ log: createMockLog() });
+
+        const result = await withStubbedModelsDao(stub, (mod) =>
+            mod.syncProviderModels(
+                appCtx,
+                {
+                    id: 'agent-provider',
+                    provider_key: 'agent:AchillesCLI/opencodeAgent',
+                    adapter_key: 'ploinky-agent-openai',
+                    metadata: {
+                        discoverySource: 'ploinky-agent-discovery',
+                    },
+                },
+                [{
+                    modelId: 'openai/gpt-5',
+                    modelKey: existing.model_key,
+                    displayName: 'GPT-5',
+                    tags: ['coding-agent'],
+                    metadata: {
+                        discoverySource: 'ploinky-agent-discovery',
+                    },
+                }]
+            )
+        );
+
+        assert.deepEqual(tierInput.previousModels, [existing]);
+        assert.deepEqual(tierInput.models[0].tags, ['coding-agent']);
+        assert.equal(result.tagTierModelsRemoved, 2);
+        assert.equal(result.tagTiersCreated, 1);
+    });
+
     it('re-enables returning sync-disabled rows but preserves operator-disabled rows', async () => {
         const backendModule = {
             async discoverModels() {

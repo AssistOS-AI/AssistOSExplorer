@@ -45,6 +45,8 @@ describe('PREDEFINED_MODEL_TAGS', () => {
             'vision',
             'free',
             'coding',
+            'coding-agent',
+            'generic-agent',
             'reasoning',
             'agentic',
             'fast',
@@ -411,6 +413,48 @@ describe('enrichModelMetadata — precedence', () => {
             enriched.metadata.classifier.source,
             'model-metadata-classifier'
         );
+    });
+
+    it('preserves Ploinky-agent tags while filling structured directory metadata', () => {
+        const envelope = makeEnvelope({
+            providerKey: 'agent:AchillesCLI/opencodeAgent',
+            providerModelId: 'openai/gpt-5-codex',
+            modelKey: 'AchillesCLI/opencodeAgent/openai/gpt-5-codex',
+            tags: ['coding-agent'],
+            metadata: {
+                discoverySource: 'ploinky-agent-discovery',
+            },
+        });
+        const directory = {
+            lookupModel() {
+                return {
+                    id: 'openai/gpt-5-codex',
+                    canonicalSlug: 'openai/gpt-5-codex',
+                    matchedBy: 'id',
+                    pricingMode: 'token',
+                    inputPricePerMillion: 1,
+                    outputPricePerMillion: 2,
+                    requestPriceUsd: null,
+                    isFree: false,
+                    contextWindow: 128_000,
+                    maxOutputTokens: 16_384,
+                    supportsTools: true,
+                    supportsVision: false,
+                    tags: ['tool-calling', 'structured-outputs'],
+                };
+            },
+        };
+
+        const enriched = enrichModelMetadata(envelope, {
+            pricingDirectory: directory,
+        });
+
+        assert.deepEqual(enriched.tags, ['coding-agent']);
+        assert.equal(enriched.inputPricePerMillion, 1);
+        assert.equal(enriched.capabilities.contextWindow, 128_000);
+        assert.equal(enriched.capabilities.supportsTools, true);
+        assert.equal(enriched.metadata.openrouter.source, 'openrouter');
+        assert.equal(enriched.metadata.classifier, undefined);
     });
 
     it('can be called with enableClassifier:false to isolate directory precedence', () => {
