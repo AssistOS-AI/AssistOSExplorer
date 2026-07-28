@@ -60,6 +60,16 @@ describe('HelpSystem', () => {
         const commandsHelp = showHelp('commands');
         assert.ok(commandsHelp.includes('/model'), 'Command reference should include /model');
         assert.ok(commandsHelp.includes('/tier'), 'Command reference should include /tier');
+        assert.ok(commandsHelp.includes('/permissions'), 'Command reference should include /permissions');
+    });
+
+    it('should explain workspace confinement in /permissions help', async () => {
+        const { showHelp, getQuickReference } = await import('../achilles-cli/src/ui/HelpSystem.mjs');
+        const permissionsHelp = showHelp('permissions');
+        assert.ok(permissionsHelp.includes('ask-for-approval'));
+        assert.ok(permissionsHelp.includes('full-access'));
+        assert.ok(permissionsHelp.includes('current workspace'));
+        assert.ok(getQuickReference().includes('/permissions'));
     });
 
     it('should list model in command help entries', async () => {
