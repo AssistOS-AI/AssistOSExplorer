@@ -87,6 +87,40 @@ describe('Copilot launch extensions', () => {
         assert.equal(params.has('workspace-dir'), false);
     });
 
+    it('opens the workspace root from the Explorer Tools plugin context', () => {
+        setRuntimePlugins([{
+            copilotLaunch: {
+                query: { 'forward-envelope': '1' },
+                workspaceDirParam: 'workspace-dir'
+            }
+        }]);
+        const url = buildCopilotUrl({
+            currentPath: '/',
+            currentFsPath: '/workspace/project',
+            workspaceFsRoot: '/workspace/project'
+        });
+        const params = new URLSearchParams(url.slice('/webchat?'.length));
+        assert.equal(params.get('agent'), 'achilles-cli');
+        assert.equal(params.get('workspace-dir'), '.');
+        assert.equal(params.has('dir'), false);
+    });
+
+    it('opens the current Explorer folder from the Tools plugin context', () => {
+        setRuntimePlugins([{
+            copilotLaunch: {
+                workspaceDirParam: 'workspace-dir'
+            }
+        }]);
+        const url = buildCopilotUrl({
+            currentPath: '/ploinky',
+            currentFsPath: '/workspace/project/ploinky',
+            workspaceFsRoot: '/workspace/project'
+        });
+        const params = new URLSearchParams(url.slice('/webchat?'.length));
+        assert.equal(params.get('workspace-dir'), 'ploinky');
+        assert.equal(params.has('dir'), false);
+    });
+
     it('discovers only runtime plugins that declare a copilotLaunch object', () => {
         setRuntimePlugins([
             { copilotLaunch: { query: { enabled: '1' } } },
