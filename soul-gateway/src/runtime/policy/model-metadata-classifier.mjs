@@ -20,6 +20,11 @@
  *      tool-calling augmentation; never overwrites capability tags
  *      and never infers `free`).
  *
+ * Ploinky-agent model catalogs are the exception to tag enrichment. Their
+ * `tags` array is an agent-owned routing contract, so directory and classifier
+ * stages may still fill structured metadata but must preserve those tags
+ * exactly.
+ *
  * This module is a pure helper: no side effects, no network access,
  * no DB access. All state it reads comes from its inputs.
  */
@@ -39,18 +44,21 @@
  *     `long-context`, `instruction-following`, `multilingual`,
  *     `creative`, `writing`, `research`, `thinking`, `roleplay`,
  *     `finance`, `medical`)
+ *   - agent-owned umbrella tags (`coding-agent`, `generic-agent`)
  */
 export const PREDEFINED_MODEL_TAGS = Object.freeze([
     'agentic',
     'audio',
     'chat',
     'coding',
+    'coding-agent',
     'creative',
     'embeddings',
     'fast',
     'finance',
     'free',
     'function-calling',
+    'generic-agent',
     'instruction-following',
     'long-context',
     'medical',
@@ -394,7 +402,7 @@ function mergeDirectoryProvenance(existingMetadata, entry) {
     return metadata;
 }
 
-function applyDirectoryEntry(envelope, entry) {
+function applyDirectoryEntry(envelope, entry, { preserveTags = false } = {}) {
     const next = {
         ...envelope,
         capabilities: { ...(envelope.capabilities || {}) },
@@ -455,7 +463,7 @@ function applyDirectoryEntry(envelope, entry) {
         next.supportsVision = entry.supportsVision;
     }
 
-    if (Array.isArray(entry.tags) && entry.tags.length > 0) {
+    if (!preserveTags && Array.isArray(entry.tags) && entry.tags.length > 0) {
         next.tags = mergeCapabilityTags(envelope.tags, entry.tags, next);
     }
 
@@ -486,7 +494,7 @@ function mergeCuratedProvenance(existingMetadata, provenance) {
     return metadata;
 }
 
-function applyCuratedEntry(envelope, entry) {
+function applyCuratedEntry(envelope, entry, { preserveTags = false } = {}) {
     const next = {
         ...envelope,
         capabilities: { ...(envelope.capabilities || {}) },
@@ -535,7 +543,7 @@ function applyCuratedEntry(envelope, entry) {
         next.contextWindow = entry.contextWindow;
     }
 
-    if (Array.isArray(entry?.tags) && entry.tags.length > 0) {
+    if (!preserveTags && Array.isArray(entry?.tags) && entry.tags.length > 0) {
         next.tags = mergeCapabilityTags(envelope.tags, entry.tags, next);
     }
 
@@ -603,6 +611,8 @@ export function enrichModelMetadata(envelope, deps = {}) {
         throw new Error('enrichModelMetadata requires an envelope object');
     }
     const { pricingDirectory = null, enableClassifier = true } = deps;
+    const preserveTags =
+        envelope?.metadata?.discoverySource === 'ploinky-agent-discovery';
 
     let result = {
         ...envelope,
@@ -621,16 +631,16 @@ export function enrichModelMetadata(envelope, deps = {}) {
             }
         );
         if (entry) {
-            result = applyDirectoryEntry(result, entry);
+            result = applyDirectoryEntry(result, entry, { preserveTags });
         }
     }
 
     const curatedEntry = lookupCuratedModelMetadata(result);
     if (curatedEntry) {
-        result = applyCuratedEntry(result, curatedEntry);
+        result = applyCuratedEntry(result, curatedEntry, { preserveTags });
     }
 
-    if (enableClassifier) {
+    if (enableClassifier && !preserveTags) {
         result = applyClassifierTags(result);
     }
 

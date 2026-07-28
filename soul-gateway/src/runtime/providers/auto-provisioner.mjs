@@ -11,6 +11,7 @@ const MAX_DB_NUMERIC_14_8_ABS = 1_000_000;
 const SYNC_DISABLED_METADATA_KEY = 'syncDisabled';
 const OPERATOR_DISABLED_METADATA_KEYS = ['disabledBy'];
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000;
+const PLOINKY_AGENT_DISCOVERY_MARKER = 'ploinky-agent-discovery';
 
 function hasSyncDisabledMarker(row) {
     return Boolean(row?.metadata?.[SYNC_DISABLED_METADATA_KEY]);
@@ -543,6 +544,11 @@ export async function syncProviderModels(
     const discoveredModelKeys = new Set();
     const syncedModels = [];
     const createdModels = [];
+    const updatedAgentModels = [];
+    const previousAgentModels = [];
+    const isPloinkyAgentProvider =
+        normalizedProvider.metadata?.discoverySource ===
+        PLOINKY_AGENT_DISCOVERY_MARKER;
     let created = 0;
     let updated = 0;
     let disabled = 0;
@@ -594,6 +600,13 @@ export async function syncProviderModels(
                     discoverySource
                 );
                 syncedModels.push(updatedRow || racedExisting);
+                if (isPloinkyAgentProvider) {
+                    previousAgentModels.push(racedExisting);
+                    updatedAgentModels.push({
+                        ...racedExisting,
+                        ...(updatedRow || {}),
+                    });
+                }
                 updated++;
             }
             continue;
@@ -612,6 +625,13 @@ export async function syncProviderModels(
             discoverySource
         );
         syncedModels.push(updatedRow || existing);
+        if (isPloinkyAgentProvider) {
+            previousAgentModels.push(existing);
+            updatedAgentModels.push({
+                ...existing,
+                ...(updatedRow || {}),
+            });
+        }
         updated++;
     }
 
@@ -639,7 +659,11 @@ export async function syncProviderModels(
 
     const tagTierResult = await appendNewModelsToTagTiers({
         appCtx,
-        models: createdModels,
+        models: isPloinkyAgentProvider
+            ? [...createdModels, ...updatedAgentModels]
+            : createdModels,
+        previousModels: previousAgentModels,
+        createMissingTiers: isPloinkyAgentProvider,
     });
 
     if (
@@ -663,6 +687,8 @@ export async function syncProviderModels(
         updated,
         disabled,
         tagTierModelsAppended: tagTierResult.appended,
+        tagTierModelsRemoved: tagTierResult.removed,
+        tagTiersCreated: tagTierResult.createdTiers,
         tagTiersUpdated: tagTierResult.updatedTiers,
     });
 
@@ -672,6 +698,8 @@ export async function syncProviderModels(
         updated,
         disabled,
         tagTierModelsAppended: tagTierResult.appended,
+        tagTierModelsRemoved: tagTierResult.removed,
+        tagTiersCreated: tagTierResult.createdTiers,
         tagTiersUpdated: tagTierResult.updatedTiers,
         models: syncedModels,
     };

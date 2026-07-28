@@ -59,6 +59,14 @@ function modelKeyOf(row) {
     return row?.model_key || row?.modelKey || null;
 }
 
+function isAutoTagTier(row) {
+    const metadata = readMetadata(row);
+    return (
+        metadata.autoTagTier === true ||
+        metadata.seededBy === REFRESH_REASON
+    );
+}
+
 async function listAllModels(pool, dao) {
     const rows = [];
     for (let offset = 0; ; offset += MODEL_PAGE_SIZE) {
@@ -246,12 +254,16 @@ export async function bootstrapInitialTagTiers({
 export async function appendNewModelsToTagTiers({
     appCtx,
     models = [],
+    previousModels = [],
+    createMissingTiers = false,
     daos = DEFAULT_DAOS,
 } = {}) {
     const summary = {
         scannedModels: 0,
         updatedTiers: 0,
         appended: 0,
+        removed: 0,
+        createdTiers: 0,
         fallbackRemoved: 0,
     };
     const pool = appCtx?.pool;
@@ -261,30 +273,101 @@ export async function appendNewModelsToTagTiers({
 
     const tagSet = new Set(PREDEFINED_MODEL_TAGS);
     const { allModels, tiers } = await loadTagTiers(pool, daos.modelsDao, tagSet);
-    if (tiers.size === 0) return summary;
 
     const defaultAgent = String(
         appCtx?.config?.env?.LLM_DEFAULT_AGENT || ''
     ).trim();
     const defaultModel = findDefaultAgentModel(allModels, defaultAgent);
     const appendsByTag = new Map();
+    const currentModels = [];
+    const requestedTags = new Set();
+    const previousById = new Map(
+        previousModels
+            .filter((model) => model?.id)
+            .map((model) => [model.id, model])
+    );
 
     for (const model of models) {
         if (!isEnabled(model) || !isDirectModel(model)) continue;
         summary.scannedModels += 1;
+        currentModels.push(model);
         for (const tag of readTags(model)) {
-            if (!tagSet.has(tag) || !tiers.has(tag)) continue;
+            if (!tagSet.has(tag)) continue;
+            requestedTags.add(tag);
             if (!appendsByTag.has(tag)) appendsByTag.set(tag, []);
             appendsByTag.get(tag).push(model);
         }
     }
 
+    const existingByKey = new Map(
+        allModels.map((model) => [modelKeyOf(model), model])
+    );
+    for (const tag of requestedTags) {
+        if (tiers.has(tag)) continue;
+        if (!createMissingTiers) continue;
+        const conflicting = existingByKey.get(tag) || null;
+        if (conflicting) continue;
+        const tier = await daos.modelsDao.createCascade(pool, {
+            modelKey: tag,
+            displayName: tag,
+            enabled: true,
+            maxAttempts: DEFAULT_MAX_ATTEMPTS,
+            discoverySource: 'manual',
+            metadata: makeTierMetadata(tag),
+        });
+        if (!tier) continue;
+        tiers.set(tag, tier);
+        existingByKey.set(tag, tier);
+        summary.createdTiers += 1;
+    }
+
+    const childrenByTierId = new Map();
+    async function childrenFor(tier) {
+        if (!childrenByTierId.has(tier.id)) {
+            childrenByTierId.set(
+                tier.id,
+                await daos.modelChildrenDao.listForParent(pool, tier.id)
+            );
+        }
+        return childrenByTierId.get(tier.id);
+    }
+    const changedTierIds = new Set();
+
+    for (const model of currentModels) {
+        const previous = previousById.get(model.id);
+        if (!previous) continue;
+        const currentTags = new Set(readTags(model));
+        for (const oldTag of readTags(previous)) {
+            if (currentTags.has(oldTag) || !tagSet.has(oldTag)) continue;
+            const tier = tiers.get(oldTag);
+            if (!tier || !isAutoTagTier(tier)) continue;
+            const children = await childrenFor(tier);
+            if (!children.some((child) => child.child_model_id === model.id)) {
+                continue;
+            }
+            const removed = await daos.modelChildrenDao.removeChild(
+                pool,
+                tier.id,
+                model.id
+            );
+            if (!removed) continue;
+            childrenByTierId.set(
+                tier.id,
+                children.filter((child) => child.child_model_id !== model.id)
+            );
+            summary.removed += 1;
+            changedTierIds.add(tier.id);
+            appCtx.log?.info?.('tag-tier removed retagged model', {
+                tier: oldTag,
+                child: modelKeyOf(model),
+            });
+        }
+    }
+
     for (const [tag, newModels] of appendsByTag) {
         const tier = tiers.get(tag);
-        const existingChildren = await daos.modelChildrenDao.listForParent(
-            pool,
-            tier.id
-        );
+        if (!tier) continue;
+        const existingChildren = await childrenFor(tier);
         const existingIds = childModelIds(existingChildren);
         const uniqueNewModels = [];
         const pendingIds = new Set();
@@ -303,6 +386,14 @@ export async function appendNewModelsToTagTiers({
                 tier.id,
                 makeChildren(uniqueNewModels)
             );
+            childrenByTierId.set(
+                tier.id,
+                makeChildren(uniqueNewModels).map((child) => ({
+                    child_model_id: child.childModelId,
+                    priority: child.priority,
+                    enabled: child.enabled,
+                }))
+            );
             summary.fallbackRemoved += 1;
         } else {
             const maxPriority = existingChildren.reduce(
@@ -316,16 +407,23 @@ export async function appendNewModelsToTagTiers({
                     priority: maxPriority + index + 1,
                     enabled: true,
                 });
+                existingChildren.push({
+                    child_model_id: uniqueNewModels[index].id,
+                    priority: maxPriority + index + 1,
+                    enabled: true,
+                });
             }
         }
 
-        summary.updatedTiers += 1;
+        changedTierIds.add(tier.id);
         summary.appended += uniqueNewModels.length;
         appCtx.log?.info?.('tag-tier appended new models', {
             tier: tag,
             children: uniqueNewModels.map(modelKeyOf),
         });
     }
+
+    summary.updatedTiers = changedTierIds.size;
 
     return summary;
 }

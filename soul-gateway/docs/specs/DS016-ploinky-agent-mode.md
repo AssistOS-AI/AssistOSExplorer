@@ -123,7 +123,7 @@ Reconciliation runs at startup (before the initial runtime snapshot is installed
 
 1. Calls the discovery endpoint (see above) with the Soul Gateway agent's own signed-subject key.
 2. For each discovered agent, upserts one provider row keyed by `<subjectId>` (`agent:<repo>/<agent>`, kind `external_api`, auth_strategy `none`, adapter_key `ploinky-agent-openai`). The provider is the agent boundary.
-3. For each discovered provider, calls `GET /<routeKey>/v1/models` through the Ploinky router with an HTTP Agent Assertion for tool `__openai_models__`. The returned model descriptors are synchronized through the normal provider model sync path, so cost, limit, tag, capability, stale-disable, tag-tier, and runtime snapshot behavior matches other providers. If the model sync fails, reconciliation keeps a discovered fallback `default` model for that agent so the agent provider remains visible. The fallback is temporary: the first later sync that discovers one or more real agent models deletes the fallback row instead of leaving a disabled non-real model behind.
+3. For each discovered provider, calls `GET /<routeKey>/v1/models` through the Ploinky router with an HTTP Agent Assertion for tool `__openai_models__`. The returned model descriptors are synchronized through the normal provider model sync path for cost, limits, capabilities, stale-disable, and runtime snapshots. Agent-supplied tags are authoritative: directory and classifier enrichment must not add tag values. If the model sync fails, reconciliation keeps a discovered fallback `default` model for that agent so the agent provider remains visible. The fallback is temporary: the first later sync that discovers one or more real agent models deletes the fallback row instead of leaving a disabled non-real model behind.
 4. The `ploinky-agent-discovery` marker is stored in row metadata only. The `models.discovery_source` column remains the schema enum value `synced`.
 5. After any DB change, calls `performRuntimeRefresh(appCtx, { snapshot: true })` so routing sees the updated rows immediately. This refresh call is mandatory; omitting it leaves the runtime snapshot stale.
 6. Stale-disables previously-discovered providers that are absent from the latest discovery response, BUT ONLY when `complete === true`. An incomplete discovery pass must not disable any rows. Per-provider model disappearance is handled by the provider model sync path.
@@ -154,7 +154,7 @@ The response may be a plain array or an OpenAI-style wrapper:
         "inputPricePerMillion": 0.15,
         "outputPricePerMillion": 0.60
       },
-      "tags": ["fast", "chat", "tool-calling"],
+      "tags": ["coding-agent"],
       "capabilities": {},
       "metadata": {}
     }
@@ -165,11 +165,19 @@ The response may be a plain array or an OpenAI-style wrapper:
 `modelId` is required. `providerModelId` may be supplied; otherwise it defaults
 to `modelId`. For Ploinky agent providers, Soul Gateway creates persisted model
 keys as `<repo>/<agent>/<providerModelId>` and never exposes the internal
-`agent:` provider prefix as part of the model name. Missing costs, limits, tags,
-and capabilities are allowed and are filled only by existing classifier/directory
-fallbacks. AgentServer returns one fallback `default` model when the manifest
-does not declare `endpoints.models`, preserving existing agents while allowing
-new agents to expose richer catalogs.
+`agent:` provider prefix as part of the model name. Missing costs, limits, and
+capabilities may be filled by existing directory and curated metadata fallbacks.
+Tags are never filled or expanded by Soul Gateway; the agent's list is the exact
+functional routing contract. AgentServer returns one fallback `default` model
+when the manifest does not declare `endpoints.models`. That fallback uses
+normalized `manifest.capabilities.tags` when declared and otherwise uses the
+single umbrella tag `generic-agent`.
+
+`coding-agent` and `generic-agent` are predefined tag-tier keys. A Ploinky-agent
+resync reconciles the updated model against auto-generated tag tiers, removing
+only obsolete bindings for that model and adding its current bindings. Existing
+tier rows are not deleted or disabled, and ordinary provider models retain the
+standard classifier and directory tag enrichment behavior.
 
 In the management dashboard Models tab, Ploinky agent models are displayed under
 the agent provider path `<repo>/<agent>`, never under a top-level `agent:<repo>`

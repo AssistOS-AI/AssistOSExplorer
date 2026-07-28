@@ -28,7 +28,11 @@ function tier(key) {
         enabled: true,
         strategy_kind: 'cascade',
         tags: [],
-        metadata: {},
+        metadata: {
+            seededBy: 'tag-tier-bootstrap',
+            tagKey: key,
+            autoTagTier: true,
+        },
     };
 }
 
@@ -53,6 +57,7 @@ function makeDaos(models, existingChildren = {}) {
     const replacements = [];
     const createdBindings = [];
     const createdCascade = [];
+    const removedBindings = [];
     const childrenByParent = new Map(Object.entries(existingChildren));
     const modelRows = models.map((model) => ({ ...model }));
 
@@ -60,6 +65,7 @@ function makeDaos(models, existingChildren = {}) {
         replacements,
         createdBindings,
         createdCascade,
+        removedBindings,
         modelsDao: {
             async list(_pool, options = {}) {
                 if ((options.offset || 0) > 0) return [];
@@ -113,6 +119,15 @@ function makeDaos(models, existingChildren = {}) {
                     enabled: child.enabled ?? true,
                 });
                 return { id: `binding-${child.childModelId}`, ...child };
+            },
+            async removeChild(_pool, parentModelId, childModelId) {
+                removedBindings.push({ parentModelId, childModelId });
+                const children = childrenByParent.get(parentModelId) || [];
+                const next = children.filter(
+                    (child) => child.child_model_id !== childModelId
+                );
+                childrenByParent.set(parentModelId, next);
+                return next.length !== children.length;
             },
         },
     };
@@ -377,5 +392,62 @@ describe('appendNewModelsToTagTiers', () => {
                 enabled: true,
             },
         ]);
+    });
+
+    it('moves a retagged agent model between auto-generated tag tiers', async () => {
+        const previous = directModel({
+            id: 'opencode-model',
+            key: 'AchillesCLI/opencodeAgent/openai/gpt-5',
+            providerId: 'agent-provider',
+            tags: ['coding', 'agentic'],
+        });
+        const current = {
+            ...previous,
+            tags: ['coding-agent'],
+        };
+        const daos = makeDaos(
+            [
+                DEFAULT_MODEL,
+                current,
+                tier('coding'),
+                tier('agentic'),
+            ],
+            {
+                'tier-coding': [{
+                    child_model_id: current.id,
+                    priority: 1,
+                    enabled: true,
+                }],
+                'tier-agentic': [{
+                    child_model_id: current.id,
+                    priority: 1,
+                    enabled: true,
+                }],
+            }
+        );
+
+        const summary = await appendNewModelsToTagTiers({
+            appCtx: makeAppCtx(),
+            daos,
+            models: [current],
+            previousModels: [previous],
+            createMissingTiers: true,
+        });
+
+        assert.equal(summary.createdTiers, 1);
+        assert.equal(summary.removed, 2);
+        assert.equal(summary.appended, 1);
+        assert.deepEqual(daos.removedBindings, [
+            { parentModelId: 'tier-coding', childModelId: current.id },
+            { parentModelId: 'tier-agentic', childModelId: current.id },
+        ]);
+        assert.equal(
+            daos.createdCascade[0].modelKey,
+            'coding-agent'
+        );
+        assert.equal(
+            daos.createdBindings.at(-1).parentModelId,
+            'tier-coding-agent'
+        );
     });
 });
