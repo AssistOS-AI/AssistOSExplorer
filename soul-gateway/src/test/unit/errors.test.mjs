@@ -7,6 +7,7 @@ import {
     ExpiredApiKeyError,
     RevokedApiKeyError,
     BadRequestError,
+    PayloadTooLargeError,
     ValidationError,
     UnsupportedFormatError,
     ModelNotFoundError,
@@ -48,6 +49,15 @@ describe('Error taxonomy', () => {
         [ExpiredApiKeyError, [], 403, 'api_key_expired', false, false, false],
         [RevokedApiKeyError, [], 403, 'api_key_revoked', false, false, false],
         [BadRequestError, [], 400, 'bad_request', false, false, false],
+        [
+            PayloadTooLargeError,
+            [5_242_880],
+            413,
+            'payload_too_large',
+            false,
+            false,
+            false,
+        ],
         [ValidationError, [], 400, 'validation_error', false, false, false],
         [
             UnsupportedFormatError,
@@ -261,8 +271,8 @@ describe('Error taxonomy', () => {
         });
     }
 
-    it('covers all 27 error types from the design doc', () => {
-        assert.equal(errorSpecs.length, 27, 'should have 27 error classes');
+    it('covers all 28 error types from the design doc', () => {
+        assert.equal(errorSpecs.length, 28, 'should have 28 error classes');
     });
 });
 

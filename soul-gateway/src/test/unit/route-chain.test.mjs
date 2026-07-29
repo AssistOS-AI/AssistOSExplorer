@@ -436,6 +436,27 @@ describe('respondMiddleware', () => {
 });
 
 describe('errorBoundaryMiddleware', () => {
+    it('returns a structured 413 response for an oversized request body', async () => {
+        const res = makeFakeRes();
+        const ctx = makeKernelCtx({
+            req: makeFakeReq('x'.repeat(100)),
+            res,
+            appCtx: makeAppCtx({ env: { BODY_LIMIT_BYTES: 50 } }),
+        });
+
+        const chain = compose([
+            errorBoundaryMiddleware(),
+            parseBodyMiddleware(),
+        ]);
+
+        await chain(ctx);
+        assert.equal(res.captured.status, 413);
+        const body = JSON.parse(res.captured.body);
+        assert.equal(body.error.type, 'payload_too_large');
+        assert.equal(body.error.detail.limit_bytes, 50);
+        assert.match(body.error.message, /Reduce the request size/);
+    });
+
     it('catches a GatewayError and writes a structured error body', async () => {
         const res = makeFakeRes();
         const ctx = makeKernelCtx({

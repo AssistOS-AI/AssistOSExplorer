@@ -86,6 +86,20 @@ export class BadRequestError extends GatewayError {
     }
 }
 
+export class PayloadTooLargeError extends GatewayError {
+    constructor(limitBytes, message = null) {
+        super(
+            message ||
+                `Request body exceeds the ${limitBytes}-byte limit. Reduce the request size and retry.`,
+            {
+                httpStatus: HTTP_STATUS.PAYLOAD_TOO_LARGE,
+                errorType: ERROR_TYPES.PAYLOAD_TOO_LARGE,
+                detail: { limit_bytes: limitBytes },
+            }
+        );
+    }
+}
+
 export class ValidationError extends GatewayError {
     constructor(message = ERROR_MESSAGES.VALIDATION_FAILED) {
         super(message, {

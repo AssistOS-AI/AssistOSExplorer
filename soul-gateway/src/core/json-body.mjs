@@ -1,4 +1,4 @@
-import { BadRequestError } from './errors.mjs';
+import { BadRequestError, PayloadTooLargeError } from './errors.mjs';
 
 /**
  * Read the full request body and parse it as JSON.
@@ -8,22 +8,26 @@ export function readJsonBody(req, limitBytes = 5_242_880) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         let bytes = 0;
+        let oversized = false;
 
         req.on('data', (chunk) => {
+            if (oversized) {
+                return;
+            }
             bytes += chunk.length;
             if (bytes > limitBytes) {
-                req.destroy();
-                reject(
-                    new BadRequestError(
-                        `Request body exceeds ${limitBytes} bytes`
-                    )
-                );
+                oversized = true;
+                chunks.length = 0;
+                reject(new PayloadTooLargeError(limitBytes));
                 return;
             }
             chunks.push(chunk);
         });
 
         req.on('end', () => {
+            if (oversized) {
+                return;
+            }
             if (bytes === 0) {
                 resolve(null);
                 return;
@@ -35,6 +39,10 @@ export function readJsonBody(req, limitBytes = 5_242_880) {
             }
         });
 
-        req.on('error', (err) => reject(err));
+        req.on('error', (err) => {
+            if (!oversized) {
+                reject(err);
+            }
+        });
     });
 }
