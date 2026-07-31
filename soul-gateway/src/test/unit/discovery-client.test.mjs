@@ -16,6 +16,8 @@ import {
     computeRchHttp,
     sha256RawBodyHash,
 } from '../../runtime/backends/ploinky/request-hash.mjs';
+import { fakeRouterDescriptorOptions } from '../helpers/fake-router-descriptor.mjs';
+import { __routerDescriptorTestables } from '../../ploinky/router-descriptor.mjs';
 
 const SILENT_LOG = {
     debug() {},
@@ -74,7 +76,23 @@ function validAgent(overrides = {}) {
     };
 }
 
+function descriptorOptions(routerUrl) {
+    const port = new URL(routerUrl).port;
+    return fakeRouterDescriptorOptions({
+        physicalOrigin: routerUrl,
+        requestAuthority: `router.test:${port}`,
+        agentPrincipal: AGENT_ID,
+    });
+}
+
 describe('discovery-client config helpers', () => {
+    it('loads the descriptor verifier from the mounted Ploinky Agent runtime', () => {
+        assert.equal(
+            __routerDescriptorTestables.MOUNTED_DESCRIPTOR_VERIFIER,
+            '/Agent/client/generatedRouterDescriptor.mjs',
+        );
+    });
+
     it('reads PLOINKY_* from config.env', () => {
         const config = {
             env: {
@@ -190,6 +208,38 @@ describe('validateDiscoveryResponse', () => {
 });
 
 describe('discoverPloinkyAgents', () => {
+    it('rejects an unverified descriptor before reading the agent secret or opening a socket', async () => {
+        await withServer(
+            () => ({ status: 200, body: { complete: true, agents: [] } }),
+            async ({ routerUrl, captured }) => {
+                let secretReads = 0;
+                const env = {
+                    PLOINKY_ROUTER_URL: routerUrl,
+                    PLOINKY_AGENT_ID: AGENT_ID,
+                    get PLOINKY_AGENT_SECRET() {
+                        secretReads += 1;
+                        return SECRET_HEX;
+                    },
+                };
+                const result = await discoverPloinkyAgents({ env }, {
+                    log: SILENT_LOG,
+                    descriptorEnv: {},
+                    loadDescriptorVerifier: async () => ({
+                        loadVerifiedGeneratedRouterDescriptor() {
+                            throw new Error('descriptor signature invalid');
+                        },
+                        resolveGeneratedRouterOperation() {
+                            throw new Error('must not resolve');
+                        },
+                    }),
+                });
+                assert.deepEqual(result, { complete: false, agents: [] });
+                assert.equal(secretReads, 0);
+                assert.equal(captured.method, null);
+            }
+        );
+    });
+
     it('fetches, sends the bearer assertion, and returns validated data', async () => {
         await withServer(
             () => ({
@@ -205,7 +255,7 @@ describe('discoverPloinkyAgents', () => {
                             PLOINKY_AGENT_SECRET: SECRET_HEX,
                         },
                     },
-                    { log: SILENT_LOG }
+                    { log: SILENT_LOG, ...descriptorOptions(routerUrl) }
                 );
 
                 assert.equal(result.complete, true);
@@ -219,6 +269,7 @@ describe('discoverPloinkyAgents', () => {
                     captured.headers.authorization,
                     /^Bearer [\w-]+\.[\w-]+\.[\w-]+$/
                 );
+                assert.equal(captured.headers.host, `router.test:${new URL(routerUrl).port}`);
             }
         );
     });
@@ -235,7 +286,7 @@ describe('discoverPloinkyAgents', () => {
                             PLOINKY_AGENT_SECRET: SECRET_HEX,
                         },
                     },
-                    { log: SILENT_LOG }
+                    { log: SILENT_LOG, ...descriptorOptions(routerUrl) }
                 );
                 assert.deepEqual(result, { complete: false, agents: [] });
             }
@@ -254,7 +305,7 @@ describe('discoverPloinkyAgents', () => {
                             PLOINKY_AGENT_SECRET: SECRET_HEX,
                         },
                     },
-                    { log: SILENT_LOG }
+                    { log: SILENT_LOG, ...descriptorOptions(routerUrl) }
                 );
                 assert.deepEqual(result, { complete: false, agents: [] });
             }
@@ -283,7 +334,7 @@ describe('discoverPloinkyAgents', () => {
                     PLOINKY_AGENT_SECRET: SECRET_HEX,
                 },
             },
-            { log: SILENT_LOG, timeoutMs: 2000 }
+            { log: SILENT_LOG, timeoutMs: 2000, ...descriptorOptions(routerUrl) }
         );
         assert.deepEqual(result, { complete: false, agents: [] });
     });

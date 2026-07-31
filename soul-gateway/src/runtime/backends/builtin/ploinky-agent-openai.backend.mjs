@@ -47,6 +47,7 @@ import {
     signOpenAiModelsAssertion,
     readAgentSecretBuffer,
 } from '../ploinky/agent-assertion.mjs';
+import { loadVerifiedPloinkyRouterDescriptor } from '../../../ploinky/router-descriptor.mjs';
 
 const PROVIDER_LABEL = 'ploinky-agent-openai';
 
@@ -79,13 +80,35 @@ const manifest = {
  * @param {object} [envOverride]
  * @returns {{ routerUrl: string, agentId: string, secretHex: string }}
  */
-function readPloinkyConfig(envOverride) {
+function readPloinkyPrincipalConfig(envOverride) {
     const env = envOverride || process.env;
     return {
         routerUrl: String(env.PLOINKY_ROUTER_URL || '').trim(),
         agentId: String(env.PLOINKY_AGENT_ID || '').trim(),
-        secretHex: String(env.PLOINKY_AGENT_SECRET || '').trim(),
     };
+}
+
+function readPloinkySecret(envOverride) {
+    const env = envOverride || process.env;
+    return String(env.PLOINKY_AGENT_SECRET || '').trim();
+}
+
+async function resolveVerifiedRouter(ctx, providerRecord) {
+    const runtime = await loadVerifiedPloinkyRouterDescriptor({
+        env: ctx?.routerDescriptorEnv || process.env,
+        loadVerifier: ctx?.loadDescriptorVerifier,
+    });
+    const configuredOrigin = String(ctx?.env?.PLOINKY_ROUTER_URL || '').trim();
+    const providerOrigin = String(providerRecord?.baseUrl || providerRecord?.base_url || '').trim();
+    for (const [label, origin] of [
+        ['PLOINKY_ROUTER_URL', configuredOrigin],
+        ['provider base_url', providerOrigin],
+    ]) {
+        if (origin && origin.replace(/\/+$/, '') !== runtime.physicalOrigin) {
+            throw new Error(`${label} disagrees with the verified Router physical origin`);
+        }
+    }
+    return runtime;
 }
 
 /**
@@ -189,31 +212,25 @@ export const backendModule = {
     },
 
     async discoverModels(ctx) {
-        const { routerUrl, agentId, secretHex } = readPloinkyConfig(
-            ctx?.env
-        );
+        const runtime = await resolveVerifiedRouter(ctx, ctx?.providerRecord);
         const { routeKey, subjectId } = readProviderMetadata(
             ctx?.providerRecord
         );
-        const baseUrl = String(
-            ctx?.providerRecord?.baseUrl || routerUrl || ''
-        ).trim();
-        if (!baseUrl) {
-            throw new Error(
-                'Ploinky agent model discovery requires PLOINKY_ROUTER_URL (or provider base_url)'
-            );
-        }
         if (!routeKey) {
             throw new Error(
                 'Ploinky agent model discovery requires provider metadata.routeKey'
             );
+        }
+        const { agentId } = readPloinkyPrincipalConfig(ctx?.env);
+        if (runtime.agentPrincipal !== agentId) {
+            throw new Error('PLOINKY_AGENT_ID disagrees with the verified Router descriptor');
         }
         if (!agentId) {
             throw new Error(
                 'Ploinky agent model discovery requires PLOINKY_AGENT_ID'
             );
         }
-        const secret = readAgentSecretBuffer(secretHex);
+        const secret = readAgentSecretBuffer(readPloinkySecret(ctx?.env));
         if (!secret) {
             throw new Error(
                 'Ploinky agent model discovery requires a hex PLOINKY_AGENT_SECRET'
@@ -225,10 +242,11 @@ export const backendModule = {
             secret,
             self: agentId,
         });
-        const url = buildModelsUrl(baseUrl, routeKey);
+        const url = runtime.resolveOperation(`/${routeKey}/v1/models`);
         const parsed = await requestJson(url, 'GET', {
             Authorization: `Bearer ${assertion}`,
             Accept: 'application/json',
+            Host: runtime.requestAuthority,
         }, null, ctx?.signal);
         return normalizeModelsResponse(parsed, {
             providerMetadata: ctx?.providerRecord?.metadata || {},
@@ -245,28 +263,23 @@ export const backendModule = {
             signal,
         } = ctx;
 
-        const { routerUrl, agentId, secretHex } = readPloinkyConfig(
-            ctx.env
-        );
+        const runtime = await resolveVerifiedRouter(ctx, providerRecord);
         const { routeKey, subjectId } = readProviderMetadata(providerRecord);
-
-        const baseUrl = String(providerRecord.baseUrl || routerUrl || '').trim();
-        if (!baseUrl) {
-            throw new Error(
-                'Ploinky agent backend requires PLOINKY_ROUTER_URL (or provider base_url)'
-            );
-        }
         if (!routeKey) {
             throw new Error(
                 'Ploinky agent backend requires provider metadata.routeKey'
             );
+        }
+        const { agentId } = readPloinkyPrincipalConfig(ctx.env);
+        if (runtime.agentPrincipal !== agentId) {
+            throw new Error('PLOINKY_AGENT_ID disagrees with the verified Router descriptor');
         }
         if (!agentId) {
             throw new Error(
                 'Ploinky agent backend requires PLOINKY_AGENT_ID'
             );
         }
-        const secret = readAgentSecretBuffer(secretHex);
+        const secret = readAgentSecretBuffer(readPloinkySecret(ctx.env));
         if (!secret) {
             throw new Error(
                 'Ploinky agent backend requires a hex PLOINKY_AGENT_SECRET'
@@ -290,10 +303,11 @@ export const backendModule = {
             self: agentId,
         });
 
-        const url = buildRouterUrl(baseUrl, routeKey);
+        const url = runtime.resolveOperation(`/${routeKey}/v1/chat/completions`);
         const headers = {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${assertion}`,
+            Host: runtime.requestAuthority,
         };
 
         const stream = makeOpenAiCompletionStream(url, headers, bodyBytes, signal, {

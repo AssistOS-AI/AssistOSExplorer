@@ -40,6 +40,7 @@ import {
     computeRchHttp,
     sha256RawBodyHash,
 } from '../runtime/backends/ploinky/request-hash.mjs';
+import { loadVerifiedPloinkyRouterDescriptor } from './router-descriptor.mjs';
 
 // The router-internal HTTP path of the discovery endpoint. This is the path the
 // router verifies the assertion against (the `/<routeKey>` mount prefix, if
@@ -93,8 +94,10 @@ export function readDiscoveryConfig(config) {
  * @returns {boolean}
  */
 export function isDiscoveryConfigured(config) {
-    const { routerUrl, agentId, secretHex } = readDiscoveryConfig(config);
-    return Boolean(routerUrl && agentId && secretHex);
+    const env = config?.env && typeof config.env === 'object' ? config.env : config || {};
+    const routerUrl = String(env.PLOINKY_ROUTER_URL ?? config?.PLOINKY_ROUTER_URL ?? '').trim();
+    const agentId = String(env.PLOINKY_AGENT_ID ?? config?.PLOINKY_AGENT_ID ?? '').trim();
+    return Boolean(routerUrl && agentId);
 }
 
 /**
@@ -242,20 +245,32 @@ export async function discoverPloinkyAgents(config, options = {}) {
     const log = options.log || NOOP_LOGGER;
     const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
 
-    const { routerUrl, agentId, secretHex } = readDiscoveryConfig(config);
-    if (!routerUrl || !agentId || !secretHex) {
+    const configEnv = config?.env && typeof config.env === 'object' ? config.env : config || {};
+    const routerUrl = String(configEnv.PLOINKY_ROUTER_URL ?? config?.PLOINKY_ROUTER_URL ?? '').trim();
+    const agentId = String(configEnv.PLOINKY_AGENT_ID ?? config?.PLOINKY_AGENT_ID ?? '').trim();
+    if (!routerUrl || !agentId) {
         log.debug?.('ploinky discovery skipped: incomplete transport config', {
             hasRouterUrl: Boolean(routerUrl),
             hasAgentId: Boolean(agentId),
-            hasSecret: Boolean(secretHex),
         });
         return { ...EMPTY_DISCOVERY };
     }
 
     let url;
     let assertion;
+    let runtime;
     try {
-        url = buildDiscoveryUrl(routerUrl);
+        runtime = await loadVerifiedPloinkyRouterDescriptor({
+            env: options.descriptorEnv || process.env,
+            loadVerifier: options.loadDescriptorVerifier,
+        });
+        if (runtime.physicalOrigin !== routerUrl || runtime.agentPrincipal !== agentId) {
+            throw new Error('Signed Router descriptor disagrees with discovery runtime mirrors.');
+        }
+        url = runtime.resolveOperation(DISCOVERY_PATH);
+        const secretHex = String(
+            configEnv.PLOINKY_AGENT_SECRET ?? config?.PLOINKY_AGENT_SECRET ?? '',
+        ).trim();
         assertion = signDiscoveryAssertion({
             agentId,
             secretHex,
@@ -269,6 +284,7 @@ export async function discoverPloinkyAgents(config, options = {}) {
     const headers = {
         Authorization: `Bearer ${assertion}`,
         Accept: 'application/json',
+        Host: runtime.requestAuthority,
     };
 
     const res = await httpGet(url, headers, timeoutMs);

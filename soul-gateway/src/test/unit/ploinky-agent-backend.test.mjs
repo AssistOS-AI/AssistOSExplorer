@@ -30,6 +30,7 @@ import {
     signOpenAiModelsAssertion,
     readAgentSecretBuffer,
 } from '../../runtime/backends/ploinky/agent-assertion.mjs';
+import { fakeRouterDescriptorOptions } from '../helpers/fake-router-descriptor.mjs';
 
 // A deterministic 32-byte hex secret (matches the golden-vector computation).
 const SECRET_HEX =
@@ -101,6 +102,11 @@ async function startCaptureServer(options = {}) {
 }
 
 function makeCtx({ baseUrl, messages, env, supportsStreaming = false }) {
+    const descriptor = fakeRouterDescriptorOptions({
+        physicalOrigin: baseUrl,
+        requestAuthority: `router.test:${new URL(baseUrl).port}`,
+        agentPrincipal: AGENT_ID,
+    });
     return {
         requestId: 'req-1',
         request: { messages },
@@ -120,6 +126,8 @@ function makeCtx({ baseUrl, messages, env, supportsStreaming = false }) {
             },
         },
         env,
+        routerDescriptorEnv: descriptor.descriptorEnv,
+        loadDescriptorVerifier: descriptor.loadDescriptorVerifier,
         signal: undefined,
     };
 }
@@ -309,6 +317,48 @@ describe('ploinky-agent-openai backend execute()', () => {
         };
     });
 
+    it('rejects an unverified descriptor before reading the agent secret', async () => {
+        let secretReads = 0;
+        const ctx = makeCtx({
+            baseUrl: 'http://127.0.0.1:1',
+            messages: [{ role: 'user', content: 'x' }],
+            env: {
+                PLOINKY_AGENT_ID: AGENT_ID,
+                get PLOINKY_AGENT_SECRET() {
+                    secretReads += 1;
+                    return SECRET_HEX;
+                },
+            },
+        });
+        ctx.loadDescriptorVerifier = async () => ({
+            loadVerifiedGeneratedRouterDescriptor() {
+                throw new Error('descriptor signature invalid');
+            },
+            resolveGeneratedRouterOperation() {
+                throw new Error('must not resolve');
+            },
+        });
+        await assert.rejects(() => backendModule.execute(ctx), /descriptor signature invalid/);
+        assert.equal(secretReads, 0);
+    });
+
+    it('rejects a principal mismatch before reading the agent secret', async () => {
+        let secretReads = 0;
+        const ctx = makeCtx({
+            baseUrl: 'http://127.0.0.1:1',
+            messages: [{ role: 'user', content: 'x' }],
+            env: {
+                PLOINKY_AGENT_ID: 'agent:wrong/principal',
+                get PLOINKY_AGENT_SECRET() {
+                    secretReads += 1;
+                    return SECRET_HEX;
+                },
+            },
+        });
+        await assert.rejects(() => backendModule.execute(ctx), /PLOINKY_AGENT_ID disagrees/);
+        assert.equal(secretReads, 0);
+    });
+
     it('targets <base>/<routeKey>/v1/chat/completions and sends Bearer assertion', async () => {
         const { server, captured, baseUrl } = await startCaptureServer();
         try {
@@ -322,6 +372,7 @@ describe('ploinky-agent-openai backend execute()', () => {
 
             assert.equal(captured.method, 'POST');
             assert.equal(captured.url, `/${ROUTE_KEY}/v1/chat/completions`);
+            assert.equal(captured.headers.host, `router.test:${new URL(baseUrl).port}`);
             assert.ok(
                 /^Bearer\s+\S+\.\S+\.\S+$/.test(captured.headers.authorization),
                 `authorization header should be a Bearer JWT, got: ${captured.headers.authorization}`
@@ -480,6 +531,23 @@ describe('ploinky-agent-openai backend execute()', () => {
 });
 
 describe('ploinky-agent-openai backend discoverModels()', () => {
+    it('rejects a principal mismatch before reading the agent secret', async () => {
+        let secretReads = 0;
+        const ctx = makeCtx({
+            baseUrl: 'http://127.0.0.1:1',
+            messages: [],
+            env: {
+                PLOINKY_AGENT_ID: 'agent:wrong/principal',
+                get PLOINKY_AGENT_SECRET() {
+                    secretReads += 1;
+                    return SECRET_HEX;
+                },
+            },
+        });
+        await assert.rejects(() => backendModule.discoverModels(ctx), /PLOINKY_AGENT_ID disagrees/);
+        assert.equal(secretReads, 0);
+    });
+
     it('targets <base>/<routeKey>/v1/models and normalizes Soul model descriptors', async () => {
         const { server, captured, baseUrl } = await startCaptureServer({
             modelsResponse: {
@@ -515,6 +583,7 @@ describe('ploinky-agent-openai backend discoverModels()', () => {
             const models = await backendModule.discoverModels(ctx);
             assert.equal(captured.method, 'GET');
             assert.equal(captured.url, `/${ROUTE_KEY}/v1/models`);
+            assert.equal(captured.headers.host, `router.test:${new URL(baseUrl).port}`);
             assert.ok(/^Bearer\s+\S+\.\S+\.\S+$/.test(captured.headers.authorization));
             const payload = decodeJwtPayload(captured.headers.authorization.replace(/^Bearer\s+/, ''));
             assert.equal(payload.method, 'GET');

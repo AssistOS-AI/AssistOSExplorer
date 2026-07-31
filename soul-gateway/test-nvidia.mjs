@@ -1,6 +1,8 @@
 // Quick smoke test for NVIDIA provider through Soul Gateway
 const BASE = 'https://soul.axiologic.dev';
-const API_KEY = process.env.PLOINKY_AGENT_API_KEY || '';
+// This script targets the public Soul Gateway endpoint. Never reuse the
+// Ploinky-managed local-agent credential for an external request.
+const API_KEY = process.env.SOUL_GATEWAY_API_KEY || '';
 const MODEL = 'nvidia/nemotron-3-super-120b-a12b';
 
 const headers = {

@@ -5,14 +5,14 @@
  *
  * Usage
  * -----
- *   SOUL_API_KEY=sk-soul-... node soul-gateway/test-nvidia-all-models.mjs
+ *   SOUL_GATEWAY_API_KEY=sk-soul-... node soul-gateway/test-nvidia-all-models.mjs
  *
- * Environment variables (only SOUL_API_KEY is required):
+ * Environment variables (only SOUL_GATEWAY_API_KEY is required):
  *
  *   GATEWAY_URL          router base URL                default http://localhost:8080
  *   PUBLIC_BASE_URL      /v1 service URL                default $GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/v1
  *   MANAGEMENT_BASE_URL  management service URL         default $GATEWAY_URL/base-agent-additional-server/soul-gateway/7000/management
- *   SOUL_API_KEY         sk-soul-... bearer for /v1     REQUIRED
+ *   SOUL_GATEWAY_API_KEY sk-soul-... bearer for /v1     REQUIRED
  *   PLOINKY_AUTH_COOKIE  authenticated admin cookie     REQUIRED for management
  *   CONCURRENCY          parallel test workers          default 5
  *   PROMPT               user prompt                    default short math question
@@ -67,7 +67,7 @@ const PUBLIC_BASE_URL =
     process.env.PUBLIC_BASE_URL || `${GATEWAY_URL}/base-agent-additional-server/soul-gateway/7000/v1`;
 const MANAGEMENT_BASE_URL =
     process.env.MANAGEMENT_BASE_URL || `${GATEWAY_URL}/base-agent-additional-server/soul-gateway/7000/management`;
-const SOUL_API_KEY = process.env.SOUL_API_KEY || '';
+const SOUL_GATEWAY_API_KEY = process.env.SOUL_GATEWAY_API_KEY || '';
 const PLOINKY_AUTH_COOKIE = process.env.PLOINKY_AUTH_COOKIE || '';
 const TEST_PLOINKY_AUTH_INFO = process.env.SG_TEST_PLOINKY_AUTH_INFO || '';
 const CONCURRENCY = parseInt(process.env.CONCURRENCY ?? '5', 10);
@@ -97,8 +97,8 @@ const MODEL_FILTER = (process.env.MODEL_FILTER || '')
 // requests races the rebuild and gets "Model not found".
 const SNAPSHOT_WAIT_MS = parseInt(process.env.SNAPSHOT_WAIT_MS ?? '2000', 10);
 
-if (!SOUL_API_KEY) {
-    console.error('Error: SOUL_API_KEY env var is required.');
+if (!SOUL_GATEWAY_API_KEY) {
+    console.error('Error: SOUL_GATEWAY_API_KEY env var is required.');
     console.error(
         '       It is the sk-soul-... bearer used to call the public chat completions service.'
     );
@@ -205,7 +205,7 @@ async function sendCompletion(modelKey) {
         const res = await fetch(`${PUBLIC_BASE_URL}/chat/completions`, {
             method: 'POST',
             headers: {
-                authorization: `Bearer ${SOUL_API_KEY}`,
+                authorization: `Bearer ${SOUL_GATEWAY_API_KEY}`,
                 'content-type': 'application/json',
             },
             body: JSON.stringify({

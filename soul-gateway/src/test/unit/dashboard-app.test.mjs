@@ -150,6 +150,34 @@ describe('dashboard app shell', () => {
     });
 });
 
+describe('dashboard external client export', () => {
+    it('uses a dedicated public-gateway key name and never the managed local-agent key', async () => {
+        const globals = installDashboardGlobals(async (url) => {
+            throw new Error(`unexpected request: ${url}`);
+        });
+
+        try {
+            const cacheKey = `${Date.now()}${Math.random()}`;
+            await import(`../../dashboard/js/app.mjs?test=${cacheKey}`);
+
+            const page = globalThis.window.exportPage();
+            page.format = 'codex';
+            page.gatewayUrl = 'https://soul.axiologic.dev/v1';
+            page.defaultModel = 'fast';
+            page.apiKey = 'public-user-key';
+
+            assert.match(page.configOutput, /env_key = "SOUL_GATEWAY_API_KEY"/);
+            assert.match(
+                page.configOutput,
+                /export SOUL_GATEWAY_API_KEY="public-user-key"/
+            );
+            assert.doesNotMatch(page.configOutput, /PLOINKY_AGENT_API_KEY/);
+        } finally {
+            globals.restore();
+        }
+    });
+});
+
 describe('dashboard tree persistence', () => {
     it('initializes providers and models when localStorage is unavailable', async () => {
         const globals = installDashboardGlobals(
