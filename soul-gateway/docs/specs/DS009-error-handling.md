@@ -35,6 +35,15 @@ Public and management HTTP APIs emit a consistent JSON error envelope:
 - Common transport failures (socket timeouts, connection refusal, DNS failures) are normalized into the shared `provider_timeout` / `provider_unavailable` taxonomy before retry or cascade decisions are made.
 - The same backend classifier runs for late stream failures. If a backend stream throws while draining, or yields a canonical `error` event, the backend terminal converts that failure into the backend's typed `GatewayError` before buffering or route serialization sees it.
 
+### Request body limit errors
+
+When a request exceeds `BODY_LIMIT_BYTES`, Soul Gateway returns HTTP 413 with
+the stable error type `payload_too_large`, the configured byte limit in
+`error.detail.limit_bytes`, and guidance to reduce the request size. The body
+reader stops retaining chunks but continues draining the incoming request; it
+does not destroy the socket. This lets the router forward the typed response
+instead of reporting a generic 502 caused by an upstream connection reset.
+
 ## HTTP-level retry
 
 When an upstream provider returns a retryable error, the system retries the same model with exponential backoff.

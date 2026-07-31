@@ -50,6 +50,12 @@ Every request gets a unique `chatcmpl-...` style request id at ingress. The rout
 
 Unknown fields pass through untouched.
 
+Before validation, `parseBodyMiddleware` enforces `BODY_LIMIT_BYTES`. An
+oversized body is drained without destroying the request socket and produces a
+structured HTTP 413 `payload_too_large` response, allowing the Ploinky router to
+preserve the gateway error instead of translating an upstream socket reset into
+a generic 502.
+
 ## Streaming vs non-streaming
 
 The pipeline supports both client modes end to end:
