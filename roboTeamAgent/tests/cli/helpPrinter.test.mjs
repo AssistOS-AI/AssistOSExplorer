@@ -61,6 +61,7 @@ describe('HelpSystem', () => {
         assert.ok(commandsHelp.includes('/model'), 'Command reference should include /model');
         assert.ok(commandsHelp.includes('/tier'), 'Command reference should include /tier');
         assert.ok(commandsHelp.includes('/permissions'), 'Command reference should include /permissions');
+        assert.ok(commandsHelp.includes('/skills'), 'Command reference should include /skills');
     });
 
     it('should explain workspace confinement in /permissions help', async () => {
@@ -85,5 +86,13 @@ describe('HelpSystem', () => {
         const ref = getQuickReference();
         assert.ok(ref, 'Should return quick reference');
         assert.ok(ref.includes('Achilles CLI'), 'Quick reference should mention Achilles CLI');
+    });
+
+    it('should document workspace skill state commands', async () => {
+        const { showHelp, getQuickReference } = await import('../achilles-cli/src/ui/HelpSystem.mjs');
+        assert.match(showHelp('skills'), /\/skills enable <relative-directory>/);
+        assert.match(showHelp('skills'), /\.achilles-cli\/settings\.json/);
+        assert.match(showHelp('skill'), /\/skill disable <skill-name>/);
+        assert.match(getQuickReference(), /\/skills/);
     });
 });
