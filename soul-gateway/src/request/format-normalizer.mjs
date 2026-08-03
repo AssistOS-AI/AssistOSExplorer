@@ -318,7 +318,7 @@ function convertResponsesInputItem(item) {
     switch (item.type) {
         case 'message':
             return {
-                role: item.role || 'user',
+                role: normalizeResponsesRole(item.role),
                 content:
                     typeof item.content === 'string'
                         ? item.content
@@ -336,10 +336,19 @@ function convertResponsesInputItem(item) {
         default:
             // Treat unknown types as user messages
             return {
-                role: item.role || 'user',
+                role: normalizeResponsesRole(item.role),
                 content: item.content || item.text || '',
             };
     }
+}
+
+/**
+ * Responses API clients may send the instruction role as `developer`.
+ * The gateway's canonical chat shape represents those instructions as
+ * `system`; Responses backends translate them back to `developer` on egress.
+ */
+function normalizeResponsesRole(role) {
+    return role === 'developer' ? 'system' : role || 'user';
 }
 
 /**

@@ -245,6 +245,29 @@ describe('normalizeIncomingFormat', () => {
             assert.equal(result.messages[2].content, 'Follow-up');
         });
 
+        it('normalizes developer input messages to canonical system messages', () => {
+            const body = {
+                model: 'gpt-5.6-sol',
+                instructions: 'Top-level instructions',
+                input: [
+                    {
+                        type: 'message',
+                        role: 'developer',
+                        content: [
+                            { type: 'input_text', text: 'Agent instructions' },
+                        ],
+                    },
+                    { type: 'message', role: 'user', content: 'Hello' },
+                ],
+            };
+            const result = normalizeIncomingFormat('openai_responses', body);
+            assert.deepEqual(
+                result.messages.map((message) => message.role),
+                ['system', 'system', 'user']
+            );
+            assert.doesNotThrow(() => validateNormalizedRequest(result));
+        });
+
         it('maps max_output_tokens to max_tokens', () => {
             const body = {
                 model: 'gpt-4o',

@@ -18,6 +18,8 @@ The gateway accepts three public completion request formats:
 
 For conversational requests, the canonical shape preserves the complete ordered `messages` array. System, user, and assistant turns remain separate records through model resolution and backend dispatch. Backends translate those roles only where the upstream protocol requires a native equivalent, such as `developer` for Responses-style system instructions or `model` for Gemini assistant turns.
 
+Responses API ingress normalizes `developer` input messages to canonical `system` messages. This keeps instruction ordering intact while satisfying the canonical validator; Responses-style backends translate those system messages back to the upstream-native `developer` role.
+
 The gateway also accepts OpenAI-compatible embeddings requests at `POST /v1/embeddings`:
 
 - request body: `model`, `input`, and optional OpenAI-compatible `encoding_format`, `dimensions`, and `user`
