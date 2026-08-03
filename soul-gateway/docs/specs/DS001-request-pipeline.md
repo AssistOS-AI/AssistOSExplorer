@@ -125,6 +125,14 @@ providerBindings   // terminal: resolves providerMiddlewares + backendDispatch
 
 `backendDispatchMiddleware` is the absolute terminal: it resolves the precompiled terminal middleware from the backend catalog per attempt and invokes it. The dispatch path acquires a backend-catalog generation lease before lookup and holds that lease until the buffered response has been materialized or the response stream has been fully drained, so backend reloads do not shut down a generation that is still serving an in-flight request.
 
+An OpenAI-compatible provider whose runtime record declares
+`supports_responses_api` uses the shared Achilles Responses transport for
+completion inference. Other providers served by the same `openai-api` backend
+continue to use Chat Completions. The Responses transport preserves canonical
+assistant tool calls and tool results as `function_call` and
+`function_call_output` input items and converts streamed function-call events
+back into canonical tool-call deltas.
+
 See **DS003** for the full middleware composition contract and the unified backend layer.
 
 ## Full request lifecycle

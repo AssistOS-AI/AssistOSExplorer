@@ -213,8 +213,10 @@ describe('Provider context', () => {
 // ── Error classification: OpenAI ────────────────────────────────────
 
 import {
+    buildOpenAiResponsesParams,
     backendModule as openaiPlugin,
     providerSupportsOpenAiStreamOptions,
+    providerUsesOpenAiResponsesApi,
 } from '../../runtime/backends/builtin/openai-api.backend.mjs';
 
 describe('OpenAI error classification', () => {
@@ -320,6 +322,61 @@ describe('OpenAI stream_options capability detection', () => {
             }),
             true
         );
+    });
+});
+
+describe('OpenAI Responses capability dispatch', () => {
+    it('uses the Responses transport only when the provider declares support', () => {
+        assert.equal(
+            providerUsesOpenAiResponsesApi({ supportsResponsesApi: true }),
+            true
+        );
+        assert.equal(
+            providerUsesOpenAiResponsesApi({ supports_responses_api: 1 }),
+            true
+        );
+        assert.equal(
+            providerUsesOpenAiResponsesApi({ supportsResponsesApi: false }),
+            false
+        );
+    });
+
+    it('maps normalized limits and named tool choice to Responses parameters', () => {
+        const tools = [{
+            type: 'function',
+            function: {
+                name: 'exec_command',
+                parameters: { type: 'object', properties: {} },
+            },
+        }];
+        assert.deepEqual(buildOpenAiResponsesParams({
+            max_tokens: 1200,
+            temperature: 0.2,
+            top_p: 0.9,
+            tools,
+            tool_choice: {
+                type: 'function',
+                function: { name: 'exec_command' },
+            },
+        }), {
+            store: false,
+            max_output_tokens: 1200,
+            temperature: 0.2,
+            top_p: 0.9,
+            tools,
+            tool_choice: { type: 'function', name: 'exec_command' },
+        });
+    });
+
+    it('does not forward Chat-only stream options to Responses providers', () => {
+        const params = buildOpenAiResponsesParams({
+            stop: ['done'],
+            response_format: { type: 'json_object' },
+        });
+        assert.equal(params.stream, undefined);
+        assert.equal(params.stream_options, undefined);
+        assert.equal(params.stop, undefined);
+        assert.equal(params.response_format, undefined);
     });
 });
 
@@ -470,23 +527,23 @@ describe('Kiro error classification', () => {
 const LLM_BACKEND_EXECUTION_CONTRACTS = [
     {
         fileName: 'openai-api.backend.mjs',
-        achillesBinding: 'achillesOpenAI',
+        achillesBindings: ['achillesOpenAI', 'achillesResponses'],
     },
     {
         fileName: 'anthropic-api.backend.mjs',
-        achillesBinding: 'achillesAnthropic',
+        achillesBindings: ['achillesAnthropic'],
     },
     {
         fileName: 'copilot-api.backend.mjs',
-        achillesBinding: 'achillesCopilot',
+        achillesBindings: ['achillesCopilot'],
     },
     {
         fileName: 'kiro-api.backend.mjs',
-        achillesBinding: 'achillesKiro',
+        achillesBindings: ['achillesKiro'],
     },
     {
         fileName: 'codex-api.backend.mjs',
-        achillesBinding: 'achillesResponses',
+        achillesBindings: ['achillesResponses'],
     },
 ];
 
@@ -524,7 +581,7 @@ function extractExecuteBody(source, fileName) {
 
 describe('LLM provider inference invariant', () => {
     it('request-time LLM execute paths delegate to Achilles transport handles', () => {
-        for (const { fileName, achillesBinding } of LLM_BACKEND_EXECUTION_CONTRACTS) {
+        for (const { fileName, achillesBindings } of LLM_BACKEND_EXECUTION_CONTRACTS) {
             const source = readBuiltinBackendSource(fileName);
             const executeBody = extractExecuteBody(source, fileName);
 
@@ -533,13 +590,15 @@ describe('LLM provider inference invariant', () => {
                 /from\s+['"]achillesAgentLib\/utils\/LLMProviders\/providers\//,
                 `${fileName} must import its request-time transport from Achilles`
             );
-            assert.match(
-                executeBody,
-                new RegExp(
-                    `createAchillesExecutionHandle\\(ctx,\\s*${achillesBinding}\\b`
-                ),
-                `${fileName} execute(ctx) must dispatch through Achilles`
-            );
+            for (const achillesBinding of achillesBindings) {
+                assert.match(
+                    executeBody,
+                    new RegExp(
+                        `createAchillesExecutionHandle\\(ctx,\\s*${achillesBinding}\\b`
+                    ),
+                    `${fileName} execute(ctx) must dispatch through ${achillesBinding}`
+                );
+            }
         }
     });
 

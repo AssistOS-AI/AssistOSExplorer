@@ -24,6 +24,7 @@ import {
     getProviderStatus,
 } from '../error-helpers.mjs';
 import * as achillesOpenAI from 'achillesAgentLib/utils/LLMProviders/providers/openai.mjs';
+import * as achillesResponses from 'achillesAgentLib/utils/LLMProviders/providers/openaiResponses.mjs';
 import {
     createAchillesExecutionHandle,
     getCredentialToken,
@@ -226,6 +227,59 @@ export function providerSupportsOpenAiStreamOptions(providerRecord) {
     return true;
 }
 
+export function providerUsesOpenAiResponsesApi(providerRecord) {
+    return Boolean(
+        providerRecord?.supportsResponsesApi ??
+            providerRecord?.supports_responses_api ??
+            false
+    );
+}
+
+export function buildOpenAiResponsesParams(normalizedReq, settings = {}) {
+    const params = { store: false };
+
+    if (normalizedReq.max_tokens != null)
+        params.max_output_tokens = normalizedReq.max_tokens;
+    if (normalizedReq.temperature != null)
+        params.temperature = normalizedReq.temperature;
+    if (normalizedReq.top_p != null) params.top_p = normalizedReq.top_p;
+    if (normalizedReq.tools && normalizedReq.tools.length > 0)
+        params.tools = normalizedReq.tools;
+    if (normalizedReq.tool_choice != null) {
+        const choice = normalizedReq.tool_choice;
+        params.tool_choice =
+            choice?.type === 'function' && choice.function?.name
+                ? { type: 'function', name: choice.function.name }
+                : choice;
+    }
+    if (settings.extra_body) Object.assign(params, settings.extra_body);
+
+    return params;
+}
+
+function buildOpenAiChatParams(normalizedReq, providerRecord, settings) {
+    const params = { stream: true };
+    if (providerSupportsOpenAiStreamOptions(providerRecord)) {
+        params.stream_options = { include_usage: true };
+    }
+
+    if (normalizedReq.max_tokens != null)
+        params.max_tokens = normalizedReq.max_tokens;
+    if (normalizedReq.temperature != null)
+        params.temperature = normalizedReq.temperature;
+    if (normalizedReq.top_p != null) params.top_p = normalizedReq.top_p;
+    if (normalizedReq.stop != null) params.stop = normalizedReq.stop;
+    if (normalizedReq.tools && normalizedReq.tools.length > 0)
+        params.tools = normalizedReq.tools;
+    if (normalizedReq.tool_choice != null)
+        params.tool_choice = normalizedReq.tool_choice;
+    if (normalizedReq.response_format != null)
+        params.response_format = normalizedReq.response_format;
+    if (settings.extra_body) Object.assign(params, settings.extra_body);
+
+    return params;
+}
+
 // ── Backend module ──────────────────────────────────────────────────
 
 export const backendModule = {
@@ -388,26 +442,10 @@ export const backendModule = {
         const baseUrl = providerRecord.baseUrl || 'https://api.openai.com/v1';
         const modelId = resolvedModel.providerModelId || resolvedModel.modelKey;
         const settings = providerRecord.settings || {};
-        const params = {
-            stream: true,
-        };
-        if (providerSupportsOpenAiStreamOptions(providerRecord)) {
-            params.stream_options = { include_usage: true };
-        }
-
-        if (normalizedReq.max_tokens != null)
-            params.max_tokens = normalizedReq.max_tokens;
-        if (normalizedReq.temperature != null)
-            params.temperature = normalizedReq.temperature;
-        if (normalizedReq.top_p != null) params.top_p = normalizedReq.top_p;
-        if (normalizedReq.stop != null) params.stop = normalizedReq.stop;
-        if (normalizedReq.tools && normalizedReq.tools.length > 0)
-            params.tools = normalizedReq.tools;
-        if (normalizedReq.tool_choice != null)
-            params.tool_choice = normalizedReq.tool_choice;
-        if (normalizedReq.response_format != null)
-            params.response_format = normalizedReq.response_format;
-        if (settings.extra_body) Object.assign(params, settings.extra_body);
+        const useResponsesApi = providerUsesOpenAiResponsesApi(providerRecord);
+        const params = useResponsesApi
+            ? buildOpenAiResponsesParams(normalizedReq, settings)
+            : buildOpenAiChatParams(normalizedReq, providerRecord, settings);
 
         const headers = {};
         // OpenRouter-specific headers
@@ -417,6 +455,17 @@ export const backendModule = {
             headers['X-Title'] = settings.openrouter_title;
         if (settings.extra_headers)
             Object.assign(headers, settings.extra_headers);
+
+        if (useResponsesApi) {
+            return createAchillesExecutionHandle(ctx, achillesResponses, {
+                model: modelId,
+                apiKey: getCredentialToken(credentialLease),
+                baseURL: baseUrl,
+                signal,
+                params,
+                headers,
+            });
+        }
 
         return createAchillesExecutionHandle(ctx, achillesOpenAI, {
             model: modelId,
