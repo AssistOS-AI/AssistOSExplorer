@@ -26,6 +26,7 @@ import {
 } from './ploinky/discovery-scheduler.mjs';
 import { seedDefaultTiers } from './bootstrap/seed-default-tiers.mjs';
 import { bootstrapInitialTagTiers } from './bootstrap/reconcile-tag-tiers.mjs';
+import { reconcileCompatibilityAliases } from './bootstrap/reconcile-compatibility-aliases.mjs';
 
 /**
  * Full boot sequence.
@@ -81,6 +82,7 @@ export async function bootstrap() {
         await bootstrapInitialTagTiers({ appCtx });
         log.info('initial tier bootstrap completed');
     }
+    await reconcileCompatibilityAliases({ appCtx });
     await installSnapshotServices(appCtx);
     try {
         installExtensionSdkServices(appCtx);

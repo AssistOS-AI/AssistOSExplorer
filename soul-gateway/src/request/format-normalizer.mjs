@@ -267,6 +267,18 @@ function normalizeOpenAiResponses(body) {
     } = body;
 
     const messages = [];
+    const inputItems = Array.isArray(input) ? input : [];
+    const embeddedTools = inputItems
+        .filter((item) => item?.type === 'additional_tools')
+        .flatMap((item) => {
+            if (Array.isArray(item.tools)) return item.tools;
+            if (Array.isArray(item.additional_tools)) return item.additional_tools;
+            return [];
+        });
+    const { tools, adapters } = normalizeResponsesTools([
+        ...(Array.isArray(responsesTools) ? responsesTools : []),
+        ...embeddedTools,
+    ]);
 
     // Instructions map to a system message
     if (instructions) {
@@ -278,7 +290,7 @@ function normalizeOpenAiResponses(body) {
         messages.push({ role: 'user', content: input });
     } else if (Array.isArray(input)) {
         for (const item of input) {
-            const converted = convertResponsesInputItem(item);
+            const converted = convertResponsesInputItem(item, adapters);
             if (Array.isArray(converted)) {
                 messages.push(...converted.filter(Boolean));
             } else if (converted) {
@@ -292,20 +304,17 @@ function normalizeOpenAiResponses(body) {
     if (max_output_tokens != null) normalized.max_tokens = max_output_tokens;
     if (temperature != null) normalized.temperature = temperature;
     if (top_p != null) normalized.top_p = top_p;
-    if (tool_choice != null) normalized.tool_choice = tool_choice;
+    if (tool_choice != null) {
+        normalized.tool_choice = normalizeResponsesToolChoice(
+            tool_choice,
+            adapters
+        );
+    }
 
     // Convert Responses API tools to OpenAI chat tools
-    if (responsesTools && responsesTools.length > 0) {
-        normalized.tools = responsesTools
-            .filter((t) => t.type === 'function')
-            .map((t) => ({
-                type: 'function',
-                function: {
-                    name: t.name,
-                    description: t.description || '',
-                    parameters: t.parameters || {},
-                },
-            }));
+    if (tools.length > 0) {
+        normalized.tools = tools;
+        normalized.responses_tool_adapters = adapters;
     }
 
     return normalized;
@@ -314,7 +323,7 @@ function normalizeOpenAiResponses(body) {
 /**
  * Convert a Responses API input item to a chat message.
  */
-function convertResponsesInputItem(item) {
+function convertResponsesInputItem(item, adapters = []) {
     if (typeof item === 'string') {
         return { role: 'user', content: item };
     }
@@ -338,8 +347,18 @@ function convertResponsesInputItem(item) {
             // Pass through as a user message with the referenced content
             return { role: 'user', content: item.text || '' };
 
+        case 'additional_tools':
+            // Responses Lite carries its tool declarations in the input
+            // stream. They are collected before message conversion and must
+            // not become a synthetic empty user turn.
+            return null;
+
         case 'function_call': {
             const callId = item.call_id || item.id || 'call_unknown';
+            const adapter = findResponsesAdapter(adapters, {
+                name: item.name,
+                namespace: item.namespace,
+            });
             return {
                 role: 'assistant',
                 content: null,
@@ -348,7 +367,7 @@ function convertResponsesInputItem(item) {
                         id: callId,
                         type: 'function',
                         function: {
-                            name: item.name || '',
+                            name: adapter?.canonicalName || item.name || '',
                             arguments: item.arguments || '{}',
                         },
                     },
@@ -357,11 +376,38 @@ function convertResponsesInputItem(item) {
         }
 
         case 'function_call_output':
+        case 'custom_tool_call_output':
             return {
                 role: 'tool',
                 tool_call_id: item.call_id || item.id || 'call_unknown',
                 content: normalizeResponsesToolOutput(item.output),
             };
+
+        case 'custom_tool_call': {
+            const callId = item.call_id || item.id || 'call_unknown';
+            const adapter = findResponsesAdapter(adapters, {
+                name: item.name,
+                responseType: 'custom',
+            });
+            return {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                    {
+                        id: callId,
+                        type: 'function',
+                        function: {
+                            name: adapter?.canonicalName || item.name || '',
+                            arguments: JSON.stringify({
+                                input: typeof item.input === 'string'
+                                    ? item.input
+                                    : '',
+                            }),
+                        },
+                    },
+                ],
+            };
+        }
 
         case 'reasoning':
             // Chat Completions has no equivalent for opaque Responses
@@ -371,12 +417,101 @@ function convertResponsesInputItem(item) {
             return null;
 
         default:
-            // Treat unknown types as user messages
+            // Preserve unknown text-bearing items, but never manufacture an
+            // empty user message for request-control items we do not know.
+            if (item.content == null && item.text == null) return null;
             return {
                 role: normalizeResponsesRole(item.role),
                 content: item.content || item.text || '',
             };
     }
+}
+
+function normalizeResponsesTools(responsesTools) {
+    const tools = [];
+    const adapters = [];
+    const usedNames = new Set();
+
+    const addTool = (tool, namespace = '') => {
+        if (!tool || typeof tool !== 'object') return;
+        const responseName = typeof tool.name === 'string' ? tool.name.trim() : '';
+        if (!responseName) return;
+        const responseType = tool.type === 'custom' ? 'custom' : 'function';
+        const canonicalBase = namespace
+            ? `${namespace}__${responseName}`
+            : responseName;
+        let canonicalName = canonicalBase.replace(/[^a-zA-Z0-9_-]/g, '_');
+        let suffix = 2;
+        while (usedNames.has(canonicalName)) {
+            canonicalName = `${canonicalBase}_${suffix++}`
+                .replace(/[^a-zA-Z0-9_-]/g, '_');
+        }
+        usedNames.add(canonicalName);
+
+        const adapter = {
+            canonicalName,
+            responseName,
+            responseType,
+            ...(namespace ? { namespace } : {}),
+        };
+        adapters.push(adapter);
+        tools.push({
+            type: 'function',
+            function: {
+                name: canonicalName,
+                description: responseType === 'custom'
+                    ? [
+                        tool.description || '',
+                        'Put the custom tool input verbatim in the `input` field.',
+                    ].filter(Boolean).join('\n')
+                    : tool.description || '',
+                parameters: responseType === 'custom'
+                    ? {
+                        type: 'object',
+                        properties: { input: { type: 'string' } },
+                        required: ['input'],
+                        additionalProperties: false,
+                    }
+                    : tool.parameters || {},
+            },
+        });
+    };
+
+    for (const tool of responsesTools) {
+        if (tool?.type === 'namespace') {
+            const namespace = typeof tool.name === 'string' ? tool.name.trim() : '';
+            const namespaceTools = Array.isArray(tool.tools) ? tool.tools : [];
+            for (const nestedTool of namespaceTools) addTool(nestedTool, namespace);
+            continue;
+        }
+        if (tool?.type === 'function' || tool?.type === 'custom') addTool(tool);
+    }
+
+    return { tools, adapters };
+}
+
+function findResponsesAdapter(adapters, {
+    name,
+    namespace = '',
+    responseType = '',
+} = {}) {
+    return adapters.find((adapter) => (
+        adapter.responseName === name
+        && (namespace ? adapter.namespace === namespace : !adapter.namespace)
+        && (!responseType || adapter.responseType === responseType)
+    ));
+}
+
+function normalizeResponsesToolChoice(toolChoice, adapters) {
+    if (!toolChoice || typeof toolChoice !== 'object') return toolChoice;
+    if (!['function', 'custom'].includes(toolChoice.type)) return toolChoice;
+    const adapter = findResponsesAdapter(adapters, {
+        name: toolChoice.name,
+        responseType: toolChoice.type,
+    });
+    return adapter
+        ? { type: 'function', function: { name: adapter.canonicalName } }
+        : toolChoice;
 }
 
 function normalizeResponsesToolOutput(output) {

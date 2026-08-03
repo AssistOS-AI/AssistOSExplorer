@@ -21,7 +21,8 @@
 export function serializeBufferedResponse(
     completion,
     responseFormat,
-    requestId
+    requestId,
+    options = {}
 ) {
     switch (responseFormat) {
         case 'openai_chat':
@@ -29,7 +30,11 @@ export function serializeBufferedResponse(
         case 'anthropic_messages':
             return serializeAnthropicMessages(completion, requestId);
         case 'openai_responses':
-            return serializeOpenAiResponses(completion, requestId);
+            return serializeOpenAiResponses(
+                completion,
+                requestId,
+                options.toolAdapters
+            );
         default:
             return serializeOpenAiChat(completion, requestId);
     }
@@ -209,7 +214,7 @@ function mapFinishReasonToAnthropicStop(reason) {
 
 // ── OpenAI Responses API ────────────────────────────────────────────
 
-function serializeOpenAiResponses(completion, requestId) {
+function serializeOpenAiResponses(completion, requestId, toolAdapters = []) {
     const choice = completion.choices?.[0];
     const message = choice?.message || {};
     const output = [];
@@ -227,14 +232,13 @@ function serializeOpenAiResponses(completion, requestId) {
 
     if (message.tool_calls) {
         for (const tc of message.tool_calls) {
-            output.push({
-                type: 'function_call',
+            output.push(responsesToolCallItem({
                 id: tc.id,
                 call_id: tc.id,
                 name: tc.function?.name || '',
                 arguments: tc.function?.arguments || '{}',
                 status: 'completed',
-            });
+            }, toolAdapters));
         }
     }
 
@@ -255,6 +259,41 @@ function serializeOpenAiResponses(completion, requestId) {
               }
             : null,
     };
+}
+
+export function responsesToolCallItem(call, toolAdapters = []) {
+    const adapter = toolAdapters.find((candidate) => (
+        candidate?.canonicalName === call.name
+    ));
+    if (adapter?.responseType === 'custom') {
+        return {
+            type: 'custom_tool_call',
+            id: call.id,
+            call_id: call.call_id,
+            name: adapter.responseName,
+            input: customToolInput(call.arguments),
+            status: call.status,
+        };
+    }
+    return {
+        type: 'function_call',
+        id: call.id,
+        call_id: call.call_id,
+        name: adapter?.responseName || call.name,
+        ...(adapter?.namespace ? { namespace: adapter.namespace } : {}),
+        arguments: call.arguments,
+        status: call.status,
+    };
+}
+
+function customToolInput(argumentsText) {
+    try {
+        const parsed = JSON.parse(argumentsText || '{}');
+        if (typeof parsed?.input === 'string') return parsed.input;
+    } catch {
+        // Return the original provider payload when it was not JSON.
+    }
+    return typeof argumentsText === 'string' ? argumentsText : '';
 }
 
 function serializeResponsesStreamChunk(chunk, requestId) {

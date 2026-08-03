@@ -351,6 +351,75 @@ describe('normalizeIncomingFormat', () => {
             assert.equal(result.tools[0].type, 'function');
             assert.equal(result.tools[0].function.name, 'search');
         });
+
+        it('normalizes Responses Lite additional tools without an empty user turn', () => {
+            const body = {
+                model: 'gpt-5.6-sol',
+                input: [
+                    {
+                        type: 'additional_tools',
+                        tools: [
+                            {
+                                type: 'custom',
+                                name: 'exec',
+                                description: 'Run JavaScript orchestration.',
+                                format: { type: 'grammar', syntax: 'lark' },
+                            },
+                            {
+                                type: 'function',
+                                name: 'wait',
+                                parameters: { type: 'object' },
+                            },
+                            {
+                                type: 'namespace',
+                                name: 'collaboration',
+                                tools: [
+                                    {
+                                        type: 'function',
+                                        name: 'spawn_agent',
+                                        parameters: { type: 'object' },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    { type: 'message', role: 'user', content: 'Inspect this.' },
+                ],
+            };
+
+            const result = normalizeIncomingFormat('openai_responses', body);
+
+            assert.deepEqual(result.messages, [
+                { role: 'user', content: 'Inspect this.' },
+            ]);
+            assert.deepEqual(
+                result.tools.map((tool) => tool.function.name),
+                ['exec', 'wait', 'collaboration__spawn_agent']
+            );
+            assert.deepEqual(result.responses_tool_adapters, [
+                {
+                    canonicalName: 'exec',
+                    responseName: 'exec',
+                    responseType: 'custom',
+                },
+                {
+                    canonicalName: 'wait',
+                    responseName: 'wait',
+                    responseType: 'function',
+                },
+                {
+                    canonicalName: 'collaboration__spawn_agent',
+                    responseName: 'spawn_agent',
+                    responseType: 'function',
+                    namespace: 'collaboration',
+                },
+            ]);
+            assert.equal(
+                result.tools[0].function.parameters.properties.input.type,
+                'string'
+            );
+            assert.doesNotThrow(() => validateNormalizedRequest(result));
+        });
     });
 
     // ── Edge cases ────────────────────────────────────────────────
@@ -510,6 +579,67 @@ describe('serializeBufferedResponse', () => {
         assert.ok(fcItem);
         assert.equal(fcItem.name, 'search');
         assert.equal(fcItem.arguments, '{"q":"test"}');
+    });
+
+    it('restores custom and namespaced Responses tool calls', () => {
+        const tcCompletion = {
+            model: 'gpt-5.6-sol',
+            choices: [{
+                message: {
+                    role: 'assistant',
+                    content: null,
+                    tool_calls: [
+                        {
+                            id: 'call_exec',
+                            function: {
+                                name: 'exec',
+                                arguments: '{"input":"text(1);"}',
+                            },
+                        },
+                        {
+                            id: 'call_spawn',
+                            function: {
+                                name: 'collaboration__spawn_agent',
+                                arguments: '{"task_name":"probe"}',
+                            },
+                        },
+                    ],
+                },
+                finish_reason: 'tool_calls',
+            }],
+        };
+        const result = serializeBufferedResponse(
+            tcCompletion,
+            'openai_responses',
+            'req-tools',
+            {
+                toolAdapters: [
+                    {
+                        canonicalName: 'exec',
+                        responseName: 'exec',
+                        responseType: 'custom',
+                    },
+                    {
+                        canonicalName: 'collaboration__spawn_agent',
+                        responseName: 'spawn_agent',
+                        responseType: 'function',
+                        namespace: 'collaboration',
+                    },
+                ],
+            }
+        );
+
+        assert.deepEqual(result.output[0], {
+            type: 'custom_tool_call',
+            id: 'call_exec',
+            call_id: 'call_exec',
+            name: 'exec',
+            input: 'text(1);',
+            status: 'completed',
+        });
+        assert.equal(result.output[1].type, 'function_call');
+        assert.equal(result.output[1].name, 'spawn_agent');
+        assert.equal(result.output[1].namespace, 'collaboration');
     });
 });
 

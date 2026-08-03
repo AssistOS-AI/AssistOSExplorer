@@ -98,7 +98,8 @@ export function respondMiddleware() {
         const serialized = serializeBufferedResponse(
             ctx.response,
             routeKind,
-            ctx.requestId
+            ctx.requestId,
+            { toolAdapters: ctx.request?.responses_tool_adapters }
         );
         sendJson(res, 200, serialized);
     };
@@ -136,7 +137,8 @@ async function streamSseResponse(
         for await (const chunk of canonicalStreamToSse(
             canonicalStream,
             routeKind,
-            requestId
+            requestId,
+            { toolAdapters: ctx.request?.responses_tool_adapters }
         )) {
             if (clientAborted) break;
             if (res.writableEnded) break;

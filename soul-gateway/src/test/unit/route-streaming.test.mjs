@@ -370,6 +370,51 @@ describe('canonicalStreamToSse: openai_responses', () => {
             frames.map((_, index) => index)
         );
     });
+
+    it('restores a canonical function adapter as a Responses custom tool call', async () => {
+        async function* events() {
+            yield {
+                type: 'tool_call_delta',
+                data: {
+                    index: 0,
+                    id: 'call_exec',
+                    name: 'exec',
+                    arguments: '{"input":"text(',
+                },
+            };
+            yield {
+                type: 'tool_call_delta',
+                data: { index: 0, arguments: '1);"}' },
+            };
+            yield { type: 'done', data: { finish_reason: 'tool_calls' } };
+        }
+
+        const out = [];
+        for await (const chunk of canonicalStreamToSse(
+            createCanonicalStream(events()),
+            'openai_responses',
+            'req-custom',
+            {
+                toolAdapters: [{
+                    canonicalName: 'exec',
+                    responseName: 'exec',
+                    responseType: 'custom',
+                }],
+            }
+        )) out.push(chunk);
+        const frames = parseNamedSse(out);
+
+        assert.ok(frames.some((frame) => (
+            frame.event === 'response.custom_tool_call_input.done'
+            && frame.data.input === 'text(1);'
+        )));
+        assert.equal(frames.at(-1).data.response.output[0].type, 'custom_tool_call');
+        assert.equal(frames.at(-1).data.response.output[0].input, 'text(1);');
+        assert.equal(
+            frames.some((frame) => frame.event === 'response.function_call_arguments.delta'),
+            false
+        );
+    });
 });
 
 // ── respondMiddleware: buffered vs streaming branch ───────────────────

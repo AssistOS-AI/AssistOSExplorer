@@ -31,7 +31,10 @@
  * @module runtime/route/canonical-stream-to-sse
  */
 
-import { serializeStreamChunk } from '../../request/format-serializers.mjs';
+import {
+    responsesToolCallItem,
+    serializeStreamChunk,
+} from '../../request/format-serializers.mjs';
 
 /**
  * Build the SSE byte iterator for a canonical stream.
@@ -44,14 +47,19 @@ import { serializeStreamChunk } from '../../request/format-serializers.mjs';
 export async function* canonicalStreamToSse(
     canonicalStream,
     routeKind,
-    requestId
+    requestId,
+    options = {}
 ) {
     if (routeKind === 'anthropic_messages') {
         yield* toAnthropicSse(canonicalStream, requestId);
         return;
     }
     if (routeKind === 'openai_responses') {
-        yield* toResponsesSse(canonicalStream, requestId);
+        yield* toResponsesSse(
+            canonicalStream,
+            requestId,
+            options.toolAdapters
+        );
         return;
     }
     yield* toOpenAiChatSse(canonicalStream, requestId);
@@ -375,7 +383,7 @@ function mapFinishReasonToAnthropic(reason) {
 
 // ── OpenAI Responses API ───────────────────────────────────────────────
 
-async function* toResponsesSse(stream, requestId) {
+async function* toResponsesSse(stream, requestId, toolAdapters = []) {
     let model = null;
     const createdAt = Math.floor(Date.now() / 1000);
     let sequenceNumber = 0;
@@ -417,14 +425,13 @@ async function* toResponsesSse(stream, requestId) {
                 ],
             };
         }
-        return {
+        return responsesToolCallItem({
             id: state.itemId,
-            type: 'function_call',
-            status: 'completed',
-            arguments: state.arguments,
             call_id: state.callId,
             name: state.name,
-        };
+            arguments: state.arguments,
+            status: 'completed',
+        }, toolAdapters);
     };
 
     const responseObject = (status) => ({
@@ -483,14 +490,19 @@ async function* toResponsesSse(stream, requestId) {
                     })
                 );
             } else {
-                frames.push(
-                    emit('response.function_call_arguments.done', {
+                const item = completedItem(state);
+                frames.push(item.type === 'custom_tool_call'
+                    ? emit('response.custom_tool_call_input.done', {
                         item_id: state.itemId,
                         output_index: state.outputIndex,
-                        name: state.name,
-                        arguments: state.arguments,
+                        input: item.input,
                     })
-                );
+                    : emit('response.function_call_arguments.done', {
+                        item_id: state.itemId,
+                        output_index: state.outputIndex,
+                        name: item.name,
+                        arguments: item.arguments,
+                    }));
             }
             frames.push(
                 emit('response.output_item.done', {
@@ -575,27 +587,32 @@ async function* toResponsesSse(stream, requestId) {
                     };
                     toolStates.set(canonicalIndex, state);
                     outputStates.push(state);
+                    const item = responsesToolCallItem({
+                        id: state.itemId,
+                        call_id: state.callId,
+                        name: state.name,
+                        arguments: '',
+                        status: 'in_progress',
+                    }, toolAdapters);
                     yield emit('response.output_item.added', {
                         output_index: state.outputIndex,
-                        item: {
-                            id: state.itemId,
-                            type: 'function_call',
-                            status: 'in_progress',
-                            arguments: '',
-                            call_id: state.callId,
-                            name: state.name,
-                        },
+                        item,
                     });
                 }
                 if (event.data?.id) state.callId = event.data.id;
                 if (event.data?.name) state.name = event.data.name;
                 const delta = event.data?.arguments || '';
                 state.arguments += delta;
-                yield emit('response.function_call_arguments.delta', {
-                    item_id: state.itemId,
-                    output_index: state.outputIndex,
-                    delta,
-                });
+                const adapter = toolAdapters.find((candidate) => (
+                    candidate?.canonicalName === state.name
+                ));
+                if (adapter?.responseType !== 'custom') {
+                    yield emit('response.function_call_arguments.delta', {
+                        item_id: state.itemId,
+                        output_index: state.outputIndex,
+                        delta,
+                    });
+                }
                 break;
             }
 
