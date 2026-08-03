@@ -49,6 +49,12 @@ fi
 
 cd "$working_directory"
 if [[ "$clear_environment" == true ]]; then
-    exec env -i "${environment_args[@]}" "${command_args[@]}"
+    if ((${#environment_args[@]})); then
+        exec env -i "${environment_args[@]}" "${command_args[@]}"
+    fi
+    exec env -i "${command_args[@]}"
 fi
-exec env "${environment_args[@]}" "${command_args[@]}"
+if ((${#environment_args[@]})); then
+    exec env "${environment_args[@]}" "${command_args[@]}"
+fi
+exec env "${command_args[@]}"
