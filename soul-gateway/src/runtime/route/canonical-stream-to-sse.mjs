@@ -81,10 +81,14 @@ export function serializeSseError(routeKind, requestId, err) {
     if (routeKind === 'openai_responses') {
         return sseEvent('response.failed', {
             type: 'response.failed',
+            sequence_number: Number.isInteger(err.sequenceNumber)
+                ? err.sequenceNumber
+                : 0,
             response: {
                 id: requestId,
                 object: 'response',
                 status: 'failed',
+                output: [],
                 error: {
                     message: err.message || 'stream error',
                     type: err.errorType || 'api_error',
@@ -373,83 +377,241 @@ function mapFinishReasonToAnthropic(reason) {
 
 async function* toResponsesSse(stream, requestId) {
     let model = null;
-    const itemId = `msg_${requestId}`;
-    let startedItem = false;
+    const createdAt = Math.floor(Date.now() / 1000);
+    let sequenceNumber = 0;
+    let responseStarted = false;
+    let textState = null;
+    const toolStates = new Map();
+    const outputStates = [];
+    let usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+
+    const emit = (name, payload = {}) =>
+        sseEvent(name, {
+            type: name,
+            ...payload,
+            sequence_number: sequenceNumber++,
+        });
+
+    const completedUsage = () => ({
+        input_tokens: usage.input_tokens,
+        input_tokens_details: { cached_tokens: 0 },
+        output_tokens: usage.output_tokens,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens:
+            usage.total_tokens || usage.input_tokens + usage.output_tokens,
+    });
+
+    const completedItem = (state) => {
+        if (state.kind === 'text') {
+            return {
+                id: state.itemId,
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [
+                    {
+                        type: 'output_text',
+                        text: state.text,
+                        annotations: [],
+                    },
+                ],
+            };
+        }
+        return {
+            id: state.itemId,
+            type: 'function_call',
+            status: 'completed',
+            arguments: state.arguments,
+            call_id: state.callId,
+            name: state.name,
+        };
+    };
+
+    const responseObject = (status) => ({
+        id: requestId,
+        object: 'response',
+        created_at: createdAt,
+        ...(status === 'completed'
+            ? { completed_at: Math.floor(Date.now() / 1000) }
+            : {}),
+        status,
+        error: null,
+        incomplete_details: null,
+        model: model || '',
+        output:
+            status === 'completed' ? outputStates.map(completedItem) : [],
+        parallel_tool_calls: false,
+        metadata: {},
+        usage: status === 'completed' ? completedUsage() : null,
+    });
+
+    const startResponseFrames = () => {
+        if (responseStarted) return [];
+        responseStarted = true;
+        return [
+            emit('response.created', {
+                response: responseObject('in_progress'),
+            }),
+            emit('response.in_progress', {
+                response: responseObject('in_progress'),
+            }),
+        ];
+    };
+
+    const finishFrames = () => {
+        const frames = [];
+        for (const state of outputStates) {
+            if (state.kind === 'text') {
+                const part = {
+                    type: 'output_text',
+                    text: state.text,
+                    annotations: [],
+                };
+                frames.push(
+                    emit('response.output_text.done', {
+                        item_id: state.itemId,
+                        output_index: state.outputIndex,
+                        content_index: 0,
+                        text: state.text,
+                        logprobs: [],
+                    }),
+                    emit('response.content_part.done', {
+                        item_id: state.itemId,
+                        output_index: state.outputIndex,
+                        content_index: 0,
+                        part,
+                    })
+                );
+            } else {
+                frames.push(
+                    emit('response.function_call_arguments.done', {
+                        item_id: state.itemId,
+                        output_index: state.outputIndex,
+                        name: state.name,
+                        arguments: state.arguments,
+                    })
+                );
+            }
+            frames.push(
+                emit('response.output_item.done', {
+                    output_index: state.outputIndex,
+                    item: completedItem(state),
+                })
+            );
+        }
+        frames.push(
+            emit('response.completed', {
+                response: responseObject('completed'),
+            })
+        );
+        return frames;
+    };
 
     for await (const event of stream) {
         switch (event.type) {
             case 'message_start': {
                 model = event.data?.model || model;
-                yield sseEvent('response.created', {
-                    type: 'response.created',
-                    response: {
-                        id: requestId,
-                        object: 'response',
-                        status: 'in_progress',
-                        model,
-                    },
-                });
+                for (const frame of startResponseFrames()) yield frame;
                 break;
             }
 
             case 'text_delta': {
-                if (!startedItem) {
-                    startedItem = true;
-                    yield sseEvent('response.output_item.added', {
-                        type: 'response.output_item.added',
-                        output_index: 0,
+                for (const frame of startResponseFrames()) yield frame;
+                if (!textState) {
+                    textState = {
+                        kind: 'text',
+                        itemId: `msg_${requestId}`,
+                        outputIndex: outputStates.length,
+                        text: '',
+                    };
+                    outputStates.push(textState);
+                    yield emit('response.output_item.added', {
+                        output_index: textState.outputIndex,
                         item: {
                             type: 'message',
-                            id: itemId,
+                            id: textState.itemId,
                             role: 'assistant',
                             status: 'in_progress',
-                            content: [{ type: 'output_text', text: '' }],
+                            content: [],
+                        },
+                    });
+                    yield emit('response.content_part.added', {
+                        item_id: textState.itemId,
+                        output_index: textState.outputIndex,
+                        content_index: 0,
+                        part: {
+                            type: 'output_text',
+                            text: '',
+                            annotations: [],
                         },
                     });
                 }
-                yield sseEvent('response.output_text.delta', {
-                    type: 'response.output_text.delta',
-                    item_id: itemId,
-                    output_index: 0,
+                const delta = event.data?.text || '';
+                textState.text += delta;
+                yield emit('response.output_text.delta', {
+                    item_id: textState.itemId,
+                    output_index: textState.outputIndex,
                     content_index: 0,
-                    delta: event.data?.text || '',
+                    delta,
+                    logprobs: [],
                 });
                 break;
             }
 
             case 'tool_call_delta': {
-                yield sseEvent('response.function_call_arguments.delta', {
-                    type: 'response.function_call_arguments.delta',
-                    item_id: event.data?.id || itemId,
-                    output_index: event.data?.index ?? 0,
-                    delta: event.data?.arguments || '',
+                for (const frame of startResponseFrames()) yield frame;
+                const canonicalIndex = event.data?.index ?? 0;
+                let state = toolStates.get(canonicalIndex);
+                if (!state) {
+                    state = {
+                        kind: 'tool',
+                        itemId: `fc_${requestId}_${canonicalIndex}`,
+                        outputIndex: outputStates.length,
+                        callId:
+                            event.data?.id ||
+                            `call_${requestId}_${canonicalIndex}`,
+                        name: event.data?.name || '',
+                        arguments: '',
+                    };
+                    toolStates.set(canonicalIndex, state);
+                    outputStates.push(state);
+                    yield emit('response.output_item.added', {
+                        output_index: state.outputIndex,
+                        item: {
+                            id: state.itemId,
+                            type: 'function_call',
+                            status: 'in_progress',
+                            arguments: '',
+                            call_id: state.callId,
+                            name: state.name,
+                        },
+                    });
+                }
+                if (event.data?.id) state.callId = event.data.id;
+                if (event.data?.name) state.name = event.data.name;
+                const delta = event.data?.arguments || '';
+                state.arguments += delta;
+                yield emit('response.function_call_arguments.delta', {
+                    item_id: state.itemId,
+                    output_index: state.outputIndex,
+                    delta,
                 });
                 break;
             }
 
             case 'usage': {
-                // Responses API carries usage on the final completion frame; we
-                // stash it and emit it at done time.
+                usage = {
+                    input_tokens: event.data?.input_tokens || 0,
+                    output_tokens: event.data?.output_tokens || 0,
+                    total_tokens: event.data?.total_tokens || 0,
+                };
                 break;
             }
 
             case 'done': {
-                if (startedItem) {
-                    yield sseEvent('response.output_item.done', {
-                        type: 'response.output_item.done',
-                        output_index: 0,
-                        item: { id: itemId, status: 'completed' },
-                    });
-                }
-                yield sseEvent('response.completed', {
-                    type: 'response.completed',
-                    response: {
-                        id: requestId,
-                        object: 'response',
-                        status: 'completed',
-                        model,
-                    },
-                });
+                model = event.data?.model || model;
+                for (const frame of startResponseFrames()) yield frame;
+                for (const frame of finishFrames()) yield frame;
                 return;
             }
 
@@ -460,21 +622,15 @@ async function* toResponsesSse(stream, requestId) {
                         event.message ||
                         'stream error',
                     errorType: event.error?.type || 'api_error',
+                    sequenceNumber,
                 });
                 return;
             }
         }
     }
 
-    yield sseEvent('response.completed', {
-        type: 'response.completed',
-        response: {
-            id: requestId,
-            object: 'response',
-            status: 'completed',
-            model,
-        },
-    });
+    for (const frame of startResponseFrames()) yield frame;
+    for (const frame of finishFrames()) yield frame;
 }
 
 // ── shared helpers ─────────────────────────────────────────────────────

@@ -278,7 +278,12 @@ function normalizeOpenAiResponses(body) {
         messages.push({ role: 'user', content: input });
     } else if (Array.isArray(input)) {
         for (const item of input) {
-            messages.push(convertResponsesInputItem(item));
+            const converted = convertResponsesInputItem(item);
+            if (Array.isArray(converted)) {
+                messages.push(...converted.filter(Boolean));
+            } else if (converted) {
+                messages.push(converted);
+            }
         }
     }
 
@@ -333,6 +338,38 @@ function convertResponsesInputItem(item) {
             // Pass through as a user message with the referenced content
             return { role: 'user', content: item.text || '' };
 
+        case 'function_call': {
+            const callId = item.call_id || item.id || 'call_unknown';
+            return {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                    {
+                        id: callId,
+                        type: 'function',
+                        function: {
+                            name: item.name || '',
+                            arguments: item.arguments || '{}',
+                        },
+                    },
+                ],
+            };
+        }
+
+        case 'function_call_output':
+            return {
+                role: 'tool',
+                tool_call_id: item.call_id || item.id || 'call_unknown',
+                content: normalizeResponsesToolOutput(item.output),
+            };
+
+        case 'reasoning':
+            // Chat Completions has no equivalent for opaque Responses
+            // reasoning items. The surrounding assistant/tool messages carry
+            // the actionable conversation state, so do not manufacture an
+            // empty user turn for this item.
+            return null;
+
         default:
             // Treat unknown types as user messages
             return {
@@ -340,6 +377,19 @@ function convertResponsesInputItem(item) {
                 content: item.content || item.text || '',
             };
     }
+}
+
+function normalizeResponsesToolOutput(output) {
+    if (typeof output === 'string') return output;
+    if (!Array.isArray(output)) return output == null ? '' : JSON.stringify(output);
+
+    return output
+        .map((part) => {
+            if (typeof part === 'string') return part;
+            if (typeof part?.text === 'string') return part.text;
+            return JSON.stringify(part);
+        })
+        .join('');
 }
 
 /**

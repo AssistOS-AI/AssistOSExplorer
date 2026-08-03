@@ -121,6 +121,22 @@ function collectChunks(res) {
     return res.captured.chunks.join('');
 }
 
+function parseNamedSse(chunks) {
+    return chunks
+        .join('')
+        .split('\n\n')
+        .filter(Boolean)
+        .map((frame) => {
+            const lines = frame.split('\n');
+            const event = lines.find((line) => line.startsWith('event: '));
+            const data = lines.find((line) => line.startsWith('data: '));
+            return {
+                event: event?.slice('event: '.length),
+                data: JSON.parse(data.slice('data: '.length)),
+            };
+        });
+}
+
 // ── canonicalStreamToSse: per route-kind wire formats ─────────────────
 
 describe('canonicalStreamToSse: openai_chat', () => {
@@ -251,7 +267,7 @@ describe('canonicalStreamToSse: anthropic_messages', () => {
 });
 
 describe('canonicalStreamToSse: openai_responses', () => {
-    it('emits Responses-shaped created / output_text.delta / completed events', async () => {
+    it('emits the complete Responses text lifecycle with final output and usage', async () => {
         const stream = createCanonicalStream(sampleEvents('xy'));
         const out = [];
         for await (const chunk of canonicalStreamToSse(
@@ -260,13 +276,99 @@ describe('canonicalStreamToSse: openai_responses', () => {
             'req-r1'
         ))
             out.push(chunk);
-        const joined = out.join('');
+        const frames = parseNamedSse(out);
 
-        assert.ok(joined.includes('event: response.created'));
-        assert.ok(joined.includes('event: response.output_item.added'));
-        assert.ok(joined.includes('event: response.output_text.delta'));
-        assert.ok(joined.includes('event: response.output_item.done'));
-        assert.ok(joined.includes('event: response.completed'));
+        assert.deepEqual(
+            frames.map((frame) => frame.event),
+            [
+                'response.created',
+                'response.in_progress',
+                'response.output_item.added',
+                'response.content_part.added',
+                'response.output_text.delta',
+                'response.output_text.delta',
+                'response.output_text.done',
+                'response.content_part.done',
+                'response.output_item.done',
+                'response.completed',
+            ]
+        );
+        assert.deepEqual(
+            frames.map((frame) => frame.data.sequence_number),
+            frames.map((_, index) => index)
+        );
+
+        const outputItemDone = frames.find(
+            (frame) => frame.event === 'response.output_item.done'
+        ).data.item;
+        assert.equal(outputItemDone.type, 'message');
+        assert.equal(outputItemDone.content[0].text, 'xy');
+
+        const completed = frames.at(-1).data.response;
+        assert.equal(completed.output[0].content[0].text, 'xy');
+        assert.deepEqual(completed.usage, {
+            input_tokens: 1,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 2,
+            output_tokens_details: { reasoning_tokens: 0 },
+            total_tokens: 3,
+        });
+    });
+
+    it('emits complete function-call items that a Responses client can replay', async () => {
+        async function* events() {
+            yield {
+                type: 'message_start',
+                data: { id: 't1', model: 'stub-model', role: 'assistant' },
+            };
+            yield {
+                type: 'tool_call_delta',
+                data: {
+                    index: 0,
+                    id: 'call_1',
+                    name: 'exec_command',
+                    arguments: '{"cmd":',
+                },
+            };
+            yield {
+                type: 'tool_call_delta',
+                data: { index: 0, arguments: '"pwd"}' },
+            };
+            yield {
+                type: 'usage',
+                data: { input_tokens: 4, output_tokens: 5, total_tokens: 9 },
+            };
+            yield { type: 'done', data: { finish_reason: 'tool_calls' } };
+        }
+
+        const out = [];
+        for await (const chunk of canonicalStreamToSse(
+            createCanonicalStream(events()),
+            'openai_responses',
+            'req-r2'
+        ))
+            out.push(chunk);
+        const frames = parseNamedSse(out);
+        const doneArguments = frames.find(
+            (frame) =>
+                frame.event === 'response.function_call_arguments.done'
+        ).data;
+        const completed = frames.at(-1).data.response;
+
+        assert.equal(doneArguments.name, 'exec_command');
+        assert.equal(doneArguments.arguments, '{"cmd":"pwd"}');
+        assert.deepEqual(completed.output[0], {
+            id: 'fc_req-r2_0',
+            type: 'function_call',
+            status: 'completed',
+            arguments: '{"cmd":"pwd"}',
+            call_id: 'call_1',
+            name: 'exec_command',
+        });
+        assert.deepEqual(
+            frames.map((frame) => frame.data.sequence_number),
+            frames.map((_, index) => index)
+        );
     });
 });
 

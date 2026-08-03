@@ -69,6 +69,12 @@ Route egress supports:
 - Anthropic Messages named events
 - OpenAI Responses named events
 
+Responses egress emits the complete typed lifecycle, including monotonically
+increasing `sequence_number` values, content-part boundaries, finalized text or
+function-call arguments, complete output items, and final usage on
+`response.completed`. This makes the stream consumable by strict Responses
+clients such as Codex, not only by delta-tolerant clients.
+
 The response format is selected from `route.kind`.
 
 If a route error is thrown after headers have already been sent, the error boundary emits the same route-specific terminal error shape that the streaming serializer uses for canonical `error` events:

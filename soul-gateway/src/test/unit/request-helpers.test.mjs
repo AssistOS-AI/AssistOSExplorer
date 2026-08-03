@@ -268,6 +268,58 @@ describe('normalizeIncomingFormat', () => {
             assert.doesNotThrow(() => validateNormalizedRequest(result));
         });
 
+        it('replays Responses function calls and outputs as canonical tool messages', () => {
+            const body = {
+                model: 'gpt-5.6-sol',
+                input: [
+                    {
+                        type: 'reasoning',
+                        id: 'rs_1',
+                        encrypted_content: 'opaque',
+                    },
+                    {
+                        type: 'function_call',
+                        id: 'fc_1',
+                        call_id: 'call_1',
+                        name: 'exec_command',
+                        arguments: '{"cmd":"pwd"}',
+                    },
+                    {
+                        type: 'function_call_output',
+                        call_id: 'call_1',
+                        output: [
+                            { type: 'input_text', text: '/workspace\n' },
+                        ],
+                    },
+                    { type: 'message', role: 'user', content: 'Continue' },
+                ],
+            };
+
+            const result = normalizeIncomingFormat('openai_responses', body);
+
+            assert.equal(result.messages.length, 3);
+            assert.deepEqual(result.messages[0], {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                    {
+                        id: 'call_1',
+                        type: 'function',
+                        function: {
+                            name: 'exec_command',
+                            arguments: '{"cmd":"pwd"}',
+                        },
+                    },
+                ],
+            });
+            assert.deepEqual(result.messages[1], {
+                role: 'tool',
+                tool_call_id: 'call_1',
+                content: '/workspace\n',
+            });
+            assert.doesNotThrow(() => validateNormalizedRequest(result));
+        });
+
         it('maps max_output_tokens to max_tokens', () => {
             const body = {
                 model: 'gpt-4o',

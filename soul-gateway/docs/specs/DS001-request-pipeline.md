@@ -20,6 +20,11 @@ For conversational requests, the canonical shape preserves the complete ordered 
 
 Responses API ingress normalizes `developer` input messages to canonical `system` messages. This keeps instruction ordering intact while satisfying the canonical validator; Responses-style backends translate those system messages back to the upstream-native `developer` role.
 
+Responses function-call history is normalized into canonical assistant
+`tool_calls` and `tool` result messages using the original `call_id`. Opaque
+reasoning replay items are omitted because the canonical Chat Completions shape
+has no equivalent; they must not become synthetic empty user turns.
+
 The gateway also accepts OpenAI-compatible embeddings requests at `POST /v1/embeddings`:
 
 - request body: `model`, `input`, and optional OpenAI-compatible `encoding_format`, `dimensions`, and `user`
