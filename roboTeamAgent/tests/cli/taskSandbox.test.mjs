@@ -279,6 +279,8 @@ for (const [agent, testables, buildSandbox, prepareSandbox, probeBubblewrap, res
                 LD_PRELOAD: '/tmp/hostile.so',
                 NODE_OPTIONS: '--require=/tmp/hostile.cjs',
                 SAFE_TEST_VALUE: 'kept',
+                PLOINKY_TASK_BROKER_URL: 'http://127.0.0.1:1234/v1',
+                PLOINKY_TASK_BROKER_KEY: 'scoped-broker-token',
                 ...sentinels,
             },
             writablePaths: [stateDir],
@@ -306,6 +308,11 @@ for (const [agent, testables, buildSandbox, prepareSandbox, probeBubblewrap, res
         });
         assert.equal(executed.status, 0, executed.stderr);
         assert.match(executed.stdout, /^SAFE_TEST_VALUE=kept$/m);
+        assert.match(
+            executed.stdout,
+            /^PLOINKY_TASK_BROKER_URL=http:\/\/127\.0\.0\.1:1234\/v1$/m
+        );
+        assert.match(executed.stdout, /^PLOINKY_TASK_BROKER_KEY=scoped-broker-token$/m);
         for (const sentinel of Object.values(sentinels)) {
             assert.doesNotMatch(executed.stdout, new RegExp(sentinel));
             assert.doesNotMatch(executed.stderr, new RegExp(sentinel));
