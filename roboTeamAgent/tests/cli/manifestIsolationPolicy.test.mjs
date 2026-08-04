@@ -31,7 +31,7 @@ async function readManifest(relativePath) {
     return JSON.parse(await fs.readFile(path.join(repoRoot, relativePath), 'utf8'));
 }
 
-test('only the three coding agents select lite-sandbox', async () => {
+test('only the three clean-break coding agents select lite-sandbox', async () => {
     const selected = [];
     for (const manifestPath of await findManifests()) {
         const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
@@ -48,6 +48,8 @@ test('only the three coding agents select lite-sandbox', async () => {
 
     for (const manifestPath of selected) {
         const manifest = await readManifest(manifestPath);
+        assert.equal(Object.hasOwn(manifest, 'container'), false, manifestPath);
+        assert.equal(Object.hasOwn(manifest, 'network'), false, manifestPath);
         assert.equal(manifest.startup, 'manual', manifestPath);
     }
 });
