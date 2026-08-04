@@ -67,12 +67,18 @@ function bindPairs(args, option) {
 }
 
 function selectedProcMode(args) {
-    return args.some((value, index) => value === '--proc' && args[index + 1] === '/proc')
-        ? 'private'
-        : 'empty';
+    if (args.some((value, index) => value === '--proc' && args[index + 1] === '/proc')) {
+        return 'private';
+    }
+    if (bindPairs(args, '--ro-bind').some(([source, target]) => (
+        source === '/proc' && target === '/proc'
+    ))) {
+        return 'inherited';
+    }
+    return 'missing';
 }
 
-test('nested Bubblewrap probe mounts the dynamic loader paths', () => {
+test('nested Bubblewrap private probe mounts the dynamic loader paths', () => {
     const args = openCodeSandboxTestables.minimalProbeArgs('private');
     for (const candidate of ['/lib', '/lib64']) {
         if (!fsSync.existsSync(candidate)) continue;
@@ -86,6 +92,23 @@ test('nested Bubblewrap probe mounts the dynamic loader paths', () => {
             && args[index + 2] === expected[2]
         )));
     }
+});
+
+test('nested Bubblewrap inherited proc probe guards the parent boundary', () => {
+    const outerPid = 4242;
+    const args = openCodeSandboxTestables.minimalProbeArgs('inherited', outerPid);
+    assert.equal(selectedProcMode(args), 'inherited');
+    assert.equal(args.some((value, index) => (
+        value === '--dir' && args[index + 1] === '/proc'
+    )), false);
+    const commandIndex = args.indexOf('--') + 1;
+    assert.deepEqual(args.slice(commandIndex, commandIndex + 2), ['/bin/sh', '-c']);
+    assert.match(args[commandIndex + 2], /\/proc\/self\/maps/);
+    assert.match(args[commandIndex + 2], /\/proc\/\$outer_pid\/environ/);
+    assert.match(args[commandIndex + 2], /\/proc\/\$outer_pid\/root/);
+    assert.match(args[commandIndex + 2], /\/proc\/\$outer_pid\/cwd/);
+    assert.match(args[commandIndex + 2], /\/proc\/\$outer_pid\/fd\/0/);
+    assert.equal(args[commandIndex + 4], String(outerPid));
 });
 
 test('missing production Bubblewrap fails with the stable capability code without a skip', () => {
@@ -162,7 +185,7 @@ for (const [agent, testables, buildSandbox, prepareSandbox, probeBubblewrap, res
         await assert.rejects(fs.access(projectDir));
     });
 
-    test(`${agent} private and empty proc modes both launch the exact executable`, async (t) => {
+    test(`${agent} private and inherited proc modes both launch the exact executable`, async (t) => {
         const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'proc-mode-task-test-'));
         t.after(() => fs.rm(temporaryDirectory, { recursive: true, force: true }));
         const workspaceRoot = path.join(temporaryDirectory, 'workspace');
@@ -171,7 +194,7 @@ for (const [agent, testables, buildSandbox, prepareSandbox, probeBubblewrap, res
         await fs.mkdir(projectDir, { recursive: true });
         await fs.writeFile(command, '#!/bin/sh\nprintf "%s" "$1" > exact-command.txt\n', { mode: 0o755 });
 
-        for (const expectedMode of ['private', 'empty']) {
+        for (const expectedMode of ['private', 'inherited']) {
             testables.clearProbeCache();
             const dependencies = expectedMode === 'private'
                 ? testDependencies()
@@ -180,7 +203,7 @@ for (const [agent, testables, buildSandbox, prepareSandbox, probeBubblewrap, res
                         if (selectedProcMode(args) === 'private') {
                             return { status: 1, stderr: 'private unavailable' };
                         }
-                        return spawnSync(binary, args, options);
+                        return { status: 0, stderr: '' };
                     },
                 });
             const capability = probeBubblewrap({ dependencies });
@@ -225,7 +248,7 @@ for (const [agent, testables, buildSandbox, prepareSandbox, probeBubblewrap, res
                 }),
             }),
             (error) => error?.code === BWRAP_CAPABILITY_ERROR_CODE
-                && /private: denied; empty: denied/.test(error.message),
+                && /private: denied; inherited: denied/.test(error.message),
         );
         assert.equal(attempts, 2);
         await assert.rejects(fs.access(projectDir));
