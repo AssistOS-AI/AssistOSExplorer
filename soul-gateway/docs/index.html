@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Soul Gateway Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+  <script type="module" src="partials-loader.js"></script>
+</head>
+<body>
+  <div data-partial="header"></div>
+  <div class="page"><main>
+    <p class="breadcrumbs">Home</p>
+    <h1>Soul Gateway Documentation</h1>
+    <p>Soul Gateway is the Ploinky-managed gateway that gives agents and authenticated users a single model interface while centralizing model selection, provider credentials, request policy, failure handling, and operational visibility. Callers use OpenAI Chat Completions, Anthropic Messages, OpenAI Responses, or OpenAI-compatible embeddings endpoints without owning provider-specific routing logic.</p>
+    <p>The gateway authenticates the caller, converts supported inputs to a canonical request, resolves an alias, direct model, or cascade tier, runs configured middleware, leases provider credentials, and returns a protocol-specific buffered or streaming response. Configuration and operational records persist in embedded SQLite.</p>
+
+    <h2>Documentation Map</h2>
+    <table class="documentation-map">
+      <thead><tr><th scope="col">Overview</th><th scope="col">Interfaces</th><th scope="col">Operations</th><th scope="col">Reference</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><a href="index.html">Home</a><span>System purpose, repository layout, runtime defaults, and documentation reading flow.</span></td>
+          <td><a href="interfaces.html">API and Management</a><span>Public inference protocols, authentication forms, dashboard functions, and administrative route groups.</span></td>
+          <td><a href="operations.html">Deployment and Operations</a><span>Ploinky startup, configuration, persistence, health, maintenance jobs, testing, and shutdown.</span></td>
+          <td><a href="specsLoader.html?spec=matrix.md">Specifications</a><span>Normative design contracts for behavior, boundaries, policy, persistence, and deployment.</span></td>
+        </tr>
+        <tr>
+          <td><a href="architecture.html">Architecture</a><span>Request processing, model execution, provider ownership, runtime snapshots, and data flow.</span></td>
+          <td></td>
+          <td></td>
+          <td><a href="wiki.html">Wiki</a><span>Canonical definitions for project-specific components, identities, routes, models, and runtime concepts.</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Begin in Overview with Architecture after this page. Use Interfaces when integrating a client or operating the dashboard, then Operations for deployment and maintenance. Reference contains the authoritative Specifications and the Wiki used throughout every page.</p>
+
+    <h2>Repository and runtime</h2>
+    <p><code>src/index.mjs</code> starts the process, while <code>src/bootstrap.mjs</code> configures the <a href="wiki.html#definition-runtime-snapshot">runtime snapshot</a>, service catalogs, background jobs, and HTTP routes. Public request handling lives under <code>src/runtime/route/</code> and <code>src/runtime/execution/</code>. Provider adapters live under <code>src/runtime/backends/</code>; management handlers live under <code>src/management/</code>; persistence lives under <code>src/db/</code>.</p>
+    <p>The Ploinky manifest mounts persistent data at <code>/data</code>, listens on internal port <code>7000</code>, publishes public inference and health routes through the <a href="wiki.html#definition-ploinky-router">Ploinky Router</a>, and protects management routes with authenticated Router identity. The standard <a href="wiki.html#definition-compatibility-tier">compatibility tiers</a> are <code>fast</code>, <code>plan</code>, and <code>deep</code>.</p>
+
+    <h2>Coding style and tests</h2>
+    <p><a href="specsLoader.html?spec=DS001-coding-style.md">DS001-coding-style</a> is the canonical source for coding style, module boundaries, file-size guidance, and test organization. JavaScript uses ES modules and four-space indentation. JSON and YAML use two-space indentation.</p>
+    <p>Unit tests in <code>src/test/unit/</code> isolate route, execution, policy, provider, management, discovery, and observability contracts. Integration tests in <code>src/test/integration/</code> verify the HTTP boundary and embedded SQLite behavior. Run <code>npm test</code> for the complete suite or <code>npm run test:unit</code> for unit coverage.</p>
+
+    <h2>Terminology and imported tooling</h2>
+    <p><code>wiki.html</code> is the canonical source for Soul Gateway terminology. This repository does not distribute agent skills as product functionality. Workspace-provided or imported skills remain development tooling, and downstream projects keep skill-specific documentation inside the imported skill folders rather than adding it to the host project's documentation set.</p>
+  </main></div>
+  <div data-partial="footer"></div>
+</body>
+</html>

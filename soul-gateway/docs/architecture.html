@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Soul Gateway Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+  <script type="module" src="partials-loader.js"></script>
+</head>
+<body>
+  <div data-partial="header"></div>
+  <div class="page"><main>
+    <p class="breadcrumbs"><a href="index.html">Home</a> / Architecture</p>
+    <h1>Soul Gateway Architecture</h1>
+    <p>Soul Gateway separates the caller-facing protocol from provider-specific execution. A request enters through the <a href="wiki.html#definition-ploinky-router">Ploinky Router</a>, passes a fixed route chain, and reaches either one direct model or a prioritized <a href="wiki.html#definition-cascade-model">cascade model</a>. The same kernel composition contract runs route, gateway, model, provider, and backend middleware.</p>
+
+    <figure class="diagram">
+      <pre class="mermaid">flowchart TB
+        Caller[Authenticated user or Ploinky agent]
+        subgraph Router[Ploinky Router]
+          Access[Path access and protected-route identity]
+        end
+        subgraph Gateway[Soul Gateway]
+          Ingress[Authenticate, normalize, validate, resolve]
+          Policy[Gateway and model policy]
+          Routing[Direct or cascade model execution]
+          State[(SQLite and runtime snapshot)]
+        end
+        subgraph Provider[Provider boundary]
+          Achilles[AchillesAgentLib LLM transport]
+          Vendor[Configured model provider]
+        end
+        Caller --> Access --> Ingress --> Policy --> Routing --> Achilles --> Vendor
+        State <--> Ingress
+        State <--> Policy
+        State <--> Routing
+        classDef actor fill:#e8efff,stroke:#2457c5,color:#172033,font-weight:bold;
+        classDef gateway fill:#eaf7ef,stroke:#287a48,color:#172033;
+        classDef state fill:#fff2d9,stroke:#a56a00,color:#172033;
+        class Caller,Access actor;
+        class Ingress,Policy,Routing,Achilles,Vendor gateway;
+        class State state;</pre>
+      <figcaption><em>Authenticated model request architecture</em></figcaption>
+    </figure>
+
+    <h2>Canonical route chain</h2>
+    <p><code>runRouteRequest()</code> creates one request context and composes error handling, JSON parsing, signed-subject authentication, caller identity, snapshot binding, ingress normalization, audit setup, validation, model resolution, agent-loop protection, session resolution, response serialization, and gateway dispatch. OpenAI Chat, Anthropic Messages, and OpenAI Responses inputs become one <a href="wiki.html#definition-canonical-request">canonical request</a> before policy and routing inspect them.</p>
+    <p>The request binds one immutable <a href="wiki.html#definition-runtime-snapshot">runtime snapshot</a>. That snapshot contains enabled providers, direct models, cascade children, aliases, tiers, active cooldowns, API-key policy data, blacklist rules, and middleware bindings. Administrative mutations request a new snapshot generation; in-flight requests retain the generation they already bound.</p>
+
+    <h2>Execution and provider ownership</h2>
+    <p>A direct model acquires its concurrency slot, enters retry and timeout control, leases one provider account, compiles provider middleware, and invokes the selected backend. The credential lease is released in a <code>finally</code> path. Request-time vendor LLM transport belongs to <a href="wiki.html#definition-achilles-agent-lib">AchillesAgentLib</a>; Soul Gateway supplies the model, credential, base URL, headers, and provider settings, then converts Achilles stream events to the gateway's canonical stream. The Ploinky-agent backend separately signs the exact serialized request bytes for an authenticated Router capability call.</p>
+    <p>A cascade model orders enabled children by priority and invokes one child at a time. A classified error may permit another child, may place a model in cooldown, or may fail the request immediately. The gateway persists cooldowns asynchronously and refreshes the snapshot so later requests avoid unavailable children.</p>
+
+    <h2>Middleware and policy</h2>
+    <p>The <a href="wiki.html#definition-middleware-catalog">middleware catalog</a> loads built-in and extension middleware into generation-scoped registries. Bindings apply at gateway, model, or provider scope and merge default, binding, request, model, key, and provider settings according to the relevant middleware contract. Built-ins cover rate and token limits, budgets, content blocking, response filtering, session context, prompt injection, request logging, response caching, context compression, output compression, and loop detection.</p>
+
+    <h2>Persistence and background coordination</h2>
+    <p>Embedded SQLite stores provider and account configuration, models and cascade children, aliases, middleware records and bindings, API-key subjects and limits, blacklist rules, cooldowns, sessions, audit logs, and persistent session state. Provider API secrets use the generated encryption key; managed OAuth credentials use encrypted credential files beneath <code>CREDENTIALS_DIR</code>.</p>
+    <p>Background jobs remove expired cooldowns, maintain audit partitions and retention, refresh OAuth tokens, reset provider quotas, clean spend caches, and refresh provider model catalogs. A separate Ploinky discovery timer reconciles agent model routes. Graceful shutdown stops ingress and jobs, closes live subscribers, waits for active requests, flushes audits, shuts down backend generations, and closes SQLite.</p>
+  </main></div>
+  <div data-partial="footer"></div>
+</body>
+</html>

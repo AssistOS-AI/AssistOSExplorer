@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Soul Gateway Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+  <script type="module" src="partials-loader.js"></script>
+</head>
+<body>
+  <div data-partial="header"></div>
+  <div class="page"><main>
+    <p class="breadcrumbs"><a href="index.html">Home</a> / Wiki</p>
+    <h1>Soul Gateway Wiki</h1>
+    <p>This page is the canonical terminology source for Soul Gateway documentation and specifications. Each entry describes the term's role, users, relationships, and governing boundary.</p>
+    <dl class="term-list">
+      <dt id="definition-achilles-agent-lib">AchillesAgentLib</dt>
+      <dd>AchillesAgentLib is the runtime library that owns request-time vendor LLM provider transport. Soul Gateway selects the backend family, leases credentials, supplies model and provider settings, and converts the library's stream events into the gateway canonical stream. Provider lifecycle checks and model discovery may use direct vendor HTTP because they do not return an inference result to a caller. The Ploinky-agent backend owns an authenticated Router capability call because its signed request hash must cover the exact serialized bytes; this does not authorize vendor LLM backends to bypass AchillesAgentLib. Provider-specific search implementations may own search transport behind the same model-facing contract.</dd>
+
+      <dt id="definition-agent-port-path">Agent-port path</dt>
+      <dd>An agent-port path is the Ploinky Router prefix that maps an external HTTP request to a port exposed by a named agent. Soul Gateway uses <code>/base-agent-additional-server/soul-gateway/7000/</code>. The manifest assigns separate access modes beneath that prefix: inference is available to guests at the Router layer but still requires a Soul Gateway signed-subject key, management requires an authenticated Ploinky identity, and health is public.</dd>
+
+      <dt id="definition-canonical-request">Canonical request</dt>
+      <dd>The canonical request is the internal representation shared by all completion protocols. Ingress normalizers translate OpenAI Chat, Anthropic Messages, and OpenAI Responses fields into this representation before validation, model policy, or provider execution. It preserves messages, selected model, streaming intent, tool definitions, token controls, and provider options that downstream code supports. Protocol serializers later convert the canonical result back to the caller's wire format.</dd>
+
+      <dt id="definition-canonical-stream">Canonical stream</dt>
+      <dd>The canonical stream is Soul Gateway's protocol-independent sequence of model events. Backend adapters emit message-start, text-delta, tool-call-delta, usage, error, and completion events. Gateway and provider middleware can inspect or transform these events without depending on OpenAI or Anthropic wire syntax. Egress serializers translate the events to the selected streaming protocol, while buffered requests collect them into a completed response.</dd>
+
+      <dt id="definition-cascade-model">Cascade model</dt>
+      <dd>A cascade model is an addressable model whose children are other enabled models ordered by priority. It lets callers select one stable model name while the gateway tries eligible children until one succeeds or the configured attempt limit is exhausted. Only classified errors marked for cascade advance to another child; cooldown-marked failures also create persistent cooldown state. A cascade has no provider account of its own because each child retains its direct-model provider boundary.</dd>
+
+      <dt id="definition-compatibility-tier">Compatibility tier</dt>
+      <dd>A compatibility tier is a stable alias such as <code>fast</code>, <code>plan</code>, or <code>deep</code> that resolves to a model strategy. On a new database, Soul Gateway can seed these aliases from the model discovered for <code>LLM_DEFAULT_AGENT</code>. Tag-tier reconciliation can also maintain cascade models for predefined model tags. Tiers are configuration records exposed as ordinary model identifiers to callers; the gateway does not require clients to understand their child routing.</dd>
+
+      <dt id="definition-credential-lease">Credential lease</dt>
+      <dd>A credential lease is the temporary right to use one eligible provider account for a single backend attempt. The credential manager selects an account, decrypts or refreshes its secret material, and returns a lease containing the account identity and authentication data. Execution releases the lease in a <code>finally</code> block on success or failure. Quota state and account rotation can exclude an account without exposing its secret to callers.</dd>
+
+      <dt id="definition-direct-model">Direct model</dt>
+      <dd>A direct model maps one public <code>model_key</code> to a provider, provider model identifier, execution backend, concurrency and timeout controls, pricing metadata, capabilities, and policy overrides. Direct execution acquires concurrency, retries classified failures, leases credentials, compiles provider middleware, and invokes a backend. Every enabled direct model requires both a provider and provider model identifier in the SQLite schema.</dd>
+
+      <dt id="definition-middleware-catalog">Middleware catalog</dt>
+      <dd>The middleware catalog is the generation-scoped registry of enabled built-in and extension middleware. It resolves bindings by gateway, model, and provider scope and composes them through the shared kernel. Administrative rescans create a new generation while previous generations receive a grace period for in-flight work. The catalog defines availability and ordering; each middleware module defines its own settings and observable policy effect.</dd>
+
+      <dt id="definition-ploinky-agent-model">Ploinky agent model</dt>
+      <dd>A Ploinky agent model represents an OpenAI-compatible model route discovered from another enabled Ploinky agent. Discovery uses the Router's authenticated agent-discovery interface and reconciles provider and model records before a runtime snapshot loads. Agent identity, route ownership, and request hashes prevent ambiguous delegation. The local Soul Gateway remains the model hub and owns the aliases and tier policy presented to its callers.</dd>
+
+      <dt id="definition-ploinky-router">Ploinky Router</dt>
+      <dd>The Ploinky Router is the host process that exposes agent-port routes, applies path-level access policy, forwards authenticated user metadata, and signs protected HTTP invocations. Soul Gateway depends on the Router for management identity and route reachability but performs its own signed-subject authentication for public inference. Management requests must include both an administrator role and a verified, replay-protected invocation surface.</dd>
+
+      <dt id="definition-provider-backend">Provider backend</dt>
+      <dd>A provider backend is a catalog entry with a validated manifest and an <code>execute()</code> terminal used for one provider protocol family. The manifest declares its key, authentication strategy, supported formats, streaming and tool support, plus lifecycle functions such as connectivity testing or model discovery. Vendor LLM backends adapt execution context to AchillesAgentLib and normalize results; lifecycle functions may contact vendor metadata endpoints directly. The Ploinky-agent backend is a distinct Router capability backend that signs and sends its exact serialized body.</dd>
+
+      <dt id="definition-provider-middleware">Provider middleware</dt>
+      <dd>Provider middleware runs around one provider attempt after a direct model and credential lease are selected. Bindings can inject prompts, compact context, filter responses, or compress output for a specific provider without changing the public model interface. The provider middleware registry combines built-ins and extension modules, and the execution chain resolves the active binding set for each attempt.</dd>
+
+      <dt id="definition-runtime-snapshot">Runtime snapshot</dt>
+      <dd>The runtime snapshot is an immutable, generation-numbered in-memory view of configuration used by request processing. It contains providers, models, aliases, tiers, cascade children, API-key policy, blacklist rules, cooldowns, and middleware bindings loaded from SQLite. Each request pins one snapshot so administrative updates cannot change its routing halfway through execution. Mutating management operations request a refresh that replaces the snapshot for later requests.</dd>
+
+      <dt id="definition-signed-subject-key">Signed-subject key</dt>
+      <dd>A signed-subject key proves either a Ploinky agent identity in the form <code>agent:&lt;repo&gt;/&lt;agent&gt;</code> or a Ploinky user identity in the form <code>user:&lt;id&gt;</code>. Ploinky signs the exact subject bytes with Ed25519, and Soul Gateway verifies the signature with <code>PLOINKY_AGENT_API_PUBLIC_KEY</code>. Agent keys travel in raw <code>&lt;subject&gt;|&lt;signature&gt;</code> form. User keys must be wrapped as canonical base64url with the <code>sk-soul-</code> prefix. A deterministic SQLite API-key row carries limits, budget, revocation, and expiry state for the verified subject.</dd>
+    </dl>
+  </main></div>
+  <div data-partial="footer"></div>
+</body>
+</html>

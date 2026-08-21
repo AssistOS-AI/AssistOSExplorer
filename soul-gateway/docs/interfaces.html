@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Soul Gateway Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+  <script type="module" src="partials-loader.js"></script>
+</head>
+<body>
+  <div data-partial="header"></div>
+  <div class="page"><main>
+    <p class="breadcrumbs"><a href="index.html">Home</a> / API and Management</p>
+    <h1>API and Management</h1>
+    <p>Soul Gateway exposes inference, model discovery, health, and administrative interfaces through the <a href="wiki.html#definition-agent-port-path">agent-port path</a> assigned by the Ploinky Router. The Router removes the external prefix before dispatching to the internal service, so route definitions in <code>src/</code> begin with <code>/v1</code>, <code>/management</code>, or <code>/healthz</code>.</p>
+
+    <h2>Public model interface</h2>
+    <table>
+      <thead><tr><th>Method and internal path</th><th>Behavior</th></tr></thead>
+      <tbody>
+        <tr><td><code>POST /v1/chat/completions</code></td><td>Accepts OpenAI Chat Completions input and returns OpenAI-compatible buffered JSON or server-sent events.</td></tr>
+        <tr><td><code>POST /v1/messages</code></td><td>Accepts Anthropic Messages input and serializes the canonical response as Anthropic JSON or events.</td></tr>
+        <tr><td><code>POST /v1/responses</code></td><td>Accepts OpenAI Responses input and returns Responses-compatible JSON or events.</td></tr>
+        <tr><td><code>POST /v1/embeddings</code></td><td>Normalizes embedding input, resolves a direct model, and calls a backend that advertises embedding support.</td></tr>
+        <tr><td><code>GET /v1/models</code></td><td>Lists addressable direct models, cascade models, and aliases with additive pricing, context, tag, free-model, and cascade metadata.</td></tr>
+      </tbody>
+    </table>
+    <p>Every public model route requires a <a href="wiki.html#definition-signed-subject-key">signed-subject key</a>. Agent callers send the raw signed value. User callers send the <code>sk-soul-</code> wrapper issued through Ploinky. A valid signature creates or reuses the deterministic API-key row for that subject; revoked or expired rows remain denied.</p>
+
+    <h2>Request and response behavior</h2>
+    <p>Completion requests must provide a model name and messages valid for their ingress protocol. The gateway resolves normalized names and aliases against the bound runtime snapshot. Unknown models return a structured model-not-found response. The <code>stream</code> flag selects protocol-specific streaming; non-streaming requests buffer the canonical events before serialization.</p>
+    <p>Errors use the caller's protocol where an error frame exists. Provider failures are classified into authentication, quota, rate-limit, content-policy, model-not-found, timeout, and availability categories. Classification controls HTTP status, retry eligibility, cascade eligibility, and cooldown behavior.</p>
+
+    <h2>Management interface</h2>
+    <p>The dashboard at <code>/management/</code> and every management API route require a verified Ploinky protected-route invocation whose authenticated user has the <code>admin</code> role. Soul Gateway verifies the signed invocation surface and replay protection; caller-supplied identity headers do not grant management access.</p>
+    <p>The management API groups operations by purpose:</p>
+    <ul>
+      <li>API keys: list, provision user keys, inspect, update, revoke, and delete.</li>
+      <li>Models and tiers: create or modify direct and cascade models, manage children, reorder cascades, and enable or disable tiers.</li>
+      <li>Providers: create provider records, test connectivity, discover or synchronize models, run OAuth flows, and manage provider accounts.</li>
+      <li>Middleware: rescan catalogs and manage gateway, model, and provider bindings.</li>
+      <li>Policy state: manage blacklist rules and clear model cooldowns.</li>
+      <li>Observability: inspect logs, sessions, agent trees, usage and cost metrics, export JSON or CSV, and subscribe to live logs over SSE or WebSocket.</li>
+    </ul>
+    <p>The Explorer integration exposes the admin-only <code>soul-gateway-settings</code> entry and opens the same Router-protected dashboard. It does not create an independent settings store or authentication flow.</p>
+
+    <h2>Health and CLI</h2>
+    <p><code>GET /healthz</code> and <code>GET /healthz/</code> return gateway liveness, SQLite reachability, runtime snapshot generation, and uptime. The Ploinky manifest publishes health without login. <code>cli.sh</code> exposes <code>status</code>, <code>health</code>, <code>keys</code>, <code>models</code>, and <code>logs [n]</code>; management commands forward <code>PLOINKY_AUTH_COOKIE</code> to the Router.</p>
+  </main></div>
+  <div data-partial="footer"></div>
+</body>
+</html>

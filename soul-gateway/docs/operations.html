@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Soul Gateway Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+  <script type="module" src="partials-loader.js"></script>
+</head>
+<body>
+  <div data-partial="header"></div>
+  <div class="page"><main>
+    <p class="breadcrumbs"><a href="index.html">Home</a> / Deployment and Operations</p>
+    <h1>Deployment and Operations</h1>
+    <p>Soul Gateway has one production deployment model: a Ploinky-managed agent behind the Ploinky Router. The manifest selects the Node 24 agent image, mounts persistent data at <code>/data</code>, starts <code>startup.sh</code>, and publishes inference, management, and health paths with different access rules.</p>
+
+    <h2>Startup contract</h2>
+    <p><code>install.sh</code> creates persistent data and credential directories, connects the Ploinky-prepared dependency cache when needed, optionally installs Chromium for headless search, and creates <code>DATA_DIR/encryption.key</code> with owner-only permissions. <code>startup.sh</code> repeats dependency and browser readiness checks, exports the data paths and listener values, and runs <code>node src/index.mjs</code>.</p>
+    <p>The application validates configuration, fails closed when required <a href="wiki.html#definition-signed-subject-key">signed-subject authentication</a> values are absent, initializes SQLite, installs catalogs and services, reconciles Ploinky agents and provider models, seeds standard tiers on a new database, loads the runtime snapshot, starts maintenance jobs, and registers HTTP and WebSocket routes.</p>
+
+    <h2>Configuration groups</h2>
+    <table>
+      <thead><tr><th>Group</th><th>Representative settings and effect</th></tr></thead>
+      <tbody>
+        <tr><td>Server and storage</td><td><code>HOST</code>, <code>PORT</code>, <code>SQLITE_PATH</code>, <code>DATA_DIR</code>, <code>CREDENTIALS_DIR</code>, <code>EXTENSIONS_DIR</code>, and <code>DASHBOARD_STATIC_DIR</code>.</td></tr>
+        <tr><td>Authentication</td><td><code>PLOINKY_AGENT_API_PUBLIC_KEY</code>, <code>PLOINKY_ROUTER_URL</code>, <code>PLOINKY_AGENT_ID</code>, <code>PLOINKY_AGENT_SECRET</code>, encryption and hash material, and the development-only <code>ALLOW_UNAUTHENTICATED</code>.</td></tr>
+        <tr><td>Routing</td><td>Default attempt, concurrency, queue timeout, request timeout, retry backoff, and cooldown values.</td></tr>
+        <tr><td>Policy</td><td>Default request, token, and daily budget limits plus loop-detection thresholds.</td></tr>
+        <tr><td>Catalogs</td><td>Provider model refresh, pricing directory refresh, OAuth adapter selection, <code>LLM_DEFAULT_AGENT</code>, and <code>LLM_DEFAULT_TIERS</code>.</td></tr>
+        <tr><td>Observability</td><td>Log retention, partition maintenance, live-stream heartbeat, export batch size, and response-capture limits.</td></tr>
+      </tbody>
+    </table>
+    <p><code>src/config/env.mjs</code> is the executable source for parsed defaults. The Ploinky manifest may override those process defaults for the agent deployment, including <code>HOST=0.0.0.0</code>, <code>PORT=7000</code>, and <code>SQLITE_PATH=/data/soul-gateway.sqlite3</code>.</p>
+
+    <h2>Persistence and credential recovery</h2>
+    <p>The SQLite file and encryption key must persist together. Provider API secrets are encrypted with the application key, and managed OAuth credential files use the same protected runtime boundary. Losing the encryption key makes existing encrypted secret material unusable even if the database remains available.</p>
+    <p>Schema initialization applies the idempotent schema in <code>src/db/schema/sqlite-current.sql</code>. New databases receive standard tier and tag-tier reconciliation. Existing configuration is loaded into an immutable runtime snapshot so the request hot path does not query configuration tables at every stage.</p>
+
+    <h2>Monitoring and maintenance</h2>
+    <p>Use the Router-published <code>/healthz/</code> path for readiness checks. The response includes <code>ok</code>, database reachability, snapshot generation, and uptime. The management dashboard exposes system metrics, cost and token aggregation, errors, activity, sessions, audit logs, live streams, and exports.</p>
+    <p>Maintenance intervals do not overlap with another run of the same job. Failures are logged and do not terminate the process. Provider discovery and pricing refresh use direct network access only as lifecycle/catalog operations; request-time vendor LLM generation remains inside <a href="wiki.html#definition-achilles-agent-lib">AchillesAgentLib</a>. Authenticated Ploinky-agent capability calls use their signed exact-byte Router transport.</p>
+
+    <h2>Shutdown and verification</h2>
+    <p>On <code>SIGTERM</code> or <code>SIGINT</code>, the process stops accepting connections, marks the application as draining, stops background and discovery timers, closes live log subscribers, waits up to <code>SHUTDOWN_GRACE_MS</code> for active work, flushes audit updates, shuts down backend generations, and closes SQLite. A second signal forces exit.</p>
+    <p>Run <code>npm test</code> before deployment. After a restart, verify the Router health path, the agent container status, and the presence of the configured SQLite file inside the container. Production state changes should use the repository's deployment and administrative workflows; direct host access is reserved for read-only diagnosis unless the operation explicitly requires otherwise.</p>
+  </main></div>
+  <div data-partial="footer"></div>
+</body>
+</html>
