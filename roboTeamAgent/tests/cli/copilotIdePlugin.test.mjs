@@ -25,6 +25,7 @@ describe('Achilles CLI Copilot IDE plugin', () => {
         assert.equal(menuConfig.id, toolbarConfig.id);
         assert.equal(menuConfig.contributionType, 'menu');
         assert.deepEqual(menuConfig.location, ['file-exp:context-menu:directory']);
+        assert.equal(menuConfig.label, toolbarConfig.label);
         assert.equal(menuConfig.menuModule, 'menu-contributions.js');
     });
 
