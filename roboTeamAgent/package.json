@@ -1,0 +1,10 @@
+{
+  "name": "roboteam-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --check server/main.mjs && node --check server/http-server.mjs && node --check server/profile-store.mjs && node --check server/desktop-manager.mjs && node --check tools/control.mjs && node --check IDE-plugins/roboteam-tool-button/roboteam-tool-button.js"
+  }
+}

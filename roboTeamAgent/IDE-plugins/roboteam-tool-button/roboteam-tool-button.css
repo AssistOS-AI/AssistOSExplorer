@@ -1,0 +1,27 @@
+roboteam-tool-button {
+    display: block;
+    width: 100%;
+    text-align: center;
+}
+
+.app-toolbar-slot roboteam-tool-button,
+roboteam-tool-button[data-host-orientation="horizontal"] {
+    width: auto;
+    text-align: initial;
+}
+
+.app-plugin-bar roboteam-tool-button {
+    width: 100%;
+    text-align: center;
+}
+
+roboteam-tool-button .roboteam-tool {
+    display: inline-flex;
+    width: 100%;
+    justify-content: center;
+}
+
+.app-toolbar-slot roboteam-tool-button .roboteam-tool,
+roboteam-tool-button[data-host-orientation="horizontal"] .roboteam-tool {
+    width: auto;
+}

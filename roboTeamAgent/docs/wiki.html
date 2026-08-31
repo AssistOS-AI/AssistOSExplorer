@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <div data-include="partials/header.html"></div>
+  <main class="page"><article class="document term-list">
+    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="index.html">Documentation</a> / Wiki</nav>
+    <h1>RoboTeam Wiki</h1>
+    <p class="lede">This page is the canonical source for project-specific terminology used by the documentation and design specifications.</p>
+
+    <article id="definition-roboteam"><h2>RoboTeam</h2><p>RoboTeam is the product that manages virtual employees. It owns the profile catalog, persistent employee storage, profile ownership checks, and interactive desktop lifecycle inside one Ploinky agent. Its role is management and controlled access; ALA remains the separate one-shot task runtime, and Ploinky remains the hosting and routing platform.</p></article>
+    <article id="definition-virtual-employee"><h2>Virtual employee</h2><p>A virtual employee is a durable work identity managed by RoboTeam. It has a name, specialization, profile workspace, persistent application state, and a desktop that its owner can enter. The term describes the complete product actor; the stored object that represents it is the robot profile, while executable domain behavior comes from task skills selected for an ALA run.</p></article>
+    <article id="definition-robot-profile"><h2>Robot profile</h2><p>A robot profile is the persistent RoboTeam record and directory tree for one virtual employee. It includes metadata, owner id, numeric Linux UID, home directory, workspace, Chromium data, downloads, logs, and runtime directory. The profile survives desktop shutdown. It is an application object within RoboTeam and does not create another Ploinky agent or container.</p></article>
+    <article id="definition-profile-owner"><h2>Profile owner</h2><p>The profile owner is the authenticated Ploinky user whose id was recorded when the profile was created. RoboTeam lists and operates a profile only for that user. MCP tools obtain the owner identity from AgentServer invocation metadata, while browser requests obtain it from Router-injected authentication information.</p></article>
+    <article id="definition-profile-workspace"><h2>Profile workspace</h2><p>The profile workspace is the persistent writable directory assigned to one robot profile. The profile terminal opens in this directory, and the product architecture reserves it as the explicit mount source for ALA tasks associated with that employee. It is distinct from ALA's ephemeral scratch workspace and is not automatically mounted into any task by this runtime.</p></article>
+    <article id="definition-desktop-session"><h2>Desktop session</h2><p>A desktop session is the temporary process group that renders and transports one profile's graphical environment. It combines Xvfb, Openbox, xterm, Chromium, x11vnc, and websockify, runs with the profile UID, and exposes its screen through the authenticated noVNC viewer. Stopping the session removes processes and temporary ports but preserves the robot profile.</p></article>
+    <article id="definition-ploinky-agent"><h2>Ploinky agent</h2><p>The Ploinky agent is the single deployable RoboTeam runtime discovered from <code>roboTeamAgent/manifest.json</code>, with canonical identity <code>agent:AchillesCLI/roboTeamAgent</code>. Ploinky starts its container, attaches persistent storage, supplies generated secrets, hosts the AgentServer contract, authenticates users, and routes requests. Robot profiles remain internal to this one agent.</p></article>
+    <article id="definition-agent-port-route"><h2>Agent-port route</h2><p>The agent-port route is Ploinky's authenticated path convention for reaching an additional port owned by an agent. RoboTeam declares the route for its port `7000`; the Router authenticates HTTP and WebSocket requests, applies browser mutation protection to state changes, injects trusted user metadata, and relays the request without publishing VNC or websockify directly.</p></article>
+    <article id="definition-advancedlanguageagent"><h2>AdvancedLanguageAgent</h2><p>AdvancedLanguageAgent, abbreviated ALA, is the separate one-shot coding-agent runtime selected for virtual employee tasks. ALA creates an ephemeral sandbox and can mount explicitly supplied folders and task repositories. RoboTeam reserves the profile workspace and profile-specific authentication/configuration directories as controlled inputs to that integration, but the launch and desktop-control protocol is outside this repository's runtime interface.</p></article>
+    <article id="definition-task-repository"><h2>Task repository</h2><p>A task repository is a source mounted by ALA to provide files or skills to one task. RoboTeam's product direction uses task-repository selection to give a virtual employee domain-specific instructions and tools without placing all skills in every profile. This repository does not select, resolve, or mount task repositories.</p></article>
+    <article id="definition-task-skill"><h2>Task skill</h2><p>A task skill is an instruction and tooling package made available to an ALA task through a selected task repository. It supplies executable specialization for a virtual employee. The profile's specialization text describes the role for people; the mounted skill defines behavior for the task runtime.</p></article>
+  </article></main>
+  <script src="partials-loader.js"></script>
+</body>
+</html>

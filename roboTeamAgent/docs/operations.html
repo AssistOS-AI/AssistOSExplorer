@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
+</head>
+<body>
+  <div data-include="partials/header.html"></div>
+  <main class="page"><article class="document">
+    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="index.html">Documentation</a> / Profiles &amp; Desktops</nav>
+    <h1>Profiles &amp; Desktops</h1>
+    <p class="lede">An authenticated user creates a <a href="wiki.html#definition-robot-profile">robot profile</a>, starts its desktop, interacts with Chromium and the terminal through noVNC, and stops the desktop without deleting its state.</p>
+
+    <h2>Create and inspect profiles</h2>
+    <p>In AchillesIDE Explorer, select <strong>RoboTeam</strong> in the file-explorer toolbar immediately after WebMeet. The runtime plugin opens the profile dashboard through the authenticated agent-port base path declared in <code>manifest.json</code>. On narrow screens Explorer places the same action in its Tools menu.</p>
+    <p>The create form accepts a name and optional specialization. RoboTeam assigns an opaque profile identifier, the authenticated Ploinky user as <a href="wiki.html#definition-profile-owner">profile owner</a>, a stable numeric UID, and six persistent directories.</p>
+    <table>
+      <thead><tr><th>Directory</th><th>Use</th></tr></thead>
+      <tbody>
+        <tr><td><code>home/</code></td><td>Desktop user configuration and command-line application state.</td></tr>
+        <tr><td><code>workspace/</code></td><td>Private working files; xterm opens in this directory.</td></tr>
+        <tr><td><code>browser/</code></td><td>Chromium user data, cookies, local storage, and session state.</td></tr>
+        <tr><td><code>downloads/</code></td><td>Profile-owned downloaded files.</td></tr>
+        <tr><td><code>logs/</code></td><td>Desktop process output used for diagnostics.</td></tr>
+        <tr><td><code>runtime/</code></td><td>Short-lived XDG runtime files for the active desktop.</td></tr>
+      </tbody>
+    </table>
+    <p>Profile metadata is descriptive. The specialization field does not select skills or start tasks.</p>
+
+    <h2>Desktop lifecycle</h2>
+    <p>Selecting <strong>Open desktop</strong> allocates a display slot and starts Xvfb, Openbox, xterm, Chromium, x11vnc, and websockify with the profile UID and profile-specific environment. The browser then opens `desktop.html`, loads noVNC, and connects to the authenticated WebSocket route. Selecting <strong>Stop desktop</strong> terminates the processes in reverse dependency order.</p>
+    <figure class="diagram">
+      <pre class="mermaid">stateDiagram-v2
+        [*] --> Stopped
+        Stopped --> Starting: Open desktop
+        Starting --> Running: X11, VNC, and WebSocket ready
+        Starting --> Stopped: Startup failure and cleanup
+        Running --> Stopping: Stop desktop or critical process exit
+        Stopping --> Stopped: Processes terminated
+        Running --> Stopped: Agent shutdown cleanup</pre>
+      <figcaption><em>Desktop session lifecycle</em></figcaption>
+    </figure>
+    <p>One RoboTeam instance accepts at most `ROBOTEAM_MAX_ACTIVE_DESKTOPS` concurrent sessions. A stopped profile consumes persistent disk but no desktop process slot.</p>
+
+    <h2>MCP operations</h2>
+    <table>
+      <thead><tr><th>Tool</th><th>Observable result</th></tr></thead>
+      <tbody>
+        <tr><td><code>robot_profile_create</code></td><td>Creates a profile owned by the authenticated user and returns its metadata and desktop URL.</td></tr>
+        <tr><td><code>robot_profile_list</code></td><td>Returns only profiles owned by the authenticated user.</td></tr>
+        <tr><td><code>robot_desktop_start</code></td><td>Starts or reuses the named profile desktop and returns the browser-accessible URL.</td></tr>
+        <tr><td><code>robot_desktop_stop</code></td><td>Stops the active session and preserves the profile directories.</td></tr>
+      </tbody>
+    </table>
+    <p>MCP commands receive the authenticated user metadata from Ploinky's AgentServer and call the loopback RoboTeam service with a generated internal token. The browser UI uses Ploinky's browser mutation proof for state-changing requests.</p>
+  </article></main>
+  <script src="partials-loader.js"></script>
+</body>
+</html>

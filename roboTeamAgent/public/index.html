@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Virtual employee manager</p>
+        <h1>RoboTeam</h1>
+        <p class="lede">Create specialized robot profiles and enter each robot's persistent Linux desktop.</p>
+      </div>
+      <button id="refreshButton" class="button secondary" type="button">Refresh</button>
+    </header>
+
+    <section class="panel" aria-labelledby="create-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">New employee</p>
+          <h2 id="create-title">Create a robot profile</h2>
+        </div>
+      </div>
+      <form id="createForm" class="profile-form">
+        <label>
+          <span>Name</span>
+          <input name="name" maxlength="80" required placeholder="Research analyst">
+        </label>
+        <label>
+          <span>Specialization</span>
+          <textarea name="specialization" maxlength="500" rows="3" placeholder="Competitive research, source verification, and concise reports"></textarea>
+        </label>
+        <button class="button primary" type="submit">Create profile</button>
+      </form>
+      <p id="formMessage" class="message" role="status"></p>
+    </section>
+
+    <section class="profiles" aria-labelledby="profiles-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Your team</p>
+          <h2 id="profiles-title">Robot profiles</h2>
+        </div>
+        <span id="profileCount" class="count">0 profiles</span>
+      </div>
+      <div id="profilesList" class="profile-list" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <template id="profileTemplate">
+    <article class="profile-card">
+      <div class="profile-main">
+        <div class="avatar" aria-hidden="true"></div>
+        <div>
+          <div class="profile-title-row">
+            <h3></h3>
+            <span class="desktop-state"></span>
+          </div>
+          <p class="specialization"></p>
+          <p class="profile-id"></p>
+        </div>
+      </div>
+      <div class="profile-actions">
+        <button class="button primary open-desktop" type="button">Open desktop</button>
+        <button class="button danger stop-desktop" type="button">Stop</button>
+      </div>
+    </article>
+  </template>
+
+  <script src="config.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

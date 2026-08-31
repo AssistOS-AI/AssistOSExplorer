@@ -1,0 +1,70 @@
+{
+  "tools": [
+    {
+      "name": "robot_profile_create",
+      "title": "Create robot profile",
+      "description": "Creates a persistent virtual employee profile owned by the authenticated user.",
+      "command": "node",
+      "args": ["tools/control.mjs", "profile-create"],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "specialization": { "type": "string", "maxLength": 500 }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "robot_profile_list",
+      "title": "List robot profiles",
+      "description": "Lists virtual employee profiles owned by the authenticated user.",
+      "command": "node",
+      "args": ["tools/control.mjs", "profile-list"],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "robot_desktop_start",
+      "title": "Start robot desktop",
+      "description": "Starts the isolated Linux desktop for one profile owned by the authenticated user.",
+      "command": "node",
+      "args": ["tools/control.mjs", "desktop-start"],
+      "cwd": "/code",
+      "timeoutMs": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" }
+        },
+        "required": ["profileId"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "robot_desktop_stop",
+      "title": "Stop robot desktop",
+      "description": "Stops the active Linux desktop for one profile while preserving its files and browser state.",
+      "command": "node",
+      "args": ["tools/control.mjs", "desktop-stop"],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" }
+        },
+        "required": ["profileId"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

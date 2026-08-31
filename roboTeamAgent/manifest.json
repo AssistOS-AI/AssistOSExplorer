@@ -1,0 +1,46 @@
+{
+  "container": "node:24.15.0-bookworm-slim",
+  "about": "Manages persistent virtual employee profiles and authenticated browser-accessible Linux desktops.",
+  "agent": "sh /code/scripts/startAgent.sh",
+  "readiness": {
+    "protocol": "mcp"
+  },
+  "routerAccess": {
+    "httpRoutes": [
+      {
+        "path": "/base-agent-additional-server/roboTeamAgent/7000/*",
+        "access": "authenticated"
+      }
+    ]
+  },
+  "volumes": {
+    ".ploinky/data/roboTeamAgent": "/data"
+  },
+  "profiles": {
+    "default": {
+      "install": "sh /code/scripts/install.sh",
+      "env": [
+        {
+          "name": "ROBOTEAM_INTERNAL_TOKEN",
+          "required": true,
+          "generatedSecret": true
+        },
+        {
+          "name": "ROBOTEAM_DATA_DIR",
+          "required": false,
+          "default": "/data"
+        },
+        {
+          "name": "ROBOTEAM_MAX_ACTIVE_DESKTOPS",
+          "required": false,
+          "default": "8"
+        },
+        {
+          "name": "ROBOTEAM_PUBLIC_BASE_PATH",
+          "required": false,
+          "default": "/base-agent-additional-server/roboTeamAgent/7000/"
+        }
+      ]
+    }
+  }
+}

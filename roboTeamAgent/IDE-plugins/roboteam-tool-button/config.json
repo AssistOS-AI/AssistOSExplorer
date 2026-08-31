@@ -1,0 +1,14 @@
+{
+    "pluginCategory": "application",
+    "id": "roboteam",
+    "component": "roboteam-tool-button",
+    "location": ["file-exp:toolbar"],
+    "locationOrder": 350,
+    "label": "RoboTeam",
+    "tooltip": "Manage RoboTeam profiles and desktops",
+    "icon": "./icon.svg",
+    "presenter": "RoboTeamToolButton",
+    "type": "embedded",
+    "autoPin": false,
+    "dependencies": []
+}
