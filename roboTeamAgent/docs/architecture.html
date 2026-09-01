@@ -45,6 +45,7 @@
     </figure>
 
     <h2>Router and service boundary</h2>
+    <p>The manifest pins a purpose-built RoboTeam image by immutable multi-platform digest. Desktop packages and noVNC assets are built into that image; the runtime install hook only verifies the versioned image contract offline before Ploinky begins MCP readiness. The entrypoint supervises both the control service and AgentServer, so either child exiting terminates its peer and fails the container.</p>
     <p>The Explorer-compatible application plugin under <code>IDE-plugins/roboteam-tool-button</code> contributes a toolbar action after WebMeet. It contains no profile state or authorization logic; it opens the existing Router-authenticated dashboard, while RoboTeam continues to own every profile mutation and desktop operation.</p>
     <p>The manifest declares one authenticated <a href="wiki.html#definition-agent-port-route">agent-port route</a> for container port `7000`. Ploinky authenticates HTTP and WebSocket requests, strips untrusted internal headers, and injects `x-ploinky-auth-info` with the authorized user identity. The control service refuses profile APIs and desktop WebSockets without that identity.</p>
     <p>The service proxies Ploinky MCP paths to the bundled AgentServer on loopback port `7001`. The MCP tools call back into the control service with `ROBOTEAM_INTERNAL_TOKEN`; external requests cannot derive this generated value.</p>

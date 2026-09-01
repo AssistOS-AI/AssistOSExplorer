@@ -1,9 +1,10 @@
 {
-  "container": "node:24.15.0-bookworm-slim",
+  "container": "docker.io/assistos/roboteam-agent@sha256:595e3026f7746ce4c2ecb2522e478cc1466c0181dbcbd4e0bf31e0dfdd881c7a",
   "about": "Manages persistent virtual employee profiles and authenticated browser-accessible Linux desktops.",
   "agent": "sh /code/scripts/startAgent.sh",
   "readiness": {
-    "protocol": "mcp"
+    "protocol": "mcp",
+    "timeoutSeconds": 45
   },
   "routerAccess": {
     "httpRoutes": [

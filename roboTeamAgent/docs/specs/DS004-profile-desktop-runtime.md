@@ -21,6 +21,10 @@ Xvfb must disable TCP display listening. Openbox, xterm, Chromium, x11vnc, and w
 
 The HTTP service must serve noVNC assets from an installed, confined root and must validate every asset path. A desktop WebSocket must resolve to an owned profile with an active session before the service connects to its websockify port. WebSocket headers must be allowlisted when the service constructs the upstream handshake.
 
+The manifest must pin the purpose-built RoboTeam runtime by immutable multi-platform image digest. That image owns Chromium, X11, Openbox, xterm, x11vnc, websockify, noVNC, and Linux account-management prerequisites. The profile install hook must remain a fast, offline, idempotent verification of the `roboteam-runtime-v1` image contract; it must not install packages or perform network access while the agent readiness clock is running.
+
+Ploinky readiness must continue to probe MCP and must declare a 45-second overall startup budget. The broader no-wait startup default may remain longer, while targeted restart must honor at least this manifest budget. Once launched, the container entrypoint must supervise both the RoboTeam service and AgentServer: exit of either child terminates the peer and fails the container.
+
 RoboTeam must provide an AchillesIDE Explorer application plugin in the `file-exp:toolbar` slot, ordered immediately after WebMeet. The plugin is a navigation entry point only: it must open the existing Router-authenticated RoboTeam dashboard, adapt its label, tooltip, and icon to Explorer host metadata, and leave profile creation, ownership checks, desktop startup, and browser mutation protection inside the RoboTeam service. Explorer may relocate the same action into its Tools menu on narrow screens.
 
 Startup must wait for the X11 socket, RFB listener, and websockify listener. Timeout, missing command, or process error must clean up all processes launched for the session and leave the profile stopped. Exit of Xvfb, x11vnc, or websockify during a running session must trigger session cleanup.
