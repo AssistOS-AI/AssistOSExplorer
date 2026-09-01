@@ -1,64 +1,16 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RoboTeam Documentation</title>
-  <link rel="stylesheet" href="styles.css">
-  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
-</head>
-<body>
-  <div data-include="partials/header.html"></div>
-  <main class="page"><article class="document">
-    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="index.html">Documentation</a> / Architecture</nav>
-    <h1>Architecture</h1>
-    <p class="lede">One <a href="wiki.html#definition-ploinky-agent">Ploinky agent</a> contains the RoboTeam control service, AgentServer proxy, persistent profile store, desktop process manager, profile dashboard, and noVNC viewer.</p>
-
-    <figure class="diagram">
-      <pre class="mermaid">flowchart TB
-        User[Authenticated browser user] --> Explorer[AchillesIDE Explorer toolbar plugin]
-        Explorer --> Router[Ploinky Router]
-        subgraph Agent[RoboTeamAgent container]
-          Service[HTTP and WebSocket control service]
-          MCP[Ploinky AgentServer]
-          Store[(Persistent profile store)]
-          subgraph Session[Selected profile desktop]
-            X11[Xvfb and Openbox]
-            Apps[Chromium and xterm]
-            VNC[x11vnc and websockify]
-          end
-          Service --> Store
-          Service --> Session
-          Service --> MCP
-          X11 --> Apps
-          X11 --> VNC
-        end
-        Router --> Service
-        User -. noVNC input and display .-> VNC
-        classDef person fill:#d9f7ea,stroke:#2b7a58,color:#10251c,font-weight:bold;
-        classDef boundary fill:#dcecff,stroke:#35658c,color:#10202d,font-weight:bold;
-        classDef runtime fill:#fff1cc,stroke:#9a7227,color:#2d210a;
-        class User person;
-        class Router,Service,MCP boundary;
-        class Store,X11,Apps,VNC runtime;</pre>
-      <figcaption><em>RoboTeam runtime architecture</em></figcaption>
-    </figure>
-
-    <h2>Router and service boundary</h2>
-    <p>The manifest pins a purpose-built RoboTeam image by immutable multi-platform digest. Desktop packages and noVNC assets are built into that image; the runtime install hook only verifies the versioned image contract offline before Ploinky begins MCP readiness. The entrypoint supervises both the control service and AgentServer, so either child exiting terminates its peer and fails the container.</p>
-    <p>The Explorer-compatible application plugin under <code>IDE-plugins/roboteam-tool-button</code> contributes a toolbar action after WebMeet. It contains no profile state or authorization logic; it opens the existing Router-authenticated dashboard, while RoboTeam continues to own every profile mutation and desktop operation.</p>
-    <p>The manifest declares one authenticated <a href="wiki.html#definition-agent-port-route">agent-port route</a> for container port `7000`. Ploinky authenticates HTTP and WebSocket requests, strips untrusted internal headers, and injects `x-ploinky-auth-info` with the authorized user identity. The control service refuses profile APIs and desktop WebSockets without that identity.</p>
-    <p>The service proxies Ploinky MCP paths to the bundled AgentServer on loopback port `7001`. The MCP tools call back into the control service with `ROBOTEAM_INTERNAL_TOKEN`; external requests cannot derive this generated value.</p>
-
-    <h2>Profile store</h2>
-    <p>The `ProfileStore` writes one metadata file and dedicated directories for every profile. Creation uses an exclusive filesystem lock, allocates a unique UID, writes metadata through a temporary file and atomic rename, and applies restrictive ownership and modes. Reads filter by owner before returning profile data.</p>
-
-    <h2>Desktop manager</h2>
-    <p>The `DesktopManager` holds only active-process state in memory. A profile remains durable in the store while display numbers, RFB ports, and websockify ports are temporary slots. The manager exposes no direct listener to external clients. The HTTP service upgrades an authenticated profile WebSocket and tunnels it to the loopback websockify listener associated with that active session.</p>
-
-    <h2>ALA boundary</h2>
-    <p>The architecture gives every profile a durable workspace that an external <a href="wiki.html#definition-advancedlanguageagent">ALA</a> task runner can mount explicitly. This repository does not define the task request schema, ALA process invocation, task-repository selection, or interaction between a task and the active graphical desktop. Those interfaces require a separate specification before implementation.</p>
-  </article></main>
-  <script src="partials-loader.js"></script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RoboTeam Architecture</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';mermaid.initialize({startOnLoad:true,theme:'neutral'});</script></head><body><div data-include="partials/header.html"></div><main class="page"><article class="document">
+<nav class="breadcrumbs"><a href="index.html">Documentation</a> / Architecture</nav><h1>Architecture</h1><p class="lede">The rootless Ploinky Box starts RoboTeam with the bounded nested-Podman contract; Podman 6 inside it starts one Chromium or Webtop container per active robot.</p>
+<figure class="diagram"><pre class="mermaid">flowchart TB
+User[Authenticated browser] --> Router[Ploinky Router]
+Router --> Outer[RoboTeam HTTP service :3001]
+Outer --> Store[(Persistent /data/robots)]
+Outer --> Inner[Rootless inner Podman]
+Inner --> Browser[Chromium + Selkies]
+Inner --> Desktop[Webtop + Selkies]
+Browser --> Loopback[Random outer loopback port]
+Desktop --> Loopback
+Loopback --> Outer</pre><figcaption><em>Podman-in-Podman runtime and authenticated GUI proxy</em></figcaption></figure>
+<h2>Outer runtime</h2><p>The custom <code>roboteam-runtime-v3</code> image derives from an immutable Podman 6 upstream index and includes Node.js, npm, fuse-overlayfs, pasta, curl, and Git. Inner storage lives at <code>/data/podman/storage</code>. The manifest follows the AssistOS-managed <code>runtime</code> channel and requests Ploinky's <code>nestedPodman</code> capability; the install hook verifies the runtime contract before startup.</p>
+<h2>Robot runtime</h2><p><code>RobotStore</code> owns durable metadata and directories. <code>RuntimeManager</code> constructs exact Podman argument vectors, tracks active runs in memory, and removes only labelled RoboTeam containers. The HTTP server authenticates ownership and reverse-proxies Selkies HTTP and WebSocket traffic.</p>
+<h2>Networking</h2><p>The outer container stays on Ploinky's managed network. AgentServer/MCP uses port 7000 and the authenticated RoboTeam UI uses port 3001. Inner containers use <code>pasta</code>; Selkies port 3000 is published only to a random outer loopback port. The proxy preserves the configured Ploinky subfolder.</p>
+</article></main><script src="partials-loader.js"></script></body></html>

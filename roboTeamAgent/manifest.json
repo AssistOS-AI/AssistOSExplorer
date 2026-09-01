@@ -1,15 +1,26 @@
 {
-  "container": "docker.io/assistos/roboteam-agent@sha256:595e3026f7746ce4c2ecb2522e478cc1466c0181dbcbd4e0bf31e0dfdd881c7a",
-  "about": "Manages persistent virtual employee profiles and authenticated browser-accessible Linux desktops.",
+  "container": "docker.io/assistos/roboteam-agent:runtime",
+  "about": "Manages persistent robots and starts authenticated browser or Linux desktop containers with nested Podman.",
+  "containerSecurity": {
+    "nestedPodman": true
+  },
   "agent": "sh /code/scripts/startAgent.sh",
   "readiness": {
     "protocol": "mcp",
     "timeoutSeconds": 45
   },
+  "health": {
+    "readiness": {
+      "interval": 1,
+      "timeout": 1,
+      "failureThreshold": 45,
+      "successThreshold": 1
+    }
+  },
   "routerAccess": {
     "httpRoutes": [
       {
-        "path": "/base-agent-additional-server/roboTeamAgent/7000/*",
+        "path": "/base-agent-additional-server/roboTeamAgent/3001/*",
         "access": "authenticated"
       }
     ]
@@ -19,29 +30,38 @@
   },
   "profiles": {
     "default": {
+      "openPorts": ["7000:7000", "3001:3001"],
       "install": "sh /code/scripts/install.sh",
-      "env": [
-        {
-          "name": "ROBOTEAM_INTERNAL_TOKEN",
+      "env": {
+        "ROBOTEAM_INTERNAL_TOKEN": {
           "required": true,
           "generatedSecret": true
         },
-        {
-          "name": "ROBOTEAM_DATA_DIR",
+        "ROBOTEAM_DATA_DIR": {
           "required": false,
           "default": "/data"
         },
-        {
-          "name": "ROBOTEAM_MAX_ACTIVE_DESKTOPS",
+        "ROBOTEAM_MAX_ACTIVE_ROBOTS": {
           "required": false,
           "default": "8"
         },
-        {
-          "name": "ROBOTEAM_PUBLIC_BASE_PATH",
+        "ROBOTEAM_BROWSER_IMAGE": {
           "required": false,
-          "default": "/base-agent-additional-server/roboTeamAgent/7000/"
+          "default": "lscr.io/linuxserver/chromium:latest"
+        },
+        "ROBOTEAM_DESKTOP_IMAGE": {
+          "required": false,
+          "default": "lscr.io/linuxserver/webtop:ubuntu-xfce"
+        },
+        "TZ": {
+          "required": false,
+          "default": "Europe/Bucharest"
+        },
+        "ROBOTEAM_PUBLIC_BASE_PATH": {
+          "required": false,
+          "default": "/base-agent-additional-server/roboTeamAgent/3001/"
         }
-      ]
+      }
     }
   }
 }

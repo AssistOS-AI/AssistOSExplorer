@@ -1,4 +1,4 @@
-const port = Number(process.env.ROBOTEAM_SERVICE_PORT || process.env.PORT || 7000);
+const port = Number(process.env.ROBOTEAM_SERVICE_PORT || 3001);
 
 try {
     const response = await fetch(`http://127.0.0.1:${port}/status`, {

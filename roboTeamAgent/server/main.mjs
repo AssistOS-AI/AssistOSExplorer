@@ -1,9 +1,9 @@
-import { DesktopManager } from './desktop-manager.mjs';
 import { createRoboTeamServer } from './http-server.mjs';
-import { ProfileStore } from './profile-store.mjs';
+import { RobotStore } from './robot-store.mjs';
+import { RuntimeManager } from './runtime-manager.mjs';
 
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
-const port = Number(process.env.ROBOTEAM_SERVICE_PORT || process.env.PORT) || 7000;
+const port = Number(process.env.ROBOTEAM_SERVICE_PORT) || 3001;
 const dataDir = process.env.ROBOTEAM_DATA_DIR || '/data';
 const internalToken = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
 
@@ -11,22 +11,27 @@ if (!internalToken) {
     throw new Error('ROBOTEAM_INTERNAL_TOKEN is required');
 }
 
-const profileStore = new ProfileStore({ dataDir });
-await profileStore.initialize();
+const publicBasePath = process.env.ROBOTEAM_PUBLIC_BASE_PATH;
+const robotStore = new RobotStore({ dataDir });
+await robotStore.initialize();
 
-const desktopManager = new DesktopManager({
+const runtimeManager = new RuntimeManager({
     dataDir,
-    maxActive: process.env.ROBOTEAM_MAX_ACTIVE_DESKTOPS,
+    publicBasePath,
+    maxActive: process.env.ROBOTEAM_MAX_ACTIVE_ROBOTS,
+    browserImage: process.env.ROBOTEAM_BROWSER_IMAGE,
+    desktopImage: process.env.ROBOTEAM_DESKTOP_IMAGE,
+    timezone: process.env.TZ,
 });
+await runtimeManager.initialize();
 
 const server = createRoboTeamServer({
-    profileStore,
-    desktopManager,
+    robotStore,
+    runtimeManager,
     internalToken,
     mcpPort: process.env.ROBOTEAM_MCP_PORT,
-    publicBasePath: process.env.ROBOTEAM_PUBLIC_BASE_PATH,
+    publicBasePath,
     routeKey: process.env.ROBOTEAM_ROUTE_KEY || 'roboTeamAgent',
-    noVncRoot: process.env.ROBOTEAM_NOVNC_ROOT || '/usr/share/novnc',
 });
 
 server.listen(port, host, () => {
@@ -38,7 +43,7 @@ async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
     server.close();
-    await desktopManager.stopAll();
+    await runtimeManager.stopAll();
     process.exit(0);
 }
 

@@ -13,7 +13,7 @@ function authenticatedUserId(payload) {
 }
 
 async function request(pathname, { method = 'GET', body, userId }) {
-    const port = Number(process.env.ROBOTEAM_SERVICE_PORT || process.env.PORT || 7000);
+    const port = Number(process.env.ROBOTEAM_SERVICE_PORT || 3001);
     const token = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
     if (!token) throw new Error('RoboTeam internal token is unavailable');
     const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
@@ -24,7 +24,7 @@ async function request(pathname, { method = 'GET', body, userId }) {
             'x-roboteam-user-id': userId,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(55000),
+        signal: AbortSignal.timeout(590000),
     });
     const result = await response.json().catch(() => ({ ok: false, error: 'invalid service response' }));
     if (!response.ok) throw new Error(result.error || `RoboTeam request failed with ${response.status}`);
@@ -35,16 +35,19 @@ const operation = process.argv[2] || '';
 const payload = await readPayload();
 const input = payload.input || {};
 const userId = authenticatedUserId(payload);
-
 let result;
-if (operation === 'profile-create') {
-    result = await request('/api/profiles', { method: 'POST', body: { name: input.name, specialization: input.specialization || '' }, userId });
-} else if (operation === 'profile-list') {
-    result = await request('/api/profiles', { userId });
-} else if (operation === 'desktop-start') {
-    result = await request(`/api/profiles/${encodeURIComponent(input.profileId || '')}/desktop/start`, { method: 'POST', body: {}, userId });
-} else if (operation === 'desktop-stop') {
-    result = await request(`/api/profiles/${encodeURIComponent(input.profileId || '')}/desktop/stop`, { method: 'POST', body: {}, userId });
+
+if (operation === 'robot-create') {
+    result = await request('/api/robots', { method: 'POST', body: { name: input.name, specialization: input.specialization || '' }, userId });
+} else if (operation === 'robot-list') {
+    result = await request('/api/robots', { userId });
+} else if (operation === 'robot-start') {
+    result = await request(`/api/robots/${encodeURIComponent(input.robotId || '')}/run`, { method: 'POST', body: { mode: input.mode }, userId });
+} else if (operation === 'robot-stop') {
+    result = await request(`/api/robots/${encodeURIComponent(input.robotId || '')}/run`, { method: 'DELETE', userId });
+} else if (operation === 'robot-logs') {
+    const query = new URLSearchParams({ tail: String(input.tail || 200) });
+    result = await request(`/api/robots/${encodeURIComponent(input.robotId || '')}/logs?${query}`, { userId });
 } else {
     throw new Error('unsupported RoboTeam control operation');
 }

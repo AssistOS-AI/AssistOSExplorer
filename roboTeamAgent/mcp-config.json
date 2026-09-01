@@ -1,11 +1,11 @@
 {
   "tools": [
     {
-      "name": "robot_profile_create",
-      "title": "Create robot profile",
-      "description": "Creates a persistent virtual employee profile owned by the authenticated user.",
+      "name": "robot_create",
+      "title": "Create robot",
+      "description": "Creates a persistent robot owned by the authenticated user.",
       "command": "node",
-      "args": ["tools/control.mjs", "profile-create"],
+      "args": ["tools/control.mjs", "robot-create"],
       "cwd": "/code",
       "timeoutMs": 30000,
       "inputSchema": {
@@ -19,50 +19,63 @@
       }
     },
     {
-      "name": "robot_profile_list",
-      "title": "List robot profiles",
-      "description": "Lists virtual employee profiles owned by the authenticated user.",
+      "name": "robot_list",
+      "title": "List robots",
+      "description": "Lists persistent robots owned by the authenticated user.",
       "command": "node",
-      "args": ["tools/control.mjs", "profile-list"],
+      "args": ["tools/control.mjs", "robot-list"],
       "cwd": "/code",
       "timeoutMs": 30000,
+      "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "robot_start",
+      "title": "Start robot",
+      "description": "Starts one robot container in browser or desktop mode.",
+      "command": "node",
+      "args": ["tools/control.mjs", "robot-start"],
+      "cwd": "/code",
+      "timeoutMs": 600000,
       "inputSchema": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "robotId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
+          "mode": { "type": "string", "enum": ["browser", "desktop"] }
+        },
+        "required": ["robotId", "mode"],
         "additionalProperties": false
       }
     },
     {
-      "name": "robot_desktop_start",
-      "title": "Start robot desktop",
-      "description": "Starts the isolated Linux desktop for one profile owned by the authenticated user.",
+      "name": "robot_stop",
+      "title": "Stop robot",
+      "description": "Stops the active robot container while preserving its home and work files.",
       "command": "node",
-      "args": ["tools/control.mjs", "desktop-start"],
+      "args": ["tools/control.mjs", "robot-stop"],
       "cwd": "/code",
-      "timeoutMs": 60000,
+      "timeoutMs": 30000,
       "inputSchema": {
         "type": "object",
-        "properties": {
-          "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" }
-        },
-        "required": ["profileId"],
+        "properties": { "robotId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" } },
+        "required": ["robotId"],
         "additionalProperties": false
       }
     },
     {
-      "name": "robot_desktop_stop",
-      "title": "Stop robot desktop",
-      "description": "Stops the active Linux desktop for one profile while preserving its files and browser state.",
+      "name": "robot_logs",
+      "title": "Read robot logs",
+      "description": "Returns the bounded log tail for the active robot container.",
       "command": "node",
-      "args": ["tools/control.mjs", "desktop-stop"],
+      "args": ["tools/control.mjs", "robot-logs"],
       "cwd": "/code",
       "timeoutMs": 30000,
       "inputSchema": {
         "type": "object",
         "properties": {
-          "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" }
+          "robotId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
+          "tail": { "type": "integer", "minimum": 1, "maximum": 1000 }
         },
-        "required": ["profileId"],
+        "required": ["robotId"],
         "additionalProperties": false
       }
     }

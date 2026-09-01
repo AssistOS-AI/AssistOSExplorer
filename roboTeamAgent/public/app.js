@@ -1,9 +1,9 @@
 const config = globalThis.ROBOTEAM_CONFIG || {};
 const basePath = config.publicBasePath || './';
 const routeKey = config.routeKey || 'roboTeamAgent';
-const profilesList = document.querySelector('#profilesList');
-const profileTemplate = document.querySelector('#profileTemplate');
-const profileCount = document.querySelector('#profileCount');
+const robotsList = document.querySelector('#robotsList');
+const robotTemplate = document.querySelector('#robotTemplate');
+const robotCount = document.querySelector('#robotCount');
 const createForm = document.querySelector('#createForm');
 const formMessage = document.querySelector('#formMessage');
 const refreshButton = document.querySelector('#refreshButton');
@@ -18,9 +18,7 @@ async function browserMutationToken() {
     const response = await fetch(tokenUrl, { credentials: 'include', cache: 'no-store' });
     const payload = await response.json().catch(() => ({}));
     const proof = payload.browserMutation;
-    if (!response.ok || !proof?.csrfToken || proof.routeKey !== routeKey) {
-        throw new Error('Could not obtain the Ploinky browser mutation proof. Refresh the page and sign in again.');
-    }
+    if (!response.ok || !proof?.csrfToken || proof.routeKey !== routeKey) throw new Error('Could not obtain the Ploinky browser mutation proof.');
     return proof.csrfToken;
 }
 
@@ -29,9 +27,7 @@ async function api(relativePath, options = {}) {
     headers.set('accept', 'application/json');
     if (options.body !== undefined) headers.set('content-type', 'application/json');
     const method = String(options.method || 'GET').toUpperCase();
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
-        headers.set('x-ploinky-browser-csrf-token', await browserMutationToken());
-    }
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers.set('x-ploinky-browser-csrf-token', await browserMutationToken());
     const response = await fetch(endpoint(relativePath), {
         ...options,
         method,
@@ -45,114 +41,150 @@ async function api(relativePath, options = {}) {
 }
 
 function initials(name) {
-    return String(name || 'R')
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((part) => part[0].toUpperCase())
-        .join('');
+    return String(name || 'R').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join('');
 }
 
-function renderProfiles(profiles) {
-    profilesList.replaceChildren();
-    profileCount.textContent = `${profiles.length} ${profiles.length === 1 ? 'profile' : 'profiles'}`;
-    if (!profiles.length) {
+function showError(error) {
+    formMessage.textContent = error.message;
+    formMessage.className = 'message error';
+}
+
+function sessionUrl(run) {
+    return new URL(String(run.sessionUrl || '').replace(/^\/+/, ''), location.origin).toString();
+}
+
+function openPendingSession(robot, mode) {
+    const sessionWindow = window.open('', `_roboteam_${robot.id}`);
+    if (!sessionWindow) return null;
+    sessionWindow.opener = null;
+    sessionWindow.document.title = `Starting ${robot.name}`;
+    sessionWindow.document.body.textContent = `Starting ${mode} session for ${robot.name}…`;
+    return sessionWindow;
+}
+
+function navigateToSession(sessionWindow, run) {
+    const url = sessionUrl(run);
+    if (sessionWindow && !sessionWindow.closed) sessionWindow.location.replace(url);
+    else window.location.assign(url);
+}
+
+function reportSessionFailure(sessionWindow, error) {
+    if (!sessionWindow || sessionWindow.closed) return;
+    sessionWindow.document.title = 'RoboTeam session failed';
+    sessionWindow.document.body.textContent = error.message;
+}
+
+async function startRobot(robot, mode, button) {
+    const sessionWindow = openPendingSession(robot, mode);
+    button.disabled = true;
+    try {
+        const result = await api(`api/robots/${robot.id}/run`, { method: 'POST', body: { mode } });
+        navigateToSession(sessionWindow, result.robot.run);
+        await loadRobots();
+    } catch (error) {
+        reportSessionFailure(sessionWindow, error);
+        showError(error);
+    } finally {
+        button.disabled = false;
+    }
+}
+
+async function stopRobot(robot, button) {
+    button.disabled = true;
+    button.textContent = `Stopping ${robot.run.mode === 'desktop' ? 'Desktop' : 'Browser'}…`;
+    try {
+        await api(`api/robots/${robot.id}/run`, { method: 'DELETE' });
+        await loadRobots();
+    } catch (error) {
+        showError(error);
+        button.textContent = robot.run.mode === 'desktop' ? 'Stop Desktop' : 'Stop Browser';
+        button.disabled = false;
+    }
+}
+
+function renderRobots(robots) {
+    robotsList.replaceChildren();
+    robotCount.textContent = `${robots.length} ${robots.length === 1 ? 'robot' : 'robots'}`;
+    if (!robots.length) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.innerHTML = '<h3>No robot profiles yet</h3><p>Create the first specialized virtual employee above.</p>';
-        profilesList.append(empty);
+        empty.innerHTML = '<h3>No robots yet</h3><p>Create the first persistent robot above.</p>';
+        robotsList.append(empty);
         return;
     }
-
-    for (const profile of profiles) {
-        const card = profileTemplate.content.firstElementChild.cloneNode(true);
-        card.dataset.profileId = profile.id;
-        card.querySelector('.avatar').textContent = initials(profile.name);
-        card.querySelector('h3').textContent = profile.name;
-        card.querySelector('.specialization').textContent = profile.specialization || 'General-purpose virtual employee';
-        card.querySelector('.profile-id').textContent = profile.id;
-        const state = card.querySelector('.desktop-state');
-        state.textContent = profile.desktop.state;
-        state.classList.add(`state-${profile.desktop.state}`);
-        const stopButton = card.querySelector('.stop-desktop');
-        stopButton.hidden = profile.desktop.state === 'stopped';
-
-        card.querySelector('.open-desktop').addEventListener('click', async (event) => {
-            const button = event.currentTarget;
-            button.disabled = true;
-            button.textContent = 'Starting…';
+    for (const robot of robots) {
+        const card = robotTemplate.content.firstElementChild.cloneNode(true);
+        card.querySelector('.avatar').textContent = initials(robot.name);
+        card.querySelector('h3').textContent = robot.name;
+        card.querySelector('.specialization').textContent = robot.specialization || 'General-purpose robot';
+        card.querySelector('.robot-id').textContent = robot.id;
+        const state = card.querySelector('.run-state');
+        state.textContent = robot.run.mode ? `${robot.run.state} · ${robot.run.mode}` : robot.run.state;
+        state.classList.add(`state-${robot.run.state}`);
+        const running = robot.run.state !== 'stopped';
+        const ready = robot.run.state === 'running' && robot.run.sessionUrl;
+        const browserButton = card.querySelector('.open-browser');
+        const desktopButton = card.querySelector('.open-desktop');
+        const browserRunning = running && robot.run.mode === 'browser';
+        const desktopRunning = running && robot.run.mode === 'desktop';
+        browserButton.textContent = browserRunning ? 'Stop Browser' : 'Start Browser';
+        desktopButton.textContent = desktopRunning ? 'Stop Desktop' : 'Start Desktop';
+        if (browserRunning) browserButton.className = 'button danger open-browser';
+        if (desktopRunning) desktopButton.className = 'button danger open-desktop';
+        browserButton.disabled = running && !(ready && robot.run.mode === 'browser');
+        desktopButton.disabled = running && !(ready && robot.run.mode === 'desktop');
+        card.querySelector('.view-logs').hidden = !running;
+        browserButton.addEventListener('click', (event) => {
+            if (ready && robot.run.mode === 'browser') stopRobot(robot, event.currentTarget);
+            else startRobot(robot, 'browser', event.currentTarget);
+        });
+        desktopButton.addEventListener('click', (event) => {
+            if (ready && robot.run.mode === 'desktop') stopRobot(robot, event.currentTarget);
+            else startRobot(robot, 'desktop', event.currentTarget);
+        });
+        card.querySelector('.view-logs').addEventListener('click', async () => {
+            const panel = card.querySelector('.robot-logs');
             try {
-                const result = await api(`api/profiles/${profile.id}/desktop/start`, { method: 'POST', body: {} });
-                window.open(result.profile.desktopUrl, `_roboteam_${profile.id}`);
-                await loadProfiles();
+                const result = await api(`api/robots/${robot.id}/logs?tail=200`);
+                panel.textContent = result.logs || 'No logs yet.';
+                panel.hidden = false;
             } catch (error) {
-                formMessage.textContent = error.message;
-                formMessage.className = 'message error';
-            } finally {
-                button.disabled = false;
-                button.textContent = 'Open desktop';
+                showError(error);
             }
         });
-
-        stopButton.addEventListener('click', async (event) => {
-            const button = event.currentTarget;
-            button.disabled = true;
-            try {
-                await api(`api/profiles/${profile.id}/desktop/stop`, { method: 'POST', body: {} });
-                await loadProfiles();
-            } catch (error) {
-                formMessage.textContent = error.message;
-                formMessage.className = 'message error';
-                button.disabled = false;
-            }
-        });
-        profilesList.append(card);
+        robotsList.append(card);
     }
 }
 
-async function loadProfiles() {
+async function loadRobots() {
     refreshButton.disabled = true;
     try {
-        const result = await api('api/profiles');
-        renderProfiles(result.profiles || []);
+        const result = await api('api/robots');
+        renderRobots(result.robots || []);
     } catch (error) {
-        profilesList.innerHTML = `<div class="empty-state error"><h3>Profiles unavailable</h3><p>${escapeHtml(error.message)}</p></div>`;
+        robotsList.textContent = `Robots unavailable: ${error.message}`;
     } finally {
         refreshButton.disabled = false;
     }
-}
-
-function escapeHtml(value) {
-    const node = document.createElement('div');
-    node.textContent = String(value || '');
-    return node.innerHTML;
 }
 
 createForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const submit = createForm.querySelector('button[type="submit"]');
     submit.disabled = true;
-    formMessage.textContent = '';
     const data = new FormData(createForm);
     try {
-        await api('api/profiles', {
-            method: 'POST',
-            body: {
-                name: data.get('name'),
-                specialization: data.get('specialization'),
-            },
-        });
+        await api('api/robots', { method: 'POST', body: { name: data.get('name'), specialization: data.get('specialization') } });
         createForm.reset();
-        formMessage.textContent = 'Robot profile created.';
+        formMessage.textContent = 'Robot created.';
         formMessage.className = 'message success';
-        await loadProfiles();
+        await loadRobots();
     } catch (error) {
-        formMessage.textContent = error.message;
-        formMessage.className = 'message error';
+        showError(error);
     } finally {
         submit.disabled = false;
     }
 });
 
-refreshButton.addEventListener('click', loadProfiles);
-await loadProfiles();
+refreshButton.addEventListener('click', loadRobots);
+await loadRobots();

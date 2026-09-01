@@ -82,7 +82,7 @@ test('opens the authenticated RoboTeam dashboard and follows host metadata', () 
         assert.equal(button['aria-label'], 'Open profiles');
         assert.equal(icon.src, '/workspace-files/roboteam/icon.svg');
         assert.deepEqual(calls, [[
-            '/base-agent-additional-server/roboTeamAgent/7000/',
+            '/base-agent-additional-server/roboTeamAgent/3001/',
             '_blank',
             'noopener,noreferrer',
         ]]);
@@ -92,4 +92,17 @@ test('opens the authenticated RoboTeam dashboard and follows host metadata', () 
     } finally {
         globalThis.window = previousWindow;
     }
+});
+
+test('opens a pending robot session before awaiting startup and toggles the active mode to stop', async () => {
+    const source = await readFile(join(testDirectory, '..', 'public', 'app.js'), 'utf8');
+    const html = await readFile(join(testDirectory, '..', 'public', 'index.html'), 'utf8');
+    const startFunction = source.slice(source.indexOf('async function startRobot'), source.indexOf('function renderRobots'));
+    assert.ok(startFunction.indexOf('openPendingSession(robot, mode)') < startFunction.indexOf('await api('));
+    assert.match(source, /robot\.run\.state === 'running' && robot\.run\.sessionUrl/);
+    assert.match(source, /browserRunning \? 'Stop Browser' : 'Start Browser'/);
+    assert.match(source, /desktopRunning \? 'Stop Desktop' : 'Start Desktop'/);
+    assert.match(source, /stopRobot\(robot, event\.currentTarget\)/);
+    assert.match(source, /window\.location\.assign\(url\)/);
+    assert.doesNotMatch(html, /stop-robot/);
 });

@@ -1,4 +1,4 @@
-const ROBOTEAM_DASHBOARD_PATH = '/base-agent-additional-server/roboTeamAgent/7000/';
+const ROBOTEAM_DASHBOARD_PATH = '/base-agent-additional-server/roboTeamAgent/3001/';
 
 export class RoboTeamToolButton {
     constructor(element, invalidate) {

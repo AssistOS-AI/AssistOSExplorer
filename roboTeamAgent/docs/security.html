@@ -1,39 +1,8 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RoboTeam Documentation</title>
-  <link rel="stylesheet" href="styles.css">
-  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
-</head>
-<body>
-  <div data-include="partials/header.html"></div>
-  <main class="page"><article class="document">
-    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="index.html">Documentation</a> / Security</nav>
-    <h1>Security</h1>
-    <p class="lede">RoboTeam relies on Ploinky for public authentication and routing, then applies profile ownership, filesystem permissions, process identity, internal-token checks, and path validation inside the agent.</p>
-
-    <h2>Public access</h2>
-    <p>All application, API, noVNC asset, and desktop WebSocket traffic uses the authenticated <a href="wiki.html#definition-agent-port-route">agent-port route</a>. The VNC server and websockify listeners bind only inside the agent container. They must not be published as direct host ports.</p>
-    <p>State-changing browser calls obtain a route- and session-bound Ploinky browser mutation proof. The Router validates that proof before the request reaches RoboTeam. WebSocket upgrades use the authenticated Ploinky session and carry Router-injected identity metadata.</p>
-
-    <h2>Ownership and isolation</h2>
-    <p>Every <a href="wiki.html#definition-robot-profile">robot profile</a> records one owner user id. List, start, stop, status, desktop page, and WebSocket operations require the same owner. The server returns a generic not-found response when a different user names the profile.</p>
-    <p>Each profile receives a unique numeric Linux UID. Its root, home, workspace, browser, downloads, log, and runtime directories use restrictive modes and ownership. Desktop processes run with that UID. This prevents one ordinary profile desktop process from reading another profile's private files through normal Unix discretionary access controls.</p>
-    <div class="callout">The RoboTeam control service runs as the trusted manager and can access every profile. The agent container shares one kernel and is not a virtual-machine boundary. Container compromise, root execution inside the desktop, or a kernel vulnerability can bypass per-profile Unix permissions.</div>
-    <p>Chromium runs as the profile UID with `--no-sandbox` for compatibility with the nested container runtime. The entire profile desktop must therefore be treated as one trust domain. Opening untrusted content or executing untrusted code in that desktop is outside the isolation guarantee; stronger containment belongs at the task-runtime or per-profile-container boundary.</p>
-
-    <h2>Authenticated browser state</h2>
-    <p>Chromium cookies, tokens, local storage, and saved session data are sensitive credentials. They persist in the profile browser directory and inherit the protection of the Ploinky data volume and profile filesystem permissions. RoboTeam does not provide application-level encryption at rest, credential rotation, backup encryption, or recovery-key management.</p>
-    <p>Operators must protect the workspace data volume and backups as credential stores. A profile should be stopped when it is not needed, but stopping the processes does not revoke website sessions.</p>
-
-    <h2>Internal service calls</h2>
-    <p>MCP command processes cannot impersonate an arbitrary browser user. They receive the authenticated user id from AgentServer metadata and send it to the loopback service with the generated `ROBOTEAM_INTERNAL_TOKEN`. The service compares that token without logging it. The generated token, Ploinky agent secret, Router tokens, cookies, and authentication headers must never enter source control or diagnostic output.</p>
-
-    <h2>Operational limits</h2>
-    <p>RoboTeam caps concurrent desktops to bound resource use. Profile creation serializes UID allocation. Desktop startup fails closed when a required executable, virtual display, VNC listener, or WebSocket bridge does not become ready. A critical desktop process exit triggers cleanup of the associated session.</p>
-  </article></main>
-  <script src="partials-loader.js"></script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RoboTeam Security</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head><body><div data-include="partials/header.html"></div><main class="page"><article class="document">
+<nav class="breadcrumbs"><a href="index.html">Documentation</a> / Security</nav><h1>Security</h1><p class="lede">Ploinky authenticates the only public route; RoboTeam checks ownership and keeps nested runtime ports private.</p>
+<h2>Identity and exposure</h2><p>AgentServer/MCP uses port 7000; the authenticated HTTP and WebSocket route targets port 3001. Requests require Router-injected identity and mutations retain Ploinky proof enforcement. Inner Podman, Selkies loopback ports, CDP, and Pelorus are not public.</p>
+<h2>Nested authority</h2><p>Ploinky admits <code>containerSecurity.nestedPodman</code> and supplies only <code>SYS_ADMIN</code>, <code>NET_ADMIN</code>, <code>/dev/fuse</code>, <code>/dev/net/tun</code>, label disablement, and a fixed seccomp profile. The outer container remains on the managed network and does not use <code>--privileged</code>.</p>
+<div class="callout"><code>SYS_ADMIN</code> remains powerful, so this is a controlled experiment rather than a hostile-tenant sandbox. Host-level or microVM isolation is required for hostile workloads.</div>
+<h2>Persistent credentials</h2><p>A robot home can contain cookies, sessions, tools, and documents. Treat <code>/data</code> and backups as credential-bearing storage. Stopping does not revoke sessions or erase data.</p>
+<h2>Cleanup</h2><p>No host Podman socket, public inner API, broad prune, or robot deletion endpoint is exposed. Cleanup targets exact owned containers and managed labels.</p>
+</article></main><script src="partials-loader.js"></script></body></html>

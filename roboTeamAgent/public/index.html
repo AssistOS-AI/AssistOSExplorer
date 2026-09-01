@@ -10,63 +10,41 @@
   <main class="shell">
     <header class="hero">
       <div>
-        <p class="eyebrow">Virtual employee manager</p>
+        <p class="eyebrow">Persistent robot environments</p>
         <h1>RoboTeam</h1>
-        <p class="lede">Create specialized robot profiles and enter each robot's persistent Linux desktop.</p>
+        <p class="lede">Create robots with durable homes, then enter a disposable browser or full Linux desktop container.</p>
       </div>
       <button id="refreshButton" class="button secondary" type="button">Refresh</button>
     </header>
 
     <section class="panel" aria-labelledby="create-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">New employee</p>
-          <h2 id="create-title">Create a robot profile</h2>
-        </div>
-      </div>
-      <form id="createForm" class="profile-form">
-        <label>
-          <span>Name</span>
-          <input name="name" maxlength="80" required placeholder="Research analyst">
-        </label>
-        <label>
-          <span>Specialization</span>
-          <textarea name="specialization" maxlength="500" rows="3" placeholder="Competitive research, source verification, and concise reports"></textarea>
-        </label>
-        <button class="button primary" type="submit">Create profile</button>
+      <div class="section-heading"><div><p class="eyebrow">New robot</p><h2 id="create-title">Create a robot</h2></div></div>
+      <form id="createForm" class="robot-form">
+        <label><span>Name</span><input name="name" maxlength="80" required placeholder="Research analyst"></label>
+        <label><span>Specialization</span><textarea name="specialization" maxlength="500" rows="3" placeholder="Competitive research and source verification"></textarea></label>
+        <button class="button primary" type="submit">Create robot</button>
       </form>
       <p id="formMessage" class="message" role="status"></p>
     </section>
 
-    <section class="profiles" aria-labelledby="profiles-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Your team</p>
-          <h2 id="profiles-title">Robot profiles</h2>
-        </div>
-        <span id="profileCount" class="count">0 profiles</span>
-      </div>
-      <div id="profilesList" class="profile-list" aria-live="polite"></div>
+    <section class="robots" aria-labelledby="robots-title">
+      <div class="section-heading"><div><p class="eyebrow">Your team</p><h2 id="robots-title">Robots</h2></div><span id="robotCount" class="count">0 robots</span></div>
+      <div id="robotsList" class="robot-list" aria-live="polite"></div>
     </section>
   </main>
 
-  <template id="profileTemplate">
-    <article class="profile-card">
-      <div class="profile-main">
+  <template id="robotTemplate">
+    <article class="robot-card">
+      <div class="robot-main">
         <div class="avatar" aria-hidden="true"></div>
-        <div>
-          <div class="profile-title-row">
-            <h3></h3>
-            <span class="desktop-state"></span>
-          </div>
-          <p class="specialization"></p>
-          <p class="profile-id"></p>
-        </div>
+        <div><div class="robot-title-row"><h3></h3><span class="run-state"></span></div><p class="specialization"></p><p class="robot-id"></p></div>
       </div>
-      <div class="profile-actions">
-        <button class="button primary open-desktop" type="button">Open desktop</button>
-        <button class="button danger stop-desktop" type="button">Stop</button>
+      <div class="robot-actions">
+        <button class="button secondary open-browser" type="button">Start Browser</button>
+        <button class="button primary open-desktop" type="button">Start Desktop</button>
+        <button class="button secondary view-logs" type="button">Logs</button>
       </div>
+      <pre class="robot-logs" hidden></pre>
     </article>
   </template>
 

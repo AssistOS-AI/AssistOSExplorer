@@ -39,13 +39,10 @@ async function writeFixture(directory, name, source) {
     return filePath;
 }
 
-test('manifest pins the purpose-built runtime by immutable digest', async () => {
+test('manifest follows the operator-managed runtime channel', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
 
-    assert.match(
-        manifest.container,
-        /^docker\.io\/assistos\/roboteam-agent@sha256:[a-f0-9]{64}$/,
-    );
+    assert.equal(manifest.container, 'docker.io/assistos/roboteam-agent:runtime');
 });
 
 test('manifest declares the MCP startup budget', async () => {
@@ -55,19 +52,34 @@ test('manifest declares the MCP startup budget', async () => {
         protocol: 'mcp',
         timeoutSeconds: 45,
     });
+    assert.deepEqual(manifest.health.readiness, {
+        interval: 1,
+        timeout: 1,
+        failureThreshold: 45,
+        successThreshold: 1,
+    });
 });
 
-test('install hook only verifies the immutable image contract', async () => {
+test('manifest requests the bounded nested Podman capability', async () => {
+    const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
+
+    assert.deepEqual(manifest.containerSecurity, { nestedPodman: true });
+    assert.equal(manifest.network, undefined);
+    assert.deepEqual(manifest.profiles.default.openPorts, ['7000:7000', '3001:3001']);
+});
+
+test('install hook only verifies the immutable nested Podman image contract', async () => {
     const source = await readFile(join(AGENT_ROOT, 'scripts', 'install.sh'), 'utf8');
 
-    assert.match(source, /\/opt\/roboteam-runtime\/contract-v1/);
-    assert.match(source, /roboteam-runtime-v1/);
-    for (const command of ['chromium', 'Xvfb', 'openbox', 'xterm', 'x11vnc', 'websockify']) {
+    assert.match(source, /\/opt\/roboteam-runtime\/contract-v3/);
+    assert.match(source, /roboteam-runtime-v3/);
+    for (const command of ['podman', 'fuse-overlayfs', 'pasta', 'node']) {
         assert.match(source, new RegExp(`\\b${command}\\b`));
     }
-    for (const requiredPath of ['/usr/bin/getent', '/usr/sbin/useradd', '/usr/share/novnc/core/rfb.js']) {
+    for (const requiredPath of ['/opt/roboteam-runtime/storage.conf']) {
         assert.match(source, new RegExp(requiredPath.replaceAll('/', '\\/')));
     }
+    assert.match(source, /podman version 6/);
     assert.doesNotMatch(source, /\b(?:apt|apt-get|curl|wget|npm|pnpm|yarn|git)\b/);
 });
 

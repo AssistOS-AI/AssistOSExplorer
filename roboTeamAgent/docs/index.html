@@ -1,70 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RoboTeam Documentation</title>
-  <link rel="stylesheet" href="styles.css">
-  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
-</head>
-<body>
-  <div data-include="partials/header.html"></div>
-  <main class="page"><article class="document">
-    <nav class="breadcrumbs" aria-label="Breadcrumb">Documentation / Home</nav>
-    <h1>RoboTeam Documentation</h1>
-    <p class="lede"><a href="wiki.html#definition-roboteam">RoboTeam</a> is the management space for a team of persistent virtual employees: specialized robots that keep their identity, working context, and tools between sessions.</p>
-
-    <h2>Purpose and vision</h2>
-    <p>RoboTeam gives an owner one place to assemble and supervise a roster of <a href="wiki.html#definition-virtual-employee">virtual employees</a>. Each employee is a robot with a distinct role, a durable <a href="wiki.html#definition-robot-profile">profile</a>, a private workspace, and an interactive desktop. The owner can prepare the employee's browser, terminal, files, and authenticated sessions without losing that working context when the desktop stops.</p>
-    <p>The product vision treats these robots like members of an organization. Their names and specializations make responsibilities understandable to people, while their isolated workspaces keep each employee's context separate. RoboTeam manages the roster and the persistent working environments; <a href="wiki.html#definition-advancedlanguageagent">AdvancedLanguageAgent</a> supplies the separate one-shot runtime that can carry out a task with explicitly selected skills and profile resources.</p>
-
-    <figure class="diagram">
-      <pre class="mermaid">flowchart TB
-        Owner[Team owner] --> RoboTeam[RoboTeam manager]
-        subgraph Team[Managed virtual employee team]
-          Research[Virtual employee: research]
-          Publishing[Virtual employee: publishing]
-          Engineering[Virtual employee: software engineering]
-        end
-        RoboTeam --> Research
-        RoboTeam --> Publishing
-        RoboTeam --> Engineering
-        classDef person fill:#d9f7ea,stroke:#2b7a58,color:#10251c,font-weight:bold;
-        classDef system fill:#dcecff,stroke:#35658c,color:#10202d,font-weight:bold;
-        classDef employee fill:#fff1cc,stroke:#9a7227,color:#2d210a;
-        class Owner person;
-        class RoboTeam system;
-        class Research,Publishing,Engineering employee;</pre>
-      <figcaption><em>RoboTeam virtual organization</em></figcaption>
-    </figure>
-
-    <p>The roles in the diagram are examples. An owner defines the size and specialization of the team, and every employee keeps a separate identity, workspace, browser state, and desktop. This model supports a growing organization without turning individual robots into separate public services or separate Ploinky agents.</p>
-
-    <h2>Documentation Map</h2>
-    <div class="documentation-map">
-      <table>
-        <thead><tr><th scope="col">Overview</th><th scope="col">Runtime</th><th scope="col">Reference</th></tr></thead>
-        <tbody>
-          <tr>
-            <td><a href="index.html">Home</a><span>Introduces the product purpose, vision, and virtual employee team model.</span></td>
-            <td><a href="operations.html">Profiles &amp; Desktops</a><span>Explains profile creation and the interactive desktop lifecycle.</span></td>
-            <td><a href="wiki.html">Wiki</a><span>Defines the canonical RoboTeam terminology and component boundaries.</span></td>
-          </tr>
-          <tr>
-            <td><a href="vision.html">Product Vision</a><span>Describes virtual employees, specialization, skills, and the ALA boundary.</span></td>
-            <td><a href="architecture.html">Architecture</a><span>Traces the Router, control service, profile storage, and desktop processes.</span></td>
-            <td><a href="specsLoader.html?spec=matrix.md">Specifications</a><span>Opens the authoritative design specification matrix.</span></td>
-          </tr>
-          <tr>
-            <td></td>
-            <td><a href="security.html">Security</a><span>Documents identity, route mediation, isolation, secrets, and limitations.</span></td>
-            <td></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p>Begin with Home and Product Vision to understand the virtual employee model. Continue through Profiles &amp; Desktops and Architecture for operating details, then use Security, Wiki, and Specifications when reviewing product boundaries or implementation contracts.</p>
-  </article></main>
-  <script src="partials-loader.js"></script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RoboTeam Documentation</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head><body><div data-include="partials/header.html"></div><main class="page"><article class="document">
+<nav class="breadcrumbs" aria-label="Breadcrumb">Documentation / Home</nav><h1>RoboTeam Documentation</h1>
+<p class="lede"><a href="wiki.html#definition-roboteam">RoboTeam</a> manages persistent robots and starts an observable browser or full Linux desktop for each one as an inner Podman container.</p>
+<h2>Product boundary</h2><p>RoboTeam itself is one Ploinky-hosted outer container. A robot is an owner-scoped metadata record plus a durable home, workspace, downloads, and logs. Starting a robot creates exactly one disposable inner GUI container; stopping it preserves the robot's files.</p>
+<h2>Available modes</h2><table><thead><tr><th>Mode</th><th>Runtime</th><th>Use</th></tr></thead><tbody><tr><td><code>browser</code></td><td>LinuxServer Chromium</td><td>A visible browser streamed by Selkies.</td></tr><tr><td><code>desktop</code></td><td>LinuxServer Webtop Ubuntu XFCE</td><td>A visible full Linux desktop streamed by Selkies.</td></tr></tbody></table><p>Autonomous task control and human takeover arbitration are future contracts.</p>
+<h2>Documentation map</h2><p><a href="operations.html">Robots &amp; Runs</a> explains use; <a href="architecture.html">Architecture</a> describes nesting; <a href="security.html">Security</a> documents trust limits; <a href="wiki.html">Wiki</a> defines terminology; and <a href="specsLoader.html?spec=matrix.md">Specifications</a> contains the normative contract.</p>
+</article></main><script src="partials-loader.js"></script></body></html>

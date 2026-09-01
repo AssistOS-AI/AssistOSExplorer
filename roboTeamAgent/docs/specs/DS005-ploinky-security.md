@@ -1,26 +1,31 @@
 ---
 title: DS005-ploinky-security
-summary: Specifies the single-agent identity, authenticated Router exposure, trusted user metadata, mutation protection, internal token use, and security limitations.
+id: DS005
+status: accepted
+owner: RoboTeamAgent
+summary: Specifies authenticated routing, owner separation, nested-container authority, secrets, and experiment limitations.
 ---
 
 ## Introduction
 
-RoboTeam is a security-sensitive [Ploinky agent](../wiki.html#definition-ploinky-agent) because its profile browser directories can contain authenticated website sessions. Public access must remain mediated by the Ploinky Router.
+RoboTeam stores credential-bearing GUI state and operates a nested engine, so public access and runtime authority remain explicit.
 
 ## Core Content
 
-The canonical agent identity must remain `agent:AchillesCLI/roboTeamAgent`. This repository-derived identity is independent of the default route key `roboTeamAgent`. A deployment may change the route key only when it updates `ROBOTEAM_ROUTE_KEY`, `ROBOTEAM_PUBLIC_BASE_PATH`, and the manifest route declaration as one compatible configuration change.
+Canonical identity remains `agent:AchillesCLI/roboTeamAgent`. Port `7000` is reserved for AgentServer/MCP; only the RoboTeam HTTP/WebSocket service on port `3001` has an authenticated browser route. Inner Podman, Selkies loopback ports, Chromium debugging, and Pelorus control ports are never public.
 
-The manifest must declare the RoboTeam port `7000` through an authenticated [agent-port route](../wiki.html#definition-agent-port-route). It must not declare VNC, websockify, Chromium debugging, AgentServer, or application container ports as direct public services. Ploinky must authenticate both HTTP and WebSocket traffic before it reaches RoboTeam.
+Browser identity comes only from Router-injected `x-ploinky-auth-info`; mutations require Ploinky proof. AgentServer listens on port `7000`; MCP callbacks use `ROBOTEAM_INTERNAL_TOKEN` and the authenticated user id without logging either.
 
-Browser requests must use Router-injected `x-ploinky-auth-info` as their user identity. RoboTeam must reject a missing or malformed identity. The Router must strip client-supplied internal identity headers before injecting trusted metadata. State-changing browser requests must carry the Ploinky browser mutation proof bound to the selected route and session.
+Each robot has one owner and separate mounts. The outer RoboTeam container remains on Ploinky's managed network. Its admitted `nestedPodman` capability adds only `SYS_ADMIN`, `NET_ADMIN`, `/dev/fuse`, `/dev/net/tun`, label disablement, and the fixed nested-Podman seccomp profile.
 
-The bundled Ploinky AgentServer must listen on loopback port `7001` and must be reached through the service proxy on port `7000`. MCP tool tags remain authenticated by default and must not be changed to `internal` or `admin` without an explicit contract and policy update.
+The inner engine runs as uid 0 inside the outer container's user namespace; it is not physical-host root. `SYS_ADMIN` still makes the outer container a weak security boundary, so this remains a controlled experiment. No host Podman socket or public inner API exists, and cleanup uses exact labels and names. Robot homes and browser sessions are credential-bearing data; operators must protect `/data` and backups.
 
-Ploinky must generate `ROBOTEAM_INTERNAL_TOKEN`. MCP command handlers must receive the authenticated user through invocation metadata and must call the loopback service with that user id and the generated token. The service must compare the token without logging it. This token is separate from Ploinky user sessions, agent assertions, Router Request JWTs, and the per-agent secret.
+## Decisions & Questions
 
-The manifest and source must not contain `PLOINKY_MASTER_KEY`, literal agent secrets, passwords, cookies, browser sessions, raw JWTs, or literal generated tokens. Diagnostic logs may contain profile ids, process names, timestamps, and non-secret failure reasons but must not contain complete authentication headers or credential-bearing browser data.
+1. **Decision:** The first experiment uses the bounded `nestedPodman` capability and never requests `--privileged` or host networking.
+2. **Decision:** reusable robot homes are deliberate credential-bearing objects.
+3. **Question:** Stronger deployments may require rootless refinements or a microVM outer boundary.
 
-The persistent data volume is a credential-bearing store. Profile Unix ownership protects profiles from ordinary processes running under another profile UID. The trusted root control service, the shared container kernel, the Ploinky runtime, and the storage operator remain inside the trust boundary. RoboTeam does not provide virtual-machine isolation or application-level encryption at rest.
+## Conclusion
 
-Chromium runs as the unprivileged profile UID with `--no-sandbox` for compatibility with the nested container runtime. The profile desktop is therefore one trust domain and must not be presented as a hostile-content sandbox. Stronger browser or code isolation requires a separately specified task-runtime or per-profile-container boundary.
+Authentication remains strict while nested privileges are an explicit experimental tradeoff.

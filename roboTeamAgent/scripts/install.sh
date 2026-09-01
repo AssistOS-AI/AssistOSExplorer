@@ -1,11 +1,11 @@
 #!/bin/sh
 set -eu
 
-contract_file="/opt/roboteam-runtime/contract-v1"
-contract_value="roboteam-runtime-v1"
-required_commands="chromium Xvfb openbox xterm x11vnc websockify"
-required_executables="/usr/bin/getent /usr/sbin/useradd"
-required_assets="/usr/share/novnc/core/rfb.js"
+contract_file="/opt/roboteam-runtime/contract-v3"
+contract_value="roboteam-runtime-v3"
+required_commands="podman fuse-overlayfs pasta node"
+required_executables=""
+required_assets="/opt/roboteam-runtime/storage.conf"
 missing=""
 
 if [ ! -f "$contract_file" ] || [ "$(cat "$contract_file" 2>/dev/null || true)" != "$contract_value" ]; then
@@ -17,6 +17,10 @@ for command_name in $required_commands; do
         missing="$missing command:$command_name"
     fi
 done
+
+if ! podman --version 2>/dev/null | grep -Eq '^podman version 6\.'; then
+    missing="$missing podman-major:6"
+fi
 
 for executable_path in $required_executables; do
     if [ ! -x "$executable_path" ]; then

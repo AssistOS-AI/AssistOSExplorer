@@ -1,51 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RoboTeam Documentation</title>
-  <link rel="stylesheet" href="styles.css">
-  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script>
-</head>
-<body>
-  <div data-include="partials/header.html"></div>
-  <main class="page"><article class="document">
-    <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="index.html">Documentation</a> / Product Vision</nav>
-    <h1>Product Vision</h1>
-    <p class="lede"><a href="wiki.html#definition-roboteam">RoboTeam</a> is the manager for a team of virtual employees. Each employee has a durable identity, a domain specialization, a private working area, selected skills, authenticated tools, and a desktop that the owner can enter directly.</p>
-
-    <h2>Virtual employees</h2>
-    <p>A <a href="wiki.html#definition-virtual-employee">virtual employee</a> is represented by a <a href="wiki.html#definition-robot-profile">robot profile</a>. The profile keeps the employee's identity and working state stable across desktop restarts and one-shot tasks. Its specialization describes the field in which the employee works, such as research, publishing, software engineering, or administration.</p>
-    <p>Specialization metadata does not grant tools by itself. Executable specialization comes from <a href="wiki.html#definition-task-skill">task skills</a> mounted by ALA from explicitly selected <a href="wiki.html#definition-task-repository">task repositories</a>. This separation keeps a human-readable role distinct from the code and instructions that can act.</p>
-
-    <figure class="diagram">
-      <pre class="mermaid">flowchart TB
-        Owner[Profile owner] --> RoboTeam[RoboTeam profile and desktop manager]
-        subgraph Employee[Virtual employee]
-          Profile[Persistent identity and specialization]
-          Workspace[Private profile workspace]
-          Desktop[Interactive Linux desktop]
-        end
-        RoboTeam --> Employee
-        ALA[AdvancedLanguageAgent one-shot task] -. separate task boundary .-> Workspace
-        Skills[Mounted task repositories and skills] -. task input .-> ALA
-        classDef person fill:#d9f7ea,stroke:#2b7a58,color:#10251c,font-weight:bold;
-        classDef system fill:#dcecff,stroke:#35658c,color:#10202d,font-weight:bold;
-        classDef data fill:#fff1cc,stroke:#9a7227,color:#2d210a;
-        class Owner person;
-        class RoboTeam,ALA system;
-        class Profile,Workspace,Desktop,Skills data;</pre>
-      <figcaption><em>Virtual employee product model</em></figcaption>
-    </figure>
-
-    <h2>Human access and task execution</h2>
-    <p>The interactive desktop exists for human configuration and oversight. The owner can open Chromium, sign in to permitted services, use a terminal, and arrange the employee's files. Desktop shutdown removes the graphical processes but retains profile state.</p>
-    <p><a href="wiki.html#definition-advancedlanguageagent">AdvancedLanguageAgent</a> is the intended one-shot execution runtime. Its task sandbox remains ephemeral. The persistent <a href="wiki.html#definition-profile-workspace">profile workspace</a> is mounted into that sandbox as an explicit task repository or writable folder, while unrelated profiles remain absent. RoboTeam's profile runtime does not define that launch protocol, browser automation, approval policy, or task scheduling contract.</p>
-
-    <h2>Product boundaries</h2>
-    <p>RoboTeam is one Ploinky agent. Robot profiles are application objects inside that agent; they are not additional Ploinky agents, aliases, or containers. Ploinky supplies hosting, authentication, persistent volume attachment, and Router-mediated access. RoboTeam owns profile identity, storage, desktop lifecycle, and user-facing operations.</p>
-    <div class="callout">The profile desktop provides Linux process and filesystem separation through a distinct numeric UID and private profile directories. This boundary is not equivalent to a virtual machine and does not make the trusted RoboTeam control service untrusted.</div>
-  </article></main>
-  <script src="partials-loader.js"></script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RoboTeam Vision</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head><body><div data-include="partials/header.html"></div><main class="page"><article class="document">
+<nav class="breadcrumbs"><a href="index.html">Documentation</a> / Product Vision</nav><h1>Product Vision</h1><p class="lede">A robot is a durable virtual employee whose visible workstation can be recreated without losing its home.</p>
+<p>RoboTeam preserves identity, descriptive specialization, application configuration, work files, and authenticated browser state. Browser mode minimizes the graphical surface; desktop mode provides a complete Linux workstation. Both use the same observable Selkies model.</p>
+<p>This milestone proves nested creation, GUI streaming, owner-scoped access, logs, persistence, and cleanup. A future controller can use Playwright for normal browser automation and Pelorus for non-DOM surfaces, but must operate the same visible session.</p>
+<p>Human takeover, pause/resume arbitration, ALA task schemas, credential delegation, and side-effect approvals remain outside the current API.</p>
+</article></main><script src="partials-loader.js"></script></body></html>

@@ -5,7 +5,7 @@
     "location": ["file-exp:toolbar"],
     "locationOrder": 350,
     "label": "RoboTeam",
-    "tooltip": "Manage RoboTeam profiles and desktops",
+    "tooltip": "Manage RoboTeam robots and runs",
     "icon": "./icon.svg",
     "presenter": "RoboTeamToolButton",
     "type": "embedded",
