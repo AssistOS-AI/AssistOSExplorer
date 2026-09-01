@@ -45,6 +45,25 @@ describe('HistoryManager', () => {
         assert.strictEqual(history[0], 'cmd1');
         assert.strictEqual(history[2], 'cmd3');
     });
+
+    it('rejects a symlinked owned history file before reading or writing', () => {
+        const workingDir = createTempDir('history-symlink');
+        const outsideDir = createTempDir('history-outside');
+        const outsideHistory = path.join(outsideDir, 'history');
+        try {
+            fs.mkdirSync(path.join(workingDir, '.data', 'achilles-cli'), { recursive: true });
+            fs.writeFileSync(outsideHistory, 'outside command\n');
+            fs.symlinkSync(outsideHistory, path.join(workingDir, '.data', 'achilles-cli', 'history'));
+            assert.throws(
+                () => new HistoryManager({ workingDir }),
+                /history file must not be a symbolic link/,
+            );
+            assert.strictEqual(fs.readFileSync(outsideHistory, 'utf8'), 'outside command\n');
+        } finally {
+            cleanupTempDir(workingDir);
+            cleanupTempDir(outsideDir);
+        }
+    });
 });
 
 // ============================================================================
@@ -318,7 +337,7 @@ describe('HistoryManager - Comprehensive', () => {
         it('should persist history to file', () => {
             const manager = new HistoryManager({ workingDir: tempDir });
             manager.add('persistent command');
-            const historyFile = path.join(tempDir, '.achilles-cli', 'history');
+            const historyFile = path.join(tempDir, '.data', 'achilles-cli', 'history');
             assert.ok(fs.existsSync(historyFile), 'History file should exist');
         });
 
@@ -360,7 +379,7 @@ describe('HistoryManager - Comprehensive', () => {
             const manager = new HistoryManager({ workingDir: tempDir });
             manager.add('command1');
             manager.clear();
-            const historyFile = path.join(tempDir, '.achilles-cli', 'history');
+            const historyFile = path.join(tempDir, '.data', 'achilles-cli', 'history');
             const content = fs.readFileSync(historyFile, 'utf-8');
             assert.strictEqual(content.trim(), '');
         });

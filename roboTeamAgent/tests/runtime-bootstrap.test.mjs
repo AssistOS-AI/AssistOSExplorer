@@ -68,6 +68,14 @@ test('manifest requests the bounded nested Podman capability', async () => {
     assert.deepEqual(manifest.profiles.default.openPorts, ['7000:7000', '3001:3001']);
 });
 
+test('manifest stores RoboTeam state in the workspace private data tree', async () => {
+    const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
+
+    assert.deepEqual(manifest.volumes, {
+        '.data/roboTeamAgent': '/data',
+    });
+});
+
 test('install hook only verifies the immutable nested Podman image contract', async () => {
     const source = await readFile(join(AGENT_ROOT, 'scripts', 'install.sh'), 'utf8');
 

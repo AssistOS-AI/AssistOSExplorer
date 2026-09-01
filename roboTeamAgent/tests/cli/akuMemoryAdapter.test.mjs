@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AgenticKnowledgeUnits } from '../../../ploinky/node_modules/achillesAgentLib/AgenticKnowledgeUnits/index.mjs';
+import { AgenticKnowledgeUnits } from '../../achillesAgentLib/AgenticKnowledgeUnits/index.mjs';
 import { AkuMemoryAdapter } from '../achilles-cli/src/lib/akuMemory/AkuMemoryAdapter.mjs';
 import {
     lookupCachedProviderResultForPrompt,
@@ -172,6 +172,10 @@ describe('AKU preflight', () => {
         assert.equal(result.initialized, false);
         assert.equal(result.intentPlan.shouldInitializeAKU, false);
         assert.deepEqual(FakeAKU.calls.map((call) => call[0]), ['constructor', 'exists']);
+        assert.equal(
+            FakeAKU.calls[0][1].persistenceRoot,
+            path.join(await fsp.realpath(rootDir), '.data', 'achilles-cli', 'aku'),
+        );
     });
 
     it('missing AKU does not block ordinary prompts', async () => {

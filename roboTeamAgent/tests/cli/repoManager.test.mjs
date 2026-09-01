@@ -38,7 +38,7 @@ describe('repoManager achillesAgentLib links', () => {
     });
 
     it('creates achillesAgentLib symlink for a repo', () => {
-        const repoPath = path.join(tempDir, '.achilles-cli', 'repos', 'WebAdminSkills');
+        const repoPath = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'WebAdminSkills');
         fs.mkdirSync(repoPath, { recursive: true });
 
         const result = ensureAgentLibLinkForRepo(repoPath);
@@ -50,7 +50,7 @@ describe('repoManager achillesAgentLib links', () => {
     });
 
     it('replaces stale achillesAgentLib symlink', () => {
-        const repoPath = path.join(tempDir, '.achilles-cli', 'repos', 'WebAdminSkills');
+        const repoPath = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'WebAdminSkills');
         const nodeModulesDir = path.join(repoPath, 'node_modules');
         const linkPath = path.join(nodeModulesDir, 'achillesAgentLib');
         fs.mkdirSync(nodeModulesDir, { recursive: true });
@@ -63,7 +63,7 @@ describe('repoManager achillesAgentLib links', () => {
     });
 
     it('preserves a real achillesAgentLib directory', () => {
-        const repoPath = path.join(tempDir, '.achilles-cli', 'repos', 'WebAdminSkills');
+        const repoPath = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'WebAdminSkills');
         const realPackageDir = path.join(repoPath, 'node_modules', 'achillesAgentLib');
         fs.mkdirSync(realPackageDir, { recursive: true });
         fs.writeFileSync(path.join(realPackageDir, 'package.json'), '{}\n');
@@ -75,23 +75,42 @@ describe('repoManager achillesAgentLib links', () => {
         assert.equal(fs.lstatSync(realPackageDir).isSymbolicLink(), false);
     });
 
-    it('repairs all cloned repos under .achilles-cli/repos', () => {
-        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoA'), { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoB'), { recursive: true });
+    it('repairs all cloned repos under .data/achilles-cli/repos', () => {
+        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoA'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoB'), { recursive: true });
 
         const results = ensureAgentLibLinksForRepos(tempDir);
 
         assert.deepEqual(results.map((entry) => entry.repo).sort(), ['RepoA', 'RepoB']);
         for (const repoName of ['RepoA', 'RepoB']) {
             assert.equal(
-                fs.lstatSync(path.join(tempDir, '.achilles-cli', 'repos', repoName, 'node_modules', 'achillesAgentLib')).isSymbolicLink(),
+                fs.lstatSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', repoName, 'node_modules', 'achillesAgentLib')).isSymbolicLink(),
                 true,
             );
         }
     });
 
+    it('rejects a symlinked owned repositories directory before scanning or mutation', () => {
+        const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-repos-outside-'));
+        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli'), { recursive: true });
+        fs.symlinkSync(outside, path.join(tempDir, '.data', 'achilles-cli', 'repos'), 'dir');
+        try {
+            assert.throws(
+                () => ensureAgentLibLinksForRepos(tempDir),
+                /repositories directory must not be a symbolic link/,
+            );
+            assert.throws(
+                () => addRepo('https://example.invalid/blocked.git', 'blocked', tempDir),
+                /repositories directory must not be a symbolic link/,
+            );
+            assert.deepEqual(fs.readdirSync(outside), []);
+        } finally {
+            fs.rmSync(outside, { recursive: true, force: true });
+        }
+    });
+
     it('links existing repos when addRepo returns exists', () => {
-        const repoPath = path.join(tempDir, '.achilles-cli', 'repos', 'WebAdminSkills');
+        const repoPath = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'WebAdminSkills');
         fs.mkdirSync(repoPath, { recursive: true });
 
         const result = addRepo('https://example.invalid/WebAdminSkills.git', 'WebAdminSkills', tempDir);
@@ -113,8 +132,8 @@ describe('repoManager achillesAgentLib links', () => {
         );
         process.env.PATH = `${fakeBin}${path.delimiter}${previousPath}`;
 
-        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoA'), { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoB'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoA'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoB'), { recursive: true });
 
         const result = updateRepos(tempDir);
 
@@ -140,9 +159,9 @@ describe('repoManager achillesAgentLib links', () => {
         );
         process.env.PATH = `${fakeBin}${path.delimiter}${previousPath}`;
 
-        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoOk'), { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoFailA'), { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoFailB'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoOk'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoFailA'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoFailB'), { recursive: true });
 
         assert.throws(
             () => updateRepos(tempDir),

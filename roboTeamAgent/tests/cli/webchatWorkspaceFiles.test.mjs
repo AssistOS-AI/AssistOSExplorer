@@ -20,7 +20,7 @@ test('workspace file scan returns safe project files and skips runtime trees and
         fs.mkdirSync(path.join(root, 'docs'));
         fs.writeFileSync(path.join(root, 'README.md'), 'readme');
         fs.writeFileSync(path.join(root, 'docs', 'report.md'), 'report');
-        for (const ignored of ['.achilles-cli', '.git', '.ploinky', 'node_modules']) {
+        for (const ignored of ['.achilles-cli', '.data', '.git', '.ploinky', 'node_modules']) {
             fs.mkdirSync(path.join(root, ignored));
             fs.writeFileSync(path.join(root, ignored, 'ignored.txt'), 'ignored');
         }

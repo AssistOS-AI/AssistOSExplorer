@@ -51,7 +51,7 @@ describe('HelpSystem', () => {
         assert.ok(modelHelp, 'Should return help for model');
         assert.ok(modelHelp.includes('model'), 'Model help should mention model');
         assert.ok(modelHelp.includes('Soul Gateway'), 'Model help should mention the catalog source');
-        assert.ok(modelHelp.includes('.achilles-cli/settings.json'), 'Model help should mention persistence');
+        assert.ok(modelHelp.includes('.data/achilles-cli/settings.json'), 'Model help should mention persistence');
         assert.equal(modelHelp.includes('/model clear'), false, 'Model help should not advertise /model clear');
     });
 
@@ -91,7 +91,7 @@ describe('HelpSystem', () => {
     it('should document workspace skill state commands', async () => {
         const { showHelp, getQuickReference } = await import('../achilles-cli/src/ui/HelpSystem.mjs');
         assert.match(showHelp('skills'), /\/skills enable <relative-directory>/);
-        assert.match(showHelp('skills'), /\.achilles-cli\/settings\.json/);
+        assert.match(showHelp('skills'), /\.data\/achilles-cli\/settings\.json/);
         assert.match(showHelp('skill'), /\/skill disable <skill-name>/);
         assert.match(getQuickReference(), /\/skills/);
     });
