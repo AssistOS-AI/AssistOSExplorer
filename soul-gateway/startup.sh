@@ -2,9 +2,17 @@
 set -e
 
 CODE_DIR="${CODE_DIR:-/code}"
-DATA_DIR="${DATA_DIR:-/data}"
-CREDENTIALS_DIR="${CREDENTIALS_DIR:-$DATA_DIR/credentials}"
-SQLITE_PATH="${SQLITE_PATH:-$DATA_DIR/soul-gateway.sqlite3}"
+require_nonblank() {
+    local name="$1"
+    local value="${!name-}"
+    if ! node -e 'process.exit(String(process.argv[1] ?? "").trim() ? 0 : 1)' -- "$value"; then
+        echo "ERROR: $name is required and must not be blank; the managed manifest supplies an absolute /data path" >&2
+        exit 1
+    fi
+}
+require_nonblank DATA_DIR
+require_nonblank CREDENTIALS_DIR
+require_nonblank SQLITE_PATH
 AGENT_NODE_MODULES_DIR="${AGENT_NODE_MODULES_DIR:-/Agent/node_modules}"
 
 echo "=== Soul Gateway: Starting ==="

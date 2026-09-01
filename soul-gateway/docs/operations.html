@@ -31,7 +31,7 @@
         <tr><td>Observability</td><td>Log retention, partition maintenance, live-stream heartbeat, export batch size, and response-capture limits.</td></tr>
       </tbody>
     </table>
-    <p><code>src/config/env.mjs</code> is the executable source for parsed defaults. The Ploinky manifest may override those process defaults for the agent deployment, including <code>HOST=0.0.0.0</code>, <code>PORT=7000</code>, and <code>SQLITE_PATH=/data/soul-gateway.sqlite3</code>.</p>
+    <p><code>src/config/env.mjs</code> is the executable source for parsed defaults. The Ploinky manifest supplies <code>DATA_DIR=/data</code>, <code>CREDENTIALS_DIR=/data/credentials</code>, and <code>SQLITE_PATH=/data/soul-gateway.sqlite3</code> for the managed agent deployment. A direct process start must explicitly set all three paths beneath the selected workspace <code>.data/soul-gateway</code> root and fails closed when any is absent; there is no relative data-directory default.</p>
 
     <h2>Persistence and credential recovery</h2>
     <p>The SQLite file and encryption key must persist together. Provider API secrets are encrypted with the application key, and managed OAuth credential files use the same protected runtime boundary. Losing the encryption key makes existing encrypted secret material unusable even if the database remains available.</p>

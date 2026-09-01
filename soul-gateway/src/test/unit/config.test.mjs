@@ -17,6 +17,16 @@ const PLOINKY_ENV = {
     PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY: 'router.config',
 };
 
+const PERSISTENCE_ENV = {
+    SQLITE_PATH: '/workspace/.data/soul-gateway/soul-gateway.sqlite3',
+    DATA_DIR: '/workspace/.data/soul-gateway',
+    CREDENTIALS_DIR: '/workspace/.data/soul-gateway/credentials',
+};
+
+function readTestEnv(overrides = {}) {
+    return readEnv({ ...PERSISTENCE_ENV, ...overrides });
+}
+
 function makeLogSpy() {
     const warnings = [];
     const errors = [];
@@ -31,11 +41,29 @@ function makeLogSpy() {
 }
 
 describe('readEnv', () => {
-    it('returns defaults when no env vars set', () => {
-        const env = readEnv({});
+    it('fails closed when any direct-start persistence path is absent', () => {
+        for (const name of ['SQLITE_PATH', 'DATA_DIR', 'CREDENTIALS_DIR']) {
+            const processEnv = { ...PERSISTENCE_ENV };
+            delete processEnv[name];
+            assert.throws(() => readEnv(processEnv), new RegExp(name));
+            assert.throws(
+                () => readEnv({ ...PERSISTENCE_ENV, [name]: '' }),
+                new RegExp(name),
+            );
+            assert.throws(
+                () => readEnv({ ...PERSISTENCE_ENV, [name]: '   ' }),
+                new RegExp(name),
+            );
+        }
+    });
+
+    it('returns non-persistence defaults while preserving explicit paths', () => {
+        const env = readTestEnv();
         assert.equal(env.PORT, 7000);
         assert.equal(env.HOST, '127.0.0.1');
-        assert.equal(env.SQLITE_PATH, './data/soul-gateway.sqlite3');
+        assert.equal(env.SQLITE_PATH, PERSISTENCE_ENV.SQLITE_PATH);
+        assert.equal(env.DATA_DIR, PERSISTENCE_ENV.DATA_DIR);
+        assert.equal(env.CREDENTIALS_DIR, PERSISTENCE_ENV.CREDENTIALS_DIR);
         assert.equal(env.DEFAULT_RPM_LIMIT, 60);
         assert.equal(env.DEFAULT_DAILY_BUDGET_USD, 2.0);
         assert.equal(env.SHUTDOWN_GRACE_MS, 30_000);
@@ -44,7 +72,7 @@ describe('readEnv', () => {
     });
 
     it('reads overrides from env', () => {
-        const env = readEnv({
+        const env = readTestEnv({
             PORT: '9000',
             HOST: '0.0.0.0',
             DEFAULT_RPM_LIMIT: '120',
@@ -61,22 +89,22 @@ describe('readEnv', () => {
     });
 
     it('ignores invalid numbers', () => {
-        const env = readEnv({ PORT: 'not-a-number' });
+        const env = readTestEnv({ PORT: 'not-a-number' });
         assert.equal(env.PORT, 7000);
     });
 
     it('validates Ploinky derived master key format when provided', () => {
         const key = 'a'.repeat(64);
-        const env = readEnv({ PLOINKY_DERIVED_MASTER_KEY: key });
+        const env = readTestEnv({ PLOINKY_DERIVED_MASTER_KEY: key });
         assert.equal(env.PLOINKY_DERIVED_MASTER_KEY, key);
         assert.throws(
-            () => readEnv({ PLOINKY_DERIVED_MASTER_KEY: 'not-hex' }),
+            () => readTestEnv({ PLOINKY_DERIVED_MASTER_KEY: 'not-hex' }),
             /64-character hex string/,
         );
     });
 
     it('defaults all Ploinky signed-subject fields to null', () => {
-        const env = readEnv({});
+        const env = readTestEnv();
         assert.equal(env.PLOINKY_AGENT_API_PUBLIC_KEY, null);
         assert.equal(env.PLOINKY_ROUTER_URL, null);
         assert.equal(env.PLOINKY_AGENT_ID, null);
@@ -91,7 +119,7 @@ describe('readEnv', () => {
     });
 
     it('parses all Ploinky signed-subject fields from env', () => {
-        const env = readEnv({ ...PLOINKY_ENV });
+        const env = readTestEnv(PLOINKY_ENV);
         assert.equal(
             env.PLOINKY_AGENT_API_PUBLIC_KEY,
             'pub-key-abc'
@@ -112,7 +140,7 @@ describe('readEnv', () => {
     });
 
     it('returns a frozen object', () => {
-        const env = readEnv({});
+        const env = readTestEnv();
         assert.throws(() => {
             env.PORT = 9999;
         });
@@ -121,7 +149,7 @@ describe('readEnv', () => {
 
 describe('assertSignedSubjectAuthConfig', () => {
     it('passes when all required Ploinky env is present', () => {
-        const config = readEnv({ ...PLOINKY_ENV });
+        const config = readTestEnv(PLOINKY_ENV);
         const spy = makeLogSpy();
         assert.doesNotThrow(() =>
             assertSignedSubjectAuthConfig(config, { log: spy.log })
@@ -131,7 +159,7 @@ describe('assertSignedSubjectAuthConfig', () => {
     });
 
     it('throws and names the missing public key', () => {
-        const config = readEnv({
+        const config = readTestEnv({
             ...PLOINKY_ENV,
             PLOINKY_AGENT_API_PUBLIC_KEY: undefined,
         });
@@ -143,7 +171,7 @@ describe('assertSignedSubjectAuthConfig', () => {
     });
 
     it('throws when the router URL is missing', () => {
-        const config = readEnv({
+        const config = readTestEnv({
             ...PLOINKY_ENV,
             PLOINKY_ROUTER_URL: undefined,
         });
@@ -155,7 +183,7 @@ describe('assertSignedSubjectAuthConfig', () => {
     });
 
     it('does not throw for a missing router URL when ALLOW_UNAUTHENTICATED=true', () => {
-        const config = readEnv({
+        const config = readTestEnv({
             ...PLOINKY_ENV,
             PLOINKY_ROUTER_URL: undefined,
             ALLOW_UNAUTHENTICATED: 'true',
@@ -167,7 +195,7 @@ describe('assertSignedSubjectAuthConfig', () => {
     });
 
     it('names every missing required variable in the error', () => {
-        const config = readEnv({});
+        const config = readTestEnv();
         let thrown;
         try {
             assertSignedSubjectAuthConfig(config, { log: makeLogSpy().log });
@@ -182,7 +210,7 @@ describe('assertSignedSubjectAuthConfig', () => {
     });
 
     it('starts in development mode without Ploinky env and logs that signed-subject auth is disabled', () => {
-        const config = readEnv({ ALLOW_UNAUTHENTICATED: 'true' });
+        const config = readTestEnv({ ALLOW_UNAUTHENTICATED: 'true' });
         const spy = makeLogSpy();
         assert.doesNotThrow(() =>
             assertSignedSubjectAuthConfig(config, { log: spy.log })
@@ -196,7 +224,7 @@ describe('assertSignedSubjectAuthConfig', () => {
 
     it('treats ALLOW_UNAUTHENTICATED=1 and =yes as development mode', () => {
         for (const value of ['1', 'yes']) {
-            const config = readEnv({ ALLOW_UNAUTHENTICATED: value });
+            const config = readTestEnv({ ALLOW_UNAUTHENTICATED: value });
             const spy = makeLogSpy();
             assert.doesNotThrow(() =>
                 assertSignedSubjectAuthConfig(config, { log: spy.log })

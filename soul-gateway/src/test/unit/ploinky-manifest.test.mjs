@@ -76,3 +76,15 @@ test('Ploinky manifest uses mounted source instead of baked app source', () => {
     assert.equal(env.SOUL_GATEWAY_USE_LIVE_SOURCE, undefined);
     assert.equal(env.SOUL_GATEWAY_IMAGE_APP_DIR, undefined);
 });
+
+test('Ploinky manifest supplies the complete managed persistence contract', () => {
+    const manifest = readManifest();
+    const env = manifest.profiles?.default?.env || {};
+
+    assert.deepEqual(manifest.volumes, {
+        '.data/soul-gateway': '/data',
+    });
+    assert.equal(env.DATA_DIR?.default, '/data');
+    assert.equal(env.CREDENTIALS_DIR?.default, '/data/credentials');
+    assert.equal(env.SQLITE_PATH?.default, '/data/soul-gateway.sqlite3');
+});

@@ -38,7 +38,7 @@ Soul Gateway does not implement or distribute agent skills as product artifacts.
 - Public inference uses `/v1/*` and requires a valid Ploinky signed-subject API key unless the development-only `ALLOW_UNAUTHENTICATED=true` setting is explicit.
 - Management uses `/management/*` and requires a verified Ploinky administrator identity and protected-route invocation.
 - Health uses `/healthz/` and is public through the Router.
-- Persistent runtime state uses embedded SQLite at `${SQLITE_PATH:-/data/soul-gateway.sqlite3}` inside the agent container.
+- The managed manifest supplies `DATA_DIR=/data`, `CREDENTIALS_DIR=/data/credentials`, and `SQLITE_PATH=/data/soul-gateway.sqlite3`; direct starts require all three explicitly and have no relative persistence default.
 - The standard compatibility tiers are `fast`, `plan`, and `deep`, seeded from `LLM_DEFAULT_AGENT` when the required discovered model exists.
 
 ## Key Paths
@@ -94,4 +94,4 @@ Deployment and administration workflows live under `../.github/workflows/`:
 - `destroy-soul-gateway.yml` (`Destroy Soul Gateway`)
 - `soul-gateway-admin.yml` (`Soul Gateway Admin`)
 
-Prefer GitHub Actions for deployment, restart, status, destroy, and administrative operations. After a deployment or restart, verify the Router health path, container status, and the SQLite file at `${SQLITE_PATH:-/data/soul-gateway.sqlite3}` inside the container.
+Prefer GitHub Actions for deployment, restart, status, destroy, and administrative operations. After a deployment or restart, verify the Router health path, container status, and the SQLite file named by the required `SQLITE_PATH` inside the container.

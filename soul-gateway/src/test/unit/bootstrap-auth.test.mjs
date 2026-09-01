@@ -27,6 +27,7 @@ describe('bootstrap auth environment', () => {
                 PORT: '0',
                 HOST: '127.0.0.1',
                 DATA_DIR: dir,
+                CREDENTIALS_DIR: join(dir, 'credentials'),
                 SQLITE_PATH: join(dir, 'soul-gateway.sqlite3'),
                 ENCRYPTION_KEY: '8'.repeat(64),
                 API_KEY_HASH_PEPPER: 'test-pepper',

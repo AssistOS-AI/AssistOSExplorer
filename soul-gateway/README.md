@@ -24,13 +24,16 @@ ploinky start soul-gateway
 
 The manifest runs `bash /code/install.sh` during installation and `bash /code/startup.sh` as the agent process. The default listener is `0.0.0.0:7000` inside the agent container, and persistent state is mounted at `/data` with SQLite at `/data/soul-gateway.sqlite3`.
 
-For a local development process with all runtime dependencies available, set the required Ploinky authentication variables and run:
+For a local development process with all runtime dependencies available, set the required Ploinky authentication variables and explicitly place all private persistence beneath the workspace `.data/soul-gateway` directory before running:
 
 ```bash
-npm start
+DATA_DIR=/absolute/workspace/.data/soul-gateway \
+CREDENTIALS_DIR=/absolute/workspace/.data/soul-gateway/credentials \
+SQLITE_PATH=/absolute/workspace/.data/soul-gateway/soul-gateway.sqlite3 \
+  npm start
 ```
 
-Use `npm run dev` to restart the Node process when source files change.
+Use the same explicit persistence variables with `npm run dev` to restart the Node process when source files change. Direct starts fail closed when any of the three variables is absent; they do not select a relative data directory.
 
 ## Configuration
 
@@ -40,9 +43,9 @@ The common runtime settings are:
 | --- | --- | --- |
 | `PORT` | `7000` in the agent manifest | Internal HTTP port. |
 | `HOST` | `0.0.0.0` in `startup.sh` | Internal bind address. |
-| `SQLITE_PATH` | `/data/soul-gateway.sqlite3` in the agent manifest | Persistent embedded database. |
-| `DATA_DIR` | `/data` in `startup.sh` | Persistent files, including the generated encryption key. |
-| `CREDENTIALS_DIR` | `/data/credentials` in `startup.sh` | Encrypted provider OAuth credential files. |
+| `SQLITE_PATH` | `/data/soul-gateway.sqlite3` in the agent manifest; required explicitly for direct starts | Persistent embedded database. |
+| `DATA_DIR` | `/data` in the agent manifest; required explicitly for direct starts | Persistent files, including the generated encryption key. |
+| `CREDENTIALS_DIR` | `/data/credentials` in the agent manifest; required explicitly for direct starts | Encrypted provider OAuth credential files. |
 | `LLM_DEFAULT_AGENT` | `default-local-llm` in the manifest | Discovered Ploinky agent used to seed standard tiers. |
 | `LLM_DEFAULT_TIERS` | `fast,plan,deep` | Comma-separated compatibility tier aliases. |
 | `ALLOW_UNAUTHENTICATED` | `false` | Development-only public API authentication bypass. |

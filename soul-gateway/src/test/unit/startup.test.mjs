@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 
 const STARTUP_SCRIPT = new URL('../../../startup.sh', import.meta.url);
+const INSTALL_SCRIPT = new URL('../../../install.sh', import.meta.url);
 
 async function writeFakeGateway(root, marker, options = {}) {
     await mkdir(join(root, 'src'), { recursive: true });
@@ -30,8 +31,12 @@ async function writeFakeDependency(nodeModulesDir, name) {
 }
 
 function runStartup(env) {
+    return runScript(STARTUP_SCRIPT, env);
+}
+
+function runScript(script, env) {
     return new Promise((resolve) => {
-        const child = spawn('bash', [STARTUP_SCRIPT.pathname], {
+        const child = spawn('bash', [script.pathname], {
             env: { ...process.env, ...env },
             stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -44,6 +49,21 @@ function runStartup(env) {
 }
 
 describe('startup.sh', () => {
+    it('fails closed for whitespace-only persistence paths', async () => {
+        const valid = {
+            DATA_DIR: '/tmp/soul-data',
+            CREDENTIALS_DIR: '/tmp/soul-data/credentials',
+            SQLITE_PATH: '/tmp/soul-data/gateway.sqlite3',
+        };
+        for (const name of ['DATA_DIR', 'CREDENTIALS_DIR', 'SQLITE_PATH']) {
+            for (const whitespace of [' \t ', '\u00a0', '\u2003']) {
+                const result = await runStartup({ ...valid, [name]: whitespace });
+                assert.notEqual(result.code, 0);
+                assert.match(`${result.stdout}\n${result.stderr}`, new RegExp(`${name} is required and must not be blank`));
+            }
+        }
+    });
+
     it('runs mounted CODE_DIR source even when image source exists', async () => {
         const dir = await mkdtemp(join(tmpdir(), 'soul-startup-mounted-'));
         try {
@@ -58,6 +78,7 @@ describe('startup.sh', () => {
                 SOUL_GATEWAY_IMAGE_APP_DIR: imageDir,
                 CODE_DIR: codeDir,
                 DATA_DIR: dataDir,
+                CREDENTIALS_DIR: join(dataDir, 'credentials'),
                 SQLITE_PATH: join(dataDir, 'gateway.sqlite3'),
                 STARTUP_MARKER_OUTPUT: markerPath,
             });
@@ -86,6 +107,7 @@ describe('startup.sh', () => {
             const result = await runStartup({
                 CODE_DIR: codeDir,
                 DATA_DIR: dataDir,
+                CREDENTIALS_DIR: join(dataDir, 'credentials'),
                 SQLITE_PATH: join(dataDir, 'gateway.sqlite3'),
                 STARTUP_MARKER_OUTPUT: markerPath,
             });
@@ -116,6 +138,7 @@ describe('startup.sh', () => {
             const result = await runStartup({
                 CODE_DIR: codeDir,
                 DATA_DIR: dataDir,
+                CREDENTIALS_DIR: join(dataDir, 'credentials'),
                 SQLITE_PATH: join(dataDir, 'gateway.sqlite3'),
                 STARTUP_MARKER_OUTPUT: markerPath,
                 AGENT_NODE_MODULES_DIR: agentNodeModulesDir,
@@ -133,6 +156,22 @@ describe('startup.sh', () => {
             );
         } finally {
             await rm(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+describe('install.sh persistence admission', () => {
+    it('fails closed for whitespace-only persistence directories', async () => {
+        const valid = {
+            DATA_DIR: '/tmp/soul-data',
+            CREDENTIALS_DIR: '/tmp/soul-data/credentials',
+        };
+        for (const name of ['DATA_DIR', 'CREDENTIALS_DIR']) {
+            for (const whitespace of [' \t ', '\u00a0', '\u2003']) {
+                const result = await runScript(INSTALL_SCRIPT, { ...valid, [name]: whitespace });
+                assert.notEqual(result.code, 0);
+                assert.match(`${result.stdout}\n${result.stderr}`, new RegExp(`${name} is required and must not be blank`));
+            }
         }
     });
 });

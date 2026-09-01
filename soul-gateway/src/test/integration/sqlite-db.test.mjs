@@ -6,6 +6,17 @@ import { tmpdir } from 'node:os';
 import { openDatabase, initializeSchema } from '../../db/sqlite-db.mjs';
 
 describe('sqlite database', () => {
+    it('fails closed without an explicit SQLite path', async () => {
+        await assert.rejects(
+            () => openDatabase({}),
+            /SQLITE_PATH is required/,
+        );
+        await assert.rejects(
+            () => openDatabase({ SQLITE_PATH: '' }),
+            /SQLITE_PATH is required/,
+        );
+    });
+
     it('opens a fresh database, initializes schema, and returns row results', async () => {
         const dir = await mkdtemp(join(tmpdir(), 'soul-sqlite-'));
         try {

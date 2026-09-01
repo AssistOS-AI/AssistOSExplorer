@@ -11,7 +11,7 @@ Soul Gateway uses embedded SQLite as the authoritative persistent configuration 
 
 ### SQLite ownership
 
-The service must open the file named by <code>SQLITE_PATH</code> and initialize it with <code>src/db/schema/sqlite-current.sql</code>. The Ploinky deployment must persist the database under the mounted data directory. Schema initialization must be idempotent and must fail startup when required tables or constraints cannot be established.
+The service must open the file named by <code>SQLITE_PATH</code> and initialize it with <code>src/db/schema/sqlite-current.sql</code>. <code>SQLITE_PATH</code>, <code>DATA_DIR</code>, and <code>CREDENTIALS_DIR</code> are required configuration; a direct start without any one of them must fail closed instead of selecting a relative data directory. The Ploinky deployment supplies all three beneath the mounted <code>/data</code> directory. Schema initialization must be idempotent and must fail startup when required tables or constraints cannot be established.
 
 The schema must preserve these data families: provider and provider-account configuration; direct and cascade models, aliases, and children; API-key subjects and limits; middleware definitions and bindings; blacklist rules and model cooldowns; sessions and session state; audit and observability records. Foreign keys, unique indexes, soft-delete rules, and JSON validity checks are part of the data contract.
 

@@ -49,7 +49,10 @@ const TXN_CONTROL_RE = /^(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b/i;
 const ROW_RETURNING_PREFIX_RE = /^(SELECT|WITH|PRAGMA|VALUES|EXPLAIN)\b/i;
 
 export async function openDatabase(env) {
-    const sqlitePath = env.SQLITE_PATH || './data/soul-gateway.sqlite3';
+    const sqlitePath = env?.SQLITE_PATH;
+    if (typeof sqlitePath !== 'string' || sqlitePath.length === 0) {
+        throw new Error('SQLITE_PATH is required; no implicit database path is permitted');
+    }
     const isNewDatabase = await databaseFileIsMissing(sqlitePath);
     await mkdir(dirname(sqlitePath), { recursive: true });
     const raw = new DatabaseSync(sqlitePath, { timeout: 5000 });

@@ -9,7 +9,7 @@ export function readEnv(processEnv = process.env) {
         HOST: str(processEnv.HOST, '127.0.0.1'),
 
         // Database (embedded SQLite)
-        SQLITE_PATH: str(processEnv.SQLITE_PATH, './data/soul-gateway.sqlite3'),
+        SQLITE_PATH: requiredStr(processEnv.SQLITE_PATH, 'SQLITE_PATH'),
 
         // Security
         ENCRYPTION_KEY: str(processEnv.ENCRYPTION_KEY, null),
@@ -21,8 +21,8 @@ export function readEnv(processEnv = process.env) {
         DASHBOARD_PASSWORD: str(processEnv.DASHBOARD_PASSWORD, null),
 
         // Paths
-        DATA_DIR: str(processEnv.DATA_DIR, './data'),
-        CREDENTIALS_DIR: str(processEnv.CREDENTIALS_DIR, './data/credentials'),
+        DATA_DIR: requiredStr(processEnv.DATA_DIR, 'DATA_DIR'),
+        CREDENTIALS_DIR: requiredStr(processEnv.CREDENTIALS_DIR, 'CREDENTIALS_DIR'),
         EXTENSIONS_DIR: str(processEnv.EXTENSIONS_DIR, './extensions'),
         DASHBOARD_STATIC_DIR: str(
             processEnv.DASHBOARD_STATIC_DIR,
@@ -242,6 +242,16 @@ export function assertSignedSubjectAuthConfig(config, { log = console } = {}) {
 
 function str(raw, fallback) {
     if (raw === undefined || raw === '') return fallback;
+    return String(raw);
+}
+
+function requiredStr(raw, name) {
+    if (raw === undefined || String(raw).trim() === '') {
+        throw new Error(
+            `${name} is required; Ploinky-managed starts supply /data paths, ` +
+                'and direct starts must explicitly select workspace .data storage'
+        );
+    }
     return String(raw);
 }
 

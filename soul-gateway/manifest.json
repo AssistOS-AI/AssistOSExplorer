@@ -4,7 +4,7 @@
     "cli": "bash /code/cli.sh",
     "about": "Soul Gateway — Ploinky-managed LLM proxy with Soul Family policies, full content logging, and AchillesIDE settings",
     "volumes": {
-        ".ploinky/data/soul-gateway": "/data"
+        ".data/soul-gateway": "/data"
     },
     "readiness": {
         "protocol": "tcp"
@@ -54,6 +54,16 @@
                     "required": false,
                     "default": "/data/soul-gateway.sqlite3",
                     "description": "SQLite database path inside the Soul Gateway agent container"
+                },
+                "DATA_DIR": {
+                    "required": false,
+                    "default": "/data",
+                    "description": "Persistent data directory inside the Soul Gateway agent container"
+                },
+                "CREDENTIALS_DIR": {
+                    "required": false,
+                    "default": "/data/credentials",
+                    "description": "Encrypted provider credential directory inside the Soul Gateway agent container"
                 },
                 "ENCRYPTION_KEY": {
                     "required": false,
