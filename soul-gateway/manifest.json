@@ -1,5 +1,5 @@
 {
-    "container": "docker.io/assistos/ploinky-node:24-bookworm-tools",
+    "container": "docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669",
     "agent": "bash /code/startup.sh",
     "cli": "bash /code/cli.sh",
     "about": "Soul Gateway — Ploinky-managed LLM proxy with Soul Family policies, full content logging, and AchillesIDE settings",

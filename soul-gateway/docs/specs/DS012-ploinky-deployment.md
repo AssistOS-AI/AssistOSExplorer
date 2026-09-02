@@ -11,6 +11,8 @@ Soul Gateway runs as one Ploinky-managed agent. Ploinky supplies the container r
 
 ### Agent manifest
 
+The manifest must pin the shared Ploinky Node image by digest. It provides Node 24 on Debian Trixie, the built-in SQLite API, and a maintained Git/libcurl stack. The image must pass native amd64 and arm64 Git/npm transport checks before adoption, while Git retains its default HTTP negotiation.
+
 <code>manifest.json</code> must select the declared Ploinky Node image, run <code>bash /code/install.sh</code> for installation, run <code>bash /code/startup.sh</code> as the agent process, and expose <code>bash /code/cli.sh</code> as the agent CLI. The persistent volume must map the workspace <code>.data/soul-gateway</code> directory to <code>/data</code>.
 
 The agent must listen on port <code>7000</code> by default. The manifest must supply <code>DATA_DIR=/data</code>, <code>CREDENTIALS_DIR=/data/credentials</code>, and <code>SQLITE_PATH=/data/soul-gateway.sqlite3</code>. <code>startup.sh</code> must bind <code>HOST=0.0.0.0</code> unless configured otherwise and start <code>src/index.mjs</code> from the mounted source tree. Direct starts must explicitly configure all three persistence paths and must not fall back to a relative data directory.

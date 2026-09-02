@@ -16,6 +16,7 @@
     <p>Soul Gateway has one production deployment model: a Ploinky-managed agent behind the Ploinky Router. The manifest selects the Node 24 agent image, mounts persistent data at <code>/data</code>, starts <code>startup.sh</code>, and publishes inference, management, and health paths with different access rules.</p>
 
     <h2>Startup contract</h2>
+    <p>The manifest pins the shared Ploinky Node image by digest. Node 24 on Debian Trixie supplies the built-in SQLite API and a maintained Git/libcurl stack; native amd64 and arm64 Git/npm checks gate image adoption.</p>
     <p><code>install.sh</code> creates persistent data and credential directories, connects the Ploinky-prepared dependency cache when needed, optionally installs Chromium for headless search, and creates <code>DATA_DIR/encryption.key</code> with owner-only permissions. <code>startup.sh</code> repeats dependency and browser readiness checks, exports the data paths and listener values, and runs <code>node src/index.mjs</code>.</p>
     <p>The application validates configuration, fails closed when required <a href="wiki.html#definition-signed-subject-key">signed-subject authentication</a> values are absent, initializes SQLite, installs catalogs and services, reconciles Ploinky agents and provider models, seeds standard tiers on a new database, loads the runtime snapshot, starts maintenance jobs, and registers HTTP and WebSocket routes.</p>
 
