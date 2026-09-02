@@ -7,8 +7,8 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { MainAgent, discoverSkillsFromRoot } from '../achilles-cli/node_modules/achillesAgentLib/MainAgent/index.mjs';
-import { OrchestratorSkillsSubsystem } from '../achilles-cli/node_modules/achillesAgentLib/OrchestratorSkillsSubsystem/index.mjs';
+import { MainAgent, discoverSkillsFromRoot } from '../../achillesAgentLib/MainAgent/index.mjs';
+import { OrchestratorSkillsSubsystem } from '../../achillesAgentLib/OrchestratorSkillsSubsystem/index.mjs';
 
 function logger() {
     return {

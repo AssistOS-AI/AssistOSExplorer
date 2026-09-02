@@ -75,6 +75,58 @@ describe('repoManager achillesAgentLib links', () => {
         assert.equal(fs.lstatSync(realPackageDir).isSymbolicLink(), false);
     });
 
+    it('keeps the exact runtime dependency link on repeated repair', () => {
+        const repoPath = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoA');
+        fs.mkdirSync(repoPath, { recursive: true });
+        assert.equal(ensureAgentLibLinkForRepo(repoPath).status, 'linked');
+        assert.equal(ensureAgentLibLinkForRepo(repoPath).status, 'exists');
+    });
+
+    for (const dangling of [false, true]) {
+        it(`rejects a ${dangling ? 'dangling ' : ''}node_modules symlink before repository repair`, () => {
+            const repoPath = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoA');
+            const outside = path.join(tempDir, '.ploinky', 'unexpected-state');
+            fs.mkdirSync(repoPath, { recursive: true });
+            fs.mkdirSync(outside, { recursive: true });
+            fs.symlinkSync(dangling ? path.join(outside, 'missing') : outside, path.join(repoPath, 'node_modules'));
+
+            for (const repair of [
+                () => ensureAgentLibLinkForRepo(repoPath),
+                () => ensureAgentLibLinksForRepos(tempDir),
+                () => addRepo('https://example.invalid/RepoA.git', 'RepoA', tempDir),
+            ]) {
+                assert.throws(repair, { code: 'ACHILLES_PRIVATE_PATH_UNSAFE' });
+            }
+            assert.deepEqual(fs.readdirSync(outside), []);
+        });
+    }
+
+    it('rejects a replaced dependency parent without repairing the link through it', () => {
+        const repoPath = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoA');
+        fs.mkdirSync(repoPath, { recursive: true });
+        ensureAgentLibLinkForRepo(repoPath);
+        const outside = path.join(tempDir, 'moved-dependencies');
+        fs.renameSync(path.join(repoPath, 'node_modules'), outside);
+        fs.symlinkSync(outside, path.join(repoPath, 'node_modules'));
+        const before = fs.readlinkSync(path.join(outside, 'achillesAgentLib'));
+
+        assert.throws(() => ensureAgentLibLinkForRepo(repoPath), { code: 'ACHILLES_PRIVATE_PATH_UNSAFE' });
+        assert.equal(fs.readlinkSync(path.join(outside, 'achillesAgentLib')), before);
+        assert.deepEqual(fs.readdirSync(outside), ['achillesAgentLib']);
+    });
+
+    it('limits direct repair to real managed repository directories', () => {
+        const outside = path.join(tempDir, 'outside-repo');
+        const managedRepo = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoA');
+        fs.mkdirSync(outside);
+        fs.mkdirSync(path.dirname(managedRepo), { recursive: true });
+        fs.symlinkSync(outside, managedRepo);
+
+        assert.throws(() => ensureAgentLibLinkForRepo(outside), { code: 'ACHILLES_PRIVATE_PATH_UNSAFE' });
+        assert.throws(() => ensureAgentLibLinkForRepo(managedRepo), { code: 'ACHILLES_PRIVATE_PATH_UNSAFE' });
+        assert.deepEqual(fs.readdirSync(outside), []);
+    });
+
     it('repairs all cloned repos under .data/achilles-cli/repos', () => {
         fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoA'), { recursive: true });
         fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoB'), { recursive: true });

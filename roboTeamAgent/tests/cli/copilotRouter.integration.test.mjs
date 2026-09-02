@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MainAgent, discoverSkillsFromRoot } from '../achilles-cli/node_modules/achillesAgentLib/MainAgent/index.mjs';
+import { MainAgent, discoverSkillsFromRoot } from '../../achillesAgentLib/MainAgent/index.mjs';
 import {
     BACKEND as OPEN_INTERPRETER_BACKEND,
     LIST_TOOL,
@@ -15,6 +15,7 @@ import {
     SUBMIT_TOOL,
 } from '../achilles-cli/src/skills/launch-open-interpreter/src/index.mjs';
 import { collectPloinkyRepoSkillRoots } from '../achilles-cli/src/index.mjs';
+import { buildOrchestratorSystemPrompt } from '../achilles-cli/src/prompts/orchestrator-prompt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BUILTIN_SKILLS_ROOT = path.join(__dirname, '../achilles-cli/src/skills');
@@ -52,60 +53,14 @@ function registerSkillRoot(agent, skillRoot, isInternal = true) {
     agent._refreshOrchestratedSkillIndex?.();
 }
 
-function hasProviderLikeToken(promptText) {
-    return /(^|\s)@[a-z][a-z0-9_-]*(?=\s|$|[.,:;!?])/i.test(String(promptText || ''));
-}
-
-function isWebSearchPrompt(promptText) {
-    const text = String(promptText || '').toLowerCase();
-    if (hasProviderLikeToken(text)) {
-        return false;
-    }
-    if (isBrowserUsePrompt(text)) {
-        return false;
-    }
-    if (/\b(memory|prior work|previous discussion|discussed)\b/.test(text)) {
-        return false;
-    }
-    return /\b(search online|look up|latest|current|recent|news|web lookup|pricing)\b/.test(text);
-}
-
-function isBrowserUsePrompt(promptText) {
-    const text = String(promptText || '').toLowerCase();
-    if (hasProviderLikeToken(text)) {
-        return false;
-    }
-    return /\b(chatgpt|gemini)\b/.test(text)
-        && /\b(use|ask|browser|login|log in|oauth|account)\b/.test(text);
-}
-
-function isExecutionPrompt(promptText) {
-    const text = String(promptText || '').toLowerCase();
-    if (hasProviderLikeToken(text)) {
-        return false;
-    }
-    if (/\bhow\s+(do|can|could)\s+i\b/.test(text) || /\bhow\s+i\s+(do|can|could)\b/.test(text)) {
-        return false;
-    }
-    return /\b(run|execute|test|debug|build|benchmark|empirically check)\b/.test(text);
-}
-
-function installDeterministicCopilotLoop(agent, loopCalls) {
+// The model supplies a tool decision; these tests verify dispatch and context,
+// not the natural-language routing policy of the retired copilot-router skill.
+function installDeterministicCopilotLoop(agent, loopCalls, selectedTool = null) {
     agent.llmAgent.startLoopAgentSession = async (tools, promptText, options = {}) => {
-        assert.ok(tools['launch-open-interpreter'], 'copilot-router should expose launch-open-interpreter');
-        assert.ok(tools['launch-web-search'], 'copilot-router should expose launch-web-search');
-        assert.match(options.systemPrompt, /Use `launch-open-interpreter`/);
-        assert.match(options.systemPrompt, /Rule order is precedence/);
-        assert.match(options.systemPrompt, /launch-web-search/);
-
-        let selectedTool = null;
-        if (isBrowserUsePrompt(promptText) && tools['launch-browser-use']) {
-            selectedTool = 'launch-browser-use';
-        } else if (isWebSearchPrompt(promptText)) {
-            selectedTool = 'launch-web-search';
-        } else if (isExecutionPrompt(promptText)) {
-            selectedTool = 'launch-open-interpreter';
-        }
+        assert.ok(tools['launch-open-interpreter'], 'MainAgent should expose the registered launcher');
+        assert.ok(tools['launch-web-search'], 'MainAgent should expose the registered launcher');
+        assert.equal(tools['copilot-router'], undefined);
+        assert.equal(options.systemPrompt, buildOrchestratorSystemPrompt());
 
         let lastResult = 'Answered directly without launching an external provider.';
         if (selectedTool) {
@@ -143,7 +98,7 @@ function createRouterAgent(options = {}) {
         }
     }
     const loopCalls = [];
-    installDeterministicCopilotLoop(agent, loopCalls);
+    installDeterministicCopilotLoop(agent, loopCalls, options.selectedTool);
     return { agent, loopCalls, tempDir };
 }
 
@@ -315,7 +270,7 @@ function createWebchatContext({ workingDir, callAgentTool }) {
     };
 }
 
-describe('copilot-router launcher integration', () => {
+describe('MainAgent Copilot launcher integration', () => {
     const tempDirs = [];
 
     afterEach(() => {
@@ -324,8 +279,8 @@ describe('copilot-router launcher integration', () => {
         }
     });
 
-    it('routes execution prompts to the Open Interpreter launcher and submits through Copilot Provider Relay', async () => {
-        const { agent, loopCalls, tempDir } = createRouterAgent();
+    it('dispatches a model-selected Open Interpreter launcher through Copilot Provider Relay', async () => {
+        const { agent, loopCalls, tempDir } = createRouterAgent({ selectedTool: 'launch-open-interpreter' });
         tempDirs.push(tempDir);
         const mcpCalls = [];
         const context = createWebchatContext({
@@ -355,14 +310,13 @@ describe('copilot-router launcher integration', () => {
             },
         });
 
-        const result = await agent.executeSkill(
-            'copilot-router',
+        const result = await agent.executePrompt(
             'Build and test the sample project.',
-            { context, model: 'plan' }
+            { context, model: 'plan', systemPrompt: buildOrchestratorSystemPrompt() }
         );
 
-        assert.match(result.skill, /copilot-router/);
-        assert.equal(result.session, 'loop');
+        assert.equal(result.status, 'completed');
+        assert.equal(result.result, loopCalls[0].result);
         assert.equal(loopCalls.length, 1);
         assert.equal(loopCalls[0].selectedTool, 'launch-open-interpreter');
         assert.deepEqual(mcpCalls.map((call) => [call.agentName, call.toolName]), [
@@ -384,11 +338,12 @@ describe('copilot-router launcher integration', () => {
         assert.equal(launcherResult.result.diagnostics.providerAvailability, 'active');
     });
 
-    it('routes online/current prompts to a deployed Web Search launcher and submits through Copilot Provider Relay', async () => {
+    it('dispatches a model-selected deployed Web Search launcher through Copilot Provider Relay', async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-router-integration-'));
         writeDeployedWebSearchLauncher(tempDir);
         const { agent, loopCalls } = createRouterAgent({
             tempDir,
+            selectedTool: 'launch-web-search',
             registerPloinkyRepoSkillRoots: true,
         });
         tempDirs.push(tempDir);
@@ -420,14 +375,13 @@ describe('copilot-router launcher integration', () => {
             },
         });
 
-        const result = await agent.executeSkill(
-            'copilot-router',
+        const result = await agent.executePrompt(
             'Search online for the latest release notes.',
-            { context, model: 'plan' }
+            { context, model: 'plan', systemPrompt: buildOrchestratorSystemPrompt() }
         );
 
-        assert.match(result.skill, /copilot-router/);
-        assert.equal(result.session, 'loop');
+        assert.equal(result.status, 'completed');
+        assert.equal(result.result, loopCalls[0].result);
         assert.equal(loopCalls.length, 1);
         assert.equal(loopCalls[0].selectedTool, 'launch-web-search');
         assert.deepEqual(mcpCalls.map((call) => [call.agentName, call.toolName]), [
@@ -450,12 +404,13 @@ describe('copilot-router launcher integration', () => {
         assert.equal(launcherResult.result.result_text, 'Node.js latest release date is May 14, 2026.');
     });
 
-    it('routes logged-in browser service prompts to Browser Use before Web Search', async () => {
+    it('dispatches a model-selected Browser Use launcher without also launching Web Search', async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-router-integration-'));
         writeDeployedBrowserUseLauncher(tempDir);
         writeDeployedWebSearchLauncher(tempDir);
         const { agent, loopCalls } = createRouterAgent({
             tempDir,
+            selectedTool: 'launch-browser-use',
             registerPloinkyRepoSkillRoots: true,
         });
         tempDirs.push(tempDir);
@@ -489,14 +444,13 @@ describe('copilot-router launcher integration', () => {
             },
         });
 
-        const result = await agent.executeSkill(
-            'copilot-router',
+        const result = await agent.executePrompt(
             'Use Gemini in the browser to search for the latest OpenAI model news.',
-            { context, model: 'plan' }
+            { context, model: 'plan', systemPrompt: buildOrchestratorSystemPrompt() }
         );
 
-        assert.match(result.skill, /copilot-router/);
-        assert.equal(result.session, 'loop');
+        assert.equal(result.status, 'completed');
+        assert.equal(result.result, loopCalls[0].result);
         assert.equal(loopCalls.length, 1);
         assert.equal(loopCalls[0].selectedTool, 'launch-browser-use');
         assert.deepEqual(mcpCalls.map((call) => [call.agentName, call.toolName]), [
@@ -519,7 +473,7 @@ describe('copilot-router launcher integration', () => {
         assert.equal(launcherResult.result.requires_user_action, true);
     });
 
-    it('does not treat provider-looking @web-search text as a launcher command', async () => {
+    it('passes provider-looking @web-search text to the model without implicit launcher dispatch', async () => {
         const { agent, loopCalls, tempDir } = createRouterAgent();
         tempDirs.push(tempDir);
         const mcpCalls = [];
@@ -531,14 +485,13 @@ describe('copilot-router launcher integration', () => {
             },
         });
 
-        const result = await agent.executeSkill(
-            'copilot-router',
+        const result = await agent.executePrompt(
             '@web-search latest Node.js release',
-            { context, model: 'plan' }
+            { context, model: 'plan', systemPrompt: buildOrchestratorSystemPrompt() }
         );
 
-        assert.match(result.skill, /copilot-router/);
-        assert.equal(result.session, 'loop');
+        assert.equal(result.status, 'completed');
+        assert.equal(loopCalls[0].prompt, '@web-search latest Node.js release');
         assert.equal(result.result, 'Answered directly without launching an external provider.');
         assert.equal(loopCalls.length, 1);
         assert.equal(loopCalls[0].selectedTool, null);
@@ -546,7 +499,7 @@ describe('copilot-router launcher integration', () => {
         assert.equal(mcpCalls.length, 0);
     });
 
-    it('does not launch a provider for how-to execution questions', async () => {
+    it('allows the model to answer an explanatory prompt without launching a provider', async () => {
         const { agent, loopCalls, tempDir } = createRouterAgent();
         tempDirs.push(tempDir);
         const mcpCalls = [];
@@ -558,14 +511,13 @@ describe('copilot-router launcher integration', () => {
             },
         });
 
-        const result = await agent.executeSkill(
-            'copilot-router',
+        const result = await agent.executePrompt(
             'Explain how I could run this script locally.',
-            { context, model: 'plan' }
+            { context, model: 'plan', systemPrompt: buildOrchestratorSystemPrompt() }
         );
 
-        assert.match(result.skill, /copilot-router/);
-        assert.equal(result.session, 'loop');
+        assert.equal(result.status, 'completed');
+        assert.equal(loopCalls[0].prompt, 'Explain how I could run this script locally.');
         assert.equal(result.result, 'Answered directly without launching an external provider.');
         assert.equal(loopCalls.length, 1);
         assert.equal(loopCalls[0].selectedTool, null);

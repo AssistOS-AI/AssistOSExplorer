@@ -37,7 +37,7 @@ describe('skillInputParser', () => {
     it('rejects JSON input', () => {
         const parsed = parseSingleArgInput('{"skillName":"demo"}', 'read-skill <skillName>');
 
-        assert.match(parsed.error, /JSON input is no longer supported/);
+        assert.match(parsed.error, /JSON input is not supported/);
     });
 
     it('requires block to be the final argument', () => {

@@ -51,6 +51,6 @@ describe('write-specs positional input', () => {
             promptText: '{"skillName":"demo-skill","content":"Return hello."}',
         });
 
-        assert.match(result, /JSON input is no longer supported/);
+        assert.match(result, /JSON input is not supported/);
     });
 });

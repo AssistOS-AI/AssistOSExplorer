@@ -270,7 +270,7 @@ describe('write-skill module', () => {
         const mockAgent = createMockAgent({ startDir: tempDir });
         const input = JSON.stringify({ skillName: 'Test', fileName: 'cskill.md', content: 'x' });
         const result = await action({ mainAgent: mockAgent, promptText: input });
-        assert.ok(result.includes('JSON input is no longer supported'), 'Should reject JSON');
+        assert.ok(result.includes('JSON input is not supported'), 'Should reject JSON');
     });
 });
 

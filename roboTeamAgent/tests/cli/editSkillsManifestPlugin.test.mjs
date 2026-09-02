@@ -1,64 +1,77 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-    buildSkillsManifestPath,
-    isMissingManifestError,
-    PRECONFIGURED_SKILL_REPOSITORIES,
-    parseSkillsManifest,
-    serializeSkillsManifest,
-    validateRepositoryUrl
-} from '../achilles-cli/IDE-plugins/edit-skills-manifest/skills-manifest-utils.mjs';
+    executeMenuAction,
+    getMenuItems,
+} from '../achilles-cli/IDE-plugins/achilles-cli-menu-contributions/menu-contributions.js';
 
-test('skills manifest utilities parse and serialize repository arrays', () => {
-    const repositories = parseSkillsManifest(JSON.stringify([
-        ' https://github.com/AssistOS-AI/AchillesCopilotBasicSkills.git ',
-        'git@github.com:AssistOS-AI/private-skills.git'
-    ]));
+const agentRoot = fileURLToPath(new URL('../achilles-cli/', import.meta.url));
+const pluginsRoot = path.join(agentRoot, 'IDE-plugins');
 
-    assert.deepEqual(repositories, [
-        'https://github.com/AssistOS-AI/AchillesCopilotBasicSkills.git',
-        'git@github.com:AssistOS-AI/private-skills.git'
-    ]);
-    assert.equal(
-        serializeSkillsManifest(repositories),
-        '[\n  "https://github.com/AssistOS-AI/AchillesCopilotBasicSkills.git",\n  "git@github.com:AssistOS-AI/private-skills.git"\n]\n'
-    );
+// The editor was removed. DS010's supported interface selects a workspace
+// through Open Copilot here; it does not create a skills manifest or task.
+test('the retired skills manifest editor is absent from the agent and plugin catalog', () => {
+    assert.equal(fs.existsSync(path.join(pluginsRoot, 'edit-skills-manifest')), false);
+    const manifest = JSON.parse(fs.readFileSync(path.join(agentRoot, 'manifest.json'), 'utf8'));
+    assert.doesNotMatch(JSON.stringify(manifest), /edit-skills-manifest|ploinky-skills-manifest/);
 });
 
-test('skills manifest utilities reject invalid manifest shapes', () => {
-    assert.throws(() => parseSkillsManifest('{"repo":"https://example.test/repo.git"}'), /expected a JSON array/);
-    assert.throws(() => parseSkillsManifest('[42]'), /must be a string/);
-    assert.throws(() => parseSkillsManifest('[""]'), /is empty/);
+test('the supported directory action replaces editor-specific menu actions', async () => {
+    const context = { isDirectory: true, selectedFsPath: '/workspace/project' };
+    const items = await getMenuItems({ context, plugin: { icon: '/copilot.svg' } });
+    assert.deepEqual(items, [{
+        id: 'achilles-cli:open-copilot-here',
+        label: 'Open Copilot here',
+        icon: '/copilot.svg',
+        action: 'open-copilot-here',
+    }]);
+    assert.deepEqual(await getMenuItems({ context: { ...context, isDirectory: false } }), []);
+    assert.deepEqual(await getMenuItems({ context: { ...context, selectedFsPath: '' } }), []);
 });
 
-test('skills manifest repository URL validation accepts git remotes and rejects duplicates', () => {
-    assert.deepEqual(
-        validateRepositoryUrl(' https://github.com/AssistOS-AI/AchillesCopilotBasicSkills.git ', []),
-        { ok: true, value: 'https://github.com/AssistOS-AI/AchillesCopilotBasicSkills.git' }
-    );
-    assert.equal(validateRepositoryUrl('', []).ok, false);
-    assert.equal(validateRepositoryUrl('not a url', []).ok, false);
-    assert.equal(
-        validateRepositoryUrl('git@github.com:AssistOS-AI/private-skills.git', ['git@github.com:AssistOS-AI/private-skills.git']).ok,
-        false
-    );
+test('opening Copilot selects context without creating a manifest or other workspace data', async (t) => {
+    const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-launch-boundary-'));
+    const originalWindow = globalThis.window;
+    const calls = [];
+    globalThis.window = { open: (...args) => calls.push(args) };
+    t.after(() => {
+        globalThis.window = originalWindow;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+    });
+    await executeMenuAction({
+        action: 'open-copilot-here',
+        context: { isDirectory: true, selectedFsPath: workingDir },
+    });
+    assert.deepEqual(calls, [[
+        `/webchat?agent=achilles-cli&dir=${encodeURIComponent(workingDir)}`,
+        '_blank',
+        'noopener,noreferrer',
+    ]]);
+    assert.deepEqual(fs.readdirSync(workingDir), []);
 });
 
-test('skills manifest path and missing-file detection are stable', () => {
-    assert.equal(
-        buildSkillsManifestPath('/workspace/project/'),
-        '/workspace/project/ploinky-skills-manifest.json'
-    );
-    assert.equal(isMissingManifestError(new Error('ENOENT: no such file or directory')), true);
-    assert.equal(isMissingManifestError(new Error('Invalid JSON')), false);
+test('the generic launch plugin does not handle the retired editor action', async (t) => {
+    const originalWindow = globalThis.window;
+    const calls = [];
+    globalThis.window = { open: (...args) => calls.push(args) };
+    t.after(() => { globalThis.window = originalWindow; });
+    await executeMenuAction({
+        action: 'edit-skills-manifest',
+        context: { isDirectory: true, selectedFsPath: '/workspace/project' },
+    });
+    assert.deepEqual(calls, []);
 });
 
-test('skills manifest plugin exposes the default suggested repository', () => {
-    assert.deepEqual(PRECONFIGURED_SKILL_REPOSITORIES, [
-        {
-            label: 'Achilles Copilot Basic Skills',
-            url: 'https://github.com/AssistOS-AI/AchillesCopilotBasicSkills.git'
-        }
-    ]);
+test('both supported plugin contributions expose generic labels without provider policy', () => {
+    for (const name of ['achilles-cli-menu-contributions', 'achilles-cli-tool-button']) {
+        const config = JSON.parse(fs.readFileSync(path.join(pluginsRoot, name, 'config.json'), 'utf8'));
+        assert.equal(config.id, 'achilles-cli-copilot');
+        assert.equal(config.label, 'Open Copilot here');
+        assert.deepEqual(config.dependencies, []);
+        assert.doesNotMatch(JSON.stringify(config), /edit-skills-manifest|provider|backend|mcpTool/);
+    }
 });

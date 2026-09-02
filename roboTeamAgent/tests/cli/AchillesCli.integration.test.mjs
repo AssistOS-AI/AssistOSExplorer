@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { MainAgent, discoverSkillsFromRoot } from '../achilles-cli/node_modules/achillesAgentLib/MainAgent/index.mjs';
+import { MainAgent, discoverSkillsFromRoot } from '../../achillesAgentLib/MainAgent/index.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const builtInSkillsDir = path.join(__dirname, '..', 'achilles-cli', 'src', 'skills');
