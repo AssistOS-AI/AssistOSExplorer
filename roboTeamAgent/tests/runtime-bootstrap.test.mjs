@@ -96,6 +96,7 @@ test('install hook verifies the runtime and prepares the persistent tool-cache r
     }
     assert.doesNotMatch(source, /command:codex/);
     assert.match(source, /ROBOTEAM_TOOL_CACHE_DIR/);
+    assert.match(source, /NODE_OPTIONS= npm --version/);
     for (const requiredPath of ['/opt/roboteam-runtime/storage.conf']) {
         assert.match(source, new RegExp(requiredPath.replaceAll('/', '\\/')));
     }

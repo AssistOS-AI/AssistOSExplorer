@@ -29,11 +29,25 @@ export function requestActor(req, internalToken) {
         const right = Buffer.from(internalToken);
         if (left.length === right.length && cryptoSafeEqual(left, right)) {
             const id = String(req?.headers?.['x-roboteam-user-id'] || '').trim();
-            return id ? { id, username: '', roles: [], internal: true } : null;
+            let roles = [];
+            try {
+                const parsed = JSON.parse(String(req?.headers?.['x-roboteam-user-roles'] || '[]'));
+                if (Array.isArray(parsed)) roles = parsed.map(String);
+            } catch {
+                roles = [];
+            }
+            return { id, username: '', roles, internal: true };
         }
     }
     const user = routerUser(req);
     return user ? { ...user, internal: false } : null;
+}
+
+export function isAdminActor(actor) {
+    const roles = Array.isArray(actor?.roles) ? actor.roles : [];
+    return roles.some((role) => String(role || '').trim().toLowerCase() === 'admin')
+        || String(actor?.username || '').trim().toLowerCase() === 'admin'
+        || String(actor?.id || '').trim().toLowerCase() === 'local:admin';
 }
 
 function cryptoSafeEqual(left, right) {

@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -9,11 +10,24 @@ import { ToolCache } from './tool-cache.mjs';
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
 const GUI_MODES = new Set(['desktop', 'browser']);
+const ALA_FAILURE_DETAIL_LIMIT = 4096;
+
+function alaFailureMessage(exit, output) {
+    const normalized = String(output || '').replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').trim();
+    const detail = normalized.length > ALA_FAILURE_DETAIL_LIMIT
+        ? `…${normalized.slice(-ALA_FAILURE_DETAIL_LIMIT)}`
+        : normalized;
+    return detail ? `ALA exited with ${exit}: ${detail}` : `ALA exited with ${exit}`;
+}
 
 function normalizeBasePath(value) {
     const raw = String(value || '/').trim();
     const leading = raw.startsWith('/') ? raw : `/${raw}`;
     return leading.endsWith('/') ? leading : `${leading}/`;
+}
+
+function robotSessionUrl(publicBasePath, robotId) {
+    return `${normalizeBasePath(publicBasePath)}api/robots/${robotId}/session/`;
 }
 
 function portIsOpen(port) {
@@ -34,6 +48,32 @@ async function waitForPort(port, timeoutMs = 90000) {
     throw new Error(`service on loopback port ${port} did not become ready`);
 }
 
+function httpServiceIsReady(port, requestPath) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+        };
+        const request = http.get({ host: '127.0.0.1', port, path: requestPath }, (response) => {
+            response.resume();
+            finish(true);
+        });
+        request.setTimeout(500, () => { request.destroy(); finish(false); });
+        request.once('error', () => finish(false));
+    });
+}
+
+async function waitForHttpService(port, requestPath, timeoutMs = 90000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (await httpServiceIsReady(port, requestPath)) return;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`HTTP service on loopback port ${port} did not become ready`);
+}
+
 function mappedPort(output) {
     const match = String(output || '').trim().match(/:(\d+)$/u);
     if (!match) throw new Error('could not resolve nested container port');
@@ -45,13 +85,13 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
     const containerName = `roboteam-${mode}-${robot.id}`;
-    const subfolder = `${normalizeBasePath(publicBasePath)}api/robots/${robot.id}/session/`;
+    const subfolder = robotSessionUrl(publicBasePath, robot.id);
     return {
         containerName,
         image: images[mode],
         subfolder,
         args: [
-            'run', '-d', '--ipc', 'private', '--shm-size', '1g', '--network', 'pasta',
+            'run', '-d', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777', '--network', 'pasta',
             '--name', containerName, '--label', MANAGED_LABEL,
             '--label', `io.assistos.roboteam.robot-id=${robot.id}`,
             '--label', `io.assistos.roboteam.mode=${mode}`,
@@ -61,7 +101,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
             ...(mode === 'browser' ? ['-e', 'CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility'] : []),
             ...(codexPath ? [
-                '-e', 'PATH=/opt/roboteam-codex/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                '-e', 'PATH=/opt/roboteam-codex/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                 '-e', 'CODEX_HOME=/config/.codex',
             ] : []),
             '-v', `${path.join(robotRoot, 'home')}:/config`,
@@ -78,7 +118,7 @@ export class RuntimeManager {
         this.dataDir = path.resolve(options.dataDir || '/data');
         this.publicBasePath = normalizeBasePath(options.publicBasePath);
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
-        this.alaCommand = options.alaCommand || '/code/node_modules/.bin/ala';
+        this.alaCommand = options.alaCommand || '/workspace/AdvancedLanguageAgent/bin/ala.mjs';
         this.workspaceRoot = path.resolve(options.workspaceRoot || '/workspace');
         this.hostWorkspaceRoot = options.hostWorkspaceRoot ? path.resolve(options.hostWorkspaceRoot) : null;
         this.maxActive = Math.max(1, Math.min(32, Number(options.maxActive) || 8));
@@ -145,16 +185,26 @@ export class RuntimeManager {
 
     activePort(robotId) { return this.sessions.get(robotId)?.sessionPort || null; }
 
-    async ensureContainer(robot, mode, cwdValue) {
+    async ensureContainer(robot, mode, cwdValue, options = {}) {
         return this._serialize(robot.id, async () => {
             const cwd = cwdValue
                 ? await this.resolveCwd(cwdValue)
                 : path.join(this.dataDir, 'robots', robot.id, 'workspace');
+            const codexHome = path.join(this.dataDir, 'robots', robot.id, 'home', '.codex');
+            await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
+            await fs.chmod(codexHome, 0o700);
             const existing = this.sessions.get(robot.id);
             if (existing) {
                 if (existing.mode !== mode) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
-                if (existing.cwd !== cwd) throw new Error('running robot container is mounted on a different cwd');
-                return existing;
+                if (existing.cwd === cwd) return existing;
+                const activeTask = this.taskStatus(robot.id);
+                const activeStates = ['queued', 'starting', 'running', 'stopping'];
+                if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
+                    throw new Error(`robot has an active ${activeTask.type} task; its container cwd cannot be changed`);
+                }
+                existing.state = 'stopping';
+                await this._podman(['rm', '-f', existing.containerName], 30000).catch(() => {});
+                this.sessions.delete(robot.id);
             }
             if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
             const activeTask = this.taskStatus(robot.id);
@@ -170,7 +220,10 @@ export class RuntimeManager {
                 await this._podman(plan.args, 10 * 60 * 1000);
                 session.sessionPort = mappedPort((await this._podman(['port', plan.containerName, '3000/tcp'])).stdout);
                 session.mcpPort = mappedPort((await this._podman(['port', plan.containerName, '8100/tcp'])).stdout);
-                await Promise.all([waitForPort(session.sessionPort), waitForPort(session.mcpPort)]);
+                await Promise.all([
+                    waitForPort(session.sessionPort),
+                    waitForHttpService(session.mcpPort, mode === 'desktop' ? '/health' : '/mcp'),
+                ]);
                 session.state = 'running';
                 return session;
             } catch (error) {
@@ -193,7 +246,12 @@ export class RuntimeManager {
     }
 
     _newTask(robot, type, request, trackLatest = true) {
-        const task = { taskId: crypto.randomUUID(), robotId: robot.id, type, state: 'queued', createdAt: new Date().toISOString(), request, output: '', error: null, child: null, cancelRequested: false };
+        const task = {
+            taskId: crypto.randomUUID(), robotId: robot.id, type, state: 'queued',
+            createdAt: new Date().toISOString(), request, output: '', error: null,
+            child: null, cancelRequested: false,
+            ...(GUI_MODES.has(type) ? { sessionUrl: robotSessionUrl(this.publicBasePath, robot.id) } : {}),
+        };
         this.tasks.set(task.taskId, task);
         if (trackLatest) this.latestTask.set(robot.id, task.taskId);
         return task;
@@ -207,7 +265,11 @@ export class RuntimeManager {
         if (type === 'simple' && session) throw new Error(`robot slot is occupied by its ${session.mode} container`);
         const task = this._newTask(robot, type, request);
         void this._runTask(robot, task);
-        return { taskId: task.taskId, state: task.state };
+        return {
+            taskId: task.taskId,
+            state: task.state,
+            ...(task.sessionUrl ? { sessionUrl: task.sessionUrl } : {}),
+        };
     }
 
     async _runTask(robot, task) {
@@ -222,7 +284,10 @@ export class RuntimeManager {
                 : Promise.resolve(null);
             let mcpAddress = null;
             if (GUI_MODES.has(task.type)) {
-                const [, session] = await Promise.all([codexPromise, this.ensureContainer(robot, task.type, cwd)]);
+                const [, session] = await Promise.all([
+                    codexPromise,
+                    this.ensureContainer(robot, task.type, cwd, { taskId: task.taskId }),
+                ]);
                 mcpAddress = `${task.type}=http://127.0.0.1:${session.mcpPort}/mcp`;
             } else {
                 await codexPromise;
@@ -230,6 +295,9 @@ export class RuntimeManager {
             if (task.cancelRequested) throw new Error('task was stopped');
             const robotHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             const runtimeDir = path.join(this.dataDir, 'robots', robot.id, 'runtime');
+            const codexHome = path.join(robotHome, '.codex');
+            await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
+            await fs.chmod(codexHome, 0o700);
             await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
             const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
             await fs.writeFile(taskFile, task.request.task, { mode: 0o600 });
@@ -248,7 +316,9 @@ export class RuntimeManager {
             child.stdout?.on('data', append); child.stderr?.on('data', append);
             await new Promise((resolve, reject) => {
                 child.once('error', reject);
-                child.once('close', (code, signal) => code === 0 ? resolve() : reject(new Error(`ALA exited with ${signal || code}`)));
+                child.once('close', (code, signal) => code === 0
+                    ? resolve()
+                    : reject(new Error(alaFailureMessage(signal || code, task.output))));
             });
             task.state = 'completed';
             task.completedAt = new Date().toISOString();
@@ -337,4 +407,4 @@ export class RuntimeManager {
     }
 }
 
-export const runtimeManagerInternals = { normalizeBasePath, MANAGED_LABEL };
+export const runtimeManagerInternals = { alaFailureMessage, httpServiceIsReady, normalizeBasePath, robotSessionUrl, MANAGED_LABEL };

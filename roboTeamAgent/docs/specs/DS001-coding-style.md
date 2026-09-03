@@ -20,7 +20,7 @@ Browser identity comes from Router-injected `x-ploinky-auth-info`. MCP commands 
 
 Inner Podman commands use argument vectors. Container operations target exact names and managed labels; broad pruning and public engine sockets are prohibited. Only the allowlisted `browser` and `desktop` modes select images.
 
-Runtime dependency preparation belongs in `server/tool-cache.mjs`. Cache updates must use unique staging directories, executable validation, immutable generations, and atomic descriptor replacement. Runtime code must accept injected cache and process implementations so tests never require network access or a real nested engine.
+Runtime dependency preparation belongs in `server/tool-cache.mjs`. Cache updates must use unique staging directories, executable validation, immutable generations, and atomic descriptor replacement. Commands for npm and cached host tools must use a copied environment with `NODE_OPTIONS` removed because Ploinky's symlink-preservation flags are runtime-loader policy, not package-manager policy. Runtime code must accept injected cache and process implementations so tests never require network access or a real nested engine.
 
 Tests use Node's built-in runner and temporary data roots. They cover owner isolation, validation, exact Podman arguments, lifecycle serialization, ALA execution, cache reuse and fallback, authentication, and proxy paths. Real nested Podman, upstream registry, and Selkies checks remain deployment smoke tests.
 

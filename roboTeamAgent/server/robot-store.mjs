@@ -4,14 +4,6 @@ import path from 'node:path';
 
 const ROBOT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
-function normalizeOwnerUserId(value) {
-    const owner = String(value || '').trim();
-    if (!owner || owner.length > 256 || /[\0\r\n]/.test(owner)) {
-        throw new Error('authenticated user identity is required');
-    }
-    return owner;
-}
-
 function normalizeName(value) {
     const name = String(value || '').trim();
     if (!name) throw new Error('robot name is required');
@@ -67,6 +59,9 @@ export class RobotStore {
             await fs.mkdir(target, { recursive: true, mode: 0o700 });
             await fs.chmod(target, 0o700);
         }
+        const codexHome = path.join(robotRoot, 'home', '.codex');
+        await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
+        await fs.chmod(codexHome, 0o700);
     }
 
     async _readMetadata(robotId) {
@@ -93,37 +88,29 @@ export class RobotStore {
         return robots.sort((left, right) => String(left.createdAt).localeCompare(String(right.createdAt)));
     }
 
-    async list(ownerUserId) {
-        const owner = normalizeOwnerUserId(ownerUserId);
-        return (await this._allRobots()).filter((robot) => robot.ownerUserId === owner);
+    async list() {
+        return this._allRobots();
     }
 
-    async getOwned(robotId, ownerUserId) {
-        const owner = normalizeOwnerUserId(ownerUserId);
-        let robot;
+    async get(robotId) {
         try {
-            robot = await this._readMetadata(robotId);
+            return await this._readMetadata(robotId);
         } catch (error) {
             if (error?.code === 'ENOENT') return null;
             throw error;
         }
-        return robot.ownerUserId === owner ? robot : null;
     }
 
-    async getOwnedByName(name, ownerUserId) {
-        const owner = normalizeOwnerUserId(ownerUserId);
+    async getByName(name) {
         const normalizedName = normalizeName(name);
-        return (await this._allRobots()).find((robot) => (
-            robot.ownerUserId === owner && robot.name === normalizedName
-        )) || null;
+        return (await this._allRobots()).find((robot) => robot.name === normalizedName) || null;
     }
 
-    async create({ ownerUserId, name, specialization = '' }) {
-        const owner = normalizeOwnerUserId(ownerUserId);
+    async create({ name, specialization = '' }) {
         const normalizedName = normalizeName(name);
         const normalizedSpecialization = normalizeSpecialization(specialization);
         await this.initialize();
-        if ((await this._allRobots()).some((robot) => robot.ownerUserId === owner && robot.name === normalizedName)) {
+        if ((await this._allRobots()).some((robot) => robot.name === normalizedName)) {
             throw new Error('robot name already exists');
         }
         let robotId;
@@ -147,7 +134,6 @@ export class RobotStore {
             id: robotId,
             name: normalizedName,
             specialization: normalizedSpecialization,
-            ownerUserId: owner,
             createdAt: now,
             updatedAt: now,
         };
@@ -155,12 +141,12 @@ export class RobotStore {
         return metadata;
     }
 
-    async deleteOwned(robotId, ownerUserId) {
-        const robot = await this.getOwned(robotId, ownerUserId);
+    async delete(robotId) {
+        const robot = await this.get(robotId);
         if (!robot) return false;
         await fs.rm(this.robotPath(robotId), { recursive: true, force: true });
         return true;
     }
 }
 
-export const robotStoreInternals = { normalizeOwnerUserId, slugify, ROBOT_ID_PATTERN };
+export const robotStoreInternals = { slugify, ROBOT_ID_PATTERN };

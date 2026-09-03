@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { requestActor } from './request-identity.mjs';
+import { isAdminActor, requestActor } from './request-identity.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -180,7 +180,7 @@ export function createRoboTeamServer(options) {
 
             const sessionId = sessionRobotId(pathname);
             if (sessionId && req.method === 'GET') {
-                const robot = await robotStore.getOwned(sessionId, actor.id);
+                const robot = await robotStore.get(sessionId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const port = runtimeManager.activePort(robot.id);
                 if (!port) return sendError(res, 409, 'robot is not running');
@@ -196,25 +196,27 @@ export function createRoboTeamServer(options) {
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
 
             if (pathname === '/api/robots' && req.method === 'GET') {
-                const robots = await robotStore.list(actor.id);
+                const robots = await robotStore.list();
                 return sendJson(res, 200, { ok: true, robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id))) });
             }
             if (pathname === '/api/robots' && req.method === 'POST') {
+                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
-                const robot = await robotStore.create({ ownerUserId: actor.id, name: body.name, specialization: body.specialization });
+                const robot = await robotStore.create({ name: body.name, specialization: body.specialization });
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
             }
             if (pathname === '/api/control' && req.method === 'POST') {
                 const body = await readJsonBody(req);
-                const robot = await robotStore.getOwnedByName(body.robotName, actor.id);
+                const robot = await robotStore.getByName(body.robotName);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const operation = String(body.operation || '');
                 if (operation === 'robot-delete') {
+                    if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                     const status = runtimeManager.status(robot.id);
                     if (status.state !== 'stopped' || ['queued', 'starting', 'running', 'stopping'].includes(status.task?.state)) {
                         return sendError(res, 409, 'stop the robot before deleting it');
                     }
-                    await robotStore.deleteOwned(robot.id, actor.id);
+                    await robotStore.delete(robot.id);
                     return sendJson(res, 200, { ok: true, deleted: robot.name });
                 }
                 if (operation === 'open-desktop') {
@@ -245,26 +247,26 @@ export function createRoboTeamServer(options) {
             }
             const runId = matchRobotPath(pathname, '/run');
             if (runId && req.method === 'GET') {
-                const robot = await robotStore.getOwned(runId, actor.id);
+                const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
             }
             if (runId && req.method === 'POST') {
-                const robot = await robotStore.getOwned(runId, actor.id);
+                const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const body = await readJsonBody(req);
                 const run = await runtimeManager.start(robot, body.mode);
                 return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run) });
             }
             if (runId && req.method === 'DELETE') {
-                const robot = await robotStore.getOwned(runId, actor.id);
+                const robot = await robotStore.get(runId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const run = await runtimeManager.stop(robot.id);
                 return sendJson(res, 200, { ok: true, robot: publicRobot(robot, run) });
             }
             const logsId = matchRobotPath(pathname, '/logs');
             if (logsId && req.method === 'GET') {
-                const robot = await robotStore.getOwned(logsId, actor.id);
+                const robot = await robotStore.get(logsId);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 return sendJson(res, 200, { ok: true, logs: await runtimeManager.logs(robot.id, url.searchParams.get('tail')) });
             }
@@ -284,7 +286,7 @@ export function createRoboTeamServer(options) {
             if (!robotId) return websocketFailure(socket, 404, 'Not Found');
             const actor = requestActor(req, internalToken);
             if (!actor) return websocketFailure(socket, 401, 'Unauthorized');
-            const robot = await robotStore.getOwned(robotId, actor.id);
+            const robot = await robotStore.get(robotId);
             if (!robot) return websocketFailure(socket, 404, 'Not Found');
             const port = runtimeManager.activePort(robot.id);
             if (!port) return websocketFailure(socket, 409, 'Conflict');

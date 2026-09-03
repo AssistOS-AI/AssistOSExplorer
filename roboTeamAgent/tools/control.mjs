@@ -6,19 +6,29 @@ async function readPayload() {
     return JSON.parse(raw || '{}');
 }
 
-function authenticatedUserId(payload) {
-    const id = String(payload?.metadata?.user?.id || payload?.metadata?.user?.sub || '').trim();
-    if (!id) throw new Error('authenticated user identity is required');
-    return id;
+function invocationUser(payload) {
+    const grant = payload?.metadata?.invocation;
+    const delegated = grant?.usr || grant?.user;
+    const actor = grant?.actor?.kind === 'user' ? grant.actor : null;
+    const user = payload?.metadata?.user || delegated || actor;
+    return {
+        id: String(user?.id || user?.sub || '').replace(/^user:/i, '').trim(),
+        roles: Array.isArray(user?.roles) ? user.roles.map(String) : [],
+    };
 }
 
-async function request(pathname, { method = 'GET', body, userId }) {
+async function request(pathname, { method = 'GET', body, user = {} }) {
     const port = Number(process.env.ROBOTEAM_SERVICE_PORT || 3001);
     const token = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
     if (!token) throw new Error('RoboTeam internal token is unavailable');
     const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
         method,
-        headers: { 'content-type': 'application/json', 'x-roboteam-internal-token': token, 'x-roboteam-user-id': userId },
+        headers: {
+            'content-type': 'application/json',
+            'x-roboteam-internal-token': token,
+            ...(user.id ? { 'x-roboteam-user-id': user.id } : {}),
+            ...(user.roles?.length ? { 'x-roboteam-user-roles': JSON.stringify(user.roles) } : {}),
+        },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(29000),
     });
@@ -42,11 +52,11 @@ const expectedToolNames = {
 const invokedToolName = String(payload.tool || payload.toolName || payload.name || '').trim();
 if (invokedToolName && invokedToolName !== expectedToolNames[operation]) throw new Error('MCP tool identity does not match the requested operation');
 const input = payload.input || payload.arguments || {};
-const userId = authenticatedUserId(payload);
+const user = invocationUser(payload);
 let result;
 
-if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, specialization: input.specialization || '' }, userId });
-else if (operation === 'robot-list') result = await request('/api/robots', { userId });
-else result = await request('/api/control', { method: 'POST', body: { operation, ...input }, userId });
+if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, specialization: input.specialization || '' }, user });
+else if (operation === 'robot-list') result = await request('/api/robots', { user });
+else result = await request('/api/control', { method: 'POST', body: { operation, ...input }, user });
 
 process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

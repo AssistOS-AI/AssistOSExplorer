@@ -20,6 +20,8 @@ The ALA child is cancellable. Stopping a task or taking control sends terminatio
 
 When `--ca` selects Codex or automatic selection, RoboTeam prepares the current cached Codex generation and prepends its binary directory to the ALA child `PATH`. The executable cache is shared, while Codex account and configuration state remains under the robot-specific `--home`.
 
+ALA owns the coding-agent sandbox even when it runs inside RoboTeam's outer container. It must first probe its normal user-namespace and private-procfs path. The current bounded nested runtime rejects the procfs mount inside that additional user namespace, so ALA may use its capability-assisted private-proc path: Bubblewrap omits the extra user namespace, retains private PID, IPC, and UTS namespaces and the private procfs, constructs the mounts using the outer admitted capability, and drops all capabilities before starting Codex. Codex must disable its redundant native sandbox inside this boundary. Neither this Codex setting nor ALA's private-proc fallback permits execution outside the ALA Bubblewrap filesystem and environment boundary.
+
 ## Decisions & Questions
 
 ### Question #1: Where does the controller run?
@@ -37,6 +39,10 @@ Response: The `--ca` boundary keeps Codex, OpenCode, and Pi selectable; Codex is
 ### Question #4: Does RoboTeam install Codex into every robot?
 
 Response: No. RoboTeam shares one validated executable generation and keeps only authentication and configuration in each robot home.
+
+### Question #5: Does the nested-runtime fallback remove coding-agent containerization?
+
+Response: No. RoboTeam remains isolated from the host by its outer Podman boundary, and Codex remains inside ALA's Bubblewrap boundary. The fallback removes only an additional UID namespace that cannot mount private procfs in the current nested environment; all capabilities are dropped before Codex starts, and failure to create private procfs remains fatal.
 
 ## Conclusion
 

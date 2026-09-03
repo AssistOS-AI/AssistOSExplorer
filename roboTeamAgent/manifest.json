@@ -55,7 +55,7 @@
         },
         "ROBOTEAM_ALA_COMMAND": {
           "required": false,
-          "default": "/code/node_modules/.bin/ala"
+          "default": "/workspace/AdvancedLanguageAgent/bin/ala.mjs"
         },
         "ROBOTEAM_TOOL_CACHE_DIR": {
           "required": false,

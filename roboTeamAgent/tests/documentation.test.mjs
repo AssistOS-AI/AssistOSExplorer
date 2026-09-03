@@ -44,3 +44,20 @@ test('documentation exposes the image guide from shared navigation', async () =>
 
     assert.match(header, /href="images\.html"[^>]*>Images &amp; Dependencies</);
 });
+
+test('documentation explains the nested ALA sandbox fallback and its retained boundaries', async () => {
+    const sources = [
+        await read('README.md'),
+        await read('docs/security.html'),
+        await read('docs/specs/DS005-ploinky-security.md'),
+        await read('docs/specs/DS006-ala-task-boundary.md'),
+    ];
+
+    for (const source of sources) {
+        const plainText = source.replaceAll(/<[^>]+>|`/g, '');
+        assert.match(plainText, /private proc(?:fs| path)/iu);
+        assert.match(plainText, /capabilit/iu);
+        assert.match(plainText, /drop(?:s|ped)? all capabilities|cap-drop ALL/iu);
+    }
+    assert.match(sources.join('\n'), /unsandboxed fallback (?:is )?forbidden|not an unsandboxed fallback/iu);
+});

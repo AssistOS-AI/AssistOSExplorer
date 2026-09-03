@@ -12,13 +12,13 @@ An authenticated Ploinky user manages durable robots and starts observable deskt
 
 ## Core Content
 
-`robot_create`, `robot_list`, and `robot_delete` manage owner-scoped records. Names are unique per owner. Each record owns a persistent home used both as `/config` in its GUI and as ALA `--home`, plus workspace, runtime, log, and download directories. No legacy record migration occurs.
+`robot_create`, `robot_list`, and `robot_delete` manage workspace-scoped records. Names are unique across the workspace. Only authenticated administrators may create or delete records; internal workspace agents may list and run them. Each record owns a persistent home used both as `/config` in its GUI and as ALA `--home`, plus workspace, runtime, log, and download directories. Existing records are read without an ownership migration; legacy `ownerUserId` metadata is ignored.
 
 `openDesktopForRobot` and the dashboard can start a desktop without ALA so the user can configure coding-agent accounts in the persistent home. `getSessionUrlForRobotDesktop` and `getSessionUrlForRobotBrowser` return the authenticated Router-relative URL for a ready matching container.
 
-The start task tools validate `robotName`, an absolute workspace-contained `cwd`, and `task`, allocate a UUID `taskId`, and return immediately. `getTaskStatusForRobot` reports queued, starting, running, completed, failed, or stopped execution together with bounded output. The three execution types are desktop, browser, and simple ALA.
+The start task tools validate `robotName`, an absolute workspace-contained `cwd`, and `task`, allocate a UUID `taskId`, and return immediately. Desktop and Browser starts also return the deterministic authenticated Router-relative `sessionUrl`, and the same URL remains present in task status. A caller must wait for task state `running` before advertising the link as ready because that transition follows Selkies and MCP readiness. `getTaskStatusForRobot` reports queued, starting, running, completed, failed, or stopped execution together with bounded output. The three execution types are desktop, browser, and simple ALA.
 
-Desktop and browser task startup prepares the required current tool-cache generation, creates or reuses exactly one matching GUI container, mounts the requested cwd at `/workspace`, waits for Selkies and MCP readiness, then starts ALA as a separate outer process. Simple ALA starts no GUI container. The robot home becomes ALA `--home`; task selection, model hint, coding agent, and bridge URL become explicit ALA arguments. Codex execution uses the shared cached binary with configuration from that robot home.
+Desktop and browser task startup prepares the required current tool-cache generation, creates or reuses exactly one matching GUI container, mounts the requested cwd at `/workspace`, waits for Selkies and MCP readiness, then starts ALA as a separate outer process. Reuse requires both the same mode and the same resolved cwd. When the same-mode retained container has another cwd and no older task is active, RoboTeam removes it and creates its replacement with the requested mount before starting ALA. Simple ALA starts no GUI container. The robot home becomes ALA `--home`; task selection, model hint, coding agent, and bridge URL become explicit ALA arguments. Codex execution uses the shared cached binary with configuration from that robot home.
 
 Take Control stops only ALA and preserves the GUI. Resume creates a new task from the original request and instructs the coding agent to observe current visible state before continuing. Desktop and browser containers have separate stop operations; stopping an ALA task never removes them.
 
@@ -30,7 +30,7 @@ Response: One execution slot exists per robot. A retained GUI container continue
 
 ### Question #2: What identifies a robot in task tools?
 
-Response: The exact owner-local unique `robotName`; opaque ids remain an internal HTTP and storage detail.
+Response: The exact workspace-unique `robotName`; opaque ids remain an internal HTTP and storage detail.
 
 ### Question #3: Is task execution synchronous?
 
@@ -39,6 +39,10 @@ Response: No. Start and stop task operations return a `taskId`; callers poll `ge
 ### Question #4: Which state is shared with ALA?
 
 Response: The persistent robot home supplies coding-agent configuration, the caller-selected cwd is the writable work tree shared with the GUI, and shared tool-cache generations supply executable bytes.
+
+### Question #5: When may a caller present the returned GUI URL as live?
+
+Response: The URL is deterministic and returned with the asynchronous start acknowledgement, but it is ready for navigation only after task status reaches `running` or `completed` because the running transition follows graphical and automation-service readiness.
 
 ## Conclusion
 

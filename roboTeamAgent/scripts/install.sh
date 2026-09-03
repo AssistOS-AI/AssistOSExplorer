@@ -4,7 +4,7 @@ set -eu
 contract_file="/opt/roboteam-runtime/contract-v4"
 contract_value="roboteam-runtime-v4"
 required_commands="podman fuse-overlayfs pasta node npm bwrap"
-required_executables="/code/node_modules/.bin/ala"
+required_executables="/workspace/AdvancedLanguageAgent/bin/ala.mjs"
 required_assets="/opt/roboteam-runtime/storage.conf"
 missing=""
 
@@ -20,6 +20,10 @@ done
 
 if ! podman --version 2>/dev/null | grep -Eq '^podman version 6\.'; then
     missing="$missing podman-major:6"
+fi
+
+if ! NODE_OPTIONS= npm --version >/dev/null 2>&1; then
+    missing="$missing npm-runtime"
 fi
 
 for executable_path in $required_executables; do

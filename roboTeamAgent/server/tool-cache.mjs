@@ -9,6 +9,13 @@ const execFileAsync = promisify(execFile);
 const CACHE_SCHEMA = 'roboteam-tool-cache-v1';
 const NPM_INSTALL_ARGS = ['install', '--omit=dev', '--no-audit', '--no-fund', '--no-package-lock'];
 const TOOL_MOUNT_PATH = '/opt/roboteam-tools';
+const NESTED_CONTAINER_ARGS = ['--ipc', 'none'];
+
+function toolProcessEnv(environment = process.env) {
+    const sanitized = { ...environment };
+    delete sanitized.NODE_OPTIONS;
+    return sanitized;
+}
 
 function safeVersion(value, label) {
     const version = String(value || '').trim().replace(/^v(?=\d)/u, '');
@@ -50,6 +57,7 @@ export class ToolCache {
         this.log = options.log || ((message) => console.log(message));
         this.refreshIntervalMs = Math.max(60000, Number(options.refreshIntervalMs) || 6 * 60 * 60 * 1000);
         this.now = options.now || Date.now;
+        this.processEnv = toolProcessEnv(options.processEnv || process.env);
         this.inflight = new Map();
     }
 
@@ -80,7 +88,7 @@ export class ToolCache {
         const result = await this.execFileImpl(this.npmCommand, ['view', `${packageName}@latest`, 'version', '--json'], {
             timeout: 30000,
             maxBuffer: 1024 * 1024,
-            env: process.env,
+            env: this.processEnv,
         });
         let value;
         try { value = JSON.parse(result.stdout); } catch { value = result.stdout; }
@@ -113,13 +121,13 @@ export class ToolCache {
         await this.execFileImpl(this.npmCommand, [...args, '--prefix', directory, `${packageName}@${version}`], {
             timeout: 10 * 60 * 1000,
             maxBuffer: 8 * 1024 * 1024,
-            env: process.env,
+            env: this.processEnv,
         });
     }
 
     async _npmInstallContainer(directory, image, packageName, version) {
         await this.execFileImpl(this.podmanCommand, [
-            'run', '--rm', '--network', 'pasta', '--user', '0:0',
+            'run', '--rm', ...NESTED_CONTAINER_ARGS, '--network', 'pasta', '--user', '0:0',
             '-v', `${directory}:/install`, '-w', '/install',
             '--entrypoint', '/usr/local/bin/npm', image,
             ...NPM_INSTALL_ARGS, '--prefix', '/install', `${packageName}@${version}`,
@@ -143,7 +151,7 @@ export class ToolCache {
 
     async _probeInContainer(image, directory, executable, args = ['--help']) {
         await this.execFileImpl(this.podmanCommand, [
-            'run', '--rm', '--network', 'none',
+            'run', '--rm', ...NESTED_CONTAINER_ARGS, '--network', 'none',
             '-v', `${directory}:${TOOL_MOUNT_PATH}:ro`,
             '--entrypoint', `${TOOL_MOUNT_PATH}/${executable}`, image,
             ...args,
@@ -160,7 +168,7 @@ export class ToolCache {
                 validate: async (directory) => {
                     const executable = path.join(directory, 'bin', 'codex');
                     if (!(await isExecutable(executable))) throw new Error('prepared Codex executable is missing');
-                    await this.execFileImpl(executable, ['--version'], { timeout: 30000, maxBuffer: 1024 * 1024, env: process.env });
+                    await this.execFileImpl(executable, ['--version'], { timeout: 30000, maxBuffer: 1024 * 1024, env: this.processEnv });
                 },
                 result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions: { codex: version } }),
             };
@@ -308,4 +316,4 @@ export class ToolCache {
     }
 }
 
-export const toolCacheInternals = { CACHE_SCHEMA, NPM_INSTALL_ARGS, TOOL_MOUNT_PATH, generationName, safeVersion };
+export const toolCacheInternals = { CACHE_SCHEMA, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, TOOL_MOUNT_PATH, generationName, safeVersion, toolProcessEnv };

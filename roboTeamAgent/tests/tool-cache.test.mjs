@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { ToolCache } from '../server/tool-cache.mjs';
+import { ToolCache, toolCacheInternals } from '../server/tool-cache.mjs';
 
 async function writeExecutable(filePath) {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -15,8 +15,11 @@ test('prepares Codex once and reuses the persistent generation', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-tool-cache-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const calls = [];
-    const execFileImpl = async (command, args) => {
+    const execFileImpl = async (command, args, options) => {
         calls.push([command, ...args]);
+        if (args[0] === 'view' || args[0] === 'install' || args[0] === '--version') {
+            assert.equal(options.env.NODE_OPTIONS, undefined);
+        }
         if (args[0] === 'view') return { stdout: '"9.8.7"\n', stderr: '' };
         if (args[0] === 'install') {
             const prefix = args[args.indexOf('--prefix') + 1];
@@ -25,7 +28,7 @@ test('prepares Codex once and reuses the persistent generation', async (t) => {
         }
         return { stdout: '', stderr: '' };
     };
-    const cache = new ToolCache({ root, execFileImpl, log: () => {} });
+    const cache = new ToolCache({ root, execFileImpl, processEnv: { PATH: '/bin', NODE_OPTIONS: '--preserve-symlinks-main' }, log: () => {} });
 
     const [first, simultaneous] = await Promise.all([cache.prepareCodex(), cache.prepareCodex()]);
     assert.equal(first.path, simultaneous.path);
@@ -43,12 +46,21 @@ test('prepares Codex once and reuses the persistent generation', async (t) => {
     assert.equal(fallback.fallback, true);
 });
 
+test('removes Ploinky symlink options only from managed tool processes', () => {
+    const source = { PATH: '/usr/local/bin:/usr/bin', NODE_OPTIONS: '--preserve-symlinks --preserve-symlinks-main', KEEP: 'yes' };
+    const sanitized = toolCacheInternals.toolProcessEnv(source);
+    assert.deepEqual(sanitized, { PATH: source.PATH, KEEP: 'yes' });
+    assert.equal(source.NODE_OPTIONS, '--preserve-symlinks --preserve-symlinks-main');
+});
+
 test('prepares desktop npm and binary tools outside the image', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-desktop-cache-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const payload = Buffer.from('#!/bin/sh\nexit 0\n');
+    const podmanRuns = [];
     const execFileImpl = async (_command, args) => {
         if (args[0] === 'view') return { stdout: '"7.6.5"\n', stderr: '' };
+        if (args[0] === 'run') podmanRuns.push(args);
         if (args[0] === 'run' && args.includes('/usr/local/bin/npm')) {
             const volume = args[args.indexOf('-v') + 1].split(':')[0];
             await writeExecutable(path.join(volume, 'node_modules', '.bin', 'supergateway'));
@@ -74,6 +86,8 @@ test('prepares desktop npm and binary tools outside the image', async (t) => {
 
     const desktop = await cache.prepareMode('desktop');
     assert.deepEqual(desktop.versions, { supergateway: '7.6.5', computerUseLinux: '6.5.4' });
+    assert.ok(podmanRuns.length >= 3);
+    assert.ok(podmanRuns.every((args) => args.includes('--ipc') && args[args.indexOf('--ipc') + 1] === 'none'));
     assert.equal(await fs.readFile(path.join(desktop.path, 'computer-use-linux'), 'utf8'), payload.toString());
     assert.equal(await fs.readFile(path.join(desktop.path, 'stamp.json'), 'utf8').then((value) => JSON.parse(value).schema), 'roboteam-tool-cache-v1');
 });

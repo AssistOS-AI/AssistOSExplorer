@@ -18,7 +18,7 @@ The Ploinky-hosted outer container owns a Podman 6 inner engine through Ploinky'
 
 Every robot retains metadata, home, workspace, downloads, and logs after its inner container stops. The home mounted at `/config` is the durable installation and application-state boundary for that robot.
 
-Ploinky owns outer-container hosting, volume attachment, authentication, mutation protection, identity, and routing. RoboTeam owns robot records, ownership checks, asynchronous ALA lifecycle, inner-container lifecycle, loopback MCP bridges, the authenticated Selkies proxy, current-version tool caching, and human takeover/resume arbitration. Desktop automation uses computer-use-linux; browser automation uses Playwright MCP connected to the same visible Chromium session.
+Ploinky owns outer-container hosting, volume attachment, authentication, mutation protection, identity, and routing. RoboTeam owns workspace robot records, administrator-only creation and deletion, asynchronous ALA lifecycle, inner-container lifecycle, loopback MCP bridges, the authenticated Selkies proxy, current-version tool caching, and human takeover/resume arbitration. Desktop automation uses computer-use-linux; browser automation uses Playwright MCP connected to the same visible Chromium session.
 
 ## Decisions & Questions
 
