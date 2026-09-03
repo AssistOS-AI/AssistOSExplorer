@@ -1,5 +1,5 @@
 {
-  "container": "docker.io/assistos/roboteam-agent:runtime",
+  "container": "docker.io/assistos/roboteam-agent@sha256:e8282f4ccd23ac4520421daecf46f208225b45b34bb9e40a9937e2c40821215d",
   "about": "Manages persistent robots and starts authenticated browser or Linux desktop containers with nested Podman.",
   "containerSecurity": {
     "nestedPodman": true

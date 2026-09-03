@@ -39,10 +39,10 @@ async function writeFixture(directory, name, source) {
     return filePath;
 }
 
-test('manifest follows the operator-managed runtime channel', async () => {
+test('manifest pins the published multi-architecture runtime compatible with contract v3', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
 
-    assert.equal(manifest.container, 'docker.io/assistos/roboteam-agent:runtime');
+    assert.equal(manifest.container, 'docker.io/assistos/roboteam-agent@sha256:e8282f4ccd23ac4520421daecf46f208225b45b34bb9e40a9937e2c40821215d');
 });
 
 test('manifest declares the MCP startup budget', async () => {
