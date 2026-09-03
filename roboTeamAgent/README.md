@@ -1,6 +1,6 @@
 # RoboTeamAgent
 
-RoboTeamAgent is a globally enabled Ploinky dependency that manages workspace-scoped robots, persistent coding-agent homes, visible GUI containers, and asynchronous ALA tasks. Robot names are unique across the workspace; only administrators create or delete robots, while internal workspace agents can list and run them by `robotName`.
+RoboTeamAgent is a globally enabled Ploinky dependency that manages workspace-scoped robots, persistent coding-agent homes, visible GUI containers, and asynchronous ALA tasks. Robot names are unique across the workspace; only administrators create or delete robots, while internal workspace agents can list and run them by `robotName`. Advanced Language Agent, abbreviated ALA, is the LLM execution layer. RoboTeam owns deterministic robot and container lifecycle; ALA runs the prompt through Codex, OpenCode, or Pi. The current task-local MCP adapter connects Codex to the selected GUI server. OpenCode and Pi can run Simple tasks when their executables and robot-home configurations are available.
 
 Each robot has one execution slot. The slot may hold one desktop container, one lighter browser container, or one simple ALA process. Desktop and Browser start tools return a task id and the authenticated Selkies session URL; callers can poll task status and expose that URL once the graphical runtime is ready. A GUI container may remain live after its ALA task stops, so a person can inspect the exact same visible session. It is reused only when its mode and resolved cwd match the next request; a different cwd automatically removes and recreates that same-mode container with the new `/workspace` mount. The container must be stopped explicitly before another mode can use the slot.
 
@@ -13,6 +13,8 @@ ALA itself runs in the outer RoboTeam container and starts the selected coding a
 The current nested RoboTeam environment cannot mount a private procfs inside an additional Bubblewrap user namespace. ALA probes the normal `--unshare-user` path first. When that specific probe fails, it keeps separate PID, IPC, and UTS namespaces and a private `/proc`, uses the outer container's admitted mount capability only while Bubblewrap constructs those mounts, and applies `--cap-drop ALL` before starting Codex. The filesystem remains read-only except for the selected cwd and controlled robot home, and the environment remains filtered. This is not an unsandboxed fallback: if neither private-proc path works, ALA fails closed. Codex also disables its redundant native sandbox because the complete Codex process already runs inside the ALA Bubblewrap boundary.
 
 Creating a robot creates metadata and persistent directories only. It does not install or copy Codex, ALA, computer-use-linux, Playwright MCP, or an operating system into the robot. The first operation that needs a runtime tool prepares a shared generation under `/data/tool-cache`; every robot then mounts that generation together with its own home and cwd.
+
+AchillesCLI integrates RoboTeam through its built-in `list-robots` and `launch-robot` C-Skills. The first lists the workspace robot catalog through `robot_list`. The second starts a Desktop or Browser task, passes the active AchillesCLI directory as `cwd`, waits for the GUI and MCP bridge, and returns the live Selkies URL.
 
 ## Development
 

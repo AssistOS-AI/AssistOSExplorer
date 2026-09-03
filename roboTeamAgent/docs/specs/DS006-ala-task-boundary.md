@@ -14,7 +14,11 @@ ALA is the task executor started by RoboTeam; it is not responsible for creating
 
 RoboTeam launches ALA from the outer agent runtime after the required GUI, tool-cache generation, and MCP bridge are ready, or after coding-agent preparation for a simple task. It passes `--home` using the robot's persistent home, `--cwd` using the caller-selected workspace directory, `--taskFile` using a private runtime prompt file, and `--ca` using the selected coding agent. Optional `--skillSets` and `--model` values are forwarded.
 
-For GUI work RoboTeam passes `--MCPServers name=http://127.0.0.1:<random>/mcp`. The random port is the outer loopback mapping of fixed inner port `8100`. ALA translates that value into transient Codex configuration overrides. Saved configuration and authentication under the robot home remain authoritative and are not rewritten.
+A Desktop task must produce an invocation equivalent to `ala --home /data/robots/<robot-id>/home --cwd /workspace/<project> --taskFile /data/robots/<robot-id>/runtime/<task-id>.prompt --ca codex --MCPServers desktop=http://127.0.0.1:<port>/mcp`. A Browser task uses the `browser` MCP name. A Simple task omits `--MCPServers`. Concrete robot ids, cwd values, task ids, coding-agent choices, and loopback ports vary per request.
+
+`--home` selects persistent coding-agent authentication and configuration. `--cwd` selects the writable work tree and disables ALA's temporary workspace. `--taskFile` supplies the prompt without placing its full text in process arguments. `--ca` selects `auto`, `codex`, `opencode`, or `pi`. `--MCPServers` supplies task-local Streamable HTTP MCP endpoints. `--skillSets` optionally restricts skills found under `<cwd>/.agents/skills`, and `--model` optionally overrides the selected backend's native model.
+
+For GUI work RoboTeam passes `--MCPServers name=http://127.0.0.1:<random>/mcp`. The random port is the outer loopback mapping of fixed inner port `8100`. ALA translates that value into transient Codex configuration overrides. Saved configuration and authentication under the robot home remain authoritative and are not rewritten. Desktop and Browser tasks must use Codex until the OpenCode and Pi adapters implement equivalent MCP URL injection.
 
 The ALA child is cancellable. Stopping a task or taking control sends termination to ALA while preserving the GUI container. Resume replays the original request as a new task with an explicit fresh-observation instruction. Only one active task is allowed per robot.
 
@@ -43,6 +47,10 @@ Response: No. RoboTeam shares one validated executable generation and keeps only
 ### Question #5: Does the nested-runtime fallback remove coding-agent containerization?
 
 Response: No. RoboTeam remains isolated from the host by its outer Podman boundary, and Codex remains inside ALA's Bubblewrap boundary. The fallback removes only an additional UID namespace that cannot mount private procfs in the current nested environment; all capabilities are dropped before Codex starts, and failure to create private procfs remains fatal.
+
+### Question #6: Which component owns LLM decisions?
+
+Response: ALA owns prompt execution, coding-agent selection, model forwarding, skill exposure, and MCP injection. RoboTeam owns robot records, task state, GUI containers, and bridge lifetime.
 
 ## Conclusion
 

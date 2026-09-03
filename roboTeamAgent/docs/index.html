@@ -1,8 +1,53 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RoboTeam Documentation</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'; mermaid.initialize({ startOnLoad: true, theme: 'neutral' });</script></head><body><div data-include="partials/header.html"></div><main class="page"><article class="document">
-<nav class="breadcrumbs" aria-label="Breadcrumb">Documentation / Home</nav><h1>RoboTeam Documentation</h1>
-<p class="lede"><a href="wiki.html#definition-roboteam">RoboTeam</a> manages persistent robots and starts an observable browser or full Linux desktop for each one as an inner Podman container.</p>
-<h2>Product boundary</h2><p>RoboTeam itself is one Ploinky-hosted outer container. A robot is a workspace-scoped metadata record plus durable directories. Only administrators create or delete robots. Robot creation installs no software. Starting a graphical run attaches those directories to one shared, disposable desktop or browser image; stopping it preserves the robot's files.</p>
-<h2>Available modes</h2><table><thead><tr><th>Mode</th><th>Runtime</th><th>Use</th></tr></thead><tbody><tr><td><code>browser</code></td><td>LinuxServer Chromium base plus cached current Playwright MCP</td><td>A visible browser controlled through the same CDP session.</td></tr><tr><td><code>desktop</code></td><td>LinuxServer Webtop base plus cached current computer-use-linux and Supergateway</td><td>A visible Linux desktop controlled through MCP.</td></tr><tr><td><code>simple</code></td><td>ALA plus cached current Codex</td><td>Non-GUI work in the selected cwd.</td></tr></tbody></table><p>Tasks are asynchronous and support live observation, Take Control, and Resume. First use prepares a persistent shared tool cache; later starts reuse it.</p>
-<h2>Documentation map</h2><p><a href="operations.html">Robots &amp; Runs</a> explains use; <a href="images.html">Images &amp; Dependencies</a> records image composition, runtime resolution, cache policy, size, and the Codex boundary; <a href="architecture.html">Architecture</a> describes nesting; <a href="security.html">Security</a> documents trust limits; <a href="wiki.html">Wiki</a> defines terminology; and <a href="specsLoader.html?spec=matrix.md">Specifications</a> contains the normative contract.</p>
-<h2>Development contract</h2><p><a href="specsLoader.html?spec=DS001-coding-style.md">DS001</a> defines coding style and test organization. Source changes that affect runtime behavior must update the corresponding HTML page and DS contract. Unit and integration tests live under <code>tests/</code>; image construction and supply-chain tests live with the separate container image definitions.</p>
-</article></main><script src="partials-loader.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RoboTeam Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+  </script>
+</head>
+<body>
+<div data-include="partials/header.html"></div>
+<main class="page"><article class="document">
+  <nav class="breadcrumbs" aria-label="Breadcrumb">Documentation / Overview</nav>
+  <h1>RoboTeam Documentation</h1>
+
+  <h2>Product vision</h2>
+  <p class="lede">A robot is a durable virtual employee with a visible workstation. Its desktop or browser can be replaced without losing its home, account configuration, or work files.</p>
+  <p>RoboTeam gives each workspace a shared catalog of named robots. An administrator creates the records, and workspace agents can assign work to them. A graphical task runs in a disposable Desktop or Browser container. The same Selkies session shows both automated actions and the final state, so a person can watch the work and open the workstation afterward.</p>
+  <p>Robot identity and state survive container replacement. RoboTeam keeps the robot home, selected working directory, downloads, logs, and coding-agent configuration outside the graphical container. Runtime tools are installed into a shared versioned cache on first use instead of being copied into each robot.</p>
+
+  <h2>System boundary</h2>
+  <p>RoboTeam is one globally enabled Ploinky agent. It owns robot records, container lifecycle, MCP bridges, the authenticated Selkies proxy, and task status. A robot is not another Ploinky agent. It is a workspace-scoped record with persistent directories and, when needed, one active Desktop or Browser container.</p>
+  <p><a href="wiki.html#definition-ala">Advanced Language Agent</a>, abbreviated ALA, is RoboTeam's LLM execution layer. RoboTeam starts ALA as a separate process for each task. ALA reads the prompt and selects the requested coding-agent backend. ALA currently supports Codex, OpenCode, and Pi. The selected executable must be available, and its authentication and configuration must exist in the robot directory passed through <code>--home</code>. RoboTeam prepares Codex automatically; OpenCode and Pi require their CLI executables to be provisioned in the outer runtime. RoboTeam's current Desktop and Browser MCP injection is implemented for Codex, so GUI automation tasks must use Codex for now.</p>
+
+  <h2>Execution modes</h2>
+  <table>
+    <thead><tr><th>Mode</th><th>Runtime and use</th></tr></thead>
+    <tbody>
+      <tr><td><code>desktop</code></td><td>LinuxServer Webtop, Selkies, and computer-use-linux. ALA controls the same full desktop that the user watches.</td></tr>
+      <tr><td><code>browser</code></td><td>LinuxServer Chromium, Selkies, and Playwright MCP. ALA controls the visible Chromium session through CDP.</td></tr>
+      <tr><td><code>simple</code></td><td>ALA runs against the selected working directory without starting a graphical container.</td></tr>
+    </tbody>
+  </table>
+  <p>Tasks are asynchronous. Desktop and Browser starts return a task id and a live-session URL. A completed GUI task leaves its container running so the final state remains available.</p>
+
+  <h2>AchillesCLI integration</h2>
+  <p>AchillesCLI includes two built-in C-Skills for RoboTeam. <code>list-robots</code> calls RoboTeam's internal <code>robot_list</code> MCP tool and prints the workspace robot catalog. <code>launch-robot</code> calls <code>startDesktopTaskForRobot</code> or <code>startBrowserTaskForRobot</code>, passes the active AchillesCLI directory as <code>cwd</code>, waits for the GUI and MCP bridge, and returns the live Selkies link.</p>
+  <pre><code>/exec list-robots
+/exec launch-robot desktop analyst: inspect the application and report any UI problems
+/exec launch-robot browser researcher: open the site and verify the login flow</code></pre>
+
+  <h2>Documentation map</h2>
+  <p><a href="operations.html">Robots &amp; Runs</a> lists the MCP tools and explains how RoboTeam starts ALA. <a href="images.html">Images &amp; Dependencies</a> records image composition and cache policy. <a href="architecture.html">Architecture</a> describes the nested runtime. <a href="security.html">Security</a> documents trust limits. <a href="wiki.html">Wiki</a> defines project terms. <a href="specsLoader.html?spec=matrix.md">Specifications</a> contains the normative contract.</p>
+
+  <h2>Development contract</h2>
+  <p><a href="specsLoader.html?spec=DS001-coding-style.md">DS001</a> defines coding style and test organization. Source changes that affect runtime behavior must update the corresponding HTML page and DS contract. Unit and integration tests live under <code>tests/</code>; image construction and supply-chain tests live with the separate container image definitions.</p>
+</article></main>
+<script src="partials-loader.js"></script>
+</body>
+</html>

@@ -20,6 +20,8 @@ Every robot retains metadata, home, workspace, downloads, and logs after its inn
 
 Ploinky owns outer-container hosting, volume attachment, authentication, mutation protection, identity, and routing. RoboTeam owns workspace robot records, administrator-only creation and deletion, asynchronous ALA lifecycle, inner-container lifecycle, loopback MCP bridges, the authenticated Selkies proxy, current-version tool caching, and human takeover/resume arbitration. Desktop automation uses computer-use-linux; browser automation uses Playwright MCP connected to the same visible Chromium session.
 
+The HTML Overview must begin with the product vision and explain the durable robot, visible-workstation, and disposable-container model. The documentation must not split that introduction into a separate Product Vision page.
+
 ## Decisions & Questions
 
 ### Question #1: Where do graphical robot runtimes execute?
@@ -33,6 +35,10 @@ Response: The MCP controller and the user operate the same Selkies desktop or Ch
 ### Question #3: Where do automation executables live?
 
 Response: Current releases are shared through validated persistent cache generations rather than copied into each robot or baked into GUI images.
+
+### Question #4: Where is the product vision presented?
+
+Response: It is the first section of the Overview page. A separate Product Vision page would make the basic system explanation harder to find and must not be part of the documentation navigation.
 
 ## Conclusion
 

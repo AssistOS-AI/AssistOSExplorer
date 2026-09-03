@@ -1,1 +1,82 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RoboTeam Operations</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';mermaid.initialize({startOnLoad:true,theme:'neutral'});</script></head><body><div data-include="partials/header.html"></div><main class="page"><article class="document"><nav class="breadcrumbs"><a href="index.html">Documentation</a> / Operations</nav><h1>Operations</h1><h2>Robot management</h2><p><code>robot_create</code>, <code>robot_list</code>, and <code>robot_delete</code> manage workspace-scoped robots by globally unique name. Creation and deletion require an authenticated administrator; internal workspace agents may list and run robots. <code>openDesktopForRobot</code> starts a manual desktop for configuring the persistent coding-agent home.</p><h2>Task tools</h2><table><thead><tr><th>Mode</th><th>Start / stop</th></tr></thead><tbody><tr><td>Desktop</td><td><code>startDesktopTaskForRobot</code> / <code>stopDesktopTaskForRobot</code></td></tr><tr><td>Browser</td><td><code>startBrowserTaskForRobot</code> / <code>stopBrowserTaskForRobot</code></td></tr><tr><td>Simple ALA</td><td><code>startSimpleALATaskForRobot</code> / <code>stopSimpleALATaskForRobot</code></td></tr></tbody></table><p>Every start operation returns a <code>taskId</code>. Desktop and Browser starts also return the deterministic authenticated <code>sessionUrl</code>. Callers poll <code>getTaskStatusForRobot</code> and present that URL after the task reaches <code>running</code>, which follows Selkies and MCP readiness. A retained GUI container is reused only when mode and resolved cwd match; if the same-mode container is idle but mounted on another cwd, RoboTeam removes and recreates it with the new <code>/workspace</code> mount. GUI task stop preserves the container; use <code>stopDesktopContainerForRobot</code> or <code>stopBrowserContainerForRobot</code> for removal.</p><h2>First-use preparation</h2><p>The first operation that needs Codex or a GUI automation server resolves the current release, installs it into <code>/data/tool-cache</code>, and validates it. Later starts reuse the active generation. When release lookup fails, RoboTeam uses the last valid generation if one exists.</p><h2>Live work</h2><p>The start response and <code>getSessionUrlForRobotDesktop</code> or <code>getSessionUrlForRobotBrowser</code> expose the same Router-relative Selkies URL. A user opening it watches the exact display controlled by ALA through the container's automation MCP bridge.</p><h2>Nested sandbox diagnostics</h2><p>The current RoboTeam container cannot mount ALA's private procfs inside an additional user namespace. This is expected to select ALA's capability-assisted private-proc path, which retains the Bubblewrap filesystem, process, temporary-directory, and environment boundaries and drops all capabilities before Codex starts. An error stating that neither private-proc path is available indicates a runtime capability or seccomp regression; RoboTeam must not bypass ALA or start Codex unsandboxed.</p></article></main><script src="partials-loader.js"></script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RoboTeam Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+  </script>
+</head>
+<body>
+<div data-include="partials/header.html"></div>
+<main class="page"><article class="document">
+  <nav class="breadcrumbs"><a href="index.html">Documentation</a> / Robots &amp; Runs</nav>
+  <h1>RoboTeam Documentation</h1>
+  <p class="lede">RoboTeam exposes robot management and task execution as MCP tools. The Ploinky Router applies the tool policy before RoboTeam receives a call.</p>
+
+  <h2>MCP tools</h2>
+  <table>
+    <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>robot_create</code></td><td>Creates a persistent workspace robot with a workspace-unique name and optional specialization. Only an authenticated administrator may call it.</td></tr>
+      <tr><td><code>robot_list</code></td><td>Returns every robot in the workspace, including its specialization and current run state. This is an internal workspace-agent tool.</td></tr>
+      <tr><td><code>robot_delete</code></td><td>Deletes a stopped robot and its persistent home. Only an authenticated administrator may call it.</td></tr>
+      <tr><td><code>openDesktopForRobot</code></td><td>Starts or reuses a Desktop without ALA. Use it to log in to Codex or configure the robot's persistent home.</td></tr>
+      <tr><td><code>startDesktopTaskForRobot</code></td><td>Starts or reuses a Desktop, starts ALA with the computer-use-linux MCP bridge, and returns a task id and live Selkies URL.</td></tr>
+      <tr><td><code>stopDesktopTaskForRobot</code></td><td>Stops the active Desktop ALA task but leaves the Desktop container and visible session running.</td></tr>
+      <tr><td><code>startBrowserTaskForRobot</code></td><td>Starts or reuses a Browser, starts ALA with the Playwright MCP bridge, and returns a task id and live Selkies URL.</td></tr>
+      <tr><td><code>stopBrowserTaskForRobot</code></td><td>Stops the active Browser ALA task but leaves the Browser container and visible session running.</td></tr>
+      <tr><td><code>startSimpleALATaskForRobot</code></td><td>Starts ALA without a Desktop or Browser container.</td></tr>
+      <tr><td><code>stopSimpleALATaskForRobot</code></td><td>Stops the active non-GUI ALA task.</td></tr>
+      <tr><td><code>getTaskStatusForRobot</code></td><td>Returns the active or most recent task, including state, output, error, cwd, and live URL when the task has a GUI.</td></tr>
+      <tr><td><code>getSessionUrlForRobotDesktop</code></td><td>Returns the authenticated Selkies URL for a running Desktop container.</td></tr>
+      <tr><td><code>getSessionUrlForRobotBrowser</code></td><td>Returns the authenticated Selkies URL for a running Browser container.</td></tr>
+      <tr><td><code>stopDesktopContainerForRobot</code></td><td>Stops and removes the Desktop container and its MCP bridge after its task has stopped.</td></tr>
+      <tr><td><code>stopBrowserContainerForRobot</code></td><td>Stops and removes the Browser container and its MCP bridge after its task has stopped.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>How RoboTeam runs ALA</h2>
+  <p>ALA is the LLM execution process. RoboTeam starts it in the outer RoboTeam container, in parallel with the graphical container. ALA then starts the selected coding-agent CLI inside its Bubblewrap sandbox. The Desktop and Browser MCP servers stay inside their graphical containers and are reachable by ALA through random loopback ports.</p>
+  <p>The concrete paths and random port differ for each robot and task. A Desktop task produces an invocation equivalent to:</p>
+  <pre><code>ala \
+  --home /data/robots/&lt;robot-id&gt;/home \
+  --cwd /workspace/&lt;project&gt; \
+  --taskFile /data/robots/&lt;robot-id&gt;/runtime/&lt;task-id&gt;.prompt \
+  --ca codex \
+  --MCPServers desktop=http://127.0.0.1:&lt;port&gt;/mcp</code></pre>
+  <p>A Browser task uses the same command shape with <code>browser=http://127.0.0.1:&lt;port&gt;/mcp</code>. A Simple task omits <code>--MCPServers</code> and does not start a graphical container.</p>
+
+  <table>
+    <thead><tr><th>ALA argument</th><th>Meaning in RoboTeam</th></tr></thead>
+    <tbody>
+      <tr><td><code>--home</code></td><td>The robot's persistent home. ALA uses it for coding-agent authentication and configuration. The same directory appears as <code>/config</code> in the graphical container.</td></tr>
+      <tr><td><code>--cwd</code></td><td>The caller-selected workspace directory. ALA uses it as the writable work tree. Desktop and Browser containers receive the same directory at <code>/workspace</code>.</td></tr>
+      <tr><td><code>--taskFile</code></td><td>A private file written by RoboTeam with the task prompt. RoboTeam uses a file so long prompts do not need to be embedded in the process argument list.</td></tr>
+      <tr><td><code>--ca</code></td><td>Selects <code>codex</code>, <code>opencode</code>, <code>pi</code>, or <code>auto</code>. The selected CLI must exist and its account state must be available through <code>--home</code>.</td></tr>
+      <tr><td><code>--MCPServers</code></td><td>Supplies the task-local Desktop or Browser Streamable HTTP MCP address. The current ALA adapter injects this URL into Codex configuration for the run.</td></tr>
+      <tr><td><code>--skillSets</code></td><td>Optional comma-separated skill names exposed from <code>&lt;cwd&gt;/.agents/skills</code>.</td></tr>
+      <tr><td><code>--model</code></td><td>Optional native model override for the selected coding agent.</td></tr>
+    </tbody>
+  </table>
+  <p><code>--home</code> supplies saved state; it does not install a coding-agent executable. RoboTeam prepares the current Codex package in its shared tool cache and places it on ALA's <code>PATH</code>. OpenCode and Pi are supported by ALA but must already be provisioned in the outer runtime before RoboTeam can select them. Use Codex for Desktop and Browser automation because task-local MCP URL injection is currently implemented only by the Codex adapter. OpenCode and Pi can run Simple tasks once provisioned.</p>
+
+  <h2>Task and container lifetime</h2>
+  <p>Every start operation returns a <code>taskId</code>. Desktop and Browser starts also return a deterministic authenticated <code>sessionUrl</code>. Callers poll <code>getTaskStatusForRobot</code> and present the URL after the task reaches <code>running</code>, which follows Selkies and MCP readiness.</p>
+  <p>A completed or stopped GUI task leaves its container running. RoboTeam reuses it only when the next task has the same mode and resolved cwd. A different cwd replaces an idle same-mode container with a new <code>/workspace</code> mount. Use the separate container-stop tool when the visible session is no longer needed.</p>
+
+  <h2>AchillesCLI calls</h2>
+  <p>AchillesCLI's <code>list-robots</code> C-Skill calls <code>robot_list</code> through the Ploinky Router. Its <code>launch-robot</code> C-Skill accepts <code>desktop &lt;robot name&gt;: &lt;task&gt;</code> or <code>browser &lt;robot name&gt;: &lt;task&gt;</code>. It passes the current AchillesCLI workspace as <code>cwd</code>, calls the matching start tool, polls <code>getTaskStatusForRobot</code>, and returns the Selkies link after the GUI is ready.</p>
+
+  <h2>First-use preparation</h2>
+  <p>The first operation that needs Codex or a GUI automation server resolves the current release, installs it into <code>/data/tool-cache</code>, and validates it. Later starts reuse the active generation. When release lookup fails, RoboTeam uses the last valid generation if one exists.</p>
+
+  <h2>Nested sandbox diagnostics</h2>
+  <p>The current RoboTeam container cannot mount ALA's private procfs inside an additional user namespace. ALA therefore uses its capability-assisted private-proc path, retains its other Bubblewrap boundaries, and drops all capabilities before Codex starts. An error stating that neither private-proc path is available indicates a runtime capability or seccomp regression. RoboTeam must not bypass ALA or start Codex unsandboxed.</p>
+</article></main>
+<script src="partials-loader.js"></script>
+</body>
+</html>

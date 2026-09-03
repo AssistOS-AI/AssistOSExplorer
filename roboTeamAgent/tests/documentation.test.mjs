@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -60,4 +60,38 @@ test('documentation explains the nested ALA sandbox fallback and its retained bo
         assert.match(plainText, /drop(?:s|ped)? all capabilities|cap-drop ALL/iu);
     }
     assert.match(sources.join('\n'), /unsandboxed fallback (?:is )?forbidden|not an unsandboxed fallback/iu);
+});
+
+test('overview begins with product vision and no separate vision page remains', async () => {
+    const overview = await read('docs/index.html');
+    const header = await read('docs/partials/header.html');
+    const firstSection = overview.match(/<h2>([^<]+)<\/h2>/u)?.[1];
+
+    assert.equal(firstSection, 'Product vision');
+    assert.doesNotMatch(header, /vision\.html/u);
+    await assert.rejects(access(join(AGENT_ROOT, 'docs/vision.html')), { code: 'ENOENT' });
+});
+
+test('operations documents every MCP tool in a two-column table', async () => {
+    const operations = await read('docs/operations.html');
+    const config = JSON.parse(await read('mcp-config.json'));
+    const toolTable = operations.match(/<h2>MCP tools<\/h2>\s*<table>([\s\S]*?)<\/table>/u)?.[1] || '';
+
+    assert.match(toolTable, /<th>Tool<\/th><th>What it does<\/th>/u);
+    assert.equal((toolTable.match(/<th>/gu) || []).length, 2);
+    for (const tool of config.tools) assert.match(toolTable, new RegExp(`<code>${tool.name}<\\/code>`, 'u'));
+});
+
+test('documentation introduces ALA execution and AchillesCLI integration', async () => {
+    const overview = await read('docs/index.html');
+    const operations = await read('docs/operations.html');
+    const combined = `${overview}\n${operations}`;
+
+    for (const backend of ['Codex', 'OpenCode', 'Pi']) assert.match(combined, new RegExp(backend, 'u'));
+    for (const option of ['--home', '--cwd', '--taskFile', '--ca', '--MCPServers', '--skillSets', '--model']) {
+        assert.match(operations, new RegExp(option, 'u'));
+    }
+    assert.match(combined, /list-robots/u);
+    assert.match(combined, /launch-robot/u);
+    assert.match(combined, /Ploinky Router/u);
 });
