@@ -204,6 +204,45 @@ export function createRoboTeamServer(options) {
                 const robot = await robotStore.create({ ownerUserId: actor.id, name: body.name, specialization: body.specialization });
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
             }
+            if (pathname === '/api/control' && req.method === 'POST') {
+                const body = await readJsonBody(req);
+                const robot = await robotStore.getOwnedByName(body.robotName, actor.id);
+                if (!robot) return sendError(res, 404, 'robot not found');
+                const operation = String(body.operation || '');
+                if (operation === 'robot-delete') {
+                    const status = runtimeManager.status(robot.id);
+                    if (status.state !== 'stopped' || ['queued', 'starting', 'running', 'stopping'].includes(status.task?.state)) {
+                        return sendError(res, 409, 'stop the robot before deleting it');
+                    }
+                    await robotStore.deleteOwned(robot.id, actor.id);
+                    return sendJson(res, 200, { ok: true, deleted: robot.name });
+                }
+                if (operation === 'open-desktop') {
+                    return sendJson(res, 202, { ok: true, robotName: robot.name, run: await runtimeManager.openDesktop(robot, body.cwd) });
+                }
+                const startTypes = { 'start-desktop-task': 'desktop', 'start-browser-task': 'browser', 'start-simple-task': 'simple' };
+                if (startTypes[operation]) {
+                    const task = runtimeManager.startTask(robot, startTypes[operation], {
+                        cwd: body.cwd, task: String(body.task || ''), skillSets: body.skillSets || null,
+                        model: body.model || null, ca: body.ca || 'codex',
+                    });
+                    return sendJson(res, 202, { ok: true, robotName: robot.name, ...task });
+                }
+                const stopTypes = { 'stop-desktop-task': 'desktop', 'stop-browser-task': 'browser', 'stop-simple-task': 'simple' };
+                if (stopTypes[operation]) return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot, stopTypes[operation]) });
+                if (operation === 'take-control') return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot) });
+                if (operation === 'resume-task') return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.resumeTask(robot) });
+                if (operation === 'task-status') return sendJson(res, 200, { ok: true, robotName: robot.name, task: runtimeManager.taskStatus(robot.id, body.taskId) });
+                if (operation === 'desktop-url' || operation === 'browser-url') {
+                    const mode = operation.startsWith('desktop') ? 'desktop' : 'browser';
+                    return sendJson(res, 200, { ok: true, robotName: robot.name, sessionUrl: runtimeManager.sessionUrl(robot.id, mode) });
+                }
+                if (operation === 'stop-desktop-container' || operation === 'stop-browser-container') {
+                    const mode = operation.includes('desktop') ? 'desktop' : 'browser';
+                    return sendJson(res, 200, { ok: true, robotName: robot.name, run: await runtimeManager.stopContainer(robot.id, mode) });
+                }
+                return sendError(res, 400, 'unsupported RoboTeam control operation');
+            }
             const runId = matchRobotPath(pathname, '/run');
             if (runId && req.method === 'GET') {
                 const robot = await robotStore.getOwned(runId, actor.id);
@@ -233,7 +272,7 @@ export function createRoboTeamServer(options) {
         } catch (error) {
             const message = String(error?.message || '');
             const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop/.test(message);
-            const conflict = /already running|active robot limit/.test(message);
+            const conflict = /already running|active robot limit|occupied|active task|different cwd|stop the|interrupted GUI/.test(message);
             sendError(res, badRequest ? 400 : conflict ? 409 : 500, badRequest || conflict ? message : 'request failed');
         }
     });

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RoboTeam Documentation</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+  </script>
+</head>
+<body>
+<div data-include="partials/header.html"></div>
+<main class="page"><article class="document">
+  <nav class="breadcrumbs"><a href="index.html">Documentation</a> / Images and dependencies</nav>
+  <h1>Images and dependencies</h1>
+  <p class="lede">RoboTeam publishes three custom runtime images and installs fast-moving control tools into a persistent cache when they are first needed.</p>
+
+  <h2>Image composition</h2>
+  <table>
+    <thead><tr><th>Published image</th><th>Public base</th><th>RoboTeam additions</th></tr></thead>
+    <tbody>
+      <tr><td><code>assistos/roboteam-agent:runtime</code></td><td><code>quay.io/podman/upstream:latest</code>, resolved to one digest per publication</td><td>Node.js, npm, Bubblewrap, nested-container storage configuration, and the <code>roboteam-runtime-v4</code> contract. ALA comes from RoboTeam's Ploinky-prepared package dependencies; Codex is not baked in.</td></tr>
+      <tr><td><code>assistos/roboteam-desktop:runtime</code></td><td>Digest-pinned <code>lscr.io/linuxserver/webtop:ubuntu-xfce</code></td><td>Node/npm, AT-SPI and X11 system support, the desktop MCP launch service, and no computer-use-linux or Supergateway installation.</td></tr>
+      <tr><td><code>assistos/roboteam-browser:runtime</code></td><td>Digest-pinned <code>lscr.io/linuxserver/chromium</code></td><td>Node/npm and the service that connects cached Playwright MCP to visible Chromium through CDP. Playwright MCP is not baked in.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>First-use preparation</h2>
+  <figure class="diagram"><pre class="mermaid">flowchart LR
+Request[First request] --> Resolve[Resolve current upstream versions]
+Resolve --> Stage[Install in unique staging directory]
+Stage --> Probe[Probe executables]
+Probe --> Activate[Atomically activate generation]
+Activate --> Cache[(Persistent tool cache)]
+Cache --> Outer[ALA and Codex]
+Cache --> Desktop[Desktop MCP tools]
+Cache --> Browser[Browser MCP tool]
+Resolve -. failure .-> Previous[Last valid generation]
+Stage -. failure .-> Previous</pre><figcaption>The first use may be slower; subsequent requests reuse the active persistent generation.</figcaption></figure>
+  <p>Codex, Supergateway, and Playwright MCP are resolved through npm. Codex uses a global-prefix cache layout so ALA can discover the binary, mount its complete runtime read-only inside Bubblewrap, and place its <code>bin</code> directory on the sandbox PATH. GUI npm packages are installed by short-lived inner containers based on their target GUI image, which preserves native-runtime compatibility.</p>
+  <p><code>computer-use-linux</code> remains an architecture-specific Rust executable. RoboTeam resolves the latest GitHub release, selects the matching amd64 or arm64 asset, records its computed SHA-256 digest, and honors an upstream digest when GitHub provides one. The prepared desktop generation is probed in the desktop image before activation.</p>
+  <p>A manual desktop mounts the active Codex generation at <code>/opt/roboteam-codex</code> and exposes it on PATH. A user can therefore run <code>codex login</code> while the robot home is mounted at <code>/config</code>; ALA later uses the same home with the same cached Codex executable.</p>
+
+  <h2>Robot creation and shared images</h2>
+  <p>Creating a robot allocates metadata plus <code>home</code>, <code>workspace</code>, <code>downloads</code>, <code>logs</code>, and <code>runtime</code> directories. It does not copy an image or install an executable. Tool generations live under the shared <code>/data/tool-cache</code> root, while each robot contributes only its own state and work directories. This avoids a separate Codex or MCP installation for every robot.</p>
+
+  <h2>Refresh, fallback, and size policy</h2>
+  <p>Each tool family is resolved once per RoboTeam process and rechecked after <code>ROBOTEAM_TOOL_REFRESH_INTERVAL_MS</code>, six hours by default. Simultaneous requests share one in-process preparation. A resolved version and its target image identify an immutable cache generation. New content is staged and validated before <code>current.json</code> is replaced atomically. If resolution, download, installation, or validation fails, RoboTeam uses the last stamped generation; the very first use fails clearly when no fallback exists.</p>
+  <p>The operating-system and graphical base digests remain fixed in image definitions. Runtime tool versions are deliberately absent from those definitions, so updating a tool does not require publishing a new image.</p>
+  <p>The graphical images are large because LinuxServer Webtop and Chromium include Selkies, a window manager, browser or desktop packages, audio support, and the supporting operating-system files. The custom MCP layers are a small part of the total. Browser and desktop are separate images, but the current browser base is not substantially smaller because it carries almost the same graphical streaming stack.</p>
+</article></main>
+<div data-include="partials/footer.html"></div>
+<script src="partials-loader.js"></script>
+</body>
+</html>

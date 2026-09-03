@@ -1,83 +1,20 @@
 {
   "tools": [
-    {
-      "name": "robot_create",
-      "title": "Create robot",
-      "description": "Creates a persistent robot owned by the authenticated user.",
-      "command": "node",
-      "args": ["tools/control.mjs", "robot-create"],
-      "cwd": "/code",
-      "timeoutMs": 30000,
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-          "specialization": { "type": "string", "maxLength": 500 }
-        },
-        "required": ["name"],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "robot_list",
-      "title": "List robots",
-      "description": "Lists persistent robots owned by the authenticated user.",
-      "command": "node",
-      "args": ["tools/control.mjs", "robot-list"],
-      "cwd": "/code",
-      "timeoutMs": 30000,
-      "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
-    },
-    {
-      "name": "robot_start",
-      "title": "Start robot",
-      "description": "Starts one robot container in browser or desktop mode.",
-      "command": "node",
-      "args": ["tools/control.mjs", "robot-start"],
-      "cwd": "/code",
-      "timeoutMs": 600000,
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "robotId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
-          "mode": { "type": "string", "enum": ["browser", "desktop"] }
-        },
-        "required": ["robotId", "mode"],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "robot_stop",
-      "title": "Stop robot",
-      "description": "Stops the active robot container while preserving its home and work files.",
-      "command": "node",
-      "args": ["tools/control.mjs", "robot-stop"],
-      "cwd": "/code",
-      "timeoutMs": 30000,
-      "inputSchema": {
-        "type": "object",
-        "properties": { "robotId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" } },
-        "required": ["robotId"],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "robot_logs",
-      "title": "Read robot logs",
-      "description": "Returns the bounded log tail for the active robot container.",
-      "command": "node",
-      "args": ["tools/control.mjs", "robot-logs"],
-      "cwd": "/code",
-      "timeoutMs": 30000,
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "robotId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
-          "tail": { "type": "integer", "minimum": 1, "maximum": 1000 }
-        },
-        "required": ["robotId"],
-        "additionalProperties": false
-      }
-    }
+    {"name":"robot_create","title":"Create Robot","description":"Creates a persistent robot with a unique name for the authenticated owner.","command":"node","args":["tools/control.mjs","robot-create"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string","minLength":1,"maxLength":80},"specialization":{"type":"string","maxLength":500}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"robot_list","title":"List Robots","description":"Lists robots owned by the authenticated user.","command":"node","args":["tools/control.mjs","robot-list"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+    {"name":"robot_delete","title":"Delete Robot","description":"Deletes a stopped robot and its persistent home.","command":"node","args":["tools/control.mjs","robot-delete"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string","minLength":1,"maxLength":80}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"openDesktopForRobot","title":"Open Desktop for Robot","description":"Starts or reuses the robot desktop without ALA so its persistent coding-agent home can be configured; cwd is optional and defaults to the robot workspace.","command":"node","args":["tools/control.mjs","open-desktop"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string","minLength":1,"maxLength":80},"cwd":{"type":"string","minLength":1}},"required":["robotName"],"additionalProperties":false}},
+
+    {"name":"startDesktopTaskForRobot","title":"Start Desktop Task for Robot","description":"Starts or reuses the desktop and asynchronously runs ALA through its computer-use MCP bridge.","command":"node","args":["tools/control.mjs","start-desktop-task"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"},"cwd":{"type":"string"},"task":{"type":"string"},"skillSets":{"type":"string"},"model":{"type":"string"},"ca":{"type":"string","enum":["auto","codex","opencode","pi"]}},"required":["robotName","cwd","task"],"additionalProperties":false}},
+    {"name":"stopDesktopTaskForRobot","title":"Stop Desktop Task for Robot","description":"Stops ALA but preserves the live desktop.","command":"node","args":["tools/control.mjs","stop-desktop-task"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"startBrowserTaskForRobot","title":"Start Browser Task for Robot","description":"Starts or reuses the lighter browser container and asynchronously runs ALA through its browser MCP bridge.","command":"node","args":["tools/control.mjs","start-browser-task"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"},"cwd":{"type":"string"},"task":{"type":"string"},"skillSets":{"type":"string"},"model":{"type":"string"},"ca":{"type":"string","enum":["auto","codex","opencode","pi"]}},"required":["robotName","cwd","task"],"additionalProperties":false}},
+    {"name":"stopBrowserTaskForRobot","title":"Stop Browser Task for Robot","description":"Stops ALA but preserves the live browser.","command":"node","args":["tools/control.mjs","stop-browser-task"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"startSimpleALATaskForRobot","title":"Start Simple ALA Task for Robot","description":"Asynchronously starts ALA without a GUI container.","command":"node","args":["tools/control.mjs","start-simple-task"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"},"cwd":{"type":"string"},"task":{"type":"string"},"skillSets":{"type":"string"},"model":{"type":"string"},"ca":{"type":"string","enum":["auto","codex","opencode","pi"]}},"required":["robotName","cwd","task"],"additionalProperties":false}},
+    {"name":"stopSimpleALATaskForRobot","title":"Stop Simple ALA Task for Robot","description":"Stops the active simple ALA task.","command":"node","args":["tools/control.mjs","stop-simple-task"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"getTaskStatusForRobot","title":"Get Task Status for Robot","description":"Returns the active or most recent task status.","command":"node","args":["tools/control.mjs","task-status"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"},"taskId":{"type":"string"}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"getSessionUrlForRobotDesktop","title":"Get Desktop Session URL","description":"Returns the authenticated live desktop URL.","command":"node","args":["tools/control.mjs","desktop-url"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"getSessionUrlForRobotBrowser","title":"Get Browser Session URL","description":"Returns the authenticated live browser URL.","command":"node","args":["tools/control.mjs","browser-url"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"stopDesktopContainerForRobot","title":"Stop Desktop Container","description":"Stops and removes the desktop and its MCP bridge.","command":"node","args":["tools/control.mjs","stop-desktop-container"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"}},"required":["robotName"],"additionalProperties":false}},
+    {"name":"stopBrowserContainerForRobot","title":"Stop Browser Container","description":"Stops and removes the browser and its MCP bridge.","command":"node","args":["tools/control.mjs","stop-browser-container"],"cwd":"/code","timeoutMs":30000,"inputSchema":{"type":"object","properties":{"robotName":{"type":"string"}},"required":["robotName"],"additionalProperties":false}}
   ]
 }

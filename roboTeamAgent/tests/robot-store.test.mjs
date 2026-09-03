@@ -30,21 +30,14 @@ test('creates a persistent robot home and isolates listings by owner', async () 
     });
 });
 
-test('migrates legacy profile records into robots without losing their home', async () => {
+test('enforces owner-local unique names and deletes only an owned robot', async () => {
     await withStore(async (store, dataDir) => {
-        const legacyRoot = path.join(dataDir, 'profiles', 'legacy-a1b2c3');
-        await fs.mkdir(path.join(legacyRoot, 'home'), { recursive: true });
-        await fs.writeFile(path.join(legacyRoot, 'home', 'kept.txt'), 'kept');
-        await fs.writeFile(path.join(legacyRoot, 'metadata.json'), JSON.stringify({
-            schema: 'roboteam-profile-v1',
-            id: 'legacy-a1b2c3',
-            name: 'Legacy',
-            specialization: '',
-            ownerUserId: 'user-a',
-            createdAt: '2026-01-01T00:00:00.000Z',
-        }));
-        await store.initialize();
-        assert.equal(await fs.readFile(path.join(dataDir, 'robots', 'legacy-a1b2c3', 'home', 'kept.txt'), 'utf8'), 'kept');
-        assert.equal((await store.list('user-a'))[0].schema, 'roboteam-robot-v1');
+        const robot = await store.create({ ownerUserId: 'user-a', name: 'Unique', specialization: '' });
+        await assert.rejects(() => store.create({ ownerUserId: 'user-a', name: 'Unique' }), /already exists/);
+        await store.create({ ownerUserId: 'user-b', name: 'Unique' });
+        assert.equal((await store.getOwnedByName('Unique', 'user-a')).id, robot.id);
+        assert.equal(await store.deleteOwned(robot.id, 'user-b'), false);
+        assert.equal(await store.deleteOwned(robot.id, 'user-a'), true);
+        await assert.rejects(() => fs.stat(path.join(dataDir, 'robots', robot.id)), /ENOENT/);
     });
 });

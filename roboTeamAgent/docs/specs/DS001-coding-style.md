@@ -20,12 +20,19 @@ Browser identity comes from Router-injected `x-ploinky-auth-info`. MCP commands 
 
 Inner Podman commands use argument vectors. Container operations target exact names and managed labels; broad pruning and public engine sockets are prohibited. Only the allowlisted `browser` and `desktop` modes select images.
 
-Tests use Node's built-in runner and temporary data roots. They cover owner isolation, migration, validation, exact Podman arguments, lifecycle serialization, authentication, and proxy paths. Real nested Podman and Selkies checks are deployment smoke tests. Any future LLM call must use AchillesAgentLib `LLMAgent`; current control remains deterministic.
+Runtime dependency preparation belongs in `server/tool-cache.mjs`. Cache updates must use unique staging directories, executable validation, immutable generations, and atomic descriptor replacement. Runtime code must accept injected cache and process implementations so tests never require network access or a real nested engine.
+
+Tests use Node's built-in runner and temporary data roots. They cover owner isolation, validation, exact Podman arguments, lifecycle serialization, ALA execution, cache reuse and fallback, authentication, and proxy paths. Real nested Podman, upstream registry, and Selkies checks remain deployment smoke tests.
 
 ## Decisions & Questions
 
-1. **Decision:** persistence, container lifecycle, and transport stay in separate modules.
-2. **Decision:** behavior, HTML documentation, and DS contracts change together.
+### Question #1: How are runtime responsibilities separated?
+
+Response: Persistence, container lifecycle, tool-cache preparation, transport, and workstation control stay in separate modules.
+
+### Question #2: What documentation accompanies behavior changes?
+
+Response: Source behavior, HTML documentation, tests, and DS contracts change together.
 
 ## Conclusion
 

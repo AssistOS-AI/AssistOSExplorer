@@ -18,13 +18,9 @@ async function request(pathname, { method = 'GET', body, userId }) {
     if (!token) throw new Error('RoboTeam internal token is unavailable');
     const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
         method,
-        headers: {
-            'content-type': 'application/json',
-            'x-roboteam-internal-token': token,
-            'x-roboteam-user-id': userId,
-        },
+        headers: { 'content-type': 'application/json', 'x-roboteam-internal-token': token, 'x-roboteam-user-id': userId },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(590000),
+        signal: AbortSignal.timeout(29000),
     });
     const result = await response.json().catch(() => ({ ok: false, error: 'invalid service response' }));
     if (!response.ok) throw new Error(result.error || `RoboTeam request failed with ${response.status}`);
@@ -33,23 +29,24 @@ async function request(pathname, { method = 'GET', body, userId }) {
 
 const operation = process.argv[2] || '';
 const payload = await readPayload();
-const input = payload.input || {};
+const expectedToolNames = {
+    'robot-create': 'robot_create', 'robot-list': 'robot_list', 'robot-delete': 'robot_delete',
+    'open-desktop': 'openDesktopForRobot',
+    'start-desktop-task': 'startDesktopTaskForRobot', 'stop-desktop-task': 'stopDesktopTaskForRobot',
+    'start-browser-task': 'startBrowserTaskForRobot', 'stop-browser-task': 'stopBrowserTaskForRobot',
+    'start-simple-task': 'startSimpleALATaskForRobot', 'stop-simple-task': 'stopSimpleALATaskForRobot',
+    'task-status': 'getTaskStatusForRobot', 'desktop-url': 'getSessionUrlForRobotDesktop',
+    'browser-url': 'getSessionUrlForRobotBrowser', 'stop-desktop-container': 'stopDesktopContainerForRobot',
+    'stop-browser-container': 'stopBrowserContainerForRobot',
+};
+const invokedToolName = String(payload.tool || payload.toolName || payload.name || '').trim();
+if (invokedToolName && invokedToolName !== expectedToolNames[operation]) throw new Error('MCP tool identity does not match the requested operation');
+const input = payload.input || payload.arguments || {};
 const userId = authenticatedUserId(payload);
 let result;
 
-if (operation === 'robot-create') {
-    result = await request('/api/robots', { method: 'POST', body: { name: input.name, specialization: input.specialization || '' }, userId });
-} else if (operation === 'robot-list') {
-    result = await request('/api/robots', { userId });
-} else if (operation === 'robot-start') {
-    result = await request(`/api/robots/${encodeURIComponent(input.robotId || '')}/run`, { method: 'POST', body: { mode: input.mode }, userId });
-} else if (operation === 'robot-stop') {
-    result = await request(`/api/robots/${encodeURIComponent(input.robotId || '')}/run`, { method: 'DELETE', userId });
-} else if (operation === 'robot-logs') {
-    const query = new URLSearchParams({ tail: String(input.tail || 200) });
-    result = await request(`/api/robots/${encodeURIComponent(input.robotId || '')}/logs?${query}`, { userId });
-} else {
-    throw new Error('unsupported RoboTeam control operation');
-}
+if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, specialization: input.specialization || '' }, userId });
+else if (operation === 'robot-list') result = await request('/api/robots', { userId });
+else result = await request('/api/control', { method: 'POST', body: { operation, ...input }, userId });
 
 process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

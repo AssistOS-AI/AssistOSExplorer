@@ -4,13 +4,15 @@
 User[Authenticated browser] --> Router[Ploinky Router]
 Router --> Outer[RoboTeam HTTP service :3001]
 Outer --> Store[(Persistent /data/robots)]
+Outer --> Cache[(Persistent /data/tool-cache)]
 Outer --> Inner[Rootless inner Podman]
 Inner --> Browser[Chromium + Selkies]
 Inner --> Desktop[Webtop + Selkies]
 Browser --> Loopback[Random outer loopback port]
 Desktop --> Loopback
 Loopback --> Outer</pre><figcaption><em>Podman-in-Podman runtime and authenticated GUI proxy</em></figcaption></figure>
-<h2>Outer runtime</h2><p>The custom <code>roboteam-runtime-v3</code> image derives from an immutable Podman 6 upstream index and includes Node.js, npm, fuse-overlayfs, pasta, curl, and Git. Inner storage lives at <code>/data/podman/storage</code>. The manifest pins <code>docker.io/assistos/roboteam-agent@sha256:e8282f4ccd23ac4520421daecf46f208225b45b34bb9e40a9937e2c40821215d</code>, published from image-definition commit <code>b0490170a976b67504d3bfb0bdbe09e3df7dcdde</code> with v3 runtime contracts for amd64 and arm64, and requests Ploinky's <code>nestedPodman</code> capability. The install hook verifies the runtime contract before startup. Image updates must preserve this contract on both architectures.</p>
+<h2>Outer runtime</h2><p>The custom <code>roboteam-runtime-v4</code> image provides Podman 6, Node.js, npm, Bubblewrap, fuse-overlayfs, pasta, curl, and Git. Inner storage lives at <code>/data/podman/storage</code>. The manifest follows the AssistOS-managed <code>runtime</code> channel and requests Ploinky's <code>nestedPodman</code> capability; the install hook verifies the runtime contract before startup.</p>
 <h2>Robot runtime</h2><p><code>RobotStore</code> owns durable metadata and directories. <code>RuntimeManager</code> constructs exact Podman argument vectors, tracks active runs in memory, and removes only labelled RoboTeam containers. The HTTP server authenticates ownership and reverse-proxies Selkies HTTP and WebSocket traffic.</p>
-<h2>Networking</h2><p>The outer container stays on Ploinky's managed network. AgentServer/MCP uses port 7000 and the authenticated RoboTeam UI uses port 3001. Inner containers use <code>pasta</code>; Selkies port 3000 is published only to a random outer loopback port. The proxy preserves the configured Ploinky subfolder.</p>
+<h2>Networking and task execution</h2><p>The outer container stays on Ploinky's managed network. AgentServer/MCP uses port 7000 and the authenticated RoboTeam UI uses port 3001. Inner containers use <code>pasta</code>; Selkies port 3000 and MCP port 8100 are published only to random outer loopback ports. Desktop uses a Streamable HTTP bridge to computer-use-linux; browser uses Playwright MCP over CDP to the visible Chromium. ALA runs separately in the outer runtime with the robot home and caller cwd.</p>
+<h2>Runtime tool cache</h2><p><code>ToolCache</code> resolves current Codex, computer-use-linux, Supergateway, and Playwright MCP releases when needed. It installs candidates into unique generations under <code>/data/tool-cache</code>, probes them, and switches <code>current.json</code> atomically. GUI containers mount exact tool generations read-only; ALA receives the cached Codex binary on <code>PATH</code>. An unavailable upstream falls back only to the last validated generation.</p>
 </article></main><script src="partials-loader.js"></script></body></html>

@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-contract_file="/opt/roboteam-runtime/contract-v3"
-contract_value="roboteam-runtime-v3"
-required_commands="podman fuse-overlayfs pasta node"
-required_executables=""
+contract_file="/opt/roboteam-runtime/contract-v4"
+contract_value="roboteam-runtime-v4"
+required_commands="podman fuse-overlayfs pasta node npm bwrap"
+required_executables="/code/node_modules/.bin/ala"
 required_assets="/opt/roboteam-runtime/storage.conf"
 missing=""
 
@@ -38,5 +38,8 @@ if [ -n "$missing" ]; then
     echo "ERROR: RoboTeam purpose-built runtime contract is incomplete:$missing" >&2
     exit 1
 fi
+
+mkdir -p "${ROBOTEAM_TOOL_CACHE_DIR:-/data/tool-cache}"
+chmod 700 "${ROBOTEAM_TOOL_CACHE_DIR:-/data/tool-cache}"
 
 echo "RoboTeam runtime contract verified"

@@ -3,7 +3,7 @@ title: DS002-model-strategy
 id: DS002
 status: accepted
 owner: RoboTeamAgent
-summary: Keeps robot persistence and graphical runtime control deterministic while reserving LLM selection for a future task contract.
+summary: Separates deterministic robot lifecycle from ALA-selected coding-agent and model execution.
 ---
 
 ## Introduction
@@ -14,12 +14,17 @@ RoboTeam's current robot and container control path does not require an LLM.
 
 Robot creation, listing, browser or desktop start, stop, log retrieval, authorization, persistence, HTTP proxying, and WebSocket proxying work without a model provider.
 
-RoboTeam does not hard-code providers, models, pricing, or tiers. Future LLM calls must use AchillesAgentLib `LLMAgent` with environment-derived configuration and an explicit override path. ALA invocation, retries, budgets, and routing remain unspecified.
+RoboTeam does not hard-code providers, pricing, or tiers. It starts ALA with the selected `--ca` backend and may forward an optional `--model` hint. The robot's persistent `--home` owns authentication and backend configuration; RoboTeam injects only task-local MCP URL overrides.
 
 ## Decisions & Questions
 
-1. **Decision:** No agent loop is included in this runtime revision.
-2. **Question:** Model and computer-control selection belongs to a later task contract.
+### Question #1: Where does coding-agent execution run?
+
+Response: RoboTeam starts ALA in the outer runtime. ALA selects and runs the configured coding agent; RoboTeam remains responsible for deterministic robot and container lifecycle.
+
+### Question #2: Where does Codex configuration live?
+
+Response: The Codex executable is shared through a persistent current-version cache, while each robot's persistent home owns its saved account and configuration state.
 
 ## Conclusion
 

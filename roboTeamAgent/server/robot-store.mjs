@@ -40,13 +40,11 @@ export class RobotStore {
     constructor(options = {}) {
         this.dataDir = path.resolve(options.dataDir || '/data');
         this.robotsDir = path.join(this.dataDir, 'robots');
-        this.legacyProfilesDir = path.join(this.dataDir, 'profiles');
     }
 
     async initialize() {
         await fs.mkdir(this.robotsDir, { recursive: true, mode: 0o700 });
         await fs.chmod(this.robotsDir, 0o700);
-        await this._migrateLegacyProfiles();
     }
 
     robotPath(robotId) {
@@ -68,39 +66,6 @@ export class RobotStore {
             const target = path.join(robotRoot, directory);
             await fs.mkdir(target, { recursive: true, mode: 0o700 });
             await fs.chmod(target, 0o700);
-        }
-    }
-
-    async _migrateLegacyProfiles() {
-        let entries;
-        try {
-            entries = await fs.readdir(this.legacyProfilesDir, { withFileTypes: true });
-        } catch (error) {
-            if (error?.code === 'ENOENT') return;
-            throw error;
-        }
-        for (const entry of entries) {
-            if (!entry.isDirectory() || !ROBOT_ID_PATTERN.test(entry.name)) continue;
-            const source = path.join(this.legacyProfilesDir, entry.name);
-            const target = this.robotPath(entry.name);
-            try {
-                await fs.rename(source, target);
-            } catch (error) {
-                if (error?.code === 'EEXIST' || error?.code === 'ENOTEMPTY') continue;
-                throw error;
-            }
-            const raw = JSON.parse(await fs.readFile(path.join(target, 'metadata.json'), 'utf8'));
-            const migrated = {
-                schema: 'roboteam-robot-v1',
-                id: entry.name,
-                name: String(raw.name || 'Robot'),
-                specialization: String(raw.specialization || ''),
-                ownerUserId: normalizeOwnerUserId(raw.ownerUserId),
-                createdAt: String(raw.createdAt || new Date().toISOString()),
-                updatedAt: new Date().toISOString(),
-            };
-            await this._ensureLayout(target);
-            await this._writeMetadata(target, migrated);
         }
     }
 
@@ -145,11 +110,22 @@ export class RobotStore {
         return robot.ownerUserId === owner ? robot : null;
     }
 
+    async getOwnedByName(name, ownerUserId) {
+        const owner = normalizeOwnerUserId(ownerUserId);
+        const normalizedName = normalizeName(name);
+        return (await this._allRobots()).find((robot) => (
+            robot.ownerUserId === owner && robot.name === normalizedName
+        )) || null;
+    }
+
     async create({ ownerUserId, name, specialization = '' }) {
         const owner = normalizeOwnerUserId(ownerUserId);
         const normalizedName = normalizeName(name);
         const normalizedSpecialization = normalizeSpecialization(specialization);
         await this.initialize();
+        if ((await this._allRobots()).some((robot) => robot.ownerUserId === owner && robot.name === normalizedName)) {
+            throw new Error('robot name already exists');
+        }
         let robotId;
         let robotRoot;
         for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -177,6 +153,13 @@ export class RobotStore {
         };
         await this._writeMetadata(robotRoot, metadata);
         return metadata;
+    }
+
+    async deleteOwned(robotId, ownerUserId) {
+        const robot = await this.getOwned(robotId, ownerUserId);
+        if (!robot) return false;
+        await fs.rm(this.robotPath(robotId), { recursive: true, force: true });
+        return true;
     }
 }
 

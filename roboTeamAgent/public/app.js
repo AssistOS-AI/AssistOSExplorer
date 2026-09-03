@@ -134,6 +134,19 @@ function renderRobots(robots) {
         browserButton.disabled = running && !(ready && robot.run.mode === 'browser');
         desktopButton.disabled = running && !(ready && robot.run.mode === 'desktop');
         card.querySelector('.view-logs').hidden = !running;
+        const takeControl = card.querySelector('.take-control');
+        const resumeTask = card.querySelector('.resume-task');
+        const task = robot.run.task;
+        takeControl.hidden = !task || !['desktop', 'browser'].includes(task.type) || task.state !== 'running';
+        resumeTask.hidden = !task || !['desktop', 'browser'].includes(task.type) || task.state !== 'stopped';
+        takeControl.addEventListener('click', async () => {
+            try { await api('api/control', { method: 'POST', body: { operation: 'take-control', robotName: robot.name } }); await loadRobots(); }
+            catch (error) { showError(error); }
+        });
+        resumeTask.addEventListener('click', async () => {
+            try { await api('api/control', { method: 'POST', body: { operation: 'resume-task', robotName: robot.name } }); await loadRobots(); }
+            catch (error) { showError(error); }
+        });
         browserButton.addEventListener('click', (event) => {
             if (ready && robot.run.mode === 'browser') stopRobot(robot, event.currentTarget);
             else startRobot(robot, 'browser', event.currentTarget);

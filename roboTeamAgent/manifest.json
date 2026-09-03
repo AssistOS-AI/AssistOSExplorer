@@ -1,5 +1,5 @@
 {
-  "container": "docker.io/assistos/roboteam-agent@sha256:e8282f4ccd23ac4520421daecf46f208225b45b34bb9e40a9937e2c40821215d",
+  "container": "docker.io/assistos/roboteam-agent:runtime",
   "about": "Manages persistent robots and starts authenticated browser or Linux desktop containers with nested Podman.",
   "containerSecurity": {
     "nestedPodman": true
@@ -47,11 +47,23 @@
         },
         "ROBOTEAM_BROWSER_IMAGE": {
           "required": false,
-          "default": "lscr.io/linuxserver/chromium:latest"
+          "default": "docker.io/assistos/roboteam-browser:runtime"
         },
         "ROBOTEAM_DESKTOP_IMAGE": {
           "required": false,
-          "default": "lscr.io/linuxserver/webtop:ubuntu-xfce"
+          "default": "docker.io/assistos/roboteam-desktop:runtime"
+        },
+        "ROBOTEAM_ALA_COMMAND": {
+          "required": false,
+          "default": "/code/node_modules/.bin/ala"
+        },
+        "ROBOTEAM_TOOL_CACHE_DIR": {
+          "required": false,
+          "default": "/data/tool-cache"
+        },
+        "ROBOTEAM_TOOL_REFRESH_INTERVAL_MS": {
+          "required": false,
+          "default": "21600000"
         },
         "TZ": {
           "required": false,

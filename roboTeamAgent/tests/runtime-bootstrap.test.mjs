@@ -39,10 +39,10 @@ async function writeFixture(directory, name, source) {
     return filePath;
 }
 
-test('manifest pins the published multi-architecture runtime compatible with contract v3', async () => {
+test('manifest follows the operator-managed runtime channel', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
 
-    assert.equal(manifest.container, 'docker.io/assistos/roboteam-agent@sha256:e8282f4ccd23ac4520421daecf46f208225b45b34bb9e40a9937e2c40821215d');
+    assert.equal(manifest.container, 'docker.io/assistos/roboteam-agent:runtime');
 });
 
 test('manifest declares the MCP startup budget', async () => {
@@ -76,19 +76,32 @@ test('manifest stores RoboTeam state in the workspace private data tree', async 
     });
 });
 
-test('install hook only verifies the immutable nested Podman image contract', async () => {
+test('manifest selects runtime-only GUI images and the persistent tool cache', async () => {
+    const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
+    const environment = manifest.profiles.default.env;
+
+    assert.equal(environment.ROBOTEAM_DESKTOP_IMAGE.default, 'docker.io/assistos/roboteam-desktop:runtime');
+    assert.equal(environment.ROBOTEAM_BROWSER_IMAGE.default, 'docker.io/assistos/roboteam-browser:runtime');
+    assert.equal(environment.ROBOTEAM_TOOL_CACHE_DIR.default, '/data/tool-cache');
+    assert.equal(environment.ROBOTEAM_TOOL_REFRESH_INTERVAL_MS.default, '21600000');
+});
+
+test('install hook verifies the runtime and prepares the persistent tool-cache root', async () => {
     const source = await readFile(join(AGENT_ROOT, 'scripts', 'install.sh'), 'utf8');
 
-    assert.match(source, /\/opt\/roboteam-runtime\/contract-v3/);
-    assert.match(source, /roboteam-runtime-v3/);
-    for (const command of ['podman', 'fuse-overlayfs', 'pasta', 'node']) {
+    assert.match(source, /\/opt\/roboteam-runtime\/contract-v4/);
+    assert.match(source, /roboteam-runtime-v4/);
+    for (const command of ['podman', 'fuse-overlayfs', 'pasta', 'node', 'npm', 'bwrap']) {
         assert.match(source, new RegExp(`\\b${command}\\b`));
     }
+    assert.doesNotMatch(source, /command:codex/);
+    assert.match(source, /ROBOTEAM_TOOL_CACHE_DIR/);
     for (const requiredPath of ['/opt/roboteam-runtime/storage.conf']) {
         assert.match(source, new RegExp(requiredPath.replaceAll('/', '\\/')));
     }
     assert.match(source, /podman version 6/);
-    assert.doesNotMatch(source, /\b(?:apt|apt-get|curl|wget|npm|pnpm|yarn|git)\b/);
+    assert.doesNotMatch(source, /\b(?:apt|apt-get|curl|wget|pnpm|yarn|git)\b/);
+    assert.doesNotMatch(source, /npm\s+(?:install|ci)/);
 });
 
 test('AgentServer failure terminates the service and fails the container', async (t) => {

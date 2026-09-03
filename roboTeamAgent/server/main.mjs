@@ -21,6 +21,10 @@ const runtimeManager = new RuntimeManager({
     maxActive: process.env.ROBOTEAM_MAX_ACTIVE_ROBOTS,
     browserImage: process.env.ROBOTEAM_BROWSER_IMAGE,
     desktopImage: process.env.ROBOTEAM_DESKTOP_IMAGE,
+    alaCommand: process.env.ROBOTEAM_ALA_COMMAND,
+    toolCacheRoot: process.env.ROBOTEAM_TOOL_CACHE_DIR,
+    toolRefreshIntervalMs: process.env.ROBOTEAM_TOOL_REFRESH_INTERVAL_MS,
+    workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT || '/workspace',
     timezone: process.env.TZ,
 });
 await runtimeManager.initialize();
