@@ -33,7 +33,7 @@ test('builds browser and desktop containers around the persistent robot director
     assert.ok(plan.args.includes('/cache/browser:/opt/roboteam-tools:ro'));
     assert.ok(plan.args.some((value) => value.includes('--remote-debugging-port=9222')));
     assert.equal(plan.args.includes('--privileged'), false);
-    assert.deepEqual(plan.args.slice(2, 6), ['--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777']);
+    assert.deepEqual(plan.args.slice(2, 8), ['--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777']);
 
     const desktop = buildRobotRunArgs({
         robot: { id: 'research-a1b2c3', name: 'Research' },
@@ -49,6 +49,30 @@ test('builds browser and desktop containers around the persistent robot director
     assert.ok(desktop.args.includes('/cache/codex:/opt/roboteam-codex:ro'));
     assert.ok(desktop.args.includes('CODEX_HOME=/config/.codex'));
     assert.ok(desktop.args.includes('PATH=/opt/roboteam-codex/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
+    assert.deepEqual(desktop.args.slice(2, 4), ['--log-driver', 'k8s-file']);
+});
+
+test('reads only the active GUI container log', async () => {
+    const calls = [];
+    const manager = new RuntimeManager({
+        execFileImpl: async (_command, args) => {
+            calls.push(args);
+            return { stdout: 'desktop stdout\n', stderr: 'desktop stderr\n' };
+        },
+        toolCache: preparedToolCache,
+    });
+    manager.sessions.set('worker-a1b2c3', {
+        robotId: 'worker-a1b2c3',
+        mode: 'desktop',
+        state: 'running',
+        containerName: 'roboteam-desktop-worker-a1b2c3',
+    });
+    manager.tasks.set('old-task', { taskId: 'old-task', robotId: 'idle-a1b2c3', logTail: 'ALA output' });
+    manager.latestTask.set('idle-a1b2c3', 'old-task');
+
+    assert.equal(await manager.logs('worker-a1b2c3', 250), 'desktop stdout\ndesktop stderr\n');
+    assert.deepEqual(calls, [['logs', '--tail', '250', 'roboteam-desktop-worker-a1b2c3']]);
+    assert.equal(await manager.logs('idle-a1b2c3'), '');
 });
 
 test('queues tasks per robot and runs them FIFO with one active ALA process', async (t) => {

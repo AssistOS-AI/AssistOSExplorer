@@ -130,7 +130,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
         image: images[mode],
         subfolder,
         args: [
-            'run', '-d', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777', '--network', 'pasta',
+            'run', '-d', '--log-driver', 'k8s-file', '--ipc', 'none', '--tmpfs', '/dev/shm:rw,size=1g,mode=1777', '--network', 'pasta',
             '--name', containerName, '--label', MANAGED_LABEL,
             '--label', `io.assistos.roboteam.robot-id=${robot.id}`,
             '--label', `io.assistos.roboteam.mode=${mode}`,
@@ -481,10 +481,7 @@ export class RuntimeManager {
 
     async logs(robotId, tail = 200) {
         const session = this.sessions.get(robotId);
-        if (!session) {
-            const task = this.taskStatus(robotId);
-            return task ? `${task.logTail || ''}${task.result || ''}` : '';
-        }
+        if (!session) return '';
         const result = await this._podman(['logs', '--tail', String(Math.max(1, Math.min(1000, Number(tail) || 200))), session.containerName], 30000);
         return `${result.stdout || ''}${result.stderr || ''}`.slice(-256 * 1024);
     }

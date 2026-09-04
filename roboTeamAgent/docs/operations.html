@@ -39,6 +39,10 @@
     </tbody>
   </table>
 
+  <h2>Dashboard controls</h2>
+  <p>The robot card starts or stops the Browser and Desktop container. Once a graphical session is ready, the card prints its complete authenticated Selkies URL as a link. The link remains available while that session runs, so a user can reopen a window that was closed.</p>
+  <p>The <code>Logs</code> button occupies a separate row below the session actions. Its initial state hides the log panel. Activating it reads the latest 200 lines from <code>podman logs</code> for the active Desktop or Browser container, displays them beneath the button, and refreshes the snapshot once per second. RoboTeam starts both graphical containers with Podman's <code>k8s-file</code> log driver, which stores their standard output and error locally and keeps <code>podman logs</code> functional even though the outer RoboTeam container has no systemd journal. The panel never mixes ALA task output into these container logs. Activating <code>Logs</code> again hides the panel and stops the polling. New output stays visible while the reader is at the bottom; scrolling upward suspends automatic movement to the latest line. The dashboard does not display Take Control or Resume buttons.</p>
+
   <h2>How RoboTeam runs ALA</h2>
   <p>ALA is the LLM execution process. RoboTeam starts it in the outer RoboTeam container, in parallel with the graphical container. ALA then starts the selected coding-agent CLI inside its Bubblewrap sandbox. The Desktop and Browser MCP servers stay inside their graphical containers and are reachable by ALA through random loopback ports.</p>
   <p>The concrete paths and random port differ for each robot and task. A Desktop task produces an invocation equivalent to:</p>

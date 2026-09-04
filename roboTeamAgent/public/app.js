@@ -7,6 +7,7 @@ const robotCount = document.querySelector('#robotCount');
 const createForm = document.querySelector('#createForm');
 const formMessage = document.querySelector('#formMessage');
 const refreshButton = document.querySelector('#refreshButton');
+const logPollers = new Set();
 
 function endpoint(relativePath) {
     return new URL(relativePath.replace(/^\/+/, ''), new URL(basePath, location.origin)).toString();
@@ -74,6 +75,11 @@ function reportSessionFailure(sessionWindow, error) {
     sessionWindow.document.body.textContent = error.message;
 }
 
+function clearLogPollers() {
+    for (const poller of logPollers) clearInterval(poller);
+    logPollers.clear();
+}
+
 async function startRobot(robot, mode, button) {
     const sessionWindow = openPendingSession(robot, mode);
     button.disabled = true;
@@ -103,6 +109,7 @@ async function stopRobot(robot, button) {
 }
 
 function renderRobots(robots) {
+    clearLogPollers();
     robotsList.replaceChildren();
     robotCount.textContent = `${robots.length} ${robots.length === 1 ? 'robot' : 'robots'}`;
     if (!robots.length) {
@@ -133,20 +140,16 @@ function renderRobots(robots) {
         if (desktopRunning) desktopButton.className = 'button danger open-desktop';
         browserButton.disabled = running && !(ready && robot.run.mode === 'browser');
         desktopButton.disabled = running && !(ready && robot.run.mode === 'desktop');
-        card.querySelector('.view-logs').hidden = !running;
-        const takeControl = card.querySelector('.take-control');
-        const resumeTask = card.querySelector('.resume-task');
-        const task = robot.run.task;
-        takeControl.hidden = !task || !['desktop', 'browser'].includes(task.type) || task.state !== 'running';
-        resumeTask.hidden = !task || !['desktop', 'browser'].includes(task.type) || task.state !== 'stopped';
-        takeControl.addEventListener('click', async () => {
-            try { await api('api/control', { method: 'POST', body: { operation: 'take-control', robotName: robot.name } }); await loadRobots(); }
-            catch (error) { showError(error); }
-        });
-        resumeTask.addEventListener('click', async () => {
-            try { await api('api/control', { method: 'POST', body: { operation: 'resume-task', robotName: robot.name } }); await loadRobots(); }
-            catch (error) { showError(error); }
-        });
+        const session = card.querySelector('.robot-session');
+        if (ready) {
+            const url = sessionUrl(robot.run);
+            session.querySelector('span').textContent = `${robot.run.mode === 'desktop' ? 'Desktop' : 'Browser'} session:`;
+            const link = session.querySelector('.session-url');
+            link.href = url;
+            link.textContent = url;
+            link.target = `_roboteam_${robot.id}`;
+            session.hidden = false;
+        }
         browserButton.addEventListener('click', (event) => {
             if (ready && robot.run.mode === 'browser') stopRobot(robot, event.currentTarget);
             else startRobot(robot, 'browser', event.currentTarget);
@@ -155,14 +158,58 @@ function renderRobots(robots) {
             if (ready && robot.run.mode === 'desktop') stopRobot(robot, event.currentTarget);
             else startRobot(robot, 'desktop', event.currentTarget);
         });
-        card.querySelector('.view-logs').addEventListener('click', async () => {
-            const panel = card.querySelector('.robot-logs');
+        const logsButton = card.querySelector('.view-logs');
+        const logsPanel = card.querySelector('.robot-logs');
+        logsPanel.id = `robot-logs-${robot.id}`;
+        logsButton.setAttribute('aria-controls', logsPanel.id);
+        let logPoller = null;
+        let logRequestActive = false;
+        const stopLogPolling = () => {
+            if (logPoller === null) return;
+            clearInterval(logPoller);
+            logPollers.delete(logPoller);
+            logPoller = null;
+        };
+        const refreshContainerLogs = async () => {
+            if (logsPanel.hidden || logRequestActive) return;
+            logRequestActive = true;
+            const distanceFromBottom = logsPanel.scrollHeight - logsPanel.clientHeight - logsPanel.scrollTop;
+            const followLatest = distanceFromBottom <= 12;
+            const previousScrollTop = logsPanel.scrollTop;
             try {
                 const result = await api(`api/robots/${robot.id}/logs?tail=200`);
-                panel.textContent = result.logs || 'No logs yet.';
-                panel.hidden = false;
+                const nextText = result.logs || 'No container output yet.';
+                if (logsPanel.textContent !== nextText) {
+                    logsPanel.textContent = nextText;
+                    requestAnimationFrame(() => {
+                        logsPanel.scrollTop = followLatest
+                            ? logsPanel.scrollHeight
+                            : Math.min(previousScrollTop, logsPanel.scrollHeight);
+                    });
+                }
             } catch (error) {
+                stopLogPolling();
                 showError(error);
+            } finally {
+                logRequestActive = false;
+            }
+        };
+        logsButton.addEventListener('click', async () => {
+            if (!logsPanel.hidden) {
+                stopLogPolling();
+                logsPanel.hidden = true;
+                logsButton.setAttribute('aria-expanded', 'false');
+                logsButton.classList.remove('is-active');
+                return;
+            }
+            logsPanel.textContent = 'Loading container logs…';
+            logsPanel.hidden = false;
+            logsButton.setAttribute('aria-expanded', 'true');
+            logsButton.classList.add('is-active');
+            await refreshContainerLogs();
+            if (!logsPanel.hidden && logPoller === null) {
+                logPoller = setInterval(refreshContainerLogs, 1000);
+                logPollers.add(logPoller);
             }
         });
         robotsList.append(card);

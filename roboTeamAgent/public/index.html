@@ -42,9 +42,10 @@
       <div class="robot-actions">
         <button class="button secondary open-browser" type="button">Start Browser</button>
         <button class="button primary open-desktop" type="button">Start Desktop</button>
-        <button class="button secondary view-logs" type="button">Logs</button>
-        <button class="button danger take-control" type="button" hidden>Take control</button>
-        <button class="button primary resume-task" type="button" hidden>Resume</button>
+      </div>
+      <p class="robot-session" hidden><span></span><a class="session-url" target="_blank" rel="noopener noreferrer"></a></p>
+      <div class="robot-log-controls">
+        <button class="button secondary view-logs" type="button" aria-expanded="false">Logs</button>
       </div>
       <pre class="robot-logs" hidden></pre>
     </article>

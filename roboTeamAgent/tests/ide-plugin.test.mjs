@@ -104,5 +104,18 @@ test('opens a pending robot session before awaiting startup and toggles the acti
     assert.match(source, /desktopRunning \? 'Stop Desktop' : 'Start Desktop'/);
     assert.match(source, /stopRobot\(robot, event\.currentTarget\)/);
     assert.match(source, /window\.location\.assign\(url\)/);
+    assert.match(source, /link\.textContent = url/);
+    assert.match(source, /session\.hidden = false/);
+    assert.doesNotMatch(html, /take-control|Take control|resume-task|>Resume</);
+    assert.match(html, /class="robot-log-controls"/);
+    assert.match(html, /class="button secondary view-logs"[^>]+aria-expanded="false"/);
+    assert.ok(html.indexOf('robot-log-controls') > html.indexOf('robot-actions'));
+    assert.ok(html.indexOf('robot-logs') > html.indexOf('robot-log-controls'));
+    assert.match(source, /if \(!logsPanel\.hidden\)/);
+    assert.match(source, /logsButton\.setAttribute\('aria-expanded', 'false'\)/);
+    assert.match(source, /logsButton\.setAttribute\('aria-expanded', 'true'\)/);
+    assert.match(source, /setInterval\(refreshContainerLogs, 1000\)/);
+    assert.match(source, /clearInterval\(logPoller\)/);
+    assert.match(source, /distanceFromBottom <= 12/);
     assert.doesNotMatch(html, /stop-robot/);
 });
