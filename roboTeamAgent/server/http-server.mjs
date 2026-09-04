@@ -207,7 +207,9 @@ export function createRoboTeamServer(options) {
             }
             if (pathname === '/api/control' && req.method === 'POST') {
                 const body = await readJsonBody(req);
-                const robot = await robotStore.getByName(body.robotName);
+                const robot = body.robotId
+                    ? await robotStore.get(body.robotId)
+                    : await robotStore.getByName(body.robotName);
                 if (!robot) return sendError(res, 404, 'robot not found');
                 const operation = String(body.operation || '');
                 if (operation === 'robot-delete') {
@@ -229,12 +231,33 @@ export function createRoboTeamServer(options) {
                         cwd: body.cwd, task: String(body.task || ''), skillSets: body.skillSets || null,
                         model: body.model || null, ca: body.ca || 'codex',
                     });
-                    return sendJson(res, 202, { ok: true, robotName: robot.name, ...task });
+                    return sendJson(res, 202, {
+                        ok: true,
+                        robotId: robot.id,
+                        robotName: robot.name,
+                        type: startTypes[operation],
+                        ...task,
+                    });
                 }
                 const stopTypes = { 'stop-desktop-task': 'desktop', 'stop-browser-task': 'browser', 'stop-simple-task': 'simple' };
                 if (stopTypes[operation]) return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot, stopTypes[operation], body.taskId) });
-                if (operation === 'take-control') return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot) });
-                if (operation === 'resume-task') return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.resumeTask(robot) });
+                if (operation === 'take-control') {
+                    return sendJson(res, 202, {
+                        ok: true,
+                        robotName: robot.name,
+                        ...runtimeManager.takeControl(robot, body.taskId),
+                    });
+                }
+                if (operation === 'resume-task') {
+                    const task = runtimeManager.resumeTask(robot, body.taskId);
+                    return sendJson(res, 202, {
+                        ok: true,
+                        robotId: robot.id,
+                        robotName: robot.name,
+                        type: runtimeManager.taskStatus(robot.id, task.taskId)?.type,
+                        ...task,
+                    });
+                }
                 if (operation === 'task-status') return sendJson(res, 200, { ok: true, robotName: robot.name, task: runtimeManager.taskStatus(robot.id, body.taskId) });
                 if (operation === 'desktop-url' || operation === 'browser-url') {
                     const mode = operation.startsWith('desktop') ? 'desktop' : 'browser';

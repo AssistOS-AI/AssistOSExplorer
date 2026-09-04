@@ -202,6 +202,86 @@ test('can stop one queued task without interrupting the active task', async (t) 
     assert.equal(children.length, 1);
 });
 
+test('holds the robot queue during manual GUI control and resumes the interrupted task first', async () => {
+    const robot = { id: 'manual-a1b2c3', name: 'Manual' };
+    const killed = [];
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const interrupted = {
+        taskId: 'interrupted-task',
+        robotId: robot.id,
+        type: 'desktop',
+        state: 'running',
+        createdAt: new Date().toISOString(),
+        request: { cwd: '/workspace/project', task: 'Inspect the application.', ca: 'codex' },
+        logTail: '',
+        logSeq: 0,
+        logTruncated: false,
+        result: '',
+        error: null,
+        child: { kill: (signal) => { killed.push(signal); return true; } },
+        cancelRequested: false,
+    };
+    const waiting = {
+        ...interrupted,
+        taskId: 'waiting-task',
+        state: 'queued',
+        request: { cwd: '/workspace/project', task: 'Run after resume.', ca: 'codex' },
+        child: null,
+    };
+    manager.tasks.set(interrupted.taskId, interrupted);
+    manager.tasks.set(waiting.taskId, waiting);
+    manager.latestTask.set(robot.id, interrupted.taskId);
+    manager.activeTasks.set(robot.id, interrupted.taskId);
+    manager.taskQueues.set(robot.id, [waiting.taskId]);
+
+    manager.takeControl(robot, interrupted.taskId);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(manager.manualControl.get(robot.id), interrupted.taskId);
+    assert.deepEqual(killed, ['SIGTERM']);
+    assert.equal(manager.taskStatus(robot.id, interrupted.taskId).state, 'stopped');
+    await manager._drainTaskQueue(robot);
+    assert.equal(manager.taskStatus(robot.id, waiting.taskId).state, 'queued');
+
+    const resumed = manager.resumeTask(robot, interrupted.taskId);
+    const resumedInternal = manager.tasks.get(resumed.taskId);
+    assert.equal(manager.manualControl.has(robot.id), false);
+    assert.deepEqual(manager.taskQueues.get(robot.id), [resumed.taskId, waiting.taskId]);
+    assert.match(resumedInternal.request.task, /^Inspect the application\./u);
+    assert.match(resumedInternal.request.task, /Inspect the current visible desktop or browser state/u);
+    assert.equal(resumedInternal.request.cwd, interrupted.request.cwd);
+    manager.shuttingDown = true;
+});
+
+test('an explicit GUI stop does not enter manual-control mode', async () => {
+    const robot = { id: 'stop-gui-a1b2c3', name: 'Stop GUI' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const active = {
+        taskId: 'explicit-stop-task',
+        robotId: robot.id,
+        type: 'browser',
+        state: 'running',
+        createdAt: new Date().toISOString(),
+        request: { cwd: '/workspace/project', task: 'Inspect the page.', ca: 'codex' },
+        logTail: '',
+        logSeq: 0,
+        logTruncated: false,
+        result: '',
+        error: null,
+        child: { kill: () => true },
+        cancelRequested: false,
+    };
+    manager.tasks.set(active.taskId, active);
+    manager.latestTask.set(robot.id, active.taskId);
+    manager.activeTasks.set(robot.id, active.taskId);
+
+    manager.stopTask(robot, 'browser', active.taskId);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(manager.taskStatus(robot.id, active.taskId).state, 'stopped');
+    assert.equal(manager.manualControl.has(robot.id), false);
+});
+
 test('allows exactly one active mode per robot and removes only its exact container', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-slot-test-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));

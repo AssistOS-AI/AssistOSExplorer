@@ -1,6 +1,9 @@
 import process from 'node:process';
 
 const TASK_POLL_INTERVAL_MS = Math.max(25, Math.min(5000, Number(process.env.ROBOTEAM_TASK_POLL_INTERVAL_MS) || 500));
+const ROBOT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
+const ROBOT_TASK_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CONTINUATION_TOOL = 'resumeTaskForRobot';
 
 async function readPayload() {
     let raw = '';
@@ -54,27 +57,67 @@ function logDelta(previousTail, nextTail) {
     return `\n[RoboTeam task log restarted or was truncated]\n${nextTail}`;
 }
 
+function encodeContinuationHandle(robotId, taskId) {
+    if (!ROBOT_ID_PATTERN.test(String(robotId || '')) || !ROBOT_TASK_ID_PATTERN.test(String(taskId || ''))) {
+        throw new Error('RoboTeam returned an invalid resumable task identity');
+    }
+    return Buffer.from(JSON.stringify({ robotId, taskId }), 'utf8').toString('base64url');
+}
+
+function decodeContinuationHandle(handle) {
+    const value = String(handle || '').trim();
+    if (!/^[A-Za-z0-9_-]{16,200}$/.test(value)) throw new Error('invalid RoboTeam continuation handle');
+    let decoded;
+    try {
+        decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    } catch {
+        throw new Error('invalid RoboTeam continuation handle');
+    }
+    if (!ROBOT_ID_PATTERN.test(String(decoded?.robotId || ''))
+        || !ROBOT_TASK_ID_PATTERN.test(String(decoded?.taskId || ''))
+        || encodeContinuationHandle(decoded.robotId, decoded.taskId) !== value) {
+        throw new Error('invalid RoboTeam continuation handle');
+    }
+    return decoded;
+}
+
+function continuationFor(started, robotTaskId) {
+    if (!['desktop', 'browser'].includes(started.type)) return null;
+    return {
+        version: 1,
+        handle: encodeContinuationHandle(started.robotId, robotTaskId),
+        toolName: CONTINUATION_TOOL,
+    };
+}
+
 async function runTaskUntilTerminal({ operation, input, user }) {
-    const started = await request('/api/control', { method: 'POST', body: { operation, ...input }, user });
+    const startInput = operation === 'resume-task'
+        ? { operation, ...decodeContinuationHandle(input.handle) }
+        : { operation, ...input };
+    const started = await request('/api/control', { method: 'POST', body: startInput, user });
     const robotTaskId = String(started.taskId || '').trim();
     if (!robotTaskId) throw new Error('RoboTeam did not return a task id');
     if (started.sessionUrl) process.stderr.write(`RoboTeam live session: ${started.sessionUrl}\n`);
     process.stderr.write(`RoboTeam task ${robotTaskId} queued.\n`);
 
-    const stopOperations = {
-        'start-desktop-task': 'stop-desktop-task',
-        'start-browser-task': 'stop-browser-task',
-        'start-simple-task': 'stop-simple-task',
-    };
+    const stopOperation = ['desktop', 'browser'].includes(started.type)
+        ? 'take-control'
+        : 'stop-simple-task';
+    const continuation = continuationFor(started, robotTaskId);
     let terminating = false;
     process.once('SIGTERM', () => {
         if (terminating) return;
         terminating = true;
         void request('/api/control', {
             method: 'POST',
-            body: { operation: stopOperations[operation], robotName: input.robotName, taskId: robotTaskId },
+            body: { operation: stopOperation, robotId: started.robotId, taskId: robotTaskId },
             user,
-        }).catch(() => {}).finally(() => process.exit(143));
+        }).then(() => new Promise((resolve) => {
+            if (!continuation) return resolve();
+            process.stdout.write(`${JSON.stringify({ outputText: '', continuation })}\n`, resolve);
+        })).catch((error) => {
+            process.stderr.write(`Could not stop RoboTeam task: ${error?.message || error}\n`);
+        }).finally(() => process.exit(143));
     });
 
     let previousTail = '';
@@ -114,6 +157,7 @@ const expectedToolNames = {
     'start-desktop-task': 'startDesktopTaskForRobot', 'stop-desktop-task': 'stopDesktopTaskForRobot',
     'start-browser-task': 'startBrowserTaskForRobot', 'stop-browser-task': 'stopBrowserTaskForRobot',
     'start-simple-task': 'startSimpleALATaskForRobot', 'stop-simple-task': 'stopSimpleALATaskForRobot',
+    'resume-task': CONTINUATION_TOOL,
     'task-status': 'getTaskStatusForRobot', 'desktop-url': 'getSessionUrlForRobotDesktop',
     'browser-url': 'getSessionUrlForRobotBrowser', 'stop-desktop-container': 'stopDesktopContainerForRobot',
     'stop-browser-container': 'stopBrowserContainerForRobot',
@@ -129,7 +173,7 @@ async function main() {
 
     if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, specialization: input.specialization || '' }, user });
     else if (operation === 'robot-list') result = await request('/api/robots', { user });
-    else if (['start-desktop-task', 'start-browser-task', 'start-simple-task'].includes(operation)) result = await runTaskUntilTerminal({ operation, input, user });
+    else if (['start-desktop-task', 'start-browser-task', 'start-simple-task', 'resume-task'].includes(operation)) result = await runTaskUntilTerminal({ operation, input, user });
     else result = await request('/api/control', { method: 'POST', body: { operation, ...input }, user });
 
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

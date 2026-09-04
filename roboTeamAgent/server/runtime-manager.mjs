@@ -6,6 +6,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { ToolCache } from './tool-cache.mjs';
+import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
@@ -181,6 +182,7 @@ export class RuntimeManager {
         this.latestTask = new Map();
         this.activeTasks = new Map();
         this.taskQueues = new Map();
+        this.manualControl = new Map();
         this.pending = new Map();
         this.shuttingDown = false;
     }
@@ -304,10 +306,11 @@ export class RuntimeManager {
         return task;
     }
 
-    startTask(robot, type, request) {
+    _enqueueTask(robot, type, request, { first = false } = {}) {
         const task = this._newTask(robot, type, request);
         const queue = this.taskQueues.get(robot.id) || [];
-        queue.push(task.taskId);
+        if (first) queue.unshift(task.taskId);
+        else queue.push(task.taskId);
         this.taskQueues.set(robot.id, queue);
         queueMicrotask(() => void this._drainTaskQueue(robot));
         return {
@@ -318,8 +321,12 @@ export class RuntimeManager {
         };
     }
 
+    startTask(robot, type, request) {
+        return this._enqueueTask(robot, type, request);
+    }
+
     async _drainTaskQueue(robot) {
-        if (this.shuttingDown || this.activeTasks.has(robot.id)) return;
+        if (this.shuttingDown || this.activeTasks.has(robot.id) || this.manualControl.has(robot.id)) return;
         const queue = this.taskQueues.get(robot.id) || [];
         let task = null;
         while (queue.length > 0 && !task) {
@@ -428,7 +435,7 @@ export class RuntimeManager {
         return id ? this.taskStatus(robotId, id) : null;
     }
 
-    stopTask(robot, expectedType = null, taskId = null) {
+    stopTask(robot, expectedType = null, taskId = null, { manualControl = false } = {}) {
         const target = taskId ? this.taskStatus(robot.id, taskId) : this.activeTaskStatus(robot.id);
         if (target && expectedType && target.type !== expectedType
             && ['queued', 'starting', 'running'].includes(target.state)) {
@@ -439,6 +446,10 @@ export class RuntimeManager {
         queueMicrotask(() => {
             const internal = target ? this.tasks.get(target.taskId) : null;
             if (internal && (!expectedType || internal.type === expectedType)) {
+                if (manualControl && GUI_MODES.has(internal.type)
+                    && this.activeTasks.get(robot.id) === internal.taskId) {
+                    this.manualControl.set(robot.id, internal.taskId);
+                }
                 internal.cancelRequested = true;
                 internal.state = 'stopped'; internal.completedAt = new Date().toISOString(); internal.child?.kill('SIGTERM');
             }
@@ -447,16 +458,23 @@ export class RuntimeManager {
         return { taskId: operation.taskId, state: operation.state };
     }
 
-    resumeTask(robot) {
-        const previous = this.taskStatus(robot.id);
-        if (!previous || !['desktop', 'browser'].includes(previous.type) || previous.state !== 'stopped') {
-            throw new Error('robot has no interrupted GUI task to resume');
+    takeControl(robot, taskId) {
+        return this.stopTask(robot, null, taskId, { manualControl: true });
+    }
+
+    resumeTask(robot, taskId) {
+        const internal = this.tasks.get(String(taskId || ''));
+        if (!internal || internal.robotId !== robot.id || !GUI_MODES.has(internal.type)
+            || internal.state !== 'stopped' || this.manualControl.get(robot.id) !== internal.taskId) {
+            throw new Error('robot has no matching interrupted GUI task to resume');
         }
-        const internal = this.tasks.get(previous.taskId);
-        return this.startTask(robot, previous.type, {
+        const resumed = this._enqueueTask(robot, internal.type, {
             ...internal.request,
-            task: `${internal.request.task}\n\nResume after human takeover. Observe the current visible desktop or browser state before acting, preserve the human's changes, and continue the original task from that state.`,
-        });
+            task: `${internal.request.task}\n\n${RESUME_REOBSERVE_INSTRUCTION}`,
+        }, { first: true });
+        this.manualControl.delete(robot.id);
+        queueMicrotask(() => void this._drainTaskQueue(robot));
+        return resumed;
     }
 
     sessionUrl(robotId, mode) {
