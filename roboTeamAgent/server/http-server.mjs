@@ -213,7 +213,8 @@ export function createRoboTeamServer(options) {
                 if (operation === 'robot-delete') {
                     if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                     const status = runtimeManager.status(robot.id);
-                    if (status.state !== 'stopped' || ['queued', 'starting', 'running', 'stopping'].includes(status.task?.state)) {
+                    if (status.state !== 'stopped' || runtimeManager.hasUnfinishedTasks?.(robot.id)
+                        || ['queued', 'starting', 'running', 'stopping'].includes(status.task?.state)) {
                         return sendError(res, 409, 'stop the robot before deleting it');
                     }
                     await robotStore.delete(robot.id);
@@ -231,7 +232,7 @@ export function createRoboTeamServer(options) {
                     return sendJson(res, 202, { ok: true, robotName: robot.name, ...task });
                 }
                 const stopTypes = { 'stop-desktop-task': 'desktop', 'stop-browser-task': 'browser', 'stop-simple-task': 'simple' };
-                if (stopTypes[operation]) return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot, stopTypes[operation]) });
+                if (stopTypes[operation]) return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot, stopTypes[operation], body.taskId) });
                 if (operation === 'take-control') return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.stopTask(robot) });
                 if (operation === 'resume-task') return sendJson(res, 202, { ok: true, robotName: robot.name, ...runtimeManager.resumeTask(robot) });
                 if (operation === 'task-status') return sendJson(res, 200, { ok: true, robotName: robot.name, task: runtimeManager.taskStatus(robot.id, body.taskId) });

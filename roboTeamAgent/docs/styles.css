@@ -31,7 +31,7 @@ th, td { padding: .75rem; border-bottom: 1px solid var(--line); text-align: left
 th { color: var(--accent); }
 .documentation-map { display: block; overflow-x: auto; padding: .35rem; border-radius: .75rem; background: #0e161f; }
 .documentation-map table { min-width: 48rem; }
-.documentation-map th, .documentation-map td { width: 33.333%; border: 0; }
+.documentation-map th, .documentation-map td { width: 25%; border: 0; }
 .documentation-map th { border-bottom: 1px solid var(--line); }
 .documentation-map td:not(:empty) { padding: .8rem; }
 .documentation-map td a { display: block; margin-bottom: .25rem; font-weight: 800; }

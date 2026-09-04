@@ -11,6 +11,45 @@ const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
 const GUI_MODES = new Set(['desktop', 'browser']);
 const ALA_FAILURE_DETAIL_LIMIT = 4096;
+const TASK_LOG_TAIL_LIMIT = 1024 * 1024;
+const TASK_RESULT_LIMIT = 1024 * 1024;
+const ALA_EVENT_PREFIX = '@@ALA_EVENT@@';
+
+function appendTail(previous, chunk, limit) {
+    const next = `${previous}${chunk}`;
+    return next.length > limit ? next.slice(-limit) : next;
+}
+
+function createAlaProgressParser(onText) {
+    let buffered = '';
+    const consumeLine = (line, terminated) => {
+        if (!line.startsWith(ALA_EVENT_PREFIX)) {
+            onText(`${line}${terminated ? '\n' : ''}`);
+            return;
+        }
+        try {
+            const event = JSON.parse(line.slice(ALA_EVENT_PREFIX.length));
+            if (event?.type === 'coding-agent-message' && typeof event.message === 'string') onText(event.message);
+        } catch {
+            onText(`${line}${terminated ? '\n' : ''}`);
+        }
+    };
+    return {
+        push(chunk) {
+            buffered += chunk.toString('utf8');
+            let newline = buffered.indexOf('\n');
+            while (newline >= 0) {
+                consumeLine(buffered.slice(0, newline), true);
+                buffered = buffered.slice(newline + 1);
+                newline = buffered.indexOf('\n');
+            }
+        },
+        finish() {
+            if (buffered) consumeLine(buffered, false);
+            buffered = '';
+        },
+    };
+}
 
 function alaFailureMessage(exit, output) {
     const normalized = String(output || '').replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/gu, '').trim();
@@ -140,7 +179,10 @@ export class RuntimeManager {
         this.sessions = new Map();
         this.tasks = new Map();
         this.latestTask = new Map();
+        this.activeTasks = new Map();
+        this.taskQueues = new Map();
         this.pending = new Map();
+        this.shuttingDown = false;
     }
 
     async _podman(args, timeout = 120000) {
@@ -180,10 +222,16 @@ export class RuntimeManager {
     status(robotId) {
         const session = this.sessions.get(robotId);
         const task = this.taskStatus(robotId);
-        return session ? { state: session.state, mode: session.mode, startedAt: session.startedAt, sessionUrl: session.sessionUrl, task } : { state: 'stopped', task };
+        const queueDepth = (this.taskQueues.get(robotId) || []).filter((id) => this.tasks.get(id)?.state === 'queued').length;
+        return session ? { state: session.state, mode: session.mode, startedAt: session.startedAt, sessionUrl: session.sessionUrl, task, queueDepth } : { state: 'stopped', task, queueDepth };
     }
 
     activePort(robotId) { return this.sessions.get(robotId)?.sessionPort || null; }
+
+    hasUnfinishedTasks(robotId) {
+        return Array.from(this.tasks.values()).some((task) => task.robotId === robotId
+            && ['queued', 'starting', 'running', 'stopping'].includes(task.state));
+    }
 
     async ensureContainer(robot, mode, cwdValue, options = {}) {
         return this._serialize(robot.id, async () => {
@@ -195,9 +243,9 @@ export class RuntimeManager {
             await fs.chmod(codexHome, 0o700);
             const existing = this.sessions.get(robot.id);
             if (existing) {
-                if (existing.mode !== mode) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
-                if (existing.cwd === cwd) return existing;
-                const activeTask = this.taskStatus(robot.id);
+                if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
+                if (existing.mode === mode && existing.cwd === cwd) return existing;
+                const activeTask = this.activeTaskStatus(robot.id);
                 const activeStates = ['queued', 'starting', 'running', 'stopping'];
                 if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
                     throw new Error(`robot has an active ${activeTask.type} task; its container cwd cannot be changed`);
@@ -207,8 +255,6 @@ export class RuntimeManager {
                 this.sessions.delete(robot.id);
             }
             if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
-            const activeTask = this.taskStatus(robot.id);
-            if (activeTask && activeTask.type !== mode && ['queued', 'starting', 'running', 'stopping'].includes(activeTask.state)) throw new Error('robot execution slot is already occupied');
             const [tools, codex] = await Promise.all([
                 this.toolCache.prepareMode(mode),
                 mode === 'desktop' ? this.toolCache.prepareCodex() : Promise.resolve(null),
@@ -248,7 +294,8 @@ export class RuntimeManager {
     _newTask(robot, type, request, trackLatest = true) {
         const task = {
             taskId: crypto.randomUUID(), robotId: robot.id, type, state: 'queued',
-            createdAt: new Date().toISOString(), request, output: '', error: null,
+            createdAt: new Date().toISOString(), request, logTail: '', logSeq: 0,
+            logTruncated: false, result: '', error: null,
             child: null, cancelRequested: false,
             ...(GUI_MODES.has(type) ? { sessionUrl: robotSessionUrl(this.publicBasePath, robot.id) } : {}),
         };
@@ -258,18 +305,43 @@ export class RuntimeManager {
     }
 
     startTask(robot, type, request) {
-        const current = this.taskStatus(robot.id);
-        if (current && ['queued', 'starting', 'running', 'stopping'].includes(current.state)) throw new Error('robot already has an active task');
-        const session = this.sessions.get(robot.id);
-        if (session && session.mode !== type) throw new Error(`robot slot is occupied by its ${session.mode} container`);
-        if (type === 'simple' && session) throw new Error(`robot slot is occupied by its ${session.mode} container`);
         const task = this._newTask(robot, type, request);
-        void this._runTask(robot, task);
+        const queue = this.taskQueues.get(robot.id) || [];
+        queue.push(task.taskId);
+        this.taskQueues.set(robot.id, queue);
+        queueMicrotask(() => void this._drainTaskQueue(robot));
         return {
             taskId: task.taskId,
             state: task.state,
+            queuePosition: this.taskQueuePosition(task),
             ...(task.sessionUrl ? { sessionUrl: task.sessionUrl } : {}),
         };
+    }
+
+    async _drainTaskQueue(robot) {
+        if (this.shuttingDown || this.activeTasks.has(robot.id)) return;
+        const queue = this.taskQueues.get(robot.id) || [];
+        let task = null;
+        while (queue.length > 0 && !task) {
+            const candidate = this.tasks.get(queue.shift());
+            if (candidate?.state === 'queued' && !candidate.cancelRequested) task = candidate;
+        }
+        if (queue.length === 0) this.taskQueues.delete(robot.id);
+        else this.taskQueues.set(robot.id, queue);
+        if (!task) return;
+        this.activeTasks.set(robot.id, task.taskId);
+        try {
+            await this._runTask(robot, task);
+        } finally {
+            if (this.activeTasks.get(robot.id) === task.taskId) this.activeTasks.delete(robot.id);
+            queueMicrotask(() => void this._drainTaskQueue(robot));
+        }
+    }
+
+    taskQueuePosition(task) {
+        if (!task || task.state !== 'queued') return 0;
+        const index = (this.taskQueues.get(task.robotId) || []).indexOf(task.taskId);
+        return index < 0 ? 0 : index + 1;
     }
 
     async _runTask(robot, task) {
@@ -301,24 +373,38 @@ export class RuntimeManager {
             await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
             const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
             await fs.writeFile(taskFile, task.request.task, { mode: 0o600 });
+            if (task.cancelRequested) throw new Error('task was stopped');
             const args = ['--home', robotHome, '--cwd', cwd, '--taskFile', taskFile, '--ca', codingAgent];
             if (task.request.skillSets) args.push('--skillSets', task.request.skillSets);
             if (task.request.model) args.push('--model', task.request.model);
             if (mcpAddress) args.push('--MCPServers', mcpAddress);
             task.state = 'running';
             const codex = await codexPromise;
-            const childEnv = codex?.binPath
-                ? { ...process.env, PATH: `${codex.binPath}:${process.env.PATH || ''}` }
-                : process.env;
+            const childEnv = {
+                ...process.env,
+                ALA_EVENT_STREAM: '1',
+                ...(codex?.binPath ? { PATH: `${codex.binPath}:${process.env.PATH || ''}` } : {}),
+            };
             const child = this.spawnImpl(this.alaCommand, args, { cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
             task.child = child;
-            const append = (chunk) => { task.output = `${task.output}${chunk}`.slice(-256 * 1024); };
-            child.stdout?.on('data', append); child.stderr?.on('data', append);
+            child.stdout?.on('data', (chunk) => {
+                task.result = appendTail(task.result, chunk, TASK_RESULT_LIMIT);
+            });
+            const appendProgress = (chunk) => {
+                const previousLength = task.logTail.length;
+                task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
+                if (task.logTail.length < previousLength + String(chunk).length) task.logTruncated = true;
+                task.logSeq += 1;
+            };
+            const progressParser = createAlaProgressParser(appendProgress);
+            child.stderr?.on('data', (chunk) => progressParser.push(chunk));
             await new Promise((resolve, reject) => {
                 child.once('error', reject);
-                child.once('close', (code, signal) => code === 0
-                    ? resolve()
-                    : reject(new Error(alaFailureMessage(signal || code, task.output))));
+                child.once('close', (code, signal) => {
+                    progressParser.finish();
+                    if (code === 0) resolve();
+                    else reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
+                });
             });
             task.state = 'completed';
             task.completedAt = new Date().toISOString();
@@ -330,15 +416,20 @@ export class RuntimeManager {
     }
 
     taskStatus(robotId, taskId = null) {
-        const id = taskId || this.latestTask.get(robotId);
+        const id = taskId || this.activeTasks.get(robotId) || this.latestTask.get(robotId);
         const task = id ? this.tasks.get(id) : null;
         if (!task || task.robotId !== robotId) return null;
         const { child, request, cancelRequested, ...status } = task;
-        return { ...status, cwd: request.cwd };
+        return { ...status, cwd: request.cwd, queuePosition: this.taskQueuePosition(task) };
     }
 
-    stopTask(robot, expectedType = null) {
-        const target = this.taskStatus(robot.id);
+    activeTaskStatus(robotId) {
+        const id = this.activeTasks.get(robotId);
+        return id ? this.taskStatus(robotId, id) : null;
+    }
+
+    stopTask(robot, expectedType = null, taskId = null) {
+        const target = taskId ? this.taskStatus(robot.id, taskId) : this.activeTaskStatus(robot.id);
         if (target && expectedType && target.type !== expectedType
             && ['queued', 'starting', 'running'].includes(target.state)) {
             throw new Error(`robot has an active ${target.type} task, not a ${expectedType} task`);
@@ -379,7 +470,7 @@ export class RuntimeManager {
             const session = this.sessions.get(robotId);
             if (!session) return { state: 'stopped' };
             if (session.mode !== mode) throw new Error(`robot slot is occupied by its ${session.mode} container`);
-            const active = this.taskStatus(robotId);
+            const active = this.activeTaskStatus(robotId);
             if (active && active.type === mode && ['queued', 'starting', 'running'].includes(active.state)) throw new Error(`stop the ${mode} task before its container`);
             session.state = 'stopping';
             await this._podman(['rm', '-f', session.containerName], 30000).catch(() => {});
@@ -390,12 +481,16 @@ export class RuntimeManager {
 
     async logs(robotId, tail = 200) {
         const session = this.sessions.get(robotId);
-        if (!session) return this.taskStatus(robotId)?.output || '';
+        if (!session) {
+            const task = this.taskStatus(robotId);
+            return task ? `${task.logTail || ''}${task.result || ''}` : '';
+        }
         const result = await this._podman(['logs', '--tail', String(Math.max(1, Math.min(1000, Number(tail) || 200))), session.containerName], 30000);
         return `${result.stdout || ''}${result.stderr || ''}`.slice(-256 * 1024);
     }
 
     async stopAll() {
+        this.shuttingDown = true;
         for (const task of this.tasks.values()) {
             if (!['queued', 'starting', 'running'].includes(task.state)) continue;
             task.cancelRequested = true;
@@ -407,4 +502,4 @@ export class RuntimeManager {
     }
 }
 
-export const runtimeManagerInternals = { alaFailureMessage, httpServiceIsReady, normalizeBasePath, robotSessionUrl, MANAGED_LABEL };
+export const runtimeManagerInternals = { alaFailureMessage, createAlaProgressParser, httpServiceIsReady, normalizeBasePath, robotSessionUrl, MANAGED_LABEL };

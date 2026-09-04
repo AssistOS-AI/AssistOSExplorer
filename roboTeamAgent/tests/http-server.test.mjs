@@ -25,6 +25,7 @@ async function startFixture() {
         stop: async (id) => { runs.delete(id); return { state: 'stopped' }; },
         logs: async () => 'line one',
         activePort: () => null,
+        hasUnfinishedTasks: () => false,
     };
     const server = createRoboTeamServer({ robotStore, runtimeManager, internalToken: 'test-token', publicBasePath: '/rt/', mcpPort: 65534 });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

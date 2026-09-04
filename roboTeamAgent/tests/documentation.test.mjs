@@ -95,3 +95,20 @@ test('documentation introduces ALA execution and AchillesCLI integration', async
     assert.match(combined, /launch-robot/u);
     assert.match(combined, /Ploinky Router/u);
 });
+
+test('documentation explains native async progress and the per-robot FIFO queue', async () => {
+    const sources = [
+        await read('README.md'),
+        await read('docs/index.html'),
+        await read('docs/operations.html'),
+        await read('docs/specs/DS003-main-behavior.md'),
+        await read('docs/specs/DS006-ala-task-boundary.md'),
+    ];
+    const combined = sources.join('\n').replaceAll(/<[^>]+>|`/g, '');
+    assert.match(combined, /native asynchronous Ploinky/iu);
+    assert.match(combined, /FIFO queue/iu);
+    assert.match(combined, /one ALA process/iu);
+    assert.match(combined, /intermediate ALA messages|coding-agent-message/iu);
+    assert.match(combined, /standard error/iu);
+    assert.match(combined, /standard output/iu);
+});

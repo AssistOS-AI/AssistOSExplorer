@@ -1,57 +1,42 @@
 ---
 title: DS003-main-behavior
-id: DS003
-status: accepted
-owner: RoboTeamAgent
-summary: Defines persistent robot management, visible sessions, and asynchronous ALA task execution.
+summary: Defines workspace robot administration, retained visible workstations, and queued observable ALA execution.
 ---
 
 ## Introduction
 
-An authenticated Ploinky user manages durable robots and starts observable desktop, browser, or non-GUI ALA work by unique robot name.
+RoboTeam lets workspace administrators maintain durable robots and lets internal workspace agents submit visible or non-GUI work by unique robot name. The robot keeps its account state and at most one graphical container while its ALA tasks execute serially.
 
 ## Core Content
 
-`robot_create`, `robot_list`, and `robot_delete` manage workspace-scoped records. Names are unique across the workspace. Only authenticated administrators may create or delete records; internal workspace agents may list and run them. Each record owns a persistent home used both as `/config` in its GUI and as ALA `--home`, plus workspace, runtime, log, and download directories. Existing records are read without an ownership migration; legacy `ownerUserId` metadata is ignored.
+### Main Behavior Components
 
-RoboTeam must document its MCP interface as named tools rather than presenting tool names as unexplained operations. The complete interface consists of `robot_create`, `robot_list`, `robot_delete`, `openDesktopForRobot`, `startDesktopTaskForRobot`, `stopDesktopTaskForRobot`, `startBrowserTaskForRobot`, `stopBrowserTaskForRobot`, `startSimpleALATaskForRobot`, `stopSimpleALATaskForRobot`, `getTaskStatusForRobot`, `getSessionUrlForRobotDesktop`, `getSessionUrlForRobotBrowser`, `stopDesktopContainerForRobot`, and `stopBrowserContainerForRobot`. The user documentation must explain each tool's result and lifecycle effect.
+| Name | Explanation |
+| --- | --- |
+| Workspace robot administration | Administrators create and delete shared robot records, while internal workspace agents list and run them by a workspace-unique name. |
+| Retained visible workstation | A Desktop or Browser container exposes the same Selkies session to ALA and a human, retains the final screen after task completion, and is reused or replaced according to mode and cwd. |
+| Queued observable ALA execution | Native asynchronous MCP start tools queue work per robot, stream ALA messages through Ploinky task logs, and reach a terminal state when the ALA process exits. |
 
-`openDesktopForRobot` and the dashboard can start a desktop without ALA so the user can configure coding-agent accounts in the persistent home. `getSessionUrlForRobotDesktop` and `getSessionUrlForRobotBrowser` return the authenticated Router-relative URL for a ready matching container.
+### Workspace robot administration
 
-The start task tools validate `robotName`, an absolute workspace-contained `cwd`, and `task`, allocate a UUID `taskId`, and return immediately. Desktop and Browser starts also return the deterministic authenticated Router-relative `sessionUrl`, and the same URL remains present in task status. A caller must wait for task state `running` before advertising the link as ready because that transition follows Selkies and MCP readiness. `getTaskStatusForRobot` reports queued, starting, running, completed, failed, or stopped execution together with bounded output. The three execution types are desktop, browser, and simple ALA.
+An authenticated administrator uses `robot_create` and `robot_delete` to manage workspace-scoped [robots](../wiki.html#definition-robot). `robot_list` lets an internal workspace agent discover the same shared catalog. Names must remain unique across the workspace, robots must not belong to individual users, and legacy `ownerUserId` metadata must not restrict access. Each robot owns a persistent home used as `/config` in a GUI container and as ALA `--home`, together with workspace, runtime, log, and download directories. Deletion must require the robot to have no active or queued work and no running container.
 
-Desktop and browser task startup prepares the required current tool-cache generation, creates or reuses exactly one matching GUI container, mounts the requested cwd at `/workspace`, waits for Selkies and MCP readiness, then starts ALA as a separate outer process. Reuse requires both the same mode and the same resolved cwd. When the same-mode retained container has another cwd and no older task is active, RoboTeam removes it and creates its replacement with the requested mount before starting ALA. Simple ALA starts no GUI container. The robot home becomes ALA `--home`; task selection, model hint, coding agent, and bridge URL become explicit ALA arguments. Codex execution uses the shared cached binary with configuration from that robot home.
+The MCP interface consists of `robot_create`, `robot_list`, `robot_delete`, `openDesktopForRobot`, `startDesktopTaskForRobot`, `stopDesktopTaskForRobot`, `startBrowserTaskForRobot`, `stopBrowserTaskForRobot`, `startSimpleALATaskForRobot`, `stopSimpleALATaskForRobot`, `getTaskStatusForRobot`, `getSessionUrlForRobotDesktop`, `getSessionUrlForRobotBrowser`, `stopDesktopContainerForRobot`, and `stopBrowserContainerForRobot`. Ploinky policy must keep administrator mutations separate from internal workspace-agent operations.
 
-Take Control stops only ALA and preserves the GUI. Resume creates a new task from the original request and instructs the coding agent to observe current visible state before continuing. Desktop and browser containers have separate stop operations; stopping an ALA task never removes them.
+### Retained visible workstation
 
-AchillesCLI integrates the internal task tools through two built-in C-Skills. `list-robots` calls `robot_list`. `launch-robot` accepts Desktop or Browser work, passes the active AchillesCLI start directory as `cwd`, calls the matching start tool, polls `getTaskStatusForRobot`, and returns the live Selkies URL after readiness.
+A user can call `openDesktopForRobot` or use the dashboard to configure coding-agent accounts in the persistent robot home without starting ALA. Desktop and Browser tasks mount the caller-selected absolute workspace-contained `cwd` at `/workspace`, and ALA controls the same graphical state shown through the authenticated [Selkies session](../wiki.html#definition-selkies-session). `getSessionUrlForRobotDesktop` and `getSessionUrlForRobotBrowser` return the Router-relative link only after the matching container is ready.
 
-## Decisions & Questions
+RoboTeam must retain at most one GUI container per robot. A completed or stopped graphical task leaves that container running so a user can inspect the result. A later graphical task must reuse it when its mode and resolved cwd match. If the queued task requires another mode or cwd, RoboTeam must remove the idle retained container by its exact managed name and create one replacement before starting ALA. A Simple task must not start a graphical container and must not remove an existing retained container. Container stop tools remain separate from ALA task stop tools.
 
-### Question #1: How many execution modes may a robot own?
+### Queued observable ALA execution
 
-Response: One execution slot exists per robot. A retained GUI container continues to occupy it until explicitly stopped.
+`startDesktopTaskForRobot`, `startBrowserTaskForRobot`, and `startSimpleALATaskForRobot` must use Ploinky's native asynchronous tool contract with full task-log retention and no fixed 30-second execution timeout. The initial MCP response returns the Ploinky task metadata. The tool process must remain alive while its RoboTeam task waits in the queue and while ALA runs. It must write readable intermediate ALA messages to standard error, reserve standard output for the final result, and exit only after ALA completes, fails, stops, or the native task is cancelled. The Ploinky task status is the caller-facing completion contract; `getTaskStatusForRobot` remains an internal view of RoboTeam queue position and execution state.
 
-### Question #2: What identifies a robot in task tools?
+Each robot must have one active ALA process and one FIFO [robot task queue](../wiki.html#definition-robot-task-queue) shared by Desktop, Browser, and Simple requests. A new task must enter that queue when another task is queued, starting, running, or stopping. RoboTeam must not reject it merely because the robot is busy. After a task reaches `completed`, `failed`, or `stopped`, RoboTeam must start the next queued task. Tasks for different robots may run concurrently within the configured global active-container limit.
 
-Response: The exact workspace-unique `robotName`; opaque ids remain an internal HTTP and storage detail.
+Before a graphical task starts ALA, RoboTeam must prepare the required tool-cache generation, create or reuse the matching container, and wait for Selkies and its MCP bridge. The robot home becomes ALA `--home`; the selected work tree becomes `--cwd`; the private prompt file becomes `--taskFile`; coding-agent, model, skill-set, and MCP values become explicit ALA arguments. RoboTeam must enable ALA's structured event stream and convert `coding-agent-message` events into task progress while keeping final ALA standard output separate.
 
-### Question #3: Is task execution synchronous?
+AchillesCLI's `launch-robot` skill must call the matching start tool with `callToolWithoutWait` so its background-task observer owns continued Ploinky status polling and log persistence. The skill must poll only the matching session-URL tool until the GUI is ready, return the authenticated Selkies link, and leave task completion reporting to the observer. `list-robots` must continue to call `robot_list` through the Ploinky Router.
 
-Response: No. Start and stop task operations return a `taskId`; callers poll `getTaskStatusForRobot`.
-
-### Question #4: Which state is shared with ALA?
-
-Response: The persistent robot home supplies coding-agent configuration, the caller-selected cwd is the writable work tree shared with the GUI, and shared tool-cache generations supply executable bytes.
-
-### Question #5: When may a caller present the returned GUI URL as live?
-
-Response: The URL is deterministic and returned with the asynchronous start acknowledgement, but it is ready for navigation only after task status reaches `running` or `completed` because the running transition follows graphical and automation-service readiness.
-
-### Question #6: How does AchillesCLI expose robot execution to its users?
-
-Response: Its `list-robots` and `launch-robot` C-Skills call RoboTeam's router-mediated internal MCP tools. They do not duplicate robot or container lifecycle logic inside AchillesCLI.
-
-## Conclusion
-
-RoboTeam combines durable agent identity, observable work, human takeover, and asynchronous ALA execution without duplicating the active robot environment.
+Take Control and explicit stop operations must terminate only the selected ALA work and preserve a GUI container. Resume must enqueue a new request that tells ALA to inspect the current visible state before it continues. Cancelling one queued task must not interrupt the active task ahead of it.

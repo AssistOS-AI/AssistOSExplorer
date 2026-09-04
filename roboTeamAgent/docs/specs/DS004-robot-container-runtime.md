@@ -1,8 +1,5 @@
 ---
 title: DS004-robot-container-runtime
-id: DS004
-status: accepted
-owner: RoboTeamAgent
 summary: Defines persistent robot storage, runtime-only GUI images, current-version tool caching, and bounded nested Podman lifecycle.
 ---
 
@@ -28,42 +25,4 @@ Desktop containers mount the active desktop tool generation read-only at `/opt/r
 
 RoboTeam must run in Ploinky global mode and invoke the real `/workspace/AdvancedLanguageAgent/bin/ala.mjs` workspace entrypoint rather than an npm `.bin` symlink. The global mount makes the current local ALA contract available during development. Ploinky's required Node.js symlink-preservation options would otherwise make the symlink path the module base and resolve ALA's relative imports outside its package. When ALA exits unsuccessfully, RoboTeam must preserve its bounded output tail and include that diagnostic in the internal task error.
 
-Only active sessions are retained in memory. A retained GUI session is reusable only for the same mode and resolved cwd. A same-mode request with another cwd must remove the idle retained container by its exact managed name and create its replacement with the new `/workspace` mount; it must not remount beneath an active older task. A GUI session becomes `running` only after Selkies accepts its published connection and the MCP endpoint returns an HTTP response; the outer Pasta listener alone is not readiness evidence. Initialization may remove stale containers only when RoboTeam's managed label proves ownership. Failure and stop must remove the exact owned container. Restart does not automatically resume interrupted work.
-
-## Decisions & Questions
-
-### Question #1: Why are runtime tools excluded from the images?
-
-Response: The images provide stable system dependencies, while RoboTeam resolves current automation packages at runtime and retains validated generations in persistent cache.
-
-### Question #2: Why are cache generations immutable after activation?
-
-Response: Live GUI containers and ALA processes may still mount an exact generation. New releases therefore create a new generation and atomically move only the active descriptor.
-
-### Question #3: What happens when upstream services are unavailable?
-
-Response: RoboTeam uses the last valid stamped generation when one exists. A cold start without a valid cache fails instead of running an unvalidated or incomplete toolset.
-
-### Question #4: Why is Codex configuration not stored in the shared tool cache?
-
-Response: The cache stores shared executable bytes. Authentication and agent configuration remain in each robot's persistent home and are selected through ALA `--home` or the desktop's `/config` mount.
-
-### Question #5: Why do nested containers use `--ipc=none` and a separate `/dev/shm`?
-
-Response: Podman's normal private IPC setup attempts to mount mqueue again and is rejected inside the bounded outer container. Disabling that setup avoids requiring broader privileges; a private tmpfs supplies the shared memory Chromium and the desktop still need.
-
-### Question #6: How are local images tested without waiting for publication?
-
-Response: The development installer builds the outer image directly in the owned Box storage and streams GUI images into RoboTeam's nested storage. Exact managed-runtime selection and a final reinstall preserve the same runtime boundaries as published images without using the registry.
-
-### Question #7: Why does the GUI container PATH retain `/lsiopy/bin`?
-
-Response: LinuxServer installs the Selkies executable in that virtual-environment directory. Adding the cached Codex binary must extend the base runtime search path rather than make the page-serving nginx process outlive an unavailable streaming backend.
-
-### Question #8: Why does RoboTeam use the global workspace ALA entrypoint?
-
-Response: RoboTeam and ALA are developed as coordinated workspace repositories, so global mode exposes current local ALA changes without waiting for a remote Git dependency refresh. Invoking its real entrypoint also keeps relative ESM imports anchored inside `AdvancedLanguageAgent` when Ploinky preserves symlink identities.
-
-## Conclusion
-
-The runtime keeps durable robot identity, replaceable GUI containers, and current automation tools independent while preserving one visible human-and-agent session.
+Only active sessions and task queues are retained in memory. A robot may retain at most one GUI session. That session is reusable only for the same mode and resolved cwd. A queued request with another mode or cwd must wait for the active ALA task, remove the idle retained container by its exact managed name, and create its replacement with the new `/workspace` mount. A Simple task must leave a retained GUI session unchanged. A GUI session becomes `running` only after Selkies accepts its published connection and the MCP endpoint returns an HTTP response; the outer Pasta listener alone is not readiness evidence. Initialization may remove stale containers only when RoboTeam's managed label proves ownership. Failure and stop must remove the exact owned container. Restart does not automatically resume interrupted work or queued requests whose native Ploinky task was interrupted.

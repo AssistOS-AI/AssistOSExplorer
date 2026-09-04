@@ -111,20 +111,6 @@
         }
 
         const items = [];
-        if (metadata.id) {
-          items.push(this.renderMetaItem('Identifier', `<code>${this.escapeHtml(metadata.id)}</code>`));
-        }
-        if (metadata.status) {
-          items.push(
-            this.renderMetaItem(
-              'Status',
-              `<span class="spec-status spec-status--${this.normalizeStatus(metadata.status)}">${this.escapeHtml(metadata.status)}</span>`
-            )
-          );
-        }
-        if (metadata.owner) {
-          items.push(this.renderMetaItem('Owner', this.escapeHtml(metadata.owner)));
-        }
         if (metadata.summary) {
           items.push(this.renderMetaItem('Summary', this.escapeHtml(metadata.summary)));
         }
@@ -136,10 +122,6 @@
 
       renderMetaItem(label, value) {
         return `<dl class="spec-meta__item"><dt>${label}</dt><dd>${value}</dd></dl>`;
-      }
-
-      normalizeStatus(status) {
-        return String(status).trim().toLowerCase().replace(/\s+/g, '-');
       }
 
       scrollToHash() {
@@ -172,21 +154,6 @@
           .replace(/'/g, '&#39;');
       }
 
-      renderStatus(status) {
-        const normalized = this.normalizeStatus(status);
-        const labels = {
-          implemented: 'Implemented',
-          'in-progress': 'In progress',
-          planned: 'Planned',
-          draft: 'Draft',
-          'review-needed': 'Review needed',
-          deprecated: 'Deprecated',
-          unknown: 'Unknown'
-        };
-        const label = labels[normalized] || status;
-        return `<span class="spec-status spec-status--${normalized}">${this.escapeHtml(label)}</span>`;
-      }
-
       applyInline(text) {
         const codeStore = [];
         const withPlaceholders = text.replace(/`([^`]+)`/g, (_, code) => {
@@ -198,7 +165,6 @@
           .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/\*(.+?)\*/g, '<em>$1</em>')
           .replace(/(^|[\s(])_(.+?)_(?=[\s).]|$)/g, '$1<em>$2</em>')
-          .replace(/\[\[(status):([a-z-]+)\]\]/gi, (_, __, value) => this.renderStatus(value))
           .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
 
         escaped = escaped.replace(/@@CODE_PLACEHOLDER_(\d+)@@/g, (_, idx) =>
@@ -248,7 +214,7 @@
 
         const flushParagraph = () => {
           if (!paragraph.length) return;
-          htmlParts.push(`<p>${paragraph.map((line) => this.applyInline(line)).join('<br>')}</p>`);
+          htmlParts.push(`<p>${paragraph.map((line) => this.applyInline(line.trim())).join(' ')}</p>`);
           paragraph = [];
         };
 
