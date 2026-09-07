@@ -94,7 +94,27 @@ test('start tool stays alive, streams progress, and returns the final ALA result
     assert.match(result.stderr, /RoboTeam task robot-task-1 queued/u);
     assert.match(result.stderr, /first message/u);
     assert.match(result.stderr, /second message/u);
-    assert.match(result.stderr, /RoboTeam task state: completed/u);
+    assert.doesNotMatch(result.stderr, /RoboTeam task state: completed/u);
+});
+
+test('empty ALA output does not synthesize a completion message', async (t) => {
+    const server = http.createServer((request, response) => {
+        let raw = '';
+        request.on('data', (chunk) => { raw += chunk; });
+        request.on('end', () => {
+            const body = JSON.parse(raw);
+            response.setHeader('content-type', 'application/json');
+            response.end(JSON.stringify(body.operation === 'start-simple-task'
+                ? { ok: true, taskId: 'empty-task' }
+                : { ok: true, task: { type: 'simple', state: 'completed', result: '', logTail: '' } }));
+        });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    const result = await runControl(server.address().port);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).outputText, '');
+    assert.doesNotMatch(result.stderr + result.stdout, /task state: completed|task completed\./u);
 });
 
 test('an interrupted GUI tool stops its exact task and returns a native continuation handle', async (t) => {
@@ -182,6 +202,8 @@ test('resume tool decodes its handle and follows the replacement task to complet
     });
 
     assert.equal(result.code, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), { outputText: 'resumed result' });
-    assert.deepEqual(requests[0], { operation: 'resume-task', robotId, taskId: interruptedTaskId });
+    assert.equal(JSON.parse(result.stdout).outputText, 'resumed result');
+    assert.equal(JSON.parse(result.stdout).continuation.toolName, 'resumeTaskForRobot');
+    assert.deepEqual(requests[0], { operation: 'resume-task', robotId, taskId: interruptedTaskId,
+        prompt: 'Continue from the current state.' });
 });

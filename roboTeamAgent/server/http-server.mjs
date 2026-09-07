@@ -249,7 +249,7 @@ export function createRoboTeamServer(options) {
                     });
                 }
                 if (operation === 'resume-task') {
-                    const task = runtimeManager.resumeTask(robot, body.taskId);
+                    const task = await runtimeManager.resumeTask(robot, body.taskId, body.prompt);
                     return sendJson(res, 202, {
                         ok: true,
                         robotId: robot.id,
@@ -258,6 +258,9 @@ export function createRoboTeamServer(options) {
                         ...task,
                     });
                 }
+                if (operation === 'message-task') return sendJson(res, 200, {
+                    ok: true, ...await runtimeManager.sendTaskMessage(robot, body.taskId, body.prompt)
+                });
                 if (operation === 'task-status') return sendJson(res, 200, { ok: true, robotName: robot.name, task: runtimeManager.taskStatus(robot.id, body.taskId) });
                 if (operation === 'desktop-url' || operation === 'browser-url') {
                     const mode = operation.startsWith('desktop') ? 'desktop' : 'browser';

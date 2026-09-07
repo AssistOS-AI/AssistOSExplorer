@@ -130,7 +130,9 @@ test('queues tasks per robot and runs them FIFO with one active ALA process', as
     assert.equal(invocations[0].command, '/workspace/AdvancedLanguageAgent/bin/ala.mjs');
     assert.deepEqual(invocations[0].args.slice(0, 4), ['--home', path.join(dataDir, 'robots', robot.id, 'home'), '--cwd', workspace]);
     assert.ok(invocations[0].args.includes('--taskFile'));
-    assert.deepEqual(invocations[0].args.slice(-4), ['--ca', 'codex', '--model', 'gpt-test']);
+    assert.equal(invocations[0].args[invocations[0].args.indexOf('--ca') + 1], 'codex');
+    assert.equal(invocations[0].args[invocations[0].args.indexOf('--session-id') + 1], first.taskId);
+    assert.deepEqual(invocations[0].args.slice(-2), ['--model', 'gpt-test']);
     assert.ok(invocations[0].options.env.PATH.startsWith('/cache/codex/bin:'));
     assert.equal(invocations[0].options.env.ALA_EVENT_STREAM, '1');
     assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.codex'))).isDirectory(), true);
@@ -252,7 +254,8 @@ test('holds the robot queue during manual GUI control and resumes the interrupte
     const killed = [];
     const manager = new RuntimeManager({ toolCache: preparedToolCache });
     const interrupted = {
-        taskId: 'interrupted-task',
+        taskId: '11111111-1111-4111-8111-111111111111',
+        alaSessionId: '22222222-2222-4222-8222-222222222222',
         robotId: robot.id,
         type: 'desktop',
         state: 'running',
@@ -288,14 +291,60 @@ test('holds the robot queue during manual GUI control and resumes the interrupte
     await manager._drainTaskQueue(robot);
     assert.equal(manager.taskStatus(robot.id, waiting.taskId).state, 'queued');
 
-    const resumed = manager.resumeTask(robot, interrupted.taskId);
+    interrupted.child = null;
+    const resumed = await manager.resumeTask(robot, interrupted.taskId);
     const resumedInternal = manager.tasks.get(resumed.taskId);
     assert.equal(manager.manualControl.has(robot.id), false);
     assert.deepEqual(manager.taskQueues.get(robot.id), [resumed.taskId, waiting.taskId]);
-    assert.match(resumedInternal.request.task, /^Inspect the application\./u);
+    assert.match(resumedInternal.request.task, /^Continue\./u);
+    assert.equal(resumedInternal.request.alaSessionId, interrupted.alaSessionId);
+    assert.equal(resumedInternal.request.resumeSession, true);
     assert.match(resumedInternal.request.task, /Inspect the current visible desktop or browser state/u);
     assert.equal(resumedInternal.request.cwd, interrupted.request.cwd);
     manager.shuttingDown = true;
+});
+
+test('restores a completed Simple conversation after restart without repeating its original prompt', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-resume-record-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'resume-a1b2c3', name: 'Resume' };
+    const first = new RuntimeManager({ dataDir: root, toolCache: preparedToolCache });
+    const taskId = '12345678-1234-4123-8123-123456789abc';
+    await first._saveTask({ taskId, robotId: robot.id, type: 'simple', state: 'completed',
+        alaSessionId: taskId, request: { cwd: '/workspace/project', task: 'original task', ca: 'pi' } });
+    const second = new RuntimeManager({ dataDir: root, toolCache: preparedToolCache });
+    second._drainTaskQueue = async () => {};
+    const continued = await second.resumeTask(robot, taskId, 'now add tests');
+    const request = second.tasks.get(continued.taskId).request;
+    assert.equal(request.task, 'now add tests');
+    assert.equal(request.alaSessionId, taskId);
+    assert.equal(request.resumeSession, true);
+    assert.equal(request.ca, 'pi');
+    const resumed = await second.resumeTask(robot, taskId);
+    assert.equal(second.tasks.get(resumed.taskId).request.task, 'Continue.');
+    await assert.rejects(second.resumeTask({ id: 'another-robot' }, taskId), /ENOENT/);
+});
+
+test('active message delivery waits for an ALA receipt and starting tasks queue input', async () => {
+    const robot = { id: 'message-a1b2c3', name: 'Message' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const task = { taskId: 'active-id', robotId: robot.id, state: 'starting', pendingMessages: [] };
+    manager.tasks.set(task.taskId, task);
+    assert.equal((await manager.sendTaskMessage(robot, task.taskId, 'first')).delivery, 'queued');
+    assert.equal(task.pendingMessages[0].message, 'first');
+    task.controlReady = true;
+    task.state = 'running';
+    task.child = { stdin: { write(line) {
+        const command = JSON.parse(line);
+        assert.equal(command.message, 'live');
+        const waiter = manager.messageWaiters.get(command.id);
+        clearTimeout(waiter.timer);
+        manager.messageWaiters.delete(command.id);
+        waiter.resolve({ delivery: 'delivered' });
+    } } };
+    assert.equal((await manager.sendTaskMessage(robot, task.taskId, 'live')).delivery, 'delivered');
+    task.state = 'completed';
+    await assert.rejects(manager.sendTaskMessage(robot, task.taskId, 'too late'), /no longer running/);
 });
 
 test('an explicit GUI stop does not enter manual-control mode', async () => {

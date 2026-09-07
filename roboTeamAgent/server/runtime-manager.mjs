@@ -30,7 +30,7 @@ function appendTail(previous, chunk, limit) {
     return next.length > limit ? next.slice(-limit) : next;
 }
 
-function createAlaProgressParser(onText) {
+function createAlaProgressParser(onText, onEvent = () => {}) {
     let buffered = '';
     const consumeLine = (line, terminated) => {
         if (!line.startsWith(ALA_EVENT_PREFIX)) {
@@ -39,6 +39,7 @@ function createAlaProgressParser(onText) {
         }
         try {
             const event = JSON.parse(line.slice(ALA_EVENT_PREFIX.length));
+            onEvent(event);
             if (event?.type === 'coding-agent-message' && typeof event.message === 'string') onText(event.message);
         } catch {
             onText(`${line}${terminated ? '\n' : ''}`);
@@ -196,6 +197,7 @@ export class RuntimeManager {
         this.manualControl = new Map();
         this.pending = new Map();
         this.shuttingDown = false;
+        this.messageWaiters = new Map();
     }
 
     async _podman(args, timeout = 120000) {
@@ -311,6 +313,8 @@ export class RuntimeManager {
             child: null, cancelRequested: false,
             ...(GUI_MODES.has(type) ? { sessionUrl: robotSessionUrl(this.publicBasePath, robot.id) } : {}),
         };
+        task.alaSessionId = request.alaSessionId || task.taskId;
+        task.pendingMessages = [];
         this.tasks.set(task.taskId, task);
         if (trackLatest) this.latestTask.set(robot.id, task.taskId);
         return task;
@@ -394,10 +398,13 @@ export class RuntimeManager {
             const runtimeDir = path.join(this.dataDir, 'robots', robot.id, 'runtime');
             await this._prepareRobotAgentState(robotHome);
             await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
+            await this._saveTask(task);
             const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
             await fs.writeFile(taskFile, task.request.task, { mode: 0o600 });
             if (task.cancelRequested) throw new Error('task was stopped');
             const args = ['--home', robotHome, '--cwd', cwd, '--taskFile', taskFile, '--ca', codingAgent];
+            args.push('--session-id', task.alaSessionId, '--control-stdin');
+            if (task.request.resumeSession) args.push('--resume-session');
             if (task.request.skillSets) args.push('--skillSets', task.request.skillSets);
             if (task.request.model) args.push('--model', task.request.model);
             if (mcpAddress) args.push('--MCPServers', mcpAddress);
@@ -412,8 +419,9 @@ export class RuntimeManager {
                 ALA_EVENT_STREAM: '1',
                 ...(codingAgentPath ? { PATH: `${codingAgentPath}:${process.env.PATH || ''}` } : {}),
             };
-            const child = this.spawnImpl(this.alaCommand, args, { cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+            const child = this.spawnImpl(this.alaCommand, args, { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
+            child.stdin?.on('error', () => {});
             child.stdout?.on('data', (chunk) => {
                 task.result = appendTail(task.result, chunk, TASK_RESULT_LIMIT);
             });
@@ -423,7 +431,25 @@ export class RuntimeManager {
                 if (task.logTail.length < previousLength + String(chunk).length) task.logTruncated = true;
                 task.logSeq += 1;
             };
-            const progressParser = createAlaProgressParser(appendProgress);
+            const progressParser = createAlaProgressParser(appendProgress, (event) => {
+                if (event.type === 'messages-cancelled') appendProgress(`\nCancelled ${event.count} queued message(s).\n`);
+                if (event.type === 'session-ready') {
+                    task.controlReady = true;
+                    for (const message of task.pendingMessages.splice(0)) {
+                        child.stdin?.write(`${JSON.stringify(message)}\n`);
+                    }
+                }
+                if (event.type === 'message-accepted' || event.type === 'message-rejected') {
+                    const waiter = this.messageWaiters.get(event.id);
+                    if (waiter && waiter.taskId === task.taskId) {
+                        this.messageWaiters.delete(event.id);
+                        clearTimeout(waiter.timer);
+                        if (event.type === 'message-rejected') waiter.reject(new Error(event.error));
+                        else waiter.resolve({ delivery: event.delivery });
+                    }
+                    appendProgress(`\nMessage ${event.id}: ${event.delivery || event.error}\n`);
+                }
+            });
             child.stderr?.on('data', (chunk) => progressParser.push(chunk));
             await new Promise((resolve, reject) => {
                 child.once('error', reject);
@@ -433,20 +459,66 @@ export class RuntimeManager {
                     else reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
                 });
             });
-            task.state = 'completed';
+            if (!task.cancelRequested) task.state = 'completed';
             task.completedAt = new Date().toISOString();
         } catch (error) {
             if (task.state !== 'stopped') {
                 task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
             }
-        } finally { task.child = null; }
+        } finally {
+            task.child = null;
+            task.controlReady = false;
+            for (const [id, waiter] of this.messageWaiters) {
+                if (waiter.taskId !== task.taskId) continue;
+                clearTimeout(waiter.timer);
+                waiter.reject(new Error('Task ended before the message was acknowledged.'));
+                this.messageWaiters.delete(id);
+            }
+            await this._saveTask(task).catch(() => {});
+        }
+    }
+
+    async _saveTask(task) {
+        if (!['desktop', 'browser', 'simple'].includes(task.type)) return;
+        const directory = path.join(this.dataDir, 'robots', task.robotId, 'runtime');
+        await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+        const file = path.join(directory, `${task.taskId}.task.json`);
+        const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+        const record = { taskId: task.taskId, robotId: task.robotId, type: task.type,
+            state: task.state, request: task.request, alaSessionId: task.alaSessionId };
+        await fs.writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
+        await fs.rename(temporary, file);
+    }
+
+    async sendTaskMessage(robot, taskId, prompt) {
+        const task = this.tasks.get(taskId);
+        if (!task || task.robotId !== robot.id || !['queued', 'starting', 'running'].includes(task.state)) {
+            throw new Error('Task is no longer running; continue it instead.');
+        }
+        const message = String(prompt || '').trim();
+        if (!message || message.length > 32768) throw new Error('Message must contain 1 to 32768 characters.');
+        const command = { type: 'message', id: crypto.randomUUID(), message };
+        if (!task.controlReady) {
+            if (task.pendingMessages.length >= 100) throw new Error('Task message queue is full.');
+            task.pendingMessages.push(command);
+            return { delivery: 'queued', messageId: command.id };
+        }
+        const response = new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.messageWaiters.delete(command.id);
+                reject(new Error('Message acknowledgement timed out; delivery is unknown.'));
+            }, 35000);
+            this.messageWaiters.set(command.id, { resolve, reject, timer, taskId });
+        });
+        task.child.stdin.write(`${JSON.stringify(command)}\n`);
+        return { ...await response, messageId: command.id };
     }
 
     taskStatus(robotId, taskId = null) {
         const id = taskId || this.activeTasks.get(robotId) || this.latestTask.get(robotId);
         const task = id ? this.tasks.get(id) : null;
         if (!task || task.robotId !== robotId) return null;
-        const { child, request, cancelRequested, ...status } = task;
+        const { child, request, cancelRequested, pendingMessages, controlReady, ...status } = task;
         return { ...status, cwd: request.cwd, queuePosition: this.taskQueuePosition(task) };
     }
 
@@ -482,17 +554,30 @@ export class RuntimeManager {
         return this.stopTask(robot, null, taskId, { manualControl: true });
     }
 
-    resumeTask(robot, taskId) {
-        const internal = this.tasks.get(String(taskId || ''));
-        if (!internal || internal.robotId !== robot.id || !GUI_MODES.has(internal.type)
-            || internal.state !== 'stopped' || this.manualControl.get(robot.id) !== internal.taskId) {
-            throw new Error('robot has no matching interrupted GUI task to resume');
+    async resumeTask(robot, taskId, prompt = '') {
+        if (!/^[0-9a-f-]{36}$/u.test(String(taskId))) throw new Error('Invalid task id.');
+        let internal = this.tasks.get(taskId);
+        if (!internal) {
+            internal = JSON.parse(await fs.readFile(path.join(this.dataDir, 'robots', robot.id,
+                'runtime', `${taskId}.task.json`), 'utf8'));
+            if (['starting', 'running'].includes(internal.state)) internal.state = 'stopped';
+        }
+        if (internal.robotId !== robot.id || !['desktop', 'browser', 'simple'].includes(internal.type)
+            || !['stopped', 'completed', 'failed'].includes(internal.state)) {
+            throw new Error('Robot has no matching task to continue.');
+        }
+        const message = String(prompt || '').trim() || 'Continue.';
+        if (!/^[0-9a-f-]{36}$/u.test(internal.alaSessionId || '')) throw new Error('Task has no recoverable ALA session.');
+        if (message.length > 32768) throw new Error('Continuation prompt is too long.');
+        if (this.manualControl.has(robot.id) && this.manualControl.get(robot.id) !== taskId) {
+            throw new Error('Resume the task currently under manual control before continuing another task.');
         }
         const resumed = this._enqueueTask(robot, internal.type, {
             ...internal.request,
-            task: `${internal.request.task}\n\n${RESUME_REOBSERVE_INSTRUCTION}`,
-        }, { first: true });
-        this.manualControl.delete(robot.id);
+            alaSessionId: internal.alaSessionId, resumeSession: true,
+            task: GUI_MODES.has(internal.type) ? `${message}\n\n${RESUME_REOBSERVE_INSTRUCTION}` : message,
+        }, { first: this.manualControl.get(robot.id) === taskId });
+        if (this.manualControl.get(robot.id) === taskId) this.manualControl.delete(robot.id);
         queueMicrotask(() => void this._drainTaskQueue(robot));
         return resumed;
     }
