@@ -97,7 +97,12 @@
                 globally before Achilles CLI so both agents can use that workspace checkout during startup.</p>
             <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision,
                 and binds it to the same Ploinky-selected AgentLib used by the agents. Its preflight exercises
-                the ALA loader and required CLI options before starting the eighteen-agent runtime graph.</p>
+                the ALA loader and required CLI options before starting the fifteen-agent runtime graph.</p>
+
+            <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), and WebMeet STT are disabled by default.
+                An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic
+                meeting notes require Scribe. The current Secretary uses browser SpeechRecognition and does not
+                require the separate STT service.</p>
 
             <h3>Application Agents and Plugins</h3>
             <div class="agent-grid">
@@ -129,11 +134,11 @@
                 <a class="agent-card" href="../webAssist/docs/index.html"><h3>WebAssist</h3>
                     <p>Workspace and guest-facing assistant chat integration.</p></a>
                 <a class="agent-card" href="../webmeetStt/docs/index.html"><h3>WebMeet STT</h3>
-                    <p>Speech-to-text runtime used by supported WebMeet workflows.</p></a>
+                    <p>Optional private speech-to-text service, disabled by default.</p></a>
                 <a class="agent-card" href="../webmeetScribeAgent/docs/index.html"><h3>WebMeet Scribe</h3>
-                    <p>Meeting Secretary transcription journal and notes reconciliation worker.</p></a>
+                    <p>Optional Meeting Secretary transcript journal and notes worker, disabled by default.</p></a>
                 <a class="agent-card" href="../onlyOffice/docs/index.html"><h3>OnlyOffice</h3>
-                    <p>Office editor sessions, authenticated transport, callbacks, and persistence.</p></a>
+                    <p>Optional Office editor sessions, authenticated transport, callbacks, and persistence; disabled by default.</p></a>
             </div>
 
             <h3>Explorer-Owned and External Entries</h3>

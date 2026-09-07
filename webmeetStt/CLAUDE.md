@@ -2,7 +2,7 @@
 
 ## Scope
 
-`webmeetStt` owns the self-hosted Faster-Whisper speech-to-text service used by WebMeet scribe agents. It is a Ploinky-managed internal service and must not expose public HTTP routes.
+`webmeetStt` owns the optional self-hosted Faster-Whisper speech-to-text service. It is disabled by default and can be enabled by an administrator through Explorer Marketplace. The text-only Meeting Secretary uses browser SpeechRecognition without an STT fallback and does not depend on this service. It is a Ploinky-managed internal service and must not expose public HTTP routes.
 
 ## Rules
 

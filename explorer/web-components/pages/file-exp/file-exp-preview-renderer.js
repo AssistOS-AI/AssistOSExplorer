@@ -399,6 +399,7 @@ export function renderStandardPreview(fileExp, refs, previewUiState) {
                     key: `onlyoffice:${runtimePath}`,
                     agentRef: 'AchillesIDE/onlyOffice',
                     label: 'OnlyOffice',
+                    enableMode: 'global',
                     operation: async () => {
                         if (String(fileExp.state.selectedPath || '') !== selectedPath) return;
                         await tryLoadOnlyOfficePreview(fileExp, runtimePath, {

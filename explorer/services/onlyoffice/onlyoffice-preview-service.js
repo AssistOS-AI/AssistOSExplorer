@@ -1,6 +1,6 @@
 import { isOnlyOfficeFile } from './onlyoffice-file-types.js';
 import { isOnlyOfficeEditorActive } from './onlyoffice-editor-host.js';
-import { isAgentRuntimeStartupError } from '../../shared/ui/agent-runtime-loader/agent-runtime-loader.js';
+import { isAgentRuntimeStartupError, readMarketplaceAgent } from '../../shared/ui/agent-runtime-loader/agent-runtime-loader.js';
 
 // Reusing a cached session re-points the editor at a documentUrl/callbackUrl
 // that embed the server-side session token (idle TTL is 30 minutes server
@@ -156,7 +156,12 @@ export async function tryLoadOnlyOfficePreview(fileExp, filePath, { invalidate =
     try {
         session = await resolveOnlyOfficeSession(fileExp, normalizedPath);
     } catch (error) {
-        if (!deferRuntimeStartup || !isAgentRuntimeStartupError(error)) throw error;
+        if (!deferRuntimeStartup) throw error;
+        // A disabled agent may have no session route. Distinguish that from
+        // an enabled editor reporting a missing document.
+        const runtime = !isAgentRuntimeStartupError(error) && Number(error?.status) === 404
+            ? await readMarketplaceAgent('AchillesIDE/onlyOffice') : null;
+        if (!isAgentRuntimeStartupError(error) && runtime?.active !== false) throw error;
         fileExp.setPreviewState({
             previewMode: 'onlyoffice',
             mediaType: null,

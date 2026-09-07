@@ -16,12 +16,13 @@ function isPermanentRequestError(error) {
     return [400, 401, 403, 422].includes(status);
 }
 
-async function readMarketplaceAgent(agentRef) {
+export async function readMarketplaceAgent(agentRef) {
     try {
         const response = await fetch('/api/marketplace', {
             credentials: 'same-origin',
             headers: { accept: 'application/json' },
-            cache: 'no-store'
+            cache: 'no-store',
+            signal: AbortSignal.timeout(5000)
         });
         if (!response.ok) return null;
         const payload = await response.json();
@@ -58,6 +59,12 @@ export async function waitForAgentRuntimeAvailability(config = {}) {
     while (!config.cancelled?.()) {
         const runtime = config.agentRef ? await readRuntime(config.agentRef) : null;
         const runtimeStatus = String(runtime?.status || '').toLowerCase();
+        if (runtime?.active === false) {
+            const modeHint = config.enableMode ? ` using ${config.enableMode} mode` : '';
+            const error = new Error(`${config.label || 'Agent'} is disabled. An administrator can enable it in Marketplace${modeHint}. Retry after enabling it.`);
+            error.code = 'agent_disabled';
+            throw error;
+        }
         if (isTerminalAgentRuntimeState(runtimeStatus)) {
             const detail = lastError ? describeError(lastError) : '';
             throw new Error(detail || `${config.label || 'Agent'} failed to start (${runtimeStatus}).`);
@@ -139,16 +146,17 @@ export class AgentRuntimeLoader {
         this.phase = phase;
         const label = String(this.config?.label || 'Agent');
         this.root.dataset.phase = phase;
-        this.title.textContent = phase === 'error' ? `${label} could not start` : `Starting ${label}`;
+        this.title.textContent = phase === 'disabled' ? `${label} is disabled`
+            : phase === 'error' ? `${label} could not start` : `Starting ${label}`;
         this.message.textContent = message || (phase === 'error'
             ? `${label} is unavailable.`
             : `Waiting for ${label} to become available. This page will open automatically.`);
-        this.retryButton.hidden = phase !== 'error';
+        this.retryButton.hidden = !['error', 'disabled'].includes(phase);
     }
 
     start(config = {}) {
         const key = String(config.key || config.agentRef || config.label || 'agent');
-        if (this.config?.key === key && (this.active || this.phase === 'error')) return;
+        if (this.config?.key === key && (this.active || ['error', 'disabled'].includes(this.phase))) return;
         this.config = { ...config, key };
         this.active = true;
         void this.run();
@@ -174,7 +182,7 @@ export class AgentRuntimeLoader {
         } catch (error) {
             if (runId !== this.runId) return;
             this.active = false;
-            this.renderState('error', describeError(error));
+            this.renderState(error?.code === 'agent_disabled' ? 'disabled' : 'error', describeError(error));
             this.config.onError?.(error);
         }
     }

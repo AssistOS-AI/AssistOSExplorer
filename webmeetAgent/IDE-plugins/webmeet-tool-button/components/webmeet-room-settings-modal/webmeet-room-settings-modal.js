@@ -257,6 +257,7 @@ export class WebmeetRoomSettingsModal {
     }
 
     closeModal() {
+        this.closed = true;
         assistOS.UI.closeModal(this.element, null);
     }
 
@@ -305,32 +306,69 @@ export class WebmeetRoomSettingsModal {
         });
     }
 
-    saveSettings() {
-        const name = String(this.titleInput?.value || '').trim();
-        if (!name) {
-            this.showError('Room name is required.');
-            this.activeTab = 'general';
-            this.updateTabVisibility();
-            return;
+    async isSecretaryDisabled() {
+        try {
+            const response = await fetch('/api/marketplace', {
+                credentials: 'include',
+                headers: { Accept: 'application/json' },
+                signal: AbortSignal.timeout(5000),
+            });
+            if (!response.ok) return false;
+            const data = await response.json();
+            if (data?.ok === false || !Array.isArray(data?.marketplace?.agents)) return false;
+            const secretary = data.marketplace.agents.find((agent) =>
+                (agent.ref || `${agent.repo}/${agent.name}`) === 'AchillesIDE/webmeetScribeAgent');
+            return secretary?.active === false;
+        } catch {
+            // Availability is advisory; the owning agent still validates settings updates.
+            return false;
         }
-        const roboTeam = this.collectRoboTeamSettings();
-        if (!this.validateRoboTeamSettings(roboTeam)) {
-            return;
-        }
-        assistOS.UI.closeModal(this.element, {
-            roomId: this.roomId,
-            name,
-            roboTeam: {
-                active: isRoboTeamActive(roboTeam),
-                assistant: roboTeam.assistant,
-                meetingNotes: roboTeam.meetingNotes,
-                blackboard: roboTeam.blackboard,
-                documentBuilder: roboTeam.documentBuilder,
-                moderation: roboTeam.moderation,
-                bots: roboTeam.bots,
-                adaptation: roboTeam.adaptation
+    }
+
+    async saveSettings() {
+        if (this.savePending || this.closed) return;
+        this.savePending = true;
+        try {
+            const name = String(this.titleInput?.value || '').trim();
+            if (!name) {
+                this.showError('Room name is required.');
+                this.activeTab = 'general';
+                this.updateTabVisibility();
+                return;
             }
-        });
+            const roboTeam = this.collectRoboTeamSettings();
+            if (!this.validateRoboTeamSettings(roboTeam)) {
+                return;
+            }
+            const secretaryDisabled = roboTeam.meetingNotes.enabled && !this.roboTeamSettings.meetingNotes.enabled
+                && await this.isSecretaryDisabled();
+            if (this.closed || this.element?.isConnected === false) return;
+            if (secretaryDisabled) {
+                this.showError('Enable webmeetScribeAgent in Marketplace before enabling Meeting Notes.');
+                this.activeTab = 'roboteam';
+                this.activeRoboTeamTab = 'meetingNotes';
+                this.updateTabVisibility();
+                this.updateRoboTeamTabVisibility();
+                return;
+            }
+            this.closed = true;
+            assistOS.UI.closeModal(this.element, {
+                roomId: this.roomId,
+                name,
+                roboTeam: {
+                    active: isRoboTeamActive(roboTeam),
+                    assistant: roboTeam.assistant,
+                    meetingNotes: roboTeam.meetingNotes,
+                    blackboard: roboTeam.blackboard,
+                    documentBuilder: roboTeam.documentBuilder,
+                    moderation: roboTeam.moderation,
+                    bots: roboTeam.bots,
+                    adaptation: roboTeam.adaptation
+                }
+            });
+        } finally {
+            this.savePending = false;
+        }
     }
 
     collectRoboTeamSettings() {

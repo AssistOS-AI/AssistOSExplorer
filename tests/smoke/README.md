@@ -4,6 +4,16 @@ This package contains the maintainable Playwright smoke suite for Explorer, WebC
 
 ## Quick Start
 
+On a fresh deployment, run `npm run test:optional-agents` before any gate that
+requires OnlyOffice. This opt-in gate requires OnlyOffice, WebMeet Scribe, and
+WebMeet STT to be disabled in both Marketplace and the real runtime snapshot.
+It enables all three through the actual Marketplace UI (OnlyOffice in global
+mode), waits for Running in the UI and independent runtime evidence, and leaves
+them enabled for subsequent editor and meeting gates. It fails if any agent is
+already enabled; rerunning it requires another fresh deployment. Each service
+has a ten-minute startup allowance for uncached image pulls. The evidence
+attachment contains only agent identities and lifecycle states.
+
 From this directory:
 
 ```bash

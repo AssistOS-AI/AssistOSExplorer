@@ -57,7 +57,7 @@ The active Explorer WebMeet UI path is the IDE plugin under `IDE-plugins/webmeet
 
 `webmeetAgent` must keep its persistent store under required `WEBMEET_DATA_DIR`, normally the `/data` container mount backed by `.data/webmeetAgent/data`. Runtime resolution must fail closed when the variable is absent and must not derive a workspace fallback.
 
-`webmeetAgent` must not own infrastructure supervision. Its manifest enables `webmeetInfra/liveKitServerAgent` and `webmeetScribeAgent` with `no-wait`, leaving their lifecycle to Ploinky. `scripts/startAgent.sh` must only start the WebMeet MCP AgentServer. It must not directly launch sibling processes, start a WebMeet HTTP API/proxy, import `@livekit/agents`, start Redis, or start LiveKit Server.
+`webmeetAgent` must not own infrastructure supervision. Its manifest enables `webmeetInfra/liveKitServerAgent` with `no-wait`, leaving its lifecycle to Ploinky. `webmeetScribeAgent` and `webmeetStt` are optional and disabled by default; an administrator can enable them independently from Explorer Marketplace. Ordinary meetings do not require either agent, and the text-only Meeting Secretary uses browser SpeechRecognition without the STT service. `scripts/startAgent.sh` must only start the WebMeet MCP AgentServer. It must not directly launch sibling processes, start a WebMeet HTTP API/proxy, import `@livekit/agents`, start Redis, or start LiveKit Server.
 
 ### Decisions & Questions
 

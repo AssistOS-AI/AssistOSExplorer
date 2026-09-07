@@ -11,6 +11,8 @@ The Meeting Secretary worker receives text-only dispatches and maintains recover
 
 ## Core Content
 
+`webmeetScribeAgent` must be disabled by default and must not be automatically enabled by WebMeet. An administrator may enable the worker through Explorer Marketplace before automatic Meeting Notes are used. Ordinary meetings remain available without the worker. Transcript capture uses browser SpeechRecognition, with no dependency on `webmeetStt`.
+
 The worker must require a meeting identifier, connect without an audio pipeline, and advertise the meeting-secretary participant attributes. A transcript segment is admissible only when its LiveKit identity has been confirmed by the authoritative WebMeet room state.
 
 Analysis must use the configured time and word checkpoints and must capture an immutable transcript checkpoint before invoking the meeting-notes skill. The input must include the active document, cumulative semantic memory, uncompacted chronological transcript, and editable title-and-chapter structure. Text that arrives during analysis remains pending for the next sequential revision.
