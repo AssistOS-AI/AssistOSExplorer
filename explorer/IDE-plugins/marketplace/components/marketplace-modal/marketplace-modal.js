@@ -14,7 +14,7 @@ import {
   getCachedRuntimePlugins
 } from '/explorer/web-components/modals/settings-modal/settings-plugin-model.js';
 import {
-  fetchAdminControlProof
+  fetchMarketplaceProof
 } from '/explorer/services/infrastructure/authApi.js';
 import {
   isRetryableRuntimeStatusStreamError,
@@ -190,8 +190,10 @@ export class MarketplaceModal {
 
     const sendRequest = async () => {
       if (actionBody) {
-        const proof = await fetchAdminControlProof();
-        fetchOptions.headers['x-ploinky-csrf-token'] = proof.csrfToken;
+        const proof = await fetchMarketplaceProof();
+        delete fetchOptions.headers['x-ploinky-csrf-token'];
+        delete fetchOptions.headers['x-ploinky-browser-csrf-token'];
+        fetchOptions.headers[proof.header] = proof.csrfToken;
       }
       const response = await fetch(url, fetchOptions);
       const data = await response.json().catch(() => ({}));
@@ -199,7 +201,7 @@ export class MarketplaceModal {
     };
 
     let { response, data } = await sendRequest();
-    if (actionBody && response.status === 403 && data?.error === 'csrf_invalid') {
+    if (actionBody && response.status === 403 && ['csrf_invalid', 'browser_csrf_invalid'].includes(data?.error)) {
       ({ response, data } = await sendRequest());
     }
     if (!response.ok || data?.ok === false) {

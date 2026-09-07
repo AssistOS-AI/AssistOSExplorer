@@ -302,3 +302,23 @@ test('OnlyOffice document 404 remains a domain error instead of entering the run
         globalThis.fetch = originalFetch;
     }
 });
+
+test('disabled OnlyOffice with a missing route opens the runtime guidance instead of a document error', async (t) => {
+    const originalFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = originalFetch; });
+    globalThis.fetch = async (url) => new Response(JSON.stringify(
+        url === '/api/marketplace'
+            ? { agents: [{ ref: 'AchillesIDE/onlyOffice', active: false, status: 'disabled' }] }
+            : { error: 'route not found' }
+    ), { status: url === '/api/marketplace' ? 200 : 404, headers: { 'content-type': 'application/json' } });
+    let preview;
+    const fileExp = {
+        normalizePath: (path) => path,
+        caches: { officeSession: { get() { return null; }, set() {}, clear() {} } },
+        setPreviewState: (state) => { preview = state; },
+        invalidate() {}
+    };
+    assert.equal(await tryLoadOnlyOfficePreview(fileExp, '/report.docx'), true);
+    assert.equal(preview.previewMode, 'onlyoffice');
+    assert.deepEqual(preview.onlyOfficeRuntimeState, { path: '/report.docx' });
+});

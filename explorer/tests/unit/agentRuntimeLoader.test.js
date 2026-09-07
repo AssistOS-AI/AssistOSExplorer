@@ -86,3 +86,57 @@ test('runtime availability never calls application operations while startup is p
         operation: async () => assert.fail('MCP must not initialize before runtime readiness'),
     }), /startup timeout/);
 });
+
+test('disabled runtime stops immediately without probing or polling, then works after Marketplace enablement', async () => {
+    let enabled = false;
+    let attempts = 0;
+    const config = {
+        agentRef: 'AchillesIDE/onlyOffice',
+        label: 'OnlyOffice',
+        enableMode: 'global',
+        readRuntime: async () => ({ active: enabled, running: enabled, status: enabled ? 'running' : 'disabled' }),
+        wait: async () => assert.fail('Disabled agents must not be polled'),
+        operation: async () => { attempts += 1; return 'editor ready'; }
+    };
+    await assert.rejects(() => waitForAgentRuntimeAvailability(config), (error) => {
+        assert.equal(error.code, 'agent_disabled');
+        assert.match(error.message, /administrator.*Marketplace/);
+        assert.match(error.message, /using global mode/);
+        return true;
+    });
+    assert.equal(attempts, 0);
+    enabled = true;
+    assert.equal(await waitForAgentRuntimeAvailability(config), 'editor ready');
+    assert.equal(attempts, 1);
+});
+
+test('missing runtime evidence does not falsely declare an agent disabled', async () => {
+    for (const runtime of [null, {}, { active: true, running: false, status: 'starting' }]) {
+        let reads = 0;
+        assert.equal(await waitForAgentRuntimeAvailability({
+            agentRef: 'AchillesIDE/onlyOffice',
+            readRuntime: async () => ++reads === 1 ? runtime : { active: true, running: true, status: 'running' },
+            wait: async () => {},
+            operation: async () => 'ready'
+        }), 'ready');
+    }
+});
+
+test('disabled presenter shows Marketplace guidance and allows an explicit retry', () => {
+    const presenter = new AgentRuntimeLoader({}, () => {});
+    presenter.root = { dataset: {} };
+    presenter.title = {};
+    presenter.message = {};
+    presenter.retryButton = {};
+    presenter.config = { key: 'office', label: 'OnlyOffice' };
+    presenter.renderState('disabled', 'Enable OnlyOffice in Marketplace.');
+    assert.equal(presenter.title.textContent, 'OnlyOffice is disabled');
+    assert.equal(presenter.root.dataset.phase, 'disabled');
+    assert.equal(presenter.retryButton.hidden, false);
+    let runs = 0;
+    presenter.run = () => { runs += 1; };
+    presenter.start({ key: 'office' });
+    assert.equal(runs, 0);
+    presenter.retry();
+    assert.equal(runs, 1);
+});

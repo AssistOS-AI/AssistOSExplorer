@@ -17,13 +17,13 @@
       </aside>
       <div class="doc-main">
         <h1 id="overview">WebMeet STT</h1>
-        <p><code>webmeetStt</code> is the internal Faster-Whisper speech-to-text service used by WebMeet scribe flows. It can apply the configured self-hosted DTLN denoise step before transcription.</p>
+        <p><code>webmeetStt</code> is an optional internal Faster-Whisper speech-to-text service. It is disabled by default and can be enabled by an administrator from Explorer Marketplace. The current text-only Meeting Secretary uses browser SpeechRecognition, with no STT fallback, and does not call this service. The STT service can apply the configured self-hosted DTLN denoise step before transcription.</p>
         <h2 id="runtime-boundary">Runtime boundary</h2>
         <p>The manifest attaches the service to the isolated <code>webmeet</code> bridge, exposes no browser route or physical-host port, and verifies its loopback <code>/healthz</code> readiness endpoint. Pinned Python dependencies are installed into the <code>.data/webmeetStt</code> volume mounted at <code>/data</code> and reused on later launches.</p>
         <p>Read the <a href="specsLoader.html?spec=matrix.md">specifications</a> and <a href="wiki.html">Wiki</a> for the service contract.</p>
         <h2 id="system-outline">System outline</h2>
         <figure class="diagram"><pre class="mermaid">flowchart LR
-  Scribe[Meeting Secretary] --> STT[Private speech-to-text service]
+  Worker[Private audio client] --> STT[Private speech-to-text service]
   STT --> Text[Transcript text]</pre><figcaption><em>The STT agent stays on the private WebMeet network and returns transcript text.</em></figcaption></figure>
       </div>
     </div>

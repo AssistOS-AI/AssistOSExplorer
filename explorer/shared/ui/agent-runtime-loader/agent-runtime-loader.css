@@ -35,7 +35,8 @@ agent-runtime-loader {
     animation: agent-runtime-loader-spin 0.8s linear infinite;
 }
 
-.agent-runtime-loader-root[data-phase="error"] .agent-runtime-loader-spinner {
+.agent-runtime-loader-root[data-phase="error"] .agent-runtime-loader-spinner,
+.agent-runtime-loader-root[data-phase="disabled"] .agent-runtime-loader-spinner {
     display: none;
 }
 

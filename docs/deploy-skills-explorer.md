@@ -22,12 +22,14 @@ It then reads the canonical achillesAgentLib URL and immutable commit from the
 selected Ploinky dependency lock, requires that commit to equal the AgentLib
 remote default-branch head, and leaves AgentLib on that exact locked commit
 without applying one global branch to the differently named application
-branches. Once all 18 agents are running, the workflow validates every managed
+branches. Once all 15 agents are running, the workflow validates every managed
 repository revision and the outer Box's locked AgentLib identity. The paired
 destroy workflow requires only its explicit destructive confirmation and
 preserves the deployed runtime as the authority for teardown.
 
-QA also clones `AdvancedLanguageAgent` into the fresh workspace root from its remote default branch and records its exact commit. Before starting Explorer, the workflow links ALA's package dependency to the prepared Box's `/opt/ploinky-agentlib`, exercises the real loader, and checks the CLI options required by RoboTeam. It rejects a second AgentLib copy, a shadowing checkout, incompatible CLI options, or a dirty or moved ALA revision. No separate `npm install` is used for ALA, and this prerequisite does not change the eighteen-agent readiness gate.
+QA also clones `AdvancedLanguageAgent` into the fresh workspace root from its remote default branch and records its exact commit. Before starting Explorer, the workflow links ALA's package dependency to the prepared Box's `/opt/ploinky-agentlib`, exercises the real loader, and checks the CLI options required by RoboTeam. It rejects a second AgentLib copy, a shadowing checkout, incompatible CLI options, or a dirty or moved ALA revision. No separate `npm install` is used for ALA, and this prerequisite does not change the fifteen-agent readiness gate.
+
+The default graph excludes `onlyOffice`, `webmeetScribeAgent`, and `webmeetStt`; readiness requires fifteen runtimes and eleven no-wait completions. Administrators can enable these optional agents individually through Explorer Marketplace after deployment. Meeting Secretary uses final browser SpeechRecognition transcripts and does not depend on the separate STT service. Existing workspace enablement choices are preserved.
 
 Direct operator execution has the same authority and safety boundary. Before a
 destructive or externally visible mutation, positively identify the exact host,

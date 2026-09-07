@@ -11,6 +11,10 @@ OnlyOffice [Runtime-v5](wiki.html#definition-runtime-v5) runs the pinned image b
 
 ## Core Content
 
+When enabling OnlyOffice in Marketplace, the administrator must select `global` runtime mode so the editor can access workspace files.
+
+Explorer must leave `onlyOffice` disabled by default. An administrator can enable it through Marketplace using Ploinky lifecycle controls; the same runtime, readiness, and authorization contracts apply after enablement.
+
 The control route at /base-agent-additional-server/onlyOffice/7000/control/* must require authenticated access. The editor route at /base-agent-additional-server/onlyOffice/8080/* must be public only for the declared editor transport. The manifest must not create a physical-host publication.
 
 Authenticated Confidential session requests return 404 `document_not_found` when the requested path is absent from the delegated user’s visible tree, and 403 `document_forbidden` when resolved content is not readable. These responses contain no paths, object IDs, delegation values, or editor configuration, and create no session. Unexpected storage failures remain server errors. Live isolation tests must use authenticated control requests without following redirects; the public WebSocket probe preserves its Engine.IO transport query and fails within a bounded deadline if no HTTP upgrade response arrives.

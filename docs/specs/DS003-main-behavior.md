@@ -29,7 +29,7 @@ The affected user is a workspace operator who needs Git, DPU, task, SOPLang, med
 
 ### Protected runtime access
 
-The affected user is any authenticated workspace participant. Starting Explorer through Ploinky creates the router-mediated application path; Explorer obtains allowed roots from its server-side configuration and guards browser restoration against an unauthenticated session. The observable result is that normal workspace functionality remains available only through the configured runtime boundary. The hidden safeguard is server-side path and invocation validation, which prevents a browser selection or client payload from expanding filesystem or identity authority.
+The affected user is any authenticated workspace participant. Starting Explorer through Ploinky creates the router-mediated application path; Explorer obtains allowed roots from its server-side configuration and guards browser restoration against an unauthenticated session. The observable result is that normal workspace functionality remains available only through the configured runtime boundary. Administrators can enable and disable optional capabilities through Marketplace on the local control origin or a configured public application origin. Ploinky validates the selected application's administrator session and exact-origin mutation proof before changing agent state. The hidden safeguard is server-side path and invocation validation, which prevents a browser selection or client payload from expanding filesystem or identity authority.
 
 ## Conclusion
 
