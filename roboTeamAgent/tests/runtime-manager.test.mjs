@@ -11,6 +11,11 @@ import { buildRobotRunArgs, RuntimeManager, runtimeManagerInternals } from '../s
 const preparedToolCache = {
     prepareMode: async (mode) => ({ path: `/cache/${mode}`, versions: {} }),
     prepareCodex: async () => ({ path: '/cache/codex', binPath: '/cache/codex/bin', versions: {} }),
+    prepareCodingAgents: async (names = ['codex', 'opencode', 'pi']) => Object.fromEntries(names.map((name) => [name, {
+        path: `/cache/${name}`,
+        binPath: `/cache/${name}/bin`,
+        versions: {},
+    }])),
 };
 
 test('builds browser and desktop containers around the persistent robot directories', () => {
@@ -44,11 +49,17 @@ test('builds browser and desktop containers around the persistent robot director
         timezone: 'Europe/Bucharest',
         cwd: '/workspace/project',
         toolsPath: '/cache/desktop',
-        codexPath: '/cache/codex',
+        codingAgents: {
+            codex: { path: '/cache/codex' },
+            opencode: { path: '/cache/opencode' },
+            pi: { path: '/cache/pi' },
+        },
     });
     assert.ok(desktop.args.includes('/cache/codex:/opt/roboteam-codex:ro'));
+    assert.ok(desktop.args.includes('/cache/opencode:/opt/roboteam-opencode:ro'));
+    assert.ok(desktop.args.includes('/cache/pi:/opt/roboteam-pi:ro'));
     assert.ok(desktop.args.includes('CODEX_HOME=/config/.codex'));
-    assert.ok(desktop.args.includes('PATH=/opt/roboteam-codex/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
+    assert.ok(desktop.args.includes('PATH=/opt/roboteam-codex/bin:/opt/roboteam-opencode/bin:/opt/roboteam-pi/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
     assert.deepEqual(desktop.args.slice(2, 4), ['--log-driver', 'k8s-file']);
 });
 
@@ -123,6 +134,40 @@ test('queues tasks per robot and runs them FIFO with one active ALA process', as
     assert.ok(invocations[0].options.env.PATH.startsWith('/cache/codex/bin:'));
     assert.equal(invocations[0].options.env.ALA_EVENT_STREAM, '1');
     assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.codex'))).isDirectory(), true);
+    assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.config', 'opencode'))).isDirectory(), true);
+    assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.pi', 'agent'))).isDirectory(), true);
+});
+
+test('places the selected OpenCode and Pi caches on the ALA path', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-agent-path-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const dataDir = path.join(root, 'data');
+    const workspace = path.join(root, 'workspace');
+    const robot = { id: 'agent-path-a1b2c3', name: 'Agent Path' };
+    await Promise.all([
+        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true }),
+        fs.mkdir(path.join(dataDir, 'robots', robot.id, 'runtime'), { recursive: true }),
+        fs.mkdir(workspace, { recursive: true }),
+    ]);
+    const invocations = [];
+    const manager = new RuntimeManager({
+        dataDir,
+        workspaceRoot: workspace,
+        toolCache: preparedToolCache,
+        spawnImpl: (_command, args, options) => {
+            invocations.push({ args, options });
+            const child = new EventEmitter();
+            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+            setImmediate(() => child.emit('close', 0, null));
+            return child;
+        },
+    });
+    const opencode = manager.startTask(robot, 'simple', { cwd: workspace, task: 'OpenCode task', ca: 'opencode' });
+    while (manager.taskStatus(robot.id, opencode.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
+    const pi = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Pi task', ca: 'pi' });
+    while (manager.taskStatus(robot.id, pi.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(invocations[0].options.env.PATH.startsWith('/cache/opencode/bin:'));
+    assert.ok(invocations[1].options.env.PATH.startsWith('/cache/pi/bin:'));
 });
 
 test('extracts visible coding-agent messages from the ALA event stream', () => {

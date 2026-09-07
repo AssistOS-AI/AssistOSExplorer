@@ -11,7 +11,7 @@ async function writeExecutable(filePath) {
     await fs.chmod(filePath, 0o755);
 }
 
-test('prepares Codex once and reuses the persistent generation', async (t) => {
+test('prepares coding agents once and reuses persistent generations', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-tool-cache-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const calls = [];
@@ -23,14 +23,18 @@ test('prepares Codex once and reuses the persistent generation', async (t) => {
         if (args[0] === 'view') return { stdout: '"9.8.7"\n', stderr: '' };
         if (args[0] === 'install') {
             const prefix = args[args.indexOf('--prefix') + 1];
+            const packageSpec = args.at(-1);
             assert.ok(args.includes('--global'));
-            await writeExecutable(path.join(prefix, 'bin', 'codex'));
+            const executable = packageSpec.startsWith('@openai/codex@')
+                ? 'codex'
+                : packageSpec.startsWith('opencode-ai@') ? 'opencode' : 'pi';
+            await writeExecutable(path.join(prefix, 'bin', executable));
         }
         return { stdout: '', stderr: '' };
     };
     const cache = new ToolCache({ root, execFileImpl, processEnv: { PATH: '/bin', NODE_OPTIONS: '--preserve-symlinks-main' }, log: () => {} });
 
-    const [first, simultaneous] = await Promise.all([cache.prepareCodex(), cache.prepareCodex()]);
+    const [first, simultaneous] = await Promise.all([cache.prepareCodex(), cache.prepareCodingAgent('codex')]);
     assert.equal(first.path, simultaneous.path);
     assert.equal(first.versions.codex, '9.8.7');
     assert.equal(calls.filter((call) => call[1] === 'view').length, 1);
@@ -44,6 +48,13 @@ test('prepares Codex once and reuses the persistent generation', async (t) => {
     const fallback = await offline.prepareCodex();
     assert.equal(fallback.path, first.path);
     assert.equal(fallback.fallback, true);
+
+    const agents = await cache.prepareCodingAgents(['opencode', 'pi']);
+    assert.equal(agents.opencode.versions.opencode, '9.8.7');
+    assert.equal(agents.pi.versions.pi, '9.8.7');
+    assert.equal(await fs.access(path.join(agents.opencode.binPath, 'opencode')).then(() => true), true);
+    assert.equal(await fs.access(path.join(agents.pi.binPath, 'pi')).then(() => true), true);
+    assert.throws(() => cache.prepareCodingAgent('unknown'), /unsupported coding agent/);
 });
 
 test('removes Ploinky symlink options only from managed tool processes', () => {

@@ -23,7 +23,7 @@
 
   <h2>System boundary</h2>
   <p>RoboTeam is one globally enabled Ploinky agent. It owns robot records, container lifecycle, MCP bridges, the authenticated Selkies proxy, and task status. A robot is not another Ploinky agent. It is a workspace-scoped record with persistent directories and, when needed, one active Desktop or Browser container.</p>
-  <p><a href="wiki.html#definition-ala">Advanced Language Agent</a>, abbreviated ALA, is RoboTeam's LLM execution layer. RoboTeam starts ALA as a separate process for each task. ALA reads the prompt and selects the requested coding-agent backend. ALA currently supports Codex, OpenCode, and Pi. The selected executable must be available, and its authentication and configuration must exist in the robot directory passed through <code>--home</code>. RoboTeam prepares Codex automatically; OpenCode and Pi require their CLI executables to be provisioned in the outer runtime. RoboTeam's current Desktop and Browser MCP injection is implemented for Codex, so GUI automation tasks must use Codex for now.</p>
+  <p><a href="wiki.html#definition-ala">Advanced Language Agent</a>, abbreviated ALA, is RoboTeam's LLM execution layer. RoboTeam starts ALA as a separate process for each task. ALA reads the prompt and selects Codex, OpenCode, or Pi. RoboTeam prepares the current CLI packages in its shared cache and puts the selected executable on ALA's PATH. Authentication and configuration remain in the robot directory passed through <code>--home</code>. A Desktop exposes all three commands for robot-specific setup. RoboTeam's current Desktop and Browser MCP injection is implemented for Codex, so GUI automation tasks must use Codex for now.</p>
 
   <h2>Execution modes</h2>
   <table>

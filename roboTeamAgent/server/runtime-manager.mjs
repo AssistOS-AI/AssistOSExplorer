@@ -15,6 +15,15 @@ const ALA_FAILURE_DETAIL_LIMIT = 4096;
 const TASK_LOG_TAIL_LIMIT = 1024 * 1024;
 const TASK_RESULT_LIMIT = 1024 * 1024;
 const ALA_EVENT_PREFIX = '@@ALA_EVENT@@';
+const CODING_AGENT_NAMES = Object.freeze(['codex', 'opencode', 'pi']);
+const ROBOT_AGENT_STATE_DIRECTORIES = Object.freeze([
+    '.codex',
+    '.config/opencode',
+    '.cache/opencode',
+    '.local/share/opencode',
+    '.local/state/opencode',
+    '.pi/agent',
+]);
 
 function appendTail(previous, chunk, limit) {
     const next = `${previous}${chunk}`;
@@ -120,7 +129,7 @@ function mappedPort(output) {
     return Number(match[1]);
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, codexPath = null }) {
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, codingAgents = {} }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
@@ -140,14 +149,16 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '-e', `SUBFOLDER=${subfolder}`, '-e', `TITLE=${robot.name}`,
             '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
             ...(mode === 'browser' ? ['-e', 'CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility'] : []),
-            ...(codexPath ? [
-                '-e', 'PATH=/opt/roboteam-codex/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+            ...(Object.keys(codingAgents).length ? [
+                '-e', `PATH=${CODING_AGENT_NAMES.filter((name) => codingAgents[name]?.path).map((name) => `/opt/roboteam-${name}/bin`).join(':')}:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
                 '-e', 'CODEX_HOME=/config/.codex',
             ] : []),
             '-v', `${path.join(robotRoot, 'home')}:/config`,
             '-v', `${cwd}:/workspace`,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
-            ...(codexPath ? ['-v', `${codexPath}:/opt/roboteam-codex:ro`] : []),
+            ...CODING_AGENT_NAMES.flatMap((name) => (
+                codingAgents[name]?.path ? ['-v', `${codingAgents[name].path}:/opt/roboteam-${name}:ro`] : []
+            )),
             images[mode],
         ],
     };
@@ -240,9 +251,8 @@ export class RuntimeManager {
             const cwd = cwdValue
                 ? await this.resolveCwd(cwdValue)
                 : path.join(this.dataDir, 'robots', robot.id, 'workspace');
-            const codexHome = path.join(this.dataDir, 'robots', robot.id, 'home', '.codex');
-            await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
-            await fs.chmod(codexHome, 0o700);
+            const robotHome = path.join(this.dataDir, 'robots', robot.id, 'home');
+            await this._prepareRobotAgentState(robotHome);
             const existing = this.sessions.get(robot.id);
             if (existing) {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
@@ -257,11 +267,11 @@ export class RuntimeManager {
                 this.sessions.delete(robot.id);
             }
             if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
-            const [tools, codex] = await Promise.all([
+            const [tools, codingAgents] = await Promise.all([
                 this.toolCache.prepareMode(mode),
-                mode === 'desktop' ? this.toolCache.prepareCodex() : Promise.resolve(null),
+                mode === 'desktop' ? this.toolCache.prepareCodingAgents() : Promise.resolve({}),
             ]);
-            const plan = buildRobotRunArgs({ robot, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, codexPath: codex?.path });
+            const plan = buildRobotRunArgs({ robot, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, codingAgents });
             const session = { robotId: robot.id, mode, cwd, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
             this.sessions.set(robot.id, session);
             try {
@@ -325,6 +335,14 @@ export class RuntimeManager {
         return this._enqueueTask(robot, type, request);
     }
 
+    async _prepareRobotAgentState(robotHome) {
+        await Promise.all(ROBOT_AGENT_STATE_DIRECTORIES.map(async (relativePath) => {
+            const directory = path.join(robotHome, relativePath);
+            await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+            await fs.chmod(directory, 0o700);
+        }));
+    }
+
     async _drainTaskQueue(robot) {
         if (this.shuttingDown || this.activeTasks.has(robot.id) || this.manualControl.has(robot.id)) return;
         const queue = this.taskQueues.get(robot.id) || [];
@@ -358,25 +376,23 @@ export class RuntimeManager {
             const cwd = await this.resolveCwd(task.request.cwd);
             if (task.cancelRequested) throw new Error('task was stopped');
             const codingAgent = task.request.ca || 'codex';
-            const codexPromise = codingAgent === 'codex' || codingAgent === 'auto'
-                ? this.toolCache.prepareCodex()
-                : Promise.resolve(null);
+            const codingAgentsPromise = codingAgent === 'auto'
+                ? this.toolCache.prepareCodingAgents()
+                : this.toolCache.prepareCodingAgents([codingAgent]);
             let mcpAddress = null;
             if (GUI_MODES.has(task.type)) {
                 const [, session] = await Promise.all([
-                    codexPromise,
+                    codingAgentsPromise,
                     this.ensureContainer(robot, task.type, cwd, { taskId: task.taskId }),
                 ]);
                 mcpAddress = `${task.type}=http://127.0.0.1:${session.mcpPort}/mcp`;
             } else {
-                await codexPromise;
+                await codingAgentsPromise;
             }
             if (task.cancelRequested) throw new Error('task was stopped');
             const robotHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             const runtimeDir = path.join(this.dataDir, 'robots', robot.id, 'runtime');
-            const codexHome = path.join(robotHome, '.codex');
-            await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
-            await fs.chmod(codexHome, 0o700);
+            await this._prepareRobotAgentState(robotHome);
             await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
             const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
             await fs.writeFile(taskFile, task.request.task, { mode: 0o600 });
@@ -386,11 +402,15 @@ export class RuntimeManager {
             if (task.request.model) args.push('--model', task.request.model);
             if (mcpAddress) args.push('--MCPServers', mcpAddress);
             task.state = 'running';
-            const codex = await codexPromise;
+            const codingAgents = await codingAgentsPromise;
+            const codingAgentPath = CODING_AGENT_NAMES
+                .map((name) => codingAgents[name]?.binPath)
+                .filter(Boolean)
+                .join(':');
             const childEnv = {
                 ...process.env,
                 ALA_EVENT_STREAM: '1',
-                ...(codex?.binPath ? { PATH: `${codex.binPath}:${process.env.PATH || ''}` } : {}),
+                ...(codingAgentPath ? { PATH: `${codingAgentPath}:${process.env.PATH || ''}` } : {}),
             };
             const child = this.spawnImpl(this.alaCommand, args, { cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
             task.child = child;

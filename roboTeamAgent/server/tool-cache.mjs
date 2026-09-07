@@ -10,6 +10,11 @@ const CACHE_SCHEMA = 'roboteam-tool-cache-v1';
 const NPM_INSTALL_ARGS = ['install', '--omit=dev', '--no-audit', '--no-fund', '--no-package-lock'];
 const TOOL_MOUNT_PATH = '/opt/roboteam-tools';
 const NESTED_CONTAINER_ARGS = ['--ipc', 'none'];
+const CODING_AGENT_PACKAGES = Object.freeze({
+    codex: Object.freeze({ packageName: '@openai/codex', executable: 'codex' }),
+    opencode: Object.freeze({ packageName: 'opencode-ai', executable: 'opencode' }),
+    pi: Object.freeze({ packageName: '@earendil-works/pi-coding-agent', executable: 'pi' }),
+});
 
 function toolProcessEnv(environment = process.env) {
     const sanitized = { ...environment };
@@ -62,7 +67,18 @@ export class ToolCache {
     }
 
     prepareCodex() {
-        return this._once('codex', () => this._prepareCodex());
+        return this.prepareCodingAgent('codex');
+    }
+
+    prepareCodingAgent(name) {
+        if (!Object.hasOwn(CODING_AGENT_PACKAGES, name)) throw new Error(`unsupported coding agent: ${name}`);
+        return this._once(name, () => this._prepareCodingAgent(name));
+    }
+
+    async prepareCodingAgents(names = Object.keys(CODING_AGENT_PACKAGES)) {
+        const uniqueNames = [...new Set(names)];
+        const prepared = await Promise.all(uniqueNames.map((name) => this.prepareCodingAgent(name)));
+        return Object.fromEntries(uniqueNames.map((name, index) => [name, prepared[index]]));
     }
 
     prepareMode(mode) {
@@ -158,19 +174,20 @@ export class ToolCache {
         ], { timeout: 60000, maxBuffer: 4 * 1024 * 1024, env: process.env });
     }
 
-    async _prepareCodex() {
-        return this._prepare('codex', async () => {
-            const version = await this._npmVersion('@openai/codex');
+    async _prepareCodingAgent(name) {
+        const definition = CODING_AGENT_PACKAGES[name];
+        return this._prepare(name, async () => {
+            const version = await this._npmVersion(definition.packageName);
             return {
-                identity: { package: '@openai/codex', version, runtime: process.versions.node },
-                versions: { codex: version },
-                install: (directory) => this._npmInstallHost(directory, '@openai/codex', version, { global: true }),
+                identity: { package: definition.packageName, version, runtime: process.versions.node },
+                versions: { [name]: version },
+                install: (directory) => this._npmInstallHost(directory, definition.packageName, version, { global: true }),
                 validate: async (directory) => {
-                    const executable = path.join(directory, 'bin', 'codex');
-                    if (!(await isExecutable(executable))) throw new Error('prepared Codex executable is missing');
+                    const executable = path.join(directory, 'bin', definition.executable);
+                    if (!(await isExecutable(executable))) throw new Error(`prepared ${name} executable is missing`);
                     await this.execFileImpl(executable, ['--version'], { timeout: 30000, maxBuffer: 1024 * 1024, env: this.processEnv });
                 },
-                result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions: { codex: version } }),
+                result: (directory) => ({ path: directory, binPath: path.join(directory, 'bin'), versions: { [name]: version } }),
             };
         });
     }
@@ -290,8 +307,9 @@ export class ToolCache {
             const directory = path.join(bundleRoot, 'generations', descriptor.generation);
             const stamp = JSON.parse(await fs.readFile(path.join(directory, 'stamp.json'), 'utf8'));
             if (stamp?.schema !== CACHE_SCHEMA || stamp.name !== name || stamp.generation !== descriptor.generation) throw new Error('invalid cached generation stamp');
-            const required = name === 'codex'
-                ? [path.join(directory, 'bin', 'codex')]
+            const codingAgent = CODING_AGENT_PACKAGES[name];
+            const required = codingAgent
+                ? [path.join(directory, 'bin', codingAgent.executable)]
                 : name === 'browser'
                     ? [executablePath(directory, 'playwright-mcp')]
                     : [path.join(directory, 'computer-use-linux'), executablePath(directory, 'supergateway')];
@@ -306,7 +324,7 @@ export class ToolCache {
             this.log(`[tool-cache] ${name} update unavailable (${cause.message}); using last valid generation ${descriptor.generation.slice(0, 12)}`);
             return {
                 path: directory,
-                ...(name === 'codex' ? { binPath: path.join(directory, 'bin') } : {}),
+                ...(codingAgent ? { binPath: path.join(directory, 'bin') } : {}),
                 versions: descriptor.versions || stamp.versions || {},
                 fallback: true,
             };
@@ -316,4 +334,4 @@ export class ToolCache {
     }
 }
 
-export const toolCacheInternals = { CACHE_SCHEMA, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, TOOL_MOUNT_PATH, generationName, safeVersion, toolProcessEnv };
+export const toolCacheInternals = { CACHE_SCHEMA, CODING_AGENT_PACKAGES, NESTED_CONTAINER_ARGS, NPM_INSTALL_ARGS, TOOL_MOUNT_PATH, generationName, safeVersion, toolProcessEnv };
