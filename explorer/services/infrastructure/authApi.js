@@ -86,6 +86,31 @@ export async function fetchAdminControlProof({
     return { origin: proofOrigin, csrfToken };
 }
 
+export async function fetchMarketplaceProof({
+    fetchImplementation = globalThis.fetch,
+    expectedOrigin = globalThis.location?.origin
+} = {}) {
+    const response = await fetchImplementation('/auth/token', {
+        cache: 'no-store',
+        credentials: 'include',
+        headers: { Accept: 'application/json' }
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok !== true) {
+        throw new Error(payload?.message || payload?.error || `Authentication request failed (${response.status})`);
+    }
+    const control = payload.adminControl !== undefined;
+    const proof = control ? payload.adminControl : payload.browserMutation;
+    const origin = String(expectedOrigin || '').trim();
+    const csrfToken = String(proof?.csrfToken || '').trim();
+    if (!origin || proof?.origin !== origin || !csrfToken
+        || (!control && (!String(proof?.hostRouteKey || '').trim()
+            || !String(proof?.generation || '').trim()))) {
+        throw new Error('Marketplace administration is unavailable for this origin.');
+    }
+    return { origin, csrfToken, header: control ? 'x-ploinky-csrf-token' : 'x-ploinky-browser-csrf-token' };
+}
+
 export async function fetchUserAdministrationProof({
     agentName,
     fetchImplementation = globalThis.fetch,

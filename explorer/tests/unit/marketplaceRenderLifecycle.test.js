@@ -19,7 +19,7 @@ async function loadMarketplaceModal() {
         const resolvePluginSettingsUrl = () => '';
         const flattenPluginsByKey = () => [];
         const getCachedRuntimePlugins = () => null;
-        const fetchAdminControlProof = (...args) => globalThis.__marketplaceFetchAdminControlProof(...args);
+        const fetchMarketplaceProof = (...args) => globalThis.__marketplaceFetchMarketplaceProof(...args);
         const publishRuntimeStatusEvents = (...args) => globalThis.__marketplacePublishRuntimeStatusEvents?.(...args) || Promise.resolve();
         const isRetryableRuntimeStatusStreamError = (error) => !Number.isFinite(Number(error?.status)) || [502, 503, 504].includes(Number(error.status));
         const RUNTIME_STATUS_UPDATED_EVENT = 'ploinky:runtime-status-updated';
@@ -66,18 +66,18 @@ test('Marketplace initial load performs one structural render after state settle
 
 test('Marketplace reads omit admin proof and mutations attach a fresh proof', async (t) => {
     const originalFetch = globalThis.fetch;
-    const originalProofFetcher = globalThis.__marketplaceFetchAdminControlProof;
+    const originalProofFetcher = globalThis.__marketplaceFetchMarketplaceProof;
     t.after(() => {
         globalThis.fetch = originalFetch;
-        if (originalProofFetcher === undefined) delete globalThis.__marketplaceFetchAdminControlProof;
-        else globalThis.__marketplaceFetchAdminControlProof = originalProofFetcher;
+        if (originalProofFetcher === undefined) delete globalThis.__marketplaceFetchMarketplaceProof;
+        else globalThis.__marketplaceFetchMarketplaceProof = originalProofFetcher;
     });
 
     let proofCalls = 0;
     const calls = [];
-    globalThis.__marketplaceFetchAdminControlProof = async () => {
+    globalThis.__marketplaceFetchMarketplaceProof = async () => {
         proofCalls += 1;
-        return { origin: 'http://localhost:8082', csrfToken: `v1.proof-${proofCalls}` };
+        return { origin: 'http://localhost:8082', header: 'x-ploinky-csrf-token', csrfToken: `v1.proof-${proofCalls}` };
     };
     globalThis.fetch = async (path, options) => {
         calls.push({
@@ -110,17 +110,18 @@ test('Marketplace reads omit admin proof and mutations attach a fresh proof', as
 
 test('Marketplace retries once with a new proof only after csrf_invalid', async (t) => {
     const originalFetch = globalThis.fetch;
-    const originalProofFetcher = globalThis.__marketplaceFetchAdminControlProof;
+    const originalProofFetcher = globalThis.__marketplaceFetchMarketplaceProof;
     t.after(() => {
         globalThis.fetch = originalFetch;
-        if (originalProofFetcher === undefined) delete globalThis.__marketplaceFetchAdminControlProof;
-        else globalThis.__marketplaceFetchAdminControlProof = originalProofFetcher;
+        if (originalProofFetcher === undefined) delete globalThis.__marketplaceFetchMarketplaceProof;
+        else globalThis.__marketplaceFetchMarketplaceProof = originalProofFetcher;
     });
 
     let proofCalls = 0;
     const suppliedProofs = [];
-    globalThis.__marketplaceFetchAdminControlProof = async () => ({
+    globalThis.__marketplaceFetchMarketplaceProof = async () => ({
         origin: 'http://localhost:8082',
+        header: 'x-ploinky-csrf-token',
         csrfToken: `v1.proof-${++proofCalls}`
     });
     globalThis.fetch = async (_path, options) => {
@@ -147,20 +148,60 @@ test('Marketplace retries once with a new proof only after csrf_invalid', async 
     assert.deepEqual(suppliedProofs, ['v1.proof-1', 'v1.proof-2']);
 });
 
-test('Marketplace does not retry a rejected mutation for non-CSRF failures', async (t) => {
+test('Marketplace retries once with a new proof after browser_csrf_invalid on a public host', async (t) => {
     const originalFetch = globalThis.fetch;
-    const originalProofFetcher = globalThis.__marketplaceFetchAdminControlProof;
+    const originalProofFetcher = globalThis.__marketplaceFetchMarketplaceProof;
     t.after(() => {
         globalThis.fetch = originalFetch;
-        if (originalProofFetcher === undefined) delete globalThis.__marketplaceFetchAdminControlProof;
-        else globalThis.__marketplaceFetchAdminControlProof = originalProofFetcher;
+        if (originalProofFetcher === undefined) delete globalThis.__marketplaceFetchMarketplaceProof;
+        else globalThis.__marketplaceFetchMarketplaceProof = originalProofFetcher;
+    });
+
+    let proofCalls = 0;
+    const suppliedProofs = [];
+    globalThis.__marketplaceFetchMarketplaceProof = async () => ({
+        origin: 'https://explorer.example.test',
+        header: 'x-ploinky-browser-csrf-token',
+        csrfToken: `v1.proof-${++proofCalls}`
+    });
+    globalThis.fetch = async (_path, options) => {
+        suppliedProofs.push(options.headers['x-ploinky-browser-csrf-token']);
+        if (suppliedProofs.length === 1) {
+            return {
+                status: 403,
+                ok: false,
+                json: async () => ({ ok: false, error: 'browser_csrf_invalid' })
+            };
+        }
+        return {
+            status: 200,
+            ok: true,
+            json: async () => ({ ok: true, marketplace: { agents: [] } })
+        };
+    };
+
+    const {MarketplaceModal} = await loadMarketplaceModal();
+    const modal = Object.create(MarketplaceModal.prototype);
+    await modal.requestMarketplace({ action: 'enable_agent', agentRef: 'proxies/searchAgent' });
+
+    assert.equal(proofCalls, 2);
+    assert.deepEqual(suppliedProofs, ['v1.proof-1', 'v1.proof-2']);
+});
+
+test('Marketplace does not retry a rejected mutation for non-CSRF failures', async (t) => {
+    const originalFetch = globalThis.fetch;
+    const originalProofFetcher = globalThis.__marketplaceFetchMarketplaceProof;
+    t.after(() => {
+        globalThis.fetch = originalFetch;
+        if (originalProofFetcher === undefined) delete globalThis.__marketplaceFetchMarketplaceProof;
+        else globalThis.__marketplaceFetchMarketplaceProof = originalProofFetcher;
     });
 
     let proofCalls = 0;
     let mutationCalls = 0;
-    globalThis.__marketplaceFetchAdminControlProof = async () => {
+    globalThis.__marketplaceFetchMarketplaceProof = async () => {
         proofCalls += 1;
-        return { origin: 'http://localhost:8082', csrfToken: 'v1.proof' };
+        return { origin: 'http://localhost:8082', header: 'x-ploinky-csrf-token', csrfToken: 'v1.proof' };
     };
     globalThis.fetch = async () => {
         mutationCalls += 1;
