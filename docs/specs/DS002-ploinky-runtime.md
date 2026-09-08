@@ -39,6 +39,8 @@ Marketplace reads use the authenticated router session. Before an administrator 
 
 Marketplace initial rendering, snapshot refreshes, and incremental runtime events must share the same normalized labels, accessible status, current lifecycle detail, and operational Configure gate. Leaving Running must disable Configure immediately, and streamed changes must preserve pending mutation text and existing row controls. Details from an earlier lifecycle must not remain attached to a new state.
 
+Both Marketplace tabs must exclude skill entries, repositories classified as `skills` or `mixed`, and the repositories `basic`, `cloud`, `container-image-builds`, `copilot-agents`, `demo`, `extra`, `security`, and `vibe`. The known skill sources `AchillesCopilotBasicSkills`, `DocumentationSkills`, and `PloinkySkills` remain excluded when installed under another local name. Match repository names and decoded Git source basenames case-insensitively, including `.git` suffixes and SSH URLs, and propagate exclusion to aliases and every associated agent. Apply this presentation policy before repository grouping, search, type filtering, enabled-agent counts, and lifecycle refreshes. Agent names remain case-sensitive when counting enabled entries. Repos exposes only Agent Repos and Others. Visible agents retain the existing lifecycle controls and router-authorized mutations. Hiding an entry must not uninstall a repository, disable an agent, modify the router catalog, or disable the skills subsystem.
+
 Repository documentation preview must remain reachable through the repository-scoped route `/.ploinky/repos/AchillesIDE/docs/development.html` when the workspace exposes the repository mount.
 
 ## Conclusion

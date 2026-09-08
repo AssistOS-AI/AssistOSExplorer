@@ -21,6 +21,11 @@ import {
   publishRuntimeStatusEvents,
   RUNTIME_STATUS_UPDATED_EVENT
 } from '/explorer/services/infrastructure/runtimeStatusEvents.js';
+import {
+    getVisibleMarketplaceCatalog,
+    marketplaceAgentRepositoryName,
+    marketplaceRepositoryIdentity,
+} from './marketplaceVisibility.js';
 
 const RUNTIME_STATUS_RECONNECT_DELAY_MS = 1000;
 
@@ -170,7 +175,7 @@ export class MarketplaceModal {
 
   switchRepoKindTab = (event) => {
     const tab = event.currentTarget?.dataset?.repoKindTab || 'agents';
-    this.state.activeRepoKindTab = ['agents', 'skills', 'others'].includes(tab) ? tab : 'agents';
+    this.state.activeRepoKindTab = ['agents', 'others'].includes(tab) ? tab : 'agents';
     this.renderRepoKindTabs();
     this.renderRepositories();
     this.syncInteractiveState();
@@ -268,7 +273,7 @@ export class MarketplaceModal {
   }
 
   handleRuntimeStatusUpdated = (event) => {
-    const agents = this.state.marketplace?.agents;
+    const {agents} = getVisibleMarketplaceCatalog(this.state.marketplace);
     const runtimes = Array.isArray(event?.detail?.runtimes) ? event.detail.runtimes : [];
     if (!Array.isArray(agents)) return;
     const runtimesByRef = new Map(runtimes.map((runtime) => [
@@ -668,7 +673,7 @@ export class MarketplaceModal {
   }
 
   renderRepoKindTabs() {
-    const active = ['agents', 'skills', 'others'].includes(this.state.activeRepoKindTab)
+    const active = ['agents', 'others'].includes(this.state.activeRepoKindTab)
       ? this.state.activeRepoKindTab
       : 'agents';
     this.repoKindButtons?.forEach(button => {
@@ -680,28 +685,25 @@ export class MarketplaceModal {
 
   repoMatchesKindTab(repo, activeTab = this.state.activeRepoKindTab) {
     const kind = String(repo?.kind || '').trim().toLowerCase();
-    if (activeTab === 'skills') {
-      return kind === 'skills' || kind === 'mixed';
-    }
     if (activeTab === 'others') {
       return kind !== 'agents' && kind !== 'skills' && kind !== 'mixed';
     }
-    return kind === 'agents' || kind === 'mixed';
+    return kind === 'agents';
   }
 
   renderRepositories() {
     if (!this.repositoriesEl) return;
-    const repositories = this.state.marketplace?.repositories || [];
+    const {repositories} = getVisibleMarketplaceCatalog(this.state.marketplace);
     if (!repositories.length) {
       this.repositoriesEl.innerHTML = '<div class="marketplace-empty">No repositories found.</div>';
       return;
     }
-    const activeRepoKindTab = ['agents', 'skills', 'others'].includes(this.state.activeRepoKindTab)
+    const activeRepoKindTab = ['agents', 'others'].includes(this.state.activeRepoKindTab)
       ? this.state.activeRepoKindTab
       : 'agents';
     const filteredRepositories = repositories.filter(repo => this.repoMatchesKindTab(repo, activeRepoKindTab));
     if (!filteredRepositories.length) {
-      const label = activeRepoKindTab === 'skills' ? 'skills' : (activeRepoKindTab === 'others' ? 'other' : 'agent');
+      const label = activeRepoKindTab === 'others' ? 'other' : 'agent';
       this.repositoriesEl.innerHTML = `<div class="marketplace-empty">No ${label} repositories found.</div>`;
       return;
     }
@@ -799,7 +801,7 @@ export class MarketplaceModal {
   }
 
   hasTransitionalAgents() {
-    return (this.state.marketplace?.agents || []).some(agent => (
+    return getVisibleMarketplaceCatalog(this.state.marketplace).agents.some(agent => (
       MARKETPLACE_AGENT_TRANSITIONAL_STATUSES.has(this.getAgentLifecycleStatus(agent))
     ));
   }
@@ -826,6 +828,7 @@ export class MarketplaceModal {
       const marketplace = await this.requestMarketplace();
       if (this.unloaded) return;
       this.state.marketplace = marketplace;
+      this.renderRepositories();
       this.renderAgents();
       this.syncInteractiveState();
     } catch {
@@ -837,8 +840,7 @@ export class MarketplaceModal {
 
   renderAgents() {
     if (!this.agentsEl) return;
-    const repositories = this.state.marketplace?.repositories || [];
-    const agents = this.state.marketplace?.agents || [];
+    const {repositories, agents} = getVisibleMarketplaceCatalog(this.state.marketplace);
     const canManage = this.canManageMarketplace();
     const noRepoName = '__no_repo__';
     const noRepoLabel = '(No repository)';
@@ -849,8 +851,10 @@ export class MarketplaceModal {
     }
 
     const agentsByRepo = new Map();
+    const repositoryNames = new Map(repositories.map(repo => [marketplaceRepositoryIdentity(repo.name), repo.name]));
     for (const agent of agents) {
-      const repoName = String(agent?.repo || '').trim() || noRepoName;
+      const declaredRepo = marketplaceAgentRepositoryName(agent);
+      const repoName = repositoryNames.get(marketplaceRepositoryIdentity(declaredRepo)) || declaredRepo || noRepoName;
       const list = agentsByRepo.get(repoName);
       if (list) {
         list.push(agent);

@@ -1,32 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-
-const sourcePath = path.resolve(
-    import.meta.dirname,
-    '../../IDE-plugins/marketplace/components/marketplace-modal/marketplace-modal.js'
-);
-
-async function loadMarketplaceModal() {
-    const source = await fs.readFile(sourcePath, 'utf8');
-    const withoutImports = source.replace(/import\s+\{[\s\S]*?\}\s+from\s+'[^']+';\s*/g, '');
-    const dependencies = `
-        const callExplorerTool = async () => ({});
-        const parseToolResult = (value) => value;
-        const buildAgentSettingsItems = () => [];
-        const ensureSettingsComponentRegistered = async () => {};
-        const resolvePluginSettingsUrl = () => '';
-        const flattenPluginsByKey = () => [];
-        const getCachedRuntimePlugins = () => null;
-        const fetchMarketplaceProof = (...args) => globalThis.__marketplaceFetchMarketplaceProof(...args);
-        const publishRuntimeStatusEvents = (...args) => globalThis.__marketplacePublishRuntimeStatusEvents?.(...args) || Promise.resolve();
-        const isRetryableRuntimeStatusStreamError = (error) => !Number.isFinite(Number(error?.status)) || [502, 503, 504].includes(Number(error.status));
-        const RUNTIME_STATUS_UPDATED_EVENT = 'ploinky:runtime-status-updated';
-    `;
-    const url = `data:text/javascript;base64,${Buffer.from(dependencies + withoutImports).toString('base64')}`;
-    return import(url);
-}
+import {loadMarketplaceModal} from '../helpers/marketplaceModal.js';
 
 test('Marketplace status and busy updates do not rebuild reactive child components', async () => {
     const {MarketplaceModal} = await loadMarketplaceModal();
