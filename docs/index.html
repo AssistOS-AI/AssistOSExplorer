@@ -94,10 +94,10 @@
                 <code>.data/</code>; <code>.ploinky/repos</code> is the single named source-state volume exception.</p>
             <p>Fresh deployments require an <code>AdvancedLanguageAgent</code> checkout at the workspace root
                 with its selected <code>achillesAgentLib</code> dependency available. Explorer enables RoboTeam
-                globally before Achilles CLI so both agents can use that workspace checkout during startup.</p>
+                globally so its default robot can use that workspace checkout for Copilot.</p>
             <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision,
                 and binds it to the same Ploinky-selected AgentLib used by the agents. Its preflight exercises
-                the ALA loader and required CLI options before starting the fifteen-agent runtime graph.</p>
+                the ALA loader and required CLI options before starting the fourteen-agent runtime graph.</p>
 
             <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), and WebMeet STT are disabled by default.
                 An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic
@@ -153,7 +153,7 @@
 
             <h3>Explorer-Owned and External Entries</h3>
             <p>The <code>help</code> plugin is owned by Explorer and is covered by the <a href="plugins.html">runtime
-                plugins guide</a>. The manifest also enables Achilles CLI, Soul Gateway, and Umami as
+                plugins guide</a>. The manifest also enables RoboTeam, Soul Gateway, and Umami as
                 supporting dependencies. Ploinky core supplies the administrator-only WebTTY surface through the
                 selected Explorer host. Explorer owns its folder target chooser, while Ploinky supplies safe Box and
                 live-agent choices and remains authoritative for runtime identity, mount access, translated working

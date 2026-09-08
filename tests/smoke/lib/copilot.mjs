@@ -48,7 +48,8 @@ export async function openCopilotForDirectory(page, directoryPath) {
 
   const launchUrl = new URL(copilotPage.url());
   expect(launchUrl.pathname).toBe('/webchat');
-  expect(launchUrl.searchParams.get('agent')).toBe('achilles-cli');
+  expect(launchUrl.searchParams.get('agent')).toBe('roboTeamAgent');
+  expect(launchUrl.searchParams.get('robot')).toBe('default');
   expect(launchUrl.searchParams.get('forward-envelope')).toBe('1');
   const requestedDirectory = launchUrl.searchParams.get('workspace-dir')
     || launchUrl.searchParams.get('dir')

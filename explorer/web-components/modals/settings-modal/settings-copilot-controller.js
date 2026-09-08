@@ -73,7 +73,7 @@ export const copilotController = {
         this.state.copilotStatusType = "loading";
         this.renderCopilotSettingsStatus();
         try {
-            const payload = await callAgentTool("achilles-cli", "list_achilles_skills", {}, { raw: true });
+            const payload = await callAgentTool("roboTeamAgent", "list_achilles_skills", { robot: "default" }, { raw: true });
             const parsed = parseToolResult(payload) || {};
             this.state.copilotItems = normalizeCopilotSkillItems(parsed.skills);
             this.state.copilotDisabledKeys = new Set();

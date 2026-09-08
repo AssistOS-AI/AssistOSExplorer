@@ -60,7 +60,7 @@ export const smokeConfig = Object.freeze({
     username: process.env.SMOKE_SECONDARY_USERNAME || 'user',
     password: process.env.SMOKE_SECONDARY_PASSWORD || 'user',
   },
-  webchatAgent: process.env.SMOKE_WEBCHAT_AGENT || 'achilles-cli',
+  webchatAgent: process.env.SMOKE_WEBCHAT_AGENT || 'roboTeamAgent',
   webAssistSiteId: process.env.SMOKE_WEBASSIST_SITE_ID || 'demo-site',
   flags: {
     failOnBrowserErrors: !readBool('SMOKE_ALLOW_BROWSER_ERRORS', false),

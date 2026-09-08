@@ -40,7 +40,7 @@ Define `webassist-settings` behavior and `web-assist-chat` runtime behavior for 
 
 ### Settings actions
 1. **Admin Webchat**
-   - Opens `{origin}/webchat?agent=achilles-cli&workspace-dir=.data/webAssist/data` in a new tab so the browser-facing workspace path matches the host sandbox translation.
+   - Opens `{origin}/webchat?agent=roboTeamAgent&robot=default&workspace-dir=.data/webAssist/data&forward-envelope=1` in a new tab so the browser-facing workspace path matches the host sandbox translation.
 2. **Preview Chat**
    - Opens embed URL in a new tab.
 3. **Copy iframe code**

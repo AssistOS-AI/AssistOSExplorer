@@ -57,3 +57,11 @@ test('Explorer and WebMeet share the local LiveKit runtime without installing re
     assert.equal(livekit.start, 'sh /code/scripts/start-livekit-server-agent.sh');
     assert.equal(livekit.health.readiness.script, 'healthcheck.sh');
 });
+
+test('Explorer enables the default robot owner without requiring the retired CLI agent', async () => {
+    const manifest = await readManifest('explorer');
+    const enabled = manifest.enable.map((entry) => typeof entry === 'string' ? entry : entry.agent);
+    assert.deepEqual(enabled.filter((entry) => entry.split(/\s+/)[0] === 'AchillesCLI/roboTeamAgent'),
+        ['AchillesCLI/roboTeamAgent global no-wait']);
+    assert.equal(enabled.some((entry) => entry.split(/\s+/)[0] === 'AchillesCLI/achilles-cli'), false);
+});

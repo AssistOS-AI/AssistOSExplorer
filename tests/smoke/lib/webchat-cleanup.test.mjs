@@ -13,7 +13,7 @@ after(async () => { await browser?.close(); });
 async function fixture(run, {stream = true, controlStatus = 204, controlDelay = 150,
   hangingControl = false, consumeControlResponse = false} = {}) {
   const directory = 'upload-cleanup-project';
-  const query = `agent=achilles-cli&workspace-dir=${directory}&tabId=fixture-tab&pageInstanceId=fixture-page`;
+  const query = `agent=roboTeamAgent&robot=default&workspace-dir=${directory}&tabId=fixture-tab&pageInstanceId=fixture-page`;
   const state = {controlCompleted: false, controlStarted: false};
   const timers = new Set();
   const server = http.createServer((request, response) => {
@@ -66,7 +66,7 @@ async function fixture(run, {stream = true, controlStatus = 204, controlDelay = 
   const cleanup = observeWebchatCleanup(page, directory, {baseURL, timeout: 2_000});
   try {
     const opened = stream ? page.waitForResponse(response => new URL(response.url()).pathname === '/webchat/stream') : Promise.resolve();
-    await page.goto(`/webchat?agent=achilles-cli&workspace-dir=${directory}`);
+    await page.goto(`/webchat?agent=roboTeamAgent&robot=default&workspace-dir=${directory}`);
     await opened;
     await run({page, diagnostics, cleanup, state, baseURL});
   } finally {

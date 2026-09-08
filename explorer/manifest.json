@@ -31,7 +31,6 @@
         "soplangAgent global no-wait",
         "tasksAgent global",
         "AchillesCLI/roboTeamAgent global no-wait",
-        "AchillesCLI/achilles-cli global no-wait",
         "AchillesIDE/liveKitServerAgent no-wait",
         "webmeetAgent global no-wait",
         "multimedia global no-wait",
