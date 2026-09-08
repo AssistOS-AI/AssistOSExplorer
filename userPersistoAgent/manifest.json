@@ -46,7 +46,7 @@
     "ideSettings": [
         {
             "key": "userpersisto-settings",
-            "label": "UserPersisto",
+            "label": "My Account",
             "scope": "workspace",
             "pluginKey": "userPersistoAgent/userpersisto-settings",
             "settingsComponent": "userpersisto-settings",

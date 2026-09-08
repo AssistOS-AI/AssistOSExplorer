@@ -11,7 +11,9 @@ Explorer exposes settings surfaces for preferences and enabled integrations with
 
 ## Core Content
 
-The Settings modal must expose the confirmed Agents, Plugins, Copilot, Keymap, Editor, Theme, Avatar, and administrator-only Administration surfaces. Settings controls must use shared WebSkel and Explorer UI components and must present loading, error, empty, and disabled states consistently.
+The Settings modal must expose the confirmed My Account, Agents, Plugins, Copilot, Keymap, Editor, Theme, Avatar, and administrator-only Administration surfaces. Settings controls must use shared WebSkel and Explorer UI components and must present loading, error, empty, and disabled states consistently.
+
+My Account embeds the account provider’s Profile, User Management, Billing, and Applications controls, retaining their existing authorization. The former UserPersisto settings entry is labeled My Account and opens this tab instead of a separate modal. Leaving the tab or closing Settings clears transient enrollment and application secrets. The standalone authenticated account dashboard remains available to accounts without Explorer access.
 
 Agent settings must be discovered from enabled agent manifests and loaded only when available to the current account. Plugin settings must use the Explorer settings contract, persist workspace plugin state only at `.data/explorer/plugin-settings.json`, and honor the application plugin whitelist. Agent-avatar overrides must persist only at `.data/explorer/avatar-overrides.json`. Copilot skill toggles in the Settings modal are temporary browser state and must not be presented as persisted manifest configuration. The Copilot catalog must come directly from the public `list_achilles_skills` MCP tool owned by AchillesCLI; Explorer must not import AchillesCLI discovery modules or depend on its dependency layout.
 

@@ -834,3 +834,8 @@ settings-modal .theme-option.active {
         min-height: 38px;
     }
 }
+
+settings-modal [data-account-retry][hidden],
+settings-modal[data-active-tab="account"] .modal-actions {
+    display: none !important;
+}

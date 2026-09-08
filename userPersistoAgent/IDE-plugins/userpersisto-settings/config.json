@@ -3,7 +3,7 @@
   "id": "userpersisto-settings",
   "component": "userpersisto-settings",
   "location": [],
-  "label": "UserPersisto",
+  "label": "My Account",
   "tooltip": "Configure users, roles, credits, billing and audit.",
   "presenter": "UserpersistoSettings",
   "type": "global",

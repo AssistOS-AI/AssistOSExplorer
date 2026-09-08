@@ -13,7 +13,7 @@
     gap: 8px;
 }
 
-userpersisto-settings[data-embedded="true"] .userpersisto-tabs {
+userpersisto-settings[data-embedded="true"] .modal-header {
     display: none;
 }
 
@@ -45,7 +45,7 @@ userpersisto-settings[data-embedded="true"] .userpersisto-tabs {
     display: none;
 }
 
-.userpersisto-settings-body [hidden] {
+userpersisto-settings .userpersisto-settings-body [hidden] {
     display: none;
 }
 
@@ -236,4 +236,13 @@ userpersisto-settings[data-embedded="true"] .userpersisto-tabs {
     .userpersisto-row-controls {
         grid-template-columns: 1fr;
     }
+}
+
+userpersisto-settings[data-embedded="true"] .userpersisto-settings-modal {
+    min-width: 0;
+}
+
+userpersisto-settings[data-embedded="true"] .userpersisto-settings-body {
+    padding: 0;
+    overflow: visible;
 }

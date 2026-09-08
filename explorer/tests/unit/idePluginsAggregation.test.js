@@ -345,7 +345,7 @@ test('aggregateIdePlugins discovers UserPersisto and EmailAgent settings from re
         [
             {
                 key: 'userpersisto-settings',
-                label: 'UserPersisto',
+                label: 'My Account',
                 ownerAgent: 'userPersistoAgent',
                 scope: 'workspace',
                 pluginKey: 'userPersistoAgent/userpersisto-settings',

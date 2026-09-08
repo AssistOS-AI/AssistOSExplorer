@@ -82,7 +82,7 @@ POSTs require an exact Origin match against the Router-overwritten forwarded sch
 
 Profile responses retain user, roles, capabilities, credits, and subscription data and add safe `authMethods`, `allowedAuthMethods`, and `enrollments` summaries. Passkeys expose configured state and enabled count; TOTP exposes configured state and whether an unexpired setup is pending. Credential payloads, TOTP secrets, challenge values, and password hashes are excluded. Policy changes immediately affect enrollment acceptance and the reported allowed methods.
 
-The dashboard and the existing UserPersisto Profile panel share enrollment controls. Passkey registration uses the browser credential API and retains the returned challenge key through verification. TOTP setup shows the manual key/URI and requires a confirming code before becoming configured. Transient setup values are cleared on success, cancellation, navigation, and component removal; they are never stored in browser storage. These are alternative sign-in methods; this revision does not introduce step-up or a mandatory second factor.
+The dashboard and the Settings → My Account → Profile panel share enrollment controls. Passkey registration uses the browser credential API and retains the returned challenge key through verification. TOTP setup shows the manual key/URI and requires a confirming code before becoming configured. Transient setup values are cleared on success, cancellation, navigation, and component removal; they are never stored in browser storage. These are alternative sign-in methods; this revision does not introduce step-up or a mandatory second factor.
 
 ## Explorer administration and settings
 

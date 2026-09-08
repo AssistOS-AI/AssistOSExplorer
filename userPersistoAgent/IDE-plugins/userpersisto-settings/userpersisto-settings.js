@@ -258,7 +258,7 @@ export class UserpersistoSettings {
             const payload = await this.callTool("userpersisto_config_set", patch);
             if (requestId !== this.settingsRequestId) return;
             this.applySettings(payload);
-            this.setStatus("UserPersisto settings saved.");
+            this.setStatus("Account settings saved.");
         } catch (error) {
             if (requestId !== this.settingsRequestId) return;
             this.setStatus(error?.message || "Failed to save settings.", "error");
@@ -372,7 +372,7 @@ export class UserpersistoSettings {
         if (!this.authProfileEl) return;
         const profile = this.state.authProfile;
         if (!profile?.user) {
-            this.authProfileEl.innerHTML = '<div class="userpersisto-result">No authenticated UserPersisto profile loaded.</div>';
+            this.authProfileEl.innerHTML = '<div class="userpersisto-result">No authenticated account profile loaded.</div>';
             return;
         }
         const roles = Array.isArray(profile.roles) ? profile.roles : [];

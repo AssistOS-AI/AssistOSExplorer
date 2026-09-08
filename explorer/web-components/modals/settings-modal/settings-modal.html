@@ -6,6 +6,7 @@
 </div>
 <div class="modal-body settings-modal-body">
     <div class="settings-tabs" role="tablist" aria-label="Settings tabs">
+        <button type="button" class="settings-tab" data-local-action="switchTab account" data-tab="account" role="tab" aria-selected="false">My Account</button>
         <button type="button" class="settings-tab" data-local-action="switchTab agents" data-tab="agents" role="tab" aria-selected="true">Agents</button>
         <button type="button" class="settings-tab" data-local-action="switchTab plugins" data-tab="plugins" role="tab" aria-selected="false">Plugins</button>
         <button type="button" class="settings-tab" data-local-action="switchTab copilot" data-tab="copilot" role="tab" aria-selected="false">Copilot</button>
@@ -18,6 +19,11 @@
     </div>
 
     <div class="settings-content">
+        <section class="settings-section hidden" data-section="account" aria-label="My Account">
+            <div data-account-status role="status" aria-live="polite"></div>
+            <button type="button" class="gray-button" data-account-retry data-local-action="loadAccountPanel" hidden>Retry</button>
+            <div data-account-mount></div>
+        </section>
         <section class="settings-section hidden" data-section="keymap">
             <p class="keymap-description">Focus a field and press a new shortcut. Use Backspace to clear.</p>
             <div class="keymap-list" id="keymapList"></div>
