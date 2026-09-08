@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LiveKit Server Wiki</title><link rel="stylesheet" href="styles.css"></head>
+<body>
+<div id="site-header"></div>
+<main class="content"><div class="doc-main">
+<p><a href="index.html">Documentation</a> / Wiki</p>
+<h1>LiveKit Server terminology</h1>
+<section id="definition-livekit"><h2>LiveKit Server</h2><p>The media server supervised by <code>AchillesIDE/liveKitServerAgent</code>. It carries live meeting media on the Box's single UDP 7882 mux while Ploinky Router mediates signaling and private administration.</p></section>
+<section id="definition-egress"><h2>Egress</h2><p>The supervised LiveKit recording process. Its private template listener and semantic health listener have separate roles; a successful recording requires connected publisher media and completed non-empty output.</p></section>
+<section id="definition-topology"><h2>Topology</h2><p>The immutable Ploinky runtime snapshot that selects the current media address and publication generation. Configuration generation consumes it only after Router authority attestation.</p></section>
+<section id="definition-turn"><h2>TURN</h2><p>An external relay service for media connectivity. Ploinky brokers short-lived credentials for authorized consumers; this agent does not run a relay or hold its long-term secret.</p></section>
+</div></main>
+<footer id="site-footer" class="site-footer"></footer><script src="partials-loader.js"></script>
+</body>
+</html>

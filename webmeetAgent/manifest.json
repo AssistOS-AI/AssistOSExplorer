@@ -4,11 +4,8 @@
   "about": "WebMeet Agent for sovereign collaboration rooms, AI participants, and room resources.",
   "guest": true,
   "enable": [
-        "webmeetInfra/liveKitServerAgent no-wait"
+        "AchillesIDE/liveKitServerAgent no-wait"
   ],
-  "repos": {
-    "webmeetInfra": "https://github.com/AssistOS-AI/webmeetInfra.git"
-  },
   "routerAccess": {
     "httpRoutes": [
       {

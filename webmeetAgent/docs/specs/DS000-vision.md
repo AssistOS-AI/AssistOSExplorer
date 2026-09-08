@@ -21,7 +21,7 @@ WebMeet is split into explicit responsibility planes:
 | --- | --- | --- |
 | WebMeet control plane | `webmeetAgent` | Durable rooms, members, roomId scopes, chat, resources, blackboard state, Ploinky room-agent metadata, and LiveKit participant JWTs. |
 | Browser meeting UI | `webmeetAgent/IDE-plugins/webmeet-tool-button` | Explorer dashboard and direct room entry UI, LiveKit browser connection, media controls, chat composer, participant rendering, and browser-scoped media/avatar preferences. |
-| Live media plane | `webmeetInfra/liveKitServerAgent` | Loopback LiveKit signaling/API, the exact box UDP `7882` mux, RTP/RTCP forwarding, data channels, Redis, Egress template `7980`, and semantic health `7981`; no local TURN or public TLS listener. |
+| Live media plane | `AchillesIDE/liveKitServerAgent` | Loopback LiveKit signaling/API, the exact box UDP `7882` mux, RTP/RTCP forwarding, data channels, Redis, Egress template `7980`, and semantic health `7981`; no local TURN or public TLS listener. |
 | Edge and relay control | Ploinky core plus explicitly configured external TURN | Router-mediated public signaling/private Twirp, immutable topology, and current-generation short-lived TURN credentials. |
 | RoboTeam room agent | `webmeetAgent` | Ploinky-managed virtual room agent that appears in WebMeet roster and can update the blackboard through WebMeet tools. |
 
@@ -57,7 +57,7 @@ The active Explorer WebMeet UI path is the IDE plugin under `IDE-plugins/webmeet
 
 `webmeetAgent` must keep its persistent store under required `WEBMEET_DATA_DIR`, normally the `/data` container mount backed by `.data/webmeetAgent/data`. Runtime resolution must fail closed when the variable is absent and must not derive a workspace fallback.
 
-`webmeetAgent` must not own infrastructure supervision. Its manifest enables `webmeetInfra/liveKitServerAgent` with `no-wait`, leaving its lifecycle to Ploinky. `webmeetScribeAgent` and `webmeetStt` are optional and disabled by default; an administrator can enable them independently from Explorer Marketplace. Ordinary meetings do not require either agent, and the text-only Meeting Secretary uses browser SpeechRecognition without the STT service. `scripts/startAgent.sh` must only start the WebMeet MCP AgentServer. It must not directly launch sibling processes, start a WebMeet HTTP API/proxy, import `@livekit/agents`, start Redis, or start LiveKit Server.
+`webmeetAgent` must not own infrastructure supervision. Its manifest enables `AchillesIDE/liveKitServerAgent` with `no-wait`, leaving its lifecycle to Ploinky. `webmeetScribeAgent` and `webmeetStt` are optional and disabled by default; an administrator can enable them independently from Explorer Marketplace. Ordinary meetings do not require either agent, and the text-only Meeting Secretary uses browser SpeechRecognition without the STT service. `scripts/startAgent.sh` must only start the WebMeet MCP AgentServer. It must not directly launch sibling processes, start a WebMeet HTTP API/proxy, import `@livekit/agents`, start Redis, or start LiveKit Server.
 
 ### Decisions & Questions
 
@@ -67,7 +67,7 @@ Response: The WebMeet application needs durable authorization, room discovery, e
 
 ### Question #2: Why does this agent depend on `liveKitServerAgent` instead of owning multiple infra agents?
 
-Response: The `webmeetInfra` contract delivers one pinned Ploinky agent, `liveKitServerAgent`, that supervises Redis, LiveKit Server, Egress, and supervisor health. It contains no Coturn, nginx, certbot, local relay range, TCP ICE listener, or public `7880`. External TURN and Router are separate box and external boundaries rather than sibling infrastructure agents.
+Response: The `AchillesIDE/liveKitServerAgent` contract delivers one pinned Ploinky agent, `liveKitServerAgent`, that supervises Redis, LiveKit Server, Egress, and supervisor health. It contains no Coturn, nginx, certbot, local relay range, TCP ICE listener, or public `7880`. External TURN and Router are separate box and external boundaries rather than sibling infrastructure agents.
 
 ### Question #3: Why keep the repository-level WebMeet architecture content inside the DS set?
 
@@ -75,4 +75,4 @@ Response: DS files are the source of truth for future agent work. The root archi
 
 ## Conclusion
 
-`webmeetAgent` remains correct while it stays the WebMeet application control plane, delegates live media infrastructure to `webmeetInfra/liveKitServerAgent`, models RoboTeam as Ploinky-managed room state rather than a LiveKit worker, and preserves the documented storage, routing, and authorization boundaries.
+`webmeetAgent` remains correct while it stays the WebMeet application control plane, delegates live media infrastructure to `AchillesIDE/liveKitServerAgent`, models RoboTeam as Ploinky-managed room state rather than a LiveKit worker, and preserves the documented storage, routing, and authorization boundaries.

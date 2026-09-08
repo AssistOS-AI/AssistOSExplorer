@@ -997,7 +997,6 @@ jobs:
 
           GRAPH_REPOSITORIES=(
             'AchillesIDE|https://github.com/AssistOS-AI/AssistOSExplorer.git'
-            'webmeetInfra|https://github.com/AssistOS-AI/webmeetInfra.git'
             'UmamiAgent|https://github.com/AssistOS-AI/UmamiAgent.git'
             'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'
             'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'

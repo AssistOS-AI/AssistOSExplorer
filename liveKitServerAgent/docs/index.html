@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LiveKit Server Runtime Documentation</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="site-header"></div>
+    <main class="content content--with-sidebar">
+      <div class="doc-layout">
+        <aside class="doc-sidebar" aria-label="Page sections"><h2>On this page</h2><nav><a href="#overview">Overview</a><a href="#readiness">Readiness</a><a href="#relay">Relay</a><a href="#storage">Storage</a></nav></aside>
+        <div class="doc-main">
+        <h1 id="overview">LiveKit Server Runtime Documentation</h1>
+        <p><code>AchillesIDE/liveKitServerAgent</code> runs a pinned multi-architecture image and supervises Redis, loopback LiveKit signaling/API, LiveKit Egress, and private health. After Router authority attestation, container startup generates private configuration from the mounted immutable topology; pre-attestation host hooks receive no Router locator or topology environment. When that topology declares media, LiveKit advertises its literal globally routable unicast public IPv4 and ignores local overrides. A topology without media enters local deployment mode: the manifest-declared optional <code>PLOINKY_MEDIA_PUBLIC_IP</code> selects an explicit usable host or LAN IPv4; absent that, the manifest-resolved <code>PLOINKY_HOST_REACHABLE_IPV4</code>, normally supplied by deployment-time detection, is preferred; otherwise startup discovers a usable container interface. Operator configuration may replace that detected hint through normal optional manifest env resolution. This local mode is not production or cross-network release evidence. LiveKit owns the single box UDP mux on 7882 in either mode.</p>
+        <h2 id="readiness">Readiness and recording</h2>
+        <p>Public signaling is routed through the public Router service. Twirp administration is routed only through the private Router listener with authenticated policy and an exact current-generation caller assertion. Egress template/service 7980 and health 7981 are distinct, loopback-only listeners with semantic probes; readiness requires the exact supervised PID to remain live and both kernel sockets to carry the unprivileged <code>egress</code> UID. The pinned binary digest is verified before that exact binary is invoked, avoiding dependence on remapped <code>/proc</code> PID views or optional socket process metadata in nested rootless runtimes. The supervisor runs both PulseAudio and Egress as the image's unprivileged <code>egress</code> user, supervises all four runtime children, and grants that user access only to an ephemeral private config copy and the recordings mount. PulseAudio's runtime directory is the fixed tmpfs path <code>/dev/shm/livekit-egress-xdgr</code>; it cannot live on the container's fuse-overlayfs root, where PulseAudio fails to apply the ownership and mode it wants to its native socket, leaving it owned by <code>root</code> with mode <code>0755</code> so the unprivileged client is refused while the daemon still reports a complete startup. Egress's hard-coded <code>/home/egress/tmp</code> service/handler IPC path is not relocated: it remains the image's own directory on the container root, and startup only clears its contents so no stale handler socket survives a restart. <code>/dev/shm/livekit-egress-xdgr</code> is therefore the only fixed tmpfs path, and it is not configurable: startup removes that directory itself before recreating it so a pre-created symlink cannot receive the <code>egress</code> ownership change. The trusted recorder's Chrome process exposes its in-namespace host ICE candidate through a scoped feature override while external clients retain the exact active 7882 candidate; LiveKit does not enable global mDNS resolution or another media port. Release evidence requires a connected publisher plus a completed non-empty room-composite recording, so open listeners alone are insufficient. The upstream wildcard-health binary is rejected; activation requires the published multi-architecture digest of the commit-pinned loopback patch.</p>
+        <h2 id="relay">External relay</h2>
+        <p>Relay service is external. Ploinky brokers short-lived relay credentials to exact authorized consumers; this agent contains no relay daemon, public TLS proxy, certificate process, or long-term relay secret.</p>
+        <h2 id="storage">Storage</h2>
+        <p>All workspace-persisted media-runtime state is owned beneath <code>.data/liveKitServerAgent/</code>: generated configuration uses <code>generated/</code>, Redis uses <code>redis/</code>, and Egress output uses <code>recordings/</code>. The container paths remain <code>/working-data/generated</code>, <code>/data/redis</code>, and <code>/data/recordings</code>.</p>
+        <ul>
+            <li><a href="specsLoader.html?spec=matrix.md">Specification matrix</a></li>
+            <li><a href="specs/matrix.md">Raw specification matrix</a></li>
+        </ul>
+        </div>
+      </div>
+    </main>
+    <footer id="site-footer" class="site-footer"></footer>
+    <script src="partials-loader.js"></script>
+</body>
+</html>

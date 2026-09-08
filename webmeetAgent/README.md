@@ -9,7 +9,7 @@
   - does not serve a WebMeet-specific HTTP API or public proxy
   - stores persistent room data under `.data/webmeetAgent/data`, mounted at required `WEBMEET_DATA_DIR=/data`
   - stores and projects the Ploinky-managed RoboTeam room agent
-- `webmeetInfra/liveKitServerAgent`
+- `AchillesIDE/liveKitServerAgent`
   - single Ploinky agent that supervises the WebMeet media runtime
   - includes LiveKit Server, Redis, Egress, and semantic supervisor health inside one pinned container
   - binds signaling/API only to box loopback `127.0.0.1:7880`, owns the one box UDP mux on `7882`, and contains no local TURN, public TLS proxy, or certificate manager
@@ -24,7 +24,7 @@ The agent is started through Ploinky, not directly with Docker Compose.
 
 The WebMeet manifest:
 
-- enables `webmeetInfra/liveKitServerAgent`
+- enables `AchillesIDE/liveKitServerAgent`
 - enables `webmeetScribeAgent`
 - starts the MCP `AgentServer`
 - does not start Redis, LiveKit Server, Egress, or an external AI worker process

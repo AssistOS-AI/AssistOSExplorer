@@ -24,7 +24,7 @@ function localCommand(commandName, args, options = {}) {
     assert.equal(options.json, true);
     return [{
       Id: LIVEKIT_ID,
-      Name: '/ploinky_webmeetInfra_liveKitServerAgent_fresh_12345678',
+      Name: '/ploinky_AchillesIDE_liveKitServerAgent_fresh_12345678',
       State: {
         Running: true,
         StartedAt: '2026-07-27T11:59:00.000Z',
@@ -54,7 +54,7 @@ function localEvidence() {
     baseURL: BASE_URL,
     outerBoxCount: 0,
     liveKit: {
-      containerName: 'ploinky_webmeetInfra_liveKitServerAgent_fresh_12345678',
+      containerName: 'ploinky_AchillesIDE_liveKitServerAgent_fresh_12345678',
       containerId: LIVEKIT_ID,
       startedAt: '2026-07-27T11:59:00.000Z',
       networkMode: 'host',
@@ -116,7 +116,7 @@ function boxEvidence() {
       },
     },
     liveKit: {
-      containerName: 'ploinky_webmeetInfra_liveKitServerAgent_fresh_12345678',
+      containerName: 'ploinky_AchillesIDE_liveKitServerAgent_fresh_12345678',
       containerId: LIVEKIT_ID,
       startedAt: '2026-07-27T11:59:00.000Z',
       networkMode: 'host',
