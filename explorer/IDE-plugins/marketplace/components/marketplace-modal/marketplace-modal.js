@@ -17,16 +17,13 @@ import {
   fetchMarketplaceProof
 } from '/explorer/services/infrastructure/authApi.js';
 import {
-  isRetryableRuntimeStatusStreamError,
-  publishRuntimeStatusEvents,
-  RUNTIME_STATUS_UPDATED_EVENT
+  fetchMarketplaceSnapshot,
+  isRetryableMarketplaceStatusError
 } from '/explorer/services/infrastructure/runtimeStatusEvents.js';
 import {
     getVisibleMarketplaceCatalog,
     marketplaceAgentRepositoryName,
 } from './marketplaceVisibility.js';
-
-const RUNTIME_STATUS_RECONNECT_DELAY_MS = 1000;
 
 const MARKETPLACE_AGENT_STATUS_LABELS = Object.freeze({
   disabled: 'Disabled',
@@ -37,7 +34,6 @@ const MARKETPLACE_AGENT_STATUS_LABELS = Object.freeze({
   paused: 'Paused',
   unknown: 'Unknown'
 });
-const MARKETPLACE_AGENT_TRANSITIONAL_STATUSES = new Set(['starting']);
 const MARKETPLACE_AGENT_STATUS_REFRESH_MS = 3000;
 
 export class MarketplaceModal {
@@ -103,12 +99,13 @@ export class MarketplaceModal {
           this.setStatus(error?.message || 'Failed to load agent settings.', 'error');
         });
     }
-    this.startAgentStatusStream();
+    this.scheduleAgentStatusRefresh();
   }
 
   afterUnload() {
-    this.stopAgentStatusStream();
     this.unloaded = true;
+    this.invalidateAgentStatusRefresh();
+    this.marketplaceLoadController?.abort();
     if (this.statusClearTimer) {
       clearTimeout(this.statusClearTimer);
       this.statusClearTimer = null;
@@ -181,6 +178,8 @@ export class MarketplaceModal {
   };
 
   async requestMarketplace(actionBody = null, options = {}) {
+    if (!actionBody) return fetchMarketplaceSnapshot({signal: options.signal});
+    this.invalidateAgentStatusRefresh();
     const fetchOptions = {
       credentials: 'include',
       headers: { Accept: 'application/json' }
@@ -209,98 +208,73 @@ export class MarketplaceModal {
       ({ response, data } = await sendRequest());
     }
     if (!response.ok || data?.ok === false) {
-      throw new Error(data?.message || data?.error || `Marketplace request failed (${response.status})`);
+      throw Object.assign(new Error(data?.message || data?.error || `Marketplace request failed (${response.status})`), {status: response.status});
     }
     return options.raw === true ? data : data.marketplace;
   }
 
   async loadMarketplace() {
+    const controller = new AbortController();
+    this.marketplaceLoadController = controller;
     this.setBusy(true);
     try {
-      this.state.marketplace = await this.requestMarketplace();
-      if (this.canManageMarketplace()) {
-        await this.loadAgentSettingsData();
-        this.startAgentStatusStream();
-      }
-      this.setStatus('');
+      const marketplace = await this.requestMarketplace(null, {signal: controller.signal});
+      if (this.unloaded || controller.signal.aborted) return;
+      this.state.marketplace = marketplace;
+      if (this.canManageMarketplace()) await this.loadAgentSettingsData();
+      if (!this.unloaded) this.setStatus('');
     } catch (error) {
-      this.setStatus(error?.message || 'Failed to load marketplace.', 'error');
+      if (!this.unloaded) this.setStatus(error?.message || 'Failed to load marketplace.', 'error');
     } finally {
+      this.marketplaceLoadController = null;
       this.state.busy = false;
+      if (!this.unloaded) this.renderState();
+    }
+  }
+
+  invalidateAgentStatusRefresh() {
+    this.agentStatusRevision = (this.agentStatusRevision || 0) + 1;
+    this.agentStatusRefreshController?.abort();
+    if (this.agentStatusRefreshTimer) {
+      clearTimeout(this.agentStatusRefreshTimer);
+      this.agentStatusRefreshTimer = null;
+    }
+  }
+
+  marketplaceStructure(marketplace) {
+    const {repositories, agents} = getVisibleMarketplaceCatalog(marketplace);
+    return JSON.stringify({
+      canManage: marketplace?.permissions?.canManage === true,
+      repositories: repositories.map(({name, url, description, kind, installed}) => ({name, url, description, kind, installed})),
+      agents: agents.map(({ref, repo, name, about, enableModes}) => ({ref, repo, name, about, enableModes})),
+    });
+  }
+
+  applyMarketplaceSnapshot(marketplace) {
+    const structureChanged = this.marketplaceStructure(this.state.marketplace) !== this.marketplaceStructure(marketplace);
+    this.state.marketplace = marketplace;
+    if (structureChanged) {
       this.renderState();
+      return;
     }
+    const {repositories, agents} = getVisibleMarketplaceCatalog(marketplace);
+    for (const agent of agents) this.updateAgentRuntimeUi(agent);
+    const rows = this.repositoriesEl?.querySelectorAll?.('[data-marketplace-repo-name]') || [];
+    for (const row of rows) {
+      const repository = repositories.find(repo => repo.name === row.dataset.marketplaceRepoName);
+      const note = row.querySelector('.marketplace-meta');
+      if (repository && note) this.updateRepositoryCount(note, repository);
+    }
+    this.syncInteractiveState();
   }
 
-  startAgentStatusStream() {
-    if (this.agentStatusStreamActive || !this.canManageMarketplace()) return;
-    this.agentStatusStreamActive = true;
-    window.addEventListener(RUNTIME_STATUS_UPDATED_EVENT, this.handleRuntimeStatusUpdated);
-    this.openAgentStatusStream();
+  updateRepositoryCount(note, repository) {
+    const count = Number(repository.activeAgentsCount || 0);
+    note.textContent = count > 0
+      ? `${count} enabled agent${count === 1 ? '' : 's'} will be removed if this repo is uninstalled.`
+      : '';
+    note.hidden = count === 0;
   }
-
-  stopAgentStatusStream() {
-    this.agentStatusStreamActive = false;
-    window.removeEventListener(RUNTIME_STATUS_UPDATED_EVENT, this.handleRuntimeStatusUpdated);
-    this.agentStatusStreamController?.abort();
-    this.agentStatusStreamController = null;
-    if (this.agentStatusReconnectTimer) {
-      clearTimeout(this.agentStatusReconnectTimer);
-      this.agentStatusReconnectTimer = null;
-    }
-  }
-
-  openAgentStatusStream() {
-    if (!this.agentStatusStreamActive || this.agentStatusStreamController) return;
-    const controller = new AbortController();
-    this.agentStatusStreamController = controller;
-    publishRuntimeStatusEvents({signal: controller.signal})
-      .catch((error) => {
-        if (isRetryableRuntimeStatusStreamError(error)) return;
-        this.agentStatusStreamActive = false;
-        window.removeEventListener(RUNTIME_STATUS_UPDATED_EVENT, this.handleRuntimeStatusUpdated);
-      })
-      .finally(() => {
-        if (this.agentStatusStreamController === controller) {
-          this.agentStatusStreamController = null;
-        }
-        if (!this.agentStatusStreamActive || controller.signal.aborted) return;
-        this.agentStatusReconnectTimer = setTimeout(() => {
-          this.agentStatusReconnectTimer = null;
-          this.openAgentStatusStream();
-        }, RUNTIME_STATUS_RECONNECT_DELAY_MS);
-      });
-  }
-
-  handleRuntimeStatusUpdated = (event) => {
-    const {agents} = getVisibleMarketplaceCatalog(this.state.marketplace);
-    const runtimes = Array.isArray(event?.detail?.runtimes) ? event.detail.runtimes : [];
-    if (!Array.isArray(agents)) return;
-    const runtimesByRef = new Map(runtimes.map((runtime) => [
-      `${String(runtime?.repoName || '')}/${String(runtime?.agentName || '')}`,
-      runtime
-    ]));
-    let changed = false;
-    for (const agent of agents) {
-      const agentRef = String(agent?.ref || `${agent?.repo || ''}/${agent?.name || ''}`);
-      const runtime = runtimesByRef.get(agentRef);
-      const active = runtime?.enabled === true;
-      const running = runtime?.state?.running === true;
-      const status = runtime
-        ? String(runtime?.state?.status || (active ? 'stopped' : 'inactive')).toLowerCase()
-        : 'inactive';
-      if (agent.active === active && agent.status === status && agent.running === running) continue;
-      if (agent.status !== status || agent.active !== active || agent.running !== running) delete agent.statusDetail;
-      agent.active = active;
-      agent.status = status;
-      agent.running = running;
-      this.updateAgentRuntimeUi(agent);
-      changed = true;
-    }
-    if (changed) {
-      this.syncInteractiveState();
-      this.scheduleAgentStatusRefresh();
-    }
-  };
 
   updateAgentRuntimeUi(agent) {
     const agentRef = String(agent?.ref || `${agent?.repo || ''}/${agent?.name || ''}`);
@@ -313,6 +287,11 @@ export class MarketplaceModal {
 
     const settingsButton = row.querySelector('[data-agent-settings-key]');
     if (settingsButton) this.updateAgentSettingsButton(settingsButton, agent);
+
+    const mode = row.querySelector('[data-enable-mode-for]');
+    const modes = Array.isArray(agent.enableModes) && agent.enableModes.length
+      ? agent.enableModes : ['isolated', 'global', 'devel'];
+    if (mode && agent.active === true && modes.includes(agent.enableMode)) mode.value = agent.enableMode;
 
     const toggle = row.querySelector('[data-agent-ref]');
     if (toggle) {
@@ -422,21 +401,27 @@ export class MarketplaceModal {
     this.state.agentMutationBusyRef = agentRef;
     this.state.agentMutationVerb = active ? 'Disabling' : 'Enabling';
     this.setStatus(`${this.state.agentMutationVerb} ${agentRef}...`);
-    this.renderAgents();
+    for (const agent of getVisibleMarketplaceCatalog(this.state.marketplace).agents) this.updateAgentRuntimeUi(agent);
     this.syncInteractiveState();
     try {
-      this.state.marketplace = await this.requestMarketplace({
+      const marketplace = await this.requestMarketplace({
         action: active ? 'disable_agent' : 'enable_agent',
         agentRef,
         ...(!active ? { mode } : {})
       });
+      if (this.unloaded) return;
+      this.applyMarketplaceSnapshot(marketplace);
       this.setStatus(`${agentRef} ${active ? 'disabled' : 'enabled'}.`);
     } catch (error) {
       this.setStatus(error?.message || 'Failed to update agent.', 'error');
     } finally {
       this.state.agentMutationBusyRef = '';
       this.state.agentMutationVerb = '';
-      this.renderState();
+      if (!this.unloaded) {
+        for (const agent of getVisibleMarketplaceCatalog(this.state.marketplace).agents) this.updateAgentRuntimeUi(agent);
+        this.syncInteractiveState();
+        this.scheduleAgentStatusRefresh();
+      }
     }
   };
 
@@ -711,6 +696,7 @@ export class MarketplaceModal {
       const canManage = this.canManageMarketplace();
       const row = document.createElement('article');
       row.className = 'marketplace-row';
+      row.dataset.marketplaceRepoName = repo.name;
       const info = document.createElement('div');
       const title = document.createElement('div');
       title.className = 'marketplace-title';
@@ -718,14 +704,10 @@ export class MarketplaceModal {
       const description = document.createElement('div');
       description.className = 'marketplace-description';
       description.textContent = repo.description || repo.url || '';
-      const activeAgentsCount = Number(repo.activeAgentsCount || 0);
       const note = document.createElement('div');
       note.className = 'marketplace-meta';
-      note.textContent = activeAgentsCount > 0
-        ? `${activeAgentsCount} enabled agent${activeAgentsCount === 1 ? '' : 's'} will be removed if this repo is uninstalled.`
-        : '';
-      info.append(title, description);
-      if (note.textContent) info.append(note);
+      this.updateRepositoryCount(note, repo);
+      info.append(title, description, note);
       row.append(info);
       if (canManage) {
         const toggle = document.createElement('button');
@@ -799,18 +781,9 @@ export class MarketplaceModal {
     else button.title = `Configure is available once ${this.getAgentDisplayName(agent)} is running.`;
   }
 
-  hasTransitionalAgents() {
-    return getVisibleMarketplaceCatalog(this.state.marketplace).agents.some(agent => (
-      MARKETPLACE_AGENT_TRANSITIONAL_STATUSES.has(this.getAgentLifecycleStatus(agent))
-    ));
-  }
-
   scheduleAgentStatusRefresh() {
-    if (this.agentStatusRefreshTimer) {
-      clearTimeout(this.agentStatusRefreshTimer);
-      this.agentStatusRefreshTimer = null;
-    }
-    if (this.unloaded || !this.hasTransitionalAgents()) return;
+    if (this.agentStatusRefreshTimer || this.agentStatusRefreshController) return;
+    if (this.unloaded || this.agentStatusRefreshStopped || !this.state.marketplace) return;
     this.agentStatusRefreshTimer = setTimeout(() => {
       this.agentStatusRefreshTimer = null;
       void this.refreshAgentStatuses();
@@ -818,21 +791,33 @@ export class MarketplaceModal {
   }
 
   async refreshAgentStatuses() {
-    if (this.unloaded) return;
+    if (this.unloaded || this.agentStatusRefreshStopped || this.agentStatusRefreshController) return;
     if (this.state.busy || this.state.agentMutationBusyRef) {
       this.scheduleAgentStatusRefresh();
       return;
     }
+    const controller = new AbortController();
+    const revision = this.agentStatusRevision || 0;
+    this.agentStatusRefreshController = controller;
     try {
-      const marketplace = await this.requestMarketplace();
-      if (this.unloaded) return;
-      this.state.marketplace = marketplace;
-      this.renderRepositories();
-      this.renderAgents();
-      this.syncInteractiveState();
-    } catch {
-      // Keep the last verified lifecycle state visible during transient polling failures.
+      const marketplace = await this.requestMarketplace(null, {signal: controller.signal});
+      if (this.unloaded || controller.signal.aborted || revision !== (this.agentStatusRevision || 0)) return;
+      this.applyMarketplaceSnapshot(marketplace);
+    } catch (error) {
+      if (this.unloaded || controller.signal.aborted || revision !== (this.agentStatusRevision || 0)) return;
+      if (!isRetryableMarketplaceStatusError(error)) {
+        this.agentStatusRefreshStopped = true;
+        if (this.state.statusType !== 'error') this.setStatus(error?.message || 'Failed to refresh marketplace.', 'error');
+        if ([401, 403].includes(Number(error?.status))) {
+          this.state.marketplace = {
+            ...this.state.marketplace,
+            permissions: {...this.state.marketplace?.permissions, canManage: false},
+          };
+          this.renderState();
+        }
+      }
     } finally {
+      if (this.agentStatusRefreshController === controller) this.agentStatusRefreshController = null;
       this.scheduleAgentStatusRefresh();
     }
   }

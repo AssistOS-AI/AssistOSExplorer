@@ -5,7 +5,10 @@ import { smokeConfig } from '../lib/config.mjs';
 test.describe('Marketplace lifecycle controls', () => {
   test('Configure stays gated while a no-wait agent starts and unlocks after refresh', async ({ page }) => {
     let marketplaceReads = 0;
-    let streamReads = 0;
+    const privateStatusRequests = [];
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/status/data') privateStatusRequests.push(request.url());
+    });
     let lifecycle = {active: true, status: 'starting', running: false};
     const startingDetail = 'Background startup is in progress.';
     await page.route('**/api/marketplace', async (route) => {
@@ -36,32 +39,6 @@ test.describe('Marketplace lifecycle controls', () => {
 
       await route.fulfill({ response, json: payload });
     });
-    // Snapshot polling and the NDJSON stream must describe the same controlled
-    // runtime. Real inactive evidence must not race the synthetic startup state.
-    await page.route('**/status/data?follow=1', async (route) => {
-      const snapshotUrl = new URL(route.request().url());
-      snapshotUrl.search = '';
-      const response = await route.fetch({url: snapshotUrl.toString()});
-      expect(response.ok()).toBe(true);
-      const payload = await response.json();
-      expect(Array.isArray(payload.runtimes)).toBe(true);
-      const runtimes = payload.runtimes.filter((runtime) => (
-        runtime.repoName !== 'proxies' || runtime.agentName !== 'searchAgent'
-      ));
-      runtimes.push({
-        repoName: 'proxies',
-        agentName: 'searchAgent',
-        enabled: lifecycle.active,
-        state: {status: lifecycle.status, running: lifecycle.running},
-      });
-      streamReads += 1;
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/x-ndjson',
-        body: `${JSON.stringify({...payload, runtimes})}\n`,
-      });
-    });
-
     await openExplorer(page, { hash: 'marketplace-modal' });
     const marketplace = page.locator('marketplace-modal');
     await expect(marketplace).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
@@ -82,7 +59,6 @@ test.describe('Marketplace lifecycle controls', () => {
     await expect(mode).toBeDisabled();
     await expect(row.getByRole('button', { name: 'Disable' })).toBeEnabled();
     await expect.poll(() => marketplaceReads).toBeGreaterThanOrEqual(2);
-    await expect.poll(() => streamReads).toBeGreaterThanOrEqual(1);
     await expect(status).toHaveText('Starting up');
     await expect(configure).toBeDisabled();
 
@@ -94,12 +70,11 @@ test.describe('Marketplace lifecycle controls', () => {
     await expect(configure).toHaveAttribute('aria-disabled', 'false');
     await expect(configure).not.toHaveAttribute('title');
 
-    // Running cancels snapshot polling; subsequent transitions must be applied
-    // by the real incremental stream consumer, without rebuilding this row.
+    // Polling continues after Running and updates this same native row.
     await row.evaluate((element) => { element.dataset.lifecycleFixtureRow = 'retained'; });
-    const runningReads = streamReads;
+    const runningReads = marketplaceReads;
     lifecycle = {active: true, status: 'stopped', running: false};
-    await expect.poll(() => streamReads).toBeGreaterThan(runningReads);
+    await expect.poll(() => marketplaceReads).toBeGreaterThan(runningReads);
     await expect(status).toHaveText('Stopped');
     await expect(configure).toBeDisabled();
     await expect(configure).toHaveAttribute('aria-disabled', 'true');
@@ -111,5 +86,13 @@ test.describe('Marketplace lifecycle controls', () => {
     await expect(mode).toBeEnabled();
     await expect(row.getByRole('button', {name: 'Enable', exact: true})).toBeEnabled();
     await expect(row).toHaveAttribute('data-lifecycle-fixture-row', 'retained');
+    await mode.selectOption('global');
+    await mode.focus();
+    const disabledReads = marketplaceReads;
+    await expect.poll(() => marketplaceReads).toBeGreaterThan(disabledReads);
+    await expect(mode).toHaveValue('global');
+    await expect(mode).toBeFocused();
+    await expect(proxiesToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(privateStatusRequests).toEqual([]);
   });
 });

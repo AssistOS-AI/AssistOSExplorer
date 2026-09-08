@@ -20,7 +20,16 @@ class Element {
     setAttribute(name, value) { this[name] = value; }
     removeAttribute(name) { delete this[name]; }
     toggleAttribute(name, value) { this[name] = value; }
-    querySelectorAll() { return []; }
+    querySelectorAll(selector) {
+        return this.children.flatMap(elements).filter(element => {
+            if (selector.startsWith('.')) return element.className.split(' ').includes(selector.slice(1));
+            const attribute = selector.match(/^\[data-([a-z-]+)\]$/);
+            if (!attribute) return false;
+            const key = attribute[1].replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
+            return key in element.dataset;
+        });
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 }
 
 function elements(root) {
@@ -136,18 +145,16 @@ test('Marketplace keeps distinct local repository groups, counts and lifecycle r
     }));
     assert.deepEqual(groups, repositories.map(repo => ({name: repo.name, refs: [`${repo.name}/worker`]})));
     assert.deepEqual(modal.repositoriesEl.children.map(row => (
-        elements(row).filter(child => child.className === 'marketplace-meta').length
+        elements(row).filter(child => child.className === 'marketplace-meta' && !child.hidden).length
     )), [1, 0, 1], 'each repository warning counts only its own enabled agents');
 
     const updatedRefs = [];
     modal.updateAgentRuntimeUi = agent => updatedRefs.push(agent.ref);
-    modal.handleRuntimeStatusUpdated({detail: {runtimes: [
-        {repoName: 'tools', agentName: 'worker', enabled: true, state: {status: 'running', running: true}},
-        {repoName: 'tools.git', agentName: 'worker', enabled: true, state: {status: 'starting', running: false}},
-        {repoName: 'Tools', agentName: 'worker', enabled: true, state: {status: 'running', running: true}},
-    ]}});
-    assert.deepEqual(updatedRefs, ['tools.git/worker']);
-    assert.deepEqual(agents.map(agent => agent.status), ['running', 'starting', 'running']);
+    const refreshed = structuredClone(catalog);
+    Object.assign(refreshed.agents[1], {active: true, status: 'starting', running: false});
+    modal.applyMarketplaceSnapshot(refreshed);
+    assert.deepEqual(updatedRefs, ['tools/worker', 'tools.git/worker', 'Tools/worker']);
+    assert.deepEqual(modal.state.marketplace.agents.map(agent => agent.status), ['running', 'starting', 'running']);
 });
 
 test('Marketplace renders only visible repositories and agents in both tabs and type filters', async (t) => {
@@ -199,20 +206,99 @@ test('Marketplace initial load and polling apply the same policy when repository
     assert.ok(renderedRefs(modal).includes('AchillesCLI/worker'));
 });
 
-test('Marketplace streams update visible agents without adding hidden rows or polling hidden startups', async (t) => {
+test('Marketplace catalog updates retain visible rows and never add hidden startups', async (t) => {
     const modal = await createModal(t);
     modal.renderState();
-    assert.equal(modal.hasTransitionalAgents(), false, 'hidden skill startups do not trigger refreshes');
     const visibleRows = [...modal.agentsEl.children];
     const updatedRefs = [];
     modal.updateAgentRuntimeUi = agent => updatedRefs.push(agent.ref);
-    modal.handleRuntimeStatusUpdated({detail: {runtimes: [{
-        repoName: 'AchillesIDE', agentName: 'worker', enabled: true, state: {status: 'starting', running: false},
-    }, {repoName: 'basic', agentName: 'worker', enabled: true, state: {status: 'starting', running: false}}]}});
+    const refreshed = structuredClone(modal.state.marketplace);
+    for (const agent of refreshed.agents) Object.assign(agent, {active: true, status: 'starting', running: false});
+    modal.applyMarketplaceSnapshot(refreshed);
     assert.ok(updatedRefs.includes('AchillesIDE/worker'));
     assert.ok(updatedRefs.every(ref => visibleAgentRefs.includes(ref)));
-    assert.deepEqual(modal.agentsEl.children, visibleRows, 'streamed transitions preserve row controls');
-    assert.equal(modal.hasTransitionalAgents(), true);
+    assert.deepEqual(modal.agentsEl.children, visibleRows, 'catalog transitions preserve row controls');
     assert.ok(modal.agentStatusRefreshTimer);
     assert.deepEqual(renderedRefs(modal), visibleAgentRefs);
 });
+
+test('Marketplace snapshots preserve actual rows, runtime-mode choices, expansion and pending labels while refreshing counts', async (t) => {
+    const modal = await createModal(t);
+    modal.renderState();
+    const agentRow = modal.agentsEl.querySelectorAll('[data-marketplace-agent-ref]')
+        .find(row => row.dataset.marketplaceAgentRef === 'AchillesIDE/worker');
+    const repoRow = modal.repositoriesEl.querySelectorAll('[data-marketplace-repo-name]')
+        .find(row => row.dataset.marketplaceRepoName === 'AchillesIDE');
+    const mode = agentRow.querySelector('[data-enable-mode-for]');
+    const toggle = agentRow.querySelector('[data-agent-ref]');
+    const status = agentRow.querySelector('.marketplace-agent-status');
+    const note = repoRow.querySelector('.marketplace-meta');
+    mode.value = 'global';
+    const inactiveRow = modal.agentsEl.querySelectorAll('[data-marketplace-agent-ref]')
+        .find(row => row.dataset.marketplaceAgentRef === 'AllowedOrphan/worker');
+    const inactiveMode = inactiveRow.querySelector('[data-enable-mode-for]');
+    inactiveMode.value = 'devel';
+    const expanded = modal.state.expandedAgentRepos;
+    modal.state.agentMutationBusyRef = 'AchillesIDE/worker';
+    modal.state.agentMutationVerb = 'Disabling';
+    const refreshed = structuredClone(modal.state.marketplace);
+    const agent = refreshed.agents.find(item => item.ref === 'AchillesIDE/worker');
+    Object.assign(agent, {active: false, status: 'inactive', running: false, statusDetail: 'Disabled by administrator.',
+        pid: null, containerName: '', runtime: ''});
+    refreshed.enabledAgents = refreshed.enabledAgents.filter(item => item.repoName !== 'AchillesIDE');
+    modal.applyMarketplaceSnapshot(refreshed);
+    assert.equal(modal.agentsEl.querySelectorAll('[data-marketplace-agent-ref]').find(row => row.dataset.marketplaceAgentRef === agent.ref), agentRow);
+    assert.equal(modal.repositoriesEl.querySelectorAll('[data-marketplace-repo-name]').find(row => row.dataset.marketplaceRepoName === 'AchillesIDE'), repoRow);
+    assert.equal(agentRow.querySelector('[data-enable-mode-for]'), mode);
+    assert.equal(mode.value, 'global');
+    assert.equal(modal.state.expandedAgentRepos, expanded);
+    assert.equal(status.textContent, 'Disabled');
+    assert.equal(status.title, 'Disabled by administrator.');
+    assert.equal(toggle.textContent, 'Disabling...');
+    assert.equal(toggle.disabled, true);
+    assert.equal(note.hidden, true);
+    assert.equal(note.textContent, '');
+    assert.equal(modal.state.marketplace.enabledAgents, refreshed.enabledAgents);
+
+    const enabled = structuredClone(refreshed);
+    Object.assign(enabled.agents.find(item => item.ref === agent.ref), {active: true, status: 'starting', running: false,
+        statusDetail: 'New startup.', pid: 4712, containerName: 'workspace-AchillesIDE-worker-generation', runtime: 'container', enableMode: 'isolated'});
+    enabled.enabledAgents.push({repoName: 'AchillesIDE', agentName: 'worker'});
+    modal.applyMarketplaceSnapshot(enabled);
+    assert.equal(note.hidden, false);
+    assert.equal(note.textContent, '1 enabled agent will be removed if this repo is uninstalled.');
+    assert.equal(status.title, 'New startup.');
+    assert.equal(status.textContent, 'Starting up');
+    assert.equal(mode.value, 'isolated', 'an enabled agent shows its authoritative runtime mode');
+    assert.equal(inactiveRow.querySelector('[data-enable-mode-for]'), inactiveMode);
+    assert.equal(inactiveMode.value, 'devel', 'another inactive agent retains its selected mode through runtime replacement');
+    assert.equal(modal.state.expandedAgentRepos, expanded);
+});
+
+for (const status of [401, 403]) {
+    test(`Marketplace removes cached management controls after refresh authorization failure ${status}`, async (t) => {
+        const modal = await createModal(t);
+        modal.renderState();
+        assert.ok(modal.agentsEl.querySelectorAll('[data-agent-ref]').length > 0);
+        assert.ok(modal.agentsEl.querySelectorAll('[data-agent-settings-key]').length > 0);
+        assert.ok(modal.repositoriesEl.querySelectorAll('[data-repo-name]').length > 0);
+        if (status === 403) {
+            modal.state.status = 'The previous agent mutation failed.';
+            modal.state.statusType = 'error';
+        }
+        modal.requestMarketplace = async () => {
+            throw Object.assign(new Error('Authentication is required.'), {status});
+        };
+        await modal.refreshAgentStatuses();
+        assert.equal(modal.agentStatusRefreshStopped, true);
+        assert.equal(modal.canManageMarketplace(), false);
+        assert.deepEqual(modal.agentsEl.querySelectorAll('[data-agent-ref]'), []);
+        assert.deepEqual(modal.agentsEl.querySelectorAll('[data-agent-settings-key]'), []);
+        assert.deepEqual(modal.repositoriesEl.querySelectorAll('[data-repo-name]'), []);
+        assert.ok(modal.agentsEl.querySelectorAll('[data-enable-mode-for]').every(select => select.disabled));
+        assert.equal(modal.state.statusType, 'error');
+        assert.equal(modal.state.status, status === 401
+            ? 'Authentication is required.' : 'The previous agent mutation failed.');
+        assert.deepEqual(renderedRefs(modal), visibleAgentRefs, 'read-only cached inventory remains visible');
+    });
+}
