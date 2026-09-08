@@ -175,7 +175,7 @@ for (const workflow of WORKFLOWS) {
   });
 }
 
-test('Explorer workflows omit retired stack repositories from install, branch, and cleanup paths', () => {
+test('Explorer workflows omit retired stack repositories outside the explicit LiveKit migration', () => {
     const retiredRepositories = ['basic', ['webmeet', 'Infra'].join('')];
     const retiredRepositoryPattern = new RegExp(`\\b(?:${retiredRepositories.join('|')})\\b`);
     for (const file of [
@@ -183,7 +183,10 @@ test('Explorer workflows omit retired stack repositories from install, branch, a
         '.github/workflows/destroy-explorer-qa.yml',
     ]) {
         const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
-        assert.doesNotMatch(source, retiredRepositoryPattern, `${file} must not manage a retired stack repository`);
+        const activeSource = file === '.github/workflows/deploy-skills-explorer.yml'
+            ? source.replace(/^          # BEGIN LiveKit repository migration\n[\s\S]*?^          # END LiveKit repository migration$/gm, '')
+            : source;
+        assert.doesNotMatch(activeSource, retiredRepositoryPattern, `${file} must not manage a retired stack repository outside migration`);
     }
 });
 
