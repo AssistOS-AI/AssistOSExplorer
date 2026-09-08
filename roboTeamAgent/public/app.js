@@ -108,7 +108,57 @@ async function stopRobot(robot, button) {
     }
 }
 
-function renderRobots(robots) {
+function renderSkillsets(card, robot, canAdmin) {
+    const list = card.querySelector('.skillset-list');
+    if (!robot.skillsets?.length) list.textContent = 'No skillsets configured.';
+    for (const set of robot.skillsets || []) {
+        const section = document.createElement('section');
+        section.className = 'skillset-entry';
+        const title = document.createElement('strong');
+        title.textContent = set.name;
+        const description = document.createElement('p');
+        description.textContent = set.description || set.source;
+        section.append(title, description);
+        const skills = document.createElement('ul');
+        for (const skill of set.skills || []) {
+            const item = document.createElement('li');
+            item.textContent = `${skill.id}: ${skill.description}`;
+            skills.append(item);
+        }
+        section.append(skills);
+        if (canAdmin && !set.builtin) {
+            const remove = document.createElement('button');
+            remove.className = 'button danger';
+            remove.type = 'button';
+            remove.textContent = 'Remove skillset';
+            remove.addEventListener('click', async () => {
+                if (!confirm(`Remove ${set.name} from ${robot.name}? Existing tasks keep their saved skills.`)) return;
+                remove.disabled = true;
+                try {
+                    await api(`api/robots/${robot.id}/skillsets`, { method: 'DELETE', body: { name: set.name } });
+                    await loadRobots();
+                } catch (error) { showError(error); remove.disabled = false; }
+            });
+            section.append(remove);
+        }
+        list.append(section);
+    }
+    const form = card.querySelector('.skillset-form');
+    form.hidden = !canAdmin;
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const submit = form.querySelector('button');
+        submit.disabled = true;
+        submit.textContent = 'Importing…';
+        try {
+            await api(`api/robots/${robot.id}/skillsets`, { method: 'POST', body: Object.fromEntries(new FormData(form)) });
+            await loadRobots();
+        } catch (error) { showError(error); }
+        finally { submit.disabled = false; submit.textContent = 'Add skillset'; }
+    });
+}
+
+function renderRobots(robots, canAdmin = false) {
     clearLogPollers();
     robotsList.replaceChildren();
     robotCount.textContent = `${robots.length} ${robots.length === 1 ? 'robot' : 'robots'}`;
@@ -121,6 +171,24 @@ function renderRobots(robots) {
     }
     for (const robot of robots) {
         const card = robotTemplate.content.firstElementChild.cloneNode(true);
+        card.querySelector('.open-chat').addEventListener('click', () => {
+            const params = new URLSearchParams({ agent: routeKey, robot: robot.name, 'workspace-dir': '.', 'forward-envelope': '1' });
+            window.open(`/webchat?${params}`, '_blank', 'noopener');
+        });
+        renderSkillsets(card, robot, canAdmin);
+        const deleteButton = card.querySelector('.delete-robot');
+        deleteButton.hidden = !canAdmin;
+        deleteButton.disabled = robot.run.state !== 'stopped'
+            || ['queued', 'starting', 'running', 'stopping'].includes(robot.run.task?.state);
+        deleteButton.title = 'Stop the container and all unfinished tasks before deleting this robot.';
+        deleteButton.addEventListener('click', async () => {
+            if (!confirm(`Permanently delete ${robot.name}, its saved logins, files and skillsets? This cannot be undone.`)) return;
+            deleteButton.disabled = true;
+            try {
+                await api('api/control', { method: 'POST', body: { operation: 'robot-delete', robotId: robot.id } });
+                await loadRobots();
+            } catch (error) { showError(error); deleteButton.disabled = false; }
+        });
         card.querySelector('.avatar').textContent = initials(robot.name);
         card.querySelector('h3').textContent = robot.name;
         card.querySelector('.specialization').textContent = robot.specialization || 'General-purpose robot';
@@ -220,7 +288,8 @@ async function loadRobots() {
     refreshButton.disabled = true;
     try {
         const result = await api('api/robots');
-        renderRobots(result.robots || []);
+        renderRobots(result.robots || [], result.canAdmin === true);
+        for (const field of createForm.elements) field.disabled = result.canAdmin !== true;
     } catch (error) {
         robotsList.textContent = `Robots unavailable: ${error.message}`;
     } finally {

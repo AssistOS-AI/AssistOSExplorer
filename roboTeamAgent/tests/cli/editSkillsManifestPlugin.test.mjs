@@ -7,9 +7,9 @@ import { fileURLToPath } from 'node:url';
 import {
     executeMenuAction,
     getMenuItems,
-} from '../achilles-cli/IDE-plugins/achilles-cli-menu-contributions/menu-contributions.js';
+} from '../roboTeamAgent/IDE-plugins/achilles-cli-menu-contributions/menu-contributions.js';
 
-const agentRoot = fileURLToPath(new URL('../achilles-cli/', import.meta.url));
+const agentRoot = fileURLToPath(new URL('../roboTeamAgent/', import.meta.url));
 const pluginsRoot = path.join(agentRoot, 'IDE-plugins');
 
 // The editor was removed. DS010's supported interface selects a workspace
@@ -47,7 +47,7 @@ test('opening Copilot selects context without creating a manifest or other works
         context: { isDirectory: true, selectedFsPath: workingDir },
     });
     assert.deepEqual(calls, [[
-        `/webchat?agent=achilles-cli&dir=${encodeURIComponent(workingDir)}`,
+        `/webchat?agent=roboTeamAgent&robot=default&dir=${encodeURIComponent(workingDir)}`,
         '_blank',
         'noopener,noreferrer',
     ]]);

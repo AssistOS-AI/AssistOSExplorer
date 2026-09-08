@@ -76,3 +76,16 @@ input:focus, textarea:focus { border-color: var(--accent-strong); box-shadow: 0 
   .robot-session { align-items: flex-start; flex-direction: column; gap: .25rem; }
   .session-url { width: 100%; }
 }
+.button[hidden] { display: none; }
+.robot-skillsets { grid-column: 1 / -1; width: 100%; border-top: 1px solid var(--line); padding-top: 1rem; }
+.robot-skillsets summary { cursor: pointer; font-weight: 600; }
+.skillset-hint { color: var(--muted); font-size: .875rem; margin-top: .75rem; }
+.skillset-entry { padding: .75rem 0; overflow-wrap: anywhere; }
+.skillset-entry p { margin: .4rem 0; }
+.skillset-entry ul { padding-left: 1.25rem; }
+.skillset-entry li { margin: .4rem 0; }
+.skillset-form { display: grid; gap: .75rem; margin-top: 1rem; }
+.skillset-form[hidden] { display: none; }
+.skillset-form label { display: grid; gap: .35rem; }
+.skillset-form input { width: 100%; }
+.skillset-form button { justify-self: start; }

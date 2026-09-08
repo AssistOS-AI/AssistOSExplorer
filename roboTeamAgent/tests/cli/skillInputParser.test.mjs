@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
     parsePositionalInput,
     parseSingleArgInput,
-} from '../achilles-cli/src/lib/skillInputParser.mjs';
+} from '../roboTeamAgent/copilot/src/lib/skillInputParser.mjs';
 
 describe('skillInputParser', () => {
     it('parses positional args and trailing multiline block', () => {

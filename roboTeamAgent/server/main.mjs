@@ -1,6 +1,7 @@
 import { createRoboTeamServer } from './http-server.mjs';
 import { RobotStore } from './robot-store.mjs';
 import { RuntimeManager } from './runtime-manager.mjs';
+import { RobotSkillsets } from './robot-skillsets.mjs';
 
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
 const port = Number(process.env.ROBOTEAM_SERVICE_PORT) || 3001;
@@ -14,6 +15,7 @@ if (!internalToken) {
 const publicBasePath = process.env.ROBOTEAM_PUBLIC_BASE_PATH;
 const robotStore = new RobotStore({ dataDir });
 await robotStore.initialize();
+await robotStore.ensureDefaultRobot();
 
 const runtimeManager = new RuntimeManager({
     dataDir,
@@ -27,6 +29,8 @@ const runtimeManager = new RuntimeManager({
     workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT || '/workspace',
     timezone: process.env.TZ,
 });
+runtimeManager.skillsets = new RobotSkillsets({ robotStore,
+    workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT || '/workspace', alaCommand: runtimeManager.alaCommand });
 await runtimeManager.initialize();
 
 const server = createRoboTeamServer({

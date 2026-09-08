@@ -9,11 +9,17 @@ RoboTeam stores credential-bearing GUI state and operates a nested engine, so pu
 
 ## Core Content
 
+Only authenticated administrators may add or remove a robot's allowed skillsets through POST or DELETE `/api/robots/<id>/skillsets`. Internal agents and non-admin users must be denied; existing Router identity and browser mutation proof remain required. Imports accept credential-free HTTPS Git URLs or canonical directories inside the workspace, excluding robot private data. Repository imports must reject symbolic links, special files, excessive size and malformed SKILL.md descriptors; they must never run repository setup scripts. Imported code remains a trusted administrator-selected supply-chain input, not validated safe code.
+
+Robot deletion from the dashboard must require confirmation and the same administrator authorization as `robot_delete`. It must refuse queued or active work, pending container transitions, and retained containers. The runtime must prevent late starts from recreating a deleted robot. Deletion removes that robot's home, runtime records, skillset imports and task catalogs, without deleting source repositories or the shared tool cache.
+
 Canonical identity remains `agent:AchillesCLI/roboTeamAgent`. Port `7000` is reserved for AgentServer/MCP; only the RoboTeam HTTP/WebSocket service on port `3001` has an authenticated browser route. Inner Podman, Selkies loopback ports, bridge port 8100, and Chromium CDP port 9222 are never public.
 
 Browser identity comes only from Router-injected `x-ploinky-auth-info`; mutations require Ploinky proof. AgentServer listens on port `7000`; MCP callbacks use `ROBOTEAM_INTERNAL_TOKEN` and the authenticated user id without logging either.
 
 Robots belong to the workspace rather than individual users and retain separate mounts. Creation and deletion require an authenticated `admin` role; internal Ploinky agents may use the explicitly internal list, task-start, and task-status tools without a delegated user identity. The outer RoboTeam container remains on Ploinky's managed network. Its admitted `nestedPodman` capability adds only `SYS_ADMIN`, `NET_ADMIN`, `/dev/fuse`, `/dev/net/tun`, label disablement, and the fixed nested-Podman seccomp profile.
+
+RoboTeam's startup-only creation of an absent ordinary robot named `default` is an internal registry operation, not a new externally callable administrative tool. It must not weaken administrator-only create/delete policy, internal workspace-agent task access, authenticated GUI routes or credential separation. The default is workspace-owned like every other robot, has no special marker or fixed identity, and remains subject to ordinary deletion guards.
 
 The inner engine runs as uid 0 inside the outer container's user namespace; it is not physical-host root. `SYS_ADMIN` still makes the outer container a weak security boundary, so this remains a controlled experiment. Inner runs disable Podman's private IPC setup to avoid a nested mqueue mount that the bounded capability intentionally cannot create; GUI runs add only their own `/dev/shm` tmpfs. No host Podman socket or public inner API exists, and cleanup uses exact labels and names. Robot homes and browser sessions are credential-bearing data; operators must protect `/data` and backups.
 

@@ -5,6 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
+import { RobotSkillsets, publicSkillsets } from './robot-skillsets.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -143,6 +144,8 @@ function publicRobot(robot, run) {
         id: robot.id,
         name: robot.name,
         specialization: robot.specialization,
+        description: robot.specialization,
+        skillsets: publicSkillsets(robot),
         createdAt: robot.createdAt,
         updatedAt: robot.updatedAt,
         run,
@@ -161,6 +164,9 @@ function sessionRobotId(pathname) {
 export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
+    const skillsets = options.skillsets || runtimeManager.skillsets || new RobotSkillsets({ robotStore,
+        workspaceRoot: runtimeManager.workspaceRoot, alaCommand: runtimeManager.alaCommand });
+    runtimeManager.skillsets = skillsets;
     const internalToken = String(options.internalToken || '');
     const publicBasePath = normalizeBasePath(options.publicBasePath);
     const routeKey = String(options.routeKey || 'roboTeamAgent');
@@ -197,13 +203,21 @@ export function createRoboTeamServer(options) {
 
             if (pathname === '/api/robots' && req.method === 'GET') {
                 const robots = await robotStore.list();
-                return sendJson(res, 200, { ok: true, robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id))) });
+                return sendJson(res, 200, { ok: true, canAdmin: isAdminActor(actor), robots: robots.map((robot) => publicRobot(robot, runtimeManager.status(robot.id))) });
             }
             if (pathname === '/api/robots' && req.method === 'POST') {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
                 const robot = await robotStore.create({ name: body.name, specialization: body.specialization });
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
+            }
+            const skillsetsId = matchRobotPath(pathname, '/skillsets');
+            if (skillsetsId && ['POST', 'DELETE'].includes(req.method)) {
+                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
+                const body = await readJsonBody(req);
+                if (req.method === 'POST') await skillsets.add(skillsetsId, body);
+                else await skillsets.remove(skillsetsId, body.name);
+                return sendJson(res, 200, { ok: true });
             }
             if (pathname === '/api/control' && req.method === 'POST') {
                 const body = await readJsonBody(req);
@@ -219,7 +233,8 @@ export function createRoboTeamServer(options) {
                         || ['queued', 'starting', 'running', 'stopping'].includes(status.task?.state)) {
                         return sendError(res, 409, 'stop the robot before deleting it');
                     }
-                    await robotStore.delete(robot.id);
+                    if (runtimeManager.deleteRobot) await runtimeManager.deleteRobot(robot.id, () => robotStore.delete(robot.id));
+                    else await robotStore.delete(robot.id);
                     return sendJson(res, 200, { ok: true, deleted: robot.name });
                 }
                 if (operation === 'open-desktop') {
@@ -227,10 +242,10 @@ export function createRoboTeamServer(options) {
                 }
                 const startTypes = { 'start-desktop-task': 'desktop', 'start-browser-task': 'browser', 'start-simple-task': 'simple' };
                 if (startTypes[operation]) {
-                    const task = runtimeManager.startTask(robot, startTypes[operation], {
-                        cwd: body.cwd, task: String(body.task || ''), skillSets: body.skillSets || null,
+                    const task = await skillsets.start(robot, body, (current, skillSelection) => runtimeManager.startTask(current, startTypes[operation], {
+                        cwd: body.cwd, task: String(body.task || ''), skillSelection,
                         model: body.model || null, ca: body.ca || 'codex',
-                    });
+                    }));
                     return sendJson(res, 202, {
                         ok: true,
                         robotId: robot.id,
@@ -302,7 +317,8 @@ export function createRoboTeamServer(options) {
             const message = String(error?.message || '');
             const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop/.test(message);
             const conflict = /already running|active robot limit|occupied|active task|different cwd|stop the|interrupted GUI/.test(message);
-            sendError(res, badRequest ? 400 : conflict ? 409 : 500, badRequest || conflict ? message : 'request failed');
+            sendError(res, error.statusCode === 400 ? 400 : badRequest ? 400 : conflict ? 409 : 500,
+                error.statusCode === 400 || badRequest || conflict ? message : 'request failed');
         }
     });
 

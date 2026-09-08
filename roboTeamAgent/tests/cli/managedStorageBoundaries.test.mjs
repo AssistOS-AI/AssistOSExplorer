@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AgenticKnowledgeUnits } from '../../achillesAgentLib/AgenticKnowledgeUnits/index.mjs';
-import { MainAgent } from '../../achillesAgentLib/MainAgent/index.mjs';
-import { AkuMemoryAdapter } from '../achilles-cli/src/lib/akuMemory/AkuMemoryAdapter.mjs';
-import { getManagedRepoSkillRoot } from '../achilles-cli/src/lib/repoManager.mjs';
+import { resolveAlaInstallation } from '../roboTeamAgent/copilot/src/lib/alaInstallation.mjs';
+import { createAnthropicSkillCatalog } from '../roboTeamAgent/copilot/src/lib/anthropicSkillCatalog.mjs';
+import { setDisabledSkills } from '../roboTeamAgent/copilot/src/lib/achillesSettings.mjs';
+import { writeSkill } from '../roboTeamAgent/copilot/tests/helpers/anthropicCatalogFixture.mjs';
+import { AkuMemoryAdapter } from '../roboTeamAgent/copilot/src/lib/akuMemory/AkuMemoryAdapter.mjs';
+import { getManagedRepoSkillRoot } from '../roboTeamAgent/copilot/src/lib/repoManager.mjs';
 
 function fixture(t, selectedInsideData = false) {
     const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-managed-boundary-')));
@@ -37,7 +39,6 @@ for (const cached of [false, true]) {
         const adapter = new AkuMemoryAdapter({
             rootDir: selected,
             workspaceRoot: workspace,
-            AgenticKnowledgeUnitsClass: AgenticKnowledgeUnits,
         });
         if (cached) await adapter.getAKU();
         const moved = replaceDataRoot();
@@ -52,74 +53,69 @@ test('an initialized AKU adapter rejects reads and mutations after the storage r
     const adapter = new AkuMemoryAdapter({
         rootDir: selected,
         workspaceRoot: workspace,
-        AgenticKnowledgeUnitsClass: AgenticKnowledgeUnits,
     });
     const ku = await adapter.createKU({ ku_name: 'Stored KU', summary: 'must stay unchanged' });
     const aku = await adapter.getAKU();
     assert.equal(aku.rootDir, selected);
+    const before = await aku.loadKU(ku.ku_id);
     const moved = replaceDataRoot();
-    const stateFile = path.join(moved, 'achilles-cli', 'aku', 'kus', ku.ku_id, 'state.md');
-    const before = fs.readFileSync(stateFile, 'utf8');
 
     await assert.rejects(() => adapter.resolveKUCandidates('Stored'), { code: 'ACHILLES_PRIVATE_PATH_UNSAFE' });
     await assert.rejects(() => adapter.updateKUState(ku.ku_id, { state: 'blocked' }), {
         code: 'ACHILLES_PRIVATE_PATH_UNSAFE',
     });
     await assert.rejects(() => aku.updateKUState(ku.ku_id, { state: 'also blocked' }), { code: 'AKU_PATH_ESCAPE' });
-    assert.equal(fs.readFileSync(stateFile, 'utf8'), before);
+    fs.unlinkSync(path.join(workspace, '.data'));
+    fs.renameSync(moved, path.join(workspace, '.data'));
+    assert.deepEqual(await aku.loadKU(ku.ku_id), before);
 });
 
 test('AKU keeps the original storage workspace if environment hints later change', async (t) => {
     const { workspace, selected } = fixture(t);
-    const adapter = new AkuMemoryAdapter({ rootDir: selected, AgenticKnowledgeUnitsClass: AgenticKnowledgeUnits });
+    const adapter = new AkuMemoryAdapter({ rootDir: selected });
     process.env.PLOINKY_WORKSPACE_ROOT = selected;
     await adapter.initializeAKU();
-    assert.equal(fs.existsSync(path.join(workspace, '.data', 'achilles-cli', 'aku', 'aku.json')), true);
+    assert.equal(fs.statSync(path.join(workspace, '.data', 'achilles-cli', 'aku')).isDirectory(), true);
     assert.equal(fs.existsSync(path.join(selected, '.data')), false);
 });
 
-function writeSkill(root, name) {
-    const directory = path.join(root, 'skills', name);
-    fs.mkdirSync(directory, { recursive: true });
-    fs.writeFileSync(path.join(directory, 'cskill.md'), `# ${name}\n\n## Description\n${name} skill.\n`);
-    return directory;
-}
+test('an older AKU implementation cannot silently write to its default project storage', async (t) => {
+    const { workspace, selected } = fixture(t);
+    const unexpected = path.join(selected, 'unexpected-aku');
+    class LegacyAKU {
+        async exists() { return false; }
+        async initAKU() { fs.writeFileSync(unexpected, 'wrong root'); }
+    }
+    const adapter = new AkuMemoryAdapter({
+        rootDir: selected, workspaceRoot: workspace, AgenticKnowledgeUnitsClass: LegacyAKU,
+    });
+    await assert.rejects(adapter.initializeAKU(), { code: 'AKU_PERSISTENCE_ROOT_UNSUPPORTED' });
+    assert.equal(fs.existsSync(unexpected), false);
+});
 
-test('nested launches discover managed repo skills at startup and on add/remove refresh', (t) => {
+test('nested launches discover only managed Anthropic repositories and revalidate their storage root', async (t) => {
     const { workspace, selected, replaceDataRoot } = fixture(t);
     const reposRoot = getManagedRepoSkillRoot(selected);
     assert.equal(fs.existsSync(path.join(workspace, '.data')), false);
-    const agent = new MainAgent({
-        startDir: selected,
-        additionalWorkspaceRoots: () => [getManagedRepoSkillRoot(selected)],
-    });
-    t.after(() => agent.shutdown());
-    assert.equal(agent.startDir, selected);
-
     const firstRepo = path.join(reposRoot, 'RepoA');
-    writeSkill(firstRepo, 'repo-alpha');
-    writeSkill(path.join(workspace, '.data', 'other-agent'), 'unrelated-private');
-    writeSkill(path.join(workspace, '.data', 'achilles-cli', 'aku'), 'not-a-repository');
-    assert.deepEqual(agent.refreshSkills().added, ['repo-alpha-cskill']);
-    assert.ok(agent.getSkillRecord('repo-alpha'));
-    assert.equal(agent.getSkillRecord('unrelated-private'), null);
-    assert.equal(agent.getSkillRecord('not-a-repository'), null);
-
-    const restarted = new MainAgent({
-        startDir: selected,
-        additionalWorkspaceRoots: () => [getManagedRepoSkillRoot(selected)],
-    });
-    t.after(() => restarted.shutdown());
-    assert.ok(restarted.getSkillRecord('repo-alpha'));
-    agent.disableSkills(['repo-alpha']);
-    writeSkill(path.join(reposRoot, 'RepoB'), 'repo-beta');
-    assert.deepEqual(agent.refreshSkills().added, ['repo-beta-cskill']);
-    assert.equal(agent.getSkillRecord('repo-alpha').enabled, false);
+    writeSkill(firstRepo, 'skills/alpha', 'repo-alpha');
+    writeSkill(path.join(workspace, '.data', 'other-agent'), 'skills/private', 'unrelated-private');
+    writeSkill(path.join(workspace, '.data', 'achilles-cli', 'aku'), 'skills/private', 'not-a-repository');
+    const { discoverTaskSkills } = await resolveAlaInstallation();
+    const options = { workingDir: selected, roots: [reposRoot], discoverTaskSkills };
+    const catalog = await createAnthropicSkillCatalog(options);
+    assert.deepEqual(catalog.getSkills().map((skill) => skill.name), ['repo-alpha']);
+    await setDisabledSkills(selected, ['repo-alpha']);
+    const restarted = await createAnthropicSkillCatalog(options);
+    assert.equal(restarted.getSkill('repo-alpha').enabled, false);
+    writeSkill(path.join(reposRoot, 'RepoB'), 'skills/beta', 'repo-beta');
+    await catalog.refresh();
+    assert.equal(catalog.getSkill('repo-beta').enabled, true);
+    assert.equal(catalog.getSkill('repo-alpha').enabled, false);
     fs.rmSync(firstRepo, { recursive: true });
-    assert.deepEqual(agent.refreshSkills().removed, ['repo-alpha-cskill']);
-    assert.equal(agent.getSkillRecord('repo-alpha'), null);
+    await catalog.refresh();
+    assert.deepEqual(catalog.getSkills().map((skill) => skill.name), ['repo-beta']);
     assert.equal(fs.existsSync(path.join(selected, '.data')), false);
-
     replaceDataRoot();
-    assert.throws(() => agent.refreshSkills(), { code: 'ACHILLES_PRIVATE_PATH_UNSAFE' });
+    await assert.rejects(catalog.refresh(), { code: 'ACHILLES_PRIVATE_PATH_UNSAFE' });
 });

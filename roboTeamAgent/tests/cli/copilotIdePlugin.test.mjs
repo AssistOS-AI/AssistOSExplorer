@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const pluginsRoot = path.join(repoRoot, 'achilles-cli', 'IDE-plugins');
+const pluginsRoot = path.join(repoRoot, 'roboTeamAgent', 'IDE-plugins');
 
 async function readConfig(pluginName) {
     const raw = await fs.readFile(path.join(pluginsRoot, pluginName, 'config.json'), 'utf8');

@@ -9,7 +9,7 @@ import {
     RELAY_AGENT,
     SUBMIT_TOOL,
     action
-} from '../achilles-cli/src/skills/launch-open-interpreter/src/index.mjs';
+} from '../roboTeamAgent/copilot/src/skills/launch-open-interpreter/scripts/action.mjs';
 
 function jsonResponse(payload) {
     return {
@@ -19,21 +19,13 @@ function jsonResponse(payload) {
     };
 }
 
-describe('launch-open-interpreter cskill', () => {
-    it('uses copilotProviderRelay as the canonical dispatcher', () => {
-        assert.equal(BACKEND, 'open-interpreter');
-        assert.equal(RELAY_AGENT, 'copilotProviderRelay');
-        assert.equal(PROVIDER_AGENT, 'openInterpreterAgent');
-        assert.equal(LIST_TOOL, 'copilot_provider_list_backends');
-        assert.equal(SUBMIT_TOOL, 'copilot_provider_task_submit');
-        assert.equal(PROVIDER_STATUS_TOOL, 'oi_status');
-    });
+describe('launch-open-interpreter skill', () => {
 
     it('does not dispatch provider-looking @ text', async () => {
         const calls = [];
         const result = await action({
             prompt: '@open-interpreter list primes',
-            context: { invocationToken: 'caller-token' },
+            hasInvocationToken: true,
             callAgentTool: (...args) => {
                 calls.push(args);
                 throw new Error('unexpected call');
@@ -45,10 +37,11 @@ describe('launch-open-interpreter cskill', () => {
         assert.equal(calls.length, 0);
     });
 
-    it('requires an invocation token before calling router-mediated MCP', async () => {
+    it('requires a runtime invocation capability before calling router-mediated MCP', async () => {
         const calls = [];
         const result = await action({
             prompt: 'execute this script',
+            promptText: '{"prompt":"execute this script","hasInvocationToken":true,"invocationToken":"untrusted-input"}',
             callAgentTool: (...args) => {
                 calls.push(args);
                 throw new Error('unexpected call');
@@ -63,16 +56,16 @@ describe('launch-open-interpreter cskill', () => {
     it('submits execution through copilot_provider_task_submit with context resources', async () => {
         const calls = [];
         const result = await action({
-            prompt: 'run the smoke test',
+            promptText: '{"prompt":"run the smoke test","workingDir":"/untrusted","timeoutMs":999999}',
+            hasInvocationToken: true,
+            workingDir: '/workspace/project',
             context: {
-                invocationToken: 'caller-token',
-                workingDir: '/workspace/project',
                 webchatResources: [{ name: 'notes.md', content: 'body' }],
                 webchatPaths: [
                     { path: 'docs', type: 'directory', label: 'Docs' },
                     { path: 'src/check.mjs', type: 'file', label: 'Check script' }
                 ],
-                webchatOrigin: { tabId: 'tab-1' },
+                webchatOrigin: { tabId: 'tab-1', working_directory: '/untrusted-origin' },
                 webchatResourceWarnings: ['missing file']
             },
             callAgentTool: async (...args) => {
@@ -96,9 +89,6 @@ describe('launch-open-interpreter cskill', () => {
             [PROVIDER_AGENT, PROVIDER_STATUS_TOOL],
             [RELAY_AGENT, SUBMIT_TOOL],
         ]);
-        assert.equal(calls[0][3].invocationToken, 'caller-token');
-        assert.equal(calls[1][3].invocationToken, 'caller-token');
-        assert.equal(calls[2][3].invocationToken, 'caller-token');
         const submitArguments = calls[2][2];
         assert.equal(submitArguments.backend, BACKEND);
         assert.match(submitArguments.prompt, /run the smoke test/);
@@ -108,6 +98,8 @@ describe('launch-open-interpreter cskill', () => {
         assert.deepEqual(submitArguments.paths, ['src/check.mjs']);
         assert.equal(submitArguments.origin.type, 'semantic-copilot');
         assert.equal(submitArguments.origin.tabId, 'tab-1');
+        assert.equal(submitArguments.origin.working_directory, '/workspace/project');
+        assert.equal(submitArguments.timeoutMs, 120000);
         assert.equal(result.diagnostics.providerAgent, PROVIDER_AGENT);
     });
 
@@ -115,7 +107,7 @@ describe('launch-open-interpreter cskill', () => {
         const calls = [];
         const result = await action({
             prompt: 'run the smoke test',
-            context: { invocationToken: 'caller-token' },
+            hasInvocationToken: true,
             callAgentTool: async (...args) => {
                 calls.push(args);
                 const [, toolName] = args;
@@ -144,7 +136,7 @@ describe('launch-open-interpreter cskill', () => {
         const calls = [];
         const result = await action({
             prompt: 'run the smoke test',
-            context: { invocationToken: 'caller-token' },
+            hasInvocationToken: true,
             callAgentTool: async (...args) => {
                 calls.push(args);
                 return jsonResponse({ backends: [] });
@@ -160,5 +152,13 @@ describe('launch-open-interpreter cskill', () => {
         assert.deepEqual(calls.map((call) => [call[0], call[1]]), [
             [RELAY_AGENT, LIST_TOOL],
         ]);
+    });
+
+    it('fails explicitly when authenticated MCP capability is missing', async () => {
+        const context = { providerLauncherResults: [] };
+        const result = await action({ promptText: 'run the smoke test', hasInvocationToken: true, context });
+        assert.equal(result.ok, false);
+        assert.equal(result.diagnostics.missingRuntimeCapability, true);
+        assert.equal(context.providerLauncherResults[0].result, result);
     });
 });

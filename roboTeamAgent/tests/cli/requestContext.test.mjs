@@ -11,14 +11,12 @@ describe('RequestContext', () => {
     let RequestContext, abortableTimeout, raceWithAbort, withRequestContext;
 
     beforeEach(async () => {
-        const module = await import('../achilles-cli/src/lib/RequestContext.mjs');
+        const module = await import('../roboTeamAgent/copilot/src/lib/RequestContext.mjs');
         RequestContext = module.RequestContext;
         abortableTimeout = module.abortableTimeout;
         raceWithAbort = module.raceWithAbort;
         withRequestContext = module.withRequestContext;
 
-        // Clear any existing current context
-        RequestContext.current = null;
     });
 
     describe('constructor', () => {
@@ -194,6 +192,25 @@ describe('RequestContext', () => {
 
             assert.strictEqual(capturedCurrent, ctx);
         });
+
+        it('keeps overlapping async operations scoped after either operation settles', async () => {
+            const first = new RequestContext({ id: 'first' });
+            const second = new RequestContext({ id: 'second' });
+            let release;
+            const gate = new Promise((resolve) => { release = resolve; });
+            const waiting = first.runAsync(async () => {
+                await gate;
+                assert.strictEqual(RequestContext.current, first);
+            });
+            await second.runAsync(async () => {
+                await Promise.resolve();
+                assert.strictEqual(RequestContext.current, second);
+            });
+            assert.strictEqual(RequestContext.current, null);
+            release();
+            await waiting;
+            assert.strictEqual(RequestContext.current, null);
+        });
     });
 
     describe('static methods', () => {
@@ -220,18 +237,12 @@ describe('RequestContext', () => {
 
         it('getOrCreate should return current context if exists', () => {
             const existing = new RequestContext({ existing: true });
-            RequestContext.current = existing;
-
-            const result = RequestContext.getOrCreate({ new: true });
-
-            assert.strictEqual(result, existing);
-
-            RequestContext.current = null;
+            existing.run(() => {
+                assert.strictEqual(RequestContext.getOrCreate({ new: true }), existing);
+            });
         });
 
         it('getOrCreate should create new context if none exists', () => {
-            RequestContext.current = null;
-
             const result = RequestContext.getOrCreate({ new: true });
 
             assert.ok(result instanceof RequestContext);
@@ -244,7 +255,7 @@ describe('Utility functions', () => {
     let abortableTimeout, raceWithAbort, withRequestContext;
 
     beforeEach(async () => {
-        const module = await import('../achilles-cli/src/lib/RequestContext.mjs');
+        const module = await import('../roboTeamAgent/copilot/src/lib/RequestContext.mjs');
         abortableTimeout = module.abortableTimeout;
         raceWithAbort = module.raceWithAbort;
         withRequestContext = module.withRequestContext;

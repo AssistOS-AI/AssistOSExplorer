@@ -5,6 +5,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { ToolCache } from './tool-cache.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 
@@ -198,6 +199,8 @@ export class RuntimeManager {
         this.pending = new Map();
         this.shuttingDown = false;
         this.messageWaiters = new Map();
+        this.deletedRobots = new Set();
+        this.skillsets = options.skillsets || null;
     }
 
     async _podman(args, timeout = 120000) {
@@ -215,7 +218,10 @@ export class RuntimeManager {
 
     _serialize(robotId, operation) {
         const previous = this.pending.get(robotId) || Promise.resolve();
-        const current = previous.catch(() => {}).then(operation);
+        const current = previous.catch(() => {}).then(() => {
+            if (this.deletedRobots.has(robotId)) throw new Error('robot was deleted');
+            return operation();
+        });
         this.pending.set(robotId, current);
         return current.finally(() => { if (this.pending.get(robotId) === current) this.pending.delete(robotId); });
     }
@@ -321,7 +327,13 @@ export class RuntimeManager {
     }
 
     _enqueueTask(robot, type, request, { first = false } = {}) {
+        if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
+        request = structuredClone(request);
         const task = this._newTask(robot, type, request);
+        if (type === 'simple') {
+            queueMicrotask(() => { if (!this.shuttingDown) void this._runTask(robot, task); });
+            return { taskId: task.taskId, state: task.state, queuePosition: 0 };
+        }
         const queue = this.taskQueues.get(robot.id) || [];
         if (first) queue.unshift(task.taskId);
         else queue.push(task.taskId);
@@ -374,6 +386,7 @@ export class RuntimeManager {
     }
 
     async _runTask(robot, task) {
+        if (task.cancelRequested || task.state !== 'queued') return;
         try {
             task.state = 'starting';
             task.startedAt = new Date().toISOString();
@@ -405,7 +418,10 @@ export class RuntimeManager {
             const args = ['--home', robotHome, '--cwd', cwd, '--taskFile', taskFile, '--ca', codingAgent];
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
-            if (task.request.skillSets) args.push('--skillSets', task.request.skillSets);
+            if (task.request.skillSelection) {
+                if (!this.skillsets) throw new Error('task skill catalog service is unavailable');
+                args.push('--skill-catalog', await this.skillsets.catalogPath(robot.id, task.request.skillSelection));
+            } else if (task.request.skillSets) args.push('--skillSets', task.request.skillSets);
             if (task.request.model) args.push('--model', task.request.model);
             if (mcpAddress) args.push('--MCPServers', mcpAddress);
             task.state = 'running';
@@ -419,7 +435,11 @@ export class RuntimeManager {
                 ALA_EVENT_STREAM: '1',
                 ...(codingAgentPath ? { PATH: `${codingAgentPath}:${process.env.PATH || ''}` } : {}),
             };
-            const child = this.spawnImpl(this.alaCommand, args, { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+            childEnv.ROBOTEAM_ALA_COMMAND = this.alaCommand;
+            childEnv.ROBOTEAM_DATA_DIR = this.dataDir;
+            if (task.request.skillSelection) childEnv.ROBOTEAM_TASK_SKILL_SELECTION = JSON.stringify(task.request.skillSelection);
+            const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
+                '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
             child.stdin?.on('error', () => {});
             child.stdout?.on('data', (chunk) => {
@@ -519,7 +539,8 @@ export class RuntimeManager {
         const task = id ? this.tasks.get(id) : null;
         if (!task || task.robotId !== robotId) return null;
         const { child, request, cancelRequested, pendingMessages, controlReady, ...status } = task;
-        return { ...status, cwd: request.cwd, queuePosition: this.taskQueuePosition(task) };
+        return { ...status, cwd: request.cwd, skillSelection: request.skillSelection ? structuredClone(request.skillSelection) : null,
+            queuePosition: this.taskQueuePosition(task) };
     }
 
     activeTaskStatus(robotId) {
@@ -528,6 +549,12 @@ export class RuntimeManager {
     }
 
     stopTask(robot, expectedType = null, taskId = null, { manualControl = false } = {}) {
+        if (!taskId && expectedType === 'simple') {
+            const candidates = [...this.tasks.values()].filter((task) => task.robotId === robot.id
+                && task.type === 'simple' && ['queued', 'starting', 'running'].includes(task.state));
+            if (candidates.length > 1) throw new Error('Multiple CLI tasks are running; specify taskId.');
+            taskId = candidates[0]?.taskId || null;
+        }
         const target = taskId ? this.taskStatus(robot.id, taskId) : this.activeTaskStatus(robot.id);
         if (target && expectedType && target.type !== expectedType
             && ['queued', 'starting', 'running'].includes(target.state)) {
@@ -568,6 +595,10 @@ export class RuntimeManager {
         }
         const message = String(prompt || '').trim() || 'Continue.';
         if (!/^[0-9a-f-]{36}$/u.test(internal.alaSessionId || '')) throw new Error('Task has no recoverable ALA session.');
+        if ([...this.tasks.values()].some((task) => task.robotId === robot.id
+            && task.alaSessionId === internal.alaSessionId && ['queued', 'starting', 'running'].includes(task.state))) {
+            throw new Error('This conversation already has an active execution.');
+        }
         if (message.length > 32768) throw new Error('Continuation prompt is too long.');
         if (this.manualControl.has(robot.id) && this.manualControl.get(robot.id) !== taskId) {
             throw new Error('Resume the task currently under manual control before continuing another task.');
@@ -607,6 +638,18 @@ export class RuntimeManager {
         if (!session) return '';
         const result = await this._podman(['logs', '--tail', String(Math.max(1, Math.min(1000, Number(tail) || 200))), session.containerName], 30000);
         return `${result.stdout || ''}${result.stderr || ''}`.slice(-256 * 1024);
+    }
+
+    async deleteRobot(robotId, remove) {
+        if (this.pending.has(robotId) || this.sessions.has(robotId) || this.activeTasks.has(robotId)
+            || this.hasUnfinishedTasks(robotId)) throw new Error('stop the robot and its queued tasks before deleting it');
+        this.deletedRobots.add(robotId);
+        try { await remove(); }
+        catch (error) { this.deletedRobots.delete(robotId); throw error; }
+        this.manualControl.delete(robotId);
+        this.taskQueues.delete(robotId);
+        this.latestTask.delete(robotId);
+        for (const [id, task] of this.tasks) if (task.robotId === robotId) this.tasks.delete(id);
     }
 
     async stopAll() {

@@ -23,7 +23,7 @@ describe('Config', () => {
 
     describe('Config class', () => {
         it('should load Config module', async () => {
-            const module = await import('../achilles-cli/src/lib/Config.mjs');
+            const module = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
 
             assert.ok(module.config, 'Should export config singleton');
             assert.ok(module.Config, 'Should export Config class');
@@ -36,7 +36,7 @@ describe('Config', () => {
             delete process.env.ACHILLES_DEBUG;
             delete process.env.LOG_LEVEL;
 
-            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const config = new Config();
 
             assert.strictEqual(config.get('UI_STYLE'), 'claude-code');
@@ -49,7 +49,7 @@ describe('Config', () => {
             process.env.ACHILLES_DEBUG = 'true';
             process.env.LOG_LEVEL = 'debug';
 
-            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const config = new Config();
 
             assert.strictEqual(config.get('UI_STYLE'), 'minimal');
@@ -61,14 +61,14 @@ describe('Config', () => {
             // Test that any of the DEBUG var names work
             process.env.ACHILES_DEBUG = 'true'; // Note: intentional typo support
 
-            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const config = new Config();
 
             assert.strictEqual(config.get('DEBUG'), true);
         });
 
         it('should parse boolean values correctly', async () => {
-            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const config = new Config();
 
             // Test various truthy strings
@@ -88,14 +88,14 @@ describe('Config', () => {
         it('should parse number values', async () => {
             process.env.SKILL_MAX_REFINEMENT_ITERATIONS = '10';
 
-            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const config = new Config();
 
             assert.strictEqual(config.get('MAX_REFINEMENT_ITERATIONS'), 10);
         });
 
         it('should throw for unknown config key', async () => {
-            const { Config, config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config, config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
 
             assert.throws(
                 () => config.get('UNKNOWN_KEY'),
@@ -104,14 +104,14 @@ describe('Config', () => {
         });
 
         it('should check if key exists', async () => {
-            const { config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
 
             assert.strictEqual(config.has('UI_STYLE'), true);
             assert.strictEqual(config.has('UNKNOWN_KEY'), false);
         });
 
         it('should list all keys', async () => {
-            const { config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const keys = config.keys();
 
             assert.ok(Array.isArray(keys));
@@ -121,7 +121,7 @@ describe('Config', () => {
         });
 
         it('should get all config values', async () => {
-            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const config = new Config();
             const all = config.getAll();
 
@@ -131,7 +131,7 @@ describe('Config', () => {
         });
 
         it('should get config definition', async () => {
-            const { config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const def = config.getDefinition('UI_STYLE');
 
             assert.ok(def);
@@ -140,7 +140,7 @@ describe('Config', () => {
         });
 
         it('should cache values', async () => {
-            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const config = new Config();
 
             // First call
@@ -162,7 +162,7 @@ describe('Config', () => {
         });
 
         it('should validate configuration', async () => {
-            const { Config } = await import('../achilles-cli/src/lib/Config.mjs');
+            const { Config } = await import('../roboTeamAgent/copilot/src/lib/Config.mjs');
             const config = new Config();
 
             // Should not throw
@@ -176,7 +176,7 @@ describe('Config', () => {
 describe('configSchema', () => {
     describe('validateAchillesCliConfig', () => {
         it('should load configSchema module', async () => {
-            const module = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const module = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             assert.ok(module.skillManagerConfigSchema, 'Should export schema');
             assert.ok(module.validateAchillesCliConfig, 'Should export validate function');
@@ -184,7 +184,7 @@ describe('configSchema', () => {
         });
 
         it('should validate valid config', async () => {
-            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const validConfig = {
                 version: 1,
@@ -200,7 +200,7 @@ describe('configSchema', () => {
         });
 
         it('should reject invalid version type', async () => {
-            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const invalidConfig = {
                 version: 'not-a-number',
@@ -213,7 +213,7 @@ describe('configSchema', () => {
         });
 
         it('should reject invalid repositories type', async () => {
-            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const invalidConfig = {
                 repositories: 'not-an-array',
@@ -226,7 +226,7 @@ describe('configSchema', () => {
         });
 
         it('should validate repository entries', async () => {
-            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const invalidConfig = {
                 repositories: [
@@ -241,7 +241,7 @@ describe('configSchema', () => {
         });
 
         it('should validate repository type enum', async () => {
-            const { validateAchillesCliConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { validateAchillesCliConfig } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const invalidConfig = {
                 repositories: [
@@ -258,7 +258,7 @@ describe('configSchema', () => {
 
     describe('assertValidConfig', () => {
         it('should not throw for valid config', async () => {
-            const { assertValidConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { assertValidConfig } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const validConfig = { version: 1, repositories: [] };
 
@@ -267,7 +267,7 @@ describe('configSchema', () => {
         });
 
         it('should throw SchemaValidationError for invalid config', async () => {
-            const { assertValidConfig } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { assertValidConfig } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const invalidConfig = { version: 'bad' };
 
@@ -280,7 +280,7 @@ describe('configSchema', () => {
 
     describe('validateRepositoryEntry', () => {
         it('should validate valid repository entry', async () => {
-            const { validateRepositoryEntry } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { validateRepositoryEntry } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const validEntry = { name: 'test', source: '/path/to/repo' };
 
@@ -290,7 +290,7 @@ describe('configSchema', () => {
         });
 
         it('should reject missing name', async () => {
-            const { validateRepositoryEntry } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { validateRepositoryEntry } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const invalidEntry = { source: '/path' };
 
@@ -301,7 +301,7 @@ describe('configSchema', () => {
         });
 
         it('should reject missing source', async () => {
-            const { validateRepositoryEntry } = await import('../achilles-cli/src/lib/configSchema.mjs');
+            const { validateRepositoryEntry } = await import('../roboTeamAgent/copilot/src/lib/configSchema.mjs');
 
             const invalidEntry = { name: 'test' };
 

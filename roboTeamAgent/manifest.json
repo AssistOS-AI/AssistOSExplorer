@@ -5,6 +5,9 @@
     "nestedPodman": true
   },
   "agent": "sh /code/scripts/startAgent.sh",
+  "cli": "node /code/server/robot-cli.mjs",
+  "enable": ["proxies/soul-gateway no-wait"],
+  "webchat": { "auth": "static", "forwardEnvelope": true },
   "readiness": {
     "protocol": "mcp",
     "timeoutSeconds": 45

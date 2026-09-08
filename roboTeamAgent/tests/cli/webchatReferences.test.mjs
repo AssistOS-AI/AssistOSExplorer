@@ -7,12 +7,12 @@ import path from 'node:path';
 import {
     normalizeWebchatMessage,
     normalizeWebchatReferences
-} from '../achilles-cli/src/lib/webchatEnvelope.mjs';
+} from '../roboTeamAgent/copilot/src/lib/webchatEnvelope.mjs';
 import {
     materializeWebchatAttachments,
     materializeWebchatContext,
     materializeWorkspaceReferences
-} from '../achilles-cli/src/lib/webchatResources.mjs';
+} from '../roboTeamAgent/copilot/src/lib/webchatResources.mjs';
 
 function makeWorkingDir(prefix) {
     return fs.mkdtempSync(path.join(os.tmpdir(), `achilles-references-${prefix}-`));

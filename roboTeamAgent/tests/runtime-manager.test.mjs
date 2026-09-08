@@ -86,7 +86,7 @@ test('reads only the active GUI container log', async () => {
     assert.equal(await manager.logs('idle-a1b2c3'), '');
 });
 
-test('queues tasks per robot and runs them FIFO with one active ALA process', async (t) => {
+test('runs independent CLI sessions for one robot concurrently', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-task-test-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'data');
@@ -111,30 +111,34 @@ test('queues tasks per robot and runs them FIFO with one active ALA process', as
     const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second', ca: 'codex' });
     assert.match(first.taskId, /^[0-9a-f-]{36}$/);
     assert.equal(first.sessionUrl, undefined);
-    assert.equal(first.queuePosition, 1);
-    assert.equal(second.queuePosition, 2);
-    while (children.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(children.length, 1);
-    assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'queued');
-    assert.equal(manager.taskStatus(robot.id, second.taskId).queuePosition, 1);
-    children[0].stderr.write('working\n');
-    children[0].stdout.write('first result\n');
-    children[0].emit('close', 0, null);
+    assert.equal(first.queuePosition, 0);
+    assert.equal(second.queuePosition, 0);
     while (children.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(children.length, 2);
+    assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'running');
+    assert.equal(manager.taskStatus(robot.id, second.taskId).queuePosition, 0);
+    assert.throws(() => manager.stopTask(robot, 'simple'), /specify taskId/);
+    const firstIndex = invocations.findIndex(({ args }) => args[args.indexOf('--session-id') + 1] === first.taskId);
+    const firstInvocation = invocations[firstIndex];
+    children[firstIndex].stderr.write('working\n');
+    children[firstIndex].stdout.write('first result\n');
+    children[firstIndex].emit('close', 0, null);
+    while (manager.taskStatus(robot.id, first.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(manager.taskStatus(robot.id, first.taskId).state, 'completed');
     assert.equal(manager.taskStatus(robot.id, first.taskId).logTail, 'working\n');
     assert.equal(manager.taskStatus(robot.id, first.taskId).result, 'first result\n');
     assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'running');
-    children[1].emit('close', 0, null);
+    children[1 - firstIndex].emit('close', 0, null);
     while (manager.taskStatus(robot.id, second.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(invocations[0].command, '/workspace/AdvancedLanguageAgent/bin/ala.mjs');
-    assert.deepEqual(invocations[0].args.slice(0, 4), ['--home', path.join(dataDir, 'robots', robot.id, 'home'), '--cwd', workspace]);
-    assert.ok(invocations[0].args.includes('--taskFile'));
-    assert.equal(invocations[0].args[invocations[0].args.indexOf('--ca') + 1], 'codex');
-    assert.equal(invocations[0].args[invocations[0].args.indexOf('--session-id') + 1], first.taskId);
-    assert.deepEqual(invocations[0].args.slice(-2), ['--model', 'gpt-test']);
-    assert.ok(invocations[0].options.env.PATH.startsWith('/cache/codex/bin:'));
-    assert.equal(invocations[0].options.env.ALA_EVENT_STREAM, '1');
+    assert.equal(firstInvocation.command, process.execPath);
+    assert.match(firstInvocation.args[0], /robot-task.mjs$/);
+    assert.deepEqual(firstInvocation.args.slice(3, 7), ['--home', path.join(dataDir, 'robots', robot.id, 'home'), '--cwd', workspace]);
+    assert.ok(firstInvocation.args.includes('--taskFile'));
+    assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--ca') + 1], 'codex');
+    assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--session-id') + 1], first.taskId);
+    assert.deepEqual(firstInvocation.args.slice(-2), ['--model', 'gpt-test']);
+    assert.ok(firstInvocation.options.env.PATH.startsWith('/cache/codex/bin:'));
+    assert.equal(firstInvocation.options.env.ALA_EVENT_STREAM, '1');
     assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.codex'))).isDirectory(), true);
     assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.config', 'opencode'))).isDirectory(), true);
     assert.equal((await fs.stat(path.join(dataDir, 'robots', robot.id, 'home', '.pi', 'agent'))).isDirectory(), true);
@@ -207,13 +211,13 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
     manager.startTask(robot, 'simple', { cwd: workspace, task: 'secret prompt' });
     while (manager.taskStatus(robot.id).state === 'queued') await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal('task' in manager.taskStatus(robot.id), false);
-    assert.throws(() => manager.stopTask(robot, 'desktop'), /active simple task/);
+    assert.throws(() => manager.stopTask(robot, 'desktop', manager.taskStatus(robot.id).taskId), /active simple task/);
     manager.stopTask(robot, 'simple');
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(manager.taskStatus(robot.id).state, 'stopped');
 });
 
-test('can stop one queued task without interrupting the active task', async (t) => {
+test('can stop one parallel CLI task without interrupting another', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-stop-queued-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const dataDir = path.join(root, 'data');
@@ -238,15 +242,15 @@ test('can stop one queued task without interrupting the active task', async (t) 
     });
     const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'First' });
     const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second' });
-    while (children.length < 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    while (children.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
     manager.stopTask(robot, 'simple', second.taskId);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(manager.taskStatus(robot.id, first.taskId).state, 'running');
     assert.equal(manager.taskStatus(robot.id, second.taskId).state, 'stopped');
-    children[0].emit('close', 0, null);
+    for (const child of children) child.emit('close', 0, null);
     while (manager.taskStatus(robot.id, first.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(children.length, 1);
+    assert.equal(children.length, 2);
 });
 
 test('holds the robot queue during manual GUI control and resumes the interrupted task first', async () => {
@@ -272,6 +276,7 @@ test('holds the robot queue during manual GUI control and resumes the interrupte
     const waiting = {
         ...interrupted,
         taskId: 'waiting-task',
+        alaSessionId: '33333333-3333-4333-8333-333333333333',
         state: 'queued',
         request: { cwd: '/workspace/project', task: 'Run after resume.', ca: 'codex' },
         child: null,

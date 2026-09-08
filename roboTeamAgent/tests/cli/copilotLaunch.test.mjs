@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const copilotLaunchPath = path.join(
     __dirname,
-    '../achilles-cli/IDE-plugins/achilles-cli-tool-button/copilot-launch.js'
+    '../roboTeamAgent/IDE-plugins/achilles-cli-tool-button/copilot-launch.js'
 );
 const copilotLaunchSource = fs.readFileSync(copilotLaunchPath, 'utf8');
 const {
@@ -40,7 +40,7 @@ describe('Copilot launch extensions', () => {
             isDirectory: true,
             selectedFsPath: '/workspace/project'
         });
-        assert.equal(url, '/webchat?agent=achilles-cli&dir=%2Fworkspace%2Fproject');
+        assert.equal(url, '/webchat?agent=roboTeamAgent&robot=default&dir=%2Fworkspace%2Fproject');
     });
 
     it('adds generic launch-extension query parameters and workspace-relative directory', () => {
@@ -59,7 +59,8 @@ describe('Copilot launch extensions', () => {
             workspaceRoot: '/workspace/project'
         });
         const params = new URLSearchParams(url.slice('/webchat?'.length));
-        assert.equal(params.get('agent'), 'achilles-cli');
+        assert.equal(params.get('agent'), 'roboTeamAgent');
+        assert.equal(params.get('robot'), 'default');
         assert.equal(params.get('forward-envelope'), '1');
         assert.equal(params.has('research-tags'), false);
         assert.equal(params.has('tag-relay-agent'), false);
@@ -100,7 +101,8 @@ describe('Copilot launch extensions', () => {
             workspaceFsRoot: '/workspace/project'
         });
         const params = new URLSearchParams(url.slice('/webchat?'.length));
-        assert.equal(params.get('agent'), 'achilles-cli');
+        assert.equal(params.get('agent'), 'roboTeamAgent');
+        assert.equal(params.get('robot'), 'default');
         assert.equal(params.get('workspace-dir'), '.');
         assert.equal(params.has('dir'), false);
     });

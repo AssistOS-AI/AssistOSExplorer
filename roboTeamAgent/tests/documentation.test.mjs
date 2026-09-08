@@ -11,6 +11,17 @@ async function read(relativePath) {
     return readFile(join(AGENT_ROOT, relativePath), 'utf8');
 }
 
+test('retired agents and their documentation links are absent', async () => {
+    for (const name of ['achilles-cli', 'codexAgent', 'opencodeAgent', 'piAgent']) {
+        await assert.rejects(access(join(AGENT_ROOT, '..', name)), { code: 'ENOENT' });
+    }
+    for (const file of ['../index.html', 'docs/index.html', 'docs/partials/header.html',
+        '../GPTResearcher/docs/index.html', '../GPTResearcher/docs/partials/header.html',
+        '../GPTResearcher/docs/specsLoader.html']) {
+        assert.doesNotMatch(await read(file), /(?:href|src)=["'][^"']*(?:achilles-cli|codexAgent|opencodeAgent|piAgent)\//u);
+    }
+});
+
 test('documentation records first-use current-version tool caching', async () => {
     const sources = [
         await read('README.md'),
@@ -91,7 +102,7 @@ test('documentation introduces ALA execution and AchillesCLI integration', async
     for (const option of ['--home', '--cwd', '--taskFile', '--ca', '--MCPServers', '--skillSets', '--model']) {
         assert.match(operations, new RegExp(option, 'u'));
     }
-    assert.match(combined, /list-robots/u);
+    assert.match(combined, /scripts\/list\.mjs/u);
     assert.match(combined, /launch-robot/u);
     assert.match(combined, /Ploinky Router/u);
 });
@@ -107,7 +118,8 @@ test('documentation explains native async progress and the per-robot FIFO queue'
     const combined = sources.join('\n').replaceAll(/<[^>]+>|`/g, '');
     assert.match(combined, /native asynchronous Ploinky/iu);
     assert.match(combined, /FIFO queue/iu);
-    assert.match(combined, /one ALA process/iu);
+    assert.match(combined, /one graphical ALA process/iu);
+    assert.match(combined, /CLI conversations run concurrently/iu);
     assert.match(combined, /intermediate ALA messages|coding-agent-message/iu);
     assert.match(combined, /standard error/iu);
     assert.match(combined, /standard output/iu);

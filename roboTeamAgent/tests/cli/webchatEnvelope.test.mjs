@@ -5,7 +5,7 @@ import {
     normalizeWebchatMessage,
     normalizeWebchatOrigin,
     normalizeWebchatReferences
-} from '../achilles-cli/src/lib/webchatEnvelope.mjs';
+} from '../roboTeamAgent/copilot/src/lib/webchatEnvelope.mjs';
 
 describe('webchat envelope helpers', () => {
     it('normalizes WebChat envelopes without exposing raw JSON to prompts', () => {

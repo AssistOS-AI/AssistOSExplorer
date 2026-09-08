@@ -6,17 +6,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AgenticKnowledgeUnits } from '../../achillesAgentLib/AgenticKnowledgeUnits/index.mjs';
-import { AkuMemoryAdapter } from '../achilles-cli/src/lib/akuMemory/AkuMemoryAdapter.mjs';
+import { AkuMemoryAdapter, loadDefaultAgenticKnowledgeUnits } from '../roboTeamAgent/copilot/src/lib/akuMemory/AkuMemoryAdapter.mjs';
 import {
     lookupCachedProviderResultForPrompt,
     persistProviderLauncherResults,
-} from '../achilles-cli/src/index.mjs';
-import { analyzeAKUMemoryIntent } from '../achilles-cli/src/lib/akuMemory/akuIntentAnalyzer.mjs';
-import { buildAKUPlanningPacket } from '../achilles-cli/src/lib/akuMemory/akuPlanningPacket.mjs';
-import { getAKUTypePolicy } from '../achilles-cli/src/lib/akuMemory/akuTypePolicies.mjs';
-import { formatAKUContextForPrompt } from '../achilles-cli/src/lib/akuMemory/akuContextFormatter.mjs';
-import { createAKUSessionState } from '../achilles-cli/src/lib/akuMemory/akuSessionState.mjs';
+} from '../roboTeamAgent/copilot/src/index.mjs';
+import { analyzeAKUMemoryIntent } from '../roboTeamAgent/copilot/src/lib/akuMemory/akuIntentAnalyzer.mjs';
+import { buildAKUPlanningPacket } from '../roboTeamAgent/copilot/src/lib/akuMemory/akuPlanningPacket.mjs';
+import { getAKUTypePolicy } from '../roboTeamAgent/copilot/src/lib/akuMemory/akuTypePolicies.mjs';
+import { formatAKUContextForPrompt } from '../roboTeamAgent/copilot/src/lib/akuMemory/akuContextFormatter.mjs';
+import { createAKUSessionState } from '../roboTeamAgent/copilot/src/lib/akuMemory/akuSessionState.mjs';
+
+const AgenticKnowledgeUnits = await loadDefaultAgenticKnowledgeUnits();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -30,6 +31,7 @@ function makeFakeAKUClass({ exists = true } = {}) {
     const calls = [];
     class FakeAKU {
         constructor(options) {
+            this.persistenceRoot = options.persistenceRoot;
             calls.push(['constructor', options]);
         }
 

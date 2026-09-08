@@ -40,7 +40,7 @@ function run(command, args, options = {}) {
 
 const nodeTestFiles = [
     ...collectFiles(__dirname, file => file.endsWith('.test.mjs')),
-    ...collectFiles(path.join(repoRoot, 'achilles-cli/tests'), file => file.endsWith('.test.mjs')),
+    ...collectFiles(path.join(repoRoot, 'roboTeamAgent/copilot/tests'), file => file.endsWith('.test.mjs')),
 ].sort();
 
 const skillTestFiles = collectFiles(__dirname, file => file.endsWith('.tests.mjs')).sort();
