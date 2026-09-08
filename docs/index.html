@@ -147,7 +147,9 @@
                 the same runtime, which owns Redis, LiveKit Server, Egress, and private health. Its pinned image,
                 readiness checks, <code>.data/liveKitServerAgent/</code> storage, Router routes, and fixed UDP
                 <code>7882</code> media mux are unchanged. The default stack requires no separate media-runtime
-                repository or <code>basic</code> installation.</p>
+                repository or <code>basic</code> installation. Skills Explorer deployment retires existing media
+                registrations through Ploinky before source update, verifies old runtime absence inside the owning
+                Box, and preserves agent data. Failed migration evidence remains available for recovery and retry.</p>
 
             <h3>Explorer-Owned and External Entries</h3>
             <p>The <code>help</code> plugin is owned by Explorer and is covered by the <a href="plugins.html">runtime
