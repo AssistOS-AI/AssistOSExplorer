@@ -31,6 +31,8 @@ QA also clones `AdvancedLanguageAgent` into the fresh workspace root from its re
 
 The default graph excludes `onlyOffice`, `webmeetScribeAgent`, and `webmeetStt`; readiness requires fifteen runtimes and eleven no-wait completions. Administrators can enable these optional agents individually through Explorer Marketplace after deployment. Meeting Secretary uses final browser SpeechRecognition transcripts and does not depend on the separate STT service. Existing workspace enablement choices are preserved.
 
+The same AchillesIDE checkout supplies `AchillesIDE/liveKitServerAgent` alongside WebMeet. Deployment repository lists must not install a separate media-runtime repository or `basic`. LiveKit keeps its immutable image, readiness contract, `.data/liveKitServerAgent/` storage, Router signaling/private Twirp paths, and single UDP `7882` media mux. Its relocation does not change the fifteen-runtime or eleven-no-wait gate. The image publication workflow in `container-image-builds` must select the `liveKitServerAgent/` build context from AssistOSExplorer. Integrate that source selection and the matching Ploinky listener profile before retiring the previous runtime source. An existing workspace must release the previous LiveKit runtime before enabling the new qualified owner; two owners cannot share the fixed media socket. Retained repository registrations are an explicit workspace migration concern, not a reason for deployment to reinstall retired sources.
+
 Direct operator execution has the same authority and safety boundary. Before a
 destructive or externally visible mutation, positively identify the exact host,
 workspace, environment, revisions, images, and rollback state. Authorization

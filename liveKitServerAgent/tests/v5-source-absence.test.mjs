@@ -5,13 +5,13 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const HISTORICAL_PREFIXES = ['docs/superpowers/'];
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const exact = (...parts) => new RegExp(`\\b${parts.join('_')}\\b`);
 const FORBIDDEN = [
-  ['retired media repository', new RegExp(['webmeet', 'Infra'].join(''), 'i')],
-  ['retired web-publishing agent', new RegExp(`\\b${['basic', 'web-publishing'].join('/')}\\b`)],
+  [['retired', ['web', 'publishing'].join('-'), 'agent'].join(' '), new RegExp(`\\b${['basic', ['web', 'publishing'].join('-')].join('/')}\\b`)],
+  [['retired', ['web', 'publishing'].join('-'), 'component'].join(' '), new RegExp(`\\b${['web', 'publishing'].join('-')}\\b`, 'i')],
   ['retired basic cloudflared component', new RegExp(`\\b${['basic', 'cloudflared'].join('/')}\\b`, 'i')],
+  ['retired standalone cloudflared agent', new RegExp(`\\b${['cloudflared', 'agent'].join('-')}\\b`, 'i')],
   ['retired publication environment', new RegExp(`\\b${['WEB', 'PUBLISHING'].join('_')}_[A-Z0-9_]*\\b`)],
   ['retired OnlyOffice public URL', exact('ONLYOFFICE', 'PUBLIC', 'URL')],
   ['retired OnlyOffice internal URL', exact('ONLYOFFICE', 'INTERNAL', 'URL')],
@@ -20,26 +20,21 @@ const FORBIDDEN = [
   ['retired WebMeet TURN environment', new RegExp(`\\b${['WEBMEET', 'TURN'].join('_')}_[A-Z0-9_]*\\b`)],
   ['retired WebMeet TLS hostname', exact('WEBMEET', 'TLS', 'HOSTNAME')],
   ['retired WebMeet certificate email', exact('WEBMEET', 'CERT', 'EMAIL')],
-  ['retired Box evidence helper', new RegExp(`\\bv[56]-${['box', 'evidence'].join('-')}\\b`, 'i')],
-  ['retired live Box helper', new RegExp(`\\bv[56]-${['live', 'box'].join('-')}\\b`, 'i')],
-  ['retired Box smoke environment', new RegExp(`\\bSMOKE_V[56]_[A-Z0-9_]*\\b`)],
-  ['retired Box runtime label', new RegExp(['io', 'assistos', 'ploinky', 'runtime-contract'].join('\\.'))],
-  ['retired external scanner identity', new RegExp(`\\b${['ploinky', 'external', 'boundary', 'v1'].join('-')}\\b`)],
 ];
 
-test('tracked executable, config, workflow, test, and normative documentation scopes omit retired publication symbols', () => {
-  const tracked = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
+test('runtime-v5 active source omits retired edge-publication symbols', () => {
+  const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
     cwd: ROOT,
     encoding: 'utf8',
   }).split('\0').filter(Boolean);
   const violations = [];
-  for (const relative of tracked) {
-    if (HISTORICAL_PREFIXES.some((prefix) => relative.startsWith(prefix))) continue;
-    const file = path.join(ROOT, relative);
-    if (!fs.existsSync(file)) continue;
-    const stat = fs.statSync(file);
+  for (const relative of files) {
+    if (relative.startsWith('docs/superpowers/')) continue;
+    const absolute = path.join(ROOT, relative);
+    if (!fs.existsSync(absolute)) continue;
+    const stat = fs.statSync(absolute);
     if (!stat.isFile() || stat.size > 2 * 1024 * 1024) continue;
-    const bytes = fs.readFileSync(file);
+    const bytes = fs.readFileSync(absolute);
     if (bytes.includes(0)) continue;
     const source = bytes.toString('utf8');
     for (const [label, pattern] of FORBIDDEN) {

@@ -6,11 +6,8 @@
       "protocol": "none"
     },
     "enable": [
-      "webmeetInfra/liveKitServerAgent"
+      "AchillesIDE/liveKitServerAgent"
     ],
-    "repos": {
-      "webmeetInfra": "https://github.com/AssistOS-AI/webmeetInfra.git"
-    },
     "volumes": {
       ".data/webmeetScribeAgent": "/data"
     },

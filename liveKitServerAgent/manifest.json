@@ -1,0 +1,115 @@
+{
+  "container": "docker.io/assistos/livekit-server-agent@sha256:fc05e4349bc1eab5a1f28ad4bd8a7ec3324867bdaf526eb55c4cdb7031b46eea",
+  "about": "WebMeet LiveKit signaling, single-port UDP media, Redis, and Egress runtime.",
+  "start": "sh /code/scripts/start-livekit-server-agent.sh",
+  "health": {
+    "readiness": {
+      "script": "healthcheck.sh",
+      "interval": 5,
+      "timeout": 10,
+      "failureThreshold": 60,
+      "successThreshold": 1
+    }
+  },
+  "network": {
+    "mode": "host"
+  },
+  "containerSecurity": {
+    "privileged": false
+  },
+  "volumes": {
+    ".data/liveKitServerAgent/generated": "/working-data/generated",
+    ".data/liveKitServerAgent/redis": "/data/redis",
+    ".data/liveKitServerAgent/recordings": "/data/recordings"
+  },
+  "volumeOptions": {
+    "/working-data/generated": {
+      "generated": true,
+      "required": false
+    }
+  },
+  "routerAccess": {
+    "httpRoutes": [
+      {
+        "path": "/base-agent-additional-server/liveKitServerAgent/7880/*",
+        "access": "public"
+      },
+      {
+        "path": "/base-agent-additional-server/liveKitServerAgent/7880/twirp/livekit.RoomService/*",
+        "access": "authenticated"
+      },
+      {
+        "path": "/base-agent-additional-server/liveKitServerAgent/7880/twirp/livekit.AgentDispatchService/*",
+        "access": "authenticated"
+      }
+    ]
+  },
+  "profiles": {
+    "default": {
+      "env": [
+        {
+          "name": "LIVEKIT_API_KEY",
+          "required": true,
+          "sharedGeneratedSecret": true
+        },
+        {
+          "name": "LIVEKIT_API_SECRET",
+          "required": true,
+          "sharedGeneratedSecret": true
+        },
+        {
+          "name": "PLOINKY_MEDIA_PUBLIC_IP",
+          "required": false
+        },
+        {
+          "name": "PLOINKY_HOST_REACHABLE_IPV4",
+          "required": false
+        }
+      ]
+    },
+    "dev": {
+      "env": [
+        {
+          "name": "LIVEKIT_API_KEY",
+          "required": true,
+          "sharedGeneratedSecret": true
+        },
+        {
+          "name": "LIVEKIT_API_SECRET",
+          "required": true,
+          "sharedGeneratedSecret": true
+        },
+        {
+          "name": "PLOINKY_MEDIA_PUBLIC_IP",
+          "required": false
+        },
+        {
+          "name": "PLOINKY_HOST_REACHABLE_IPV4",
+          "required": false
+        }
+      ]
+    },
+    "prod": {
+      "env": [
+        {
+          "name": "LIVEKIT_API_KEY",
+          "required": true,
+          "sharedGeneratedSecret": true
+        },
+        {
+          "name": "LIVEKIT_API_SECRET",
+          "required": true,
+          "sharedGeneratedSecret": true
+        },
+        {
+          "name": "PLOINKY_MEDIA_PUBLIC_IP",
+          "required": false
+        },
+        {
+          "name": "PLOINKY_HOST_REACHABLE_IPV4",
+          "required": false
+        }
+      ]
+    }
+  }
+}

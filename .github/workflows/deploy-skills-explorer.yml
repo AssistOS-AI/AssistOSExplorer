@@ -303,11 +303,10 @@ jobs:
           # 'install <url|repoName> [name] [--branch X]'. Repos are activated by install; the
           # explorer manifest's "enable" list brings up the agent stack at start time.
           "$PLOINKY" install https://github.com/AssistOS-AI/AssistOSExplorer.git AchillesIDE --branch "${EXPLORER_BRANCH:-main}" || true
-          "$PLOINKY" install https://github.com/AssistOS-AI/webmeetInfra.git webmeetInfra --branch main || true
           "$PLOINKY" install https://github.com/AssistOS-AI/proxies.git proxies --branch "${PROXIES_BRANCH:-main}" || true
 
           sync_managed_repos() {
-            for repo_spec in "AchillesIDE:${EXPLORER_BRANCH:-main}" "webmeetInfra:main" "proxies:${PROXIES_BRANCH:-main}"; do
+            for repo_spec in "AchillesIDE:${EXPLORER_BRANCH:-main}" "proxies:${PROXIES_BRANCH:-main}"; do
               repo_name="${repo_spec%%:*}"
               repo_branch="${repo_spec#*:}"
               repo_dir="$WORK_DIR/.ploinky/repos/$repo_name"
@@ -337,110 +336,6 @@ jobs:
 
           echo "[deploy] Re-pinning managed repositories after update..."
           sync_managed_repos
-
-          cleanup_retired_webmeet_infra() {
-            local retired_agents=(
-              stack
-              webmeetCoturn
-              webmeetRedis
-              webmeetLivekitServer
-              webmeetLivekitEgress
-              webmeetLivekitNginx
-              webmeetLivekitCertbot
-            )
-
-            echo "[deploy] Removing retired split WebMeet infra agent registrations..."
-            for agent in "${retired_agents[@]}"; do
-              env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" disable agent "webmeetInfra/$agent" || true
-              env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" disable agent "$agent" || true
-            done
-
-            node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-
-          const retired = new Set([
-            'stack',
-            'webmeetCoturn',
-            'webmeetRedis',
-            'webmeetLivekitServer',
-            'webmeetLivekitEgress',
-            'webmeetLivekitNginx',
-            'webmeetLivekitCertbot',
-          ]);
-          const root = process.cwd();
-
-          function splitRef(value) {
-            const text = String(value || '');
-            const parts = text.split('/');
-            return {
-              repo: parts.length > 1 ? parts[0] : '',
-              agent: parts[parts.length - 1] || text,
-            };
-          }
-
-          function readJson(filePath) {
-            try {
-              return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            } catch (_) {
-              return null;
-            }
-          }
-
-          function writeJson(filePath, value) {
-            fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
-          }
-
-          const agentsPath = path.join(root, '.ploinky', 'agents.json');
-          const agents = readJson(agentsPath);
-          let agentsChanged = false;
-          if (agents && typeof agents === 'object') {
-            for (const [key, record] of Object.entries(agents)) {
-              if (key === '_config' || !record || typeof record !== 'object') continue;
-              const keyRef = splitRef(key);
-              const repo = String(record.repoName || keyRef.repo);
-              const agent = String(record.agentName || keyRef.agent);
-              if (repo === 'webmeetInfra' && retired.has(agent)) {
-                delete agents[key];
-                agentsChanged = true;
-              }
-            }
-            if (agentsChanged) {
-              writeJson(agentsPath, agents);
-            }
-          }
-
-          const routingPath = path.join(root, '.ploinky', 'routing.json');
-          const routing = readJson(routingPath);
-          let routingChanged = false;
-          if (routing && routing.routes && typeof routing.routes === 'object') {
-            for (const [key, route] of Object.entries(routing.routes)) {
-              const keyRef = splitRef(key);
-              const routeRef = splitRef(route && route.agent);
-              const agent = String(routeRef.agent || keyRef.agent);
-              const repo = String(route && route.repo || routeRef.repo || keyRef.repo);
-              if (retired.has(agent) && (!repo || repo === 'webmeetInfra')) {
-                delete routing.routes[key];
-                routingChanged = true;
-              }
-            }
-            if (routingChanged) {
-              writeJson(routingPath, routing);
-            }
-          }
-
-          console.log(`[deploy] Retired registry cleanup: agents=${agentsChanged ? 'updated' : 'unchanged'} routes=${routingChanged ? 'updated' : 'unchanged'}`);
-          NODE
-
-            local retired_pattern="^ploinky_webmeetInfra_(stack|webmeetCoturn|webmeetRedis|webmeetLivekitServer|webmeetLivekitEgress|webmeetLivekitNginx|webmeetLivekitCertbot)_${WORKSPACE}_"
-            podman ps -a --format '{{.Names}}' | grep -E "$retired_pattern" | while read -r container_name; do
-              [ -n "$container_name" ] || continue
-              echo "[deploy] Removing retired container $container_name"
-              podman rm -f "$container_name" || true
-            done || true
-          }
-
-          cleanup_retired_webmeet_infra
 
           "$PLOINKY" profile "${PLOINKY_PROFILE:-prod}"
           "$PLOINKY" sandbox disable
@@ -483,7 +378,6 @@ jobs:
           nohup env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" start AchillesIDE/explorer "$ROUTER_PORT" \
             --branch "${EXPLORER_BRANCH:-main}" \
             --repo-branch "proxies=${PROXIES_BRANCH:-main}" \
-            --repo-branch "webmeetInfra=main" \
             --reset-repos \
             > "$WORK_DIR/logs/skills-explorer-start.log" 2>&1 &
 

@@ -1,0 +1,210 @@
+@import url("../../docs/styles.css");
+
+:root {
+    color-scheme: light;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f7f8fa;
+    color: #17202a;
+}
+
+.breadcrumbs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0 0 12px;
+    color: #546170;
+    font-size: 0.92rem;
+}
+
+.breadcrumbs a {
+    color: inherit;
+    text-underline-offset: 3px;
+}
+
+.breadcrumbs [aria-current="page"] {
+    color: inherit;
+    font-weight: 600;
+}
+
+.site-header .breadcrumbs {
+    margin: 0;
+    color: #fff;
+}
+
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+}
+
+main {
+    width: 100%;
+    padding: 1rem;
+    box-sizing: border-box;
+}
+
+h1 {
+    font-size: 34px;
+    line-height: 1.15;
+    margin: 0 0 18px;
+}
+
+p, li {
+    font-size: 16px;
+    line-height: 1.65;
+}
+
+a {
+    color: #145ea8;
+}
+
+.doc-layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 1rem; align-items: start; }
+.doc-main { min-width: 0; padding: 1rem; background: #fff; }
+.doc-sidebar { position: sticky; top: 1rem; padding: 1rem; border: 1px solid #d7dee8; border-radius: 8px; background: #fff; }
+.doc-sidebar h2 { margin: 0 0 .75rem; font-size: 1rem; }
+.doc-sidebar nav { display: grid; gap: .25rem; }
+.doc-sidebar a { padding: .4rem .55rem; border-radius: 4px; text-decoration: none; }
+.doc-sidebar a:hover, .doc-sidebar a[aria-current="location"] { background: #f1f4f8; }
+pre, table { max-width: 100%; overflow-x: auto; }
+figure { margin-inline: 0; }
+figcaption { text-align: center; }
+@media (max-width: 800px) { main { padding: .5rem; } .doc-layout { grid-template-columns: 1fr; } .doc-main { padding: .75rem; } .doc-sidebar { position: static; } }
+
+.site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem; background: #17202a; color: #fff; }
+.site-header a { color: #fff; text-decoration: none; }
+.site-header__brand { font-weight: 700; }
+.site-nav { display: flex; gap: .5rem; align-items: center; }
+.site-nav__group { position: relative; }
+.site-nav__trigger { border: 0; border-radius: 4px; padding: .45rem .7rem; background: transparent; color: #fff; cursor: pointer; font: inherit; }
+.site-nav__trigger:hover, .site-nav__trigger[aria-expanded="true"] { background: rgba(255,255,255,.16); }
+.site-nav__menu { position: absolute; z-index: 10; top: calc(100% + .35rem); right: 0; min-width: 12rem; padding: .35rem; border: 1px solid #d7dee8; border-radius: 4px; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,.14); }
+.site-nav__menu[hidden] { display: none; }
+.site-nav__menu a { display: block; padding: .45rem .55rem; border-radius: 4px; color: #145ea8; }
+.site-nav__menu a:hover, .site-nav__menu a[aria-current="page"] { background: #f1f4f8; color: #145ea8; }
+@media (max-width: 700px) { .site-header { align-items: flex-start; flex-direction: column; } .site-nav { width: 100%; } .site-nav__group { flex: 1; } .site-nav__trigger { width: 100%; } .site-nav__menu { left: 0; right: auto; } }
+
+/* Shared agent documentation layout contract. */
+html, body { max-width: 100%; overflow-x: hidden; }
+main, .content, .page { width: 100%; min-width: 0; max-width: 100%; }
+.doc-layout { width: 100%; min-width: 0; }
+.doc-main, .page__panel, .loader-frame { min-width: 0; width: 100%; max-width: 100%; }
+.doc-main p, .lead p, .content p { max-width: none; }
+.table-wrap, pre { max-width: 100%; overflow: auto; }
+img, svg { max-width: 100%; height: auto; }
+.spec-nav { display: flex; justify-content: center; align-items: center; gap: .75rem; margin-top: 1.5rem; }
+.spec-nav a { display: inline-flex; align-items: center; justify-content: center; min-width: 7rem; padding: .5rem .9rem; border: 1px solid #d7dee8; border-radius: 6px; color: #145ea8; background: #fff; text-decoration: none; }
+.spec-nav a:hover { background: #f1f4f8; }
+.spec-nav a[hidden] { display: none; }
+@media (max-width: 800px) { .doc-layout { grid-template-columns: 1fr; } .doc-sidebar { position: static; } }
+@media (max-width: 640px) { main, .content, .page { padding: .5rem; } .doc-main, .page__panel { padding: .75rem; } }
+
+/* Shared agent documentation sidebar contract. */
+.doc-layout {
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: 24px;
+}
+
+.doc-sidebar {
+    position: sticky;
+    top: 20px;
+    padding: 14px;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    background: #ffffff;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+    color: #1f2933;
+    font-family: "Inter", sans-serif;
+    line-height: 1.65;
+}
+
+.doc-sidebar__group + .doc-sidebar__group {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #e5e7eb;
+}
+
+.doc-sidebar h2,
+.doc-sidebar__group-title {
+    margin: 0 0 6px;
+    padding: 0;
+    border: 0;
+    color: #4b5563;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.doc-sidebar nav {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.doc-sidebar a {
+    display: block;
+    padding: 6px 9px;
+    border-radius: 8px;
+    color: #1f2933;
+    text-decoration: none;
+}
+
+.doc-sidebar a:hover {
+    background: rgba(37, 99, 235, 0.08);
+    color: #1f2933;
+}
+
+.doc-sidebar a[aria-current="page"],
+.doc-sidebar a[aria-current="location"] {
+    background: #2563eb;
+    color: #ffffff;
+}
+
+.doc-sidebar a:focus-visible {
+    outline: 3px solid rgba(37, 99, 235, 0.24);
+    outline-offset: 2px;
+}
+
+@media (max-width: 800px) {
+    .doc-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .doc-sidebar {
+        position: static;
+    }
+}
+
+/* Shared documentation footer contract. */
+.site-footer {
+    width: 100%;
+    margin-top: 1rem;
+    padding: 0.9rem 1rem;
+    border-top: 1px solid #d7dee8;
+    background: #ffffff;
+    color: #4b5563;
+    text-align: center;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+
+.site-footer p {
+    margin: 0;
+    color: inherit;
+    font-size: inherit;
+}
+
+.site-footer a {
+    color: #145ea8;
+    text-underline-offset: 3px;
+}
+
+@media (max-width: 640px) {
+    .site-footer {
+        margin-top: 0.5rem;
+        padding: 0.75rem 0.5rem;
+    }
+}

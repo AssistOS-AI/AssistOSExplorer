@@ -141,9 +141,17 @@
                     <p>Optional Office editor sessions, authenticated transport, callbacks, and persistence; disabled by default.</p></a>
             </div>
 
+            <h3>Live Media Runtime</h3>
+            <p><a href="../liveKitServerAgent/docs/index.html">LiveKit Server</a> runs as
+                <code>AchillesIDE/liveKitServerAgent</code> from this repository. Explorer and WebMeet enable
+                the same runtime, which owns Redis, LiveKit Server, Egress, and private health. Its pinned image,
+                readiness checks, <code>.data/liveKitServerAgent/</code> storage, Router routes, and fixed UDP
+                <code>7882</code> media mux are unchanged. The default stack requires no separate media-runtime
+                repository or <code>basic</code> installation.</p>
+
             <h3>Explorer-Owned and External Entries</h3>
             <p>The <code>help</code> plugin is owned by Explorer and is covered by the <a href="plugins.html">runtime
-                plugins guide</a>. The manifest also enables Achilles CLI, LiveKit Server, Soul Gateway, and Umami as
+                plugins guide</a>. The manifest also enables Achilles CLI, Soul Gateway, and Umami as
                 supporting dependencies. Ploinky core supplies the administrator-only WebTTY surface through the
                 selected Explorer host. Explorer owns its folder target chooser, while Ploinky supplies safe Box and
                 live-agent choices and remains authoritative for runtime identity, mount access, translated working
