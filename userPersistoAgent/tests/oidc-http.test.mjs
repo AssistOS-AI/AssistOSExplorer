@@ -7,10 +7,10 @@ import { once } from 'node:events';
 import * as client from 'openid-client';
 import { startService } from '../service/index.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
-import { registerUser, updateUser, setUserRoles } from '../lib/users.mjs';
+import { registerUser, updateUser, setUserRoles, getSetupStatus, getUserByEmail } from '../lib/users.mjs';
 import { createOidcClient, updateOidcClient, rotateOidcClientSecret } from '../lib/oidc/clients.mjs';
 import { resetOidcProviderForTests } from '../lib/oidc/provider.mjs';
-import { resetStoreForTests } from '../lib/store.mjs';
+import { getStore, resetStoreForTests } from '../lib/store.mjs';
 import { updateAuthPolicy } from '../lib/policy.mjs';
 
 const password = 'correct-oidc-test-password';
@@ -272,15 +272,87 @@ test('client disabling revokes existing grants and public browser token/UserInfo
 }));
 
 test('OIDC registration uses normal user policy and disabled methods cannot bypass it', async () => fixture(async ({ config, owner, admin }) => {
-    const flow = await begin(config);
+    const flow = await begin(config, { screen_hint: 'signup' });
+    const registrationPage = await flow.browser.fetch(flow.location);
+    const registrationHtml = await registrationPage.text();
+    assert.match(registrationHtml, /<h1>Create your account<\/h1>/);
+    assert.ok(registrationHtml.indexOf('/register"') < registrationHtml.indexOf('/login"'));
+    assert.match(registrationHtml, /<summary>Already registered\? Sign in<\/summary>/);
     const callback = await complete(flow, 'new-oidc@example.test', { action: 'register' });
     const token = await client.authorizationCodeGrant(config, callback, { pkceCodeVerifier: flow.verifier, expectedState: flow.state, expectedNonce: flow.nonce });
     const registered = await client.fetchUserInfo(config, token.access_token, token.claims().sub);
     assert.deepEqual(registered.roles, ['selfRegistered']);
     assert.deepEqual(registered.capabilities, ['selfregistered.dashboard.access']);
     await updateAuthPolicy({ enabledAuthMethods: ['totp'] }, admin);
-    const next = await begin(config);
+    const next = await begin(config, { screen_hint: 'signup' });
     const body = await (await next.browser.fetch(next.location)).text();
     assert.ok(!body.includes('/login"'));
+    assert.ok(!body.includes('/register"'));
+    assert.match(body, /<h1>Sign in<\/h1>/);
     assert.equal((await next.browser.post(`${next.location}/login`, { email: owner.email, password, csrf: csrf(body) })).status, 400);
+}));
+
+test('signup hint retains existing sign-in and consent; retry errors show the attempted form', async () => fixture(async ({ config, owner, user }) => {
+    for (const email of [owner.email, user.email]) {
+        const flow = await begin(config, { screen_hint: 'signup' });
+        const body = await (await flow.browser.fetch(flow.location)).text();
+        const failed = await flow.browser.post(`${flow.location}/login`, { email, password: 'invalid-password', csrf: csrf(body) });
+        assert.equal(failed.status, 400);
+        const failedHtml = await failed.text();
+        assert.match(failedHtml, /<h1>Sign in<\/h1>/);
+        assert.ok(failedHtml.indexOf('/login"') < failedHtml.indexOf('/register"'));
+        const callback = await complete(flow, email);
+        const tokens = await client.authorizationCodeGrant(config, callback, { pkceCodeVerifier: flow.verifier, expectedState: flow.state, expectedNonce: flow.nonce });
+        assert.ok(tokens.access_token);
+        const returning = await begin(config, { screen_hint: 'signup' }, flow.browser);
+        const consent = await returning.browser.fetch(returning.location);
+        assert.match(await consent.text(), /<h1>Allow access\?<\/h1>/);
+        assert.equal((await complete(returning, email, { allow: false })).searchParams.get('error'), 'access_denied');
+    }
+    const registration = await begin(config, { screen_hint: 'signup' });
+    const body = await (await registration.browser.fetch(registration.location)).text();
+    const failed = await registration.browser.post(`${registration.location}/register`, { email: 'invalid', password, csrf: csrf(body) });
+    assert.equal(failed.status, 400);
+    const failedHtml = await failed.text();
+    assert.match(failedHtml, /<h1>Create your account<\/h1>/);
+    assert.match(failedHtml, /Unable to create an account/);
+    assert.equal(await getUserByEmail('invalid'), null);
+}));
+
+test('absent or unknown signup hints preserve sign-in-first, and signup policy is rechecked after rendering', async () => fixture(async ({ config, admin }) => {
+    for (const params of [{}, { screen_hint: 'login' }, { screen_hint: '<script>signup</script>' }]) {
+        const flow = await begin(config, params);
+        const html = await (await flow.browser.fetch(flow.location)).text();
+        assert.match(html, /<h1>Sign in<\/h1>/);
+        assert.ok(html.indexOf('/login"') < html.indexOf('/register"'));
+        assert.ok(!html.includes('<script>signup</script>'));
+    }
+    const flow = await begin(config, { screen_hint: 'signup' });
+    const body = await (await flow.browser.fetch(flow.location)).text();
+    await updateAuthPolicy({ selfRegistrationEnabled: false }, admin);
+    const failed = await flow.browser.post(`${flow.location}/register`, { email: 'disabled@example.test', password, csrf: csrf(body) });
+    assert.equal(failed.status, 400);
+    assert.ok(!(await failed.text()).includes('/register"'));
+    assert.equal(await getUserByEmail('disabled@example.test'), null);
+    const next = await begin(config, { screen_hint: 'signup' });
+    const html = await (await next.browser.fetch(next.location)).text();
+    assert.match(html, /<h1>Sign in<\/h1>/);
+    assert.ok(!html.includes('/register"'));
+}));
+
+test('OIDC registration cannot create an initial administrator when client metadata survives an empty user store', async () => fixture(async ({ config, owner, user }) => {
+    const store = await getStore();
+    await store.deleteUser(owner.id);
+    await store.deleteUser(user.id);
+    assert.equal((await getSetupStatus()).needsInitialAdmin, true);
+    const flow = await begin(config, { screen_hint: 'signup' });
+    const body = await (await flow.browser.fetch(flow.location)).text();
+    assert.ok(!body.includes('/register"'));
+    const failed = await flow.browser.post(`${flow.location}/register`, { email: 'public-owner@example.test', password, csrf: csrf(body), allowInitialAdmin: 'true' });
+    assert.equal(failed.status, 400);
+    assert.equal((await getSetupStatus()).userCount, 0);
+    assert.equal(await getUserByEmail('public-owner@example.test'), null);
+    const setup = await registerUser({ email: 'setup-owner@example.test', password });
+    assert.equal(setup.firstUser, true);
+    assert.deepEqual(setup.roles, ['admin']);
 }));

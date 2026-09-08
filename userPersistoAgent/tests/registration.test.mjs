@@ -17,6 +17,18 @@ after(async () => {
     await resetStoreForTests();
 });
 
+test('external registrations cannot claim an empty installation or override the trusted registration option', async () => {
+    await ensureSeedData();
+    const attempts = await Promise.allSettled(Array.from({ length: 3 }, (_, index) => registerUser({
+        email: `external-${index}@example.com`,
+        password: 'external-pass-123',
+        allowInitialAdmin: true,
+    }, { allowInitialAdmin: false })));
+    assert.ok(attempts.every((attempt) => attempt.status === 'rejected'
+        && attempt.reason.code === 'initial_setup_required' && attempt.reason.statusCode === 403));
+    assert.equal((await getSetupStatus()).userCount, 0);
+});
+
 test('concurrent first registrations create exactly one admin and later registrations receive dashboard-only access', async () => {
     await ensureSeedData();
     assert.equal((await getSetupStatus()).needsInitialAdmin, true);

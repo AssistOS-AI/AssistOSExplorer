@@ -126,12 +126,15 @@ export async function getSetupStatus() {
     };
 }
 
-export function registerUser({ email, password }) {
+export function registerUser({ email, password }, { allowInitialAdmin = true } = {}) {
     return serialize('users', async () => {
         validatePassword(password);
         const store = await getStore();
         const existing = await store.select('user', {}, { start: 0, pageSize: 1 });
         const firstUser = Number(existing.totalCount ?? existing.filteredCount ?? existing.objects.length) === 0;
+        if (firstUser && !allowInitialAdmin) {
+            throw Object.assign(userError('initial_setup_required', 'Complete initial owner setup before self-registration.'), { statusCode: 403 });
+        }
         const policy = await getAuthPolicy();
         if (!firstUser && !policy.selfRegistrationEnabled) {
             throw Object.assign(userError('registration_disabled', 'Self-registration is disabled.'), { statusCode: 403 });

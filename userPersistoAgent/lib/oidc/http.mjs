@@ -71,7 +71,7 @@ function form(url, csrf, body) {
     return `<form method="post" action="${esc(url)}"><input type="hidden" name="csrf" value="${esc(csrf)}">${body}</form>`;
 }
 
-async function renderInteraction(res, interaction, issuer, csrf, message = '', status = message ? 400 : 200) {
+async function renderInteraction(res, interaction, issuer, csrf, message = '', status = message ? 400 : 200, screenHint = interaction.params.screen_hint) {
     const client = await getClientMetadata(interaction.params.client_id);
     if (!client) return html(res, 400, page('Application unavailable', '<p>Return to the application and start again.</p>'));
     const base = `${issuer.href}/interaction/${interaction.uid}`;
@@ -96,10 +96,15 @@ async function renderInteraction(res, interaction, issuer, csrf, message = '', s
     if (enabled.includes('totp')) forms += `<details><summary>Sign in with an authenticator</summary>${form(`${base}/totp`, csrf, `${email}<label>Authenticator code<input name="token" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label><button>Verify code</button>`)}</details>`;
     if (enabled.includes('passkey')) forms += `<details><summary>Sign in with a passkey</summary>${form(`${base}/passkey-options`, csrf, `${email}<button data-passkey>Use passkey</button><p data-passkey-error class="error" role="alert"></p>`)}<script src="${esc(issuer.href)}/interaction.js" defer></script></details>`;
     const setup = await getSetupStatus();
-    if (enabled.includes('password') && (policy.selfRegistrationEnabled || setup.needsInitialAdmin)) {
-        forms += `<details><summary>Create an account</summary>${form(`${base}/register`, csrf, `${email}<label>New password<input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label><button>Create account</button>`)}</details>`;
+    const canRegister = enabled.includes('password') && policy.selfRegistrationEnabled && !setup.needsInitialAdmin;
+    const signupFirst = canRegister && screenHint === 'signup';
+    if (canRegister) {
+        const registration = form(`${base}/register`, csrf, `${email}<label>New password<input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label><button>Create account</button>`);
+        forms = signupFirst
+            ? `${registration}<details><summary>Already registered? Sign in</summary>${forms}</details>`
+            : `${forms}<details><summary>Create an account</summary>${registration}</details>`;
     }
-    return html(res, status, page('Sign in', `${identity}${message ? `<p class="${status >= 400 ? 'error' : 'muted'}" role="${status >= 400 ? 'alert' : 'status'}">${esc(message)}</p>` : ''}${forms}${abort}`), interaction.params.redirect_uri);
+    return html(res, status, page(signupFirst ? 'Create your account' : 'Sign in', `${identity}${message ? `<p class="${status >= 400 ? 'error' : 'muted'}" role="${status >= 400 ? 'alert' : 'status'}">${esc(message)}</p>` : ''}${forms}${abort}`), interaction.params.redirect_uri);
 }
 
 async function interactionRequest(req, res, issuer, provider, match) {
@@ -146,14 +151,14 @@ async function interactionRequest(req, res, issuer, provider, match) {
             if (action === 'login') authenticated = await loginWithPassword(body.email, body.password);
             if (action === 'register') {
                 // The live, browser-bound interaction is checked before account creation.
-                const registered = await registerUser({ email: body.email, password: body.password });
+                const registered = await registerUser({ email: body.email, password: body.password }, { allowInitialAdmin: false });
                 authenticated = { ok: true, user: registered.user };
             }
             if (action === 'totp') authenticated = await verifyTotp({ email: body.email, token: body.token });
             if (action === 'email-start') {
                 const started = await startEmailCode({ email: body.email, purpose: 'login', correlationId: uid });
                 await challengeStore.upsert(uid, { challengeId: started.challengeId, method: 'emailCode' }, 600);
-                return renderInteraction(res, interaction, issuer, csrf, 'If this account can sign in, a code has been sent.', 200);
+                return renderInteraction(res, interaction, issuer, csrf, 'If this account can sign in, a code has been sent.', 200, 'login');
             }
             if (action === 'email-verify') {
                 const stored = await challengeStore.find(uid);
@@ -171,9 +176,11 @@ async function interactionRequest(req, res, issuer, provider, match) {
             }
         } catch (error) {
             if (Number(error.statusCode) >= 500 || error.code === 'persistence_unavailable') throw error;
-            return renderInteraction(res, interaction, issuer, csrf, 'Unable to sign in. Check your details and try again.');
+            return renderInteraction(res, interaction, issuer, csrf, action === 'register'
+                ? 'Unable to create an account. Check your details and try again.'
+                : 'Unable to sign in. Check your details and try again.', 400, action === 'register' ? 'signup' : 'login');
         }
-        if (!authenticated?.ok) return renderInteraction(res, interaction, issuer, csrf, 'Unable to sign in. Check your details and try again.');
+        if (!authenticated?.ok) return renderInteraction(res, interaction, issuer, csrf, 'Unable to sign in. Check your details and try again.', 400, 'login');
         await challengeStore.destroy(uid);
         return finish({ login: { accountId: authenticated.user.id, amr: [method === 'password' ? 'pwd' : method] } });
     });

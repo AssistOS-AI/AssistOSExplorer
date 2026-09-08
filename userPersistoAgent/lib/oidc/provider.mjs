@@ -61,6 +61,7 @@ export async function createOidcProvider(issuer = oidcIssuer()) {
             capabilities: ['capabilities'],
         },
         scopes: ['openid', 'profile', 'email', 'offline_access', 'roles', 'capabilities', 'api'],
+        extraParams: ['screen_hint'],
         subjectTypes: ['public'],
         responseTypes: ['code'],
         clientAuthMethods: ['none', 'client_secret_basic', 'client_secret_post'],
