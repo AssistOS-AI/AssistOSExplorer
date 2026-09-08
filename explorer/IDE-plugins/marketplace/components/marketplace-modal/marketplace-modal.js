@@ -24,7 +24,6 @@ import {
 import {
     getVisibleMarketplaceCatalog,
     marketplaceAgentRepositoryName,
-    marketplaceRepositoryIdentity,
 } from './marketplaceVisibility.js';
 
 const RUNTIME_STATUS_RECONNECT_DELAY_MS = 1000;
@@ -851,10 +850,8 @@ export class MarketplaceModal {
     }
 
     const agentsByRepo = new Map();
-    const repositoryNames = new Map(repositories.map(repo => [marketplaceRepositoryIdentity(repo.name), repo.name]));
     for (const agent of agents) {
-      const declaredRepo = marketplaceAgentRepositoryName(agent);
-      const repoName = repositoryNames.get(marketplaceRepositoryIdentity(declaredRepo)) || declaredRepo || noRepoName;
+      const repoName = marketplaceAgentRepositoryName(agent) || noRepoName;
       const list = agentsByRepo.get(repoName);
       if (list) {
         list.push(agent);

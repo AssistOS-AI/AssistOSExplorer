@@ -48,7 +48,7 @@ export function marketplaceAgentRepositoryName(agent) {
 }
 
 function agentRef(agent) {
-    const repository = marketplaceRepositoryIdentity(marketplaceAgentRepositoryName(agent));
+    const repository = marketplaceAgentRepositoryName(agent);
     const name = String(agent?.name || agent?.agentName || String(agent?.ref || '').split('/').at(-1)).trim();
     return `${repository}/${name}`;
 }
@@ -93,14 +93,14 @@ export function getVisibleMarketplaceCatalog(marketplace) {
         : visibleAgents.filter(agent => agent.active === true);
     const enabledCounts = new Map();
     for (const agent of enabledAgents) {
-        const identity = marketplaceRepositoryIdentity(marketplaceAgentRepositoryName(agent));
+        const identity = marketplaceAgentRepositoryName(agent);
         enabledCounts.set(identity, (enabledCounts.get(identity) || 0) + 1);
     }
 
     return {
         repositories: repositories.filter(repo => !hiddenRepositories.has(repo)).map(repo => ({
             ...repo,
-            activeAgentsCount: enabledCounts.get(marketplaceRepositoryIdentity(repo.name)) || 0,
+            activeAgentsCount: enabledCounts.get(repo.name) || 0,
         })),
         agents: visibleAgents,
     };

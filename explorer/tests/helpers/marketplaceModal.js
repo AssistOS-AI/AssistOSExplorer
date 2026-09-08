@@ -12,7 +12,7 @@ export async function loadMarketplaceModal() {
     const withoutImports = source.replace(/import\s+\{[\s\S]*?\}\s+from\s+'[^']+';\s*/g, '');
     const visibilityUrl = pathToFileURL(path.join(path.dirname(sourcePath), 'marketplaceVisibility.js')).href;
     const dependencies = `
-        import { getVisibleMarketplaceCatalog, marketplaceAgentRepositoryName, marketplaceRepositoryIdentity } from '${visibilityUrl}';
+        import { getVisibleMarketplaceCatalog, marketplaceAgentRepositoryName } from '${visibilityUrl}';
         const callExplorerTool = async () => ({});
         const parseToolResult = (value) => value;
         const buildAgentSettingsItems = () => [];

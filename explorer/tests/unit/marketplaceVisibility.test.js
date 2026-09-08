@@ -111,6 +111,45 @@ test('Marketplace enabled counts distinguish case-sensitive agent names from hid
     assert.equal(visible.repositories[0].activeAgentsCount, 1);
 });
 
+test('Marketplace keeps distinct local repository groups, counts and lifecycle refs despite similar visibility identities', async (t) => {
+    const modal = await createModal(t);
+    const repositories = ['tools', 'tools.git', 'Tools'].map(name => ({name, kind: 'agents', installed: true}));
+    const agents = repositories.map((repo, index) => ({
+        repo: repo.name, name: 'worker', ref: `${repo.name}/worker`,
+        active: index !== 1, status: index === 1 ? 'inactive' : 'running', running: index !== 1,
+    }));
+    const catalog = {repositories, agents, permissions: {canManage: true}};
+    const counts = value => getVisibleMarketplaceCatalog(value).repositories.map(repo => [repo.name, repo.activeAgentsCount]);
+    assert.deepEqual(counts(catalog), [['tools', 1], ['tools.git', 0], ['Tools', 1]]);
+    catalog.enabledAgents = [{repoName: 'tools', agentName: 'worker'}, {repoName: 'Tools', agentName: 'worker'}];
+    assert.deepEqual(counts(catalog), [['tools', 1], ['tools.git', 0], ['Tools', 1]]);
+    assert.deepEqual(counts({
+        ...catalog, enabledAgents: repositories.map(repo => ({repoName: repo.name, agentName: 'worker'})),
+    }), [['tools', 1], ['tools.git', 1], ['Tools', 1]], 'one enabled record per distinct local repository');
+
+    modal.state.marketplace = catalog;
+    modal.state.expandedAgentRepos = Object.fromEntries(repositories.map(repo => [repo.name, true]));
+    modal.renderState();
+    const groups = modal.agentsEl.children.map(group => ({
+        name: elements(group).find(row => row.className.includes('marketplace-repo-title')).textContent,
+        refs: elements(group).map(row => row.dataset.marketplaceAgentRef).filter(Boolean),
+    }));
+    assert.deepEqual(groups, repositories.map(repo => ({name: repo.name, refs: [`${repo.name}/worker`]})));
+    assert.deepEqual(modal.repositoriesEl.children.map(row => (
+        elements(row).filter(child => child.className === 'marketplace-meta').length
+    )), [1, 0, 1], 'each repository warning counts only its own enabled agents');
+
+    const updatedRefs = [];
+    modal.updateAgentRuntimeUi = agent => updatedRefs.push(agent.ref);
+    modal.handleRuntimeStatusUpdated({detail: {runtimes: [
+        {repoName: 'tools', agentName: 'worker', enabled: true, state: {status: 'running', running: true}},
+        {repoName: 'tools.git', agentName: 'worker', enabled: true, state: {status: 'starting', running: false}},
+        {repoName: 'Tools', agentName: 'worker', enabled: true, state: {status: 'running', running: true}},
+    ]}});
+    assert.deepEqual(updatedRefs, ['tools.git/worker']);
+    assert.deepEqual(agents.map(agent => agent.status), ['running', 'starting', 'running']);
+});
+
 test('Marketplace renders only visible repositories and agents in both tabs and type filters', async (t) => {
     const modal = await createModal(t);
     modal.renderState();
