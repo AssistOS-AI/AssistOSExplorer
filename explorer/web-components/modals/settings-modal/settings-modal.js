@@ -292,8 +292,10 @@ export class SettingsModal {
         }
         this.syncEditorSettingsUi();
         this.loadAdministrationPanel();
-        if (this.state.activeTab === "account") void this.loadAccountPanel();
-        else this.unloadAccountPanel();
+        const accountScope = this.state.activeTab === "account" ? "account"
+            : this.state.activeTab === "users" && this.state.usersAccess ? "administration" : null;
+        if (this.accountScope !== accountScope) this.unloadAccountPanel();
+        if (accountScope) void this.loadAccountPanel();
     }
 
     renderRows() {

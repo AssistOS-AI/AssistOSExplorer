@@ -49,3 +49,16 @@ test('former UserPersisto settings entry opens My Account without a standalone m
     await runtimeSettingsController.openAgentSettings.call({ switchTab: (...args) => calls.push(args) }, null, 'userpersisto-settings');
     assert.deepEqual(calls, [[null, 'account']]);
 });
+
+
+test('Administration mounts account controls only after administrator access is verified', async (t) => {
+    const { controller, panel } = fixture(t);
+    controller.usersSection = controller.accountSection;
+    controller.state.activeTab = 'users';
+    await controller.loadAccountPanel();
+    assert.equal(controller.accountPanel, undefined);
+    controller.state.usersAccess = true;
+    await controller.loadAccountPanel();
+    assert.equal(controller.accountPanel, panel);
+    assert.equal(controller.accountScope, 'administration');
+});

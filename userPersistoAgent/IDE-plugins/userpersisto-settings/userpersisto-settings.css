@@ -246,3 +246,13 @@ userpersisto-settings[data-embedded="true"] .userpersisto-settings-body {
     padding: 0;
     overflow: visible;
 }
+
+userpersisto-settings [data-section="provider"],
+userpersisto-settings[data-settings-scope="account"] .userpersisto-tabs,
+userpersisto-settings[data-settings-scope="account"] [data-section]:not([data-section="auth"]),
+userpersisto-settings[data-settings-scope="administration"] [data-panel="auth"],
+userpersisto-settings[data-settings-scope="administration"] [data-panel="users"],
+userpersisto-settings[data-settings-scope="administration"] [data-section="auth"],
+userpersisto-settings[data-settings-scope="administration"] [data-section="users"] {
+    display: none !important;
+}

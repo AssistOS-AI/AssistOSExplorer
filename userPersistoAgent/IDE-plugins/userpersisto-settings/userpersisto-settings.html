@@ -10,7 +10,7 @@
         <div class="userpersisto-tabs" role="tablist">
             <button type="button" class="userpersisto-tab" data-local-action="switchPanel users" data-panel="users" data-admin-only hidden>User Management</button>
             <button type="button" class="userpersisto-tab active" data-local-action="switchPanel auth" data-panel="auth">Profile</button>
-            <button type="button" class="userpersisto-tab" data-local-action="switchPanel provider" data-panel="provider" data-admin-only hidden>Billing</button>
+            <button type="button" class="userpersisto-tab" data-local-action="switchPanel policy" data-panel="policy" data-admin-only hidden>Authentication policy</button>
             <button type="button" class="userpersisto-tab" data-local-action="switchPanel applications" data-panel="applications" data-admin-only hidden>Applications</button>
         </div>
 
@@ -65,9 +65,6 @@
         </section>
 
         <section class="userpersisto-panel hidden" data-section="auth">
-            <div class="userpersisto-actions" data-admin-only hidden>
-                <button type="button" class="gray-button" data-local-action="switchPanel applications">Manage OAuth applications</button>
-            </div>
             <div class="userpersisto-auth-methods-card">
                 <div class="userpersisto-auth-methods-header">
                     <div>
@@ -98,6 +95,10 @@
                 </div>
                 <div id="authEnrollment"></div>
             </div>
+
+        </section>
+
+        <section class="userpersisto-panel hidden" data-section="policy" data-admin-only hidden>
             <div class="userpersisto-auth-methods-card" data-admin-only hidden>
                 <div class="userpersisto-auth-methods-header">
                     <div>
@@ -170,7 +171,6 @@
                     <div class="userpersisto-card-title">OAuth / OpenID Connect applications</div>
                     <div class="userpersisto-card-description">Register applications that use your account to sign in or access an API.</div>
                 </div>
-                <button type="button" class="gray-button" data-local-action="switchPanel auth">Back to profile</button>
             </div>
             <div id="oidcProviderStatus" class="userpersisto-provider-status" role="status">Loading provider…</div>
             <div id="applicationSecretBox" class="userpersisto-auth-methods-card" hidden>

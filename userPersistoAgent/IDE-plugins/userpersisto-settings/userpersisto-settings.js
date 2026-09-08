@@ -4,7 +4,7 @@ import {
     parseToolResult
 } from "/explorer/services/infrastructure/explorerApi.js";
 
-const PANELS = new Set(["users", "auth", "provider", "applications"]);
+const PANELS = new Set(["users", "auth", "policy", "applications"]);
 const SECRET_KEYS = new Set(["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]);
 const SETTING_KEYS = [
     "STRIPE_SECRET_KEY",
@@ -163,7 +163,7 @@ export class UserpersistoSettings {
 
     syncPanelFromAttributes() {
         const panel = this.element.getAttribute("data-active-panel") || this.element.getAttribute("data-initial-panel");
-        if (PANELS.has(panel)) {
+        if (this.allowedPanels().has(panel)) {
             this.state.activePanel = panel;
         }
     }
@@ -181,8 +181,16 @@ export class UserpersistoSettings {
         }
     }
 
+    allowedPanels() {
+        const scope = this.element.getAttribute?.("data-settings-scope");
+        if (scope === "account") return new Set(["auth"]);
+        if (scope === "administration") return new Set(["policy", "applications"]);
+        return PANELS;
+    }
+
     switchPanel(_target, panel) {
-        if (panel === "applications" && !this.isAdministrator()) return;
+        if (!this.allowedPanels().has(panel)) return;
+        if (panel !== "auth" && !this.isAdministrator()) return;
         if (panel !== this.state.activePanel) this.clearApplicationSecret();
         this.state.activePanel = PANELS.has(panel) ? panel : "users";
         this.renderPanels();
@@ -298,8 +306,7 @@ export class UserpersistoSettings {
             }
             if (isAdmin && !this.state.settingsLoaded) {
                 this.state.settingsLoaded = true;
-                void this.loadSettings();
-                void this.refreshAuthPolicy();
+                if (this.allowedPanels().has("policy")) void this.refreshAuthPolicy();
             }
             if (isAdmin && this.state.activePanel === "applications") void this.refreshApplications();
             this.setStatus("");

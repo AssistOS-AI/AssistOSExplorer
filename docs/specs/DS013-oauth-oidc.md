@@ -63,7 +63,7 @@ Redirects and post-logout redirects are canonical absolute HTTPS URLs or HTTP on
 
 Any metadata update, including a name change or enable/disable action, revokes the client's existing grants and tokens. Secret rotation also revokes them. The next browser sign-in must obtain consent again. This intentionally favors immediate enforcement of updated redirects and scope policy over retaining existing sessions. Confidential Basic/form authentication changes retain the current secret unless it is separately rotated.
 
-The My Account Applications panel is available to administrators, including through **Profile → Manage OAuth applications** when embedded. It provides metadata editing, status changes, delete/rotation confirmations, and pages of 100 applications. Save errors preserve the entered metadata. Deleting the last row on a page moves to the previous valid page. Issuer configuration is displayed as a readout; this panel does not silently choose or change the public issuer.
+The Administration Applications panel is available to administrators, under **Settings → Administration → Applications**. It provides metadata editing, status changes, delete/rotation confirmations, and pages of 100 applications. Save errors preserve the entered metadata. Deleting the last row on a page moves to the previous valid page. Issuer configuration is displayed as a readout; this panel does not silently choose or change the public issuer.
 
 A generated confidential secret is visible only in the create/rotation response and a transient copyable field. It is never retained in the presenter state, browser storage, application list, or logs. Refreshing, changing panels, dismissing the field, closing the modal, or losing administrator status clears the displayed secret. Applications must save it immediately in their own server-side secret store. Rotating a secret requires coordinating the relying application's deployment; it does not retrieve the previous value.
 
@@ -109,7 +109,7 @@ Storage errors fail closed and follow DS012's poisoned-store behavior; an unpers
 
 ## Setup and client examples
 
-Complete the existing first-owner setup, retain the generated settings key, configure the issuer on the UserPersisto agent, and restart it. From an administrator session, open **Settings → My Account → Profile → Manage OAuth applications** and verify the displayed issuer/discovery URL. Register exact application callbacks and save any generated confidential secret in the application server's secret store.
+Complete the existing first-owner setup, retain the generated settings key, configure the issuer on the UserPersisto agent, and restart it. From an administrator session, open **Settings → Administration → Applications** and verify the displayed issuer/discovery URL. Register exact application callbacks and save any generated confidential secret in the application server's secret store.
 
 A public browser or native application can be registered through the administrative tool with this payload:
 

@@ -4,7 +4,7 @@
   "component": "userpersisto-settings",
   "location": [],
   "label": "My Account",
-  "tooltip": "Configure users, roles, credits, billing and audit.",
+  "tooltip": "Manage your profile and sign-in security.",
   "presenter": "UserpersistoSettings",
   "type": "global",
   "autoPin": false,

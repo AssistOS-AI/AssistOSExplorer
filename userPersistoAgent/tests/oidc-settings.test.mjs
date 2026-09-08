@@ -171,7 +171,7 @@ test('rotation requires confirmation and the returned secret is cleared when cha
     panel.confirmApplicationAction = async () => true;
     await panel.rotateApplicationSecret(null, 'app');
     assert.equal(panel.applicationSecretInput.value, 'rotated-once');
-    panel.switchPanel(null, 'provider');
+    panel.switchPanel(null, 'policy');
     assert.equal(panel.applicationSecretInput.value, '');
     assert.equal(panel.applicationSecretBox.hidden, true);
 });

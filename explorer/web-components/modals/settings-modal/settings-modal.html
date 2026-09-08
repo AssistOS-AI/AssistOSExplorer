@@ -117,6 +117,9 @@
         </section>
 
         <section class="settings-section hidden" data-section="users">
+            <div data-account-status role="status" aria-live="polite"></div>
+            <button type="button" class="gray-button" data-account-retry data-local-action="loadAccountPanel" hidden>Retry</button>
+            <div data-account-mount></div>
             <admin-settings-panel data-presenter="admin-settings-panel" data-embedded="true" data-auto-load="false"></admin-settings-panel>
         </section>
     </div>

@@ -213,6 +213,7 @@ test('settings profile navigation and unload dispose the shared enrollment widge
     const source = await fs.readFile(new URL('../IDE-plugins/userpersisto-settings/userpersisto-settings.js', import.meta.url), 'utf8');
     const { UserpersistoSettings } = await import(`data:text/javascript;base64,${Buffer.from(source.replace(/^import[\s\S]*?;\s*/, '')).toString('base64')}`);
     const panel = new UserpersistoSettings(new Element(), () => {});
+    panel.state.authProfile = { roles: ['admin'] };
     panel.refreshUsers = async () => {};
     let disposed = 0;
     panel.enrollmentWidget = { dispose() { disposed++; } };
