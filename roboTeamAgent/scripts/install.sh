@@ -4,7 +4,6 @@ set -eu
 contract_file="/opt/roboteam-runtime/contract-v4"
 contract_value="roboteam-runtime-v4"
 required_commands="podman fuse-overlayfs pasta node npm bwrap"
-required_executables="/workspace/AdvancedLanguageAgent/bin/ala.mjs"
 required_assets="/opt/roboteam-runtime/storage.conf"
 missing=""
 
@@ -26,12 +25,6 @@ if ! NODE_OPTIONS= npm --version >/dev/null 2>&1; then
     missing="$missing npm-runtime"
 fi
 
-for executable_path in $required_executables; do
-    if [ ! -x "$executable_path" ]; then
-        missing="$missing $executable_path"
-    fi
-done
-
 for asset_path in $required_assets; do
     if [ ! -f "$asset_path" ]; then
         missing="$missing $asset_path"
@@ -43,7 +36,9 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 
-mkdir -p "${ROBOTEAM_TOOL_CACHE_DIR:-/data/tool-cache}"
-chmod 700 "${ROBOTEAM_TOOL_CACHE_DIR:-/data/tool-cache}"
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+node "$script_dir/verify-ala.mjs"
+
+node "$script_dir/prepare-data.mjs"
 
 echo "RoboTeam runtime contract verified"

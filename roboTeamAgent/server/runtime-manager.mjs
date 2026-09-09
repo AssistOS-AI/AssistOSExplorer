@@ -7,6 +7,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { ToolCache } from './tool-cache.mjs';
+import { resolveAlaCommand } from './ala-command.mjs';
+import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE } from './constants.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -168,18 +170,18 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
 
 export class RuntimeManager {
     constructor(options = {}) {
-        this.dataDir = path.resolve(options.dataDir || '/data');
+        this.dataDir = path.resolve(options.dataDir || DATA_DIR);
         this.publicBasePath = normalizeBasePath(options.publicBasePath);
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
-        this.alaCommand = options.alaCommand || '/workspace/AdvancedLanguageAgent/bin/ala.mjs';
+        this.alaCommand = resolveAlaCommand(options.alaCommand);
         this.workspaceRoot = path.resolve(options.workspaceRoot || '/workspace');
         this.hostWorkspaceRoot = options.hostWorkspaceRoot ? path.resolve(options.hostWorkspaceRoot) : null;
-        this.maxActive = Math.max(1, Math.min(32, Number(options.maxActive) || 8));
+        this.maxActive = Math.max(1, Math.min(32, Number(options.maxActive) || MAX_ACTIVE_GUI_ROBOTS));
         this.images = {
-            desktop: options.desktopImage || 'docker.io/assistos/roboteam-desktop:runtime',
-            browser: options.browserImage || 'docker.io/assistos/roboteam-browser:runtime',
+            desktop: options.desktopImage || DESKTOP_IMAGE,
+            browser: options.browserImage || BROWSER_IMAGE,
         };
-        this.timezone = options.timezone || 'Europe/Bucharest';
+        this.timezone = options.timezone || TIMEZONE;
         this.execFileImpl = options.execFileImpl || execFileAsync;
         this.spawnImpl = options.spawnImpl || spawn;
         this.toolCache = options.toolCache || new ToolCache({
@@ -435,8 +437,7 @@ export class RuntimeManager {
                 ALA_EVENT_STREAM: '1',
                 ...(codingAgentPath ? { PATH: `${codingAgentPath}:${process.env.PATH || ''}` } : {}),
             };
-            childEnv.ROBOTEAM_ALA_COMMAND = this.alaCommand;
-            childEnv.ROBOTEAM_DATA_DIR = this.dataDir;
+            delete childEnv.ROBOTEAM_INTERNAL_TOKEN;
             if (task.request.skillSelection) childEnv.ROBOTEAM_TASK_SKILL_SELECTION = JSON.stringify(task.request.skillSelection);
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });

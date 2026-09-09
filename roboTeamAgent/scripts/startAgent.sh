@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Fresh per launch, shared only by AgentServer callbacks and the HTTP service.
+ROBOTEAM_INTERNAL_TOKEN=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')
+export ROBOTEAM_INTERNAL_TOKEN
+
 export ROBOTEAM_SERVICE_HOST="${ROBOTEAM_SERVICE_HOST:-0.0.0.0}"
 export ROBOTEAM_SERVICE_PORT="${ROBOTEAM_SERVICE_PORT:-3001}"
 export ROBOTEAM_MCP_PORT="${ROBOTEAM_MCP_PORT:-${PORT:-7000}}"

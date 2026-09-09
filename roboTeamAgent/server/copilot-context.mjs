@@ -3,10 +3,13 @@ import path from 'node:path';
 import { RobotStore } from './robot-store.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { ToolCache } from './tool-cache.mjs';
+import { resolveAlaCommand } from './ala-command.mjs';
+import { DATA_DIR } from './constants.mjs';
 
 // One CLI process owns one robot context; browser input cannot change its home.
-export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, holdUsage = false } = {}) {
-    const store = new RobotStore({ dataDir: process.env.ROBOTEAM_DATA_DIR || '/data' });
+export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, holdUsage = false,
+    dataDir = DATA_DIR, alaCommand } = {}) {
+    const store = new RobotStore({ dataDir });
     await store.initialize();
     const robot = await store.getByName(robotName);
     if (!robot) throw new Error(`Robot not found: ${robotName}`);
@@ -25,11 +28,12 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
         process.env.ROBOTEAM_COPILOT_ROBOT_ID = robot.id;
         process.env.ROBOTEAM_COPILOT_ROBOT_NAME = robot.name;
         process.env.ACHILLES_ALA_HOME = await fs.realpath(home);
-        process.env.ACHILLES_ALA_COMMAND = process.env.ROBOTEAM_ALA_COMMAND || '/workspace/AdvancedLanguageAgent/bin/ala.mjs';
+        process.env.ACHILLES_ALA_COMMAND = resolveAlaCommand(alaCommand);
+        delete process.env.ROBOTEAM_INTERNAL_TOKEN;
         if (prepareTools) {
             // CLI output is consumed as conversation content. Routine cache diagnostics
             // must not enter that channel; preparation failures still propagate below.
-            const cache = new ToolCache({ dataDir: store.dataDir, root: process.env.ROBOTEAM_TOOL_CACHE_DIR,
+            const cache = new ToolCache({ dataDir: store.dataDir,
                 log: () => {} });
             const agents = await cache.prepareCodingAgents();
             for (const name of ['codex', 'opencode', 'pi']) {

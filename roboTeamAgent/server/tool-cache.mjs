@@ -4,6 +4,7 @@ import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { DATA_DIR, TOOL_REFRESH_INTERVAL_MS, BROWSER_IMAGE, DESKTOP_IMAGE } from './constants.mjs';
 
 const execFileAsync = promisify(execFile);
 const CACHE_SCHEMA = 'roboteam-tool-cache-v1';
@@ -19,6 +20,7 @@ const CODING_AGENT_PACKAGES = Object.freeze({
 function toolProcessEnv(environment = process.env) {
     const sanitized = { ...environment };
     delete sanitized.NODE_OPTIONS;
+    delete sanitized.ROBOTEAM_INTERNAL_TOKEN;
     return sanitized;
 }
 
@@ -49,18 +51,18 @@ async function isExecutable(filePath) {
 
 export class ToolCache {
     constructor(options = {}) {
-        this.root = path.resolve(options.root || path.join(options.dataDir || '/data', 'tool-cache'));
+        this.root = path.resolve(options.root || path.join(options.dataDir || DATA_DIR, 'tool-cache'));
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
         this.npmCommand = options.npmCommand || '/usr/local/bin/npm';
         this.images = {
-            desktop: options.desktopImage || 'docker.io/assistos/roboteam-desktop:runtime',
-            browser: options.browserImage || 'docker.io/assistos/roboteam-browser:runtime',
+            desktop: options.desktopImage || DESKTOP_IMAGE,
+            browser: options.browserImage || BROWSER_IMAGE,
         };
         this.execFileImpl = options.execFileImpl || execFileAsync;
         this.fetchImpl = options.fetchImpl || globalThis.fetch;
         this.arch = options.arch || process.arch;
         this.log = options.log || ((message) => console.log(message));
-        this.refreshIntervalMs = Math.max(60000, Number(options.refreshIntervalMs) || 6 * 60 * 60 * 1000);
+        this.refreshIntervalMs = Math.max(60000, Number(options.refreshIntervalMs) || TOOL_REFRESH_INTERVAL_MS);
         this.now = options.now || Date.now;
         this.processEnv = toolProcessEnv(options.processEnv || process.env);
         this.inflight = new Map();

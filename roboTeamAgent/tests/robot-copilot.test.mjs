@@ -34,11 +34,11 @@ test('copilot cache preparation is silent but preparation failures remain visibl
         if (fail) throw new Error('cache preparation failed');
         return Object.fromEntries(['codex', 'pi', 'opencode'].map((name) => [name, { binPath: '/cached/bin' }]));
     });
-    await prepareCopilotContext('default');
+    await prepareCopilotContext('default', { dataDir: root });
     assert.deepEqual(output, []);
     assert.equal(process.env.CODEX_BIN, '/cached/bin/codex');
     fail = true;
-    await assert.rejects(prepareCopilotContext('default'), /cache preparation failed/);
+    await assert.rejects(prepareCopilotContext('default', { dataDir: root }), /cache preparation failed/);
     assert.deepEqual(output, []);
 });
 
@@ -57,14 +57,14 @@ test('robot chat state is isolated and opening another cwd does not reuse the wr
     await Promise.all([fs.mkdir(one), fs.mkdir(two)]);
     const store = new RobotStore({ dataDir: process.env.ROBOTEAM_DATA_DIR });
     await store.ensureDefaultRobot(); await store.create({ name: 'analyst' });
-    await prepareCopilotContext('default', { prepareTools: false });
+    await prepareCopilotContext('default', { prepareTools: false, dataDir: store.dataDir });
     const sessions = new ConversationSessionStore({ workingDir: one });
     const first = await sessions.ensureCurrentSession();
     const other = await new ConversationSessionStore({ workingDir: two }).ensureCurrentSession();
     assert.notEqual(first.sessionId, other.sessionId);
     assert.equal(other.cwd, two);
     assert.equal(sessions.listSessions().sessions.length, 2);
-    await prepareCopilotContext('analyst', { prepareTools: false });
+    await prepareCopilotContext('analyst', { prepareTools: false, dataDir: store.dataDir });
     const analyst = new ConversationSessionStore({ workingDir: one });
     assert.equal(analyst.listSessions().sessions.length, 0);
     await assert.rejects(analyst.resumeSession(first.sessionId), /ENOENT/);
@@ -93,10 +93,11 @@ test('task runner uses robot home, persists a conversation, and resumes its nati
     const run = async (prompt, resume = false) => {
         await fs.writeFile(taskFile, prompt);
         return new Promise((resolve, reject) => {
-            const child = spawn(process.execPath, [fileURLToPath(new URL('../server/robot-task.mjs', import.meta.url)),
-                '--robot', robot.name, '--cwd', workspace, '--session-id', sessionId, '--ca', 'codex',
+            const child = spawn(process.execPath, ['--input-type=module', '-e',
+                `import { runRobotTask } from ${JSON.stringify(new URL('../server/robot-task.mjs', import.meta.url).href)}; await runRobotTask(process.argv.slice(2), ${JSON.stringify({ dataDir, alaCommand: entry })});`,
+                '--', fileURLToPath(import.meta.url), '--robot', robot.name, '--cwd', workspace, '--session-id', sessionId, '--ca', 'codex',
                 '--taskFile', taskFile, ...(resume ? ['--resume-session'] : [])], {
-                env: { ...process.env, ROBOTEAM_DATA_DIR: dataDir, ROBOTEAM_ALA_COMMAND: entry,
+                env: { ...process.env,
                     PLOINKY_WORKSPACE_ROOT: workspace }, stdio: ['pipe', 'pipe', 'pipe'],
             });
             let stdout = ''; let stderr = '';

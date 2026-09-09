@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { availableSkillsets, copilotSkillsRoot } from './copilot-skillset.mjs';
+import { resolveAlaCommand } from './ala-command.mjs';
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const UUID = /^[a-f0-9-]{36}$/;
@@ -68,7 +69,7 @@ async function treeDigest(root) {
 }
 
 export class RobotSkillsets {
-    constructor({ robotStore, workspaceRoot = '/workspace', alaCommand = '/workspace/AdvancedLanguageAgent/bin/ala.mjs', discoverSkills, execImpl = exec }) {
+    constructor({ robotStore, workspaceRoot = '/workspace', alaCommand = resolveAlaCommand(), discoverSkills, execImpl = exec }) {
         Object.assign(this, { robotStore, workspaceRoot, alaCommand, discoverSkills, execImpl });
     }
 

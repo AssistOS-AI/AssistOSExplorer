@@ -2,17 +2,18 @@ import { createRoboTeamServer } from './http-server.mjs';
 import { RobotStore } from './robot-store.mjs';
 import { RuntimeManager } from './runtime-manager.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
+import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 
 const host = process.env.ROBOTEAM_SERVICE_HOST || '0.0.0.0';
 const port = Number(process.env.ROBOTEAM_SERVICE_PORT) || 3001;
-const dataDir = process.env.ROBOTEAM_DATA_DIR || '/data';
+const dataDir = DATA_DIR;
 const internalToken = String(process.env.ROBOTEAM_INTERNAL_TOKEN || '');
 
 if (!internalToken) {
     throw new Error('ROBOTEAM_INTERNAL_TOKEN is required');
 }
 
-const publicBasePath = process.env.ROBOTEAM_PUBLIC_BASE_PATH;
+const publicBasePath = PUBLIC_BASE_PATH;
 const robotStore = new RobotStore({ dataDir });
 await robotStore.initialize();
 await robotStore.ensureDefaultRobot();
@@ -20,14 +21,7 @@ await robotStore.ensureDefaultRobot();
 const runtimeManager = new RuntimeManager({
     dataDir,
     publicBasePath,
-    maxActive: process.env.ROBOTEAM_MAX_ACTIVE_ROBOTS,
-    browserImage: process.env.ROBOTEAM_BROWSER_IMAGE,
-    desktopImage: process.env.ROBOTEAM_DESKTOP_IMAGE,
-    alaCommand: process.env.ROBOTEAM_ALA_COMMAND,
-    toolCacheRoot: process.env.ROBOTEAM_TOOL_CACHE_DIR,
-    toolRefreshIntervalMs: process.env.ROBOTEAM_TOOL_REFRESH_INTERVAL_MS,
     workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT || '/workspace',
-    timezone: process.env.TZ,
 });
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT || '/workspace', alaCommand: runtimeManager.alaCommand });

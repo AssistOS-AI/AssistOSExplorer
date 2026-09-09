@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { DATA_DIR } from './constants.mjs';
 
 const ROBOT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
@@ -122,7 +123,7 @@ async function withRegistryMutation(directory, operation) {
 
 export class RobotStore {
     constructor(options = {}) {
-        this.dataDir = path.resolve(options.dataDir || '/data');
+        this.dataDir = path.resolve(options.dataDir || DATA_DIR);
         this.robotsDir = path.join(this.dataDir, 'robots');
     }
 

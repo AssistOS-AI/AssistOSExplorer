@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const MANAGED_ENTRY = '/workspace/AdvancedLanguageAgent/bin/ala.mjs';
+import { resolveAlaCommand } from '../../../server/ala-command.mjs';
 
 async function executableOnPath(name, env) {
     for (const directory of String(env.PATH || '').split(path.delimiter).filter(Boolean)) {
@@ -22,7 +22,7 @@ export async function resolveAlaInstallation({ env = process.env } = {}) {
     const explicit = String(env.ACHILLES_ALA_COMMAND || '').trim();
     const candidate = explicit
         ? (explicit.includes(path.sep) ? path.resolve(explicit) : await executableOnPath(explicit, env))
-        : await executableOnPath('ala', env) || MANAGED_ENTRY;
+        : resolveAlaCommand();
     const instruction = 'Install ALA and its dependencies, or set ACHILLES_ALA_COMMAND to its bin/ala.mjs Node entry (not a shell command or opaque wrapper).';
     try {
         if (!candidate) throw new Error('ALA command was not found on PATH.');

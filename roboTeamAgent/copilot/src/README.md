@@ -4,7 +4,7 @@ AchillesCLI provides a workspace copilot through a terminal or Ploinky WebChat. 
 
 ## Setup
 
-Install package-local dependencies and make the real ALA Node entry available through `ACHILLES_ALA_COMMAND`, installed `ala` on PATH, or the managed `/workspace/AdvancedLanguageAgent/bin/ala.mjs` entry. Native coding-agent execution requires Linux Bubblewrap and compatible authenticated backend configuration. The managed installer requires Node.js 22.19.0 or newer and installs pinned native CLIs into container-owned prefixes, without modifying user-global packages.
+Install RoboTeam's package dependencies with npm. The wrapper resolves the real Node entry from the `advanced-language-agent` dependency, including when Ploinky mounts a dependency cache through symlinks. No ALA checkout in the workspace or global CLI installation is required. RoboTeam selects the installed package entry and passes it internally to the wrapper. Runtime settings are constants, not user environment options. Native execution requires Linux Bubblewrap and configured coding-agent accounts. Coding-agent CLIs are prepared separately in RoboTeam's shared tool cache.
 
 ```sh
 export ACHILLES_ALA_COMMAND=/absolute/path/to/AdvancedLanguageAgent/bin/ala.mjs

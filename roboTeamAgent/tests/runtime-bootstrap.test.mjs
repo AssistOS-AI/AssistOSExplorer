@@ -39,6 +39,35 @@ async function writeFixture(directory, name, source) {
     return filePath;
 }
 
+test('launcher generates a fresh shared token without logging or accepting a configured token', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'roboteam-bootstrap-token-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const fixture = await writeFixture(directory, 'token.mjs', `
+import { writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+const token = process.env.ROBOTEAM_INTERNAL_TOKEN;
+if (!/^[a-f0-9]{64}$/.test(token) || token === 'a'.repeat(64)) process.exit(9);
+writeFileSync(process.env.TOKEN_CHECK_DIR + '/' + process.argv[2], createHash('sha256').update(token).digest('hex'));
+setTimeout(() => process.exit(7), 200);
+`);
+    const service = await writeFixture(directory, 'service.mjs', `process.argv[2] = 'service'; await import(${JSON.stringify(new URL('file://' + fixture).href)});`);
+    const agent = await writeFixture(directory, 'agent.sh', '#!/bin/sh\nexec node "$TOKEN_FIXTURE" mcp\n');
+    const check = await writeFixture(directory, 'check.mjs', 'process.exit(0);');
+    let previous;
+    for (let run = 0; run < 2; run++) {
+        const result = await runScript(join(AGENT_ROOT, 'scripts/startAgent.sh'), {
+            ROBOTEAM_INTERNAL_TOKEN: 'a'.repeat(64), TOKEN_CHECK_DIR: directory, TOKEN_FIXTURE: fixture,
+            ROBOTEAM_AGENT_SERVER_SCRIPT: agent, ROBOTEAM_SERVICE_MAIN: service, ROBOTEAM_SERVICE_CHECK: check,
+        });
+        assert.equal(result.code, 7, result.stderr);
+        const digest = await readFile(join(directory, 'service'), 'utf8');
+        assert.equal(await readFile(join(directory, 'mcp'), 'utf8'), digest);
+        assert.notEqual(digest, previous);
+        assert.doesNotMatch(result.stdout + result.stderr, /[a-f0-9]{64}/);
+        previous = digest;
+    }
+});
+
 test('manifest follows the operator-managed runtime channel', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
 
@@ -78,12 +107,13 @@ test('manifest stores RoboTeam state in the workspace private data tree', async 
 
 test('manifest selects runtime-only GUI images and the persistent tool cache', async () => {
     const manifest = JSON.parse(await readFile(join(AGENT_ROOT, 'manifest.json'), 'utf8'));
-    const environment = manifest.profiles.default.env;
+    const constants = await import('../server/constants.mjs');
+    assert.equal(manifest.profiles.default.env, undefined);
 
-    assert.equal(environment.ROBOTEAM_DESKTOP_IMAGE.default, 'docker.io/assistos/roboteam-desktop:runtime');
-    assert.equal(environment.ROBOTEAM_BROWSER_IMAGE.default, 'docker.io/assistos/roboteam-browser:runtime');
-    assert.equal(environment.ROBOTEAM_TOOL_CACHE_DIR.default, '/data/tool-cache');
-    assert.equal(environment.ROBOTEAM_TOOL_REFRESH_INTERVAL_MS.default, '21600000');
+    assert.equal(constants.DESKTOP_IMAGE, 'docker.io/assistos/roboteam-desktop:runtime');
+    assert.equal(constants.BROWSER_IMAGE, 'docker.io/assistos/roboteam-browser:runtime');
+    assert.equal(constants.TOOL_CACHE_DIR, '/data/tool-cache');
+    assert.equal(constants.TOOL_REFRESH_INTERVAL_MS, 21600000);
 });
 
 test('install hook verifies the runtime and prepares the persistent tool-cache root', async () => {
@@ -95,7 +125,7 @@ test('install hook verifies the runtime and prepares the persistent tool-cache r
         assert.match(source, new RegExp(`\\b${command}\\b`));
     }
     assert.doesNotMatch(source, /command:codex/);
-    assert.match(source, /ROBOTEAM_TOOL_CACHE_DIR/);
+    assert.match(source, /prepare-data\.mjs/);
     assert.match(source, /NODE_OPTIONS= npm --version/);
     for (const requiredPath of ['/opt/roboteam-runtime/storage.conf']) {
         assert.match(source, new RegExp(requiredPath.replaceAll('/', '\\/')));

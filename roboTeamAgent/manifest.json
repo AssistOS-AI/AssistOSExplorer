@@ -6,8 +6,13 @@
   },
   "agent": "sh /code/scripts/startAgent.sh",
   "cli": "node /code/server/robot-cli.mjs",
-  "enable": ["proxies/soul-gateway no-wait"],
-  "webchat": { "auth": "static", "forwardEnvelope": true },
+  "enable": [
+    "proxies/soul-gateway no-wait"
+  ],
+  "webchat": {
+    "auth": "static",
+    "forwardEnvelope": true
+  },
   "readiness": {
     "protocol": "mcp",
     "timeoutSeconds": 45
@@ -33,50 +38,11 @@
   },
   "profiles": {
     "default": {
-      "openPorts": ["7000:7000", "3001:3001"],
-      "install": "sh /code/scripts/install.sh",
-      "env": {
-        "ROBOTEAM_INTERNAL_TOKEN": {
-          "required": true,
-          "generatedSecret": true
-        },
-        "ROBOTEAM_DATA_DIR": {
-          "required": false,
-          "default": "/data"
-        },
-        "ROBOTEAM_MAX_ACTIVE_ROBOTS": {
-          "required": false,
-          "default": "8"
-        },
-        "ROBOTEAM_BROWSER_IMAGE": {
-          "required": false,
-          "default": "docker.io/assistos/roboteam-browser:runtime"
-        },
-        "ROBOTEAM_DESKTOP_IMAGE": {
-          "required": false,
-          "default": "docker.io/assistos/roboteam-desktop:runtime"
-        },
-        "ROBOTEAM_ALA_COMMAND": {
-          "required": false,
-          "default": "/workspace/AdvancedLanguageAgent/bin/ala.mjs"
-        },
-        "ROBOTEAM_TOOL_CACHE_DIR": {
-          "required": false,
-          "default": "/data/tool-cache"
-        },
-        "ROBOTEAM_TOOL_REFRESH_INTERVAL_MS": {
-          "required": false,
-          "default": "21600000"
-        },
-        "TZ": {
-          "required": false,
-          "default": "Europe/Bucharest"
-        },
-        "ROBOTEAM_PUBLIC_BASE_PATH": {
-          "required": false,
-          "default": "/base-agent-additional-server/roboTeamAgent/3001/"
-        }
-      }
+      "openPorts": [
+        "7000:7000",
+        "3001:3001"
+      ],
+      "install": "sh /code/scripts/install.sh"
     }
   }
 }
