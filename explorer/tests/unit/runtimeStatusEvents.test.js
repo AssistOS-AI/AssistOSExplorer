@@ -1,64 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-
 import {
-    isRetryableRuntimeStatusStreamError,
-    publishRuntimeStatusEvents,
-    RUNTIME_STATUS_UPDATED_EVENT
+    fetchMarketplaceSnapshot,
+    isRetryableMarketplaceStatusError,
 } from '../../services/infrastructure/runtimeStatusEvents.js';
 
-test('runtime status stream preserves HTTP status and retries only transient failures', async () => {
-    await assert.rejects(
-        publishRuntimeStatusEvents({
-            eventTarget: new EventTarget(),
-            fetchImplementation: async () => ({ok: false, status: 404})
-        }),
-        (error) => {
-            assert.equal(error.status, 404);
-            assert.equal(isRetryableRuntimeStatusStreamError(error), false);
-            return true;
-        }
-    );
-
-    assert.equal(isRetryableRuntimeStatusStreamError({status: 401}), false);
-    assert.equal(isRetryableRuntimeStatusStreamError({status: 403}), false);
-    assert.equal(isRetryableRuntimeStatusStreamError({status: 502}), true);
-    assert.equal(isRetryableRuntimeStatusStreamError({status: 503}), true);
-    assert.equal(isRetryableRuntimeStatusStreamError({status: 504}), true);
-    assert.equal(isRetryableRuntimeStatusStreamError(new TypeError('Failed to fetch')), true);
+test('Marketplace status reads use only the authorized JSON catalog with session, abort and no cache', async () => {
+    const controller = new AbortController();
+    const catalog = {repositories: [], agents: [], enabledAgents: [], permissions: {canManage: true}};
+    const calls = [];
+    const result = await fetchMarketplaceSnapshot({
+        signal: controller.signal,
+        fetchImplementation: async (...args) => {
+            calls.push(args);
+            return {ok: true, status: 200, json: async () => ({ok: true, marketplace: catalog})};
+        },
+    });
+    assert.equal(result, catalog);
+    assert.deepEqual(calls, [['/api/marketplace', {
+        credentials: 'include', cache: 'no-store', signal: controller.signal,
+        headers: {Accept: 'application/json'},
+    }]]);
 });
 
-test('runtime status stream publishes each NDJSON snapshot as a custom event', async (t) => {
-    const originalCustomEvent = globalThis.CustomEvent;
-    if (typeof originalCustomEvent !== 'function') {
-        globalThis.CustomEvent = class CustomEvent extends Event {
-            constructor(type, options = {}) {
-                super(type);
-                this.detail = options.detail;
-            }
-        };
+test('Marketplace status preserves permanent authorization failures and retries only transient errors', async () => {
+    for (const status of [401, 403, 404, 502, 503, 504]) {
+        await assert.rejects(fetchMarketplaceSnapshot({
+            fetchImplementation: async () => ({ok: false, status, json: async () => ({error: 'unavailable'})}),
+        }), error => {
+            assert.equal(error.status, status);
+            assert.equal(isRetryableMarketplaceStatusError(error), status >= 502);
+            return true;
+        });
     }
-    t.after(() => {
-        if (originalCustomEvent === undefined) delete globalThis.CustomEvent;
-        else globalThis.CustomEvent = originalCustomEvent;
-    });
-
-    const target = new EventTarget();
-    const received = [];
-    target.addEventListener(RUNTIME_STATUS_UPDATED_EVENT, (event) => received.push(event.detail));
-    const body = new ReadableStream({
-        start(controller) {
-            controller.enqueue(new TextEncoder().encode('{"runtimes":[{"agentName":"webAssist","state":{"status":"run'));
-            controller.enqueue(new TextEncoder().encode('ning","running":true}}]}\n'));
-            controller.close();
-        }
-    });
-
-    await publishRuntimeStatusEvents({
-        eventTarget: target,
-        fetchImplementation: async () => ({ok: true, body})
-    });
-
-    assert.equal(received.length, 1);
-    assert.equal(received[0].runtimes[0].state.status, 'running');
+    assert.equal(isRetryableMarketplaceStatusError(new TypeError('Failed to fetch')), true);
+    assert.equal(isRetryableMarketplaceStatusError(new DOMException('Aborted', 'AbortError')), false);
+    await assert.rejects(fetchMarketplaceSnapshot({
+        fetchImplementation: async () => ({ok: true, status: 200, json: async () => { throw new SyntaxError('HTML login'); }}),
+    }), error => error.status === 200 && !isRetryableMarketplaceStatusError(error));
 });

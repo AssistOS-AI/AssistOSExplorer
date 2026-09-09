@@ -1,32 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-
-const sourcePath = path.resolve(
-    import.meta.dirname,
-    '../../IDE-plugins/marketplace/components/marketplace-modal/marketplace-modal.js'
-);
-
-async function loadMarketplaceModal() {
-    const source = await fs.readFile(sourcePath, 'utf8');
-    const withoutImports = source.replace(/import\s+\{[\s\S]*?\}\s+from\s+'[^']+';\s*/g, '');
-    const dependencies = `
-        const callExplorerTool = async () => ({});
-        const parseToolResult = (value) => value;
-        const buildAgentSettingsItems = () => [];
-        const ensureSettingsComponentRegistered = async () => {};
-        const resolvePluginSettingsUrl = () => '';
-        const flattenPluginsByKey = () => [];
-        const getCachedRuntimePlugins = () => null;
-        const fetchMarketplaceProof = (...args) => globalThis.__marketplaceFetchMarketplaceProof(...args);
-        const publishRuntimeStatusEvents = (...args) => globalThis.__marketplacePublishRuntimeStatusEvents?.(...args) || Promise.resolve();
-        const isRetryableRuntimeStatusStreamError = (error) => !Number.isFinite(Number(error?.status)) || [502, 503, 504].includes(Number(error.status));
-        const RUNTIME_STATUS_UPDATED_EVENT = 'ploinky:runtime-status-updated';
-    `;
-    const url = `data:text/javascript;base64,${Buffer.from(dependencies + withoutImports).toString('base64')}`;
-    return import(url);
-}
+import {loadMarketplaceModal} from '../helpers/marketplaceModal.js';
 
 test('Marketplace status and busy updates do not rebuild reactive child components', async () => {
     const {MarketplaceModal} = await loadMarketplaceModal();
@@ -251,7 +225,7 @@ test('Marketplace enables Configure only while its agent is running', async () =
     assert.equal(settingsButton['aria-disabled'], 'false');
 });
 
-test('Marketplace stream transitions preserve normalized presentation and real Configure gating without rebuilding rows', async (t) => {
+test('Marketplace catalog transitions preserve normalized presentation and real Configure gating without rebuilding rows', async (t) => {
     const {MarketplaceModal} = await loadMarketplaceModal();
     const modal = new MarketplaceModal({}, () => {});
     modal.state = {
@@ -314,15 +288,9 @@ test('Marketplace stream transitions preserve normalized presentation and real C
     assert.equal(settingsButton.title, 'Configure is available once webAssist is running.');
     assert.equal(mode.disabled, true);
 
-    const sendState = (enabled, runtimeState) => modal.handleRuntimeStatusUpdated({
-        detail: {
-            runtimes: [{
-                repoName: 'AchillesIDE',
-                agentName: 'webAssist',
-                enabled,
-                state: runtimeState
-            }]
-        }
+    const sendState = (active, runtimeState) => modal.applyMarketplaceSnapshot({
+        ...modal.state.marketplace,
+        agents: [{ref: 'AchillesIDE/webAssist', active, ...runtimeState}],
     });
     sendState(true, {status: 'running', running: true});
     assert.equal(modal.state.marketplace.agents[0].status, 'running');
@@ -347,9 +315,7 @@ test('Marketplace stream transitions preserve normalized presentation and real C
 
     sendState(true, {status: 'starting', running: false});
     assert.equal(status.textContent, 'Starting up');
-    assert.ok(modal.agentStatusRefreshTimer, 'streamed startup schedules snapshot refresh');
     sendState(true, {status: 'running', running: true});
-    assert.equal(modal.agentStatusRefreshTimer, null);
     assert.equal(settingsButton.disabled, false);
     modal.state.agentMutationBusyRef = 'AchillesIDE/webAssist';
     modal.state.agentMutationVerb = 'Disabling';
@@ -371,36 +337,26 @@ test('Marketplace stream transitions preserve normalized presentation and real C
     assert.equal(status.textContent, 'Unknown');
     assert.equal(status.className, 'marketplace-agent-status unknown');
     assert.equal(settingsButton.disabled, true);
-    modal.handleRuntimeStatusUpdated({detail: {runtimes: []}});
-    assert.equal(status.textContent, 'Disabled', 'missing runtime evidence must close Configure');
+    sendState(true, {status: 'failed', running: false, statusDetail: 'The new startup failed.'});
+    assert.equal(status.textContent, 'Failed');
+    assert.equal(status.title, 'The new startup failed.');
     assert.equal(settingsButton.disabled, true);
 });
 
-test('Marketplace does not reconnect the runtime status stream after a permanent HTTP error', async (t) => {
-    const originalWindow = globalThis.window;
-    const originalPublisher = globalThis.__marketplacePublishRuntimeStatusEvents;
-    const windowTarget = new EventTarget();
-    globalThis.window = windowTarget;
-    globalThis.__marketplacePublishRuntimeStatusEvents = async () => {
-        throw Object.assign(new Error('Runtime status stream failed (404)'), {status: 404});
-    };
-    t.after(() => {
-        if (originalWindow === undefined) delete globalThis.window;
-        else globalThis.window = originalWindow;
-        if (originalPublisher === undefined) delete globalThis.__marketplacePublishRuntimeStatusEvents;
-        else globalThis.__marketplacePublishRuntimeStatusEvents = originalPublisher;
-    });
-
+test('Marketplace stops polling and reports permanent authorization failure', async (t) => {
     const {MarketplaceModal} = await loadMarketplaceModal();
-    const modal = Object.create(MarketplaceModal.prototype);
-    modal.state = {marketplace: {permissions: {canManage: true}}};
-    modal.handleRuntimeStatusUpdated = () => {};
-    modal.startAgentStatusStream();
-    await new Promise(resolve => setImmediate(resolve));
-
-    assert.equal(modal.agentStatusStreamActive, false);
-    assert.equal(modal.agentStatusStreamController, null);
-    assert.equal(modal.agentStatusReconnectTimer, undefined);
+    const modal = new MarketplaceModal({}, () => {});
+    modal.state.marketplace = {permissions: {canManage: true}, agents: []};
+    modal.renderStatus = () => {};
+    modal.renderState = () => {};
+    modal.requestMarketplace = async () => { throw Object.assign(new Error('Administrator access is required.'), {status: 403}); };
+    t.after(() => clearTimeout(modal.agentStatusRefreshTimer));
+    await modal.refreshAgentStatuses();
+    assert.equal(modal.agentStatusRefreshStopped, true);
+    assert.equal(modal.agentStatusRefreshController, null);
+    assert.equal(modal.agentStatusRefreshTimer, undefined);
+    assert.equal(modal.state.statusType, 'error');
+    assert.equal(modal.state.status, 'Administrator access is required.');
 });
 
 test('Marketplace presents a bounded set of distinct lifecycle states', async () => {
@@ -466,7 +422,7 @@ test('Marketplace ignores settings clicks for agents that are not operational', 
     });
 });
 
-test('Marketplace refreshes starting agents until the backend reports a terminal state', async () => {
+test('Marketplace keeps polling after an agent reaches Running without rebuilding unchanged inventory', async (t) => {
     const {MarketplaceModal} = await loadMarketplaceModal();
     const modal = Object.create(MarketplaceModal.prototype);
     modal.unloaded = false;
@@ -488,7 +444,88 @@ test('Marketplace refreshes starting agents until the backend reports a terminal
     await modal.refreshAgentStatuses();
 
     assert.equal(modal.state.marketplace.agents[0].status, 'running');
-    assert.equal(agentRenders, 1);
+    assert.equal(agentRenders, 0);
     assert.equal(interactiveSyncs, 1);
+    assert.ok(modal.agentStatusRefreshTimer);
+    t.after(() => clearTimeout(modal.agentStatusRefreshTimer));
+});
+
+function deferred() {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    return {promise, resolve};
+}
+
+test('Marketplace polling is serial and resumes after transient failure while preserving mutation errors', async (t) => {
+    const {MarketplaceModal} = await loadMarketplaceModal();
+    const modal = new MarketplaceModal({}, () => {});
+    modal.state.marketplace = {agents: [], repositories: []};
+    modal.state.status = 'Previous mutation failed';
+    modal.state.statusType = 'error';
+    const request = deferred();
+    let requests = 0;
+    modal.requestMarketplace = async () => {
+        requests += 1;
+        await request.promise;
+        throw Object.assign(new Error('Unavailable'), {status: 503});
+    };
+    const first = modal.refreshAgentStatuses();
+    await modal.refreshAgentStatuses();
+    assert.equal(requests, 1);
+    request.resolve();
+    await first;
+    assert.equal(modal.agentStatusRefreshStopped, undefined);
+    assert.equal(modal.state.status, 'Previous mutation failed');
+    assert.ok(modal.agentStatusRefreshTimer);
+    t.after(() => clearTimeout(modal.agentStatusRefreshTimer));
+});
+
+test('Marketplace unload aborts an outstanding read and cannot render or schedule another poll', async () => {
+    const {MarketplaceModal} = await loadMarketplaceModal();
+    const modal = new MarketplaceModal({querySelector: () => null}, () => {});
+    modal.state.marketplace = {agents: [], repositories: []};
+    const request = deferred();
+    let signal;
+    modal.requestMarketplace = async (_action, options) => { signal = options.signal; return request.promise; };
+    modal.applyMarketplaceSnapshot = () => assert.fail('unmounted catalog cannot be applied');
+    const refresh = modal.refreshAgentStatuses();
+    modal.afterUnload();
+    assert.equal(signal.aborted, true);
+    request.resolve({agents: [], repositories: []});
+    await refresh;
+    assert.equal(modal.agentStatusRefreshController, null);
     assert.equal(modal.agentStatusRefreshTimer, undefined);
+});
+
+test('Marketplace mutation invalidates an older poll even when its response arrives after the mutation', async (t) => {
+    const originalFetch = globalThis.fetch;
+    const originalProof = globalThis.__marketplaceFetchMarketplaceProof;
+    const {MarketplaceModal} = await loadMarketplaceModal();
+    const modal = new MarketplaceModal({}, () => {});
+    const oldCatalog = {agents: [{ref: 'repo/agent', active: false}], repositories: []};
+    const newCatalog = {agents: [{ref: 'repo/agent', active: true}], repositories: []};
+    modal.state.marketplace = oldCatalog;
+    const request = deferred();
+    let readSignal;
+    globalThis.__marketplaceFetchMarketplaceProof = async () => ({header: 'x-ploinky-csrf-token', csrfToken: 'test-proof'});
+    globalThis.fetch = async (_url, options) => {
+        if (options.method === 'POST') return {ok: true, status: 200, json: async () => ({marketplace: newCatalog})};
+        readSignal = options.signal;
+        await request.promise;
+        return {ok: true, status: 200, json: async () => ({marketplace: oldCatalog})};
+    };
+    modal.applyMarketplaceSnapshot = value => { modal.state.marketplace = value; };
+    t.after(() => {
+        clearTimeout(modal.agentStatusRefreshTimer);
+        globalThis.fetch = originalFetch;
+        if (originalProof === undefined) delete globalThis.__marketplaceFetchMarketplaceProof;
+        else globalThis.__marketplaceFetchMarketplaceProof = originalProof;
+    });
+    const refresh = modal.refreshAgentStatuses();
+    modal.state.marketplace = await modal.requestMarketplace({action: 'enable_agent', agentRef: 'repo/agent'});
+    assert.equal(readSignal.aborted, true);
+    request.resolve();
+    await refresh;
+    assert.equal(modal.state.marketplace, newCatalog);
+    assert.ok(modal.agentStatusRefreshTimer);
 });

@@ -9,6 +9,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const HISTORICAL_PREFIXES = ['docs/superpowers/'];
 const exact = (...parts) => new RegExp(`\\b${parts.join('_')}\\b`);
 const FORBIDDEN = [
+  ['retired media repository', new RegExp(['webmeet', 'Infra'].join(''), 'i')],
   ['retired web-publishing agent', new RegExp(`\\b${['basic', 'web-publishing'].join('/')}\\b`)],
   ['retired basic cloudflared component', new RegExp(`\\b${['basic', 'cloudflared'].join('/')}\\b`, 'i')],
   ['retired publication environment', new RegExp(`\\b${['WEB', 'PUBLISHING'].join('_')}_[A-Z0-9_]*\\b`)],
@@ -42,7 +43,10 @@ test('tracked executable, config, workflow, test, and normative documentation sc
     if (bytes.includes(0)) continue;
     const source = bytes.toString('utf8');
     for (const [label, pattern] of FORBIDDEN) {
-      if (pattern.test(source)) violations.push(`${relative}: ${label}`);
+      const activeSource = label === 'retired media repository' && relative === '.github/workflows/deploy-skills-explorer.yml'
+        ? source.replace(/^          # BEGIN LiveKit repository migration\n[\s\S]*?^          # END LiveKit repository migration$/gm, '')
+        : source;
+      if (pattern.test(activeSource)) violations.push(`${relative}: ${label}`);
     }
   }
   assert.deepEqual(violations, []);

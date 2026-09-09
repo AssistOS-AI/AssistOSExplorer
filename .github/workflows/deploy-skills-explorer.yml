@@ -298,16 +298,115 @@ jobs:
             exit 1
           fi
 
+          # BEGIN LiveKit repository migration
+          # Save exact retired-repository keys before lifecycle calls can remove
+          # registry rows. Retries must still prove those physical runtimes absent.
+          RETIRED_LIVEKIT_CONTAINERS="$(node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const stateRoot = path.join(process.env.PLOINKY_WORKSPACE_ROOT, '.ploinky');
+          const registryPath = path.join(stateRoot, 'agents.json');
+          const pendingPath = path.join(stateRoot, 'livekit-repository-migration.json');
+          const registry = fs.existsSync(registryPath) ? JSON.parse(fs.readFileSync(registryPath, 'utf8')) : {};
+          if (!registry || typeof registry !== 'object' || Array.isArray(registry)) throw new Error('Invalid workspace agent registry');
+          const pending = fs.existsSync(pendingPath) ? JSON.parse(fs.readFileSync(pendingPath, 'utf8')) : [];
+          if (!Array.isArray(pending)) throw new Error('Invalid pending LiveKit migration');
+          const registered = Object.entries(registry).filter(([, record]) => (
+            record?.type === 'agent' && record.repoName === 'webmeetInfra'
+          )).map(([containerName]) => containerName);
+          const targets = [...new Set([...pending, ...registered])];
+          if (targets.some((name) => typeof name !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name))) throw new Error('Invalid retired LiveKit container identity');
+          fs.mkdirSync(stateRoot, { recursive: true });
+          fs.writeFileSync(`${pendingPath}.tmp`, JSON.stringify(targets), { mode: 0o600 });
+          fs.renameSync(`${pendingPath}.tmp`, pendingPath);
+          // Pending-only keys are inspection evidence, never alias-resolved
+          // disable requests after their original registry records disappear.
+          process.stdout.write(registered.join('\n'));
+          NODE
+          )"
+          while IFS= read -r container_name; do
+            [ -n "$container_name" ] || continue
+            env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" disable agent "$container_name"
+          done <<< "$RETIRED_LIVEKIT_CONTAINERS"
+          env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" disable repo webmeetInfra
+          # Inspect nested runtimes in the supervisor-validated owning Box. Use
+          # explicit argv and an acknowledgement; non-TTY shell stdin is not proof.
+          node --input-type=module - "$PLOINKY_DIR" <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { pathToFileURL } from 'node:url';
+          import { randomUUID } from 'node:crypto';
+          import { spawnSync } from 'node:child_process';
+          const pendingPath = path.join(process.env.PLOINKY_WORKSPACE_ROOT, '.ploinky', 'livekit-repository-migration.json');
+          const targets = JSON.parse(fs.readFileSync(pendingPath, 'utf8'));
+          if (!Array.isArray(targets) || targets.some((name) => typeof name !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name))) throw new Error('Invalid pending LiveKit migration');
+          if (targets.length) {
+            const runtimeRoot = path.resolve(process.argv[2]);
+            const { createBoxSupervisor } = await import(pathToFileURL(path.join(runtimeRoot, 'ploinky-box/supervisor.mjs')).href);
+            const { buildEngineProcessEnvironment } = await import(pathToFileURL(path.join(runtimeRoot, 'ploinky-box/process.mjs')).href);
+            const supervisor = createBoxSupervisor({ repositoryRoot: runtimeRoot });
+            const workspaceRoot = fs.realpathSync(process.env.PLOINKY_WORKSPACE_ROOT);
+            const inspectOwner = () => {
+              const status = supervisor.inspectBoxStatus();
+              const containerId = status.ownership?.handles?.container?.id;
+              const engine = status.ownership?.engine?.name;
+              if (status.identity?.workspaceRoot !== workspaceRoot || status.state !== 'running-initialized' || status.ownership?.state !== 'owned'
+                || !/^[a-f0-9]{64}$/.test(containerId || '') || !['podman', 'docker'].includes(engine)) throw new Error('Cannot prove the owning Box identity for LiveKit migration');
+              return { containerId, engine };
+            };
+            const owner = inspectOwner();
+            const nonce = randomUUID();
+            const probe = `const { spawnSync } = require('node:child_process');
+              const targets = JSON.parse(process.argv[1]);
+              for (const name of targets) {
+                const result = spawnSync('podman', ['container', 'exists', name], { encoding: 'utf8', timeout: 30000 });
+                if (result.status === 0) throw new Error('Retired runtime ' + name + ' still exists; recover with Ploinky shutdown before retrying');
+                if (result.error || result.status !== 1) throw new Error('Could not prove retired runtime ' + name + ' absent in its owning Box');
+              }
+              process.stdout.write(JSON.stringify({ nonce: process.argv[2], absent: targets }));`;
+            const result = spawnSync(owner.engine, ['container', 'exec', '--user', 'podman', '--workdir', '/workspace', owner.containerId,
+              '/usr/local/bin/node', '-e', probe, JSON.stringify(targets), nonce], {
+              encoding: 'utf8', timeout: 30000 * targets.length + 10000, env: buildEngineProcessEnvironment(),
+            });
+            if (result.error || result.status !== 0) throw new Error('Could not prove retired runtimes absent in their owning Box; complete Ploinky shutdown recovery before retrying');
+            const proof = JSON.parse(result.stdout);
+            if (proof.nonce !== nonce || JSON.stringify(proof.absent) !== JSON.stringify(targets)) throw new Error('Invalid retired-runtime absence acknowledgement');
+            const after = inspectOwner();
+            if (after.containerId !== owner.containerId || after.engine !== owner.engine) throw new Error('Owning Box changed during LiveKit migration');
+          }
+          NODE
+          if [ -e "$WORK_DIR/.ploinky/repos/webmeetInfra" ] || [ -L "$WORK_DIR/.ploinky/repos/webmeetInfra" ]; then
+            env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" uninstall repo webmeetInfra
+          fi
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const stateRoot = path.join(process.env.PLOINKY_WORKSPACE_ROOT, '.ploinky');
+          const readState = (name, fallback) => {
+            const file = path.join(stateRoot, name);
+            return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : fallback;
+          };
+          const registry = readState('agents.json', {});
+          const enabledRepos = readState('enabled_repos.json', []);
+          if (!registry || typeof registry !== 'object' || Array.isArray(registry) || !Array.isArray(enabledRepos)) throw new Error('Invalid workspace registration state');
+          const retained = Object.values(registry).some((record) => record?.type === 'agent' && record.repoName === 'webmeetInfra');
+          const reposRoot = path.join(stateRoot, 'repos');
+          const installed = fs.existsSync(reposRoot) && fs.readdirSync(reposRoot, { withFileTypes: true }).some((entry) => entry.name === 'webmeetInfra');
+          if (retained || enabledRepos.includes('webmeetInfra') || installed) throw new Error('Retired LiveKit registration remains; refusing source update');
+          fs.rmSync(path.join(stateRoot, 'livekit-repository-migration.json'));
+          console.log('[deploy] LiveKit repository migration complete; agent data retained.');
+          NODE
+          # END LiveKit repository migration
+
           echo "[deploy] Installing Ploinky repos..."
           # Ploinky retired 'add repo <name> <url> <branch>' / 'enable repo <name>' in favor of
           # 'install <url|repoName> [name] [--branch X]'. Repos are activated by install; the
           # explorer manifest's "enable" list brings up the agent stack at start time.
           "$PLOINKY" install https://github.com/AssistOS-AI/AssistOSExplorer.git AchillesIDE --branch "${EXPLORER_BRANCH:-main}" || true
-          "$PLOINKY" install https://github.com/AssistOS-AI/webmeetInfra.git webmeetInfra --branch main || true
           "$PLOINKY" install https://github.com/AssistOS-AI/proxies.git proxies --branch "${PROXIES_BRANCH:-main}" || true
 
           sync_managed_repos() {
-            for repo_spec in "AchillesIDE:${EXPLORER_BRANCH:-main}" "webmeetInfra:main" "proxies:${PROXIES_BRANCH:-main}"; do
+            for repo_spec in "AchillesIDE:${EXPLORER_BRANCH:-main}" "proxies:${PROXIES_BRANCH:-main}"; do
               repo_name="${repo_spec%%:*}"
               repo_branch="${repo_spec#*:}"
               repo_dir="$WORK_DIR/.ploinky/repos/$repo_name"
@@ -337,110 +436,6 @@ jobs:
 
           echo "[deploy] Re-pinning managed repositories after update..."
           sync_managed_repos
-
-          cleanup_retired_webmeet_infra() {
-            local retired_agents=(
-              stack
-              webmeetCoturn
-              webmeetRedis
-              webmeetLivekitServer
-              webmeetLivekitEgress
-              webmeetLivekitNginx
-              webmeetLivekitCertbot
-            )
-
-            echo "[deploy] Removing retired split WebMeet infra agent registrations..."
-            for agent in "${retired_agents[@]}"; do
-              env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" disable agent "webmeetInfra/$agent" || true
-              env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" disable agent "$agent" || true
-            done
-
-            node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-
-          const retired = new Set([
-            'stack',
-            'webmeetCoturn',
-            'webmeetRedis',
-            'webmeetLivekitServer',
-            'webmeetLivekitEgress',
-            'webmeetLivekitNginx',
-            'webmeetLivekitCertbot',
-          ]);
-          const root = process.cwd();
-
-          function splitRef(value) {
-            const text = String(value || '');
-            const parts = text.split('/');
-            return {
-              repo: parts.length > 1 ? parts[0] : '',
-              agent: parts[parts.length - 1] || text,
-            };
-          }
-
-          function readJson(filePath) {
-            try {
-              return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            } catch (_) {
-              return null;
-            }
-          }
-
-          function writeJson(filePath, value) {
-            fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
-          }
-
-          const agentsPath = path.join(root, '.ploinky', 'agents.json');
-          const agents = readJson(agentsPath);
-          let agentsChanged = false;
-          if (agents && typeof agents === 'object') {
-            for (const [key, record] of Object.entries(agents)) {
-              if (key === '_config' || !record || typeof record !== 'object') continue;
-              const keyRef = splitRef(key);
-              const repo = String(record.repoName || keyRef.repo);
-              const agent = String(record.agentName || keyRef.agent);
-              if (repo === 'webmeetInfra' && retired.has(agent)) {
-                delete agents[key];
-                agentsChanged = true;
-              }
-            }
-            if (agentsChanged) {
-              writeJson(agentsPath, agents);
-            }
-          }
-
-          const routingPath = path.join(root, '.ploinky', 'routing.json');
-          const routing = readJson(routingPath);
-          let routingChanged = false;
-          if (routing && routing.routes && typeof routing.routes === 'object') {
-            for (const [key, route] of Object.entries(routing.routes)) {
-              const keyRef = splitRef(key);
-              const routeRef = splitRef(route && route.agent);
-              const agent = String(routeRef.agent || keyRef.agent);
-              const repo = String(route && route.repo || routeRef.repo || keyRef.repo);
-              if (retired.has(agent) && (!repo || repo === 'webmeetInfra')) {
-                delete routing.routes[key];
-                routingChanged = true;
-              }
-            }
-            if (routingChanged) {
-              writeJson(routingPath, routing);
-            }
-          }
-
-          console.log(`[deploy] Retired registry cleanup: agents=${agentsChanged ? 'updated' : 'unchanged'} routes=${routingChanged ? 'updated' : 'unchanged'}`);
-          NODE
-
-            local retired_pattern="^ploinky_webmeetInfra_(stack|webmeetCoturn|webmeetRedis|webmeetLivekitServer|webmeetLivekitEgress|webmeetLivekitNginx|webmeetLivekitCertbot)_${WORKSPACE}_"
-            podman ps -a --format '{{.Names}}' | grep -E "$retired_pattern" | while read -r container_name; do
-              [ -n "$container_name" ] || continue
-              echo "[deploy] Removing retired container $container_name"
-              podman rm -f "$container_name" || true
-            done || true
-          }
-
-          cleanup_retired_webmeet_infra
 
           "$PLOINKY" profile "${PLOINKY_PROFILE:-prod}"
           "$PLOINKY" sandbox disable
@@ -483,7 +478,6 @@ jobs:
           nohup env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" start AchillesIDE/explorer "$ROUTER_PORT" \
             --branch "${EXPLORER_BRANCH:-main}" \
             --repo-branch "proxies=${PROXIES_BRANCH:-main}" \
-            --repo-branch "webmeetInfra=main" \
             --reset-repos \
             > "$WORK_DIR/logs/skills-explorer-start.log" 2>&1 &
 

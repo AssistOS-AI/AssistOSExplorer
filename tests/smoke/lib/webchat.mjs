@@ -14,12 +14,8 @@ const EXPLORER_EMPTY_TEXT_SENTINEL = '__ASSISTOS_EXPLORER_EMPTY_TEXT__';
 export function taggedWebchatPath(workspaceDirectory = '.') {
   const params = new URLSearchParams({
     agent: smokeConfig.webchatAgent,
-    'research-tags': '1',
+    robot: 'default',
     'forward-envelope': '1',
-    'tag-relay-agent': 'researchRelay',
-    'tag-relay-submit-tool': 'research_task_submit',
-    'tag-relay-list-tool': 'research_relay_list_backends',
-    'tag-relay-tags': 'open-interpreter',
     'workspace-dir': workspaceDirectory,
   });
   return `/webchat?${params.toString()}`;

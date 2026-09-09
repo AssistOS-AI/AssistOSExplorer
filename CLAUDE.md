@@ -17,7 +17,7 @@ Ploinky Explorer workspace + 17 coupled agents. Origin: `https://github.com/Assi
 - `gitAgent/` — workspace Git operations, MCP tooling, auth integration.
 - `soplangAgent/` — SOPLang build and execution orchestration.
 - `tasksAgent/` — backlog file operations.
-- `multimedia/`, `webmeetAgent/`, `webmeetLivekitAiAgent/`, `webmeetInfra/`, `webassist/` — domain-specific workflows.
+- `multimedia/`, `webmeetAgent/`, `webmeetLivekitAiAgent/`, `liveKitServerAgent/`, `webassist/` — domain-specific workflows.
 - `AchillesCLI/` — Achilles skill management CLI. See `AchillesCLI/CLAUDE.md` and `AchillesCLI/docs/specs/` for local architecture and runtime contracts.
 - `shared/` — shared runtime utilities.
 - `docs/` and each agent's `docs/specs/` — user docs and DS specs.

@@ -5,7 +5,7 @@ import path from 'node:path';
 
 const explorerRoot = path.resolve(import.meta.dirname, '../..');
 
-test('Copilot settings consume the AchillesCLI public skill catalog', async () => {
+test('Copilot settings consume the default RoboTeam robot public skill catalog', async () => {
     const controller = await fs.readFile(
         path.join(explorerRoot, 'web-components/modals/settings-modal/settings-copilot-controller.js'),
         'utf8'
@@ -17,7 +17,7 @@ test('Copilot settings consume the AchillesCLI public skill catalog', async () =
     );
     const mcpConfig = JSON.parse(await fs.readFile(path.join(explorerRoot, 'mcp-config.json'), 'utf8'));
 
-    assert.match(controller, /callAgentTool\("achilles-cli", "list_achilles_skills"/);
+    assert.match(controller, /callAgentTool\("roboTeamAgent", "list_achilles_skills", \{ robot: "default" \}/);
     assert.doesNotMatch(controller, /callExplorerTool\("list-skills"/);
     assert.doesNotMatch(handlers, /discoverSkills|achillesAgentLib|AchillesCLI.*node_modules/);
     assert.equal(mcpConfig.tools.some((tool) => tool.name === 'list-skills'), false);

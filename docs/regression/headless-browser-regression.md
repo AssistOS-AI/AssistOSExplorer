@@ -248,7 +248,7 @@ Purpose: verify that WebMeet works end to end with two Explorer accounts, routed
 
 Preconditions:
 
-- `webmeetAgent` and `webmeetInfra` services are running from `ploinky start explorer`.
+- `webmeetAgent` and `liveKitServerAgent` services are running from `ploinky start explorer`.
 - Two Explorer accounts exist from the shared account steps.
 - Browser contexts are launched with fake camera and microphone devices.
 
@@ -310,16 +310,16 @@ Purpose: verify that WebChat and WebMeet keep workspace/file `@` references usab
 
 Preconditions:
 
-- `AchillesCLI/achilles-cli` and `webmeetAgent` are enabled in the workspace.
+- `AchillesCLI/roboTeamAgent` and `webmeetAgent` are enabled in the workspace.
 - Create uploads, rooms, and chat text with `SMOKE_RUN_ID` names so repeated smoke runs do not collide.
 - Run Copilot semantic routing checks separately with `SMOKE_OPEN_INTERPRETER=1` when the external provider runtime is configured.
 
 Copilot WebChat steps:
 
-1. Create a unique empty project directory with a run-scoped name through Explorer's authenticated filesystem tools. Open the routed WebChat URL for AchillesCLI with that exact workspace-relative directory:
+1. Create a unique empty project directory with a run-scoped name through Explorer's authenticated filesystem tools. Open the routed WebChat URL for RoboTeam’s default robot with that exact workspace-relative directory:
 
    ```text
-   /webchat?agent=achilles-cli&forward-envelope=1&workspace-dir=<run-scoped-project>
+   /webchat?agent=roboTeamAgent&robot=default&forward-envelope=1&workspace-dir=<run-scoped-project>
    ```
 
 2. Upload a file and a nested folder through the browser UI.

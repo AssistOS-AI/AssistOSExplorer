@@ -70,7 +70,7 @@ flowchart TB
           </figure>
 
           <h2>Media Infrastructure Layer</h2>
-          <p><code>webmeetInfra/liveKitServerAgent</code> supervises <a href="wiki.html#definition-livekit">LiveKit</a> Server, Redis, and Egress. WebMeet gives the participant browser a participant token, the Router signaling path, and the current RTC configuration. Ploinky Router carries public signaling and authenticated private Twirp calls. When the active topology declares external TURN, the Ploinky credential broker returns short-lived credentials to WebMeet, while the external TURN service alone relays WebRTC traffic when the direct media path is unavailable.</p>
+          <p><code>AchillesIDE/liveKitServerAgent</code> supervises <a href="wiki.html#definition-livekit">LiveKit</a> Server, Redis, and Egress. WebMeet gives the participant browser a participant token, the Router signaling path, and the current RTC configuration. Ploinky Router carries public signaling and authenticated private Twirp calls. When the active topology declares external TURN, the Ploinky credential broker returns short-lived credentials to WebMeet, while the external TURN service alone relays WebRTC traffic when the direct media path is unavailable.</p>
           <figure class="diagram">
             <pre class="mermaid">
 sequenceDiagram
@@ -98,7 +98,7 @@ flowchart TB
   Browser -.->|when the direct path is unavailable| Turn[External TURN service]
   Turn -->|relayed WebRTC traffic| LiveKit
 
-  subgraph Runtime["webmeetInfra/liveKitServerAgent"]
+  subgraph Runtime["AchillesIDE/liveKitServerAgent"]
     direction LR
     LiveKit[LiveKit Server]
     LiveKit <--> Redis[(Redis)]
@@ -127,7 +127,7 @@ flowchart TB
         </section>
         <section>
           <h2>Media Plane</h2>
-          <p><code>webmeetInfra/liveKitServerAgent</code> supervises <a href="wiki.html#definition-livekit">LiveKit</a> signaling and media transport, Redis, Egress, and semantic health. It does not own local TURN, a public TLS proxy, or certificate management. Ploinky Router owns public signaling and private Twirp routing, while configured external TURN and Ploinky's broker provide short-lived relay material. WebMeet obtains generation-bound join material rather than publishing an alternative media-control path.</p>
+          <p><code>AchillesIDE/liveKitServerAgent</code> supervises <a href="wiki.html#definition-livekit">LiveKit</a> signaling and media transport, Redis, Egress, and semantic health. It does not own local TURN, a public TLS proxy, or certificate management. Ploinky Router owns public signaling and private Twirp routing, while configured external TURN and Ploinky's broker provide short-lived relay material. WebMeet obtains generation-bound join material rather than publishing an alternative media-control path.</p>
           <p>Leaving a room stops local capture and remote playback before exit completes. A refreshed join recreates the LiveKit connection and restores microphone and camera state; browser security requires a new user gesture before screen sharing can resume.</p>
         </section>
         <section>

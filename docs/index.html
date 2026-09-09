@@ -32,6 +32,8 @@
             then returns only the result needed by the workspace.</p>
 
 
+        <h2>Workspace copilot</h2>
+        <p>Open Copilot here opens the selected directory in RoboTeam's ordinary robot named <code>default</code>. Explorer enables <code>AchillesCLI/roboTeamAgent global no-wait</code>; there is no separate AchillesCLI agent. Other robots have their own Open Chat action in RoboTeam. Independent CLI conversations can run concurrently, while Desktop and Browser retain one shared GUI container per robot.</p>
         <h2>How the workspace fits together</h2>
         <figure class="diagram"><pre class="mermaid">flowchart TB
       User([Workspace user]) -->|authenticated session| Runtime["Ploinky runtime<br/>routing · authentication · lifecycle"]
@@ -94,10 +96,10 @@
                 <code>.data/</code>; <code>.ploinky/repos</code> is the single named source-state volume exception.</p>
             <p>Fresh deployments require an <code>AdvancedLanguageAgent</code> checkout at the workspace root
                 with its selected <code>achillesAgentLib</code> dependency available. Explorer enables RoboTeam
-                globally before Achilles CLI so both agents can use that workspace checkout during startup.</p>
+                globally so its default robot can use that workspace checkout for Copilot.</p>
             <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision,
                 and binds it to the same Ploinky-selected AgentLib used by the agents. Its preflight exercises
-                the ALA loader and required CLI options before starting the fifteen-agent runtime graph.</p>
+                the ALA loader and required CLI options before starting the fourteen-agent runtime graph.</p>
 
             <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), and WebMeet STT are disabled by default.
                 An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic
@@ -141,9 +143,19 @@
                     <p>Optional Office editor sessions, authenticated transport, callbacks, and persistence; disabled by default.</p></a>
             </div>
 
+            <h3>Live Media Runtime</h3>
+            <p><a href="../liveKitServerAgent/docs/index.html">LiveKit Server</a> runs as
+                <code>AchillesIDE/liveKitServerAgent</code> from this repository. Explorer and WebMeet enable
+                the same runtime, which owns Redis, LiveKit Server, Egress, and private health. Its pinned image,
+                readiness checks, <code>.data/liveKitServerAgent/</code> storage, Router routes, and fixed UDP
+                <code>7882</code> media mux are unchanged. The default stack requires no separate media-runtime
+                repository or <code>basic</code> installation. Skills Explorer deployment retires existing media
+                registrations through Ploinky before source update, verifies old runtime absence inside the owning
+                Box, and preserves agent data. Failed migration evidence remains available for recovery and retry.</p>
+
             <h3>Explorer-Owned and External Entries</h3>
             <p>The <code>help</code> plugin is owned by Explorer and is covered by the <a href="plugins.html">runtime
-                plugins guide</a>. The manifest also enables Achilles CLI, LiveKit Server, Soul Gateway, and Umami as
+                plugins guide</a>. The manifest also enables RoboTeam, Soul Gateway, and Umami as
                 supporting dependencies. Ploinky core supplies the administrator-only WebTTY surface through the
                 selected Explorer host. Explorer owns its folder target chooser, while Ploinky supplies safe Box and
                 live-agent choices and remains authoritative for runtime identity, mount access, translated working

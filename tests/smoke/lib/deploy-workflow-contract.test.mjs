@@ -24,7 +24,6 @@ const WORKFLOWS = [
       "PLOINKY_NO_WAIT_SEQUENCE_TERMINAL_GRACE_MS='300000'",
       '"$PLOINKY" start explorer "${BRANCH_ARGS[@]}"',
       "'AchillesIDE|https://github.com/AssistOS-AI/AssistOSExplorer.git'",
-      "'webmeetInfra|https://github.com/AssistOS-AI/webmeetInfra.git'",
       "'UmamiAgent|https://github.com/AssistOS-AI/UmamiAgent.git'",
       "'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'",
       "'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'",
@@ -73,16 +72,16 @@ const WORKFLOWS = [
       'Cloudflare management: api-managed',
       'Cloudflare publication: ready',
       'Cloudflare connector: running',
-      'Tracked agents: 18',
-      'Running agents: 18',
-      'EXPECTED_NO_WAIT_AGENTS=14',
+      'Tracked agents: 14',
+      'Running agents: 14',
+      'EXPECTED_NO_WAIT_AGENTS=10',
       'QA_DEPLOY_STARTED_AT_MS="$(node -p \'Date.now()\')"',
       'check-no-wait-readiness.mjs',
       'QA_READY_STREAK',
       'QA_TERMINAL_FAILURE',
       'for _ in $(seq 1 180); do',
       'current-run no-wait readiness evidence failed',
-      'timed out waiting for stable 18/18 process admission and 14/14 semantic readiness',
+      'timed out waiting for stable 14/14 process admission and 10/10 semantic readiness',
       'dedicated persistent `%s` tunnel `%s`, ingress, and DNS API-managed by Ploinky',
       '"${PUBLIC_URL%/}/auth/login?agent=explorer"',
       '"${PUBLIC_URL%/}/auth/login?agent=webAssist"',
@@ -126,7 +125,6 @@ const WORKFLOWS = [
       'https://github.com/AssistOS-AI/ploinky.git',
       'https://github.com/AssistOS-AI/AchillesAgentLib.git',
       '--repo-branch "proxies=${PROXIES_BRANCH:-main}"',
-      '--repo-branch "webmeetInfra=main"',
       '${PUBLIC_URL%/}/dashboard',
     ],
   },
@@ -168,7 +166,6 @@ for (const workflow of WORKFLOWS) {
       assert.doesNotMatch(source, /BRANCH_ARGS=\(--branch|--branch-fallback|--reset-repos/);
       assert.doesNotMatch(source, /deleteTunnelOnTeardown|create-managed-tunnel/);
       assert.doesNotMatch(source, /BOX_STATUS="\$\("\$PLOINKY" status\)"/);
-      assert.doesNotMatch(source, /basic\|https:\/\/github\.com\/AssistOS-AI\/basic\.git/);
     } else {
       assert.match(source, /--reset-repos/);
     }
@@ -177,6 +174,38 @@ for (const workflow of WORKFLOWS) {
     assert.equal(source.match(/^          REMOTE$/gm)?.length, 1, 'expected one closed remote deployment heredoc');
   });
 }
+
+test('Explorer workflows omit retired stack repositories outside the explicit LiveKit migration', () => {
+    const retiredRepositories = ['basic', ['webmeet', 'Infra'].join('')];
+    const retiredRepositoryPattern = new RegExp(`\\b(?:${retiredRepositories.join('|')})\\b`);
+    for (const file of [
+        ...WORKFLOWS.map((workflow) => workflow.file),
+        '.github/workflows/destroy-explorer-qa.yml',
+    ]) {
+        const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+        const activeSource = file === '.github/workflows/deploy-skills-explorer.yml'
+            ? source.replace(/^          # BEGIN LiveKit repository migration\n[\s\S]*?^          # END LiveKit repository migration$/gm, '')
+            : source;
+        assert.doesNotMatch(activeSource, retiredRepositoryPattern, `${file} must not manage a retired stack repository outside migration`);
+    }
+});
+
+test('Skills Explorer retains the relocated LiveKit image override and readiness contract', () => {
+    const source = fs.readFileSync(path.join(ROOT, '.github/workflows/deploy-skills-explorer.yml'), 'utf8');
+    for (const required of [
+        "WEBMEET_INFRA_IMAGE_TAG: ${{ inputs.webmeet_infra_image_tag || vars.WEBMEET_INFRA_IMAGE_TAG || 'webmeet-infra' }}",
+        'write_env WEBMEET_INFRA_IMAGE_TAG',
+        'write_env WEBMEET_INFRA_HEALTH_PORT',
+        'set_var WEBMEET_INFRA_IMAGE_TAG "${WEBMEET_INFRA_IMAGE_TAG:-webmeet-infra}"',
+        'set_var WEBMEET_INFRA_HEALTH_PORT "${WEBMEET_INFRA_HEALTH_PORT:-17000}"',
+        'podman pull "docker.io/assistos/livekit-server-agent:${WEBMEET_INFRA_IMAGE_TAG}"',
+        '"http://127.0.0.1:${WEBMEET_INFRA_HEALTH_PORT}/"',
+        'liveKitServerAgent health did not respond and STRICT_INFRA_CHECKS=1.',
+    ]) {
+        assert.equal(source.includes(required), true, `missing LiveKit compatibility contract: ${required}`);
+    }
+    assert.doesNotMatch(source, /cleanup_retired_webmeet_infra|retired_pattern|delete agents\[key\]|delete routing\.routes\[key\]/);
+});
 
 test('Explorer QA destroy removes only its Ploinky-owned Cloudflare publication', () => {
   const source = fs.readFileSync(
@@ -234,7 +263,6 @@ test('Explorer QA destroy removes only its Ploinky-owned Cloudflare publication'
   assert.doesNotMatch(source, /tunnelTokenSecret|publication\/explorer-qa-tunnel/);
   assert.doesNotMatch(source, /BOX_STATUS="\$\("\$PLOINKY" status\)"/);
   assert.doesNotMatch(source, /workspace_name|inputs\.workspace_name/);
-  assert.doesNotMatch(source, /basic\|https:\/\/github\.com\/AssistOS-AI\/basic\.git/);
   assert.doesNotMatch(source, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
   assert.equal(source.match(/ssh-keyscan/g)?.length, 1, 'destroy host key must be scanned only in pinned preflight');
   assert.ok(
