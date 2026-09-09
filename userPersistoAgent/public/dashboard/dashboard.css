@@ -6,9 +6,7 @@ a:hover { text-decoration: underline; }
 .account-shell { width: min(1000px, calc(100% - 48px)); margin: 0 auto; }
 .account-header { min-height: 100px; display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
 .account-brand { display: flex; gap: 10px; align-items: center; color: #1c2938; font-size: 17px; font-weight: 650; letter-spacing: -.4px; }
-.brand-mark { display: grid; place-items: center; width: 30px; height: 32px; border-radius: 8px; background: #264ec6; color: white; font-size: 19px; }
 .page-heading { padding: 36px 0 16px; }
-.page-heading h1 { margin: 10px 0; font-size: clamp(28px, 4vw, 36px); font-weight: 650; letter-spacing: -1px; }
 .page-heading p { color: #657185; font-size: 15px; line-height: 1.6; }
 .page-heading .eyebrow { font-size: 11px; font-weight: 650; letter-spacing: 1.8px; color: #536381; }
 .account-grid { display: grid; grid-template-columns: minmax(270px, .9fr) minmax(0, 1.3fr); gap: 24px; }
