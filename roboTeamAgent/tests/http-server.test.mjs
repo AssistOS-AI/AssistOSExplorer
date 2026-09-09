@@ -41,6 +41,18 @@ async function startFixture(options = {}) {
     };
 }
 
+test('terminal home endpoint requires administrator access', async () => {
+    const fixture = await startFixture();
+    try {
+        const robot = await fixture.robotStore.create({ name: 'terminal-robot' });
+        const url = `${fixture.baseUrl}/api/robots/${robot.id}/terminal`;
+        assert.equal((await fetch(url, { method: 'POST' })).status, 401);
+        assert.equal((await fetch(url, { method: 'POST', headers: { 'x-ploinky-auth-info': authHeader('user') } })).status, 403);
+        assert.equal((await fetch(url, { method: 'POST', headers: { 'x-roboteam-internal-token': 'test-token' } })).status, 403);
+        assert.equal(fixture.runtimeManager.status(robot.id).state, 'stopped');
+    } finally { await fixture.close(); }
+});
+
 test('robot API shares workspace robots and restricts creation to administrators', async () => {
     const fixture = await startFixture();
     try {

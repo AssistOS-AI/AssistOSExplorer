@@ -1,3 +1,5 @@
+import { openRobotTerminal } from './terminal.js';
+
 const config = globalThis.ROBOTEAM_CONFIG || {};
 const basePath = config.publicBasePath || './';
 const routeKey = config.routeKey || 'roboTeamAgent';
@@ -171,6 +173,14 @@ function renderRobots(robots, canAdmin = false) {
     }
     for (const robot of robots) {
         const card = robotTemplate.content.firstElementChild.cloneNode(true);
+        const terminalButton = card.querySelector('.open-terminal');
+        terminalButton.hidden = !canAdmin;
+        terminalButton.addEventListener('click', async () => {
+            terminalButton.disabled = true;
+            try { await openRobotTerminal(robot, api); }
+            catch (error) { showError(error); }
+            finally { terminalButton.disabled = false; }
+        });
         card.querySelector('.open-chat').addEventListener('click', () => {
             const params = new URLSearchParams({ agent: routeKey, robot: robot.name, 'workspace-dir': '.', 'forward-envelope': '1' });
             window.open(`/webchat?${params}`, '_blank', 'noopener');

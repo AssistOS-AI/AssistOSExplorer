@@ -40,5 +40,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 node "$script_dir/verify-ala.mjs"
 
 node "$script_dir/prepare-data.mjs"
+mkdir -p /etc/ploinky
+ln -sfn /code/scripts/webtty-env.sh /etc/ploinky/webtty-env.sh
 
 echo "RoboTeam runtime contract verified"

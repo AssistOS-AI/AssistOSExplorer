@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE } from './constants.mjs';
+import { prepareRobotShell } from './robot-shell.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -133,7 +134,7 @@ function mappedPort(output) {
     return Number(match[1]);
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, codingAgents = {} }) {
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, shellTools }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
@@ -153,16 +154,18 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '-e', `SUBFOLDER=${subfolder}`, '-e', `TITLE=${robot.name}`,
             '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
             ...(mode === 'browser' ? ['-e', 'CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility'] : []),
-            ...(Object.keys(codingAgents).length ? [
-                '-e', `PATH=${CODING_AGENT_NAMES.filter((name) => codingAgents[name]?.path).map((name) => `/opt/roboteam-${name}/bin`).join(':')}:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+            ...(shellTools ? [
+                '-e', 'PATH=/data/tool-cache/shell/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                 '-e', 'CODEX_HOME=/config/.codex',
+                '-e', 'HOME=/config',
+                '-e', 'XDG_CONFIG_HOME=/config/.config', '-e', 'XDG_CACHE_HOME=/config/.cache',
+                '-e', 'XDG_DATA_HOME=/config/.local/share', '-e', 'XDG_STATE_HOME=/config/.local/state',
+                '-e', 'PI_CODING_AGENT_DIR=/config/.pi/agent',
             ] : []),
             '-v', `${path.join(robotRoot, 'home')}:/config`,
             '-v', `${cwd}:/workspace`,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
-            ...CODING_AGENT_NAMES.flatMap((name) => (
-                codingAgents[name]?.path ? ['-v', `${codingAgents[name].path}:/opt/roboteam-${name}:ro`] : []
-            )),
+            ...(shellTools ? ['-v', `${shellTools.root}:/data/tool-cache:ro`] : []),
             images[mode],
         ],
     };
@@ -263,6 +266,7 @@ export class RuntimeManager {
                 : path.join(this.dataDir, 'robots', robot.id, 'workspace');
             const robotHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             await this._prepareRobotAgentState(robotHome);
+            await prepareRobotShell(robotHome);
             const existing = this.sessions.get(robot.id);
             if (existing) {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
@@ -277,11 +281,11 @@ export class RuntimeManager {
                 this.sessions.delete(robot.id);
             }
             if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
-            const [tools, codingAgents] = await Promise.all([
+            const [tools, shellTools] = await Promise.all([
                 this.toolCache.prepareMode(mode),
-                mode === 'desktop' ? this.toolCache.prepareCodingAgents() : Promise.resolve({}),
+                mode === 'desktop' ? this.toolCache.prepareShellTools() : Promise.resolve(null),
             ]);
-            const plan = buildRobotRunArgs({ robot, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, codingAgents });
+            const plan = buildRobotRunArgs({ robot, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools });
             const session = { robotId: robot.id, mode, cwd, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
             this.sessions.set(robot.id, session);
             try {

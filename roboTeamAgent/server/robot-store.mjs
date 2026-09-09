@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DATA_DIR } from './constants.mjs';
+import { prepareRobotShell } from './robot-shell.mjs';
 
 const ROBOT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
@@ -157,6 +158,7 @@ export class RobotStore {
         const codexHome = path.join(robotRoot, 'home', '.codex');
         await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
         await fs.chmod(codexHome, 0o700);
+        await prepareRobotShell(path.join(robotRoot, 'home'));
     }
 
     async _readMetadata(robotId) {

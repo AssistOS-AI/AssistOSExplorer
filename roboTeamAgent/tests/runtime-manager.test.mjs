@@ -9,6 +9,7 @@ import test from 'node:test';
 import { buildRobotRunArgs, RuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
 
 const preparedToolCache = {
+    prepareShellTools: async () => ({ root: '/cache', binPath: '/cache/shell/bin' }),
     prepareMode: async (mode) => ({ path: `/cache/${mode}`, versions: {} }),
     prepareCodex: async () => ({ path: '/cache/codex', binPath: '/cache/codex/bin', versions: {} }),
     prepareCodingAgents: async (names = ['codex', 'opencode', 'pi']) => Object.fromEntries(names.map((name) => [name, {
@@ -49,17 +50,11 @@ test('builds browser and desktop containers around the persistent robot director
         timezone: 'Europe/Bucharest',
         cwd: '/workspace/project',
         toolsPath: '/cache/desktop',
-        codingAgents: {
-            codex: { path: '/cache/codex' },
-            opencode: { path: '/cache/opencode' },
-            pi: { path: '/cache/pi' },
-        },
+        shellTools: { root: '/cache' },
     });
-    assert.ok(desktop.args.includes('/cache/codex:/opt/roboteam-codex:ro'));
-    assert.ok(desktop.args.includes('/cache/opencode:/opt/roboteam-opencode:ro'));
-    assert.ok(desktop.args.includes('/cache/pi:/opt/roboteam-pi:ro'));
+    assert.ok(desktop.args.includes('/cache:/data/tool-cache:ro'));
     assert.ok(desktop.args.includes('CODEX_HOME=/config/.codex'));
-    assert.ok(desktop.args.includes('PATH=/opt/roboteam-codex/bin:/opt/roboteam-opencode/bin:/opt/roboteam-pi/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
+    assert.ok(desktop.args.includes('PATH=/data/tool-cache/shell/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
     assert.deepEqual(desktop.args.slice(2, 4), ['--log-driver', 'k8s-file']);
 });
 

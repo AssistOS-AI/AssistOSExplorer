@@ -6,6 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
 import { RobotSkillsets, publicSkillsets } from './robot-skillsets.mjs';
+import { robotTerminalDirectory } from './robot-terminal.mjs';
+import { prepareRobotShell } from './robot-shell.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -200,6 +202,17 @@ export function createRoboTeamServer(options) {
             }
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
+            if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');
+
+            const terminalRobotId = matchRobotPath(pathname, '/terminal');
+            if (terminalRobotId && req.method === 'POST') {
+                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
+                if (!await robotStore.get(terminalRobotId)) return sendError(res, 404, 'robot not found');
+                const directory = await robotTerminalDirectory(robotStore, terminalRobotId, runtimeManager.workspaceRoot);
+                await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'));
+                await runtimeManager.toolCache.prepareShellTools();
+                return sendJson(res, 200, { ok: true, directory });
+            }
 
             if (pathname === '/api/robots' && req.method === 'GET') {
                 const robots = await robotStore.list();

@@ -72,6 +72,40 @@ export class ToolCache {
         return this.prepareCodingAgent('codex');
     }
 
+    prepareShellTools() {
+        return this._once('shell', async () => {
+            const agents = await this.prepareCodingAgents();
+            const generation = generationName(Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, value.path])));
+            const directory = path.join(this.root, 'shell-generations', generation);
+            await fs.mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
+            const staging = await fs.mkdtemp(path.join(this.root, 'shell-generations', '.staging-'));
+            try {
+                await fs.mkdir(path.join(staging, 'bin'));
+                for (const [name, agent] of Object.entries(agents)) {
+                    const target = path.resolve(agent.binPath, name);
+                    if (!target.startsWith(this.root + path.sep)) throw new Error('Coding-agent executable is outside the shared cache');
+                    const relative = path.relative(path.join(directory, 'bin'), target);
+                    await fs.symlink(relative, path.join(staging, 'bin', name));
+                }
+                await fs.rename(staging, directory).catch(error => {
+                    if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
+                });
+                for (const name of Object.keys(agents)) {
+                    if (!await isExecutable(path.join(directory, 'bin', name))) throw new Error(`Shared ${name} executable is unavailable`);
+                    if (await fs.realpath(path.join(directory, 'bin', name)) !== await fs.realpath(path.join(agents[name].binPath, name))) {
+                        throw new Error(`Shared ${name} executable does not match its cache generation`);
+                    }
+                }
+                const candidate = path.join(this.root, `.shell-${crypto.randomUUID()}`);
+                try {
+                    await fs.symlink(path.relative(this.root, directory), candidate);
+                    await fs.rename(candidate, path.join(this.root, 'shell'));
+                } finally { await fs.unlink(candidate).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
+                return { root: this.root, binPath: path.join(this.root, 'shell', 'bin'), agents };
+            } finally { await fs.rm(staging, { recursive: true, force: true }); }
+        });
+    }
+
     prepareCodingAgent(name) {
         if (!Object.hasOwn(CODING_AGENT_PACKAGES, name)) throw new Error(`unsupported coding agent: ${name}`);
         return this._once(name, () => this._prepareCodingAgent(name));
