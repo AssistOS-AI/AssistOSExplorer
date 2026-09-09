@@ -7,6 +7,53 @@ import { createPloinkyTaskContext } from '../src/lib/ploinkyTaskContext.mjs';
 import { createSkillInvocation } from '../src/skills/launch-robot/scripts/ploinkyInvocation.mjs';
 import { action } from '../src/skills/launch-gpt-researcher/scripts/action.mjs';
 import { createWebchatBackgroundTaskManager } from '../src/lib/webchatBackgroundTasks.mjs';
+import { action as launchRobot } from '../src/skills/launch-robot/scripts/action.mjs';
+import { readWorkspaceTasks } from '../src/lib/workspaceTasks.mjs';
+
+test('robot live links travel through receipts and persist alongside the model-facing link', async (t) => {
+    const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'live-receipt-'));
+    t.after(() => fs.rm(workingDir, { recursive: true, force: true }));
+    const origin = { workingDir, sessionId: 'session-live', turnId: 'turn-live', assistantMessageId: 'message-live' };
+    const attached = [];
+    const published = [];
+    const manager = await createWebchatBackgroundTaskManager({ workingDir, emitProtocol: false,
+        onTaskStarted: (task) => attached.push(task.id), onPublish: (event) => published.push(event),
+        agentClientModule: { setAgentTaskObserver() { return () => {}; },
+            async createAgentClient() { return { getTaskStatus: async () => ({ status: 'running' }) }; } },
+    });
+    t.after(() => manager.close());
+    const context = await createPloinkyTaskContext({ context: origin, env: {},
+        onTask: (task) => manager.observeScriptTask(task, origin) });
+    t.after(() => context.close());
+    let observer;
+    const sdk = {
+        setAgentTaskObserver(fn) { observer = fn; return () => {}; },
+        async createAgentClient(agentName) { return {
+            ensureAgentRunning: async () => {}, getTaskStatus: async () => ({ status: 'running' }),
+            async callToolWithoutWait(toolName, args) {
+                if (!toolName.startsWith('start')) return { sessionUrl: '/example/session/' };
+                const metadata = { status: 'running', taskId: 'live-task' };
+                await observer({ agentName, toolName, taskId: 'live-task', arguments: args, metadata });
+                return { metadata };
+            },
+        }; },
+    };
+    const invocation = await createSkillInvocation({ skillName: 'launch-robot',
+        input: 'browser analyst: inspect', contextDirectory: context.directory, sdk });
+    const output = await launchRobot(invocation);
+    await invocation.close();
+    await context.close();
+    assert.equal(output, 'Robot task live-task started. [Open live browser](/example/session/)');
+    assert.equal(attached.length, 1);
+    const [stored] = readWorkspaceTasks(workingDir);
+    assert.deepEqual(stored.liveSession, { mode: 'browser', url: '/example/session/' });
+    assert.ok(published.some((event) => event.task?.liveSession?.url === '/example/session/'));
+    // Delayed initial receipt must not erase UI metadata or start a second observer.
+    await manager.observeScriptTask({ agentName: 'roboTeamAgent', taskId: 'live-task',
+        toolName: 'startBrowserTaskForRobot', metadata: {} }, origin);
+    assert.equal(attached.length, 1);
+    assert.deepEqual(readWorkspaceTasks(workingDir)[0].liveSession, stored.liveSession);
+});
 
 test('script task receipts attach authenticated observers to their originating chat turn', async (t) => {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'script-observer-'));

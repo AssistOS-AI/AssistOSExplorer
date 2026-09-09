@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { normalizeTaskLiveSession } from './taskLiveSession.mjs';
 import { resolveAchillesPrivateDataRoot } from './privateDataRoot.mjs';
 import { acquireExecutionLease } from './workspaceStateLock.mjs';
 import { getSkillRuntimeOrigin, runWithSkillRuntimeOrigin } from './skillTaskOrigin.mjs';
@@ -236,6 +237,7 @@ export async function createWebchatBackgroundTaskManager({
                         createdAt: record.createdAt,
                         updatedAt: task?.updatedAt || new Date().toISOString(),
                         executionStartedAt: record.executionStartedAt,
+                        liveSession: record.liveSession,
                         turn: record.turn,
                         error: trim(task?.error),
                         ...(record.continuation ? { continuation: record.continuation } : {}),
@@ -316,6 +318,7 @@ export async function createWebchatBackgroundTaskManager({
             executionStartedAt: existing?.executionStartedAt || metadata?.createdAt || now,
             turn: existing?.turn || 1,
             logSeq: null,
+            liveSession: normalizeTaskLiveSession(metadata?.liveSession || existing?.liveSession),
             continuation,
             logRetention: metadata?.logRetention === 'full' || existing?.logRetention === 'full'
                 ? 'full'
@@ -415,6 +418,19 @@ export async function createWebchatBackgroundTaskManager({
             // Verify the returned task through the authenticated SDK before attaching it.
             const status = await client.getTaskStatus(task.taskId);
             if (!status || status.status === 'not_found') throw new Error('script_task_not_found');
+            const existing = getTask(workingDir, localTaskId(task.agentName, task.taskId));
+            const liveSession = normalizeTaskLiveSession(task.metadata?.liveSession);
+            if (existing) {
+                if (liveSession && existing.sessionId === origin?.sessionId
+                    && existing.turnId === origin?.turnId) {
+                    const running = active.get(existing.id);
+                    if (running) running.liveSession = liveSession;
+                    const saved = await ingestTaskEvent(workingDir, { task: { ...existing, liveSession } });
+                    if (!saved.rejected) await publish({ event: 'update', task: saved.task,
+                        ...association(existing) }, { persist: false });
+                }
+                return existing;
+            }
             return watch({ ...task, getTaskStatus: () => client.getTaskStatus(task.taskId) }, null, origin);
         },
         createTaskStartWaiter(origin = getSkillRuntimeOrigin()) {

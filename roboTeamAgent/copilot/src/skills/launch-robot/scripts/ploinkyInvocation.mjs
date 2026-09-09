@@ -39,11 +39,13 @@ export async function createSkillInvocation({ skillName, input, contextDirectory
         await fs.rename(temporary, path.join(folder, name + '.json'));
     };
     const clients = new Map();
+    const launchedTasks = new Map();
     let module = sdk;
     let removeObserver;
     const load = async () => {
         if (!module) module = await import('/Agent/client/AgentMcpClient.mjs');
         if (!removeObserver) removeObserver = module.setAgentTaskObserver(async (task) => {
+            launchedTasks.set(task.taskId, task);
             await receipt({ type: 'task-started', task: {
                 agentName: task.agentName, taskId: task.taskId, toolName: task.toolName,
                 arguments: task.arguments, metadata: task.metadata,
@@ -76,6 +78,14 @@ export async function createSkillInvocation({ skillName, input, contextDirectory
         resources: context.webchatResources, paths: context.webchatPaths, origin: context.webchatOrigin,
         hasInvocationToken: false, hasUserDelegationToken: Boolean(setup.userDelegationToken),
         callAgentTool, ensureAgentRunning, getTaskStatus,
+        async publishLiveSession(taskId, liveSession) {
+            const task = launchedTasks.get(taskId);
+            if (!task) throw new Error('Unknown launched task.');
+            await receipt({ type: 'task-started', task: {
+                agentName: task.agentName, taskId, toolName: task.toolName,
+                arguments: task.arguments, metadata: { ...task.metadata, liveSession },
+            } });
+        },
         agentClient: {
             callToolWithoutWait: (tool, payload) => callAgentTool(target, tool, payload),
             ensureAgentRunning, getTaskStatus,

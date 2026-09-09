@@ -1,6 +1,6 @@
 ---
 name: launch-robot
-description: Delegate CLI, desktop, or browser work to a workspace robot; GUI tasks return an authenticated live session link.
+description: Delegate CLI, desktop, or browser work to a workspace robot; WebChat displays GUI task sessions through structured task metadata.
 ---
 
 # Launch Robot
@@ -12,7 +12,7 @@ Start a RoboTeam CLI, Desktop, or Browser task for one robot in the current conv
 Use `desktop <robot name>: <task>` or `browser <robot name>: <task>`. Omit the name with `desktop: <task>` or `browser: <task>` to select the ordinary workspace robot named `default`. A JSON object with `mode`, `task`, optional `robotName`, and optional `ca`, `model`, or `skillSets` is also accepted. Only an omitted JSON `robotName` selects `default`; explicit blank or non-string names are errors. Explicit unknown names remain errors and never fall back.
 
 ## Output Format
-Plain text containing the native Ploinky task id and a Markdown link to the live Selkies session after the GUI and its MCP bridge are ready. AchillesCLI reports intermediate ALA messages and the terminal result through its background-task view.
+Plain text confirming startup with the native Ploinky task id and a Markdown link to the ready live session. Preserve the returned URL exactly. The script also publishes structured task metadata so WebChat can show its live-session button independently. Intermediate ALA messages and the terminal result appear in the task view.
 
 ## Constraints
 Discover available robot skillsets and skills with `scripts/list.mjs` before selecting them. JSON launch input accepts `skillSets` or its alias `skillset` for whole registered repositories and `skills` for qualified `skillset/skill` names. Values may be comma-separated strings or arrays. Whole sets and individual skills form a union; omission mounts no extra robot skills. Never invent names or pass filesystem paths as selectors. RoboTeam validates the allowed catalog, snapshots the selection and keeps it for Resume and custom continuation even if the administrator later removes the skillset.

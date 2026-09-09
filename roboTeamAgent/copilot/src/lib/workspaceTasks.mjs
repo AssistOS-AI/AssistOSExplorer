@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { normalizeTaskLiveSession } from './taskLiveSession.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -213,6 +214,7 @@ function normalizeTask(raw) {
         description: String(raw.description || '').replace(/\s+/g, ' ').trim().slice(0, 240),
         status,
         remoteStatus: String(raw.remoteStatus || '').slice(0, 80),
+        ...(normalizeTaskLiveSession(raw.liveSession) ? { liveSession: normalizeTaskLiveSession(raw.liveSession) } : {}),
         createdAt,
         updatedAt: validTimestamp(raw.updatedAt) || now,
         executionStartedAt: validTimestamp(raw.executionStartedAt) || createdAt,

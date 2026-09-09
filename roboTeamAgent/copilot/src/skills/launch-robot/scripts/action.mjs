@@ -124,8 +124,8 @@ export async function action(invocation = {}) {
         if (request.mode === 'cli') return `Robot CLI task ${taskId} started.`;
         const ready = await waitUntilVisible(client, request, started, invocation);
         if (!ready.sessionUrl) throw new Error('RoboTeam did not return a live session URL');
-        const label = request.mode === 'desktop' ? 'desktop' : 'browser';
-        return `Robot task ${taskId} started. [Open live ${label}](${ready.sessionUrl})`;
+        await invocation.publishLiveSession?.(taskId, { mode: request.mode, url: ready.sessionUrl });
+        return `Robot task ${taskId} started. [Open live ${request.mode}](${ready.sessionUrl})`;
     } catch (error) {
         return `Could not start the RoboTeam task: ${error?.message || 'request failed'}`;
     }

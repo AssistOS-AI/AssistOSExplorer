@@ -25,9 +25,11 @@ test('normalizes whole and individual robot skill selections for the SDK payload
     assert.throws(() => launchRobotInternals.normalizeRequest('{"mode":"desktop","task":"x","skills":{}}'), /string or array/);
 });
 
-test('starts a desktop robot in the active workspace and returns its ready Selkies link', async () => {
+test('starts a desktop robot and publishes its link and returns it to the model', async () => {
     const calls = [];
+    const presentations = [];
     const result = await action({
+        publishLiveSession: async (...args) => presentations.push(args),
         promptText: 'desktop Analyst: inspect the application',
         workingDir: '/workspace/project',
         pollIntervalMs: 1,
@@ -44,6 +46,7 @@ test('starts a desktop robot in the active workspace and returns its ready Selki
     });
 
     assert.equal(result, 'Robot task task-1 started. [Open live desktop](/robo/live/)');
+    assert.deepEqual(presentations, [['task-1', { mode: 'desktop', url: '/robo/live/' }]]);
     assert.deepEqual(calls, [
         {
             toolName: 'startDesktopTaskForRobot',
@@ -84,7 +87,7 @@ test('starts a browser robot from JSON with optional execution hints', async () 
         },
     });
 
-    assert.match(result, /\[Open live browser\]\(\/browser\/live\/\)/u);
+    assert.equal(result, 'Robot task task-2 started. [Open live browser](/browser/live/)');
     assert.deepEqual(calls[0], {
         toolName: 'startBrowserTaskForRobot',
         input: {
