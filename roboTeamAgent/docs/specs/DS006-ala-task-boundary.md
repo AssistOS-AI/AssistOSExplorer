@@ -9,6 +9,8 @@ ALA is the task executor started by RoboTeam; it is not responsible for creating
 
 ## Core Content
 
+The robot command catalog must accept an optional conversation `sessionId` and discover model completions through ALA using that robot's home and selected conversation. A missing session id must use a non-persisted preview, not another saved conversation. Model discovery must not bind a backend or create conversation state. Discovery errors must be returned explicitly. WebChat must refresh the catalog when the selected conversation or backend changes and must not let an earlier request replace a later conversation's catalog.
+
 Graphical launch scripts must publish their ready session as structured `liveSession` metadata with `mode` and a bounded same-router `url` through the existing task receipt channel. The parent must verify the task through the authenticated MCP client before persisting or publishing its presentation. Duplicate or reordered receipts must not reset task lifecycle or create duplicate observers. Task polling and snapshot reads must preserve the metadata. The stdout result supplied to the coding agent must include startup confirmation, task id and the exact live-session Markdown link. WebChat owns the fixed English live-session button labels and validates the URL independently; no optional agent identity may be hardcoded in Ploinky for this feature.
 
 The bundled copilot catalog must contain bash, launch-gpt-researcher, launch-open-interpreter, launch-web-search and launch-robot. Codex, OpenCode and Pi are ALA backends, not standalone Ploinky workers. Provider names in ordinary prompts must not force selection of removed launcher skills. Existing task catalog snapshots remain unchanged for continuation.

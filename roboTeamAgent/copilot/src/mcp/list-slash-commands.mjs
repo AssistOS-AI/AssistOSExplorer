@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { buildSlashCommandCatalog } from '../repl/SlashCommandHandler.mjs';
 import { createAnthropicSkillCatalog } from '../lib/anthropicSkillCatalog.mjs';
@@ -97,12 +98,16 @@ export async function loadAutocompleteCatalog(options = {}) {
     const workingDir = options.dir || process.env.WORKSPACE_PATH || process.cwd();
     const installation = options.installation || await resolveAlaInstallation();
     const skillCatalog = await discoverCatalog(workingDir, { ...options, installation });
-    const sessionStore = new ConversationSessionStore({ workingDir });
+    const storedSessions = new ConversationSessionStore({ workingDir });
+    const preview = options.freshSession && !options.sessionId
+        ? { sessionId: randomUUID(), cwd: workingDir, messages: [] } : null;
+    const sessionStore = preview ? { loadSession: () => preview } : storedSessions;
     const modelCompletions = [{ value: 'default', label: 'default', description: 'Use the native backend default' }];
     let modelError;
     const engine = options.engine || createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, installation });
     try {
-        const current = await sessionStore.ensureCurrentSession();
+        const current = options.sessionId ? storedSessions.loadSession(options.sessionId)
+            : preview || await storedSessions.ensureCurrentSession();
         const { models } = await engine.listModels({ sessionId: current.sessionId, signal: options.signal });
         modelCompletions.push(...models.map((model) => ({
             value: typeof model === 'string' ? model : model.id || model.name || model.key,

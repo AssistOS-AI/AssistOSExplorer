@@ -1,14 +1,14 @@
 import path from 'node:path';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
 import { publicSkillsets } from '../server/robot-skillsets.mjs';
-import { toAutocompleteCatalog, buildSessionCompletions, buildTaskActionCompletions } from '../copilot/src/mcp/list-slash-commands.mjs';
+import { loadAutocompleteCatalog, buildSessionCompletions, buildTaskActionCompletions } from '../copilot/src/mcp/list-slash-commands.mjs';
 
 try {
     let raw = '';
     for await (const chunk of process.stdin) raw += chunk;
     const payload = JSON.parse(raw || '{}');
     const input = payload.input || payload.arguments || payload.params?.arguments || {};
-    const context = await prepareCopilotContext(input.robot || 'default', { prepareTools: false });
+    const context = await prepareCopilotContext(input.robot || 'default', { prepareTools: !process.argv.includes('--skills') });
     const workingDir = path.resolve(input.dir || process.env.PLOINKY_WORKSPACE_ROOT || '/workspace');
     const sets = publicSkillsets(context.robot);
     // Discovery is metadata-only. Different allowed sets may contain the same native name;
@@ -18,7 +18,8 @@ try {
     const catalog = { getSkills: () => available };
     const result = process.argv.includes('--skills') ? { skillsets: sets, skills: available.map((skill) => ({
         key: skill.id, name: skill.name, type: 'anthropic', isInternal: true, enabled: skill.enabled })) }
-        : await toAutocompleteCatalog({ dir: workingDir, skillCatalog: catalog,
+        : await loadAutocompleteCatalog({ dir: workingDir, skillCatalog: catalog,
+            sessionId: input.sessionId, freshSession: true, signal: AbortSignal.timeout(20000),
             sessionCompletions: buildSessionCompletions(workingDir),
             taskCompletions: Object.fromEntries(['view', 'continue', 'stop', 'model', 'login'].map((action) =>
                 [action, buildTaskActionCompletions(workingDir, action)])) });
