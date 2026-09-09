@@ -47,6 +47,8 @@ Both Marketplace tabs must exclude skill entries, repositories classified as `sk
 
 Repository documentation preview must remain reachable through the repository-scoped route `/.ploinky/repos/AchillesIDE/docs/development.html` when the workspace exposes the repository mount.
 
+Explorer must enable RoboTeam globally and route Open Copilot here through the RoboTeam copilot plugin with `agent=roboTeamAgent`, `robot=default` and the selected directory. Robot selection must remain in the WebChat launch query and declared MCP command-catalog arguments. Explorer must not enable a separate AchillesCLI agent or copy its persisted data. RoboTeam owns robot account configuration, conversational state and graphical task limits.
+
 ## Conclusion
 
 Ploinky provides the deployment and trust boundary; Explorer provides the workspace interface inside that boundary.
