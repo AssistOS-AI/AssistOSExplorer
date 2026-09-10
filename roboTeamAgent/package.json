@@ -8,6 +8,6 @@
     "check": "node --check server/main.mjs && node --check server/http-server.mjs && node --check server/robot-store.mjs && node --check server/runtime-manager.mjs && node --check server/tool-cache.mjs && node --check tools/control.mjs && node --check public/app.js && node --check IDE-plugins/roboteam-tool-button/roboteam-tool-button.js"
   },
   "dependencies": {
-    "advanced-language-agent": "git+https://github.com/AssistOS-AI/AdvancedLanguageAgent.git#7755fa687186dc513cfae5db02419ba858eda35e"
+    "advanced-language-agent": "git+https://github.com/AssistOS-AI/AdvancedLanguageAgent.git#74aec671f35a8ae74c3503e5c446e2a8304186bf"
   }
 }

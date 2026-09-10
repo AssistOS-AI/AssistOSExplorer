@@ -1,6 +1,6 @@
 # Runtime dependency selection
 
-RoboTeam uses the existing AdvancedLanguageAgent runtime for native execution, skill catalog isolation, and continued sessions. `package.json` pins that Git dependency to commit `7755fa687186dc513cfae5db02419ba858eda35e`, which supports both JSON skill manifests and live catalog directories. A moving branch reference could install an incompatible runtime during a fresh deployment.
+RoboTeam uses the existing AdvancedLanguageAgent runtime for native execution, skill catalog isolation, and continued sessions. `package.json` pins that Git dependency to commit `74aec671f35a8ae74c3503e5c446e2a8304186bf`, which supports both JSON skill manifests and live catalog directories and keeps native runtimes installed below `/workspace` visible inside the task sandbox. A moving branch reference could install an incompatible runtime during a fresh deployment.
 
 ALA is maintained at https://github.com/AssistOS-AI/AdvancedLanguageAgent and uses the MIT license, included in its installed `LICENSE`. Preserve that license when redistributing the package. To update, validate the proposed ALA commit with the repository suites and Ploinky's cross-repository skill acceptance test, then change the exact Git revision in `package.json`. Ploinky installs this manifest into its owned runtime dependency cache; a repository package lock does not select that cache's dependency versions.
 
