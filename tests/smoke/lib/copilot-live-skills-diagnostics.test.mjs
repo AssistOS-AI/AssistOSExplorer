@@ -40,7 +40,7 @@ function responseFixture() {
 }
 
 test('only an exact proven 204 acknowledgement cancellation becomes retained transport evidence', () => {
-    for (const path of ['/dpuAgent/mcp', '/roboTeamAgent/mcp', '/webchat/input', '/webchat/interaction']) {
+    for (const path of ['/dpuAgent/mcp', '/roboTeamAgent/mcp', '/explorer/mcp', '/webchat/input', '/webchat/interaction']) {
         const f = responseFixture(); f.request.url = () => 'http://127.0.0.1:8080' + path;
         f.page.emit('request', f.request); f.page.emit('response', f.response); f.page.emit('requestfailed', f.request);
         assert.deepEqual(f.errors, []);
@@ -116,6 +116,7 @@ test('real Chromium reports completed unread 204 acknowledgements as aborts; con
     const cases = [
         { path: '/dpuAgent/mcp', payload: { jsonrpc: '2.0', method: 'notifications/initialized' } },
         { path: '/roboTeamAgent/mcp', payload: { jsonrpc: '2.0', method: 'notifications/initialized' } },
+        { path: '/explorer/mcp', payload: { jsonrpc: '2.0', method: 'notifications/initialized' } },
         { path: '/webchat/input', payload: { text: 'fixture acknowledgement' } },
         { path: '/webchat/interaction', payload: { interactionId: 'fixture-interaction', optionId: 'allow-once' } },
         { path: '/webchat/interaction', payload: { interactionId: 'fixture-interaction', cancelled: true } },
@@ -147,7 +148,8 @@ test('real browser unread 200, unknown 204, pre-response and partial-body cancel
     const f = await isolatedBrowser(t), page = await f.browser.newPage(), errors = [], network = [];
     await page.goto(f.origin); const observer = observeLiveSkillsBrowser({ errors, network }); observer.observe(page);
     for (const [path, mode] of [['/webchat/input', '200'], ['/unexpected/mcp', '204'], ['/webchat/input', 'hanging'],
-        ['/webchat/input', 'partial'], ['/dpuAgent/mcp', 'truncated']]) {
+        ['/webchat/input', 'partial'], ['/dpuAgent/mcp', 'truncated'], ['/explorer/mcp', '200'],
+        ['/explorer/mcp', 'hanging'], ['/explorer/mcp', 'partial'], ['/explorer/mcp', 'truncated']]) {
         const before = errors.filter(event => event.kind === 'requestfailed').length;
         const failed = page.waitForEvent('requestfailed', { predicate: request => new URL(request.url()).pathname === path });
         await page.evaluate(async ({ path, mode }) => {

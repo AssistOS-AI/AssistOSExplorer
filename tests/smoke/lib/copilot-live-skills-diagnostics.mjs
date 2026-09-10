@@ -13,7 +13,7 @@ export function observeLiveSkillsBrowser({ errors, network, now = () => new Date
     const pages = new Map();
     const requests = new WeakMap();
     const completedNoContent = new WeakSet();
-    const acknowledgementPaths = new Set(['/dpuAgent/mcp', '/roboTeamAgent/mcp', '/webchat/input', '/webchat/interaction']);
+    const acknowledgementPaths = new Set(['/dpuAgent/mcp', '/roboTeamAgent/mcp', '/explorer/mcp', '/webchat/input', '/webchat/interaction']);
     let nextRequest = 0;
     function observe(page) {
         if (pages.has(page)) return;
