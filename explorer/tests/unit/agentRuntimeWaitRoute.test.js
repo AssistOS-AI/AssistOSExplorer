@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { waitForAgentRuntimeAvailability } from '../../shared/ui/agent-runtime-loader/agent-runtime-loader.js';
 
 import {
     buildAgentRuntimeWaitUrl,
@@ -11,6 +12,53 @@ import {
 } from '../../shared/ui/agent-runtime-loader/agent-runtime-wait-route.js';
 
 const ORIGIN = 'http://localhost:8080';
+
+test('RoboTeam dashboard waits through an inactive service response before navigation', async () => {
+    const targetUrl = resolveAgentRuntimeTarget({
+        agentRef: 'AchillesCLI/roboTeamAgent', target: '/base-agent-additional-server/roboTeamAgent/3001/',
+    }, ORIGIN);
+    let attempts = 0;
+    let waits = 0;
+    const result = await waitForAgentRuntimeAvailability({
+        agentRef: 'AchillesCLI/roboTeamAgent', label: 'RoboTeam',
+        readRuntime: async () => ({ active: true, running: false, status: 'starting' }),
+        wait: async () => { waits += 1; },
+        operation: () => probeAgentRuntimeTarget(targetUrl, async () => {
+            attempts += 1;
+            return { ok: attempts > 1, status: attempts > 1 ? 200 : 503, redirected: false };
+        }),
+    });
+    assert.equal(result, targetUrl);
+    assert.equal(attempts, 2);
+    assert.equal(waits, 1);
+});
+
+test('builds and parses the RoboTeam additional-service waiting route', () => {
+    const targetUrl = '/base-agent-additional-server/roboTeamAgent/3001/';
+    const waitingUrl = buildAgentRuntimeWaitUrl({
+        agentRef: 'AchillesCLI/roboTeamAgent', label: 'RoboTeam', targetUrl,
+    }, ORIGIN);
+    const parsed = parseAgentRuntimeWaitRoute(waitingUrl.hash, ORIGIN);
+    assert.equal(parsed.agentRef, 'AchillesCLI/roboTeamAgent');
+    assert.equal(parsed.targetUrl.toString(), `${ORIGIN}${targetUrl}`);
+});
+
+test('additional-service targets stay on the same origin and exact agent with a valid port', () => {
+    for (const target of [
+        '/base-agent-additional-server/otherAgent/3001/',
+        '/base-agent-additional-server/roboTeamAgentOther/3001/',
+        '/base-agent-additional-server/roboTeamAgent/0/',
+        '/base-agent-additional-server/roboTeamAgent/65536/',
+        '/base-agent-additional-server/roboTeamAgent/not-a-port/',
+        '/base-agent-additional-server/roboTeamAgent/3001',
+        '/base-agent-additional-server/roboTeamAgent/3001/../../otherAgent/3001/',
+        'https://example.test/base-agent-additional-server/roboTeamAgent/3001/',
+        '/base-agent-additional-server/roboTeamAgent/3001/#fragment',
+    ]) {
+        assert.throws(() => resolveAgentRuntimeTarget({ agentRef: 'AchillesCLI/roboTeamAgent', target }, ORIGIN),
+            /target is invalid/, target);
+    }
+});
 
 test('builds and parses a same-agent Explorer waiting route', () => {
     const waitingUrl = buildAgentRuntimeWaitUrl({

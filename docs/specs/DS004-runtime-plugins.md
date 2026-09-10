@@ -25,6 +25,8 @@ A menu contribution declares its Explorer slots and stable presentation metadata
 
 On the initial file-browser route, Explorer may mount the shell before runtime discovery completes. As soon as the catalog is discovered, the host must refresh manifest-backed menu metadata while preserving any open action menu. The later component-mount readiness phase may mount plugin components, but it must not rebuild or close that menu.
 
+Agent dashboard launchers may use Explorer's `#agent-runtime-wait` bootstrap route before navigating to a protected page. A target must remain on the current origin, contain no credentials or fragment, and belong to the watched agent through either `/<agent>/...` or `/base-agent-additional-server/<agent>/<port>/...` with a valid TCP port. Cross-agent targets must be rejected. The loader must wait for the target HTTP response, the standard MCP tools handshake and a stable Router generation, and retain retry feedback for terminal failures. RoboTeam's toolbar button must open this waiting route for `AchillesCLI/roboTeamAgent` and its port-3001 dashboard, because its no-wait dependency can still be starting when Explorer renders. The Router remains responsible for service exposure and authorization.
+
 An unavailable plugin component or dependent agent must produce a visible, recoverable interface error without preventing unrelated Explorer functionality from loading.
 
 ## Conclusion
