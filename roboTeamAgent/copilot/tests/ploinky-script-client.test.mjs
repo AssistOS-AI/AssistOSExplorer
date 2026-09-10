@@ -12,19 +12,26 @@ import { readWorkspaceTasks } from '../src/lib/workspaceTasks.mjs';
 
 test('robot live links travel through receipts and persist alongside the model-facing link', async (t) => {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'live-receipt-'));
-    t.after(() => fs.rm(workingDir, { recursive: true, force: true }));
+    let manager;
+    let context;
+    t.after(async () => {
+        try {
+            await context?.close();
+        } finally {
+            manager?.close();
+            await fs.rm(workingDir, { recursive: true, force: true });
+        }
+    });
     const origin = { workingDir, sessionId: 'session-live', turnId: 'turn-live', assistantMessageId: 'message-live' };
     const attached = [];
     const published = [];
-    const manager = await createWebchatBackgroundTaskManager({ workingDir, emitProtocol: false,
+    manager = await createWebchatBackgroundTaskManager({ workingDir, emitProtocol: false,
         onTaskStarted: (task) => attached.push(task.id), onPublish: (event) => published.push(event),
         agentClientModule: { setAgentTaskObserver() { return () => {}; },
             async createAgentClient() { return { getTaskStatus: async () => ({ status: 'running' }) }; } },
     });
-    t.after(() => manager.close());
-    const context = await createPloinkyTaskContext({ context: origin, env: {},
+    context = await createPloinkyTaskContext({ context: origin, env: {},
         onTask: (task) => manager.observeScriptTask(task, origin) });
-    t.after(() => context.close());
     let observer;
     const sdk = {
         setAgentTaskObserver(fn) { observer = fn; return () => {}; },
@@ -57,10 +64,14 @@ test('robot live links travel through receipts and persist alongside the model-f
 
 test('script task receipts attach authenticated observers to their originating chat turn', async (t) => {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'script-observer-'));
-    t.after(() => fs.rm(workingDir, { recursive: true, force: true }));
+    let manager;
+    t.after(async () => {
+        manager?.close();
+        await fs.rm(workingDir, { recursive: true, force: true });
+    });
     const started = [];
     const reads = [];
-    const manager = await createWebchatBackgroundTaskManager({ workingDir, emitProtocol: false,
+    manager = await createWebchatBackgroundTaskManager({ workingDir, emitProtocol: false,
         onTaskStarted: (task, origin) => started.push({ task, origin }),
         agentClientModule: {
             setAgentTaskObserver() { return () => {}; },
@@ -69,7 +80,6 @@ test('script task receipts attach authenticated observers to their originating c
             }; },
         },
     });
-    t.after(() => manager.close());
     const origin = { workingDir, sessionId: 'session-a', turnId: 'turn-a', assistantMessageId: 'message-a' };
     await manager.observeScriptTask({ agentName: 'GPTResearcher', taskId: 'remote-a', toolName: 'execute-task', arguments: { prompt: 'Review' } }, origin);
     assert.deepEqual(reads[0], ['GPTResearcher', 'remote-a']);
@@ -80,10 +90,16 @@ test('script task receipts attach authenticated observers to their originating c
 
 test('launch scripts call the Ploinky SDK directly and publish task receipts without sockets', async (t) => {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'direct-ploinky-test-'));
-    t.after(() => fs.rm(workingDir, { recursive: true, force: true }));
+    let context;
+    t.after(async () => {
+        try {
+            await context?.close();
+        } finally {
+            await fs.rm(workingDir, { recursive: true, force: true });
+        }
+    });
     const tasks = [];
-    const context = await createPloinkyTaskContext({ context: { workingDir }, env: { PLOINKY_MASTER_KEY: 'must-not-copy' }, onTask: (task) => tasks.push(task) });
-    t.after(() => context.close());
+    context = await createPloinkyTaskContext({ context: { workingDir }, env: { PLOINKY_MASTER_KEY: 'must-not-copy' }, onTask: (task) => tasks.push(task) });
     assert.equal((await fs.readFile(path.join(context.directory, 'context.json'), 'utf8')).includes('must-not-copy'), false);
     assert.deepEqual((await fs.readdir(context.directory)).sort(), ['context.json', 'events']);
     let observer;
