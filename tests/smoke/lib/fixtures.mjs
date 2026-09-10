@@ -55,6 +55,12 @@ export function setPageDiagnosticsExpectedOffline(page, expected) {
   }
 }
 
+export function recordPageNavigationFailure(page, snapshot) {
+  for (const controller of diagnosticControllers.get(page) || []) {
+    controller.events.push({ kind: 'navigationfailure', type: 'info', ...snapshot });
+  }
+}
+
 export function checkpointPageDiagnostics(page, label) {
   const controllers = [...(diagnosticControllers.get(page) || [])];
   if (controllers.length === 0) {

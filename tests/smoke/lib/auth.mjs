@@ -1,4 +1,5 @@
-import { expect } from './fixtures.mjs';
+import { expect, recordPageNavigationFailure } from './fixtures.mjs';
+import { beginAuthNavigationDiagnostics } from './auth-navigation-diagnostics.mjs';
 import { smokeConfig } from './config.mjs';
 import { getWithoutKeepAlive } from './api-probe.mjs';
 
@@ -86,34 +87,47 @@ export async function signIn(
   returnTo = '/',
   { requireConfiguredPrincipal = false } = {},
 ) {
-  const sessionOk = await hasAuthenticatedSession(page.request);
-  if (sessionOk) {
-    await page.goto(returnTo, { waitUntil: 'load' });
-  } else {
-    const params = new URLSearchParams({
-      agent: smokeConfig.authAgent,
-      returnTo,
-    });
-    await page.goto(`/auth/login?${params.toString()}`, { waitUntil: 'load' });
-  }
+  const navigation = await beginAuthNavigationDiagnostics(page, account);
+  let stage = 'session-check';
+  try {
+    const sessionOk = await hasAuthenticatedSession(page.request);
+    stage = sessionOk ? 'authenticated-navigation' : 'login-navigation';
+    if (sessionOk) {
+      await page.goto(returnTo, { waitUntil: 'load' });
+    } else {
+      const params = new URLSearchParams({
+        agent: smokeConfig.authAgent,
+        returnTo,
+      });
+      await page.goto(`/auth/login?${params.toString()}`, { waitUntil: 'load' });
+    }
 
-  if (new URL(page.url()).origin === new URL(smokeConfig.baseURL).origin
-    && new URL(page.url()).pathname === '/auth/login'
-    && await loginForm(page).isVisible({ timeout: 3_000 }).catch(() => false)) {
-    await page.locator('input#username, input[name="username"]').first().fill(account.username);
-    await page.locator('input#password, input[name="password"]').first().fill(account.password);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'load' }).catch(() => null),
-      page.locator('form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn').first().click(),
-    ]);
-  }
+    if (new URL(page.url()).origin === new URL(smokeConfig.baseURL).origin
+      && new URL(page.url()).pathname === '/auth/login'
+      && await loginForm(page).isVisible({ timeout: 3_000 }).catch(() => false)) {
+      await page.locator('input#username, input[name="username"]').first().fill(account.username);
+      await page.locator('input#password, input[name="password"]').first().fill(account.password);
+      stage = 'login-submit-navigation';
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'load' }),
+        page.locator('form[action="/auth/login"] button[type="submit"], button[type="submit"], .auth-btn').first().click(),
+      ]);
+    }
 
-  await page.waitForLoadState('load');
-  await expect(page.locator('body')).not.toContainText(/Invalid username or password|Local auth is not configured/i);
-  if (new URL(page.url()).pathname === '/auth/login') {
-    throw new Error(`Login did not leave /auth/login for ${account.username}.`);
+    stage = 'final-load';
+    await page.waitForLoadState('load');
+    stage = 'principal-verification';
+    await expect(page.locator('body')).not.toContainText(/Invalid username or password|Local auth is not configured/i);
+    if (new URL(page.url()).pathname === '/auth/login') {
+      throw new Error(`Login did not leave /auth/login for ${account.username}.`);
+    }
+    return await readAuthenticatedPrincipal(page, requireConfiguredPrincipal ? account : undefined);
+  } catch (error) {
+    recordPageNavigationFailure(page, navigation.failure(error, stage));
+    throw error;
+  } finally {
+    await navigation.dispose();
   }
-  return readAuthenticatedPrincipal(page, requireConfiguredPrincipal ? account : undefined);
 }
 
 export async function trySignIn(page, account = smokeConfig.primaryUser, returnTo = '/') {
