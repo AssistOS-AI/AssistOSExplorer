@@ -50,12 +50,13 @@ test('QA enters its guarded workspace before all host Ploinky entry points', () 
     assert.ok(workflow.indexOf('Exact prior Explorer QA deployment cleanup verified.') < admission);
     for (const entry of [
         '          inspect_outer_box_status() {',
-        '"$RUNTIME_DIR/bin/ploinky" stop',
         '"$PLOINKY" --dry-run --port "$ROUTER_PORT" start explorer',
         '"$PLOINKY" start explorer "${BRANCH_ARGS[@]}"',
     ]) {
         assert.ok(workflow.indexOf(entry) > admission, `host entry point must follow workspace admission: ${entry}`);
     }
+    assert.doesNotMatch(workflow, /"\$RUNTIME_DIR\/bin\/ploinky" stop/,
+        'archive retirement uses the exact engine stop while holding the outer workspace lock');
     assert.doesNotMatch(workflow.slice(end), /^ {10,}(?:cd|pushd|popd)\s/m,
         'later host commands must retain the admitted workspace');
 });

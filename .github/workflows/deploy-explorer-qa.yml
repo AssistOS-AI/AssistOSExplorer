@@ -573,7 +573,35 @@ jobs:
           CLOUDFLARE_CREDENTIAL_FILE=""
           PROTECTED_BEFORE_FILE=""
           PROTECTED_AFTER_FILE=""
+          QA_WORKSPACE_LOCK_PID=""
+          assert_qa_workspace_lock_held() {
+            test -n "$QA_WORKSPACE_LOCK_PID" || return 1
+          node --input-type=module - "$QA_BACKUP_DIR-lock-ready.json" "$QA_WORKSPACE_LOCK_PID" "$BOX_INSTANCE" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const receipt = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.deepEqual(receipt, { held: true, pid: Number(process.argv[3]), instance: process.argv[4] });
+          process.kill(receipt.pid, 0);
+          NODE
+          }
+          release_qa_workspace_lock() {
+            if [ -z "$QA_WORKSPACE_LOCK_PID" ]; then return; fi
+            printf '%s\n' release > "$QA_BACKUP_DIR-lock-release" || return 1
+            if ! wait "$QA_WORKSPACE_LOCK_PID"; then
+              echo '[deploy-qa] ERROR: the workspace archive lock did not release cleanly.' >&2
+              return 1
+            fi
+            node --input-type=module - "$QA_BACKUP_DIR-lock-released.json" "$QA_WORKSPACE_LOCK_PID" "$BOX_INSTANCE" <<'NODE' || return 1
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const receipt = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.deepEqual(receipt, { released: true, pid: Number(process.argv[3]), instance: process.argv[4] });
+          NODE
+            QA_WORKSPACE_LOCK_PID=""
+          }
           cleanup_remote_files() {
+            local status=$?
+            release_qa_workspace_lock || status=1
             rm -f "$REMOTE_ENV_FILE"
             if [ -n "$CLOUDFLARE_CREDENTIAL_FILE" ]; then
               rm -f "$CLOUDFLARE_CREDENTIAL_FILE"
@@ -584,6 +612,7 @@ jobs:
             if [ -n "$PROTECTED_AFTER_FILE" ]; then
               rm -f "$PROTECTED_AFTER_FILE"
             fi
+            exit "$status"
           }
           case "$REMOTE_ENV_FILE" in
             /tmp/explorer_qa_deploy.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
@@ -839,6 +868,7 @@ jobs:
             echo "[deploy-qa] ERROR: QA has named volumes; back them up and review their durable-data restore before redeploying."
             exit 1
           fi
+          assert_qa_preservation_admission() {
           sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
@@ -914,6 +944,8 @@ jobs:
           console.log('[deploy-qa] Durable-state admission passed before stopping the previous runtime.');
           // END QA preservation admission
           NODE
+          }
+          assert_qa_preservation_admission
           sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
@@ -933,6 +965,29 @@ jobs:
           console.log('[deploy-qa] Capacity admission passed before stopping the previous runtime.');
           // END QA capacity admission
           NODE
+          resolve_default_branch() {
+            local repository_url="$1"
+            local symref_record default_ref default_branch
+            if ! symref_record="$(git ls-remote --symref "$repository_url" HEAD)"; then
+              echo "[deploy-qa] ERROR: unable to resolve the default branch for $repository_url." >&2
+              return 1
+            fi
+            default_ref="$({
+              printf '%s\n' "$symref_record" |
+                awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }'
+            })"
+            case "$default_ref" in
+              refs/heads/*) ;;
+              *)
+                echo "[deploy-qa] ERROR: remote HEAD for $repository_url is not a branch." >&2
+                return 1
+                ;;
+            esac
+            default_branch="${default_ref#refs/heads/}"
+            git check-ref-format --branch "$default_branch" >/dev/null
+            printf '%s\n' "$default_branch"
+          }
+
           mkdir -p "$HOME/.qa-deployment-backups"
           chmod 700 "$HOME/.qa-deployment-backups"
           QA_BACKUP_DIR="$(mktemp -d "$HOME/.qa-deployment-backups/redeploy-XXXXXXXX")"
@@ -941,7 +996,103 @@ jobs:
           mkdir -m 700 "$QA_HELPER_DIR"
           printf '%s' "$QA_ROLLBACK_SOURCE" > "$QA_HELPER_DIR/rollback-explorer-qa.mjs"
           printf '%s' "$QA_QUIESCE_SOURCE" > "$QA_HELPER_DIR/quiesce-explorer-qa.mjs"
+          # BEGIN QA outer archive lock acquisition
+          QA_LOCK_RUNTIME_ROOT="$WORK_DIR"
+          if [ ! -f "$WORK_DIR/.runtime/ploinky/ploinky-box/locks.mjs" ]; then
+            if [ "${#QA_CONTAINER_RECORDS[@]}" -ne 0 ]; then
+              echo '[deploy-qa] ERROR: the existing QA runtime has no proven workspace lock module.'
+              exit 1
+            fi
+            node --input-type=module - "$WORK_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const workspace = process.argv[2];
+          assert.equal(workspace, '/home/admin/explorerQaWorkspace');
+          if (fs.existsSync(workspace)) {
+              const stat = fs.lstatSync(workspace);
+              assert(stat.isDirectory() && !stat.isSymbolicLink());
+              assert.equal(fs.readdirSync(workspace).length, 0, 'Cold lock bootstrap requires an absent or empty workspace');
+          }
+          NODE
+            QA_LOCK_RUNTIME_ROOT="$QA_HELPER_DIR/lock-runtime"
+            mkdir -m 700 "$QA_LOCK_RUNTIME_ROOT"
+            mkdir -m 700 "$QA_LOCK_RUNTIME_ROOT/.runtime"
+            QA_LOCK_SOURCE="$QA_LOCK_RUNTIME_ROOT/.runtime/ploinky"
+            QA_LOCK_BRANCH="$(resolve_default_branch https://github.com/AssistOS-AI/ploinky.git)"
+            QA_LOCK_COMMIT="$(git ls-remote --exit-code --heads https://github.com/AssistOS-AI/ploinky.git "refs/heads/$QA_LOCK_BRANCH" | awk 'NR == 1 { print $1 }')"
+            [[ "$QA_LOCK_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+            git clone --no-checkout https://github.com/AssistOS-AI/ploinky.git "$QA_LOCK_SOURCE"
+            git -C "$QA_LOCK_SOURCE" fetch origin "$QA_LOCK_COMMIT"
+            git -C "$QA_LOCK_SOURCE" checkout --detach "$QA_LOCK_COMMIT"
+            test "$(git -C "$QA_LOCK_SOURCE" rev-parse HEAD)" = "$QA_LOCK_COMMIT"
+            test -z "$(git -C "$QA_LOCK_SOURCE" status --porcelain=v1 --untracked-files=all)"
+            test -f "$QA_LOCK_SOURCE/ploinky-box/locks.mjs"
+            printf '%s|%s\n' "$QA_LOCK_BRANCH" "$QA_LOCK_COMMIT" > "$QA_BACKUP_DIR-lock-source.txt"
+          fi
+          cat > "$QA_HELPER_DIR/hold-workspace-lock.mjs" <<'NODE'
+          // BEGIN QA archive lock holder
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { fileURLToPath, pathToFileURL } from 'node:url';
+
+          export async function holdArchiveLock({ adapters, scope, runtimeRoot, backup, parentPid, intervalMs = 100 }) {
+              adapters.assertHost();
+              assert.equal(process.ppid, parentPid, 'Archive lock holder must remain attached to the deploying shell');
+              let lock, reason, resolveStopped;
+              const stopped = new Promise(resolve => { resolveStopped = resolve; });
+              const stop = value => { if (!reason) { reason = value; resolveStopped(value); } };
+              const interrupted = () => stop('interrupted');
+              process.on('SIGTERM', interrupted); process.on('SIGINT', interrupted);
+              const timer = setInterval(() => {
+                  if (process.ppid !== parentPid) return stop('parent-exited');
+                  try {
+                      const file = `${backup}-lock-release`, stat = fs.lstatSync(file);
+                      assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1
+                          && stat.uid === process.getuid() && (stat.mode & 0o077) === 0);
+                      assert.equal(fs.readFileSync(file, 'utf8'), 'release\n');
+                      stop('released');
+                  } catch (error) { if (error.code !== 'ENOENT') stop('invalid-release'); }
+              }, intervalMs);
+              try {
+                  lock = await adapters.acquireWorkspaceLock(runtimeRoot);
+                  assert.equal(reason, undefined, 'Archive lock acquisition was interrupted');
+                  fs.writeFileSync(`${backup}-lock-ready.json`, JSON.stringify({ held: true, pid: process.pid, instance: scope.box }), { flag: 'wx', mode: 0o600 });
+                  assert.equal(await stopped, 'released', 'Archive operation ended without a deliberate release');
+              } finally {
+                  clearInterval(timer); process.removeListener('SIGTERM', interrupted); process.removeListener('SIGINT', interrupted);
+                  if (lock) {
+                      lock.release();
+                      fs.writeFileSync(`${backup}-lock-released.json`, JSON.stringify({ released: true, pid: process.pid, instance: scope.box }), { flag: 'wx', mode: 0o600 });
+                  }
+              }
+          }
+          if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+              const [runtimeRoot, backup, helper, parentPid] = process.argv.slice(2);
+              const { productionAdapters, QA_SCOPE } = await import(pathToFileURL(helper));
+              try { await holdArchiveLock({ adapters: productionAdapters(), scope: QA_SCOPE, runtimeRoot, backup, parentPid: Number(parentPid) }); }
+              catch { process.stderr.write('[deploy-qa] Workspace archive lock failed.\n'); process.exitCode = 1; }
+          }
+          // END QA archive lock holder
+          NODE
+          node "$QA_HELPER_DIR/hold-workspace-lock.mjs" "$QA_LOCK_RUNTIME_ROOT" "$QA_BACKUP_DIR" \
+            "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$$" > "$QA_BACKUP_DIR-lock.log" 2>&1 &
+          QA_WORKSPACE_LOCK_PID=$!
+          for _ in $(seq 1 350); do
+            if [ -f "$QA_BACKUP_DIR-lock-ready.json" ]; then break; fi
+            kill -0 "$QA_WORKSPACE_LOCK_PID" || { wait "$QA_WORKSPACE_LOCK_PID"; exit 1; }
+            sleep 0.1
+          done
+          assert_qa_workspace_lock_held
+          # END QA outer archive lock acquisition
+          assert_qa_preservation_admission
+          assert_qa_workspace_lock_held
           QA_CAPTURE="$(node "$QA_HELPER_DIR/rollback-explorer-qa.mjs" capture "$QA_BACKUP_DIR" --lock-held)"
+          QA_CAPTURED_CONTAINERS="$(cat "$QA_BACKUP_DIR/prior-containers.txt")"
+          QA_EXPECTED_CONTAINERS="$(printf '%s\n' "${QA_CONTAINER_RECORDS[@]}")"
+          if [ "$QA_CAPTURED_CONTAINERS" != "$QA_EXPECTED_CONTAINERS" ]; then
+            echo '[deploy-qa] ERROR: QA Box identity changed before workspace-lock acquisition; no services were stopped.'
+            exit 1
+          fi
           mv "$QA_HELPER_DIR" "$QA_BACKUP_DIR/helpers"
           QA_HELPER_DIR="$QA_BACKUP_DIR/helpers"
           if ! printf '%s' "$QA_CAPTURE" | node --input-type=module -e '
@@ -955,10 +1106,13 @@ jobs:
           for record in "${QA_CONTAINER_RECORDS[@]}"; do
             IFS='|' read -r engine container_id _ <<< "$record"
             if [ "$("$engine" container inspect "$container_id" --format '{{.State.Running}}')" = 'true' ]; then
+              assert_qa_workspace_lock_held
               echo "[deploy-qa] Stopping nested QA services before the consistent durable-data backup..."
               printf '%s' "$QA_QUIESCE_SOURCE" | "$engine" container exec -i --user podman \
                 --workdir /workspace --env PLOINKY_WORKSPACE_ROOT=/workspace \
+                --env PLOINKY_ROUTER_HOST_PORT=8097 --env PLOINKY_MEDIA_HOST_PORT=7882 \
                 "$container_id" node --input-type=module - > "$QA_BACKUP_DIR-quiesce.log"
+              assert_qa_workspace_lock_held
               "$engine" container stop --time 30 "$container_id"
             fi
             if [ "$("$engine" container inspect "$container_id" --format '{{.State.Running}}')" != 'false' ]; then
@@ -1043,6 +1197,7 @@ jobs:
           console.log('[deploy-qa] Prior workspace retained; durable files and their encryption identities copied and compared. Runtime state will be regenerated.');
           // END QA durable workspace preservation
           NODE
+          assert_qa_workspace_lock_held
           if [ -f "$QA_BACKUP_DIR-quiesce.log" ]; then mv "$QA_BACKUP_DIR-quiesce.log" "$QA_BACKUP_DIR/quiesce.log"; fi
           printf '%s\n' "$QA_QUIESCE_SOURCE" > "$QA_BACKUP_DIR/quiesce-source.mjs"
           for record in "${QA_CONTAINER_RECORDS[@]}"; do
@@ -1118,28 +1273,6 @@ jobs:
               ;;
           esac
 
-          resolve_default_branch() {
-            local repository_url="$1"
-            local symref_record default_ref default_branch
-            if ! symref_record="$(git ls-remote --symref "$repository_url" HEAD)"; then
-              echo "[deploy-qa] ERROR: unable to resolve the default branch for $repository_url." >&2
-              return 1
-            fi
-            default_ref="$({
-              printf '%s\n' "$symref_record" |
-                awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }'
-            })"
-            case "$default_ref" in
-              refs/heads/*) ;;
-              *)
-                echo "[deploy-qa] ERROR: remote HEAD for $repository_url is not a branch." >&2
-                return 1
-                ;;
-            esac
-            default_branch="${default_ref#refs/heads/}"
-            git check-ref-format --branch "$default_branch" >/dev/null
-            printf '%s\n' "$default_branch"
-          }
 
           GRAPH_REPOSITORIES=(
             'AchillesIDE|https://github.com/AssistOS-AI/AssistOSExplorer.git'
@@ -1183,27 +1316,6 @@ jobs:
           PLOINKY_BRANCH="$(resolve_default_branch "$PLOINKY_URL")"
           echo "[deploy-qa] Selected Ploinky/$PLOINKY_BRANCH."
 
-          if [ -x "$RUNTIME_DIR/bin/ploinky" ] &&
-            [ -f "$RUNTIME_DIR/ploinky-box/bin/ploinky-box.mjs" ]; then
-            echo "[deploy-qa] Stopping the existing QA Box before updating its mounted runtime..."
-            if ! env PLOINKY_WORKSPACE_ROOT="$WORK_DIR" "$RUNTIME_DIR/bin/ploinky" stop; then
-              echo "[deploy-qa] The inner graceful stop failed; proving the outer Box stopped..."
-              if ! STOPPED_BOX_STATUS="$(inspect_outer_box_status)"; then
-                echo "[deploy-qa] ERROR: unable to inspect the Box after the degraded stop."
-                exit 1
-              fi
-              case "$STOPPED_BOX_STATUS" in
-                *"Ploinky Box: stopped"*)
-                  echo "[deploy-qa] The exact outer Box is stopped; continuing recovery."
-                  ;;
-                *)
-                  printf '%s\n' "$STOPPED_BOX_STATUS"
-                  echo "[deploy-qa] ERROR: the Box remained running or ambiguous after the degraded stop."
-                  exit 1
-                  ;;
-              esac
-            fi
-          fi
           git -C "$RUNTIME_DIR" fetch --prune origin \
             "refs/heads/$PLOINKY_BRANCH:refs/remotes/origin/$PLOINKY_BRANCH"
           git -C "$RUNTIME_DIR" checkout -B "$PLOINKY_BRANCH" "refs/remotes/origin/$PLOINKY_BRANCH"
@@ -1382,6 +1494,24 @@ jobs:
           fi
           echo "[deploy-qa] Box plan: $PLAN_JSON"
 
+          # The supervisor takes this same outer lock. Release only after capture,
+          # quiesce, exact outer stop, complete preservation and fresh source staging.
+          assert_qa_workspace_lock_held
+          release_qa_workspace_lock
+          for suffix in lock-ready.json lock-released.json lock-release lock.log lock-source.txt; do
+            if [ -f "$QA_BACKUP_DIR-$suffix" ]; then mv "$QA_BACKUP_DIR-$suffix" "$QA_BACKUP_DIR/$suffix"; fi
+          done
+          if [ -d "$QA_HELPER_DIR/lock-runtime" ]; then
+            node --input-type=module - "$QA_HELPER_DIR/lock-runtime" "$QA_BACKUP_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [staging, backup] = process.argv.slice(2);
+          assert.equal(staging, path.join(backup, 'helpers/lock-runtime'));
+          assert.equal(fs.realpathSync(staging), staging);
+          fs.rmSync(staging, { recursive: true });
+          NODE
+          fi
           echo "[deploy-qa] Preparing the exact QA Box..."
           node --input-type=module - \
             "$RUNTIME_DIR/ploinky-box/supervisor.mjs" \
