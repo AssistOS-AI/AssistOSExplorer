@@ -64,7 +64,9 @@ export class SettingsModal {
             agentSettingsBusyKey: "",
             agentRuntimeStatusRequestId: 0,
             copilotItems: [],
-            copilotDisabledKeys: new Set(),
+            copilotBusy: false,
+            copilotPolicyVersion: null,
+            copilotDiagnostics: [],
             copilotStatus: "",
             copilotStatusType: "",
             copilotDataLoaded: false,
@@ -446,7 +448,12 @@ export class SettingsModal {
         });
     }
 
+    afterUnload() {
+        this.invalidateCopilotRequests();
+    }
+
     closeModal(payload) {
+        this.invalidateCopilotRequests();
         assistOS.UI.closeModal(this.element, payload);
     }
 }

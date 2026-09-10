@@ -304,3 +304,81 @@ test('add_skills_manifest_repo explains when a cached repository has no Anthropi
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }
 });
+
+test('manifest exports preserve legacy collisions, unrelated skills and independent Claude files', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-preserve-'));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    const projectDir = path.join(workspaceRoot, 'project');
+    const localFile = path.join(projectDir, '.agents', 'skills', 'alpha-skill', 'SKILL.md');
+    await writeFile(localFile, 'local alpha');
+    await writeFile(path.join(projectDir, '.agents', 'skills', 'unrelated', 'SKILL.md'), 'local unrelated');
+    await writeFile(path.join(projectDir, '.claude', 'skills', 'independent', 'SKILL.md'), 'independent Claude');
+    const handlers = createHandlers(workspaceRoot);
+    const added = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }));
+    assert.equal(await fs.readFile(localFile, 'utf8'), 'local alpha');
+    assert.equal(added.exportResult.diagnostics[0].reason, 'unrecorded-output-preserved');
+    assert.equal(added.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'local');
+    assert.equal(await fs.readFile(path.join(projectDir, '.claude', 'skills', 'independent', 'SKILL.md'), 'utf8'), 'independent Claude');
+    const removed = parseJsonResponse(await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'local-skills' }));
+    assert.deepEqual(removed.installedSkills, ['alpha-skill', 'unrelated']);
+    assert.equal(await fs.readFile(localFile, 'utf8'), 'local alpha');
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('edited owned descriptor and executable modes survive replacement and removal with diagnostics', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-owned-'));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir);
+    const handlers = createHandlers(workspaceRoot);
+    const args = { folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' };
+    await handlers.add_skills_manifest_repo(args);
+    const output = path.join(projectDir, '.agents', 'skills', 'alpha-skill', 'SKILL.md');
+    const original = await fs.readFile(output, 'utf8');
+    await fs.chmod(output, 0o755);
+    const update = parseJsonResponse(await handlers.add_skills_manifest_repo(args));
+    assert.equal(update.exportResult.diagnostics[0].reason, 'edited-output-preserved');
+    assert.equal((await fs.stat(output)).mode & 0o777, 0o755);
+    await fs.writeFile(output, original.replace('alpha-skill', 'local-skill'));
+    const removed = parseJsonResponse(await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'local-skills' }));
+    assert.equal(removed.skillOutputs[0].state, 'modified');
+    assert.match(await fs.readFile(output, 'utf8'), /local-skill/);
+    assert.equal(removed.exportResult.diagnostics[0].reason, 'edited-output-preserved');
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('unchanged owned output is removed alone and retired content is retained outside the skill root', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-remove-'));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    const projectDir = path.join(workspaceRoot, 'project');
+    await writeFile(path.join(projectDir, '.agents', 'skills', 'local', 'SKILL.md'), 'keep');
+    const handlers = createHandlers(workspaceRoot);
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' });
+    const removed = parseJsonResponse(await handlers.set_skills_manifest_skill_enabled({ folderPath: projectDir, repoName: 'local-skills', skill: 'alpha-skill', enabled: false }));
+    assert.deepEqual(removed.installedSkills, ['local']);
+    assert.deepEqual(removed.exportResult.removed, ['alpha-skill']);
+    assert.equal(removed.exportResult.backups.length, 1);
+    assert.match(await fs.readFile(path.join(removed.exportResult.backups[0], 'SKILL.md'), 'utf8'), /alpha-skill/);
+    assert.equal(await fs.readFile(path.join(projectDir, '.agents', 'skills', 'local', 'SKILL.md'), 'utf8'), 'keep');
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('same-name exports from two repositories are rejected without a traversal-order winner', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-duplicate-'));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    const secondRepo = path.join(workspaceRoot, 'second-repo');
+    await fs.cp(repoDir, secondRepo, { recursive: true });
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir);
+    const handlers = createHandlers(workspaceRoot);
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'first' });
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${secondRepo}`, name: 'second' }), /Duplicate exported skill name/);
+    const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
+    assert.deepEqual(state.repositories.map((entry) => entry.name), ['first']);
+    assert.equal(state.skillOutputs[0].source.name, 'first');
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});

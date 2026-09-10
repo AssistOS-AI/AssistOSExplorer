@@ -5,6 +5,7 @@ import { FILE_EXP_REPLACE_COMPLETE_EVENT } from "../../../utils/appEvents.js";
 import { withTimeout } from "../../utils/workspace-search-utils.js";
 import { callExplorerTool } from "../../../services/infrastructure/explorerApi.js";
 import { buildFileExpHash } from "./file-exp-utils.js";
+import { consumeConversationSettingsRequest } from "./conversation-settings-route.mjs";
 export function attachSearchController(fileExp) {
     const getState = () => fileExp.state;
     const defaultExclude = 'node_modules,.git';
@@ -191,13 +192,14 @@ export function attachSearchController(fileExp) {
         await openSearchModal('replace');
     }
 
-    async function openSettingsModal(_target, tab = 'agents') {
+    async function openSettingsModal(_target, tab = 'agents', copilotContext) {
         const state = getState();
         const normalizedTab = ['agents', 'plugins', 'copilot', 'keymap', 'editor', 'theme', 'avatar', 'users'].includes(tab) ? tab : 'agents';
         fileExp.setSearchMenuOpen(false);
         updateSearchUI();
         const result = await assistOS.UI.createReactiveModal('settings-modal', {
             tab: normalizedTab,
+            ...(copilotContext ? { copilotContext } : {}),
             keymap: state.keymap || getKeymap(),
             theme: getCurrentTheme(),
             editorAutoSaveEnabled: Boolean(state.editorAutoSaveEnabled),
@@ -213,6 +215,15 @@ export function attachSearchController(fileExp) {
                 Boolean(result.editorAutoSaveEnabled),
                 Number.parseInt(String(result.editorAutoSaveIntervalSeconds ?? ''), 10)
             );
+        }
+    }
+
+    async function openConversationSettingsFromLocation() {
+        try {
+            const context = consumeConversationSettingsRequest(window.location, window.history);
+            if (context) await openSettingsModal(null, 'copilot', context);
+        } catch (error) {
+            fileExp.showStatus(error?.message || 'Unable to open conversation settings.', true);
         }
     }
 
@@ -379,6 +390,7 @@ export function attachSearchController(fileExp) {
         openSearchInFiles,
         openReplaceInFiles,
         openSettingsModal,
+        openConversationSettingsFromLocation,
         closeSearchOverlays,
         openSearchResult,
         navigateToPath,
