@@ -11,6 +11,7 @@ import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { setComposer, waitForWebchatIdle, cancelWebchatGenerationIfActive } from '../lib/webchat.mjs';
 import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.mjs';
 import { observeLiveSkillsBrowser, captureLiveSkillsFailure, liveSkillsDiagnosticText } from '../lib/copilot-live-skills-diagnostics.mjs';
+import { approveLiveSkillsRequest } from '../lib/copilot-live-skills-approval.mjs';
 import {
     createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt, conversationFromSettingsURL,
     isCompletedLiveSkillsTurn, validateLiveSkillsTurn, policyEvidence, liveSkillsHash, LIVE_SKILLS_TURN_TIMEOUT_MS,
@@ -137,7 +138,7 @@ test.describe('Deployed Copilot live skills', () => {
             const prompt = liveSkillsPrompt({ phase, selected });
             const hostStarted = Date.now();
             evidence.currentPhase = { label, phase, stage: 'submit', startedAt: new Date(hostStarted).toISOString(),
-                baselineIds, selected: selected.map(skill => skill.name), absent: absent.map(skill => skill.name) };
+                baselineIds, selected: selected.map(skill => skill.name), absent: absent.map(skill => skill.name), approvals: [] };
             const input = copilot.waitForResponse(response => new URL(response.url()).pathname === '/webchat/input'
                 && response.request().method() === 'POST', { timeout: smokeConfig.timeouts.action });
             await setComposer(copilot, prompt);
@@ -145,13 +146,23 @@ test.describe('Deployed Copilot live skills', () => {
             assert.equal((await input).status(), 204, 'Browser input was not accepted.');
             evidence.currentPhase.stage = 'persisted native completion';
             let snapshot;
+            let approvalFailure;
             const remaining = () => Math.max(1, LIVE_SKILLS_TURN_TIMEOUT_MS - (Date.now() - hostStarted));
             await expect.poll(async () => {
                 snapshot = await reader.capture({ sessionId, fixture });
                 evidence.lastRuntime = snapshot;
                 evidence.currentPhase.elapsedMs = Date.now() - hostStarted;
+                try {
+                    await approveLiveSkillsRequest({ page: copilot, remaining, evidence: evidence.currentPhase,
+                        baseURL: smokeConfig.baseURL, snapshot, fixture, sessionId, phase, selected, baselineIds, nativeIdentity });
+                } catch (error) {
+                    // Stop polling and preserve the exact rejected request immediately.
+                    approvalFailure = error;
+                    return true;
+                }
                 return isCompletedLiveSkillsTurn(snapshot, baselineIds);
             }, { timeout: remaining(), intervals: [500], message: `${label}: one completed persisted native turn within 150 seconds` }).toBe(true);
+            if (approvalFailure) throw approvalFailure;
             evidence.currentPhase.stage = 'browser completion';
             await waitForWebchatIdle(copilot, remaining());
             assert.ok(Date.now() - hostStarted <= LIVE_SKILLS_TURN_TIMEOUT_MS, `${label} exceeded the 150 second completion budget.`);
@@ -174,7 +185,7 @@ test.describe('Deployed Copilot live skills', () => {
             turnIds.push(proof.turnId);
             receiptNames = Object.keys(snapshot.receipts);
             receiptHashes = Object.fromEntries(Object.entries(snapshot.receipts).map(([name, receipt]) => [name, liveSkillsHash(receipt)]));
-            evidence.phases.push({ label, ...proof, durationMs: Date.now() - hostStarted });
+            evidence.phases.push({ label, ...proof, durationMs: Date.now() - hostStarted, approvals: evidence.currentPhase.approvals });
             await unchangedPolicies();
             assert.deepEqual(errors, [], 'Browser errors occurred during the composed gate.');
             evidence.currentPhase.stage = 'passed';

@@ -31,12 +31,12 @@ export function observeLiveSkillsBrowser({ errors, network, now = () => new Date
         const onRequest = request => {
             const info = requestInfo(request);
             // Query strings, bodies and headers are intentionally never collected.
-            if (/\/mcp$|^\/webchat\/(input|control|events)$/.test(info.path)) network.push(record('request', info));
+            if (/\/mcp$|^\/webchat\/(input|control|events|interaction)$/.test(info.path)) network.push(record('request', info));
         };
         const onResponse = response => {
             const info = requestInfo(response.request());
             info.responseStatus = response.status();
-            if (/\/mcp$|^\/webchat\/(input|control|events)$/.test(info.path)) network.push(record('response', info));
+            if (/\/mcp$|^\/webchat\/(input|control|events|interaction)$/.test(info.path)) network.push(record('response', info));
         };
         const onFailure = request => errors.push(record('requestfailed', {
             ...requestInfo(request), failure: request.failure()?.errorText || 'request failed',
