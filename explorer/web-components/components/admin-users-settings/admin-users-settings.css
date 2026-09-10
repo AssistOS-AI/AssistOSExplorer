@@ -7,6 +7,34 @@ admin-users-settings * {
     box-sizing: border-box;
 }
 
+admin-users-settings .users-search-panel {
+    padding: 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+admin-users-settings .users-search-panel p {
+    margin: 0 0 10px;
+}
+
+admin-users-settings .users-search-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: end;
+}
+
+admin-users-settings .users-search-form label {
+    display: grid;
+    gap: 4px;
+    flex: 1 1 240px;
+}
+
+admin-users-settings .users-search-panel .users-search-help {
+    margin: 10px 0 0;
+    color: var(--text-soft);
+    font-size: 13px;
+}
+
 admin-users-settings .toolbar {
     --admin-user-control-height: 36px;
     display: grid;

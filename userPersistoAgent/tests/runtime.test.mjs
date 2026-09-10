@@ -80,6 +80,20 @@ test('provider account projections preserve optional fields and an email-only ac
         assert.equal(row.name, '');
         assert.equal(row.displayName, '');
         assert.deepEqual(row.roles, ['selfRegistered']);
+        const defaults = await provider.sso_admin_list_users({
+            actorUserId: owner.user.id, excludeOnlyRole: 'selfRegistered', includeRoleCounts: true,
+        });
+        assert.deepEqual(defaults.users.map(user => user.id), [owner.user.id]);
+        assert.equal(defaults.totalCount, 1);
+        assert.equal(defaults.singleRoleCounts.selfRegistered, 1);
+        const searched = await provider.sso_admin_list_users({
+            actorUserId: owner.user.id, search: ' MEMBER@EXAMPLE ', includeRoleCounts: true,
+        });
+        assert.deepEqual(searched.users.map(user => user.id), [member.user.id]);
+        assert.equal(searched.singleRoleCounts.selfRegistered, 1);
+        await assert.rejects(provider.sso_admin_list_users({
+            actorUserId: member.user.id, search: 'owner', includeRoleCounts: true,
+        }), error => error.statusCode === 403 || error.code === 'forbidden');
         const updated = await provider.sso_admin_update_user({
             actorUserId: owner.user.id, userId: row.id,
             username: row.username, email: row.email, name: row.name, roles: ['user'],
@@ -96,6 +110,11 @@ test('provider account projections preserve optional fields and an email-only ac
             actorUserId: owner.user.id, userId: row.id, username: row.email,
         }), (error) => error.code === 'invalid_username');
         assert.deepEqual(await getUserRoles(row.id), ['user']);
+        const promoted = await provider.sso_admin_list_users({
+            actorUserId: owner.user.id, excludeOnlyRole: 'selfRegistered', includeRoleCounts: true,
+        });
+        assert.equal(promoted.totalCount, 2);
+        assert.equal(promoted.singleRoleCounts.selfRegistered ?? 0, 0);
     } finally {
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         await resetStoreForTests();

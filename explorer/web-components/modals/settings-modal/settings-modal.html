@@ -117,10 +117,18 @@
         </section>
 
         <section class="settings-section hidden" data-section="users">
-            <div data-account-status role="status" aria-live="polite"></div>
-            <button type="button" class="gray-button" data-account-retry data-local-action="loadAccountPanel" hidden>Retry</button>
-            <div data-account-mount></div>
-            <admin-settings-panel data-presenter="admin-settings-panel" data-embedded="true" data-auto-load="false"></admin-settings-panel>
+            <div class="settings-administration-tabs" role="tablist" aria-label="Administration tabs">
+                <button type="button" class="settings-tab active" id="administrationUsersTab" data-administration-tab="users" data-local-action="switchAdministrationTab users" role="tab" aria-selected="true" aria-controls="administrationUsersPanel">Users</button>
+                <button type="button" class="settings-tab" id="administrationApplicationsTab" data-administration-tab="applications" data-local-action="switchAdministrationTab applications" role="tab" aria-selected="false" aria-controls="administrationApplicationsPanel">Applications</button>
+            </div>
+            <div class="settings-administration-panel" id="administrationUsersPanel" data-administration-panel="users" role="tabpanel" aria-labelledby="administrationUsersTab">
+                <admin-settings-panel data-presenter="admin-settings-panel" data-embedded="true" data-auto-load="false"></admin-settings-panel>
+            </div>
+            <div class="settings-administration-panel" id="administrationApplicationsPanel" data-administration-panel="applications" role="tabpanel" aria-labelledby="administrationApplicationsTab" tabindex="0" hidden>
+                <div data-account-status role="status" aria-live="polite"></div>
+                <button type="button" class="gray-button" data-account-retry data-local-action="loadAccountPanel" hidden>Retry</button>
+                <div data-account-mount></div>
+            </div>
         </section>
     </div>
 

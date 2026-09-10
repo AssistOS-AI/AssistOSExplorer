@@ -456,8 +456,32 @@ settings-modal[data-active-tab="users"] .settings-content {
 }
 
 settings-modal [data-section="users"] {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     height: 100%;
     min-height: 0;
+}
+
+settings-modal .settings-administration-tabs {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 8px;
+}
+
+settings-modal .settings-administration-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+}
+
+settings-modal .settings-administration-panel[hidden] {
+    display: none;
+}
+
+settings-modal [data-administration-panel="applications"] {
+    overflow: auto;
+    overscroll-behavior: contain;
 }
 
 settings-modal .plugin-settings-list {

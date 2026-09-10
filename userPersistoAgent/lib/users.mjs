@@ -190,12 +190,43 @@ export function updateUser(userId, patch = {}, { actorId = 'system' } = {}) {
     });
 }
 
-export async function listUsers({ start = 0, pageSize = 50 } = {}) {
+export async function listUsers({ start = 0, pageSize = 50, search = '', excludeOnlyRole = '', includeRoleCounts = false } = {}) {
+    if (typeof search !== 'string' || search.length > 200
+        || typeof excludeOnlyRole !== 'string' || excludeOnlyRole.length > 128
+        || typeof includeRoleCounts !== 'boolean') {
+        throw userError('invalid_user_filter', 'Invalid user search or role filter.');
+    }
+    const needle = search.trim().toLowerCase();
+    start = Number.isInteger(start) && start >= 0 ? start : 0;
+    pageSize = Number.isInteger(pageSize) && pageSize > 0 ? Math.min(pageSize, 500) : 50;
     const store = await getStore();
+    if (needle || excludeOnlyRole || includeRoleCounts) {
+        const users = [];
+        const singleRoleCounts = Object.create(null);
+        let offset = 0;
+        let totalCount = 0;
+        while (true) {
+            const result = await store.select('user', {}, { sortBy: 'createdAt', start: offset, pageSize: USER_SCAN_PAGE_SIZE });
+            const objects = result.objects || [];
+            for (const user of objects) {
+                const roles = await getUserRoles(user.id);
+                if (roles.length === 1) singleRoleCounts[roles[0]] = (singleRoleCounts[roles[0]] || 0) + 1;
+                if (excludeOnlyRole && roles.length === 1 && roles[0] === excludeOnlyRole) continue;
+                if (needle && ![user.email, user.username, user.displayName, user.id]
+                    .some(value => String(value || '').toLowerCase().includes(needle))) continue;
+                if (totalCount >= start && users.length < pageSize) users.push({ ...sanitizeUser(user), roles });
+                totalCount++;
+            }
+            offset += objects.length;
+            const count = Number(result.filteredCount ?? result.totalCount);
+            if (!objects.length || objects.length < USER_SCAN_PAGE_SIZE || (Number.isFinite(count) && offset >= count)) break;
+        }
+        return { users, totalCount, ...(includeRoleCounts ? { singleRoleCounts } : {}) };
+    }
     const result = await store.select('user', {}, {
         sortBy: 'createdAt',
-        start: Number.isInteger(start) && start >= 0 ? start : 0,
-        pageSize: Number.isInteger(pageSize) && pageSize > 0 ? Math.min(pageSize, 500) : 50,
+        start,
+        pageSize,
     });
     const users = await Promise.all(result.objects.map(async (user) => ({
         ...sanitizeUser(user),

@@ -29,7 +29,8 @@ export const usersController = {
     },
 
     async loadAdministrationPanel() {
-        if (!this.adminSettingsPanel || !this.state.usersAccess || this.state.activeTab !== "users") return;
+        if (!this.adminSettingsPanel || !this.state.usersAccess || this.state.activeTab !== "users"
+            || this.state.activeAdministrationTab === "applications") return;
         if (this.adminSettingsPanel.presenterReadyPromise) {
             await this.adminSettingsPanel.presenterReadyPromise.catch(() => {});
         }

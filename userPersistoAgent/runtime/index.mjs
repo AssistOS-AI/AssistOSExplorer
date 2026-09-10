@@ -119,13 +119,14 @@ export function createProvider({ getConfig }) {
         async sso_logout({ postLogoutRedirectUri }) {
             return { redirectUrl: postLogoutRedirectUri || '/' };
         },
-        async sso_admin_list_users({ actorUserId, start = 0, pageSize = 500 }) {
+        async sso_admin_list_users({ actorUserId, start = 0, pageSize = 500, search = '', excludeOnlyRole = '', includeRoleCounts = false }) {
             const config = await getConfig();
-            const result = await postRuntime(config, 'sso-admin-users-list', { actorUserId, start, pageSize });
+            const result = await postRuntime(config, 'sso-admin-users-list', { actorUserId, start, pageSize, search, excludeOnlyRole, includeRoleCounts });
             return {
                 users: (result.users || []).map(normalizeAdminUser),
                 totalCount: result.totalCount || 0,
                 availableRoles: result.availableRoles || [],
+                ...(result.singleRoleCounts ? { singleRoleCounts: result.singleRoleCounts } : {}),
             };
         },
         async sso_admin_create_user(input = {}) {

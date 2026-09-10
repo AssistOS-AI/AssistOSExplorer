@@ -30,8 +30,11 @@ export class AdminSettingsPanel {
             usersPageSize: 100,
             usersTotal: 0,
             usersHasMore: false,
+            usersSearch: '',
+            selfRegisteredCount: null,
             availableRoles: [],
         };
+        this.usersRequestId = 0;
         this.invalidate();
     }
 
@@ -65,6 +68,9 @@ export class AdminSettingsPanel {
         this.element.addEventListener('admin-users-page', (event) => {
             this.loadUsersPage(event.detail?.start).catch((error) => this.setStatus(error.message, 'error'));
         });
+        this.element.addEventListener('admin-users-search', (event) => {
+            this.searchUsers(event.detail?.search).catch((error) => this.setStatus(error.message, 'error'));
+        });
         this.element.addEventListener('admin-settings-error', (event) => {
             this.setStatus(event.detail?.message || 'Administration action failed.', 'error');
         });
@@ -77,18 +83,7 @@ export class AdminSettingsPanel {
             this.pushChildState();
             return;
         }
-        this.state.loading = true;
-        this.setStatus('Loading settings...');
-        try {
-            const usersPayload = await this.fetchUsersPage(this.state.usersStart);
-            this.applyUsersPage(usersPayload);
-            this.state.loaded = true;
-            this.pushChildState();
-            this.setStatus('');
-        } finally {
-            this.state.loading = false;
-            this.pushChildState();
-        }
+        return this.loadUsersPage(this.state.usersStart);
     }
 
     applyUsersPage(payload) {
@@ -97,10 +92,22 @@ export class AdminSettingsPanel {
         this.state.usersStart = payload.start ?? this.state.usersStart;
         this.state.usersTotal = payload.totalCount ?? null;
         this.state.usersHasMore = payload.hasMore === true;
+        const selfRegisteredCount = payload.singleRoleCounts?.selfRegistered ?? 0;
+        this.state.selfRegisteredCount = payload.singleRoleCounts && Number.isSafeInteger(selfRegisteredCount)
+            ? selfRegisteredCount : null;
     }
 
-    async fetchUsersPage(start) {
-        const requestPage = (offset) => this.request(`${this.apiBase}?start=${offset}&pageSize=${this.state.usersPageSize}`);
+    async fetchUsersPage(start, search = this.state.usersSearch) {
+        const requestPage = (offset) => {
+            const params = new URLSearchParams({
+                start: offset,
+                pageSize: this.state.usersPageSize,
+                search,
+                excludeOnlyRole: search ? '' : 'selfRegistered',
+                includeRoleCounts: 'true',
+            });
+            return this.request(`${this.apiBase}?${params}`);
+        };
         const payload = await requestPage(start);
         if (start > 0 && !payload.users?.length && Number.isSafeInteger(payload.totalCount) && start >= payload.totalCount) {
             const lastPage = Math.max(0, Math.floor((payload.totalCount - 1) / this.state.usersPageSize) * this.state.usersPageSize);
@@ -109,19 +116,42 @@ export class AdminSettingsPanel {
         return payload;
     }
 
-    async loadUsersPage(start) {
-        if (this.state.loading || !Number.isSafeInteger(start) || start < 0) return;
+    async searchUsers(value) {
+        const search = String(value || '').trim().slice(0, 200);
+        if (search === this.state.usersSearch && this.state.loaded) return;
+        this.state.usersSearch = search;
+        this.state.loaded = false;
+        this.state.users = [];
+        this.state.usersStart = 0;
+        this.state.usersTotal = 0;
+        this.state.usersHasMore = false;
+        return this.loadUsersPage(0, { replace: true });
+    }
+
+    async loadUsersPage(start, { replace = false } = {}) {
+        if ((this.state.loading && !replace) || !Number.isSafeInteger(start) || start < 0) return;
+        const requestId = ++this.usersRequestId;
         this.state.loading = true;
         this.pushChildState();
         this.setStatus('Loading users...');
         try {
             const payload = await this.fetchUsersPage(start);
+            if (requestId !== this.usersRequestId) return;
             this.applyUsersPage(payload);
+            this.state.loaded = true;
             this.setStatus('');
+        } catch (error) {
+            if (requestId === this.usersRequestId) throw error;
         } finally {
-            this.state.loading = false;
-            this.pushChildState();
+            if (requestId === this.usersRequestId) {
+                this.state.loading = false;
+                this.pushChildState();
+            }
         }
+    }
+
+    afterUnload() {
+        this.usersRequestId++;
     }
 
     async pushChildState() {
@@ -133,6 +163,8 @@ export class AdminSettingsPanel {
             totalCount: this.state.usersTotal,
             hasMore: this.state.usersHasMore,
             loading: this.state.loading,
+            search: this.state.usersSearch,
+            selfRegisteredCount: this.state.selfRegisteredCount,
         });
     }
 
@@ -178,7 +210,7 @@ export class AdminSettingsPanel {
 
     async reloadAfterMutation() {
         this.state.loaded = false;
-        await this.loadPage({ force: true });
+        await this.loadUsersPage(this.state.usersStart, { replace: true });
     }
 
     setStatus(message, kind = '') {

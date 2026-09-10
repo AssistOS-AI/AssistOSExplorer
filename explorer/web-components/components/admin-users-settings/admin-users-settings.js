@@ -16,6 +16,8 @@ export class AdminUsersSettings {
             totalCount: 0,
             hasMore: false,
             loading: false,
+            search: '',
+            selfRegisteredCount: null,
         };
         this.invalidate();
     }
@@ -29,6 +31,10 @@ export class AdminUsersSettings {
         this.pageLabel = this.element.querySelector('[data-role="pageLabel"]');
         this.previousButton = this.element.querySelector('[data-role="previousPage"]');
         this.nextButton = this.element.querySelector('[data-role="nextPage"]');
+        this.searchForm = this.element.querySelector('[data-role="searchForm"]');
+        this.searchInput = this.element.querySelector('[data-role="userSearch"]');
+        this.selfRegisteredCountEl = this.element.querySelector('[data-role="selfRegisteredCount"]');
+        if (this.searchInput) this.searchInput.value = this.state.search;
         this.bindEvents();
         this.render();
     }
@@ -39,7 +45,30 @@ export class AdminUsersSettings {
             event.preventDefault();
             this.submitCreateUser().catch((error) => this.emitError(error));
         });
+        this.searchForm?.addEventListener('submit', (event) => {
+            event.preventDefault();
+            this.submitSearch();
+        });
+        this.searchInput?.addEventListener('input', () => {
+            clearTimeout(this.searchTimer);
+            this.searchTimer = setTimeout(() => this.submitSearch(), 250);
+        });
         this.element.dataset.boundAdminUsersSettings = 'true';
+    }
+
+    submitSearch() {
+        clearTimeout(this.searchTimer);
+        this.dispatch('admin-users-search', { search: this.searchInput?.value || '' });
+    }
+
+    clearSearch() {
+        if (this.searchInput) this.searchInput.value = '';
+        this.submitSearch();
+        this.searchInput?.focus();
+    }
+
+    afterUnload() {
+        clearTimeout(this.searchTimer);
     }
 
     setState(next = {}) {
@@ -49,7 +78,7 @@ export class AdminUsersSettings {
         if (Array.isArray(next.availableRoles)) {
             this.state.availableRoles = next.availableRoles;
         }
-        for (const key of ['start', 'pageSize', 'totalCount', 'hasMore', 'loading']) {
+        for (const key of ['start', 'pageSize', 'totalCount', 'hasMore', 'loading', 'search', 'selfRegisteredCount']) {
             if (Object.prototype.hasOwnProperty.call(next, key)) this.state[key] = next[key];
         }
         this.render();
@@ -59,6 +88,11 @@ export class AdminUsersSettings {
         this.configureRoleSelect(this.createRolesSelect, []);
         this.renderUsers();
         this.renderPagination();
+        if (this.selfRegisteredCountEl) {
+            this.selfRegisteredCountEl.textContent = this.state.selfRegisteredCount === null
+                ? this.state.loading ? 'Loading self-registered user count…' : 'Self-registered user count unavailable.'
+                : `Self-registered users: ${this.state.selfRegisteredCount}`;
+        }
     }
 
     renderPagination() {
@@ -93,7 +127,8 @@ export class AdminUsersSettings {
         if (!this.state.users.length) {
             const empty = document.createElement('div');
             empty.className = 'empty';
-            empty.textContent = 'No users.';
+            empty.textContent = this.state.loading ? 'Loading users…'
+                : this.state.search ? 'No matching users.' : 'No users to display.';
             fragment.appendChild(empty);
             this.tableHost.replaceChildren(fragment);
             return;

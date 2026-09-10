@@ -58,6 +58,56 @@ test('administration page failure preserves current page and re-enables the cont
     assert.equal(panel.state.users[0].id, 'existing');
 });
 
+test('search includes every role, resets pagination, and survives a role edit before clearing', async () => {
+    const panel = new AdminSettingsPanel({ getAttribute: () => null }, () => {});
+    const queries = [];
+    panel.request = async (url, options = {}) => {
+        if (options.method === 'PATCH') return { ok: true };
+        const params = new URL(url, 'http://localhost').searchParams;
+        queries.push(Object.fromEntries(params));
+        return {
+            users: [{ id: 'match' }], start: Number(params.get('start')), totalCount: 1,
+            availableRoles: ['user', 'selfRegistered'], singleRoleCounts: { selfRegistered: 601 },
+        };
+    };
+    await panel.loadUsersPage(100);
+    assert.equal(queries[0].excludeOnlyRole, 'selfRegistered');
+    assert.equal(queries[0].includeRoleCounts, 'true');
+    await panel.searchUsers('  reader@example.test  ');
+    assert.equal(queries.at(-1).search, 'reader@example.test');
+    assert.equal(queries.at(-1).excludeOnlyRole, '');
+    assert.equal(queries.at(-1).start, '0');
+    assert.equal(panel.state.selfRegisteredCount, 601);
+    await panel.saveUser('match', { roles: ['user'] });
+    assert.equal(queries.at(-1).search, 'reader@example.test');
+    await panel.searchUsers('');
+    assert.equal(queries.at(-1).excludeOnlyRole, 'selfRegistered');
+    assert.equal(panel.state.usersSearch, '');
+});
+
+test('latest search wins over stale results and a failed search can be retried', async () => {
+    const panel = new AdminSettingsPanel({ getAttribute: () => null }, () => {});
+    const pending = [];
+    panel.request = () => new Promise((resolve, reject) => pending.push({ resolve, reject }));
+    const first = panel.searchUsers('first');
+    const second = panel.searchUsers('second');
+    pending[1].resolve({ users: [{ id: 'second' }], start: 0, totalCount: 1 });
+    await second;
+    pending[0].resolve({ users: [{ id: 'first' }], start: 0, totalCount: 1 });
+    await first;
+    assert.equal(panel.state.users[0].id, 'second');
+    assert.equal(panel.state.loading, false);
+    const failed = panel.searchUsers('retry');
+    pending[2].reject(new Error('provider unavailable'));
+    await assert.rejects(failed, /provider unavailable/);
+    assert.equal(panel.state.loaded, false);
+    const retry = panel.searchUsers('retry');
+    pending[3].resolve({ users: [], totalCount: 0, singleRoleCounts: {} });
+    await retry;
+    assert.equal(panel.state.selfRegisteredCount, 0);
+    assert.equal(panel.state.loaded, true);
+});
+
 test('saving an email-only account preserves empty optional profile fields while changing its role', async (t) => {
     const previousDocument = globalThis.document;
     globalThis.document = { createElement: () => ({ dataset: {}, innerHTML: '' }) };

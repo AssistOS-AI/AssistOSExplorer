@@ -266,7 +266,13 @@ async function handlePost(req, res, path) {
         if (path === '/service/runtime/sso-admin-users-list') {
             return sendJson(res, 200, {
                 ok: true,
-                ...(await listUsers({ start: body.start || 0, pageSize: body.pageSize || 500 })),
+                ...(await listUsers({
+                    start: body.start || 0,
+                    pageSize: body.pageSize || 500,
+                    search: body.search,
+                    excludeOnlyRole: body.excludeOnlyRole,
+                    includeRoleCounts: body.includeRoleCounts,
+                })),
                 availableRoles: (await listRoles()).map((role) => role.name),
             });
         }

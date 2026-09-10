@@ -184,7 +184,7 @@ export class UserpersistoSettings {
     allowedPanels() {
         const scope = this.element.getAttribute?.("data-settings-scope");
         if (scope === "account") return new Set(["auth"]);
-        if (scope === "administration") return new Set(["policy", "applications"]);
+        if (scope === "administration") return new Set(["applications"]);
         return PANELS;
     }
 
@@ -208,7 +208,9 @@ export class UserpersistoSettings {
             tab.setAttribute("aria-selected", isActive ? "true" : "false");
         });
         this.element.querySelectorAll("[data-section]").forEach((section) => {
-            section.classList.toggle("hidden", section.dataset.section !== this.state.activePanel);
+            const accountPolicy = this.element.getAttribute?.("data-settings-scope") === "account"
+                && this.state.activePanel === "auth" && section.dataset.section === "policy";
+            section.classList.toggle("hidden", !accountPolicy && section.dataset.section !== this.state.activePanel);
         });
     }
 
@@ -306,7 +308,8 @@ export class UserpersistoSettings {
             }
             if (isAdmin && !this.state.settingsLoaded) {
                 this.state.settingsLoaded = true;
-                if (this.allowedPanels().has("policy")) void this.refreshAuthPolicy();
+                if (this.allowedPanels().has("policy")
+                    || this.element.getAttribute?.("data-settings-scope") === "account") void this.refreshAuthPolicy();
             }
             if (isAdmin && this.state.activePanel === "applications") void this.refreshApplications();
             this.setStatus("");

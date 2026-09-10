@@ -247,12 +247,25 @@ userpersisto-settings[data-embedded="true"] .userpersisto-settings-body {
     overflow: visible;
 }
 
+.userpersisto-policy > summary {
+    padding: 16px;
+    cursor: pointer;
+}
+
+.userpersisto-policy {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+userpersisto-settings .userpersisto-card-description,
+userpersisto-settings .userpersisto-row-meta {
+    overflow-wrap: anywhere;
+}
+
 userpersisto-settings [data-section="provider"],
 userpersisto-settings[data-settings-scope="account"] .userpersisto-tabs,
-userpersisto-settings[data-settings-scope="account"] [data-section]:not([data-section="auth"]),
-userpersisto-settings[data-settings-scope="administration"] [data-panel="auth"],
-userpersisto-settings[data-settings-scope="administration"] [data-panel="users"],
-userpersisto-settings[data-settings-scope="administration"] [data-section="auth"],
-userpersisto-settings[data-settings-scope="administration"] [data-section="users"] {
+userpersisto-settings[data-settings-scope="account"] [data-section]:not([data-section="auth"]):not([data-section="policy"]),
+userpersisto-settings[data-settings-scope="administration"] .userpersisto-tabs,
+userpersisto-settings[data-settings-scope="administration"] [data-section]:not([data-section="applications"]) {
     display: none !important;
 }

@@ -99,32 +99,30 @@
         </section>
 
         <section class="userpersisto-panel hidden" data-section="policy" data-admin-only hidden>
-            <div class="userpersisto-auth-methods-card" data-admin-only hidden>
-                <div class="userpersisto-auth-methods-header">
-                    <div>
-                        <div class="userpersisto-card-title">Authentication policy</div>
-                        <div class="userpersisto-card-description">Password is the default. Other methods appear at login only when explicitly enabled.</div>
+            <details class="userpersisto-policy">
+                <summary class="userpersisto-card-title">Workspace authentication policy</summary>
+                <div class="userpersisto-auth-methods-card">
+                    <div class="userpersisto-card-description">Administrator controls for everyone in this workspace. Choose the allowed sign-in methods and registration rules. Manage your own passkeys and authenticator app under Sign-in &amp; security.</div>
+                    <div class="userpersisto-grid">
+                        <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="password"> Password</span></label>
+                        <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="emailCode"> Email code</span></label>
+                        <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="passkey"> Passkey</span></label>
+                        <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="totp"> TOTP</span></label>
+                        <label class="form-item"><span class="form-label"><input id="selfRegistrationEnabled" type="checkbox"> Self-registration enabled</span></label>
+                        <label class="form-item">
+                            <span class="form-label">Default registration role</span>
+                            <input id="defaultRegistrationRole" class="form-input" type="text" value="selfRegistered" spellcheck="false">
+                        </label>
+                        <label class="form-item">
+                            <span class="form-label">Allowed redirect origins (one per line)</span>
+                            <textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea>
+                        </label>
+                    </div>
+                    <div class="userpersisto-actions">
+                        <button type="button" class="general-button" data-local-action="saveAuthPolicy">Save authentication policy</button>
                     </div>
                 </div>
-                <div class="userpersisto-grid">
-                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="password"> Password</span></label>
-                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="emailCode"> Email code</span></label>
-                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="passkey"> Passkey</span></label>
-                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="totp"> TOTP</span></label>
-                    <label class="form-item"><span class="form-label"><input id="selfRegistrationEnabled" type="checkbox"> Self-registration enabled</span></label>
-                    <label class="form-item">
-                        <span class="form-label">Default registration role</span>
-                        <input id="defaultRegistrationRole" class="form-input" type="text" value="selfRegistered" spellcheck="false">
-                    </label>
-                    <label class="form-item">
-                        <span class="form-label">Allowed redirect origins (one per line)</span>
-                        <textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea>
-                    </label>
-                </div>
-                <div class="userpersisto-actions">
-                    <button type="button" class="general-button" data-local-action="saveAuthPolicy">Save authentication policy</button>
-                </div>
-            </div>
+            </details>
         </section>
 
         <section class="userpersisto-panel hidden" data-section="users" data-admin-only hidden>

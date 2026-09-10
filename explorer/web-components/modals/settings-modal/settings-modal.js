@@ -87,7 +87,8 @@ export class SettingsModal {
             selectedAgentAvatarEnabled: true,
             canManageAgentAvatars: false,
             usersAccessChecked: false,
-            usersAccess: false
+            usersAccess: false,
+            activeAdministrationTab: 'users'
         };
         this.invalidate();
     }
@@ -127,6 +128,7 @@ export class SettingsModal {
         this.avatarSection = this.element.querySelector('[data-section="avatar"]');
         this.accountSection = this.element.querySelector('[data-section="account"]');
         this.usersSection = this.element.querySelector('[data-section="users"]');
+        this.applicationsSection = this.element.querySelector('[data-administration-panel="applications"]');
         this.usersTab = this.element.querySelector('[data-admin-tab]');
         this.adminSettingsPanel = this.element.querySelector('admin-settings-panel');
         this.listEl = this.element.querySelector("#keymapList");
@@ -291,9 +293,9 @@ export class SettingsModal {
                 || this.state.activeTab === "account";
         }
         this.syncEditorSettingsUi();
+        this.updateAdministrationTabs();
         this.loadAdministrationPanel();
-        const accountScope = this.state.activeTab === "account" ? "account"
-            : this.state.activeTab === "users" && this.state.usersAccess ? "administration" : null;
+        const accountScope = this.getAccountScope();
         if (this.accountScope !== accountScope) this.unloadAccountPanel();
         if (accountScope) void this.loadAccountPanel();
     }
