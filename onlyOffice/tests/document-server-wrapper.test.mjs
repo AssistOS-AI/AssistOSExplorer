@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import { fixtureBootstrapEnv } from './bootstrap-fixture.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +26,10 @@ test('document server wrapper enables auto assembly before supervisor starts', a
     '#!/bin/bash',
     'set -e',
     'CHILD=""',
+    'start_process() {',
+    '  "$@" &',
+    '  CHILD=$!; wait "$CHILD"; CHILD="";',
+    '}',
     'function clean_exit {',
     '  [[ -z "$CHILD" ]] || kill -s SIGTERM "$CHILD" 2>/dev/null',
     '  if [ "${ONLYOFFICE_DATA_CONTAINER:-false}" = "false" ]; then',
@@ -43,6 +48,10 @@ test('document server wrapper enables auto assembly before supervisor starts', a
     '  service $i start',
     'done',
     'service supervisor start',
+    'start_process documentserver-generate-allfonts.sh ${ONLYOFFICE_DATA_CONTAINER}',
+    'start_process documentserver-static-gzip.sh ${ONLYOFFICE_DATA_CONTAINER}',
+    'bash() { :; }',
+    'start_process bash -c "find /tmp -type f -name *.log | xargs tail -F"',
   ].join('\n'), { mode: 0o755 });
   await writeFile(configureV5, [
     '#!/bin/bash',
@@ -59,6 +68,7 @@ test('document server wrapper enables auto assembly before supervisor starts', a
     cwd: new URL('..', import.meta.url),
     env: {
       ...process.env,
+      ...await fixtureBootstrapEnv(tempDir),
       ONLYOFFICE_DOCUMENT_SERVER_BASE_SCRIPT: fakeDocumentServer,
       ONLYOFFICE_V5_CONFIGURE_SCRIPT: configureV5,
       ONLYOFFICE_SUPPORT_LISTENER_SCRIPT: configureSupportListeners,
@@ -94,10 +104,7 @@ test('document server wrapper bounds the native shutdown hook after application 
     'CHILD=""',
     'start_process() {',
     '  "$@" &',
-    '  CHILD=$!',
-    '  echo ready',
-    '  wait "$CHILD"',
-    '  CHILD=""',
+    '  CHILD=$!; wait "$CHILD"; CHILD="";',
     '}',
     'function clean_exit {',
     '  [[ -z "$CHILD" ]] || kill -s SIGTERM "$CHILD" 2>/dev/null',
@@ -117,7 +124,10 @@ test('document server wrapper bounds the native shutdown hook after application 
     '  service $i start',
     'done',
     'service supervisor start',
-    'start_process sleep 300',
+    'start_process documentserver-generate-allfonts.sh ${ONLYOFFICE_DATA_CONTAINER}',
+    'start_process documentserver-static-gzip.sh ${ONLYOFFICE_DATA_CONTAINER}',
+    'bash() { echo ready; sleep 300; }',
+    'start_process bash -c "find /tmp -type f -name *.log | xargs tail -F"',
   ].join('\n'), { mode: 0o755 });
   await writeFile(boundedShutdown, [
     '#!/bin/bash',
@@ -130,6 +140,7 @@ test('document server wrapper bounds the native shutdown hook after application 
     detached: true,
     env: {
       ...process.env,
+      ...await fixtureBootstrapEnv(tempDir),
       ONLYOFFICE_DOCUMENT_SERVER_BASE_SCRIPT: fakeDocumentServer,
       ONLYOFFICE_V5_CONFIGURE_SCRIPT: noOpScript,
       ONLYOFFICE_SUPPORT_LISTENER_SCRIPT: noOpScript,

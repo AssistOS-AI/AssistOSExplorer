@@ -2,6 +2,10 @@
 set -euo pipefail
 
 curl -fsS --max-time 2 http://127.0.0.1:80/web-apps/apps/api/documents/api.js >/dev/null
+bootstrap_nonce="$(/usr/local/bin/node /code/scripts/document-server-bootstrap.mjs verify)"
+# The sentinel preserves trailing newlines through command substitution.
+docservice_health="$(curl --noproxy '*' -fsS --connect-timeout 1 --max-time 2 http://127.0.0.1:80/healthcheck && printf '.')"
+[ "$docservice_health" = 'true.' ]
 curl -sS --max-time 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:7000/__ready | grep -qx '404'
 curl -sS --max-time 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:9100/__ready | grep -qx '404'
 /usr/local/bin/node /code/scripts/verify-document-server-jwt-config.mjs
@@ -107,3 +111,7 @@ assert_loopback_owner 'OnlyOffice Redis' 6379 redis-server false
 assert_exact_docservice_listener
 assert_loopback_owner 'OnlyOffice DocService' 8000 docservice
 assert_no_wildcard_support_listener 'OnlyOffice AdminPanel' 9000
+
+# Recheck after the listener/configuration probes so an overlapping restart
+# cannot reuse the completion observed at the beginning of this readiness run.
+/usr/local/bin/node /code/scripts/document-server-bootstrap.mjs verify "$bootstrap_nonce" >/dev/null
