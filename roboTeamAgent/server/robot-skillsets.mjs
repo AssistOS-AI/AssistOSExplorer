@@ -4,29 +4,19 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { availableRepositories, availableSkillsets, copilotSkillsRoot } from './copilot-skillset.mjs';
+import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector } from './copilot-skillset.mjs';
 import { skillsetMDParser } from './skillsetMDParser.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
+import { SkillPolicies, selectorNames } from './skill-policy.mjs';
+import { LiveSkillCatalog } from './live-skill-catalog.mjs';
+import { catalogDigest, hashValue } from './skill-files.mjs';
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const UUID = /^[a-f0-9-]{36}$/;
 const exec = promisify(execFile);
 const invalid = (message) => Object.assign(new Error(message), { statusCode: 400 });
 
-export function selectionNames(value, qualified = false) {
-    if (value === undefined || value === null) return [];
-    const values = typeof value === 'string' ? value.split(',') : value;
-    if (!Array.isArray(values) || values.length > 100) throw invalid('skills must be a string or an array of at most 100 names');
-    return [...new Set(values.map((item) => {
-        if (typeof item !== 'string') throw invalid('invalid skill name');
-        const name = item.trim();
-        const parts = name.split('/');
-        if (parts.length !== (qualified ? 2 : 1) || parts.some((part) => !NAME.test(part) || part.length > 100)) {
-            throw invalid(qualified ? 'skills must use skillset/skill names' : 'invalid skillset name');
-        }
-        return name;
-    }))];
-}
+export const selectionNames = selectorNames;
 
 // Copy only regular files and directories. Never follow a repository's symbolic links.
 async function copyTree(source, target, budget = { bytes: 0, files: 0 }, depth = 0) {
@@ -77,8 +67,10 @@ export async function readSkillsetDefinitions(directory, skills) {
 }
 
 export class RobotSkillsets {
-    constructor({ robotStore, workspaceRoot = '/workspace', alaCommand = resolveAlaCommand(), discoverSkills, execImpl = exec }) {
-        Object.assign(this, { robotStore, workspaceRoot, alaCommand, discoverSkills, execImpl });
+    constructor({ robotStore, workspaceRoot = '/workspace', scopeRoot = process.env.PLOINKY_SKILL_SCOPE, alaCommand = resolveAlaCommand(), discoverSkills, execImpl = exec }) {
+        Object.assign(this, { robotStore, workspaceRoot, scopeRoot, alaCommand, discoverSkills, execImpl });
+        this.policies = new SkillPolicies(this);
+        this.live = new LiveSkillCatalog(this);
     }
 
     async discover(directory) {
@@ -91,7 +83,9 @@ export class RobotSkillsets {
     }
 
     async add(robotId, input) {
-        const name = `repo-${crypto.randomUUID()}`;
+        const name = input.name === undefined ? `repo-${crypto.randomUUID()}` : selectionNames([input.name])[0];
+        if (!NAME.test(name) || name === 'copilot' || name === 'workspace') throw invalid('invalid or reserved skill source name');
+        const description = String(input.description || '').trim();
         const source = String(input.source || '').trim();
         if (!source || source.length > 2048) throw invalid('invalid skillset source or description');
         const stagingRoot = path.join(this.robotStore.dataDir, 'skillset-imports');
@@ -120,7 +114,7 @@ export class RobotSkillsets {
                     throw invalid('skillset source cannot contain robot private data');
                 }
             }
-            const imported = path.join(stage, 'source');
+            const imported = path.join(await fs.realpath(stage), 'source');
             await copyTree(local, imported);
             const records = await this.discover(imported);
             if (!records.length || records.length > 100) throw invalid('skillset must contain 1 to 100 skills');
@@ -128,126 +122,111 @@ export class RobotSkillsets {
                 directory: path.relative(imported, skill.directoryPath) }));
             const definitions = await readSkillsetDefinitions(imported, skills);
             const digest = await treeDigest(imported);
+            const registeredSource = path.isAbsolute(source) ? local : source;
             return await this.robotStore.withRobot(robotId, async (robot, save) => {
                 const available = robot.skillsets || [];
-                if (available.some((set) => set.source === source)) throw invalid('repository already exists');
+                if (available.some((set) => set.name === name || set.source === registeredSource)) throw invalid('repository already exists');
                 if (available.length >= 32) throw invalid('robot allows at most 32 skillsets');
                 const generation = crypto.randomUUID();
+                const record = { name, description, source: registeredSource, revision, digest, generation, skills, definitions };
+                const candidate = { ...robot, skillsets: [...available, record] };
+                const repositories = availableRepositories(candidate);
+                const selectors = availableSkillsets(candidate);
+                for (const repository of repositories) resolveSkillsetSelector(repositories, selectors, repository.name);
                 const parent = path.join(this.robotStore.robotPath(robotId), 'skillsets');
                 await fs.mkdir(parent, { recursive: true, mode: 0o700 });
                 await fs.rename(imported, path.join(parent, generation));
-                const record = { name, source, revision, digest, generation, skills, definitions };
-                await save({ ...robot, skillsets: [...available, record] });
+                await save(candidate);
                 return record;
             });
         } finally { await fs.rm(stage, { recursive: true, force: true }); }
     }
 
     async remove(robotId, name) {
-        if (name === 'copilot') throw invalid('copilot is a bundled read-only skillset');
+        if (name === 'copilot' || name === 'workspace') throw invalid('copilot and workspace are reserved skill sources');
         selectionNames([name]);
         return this.robotStore.withRobot(robotId, async (robot, save) => {
             const record = (robot.skillsets || []).find((set) => set.name === name);
             if (!record) throw invalid('skillset not found');
             await save({ ...robot, skillsets: robot.skillsets.filter((set) => set.name !== name) });
-            // Saved manifests drop missing paths before the next execution. Remove this exact generation.
+            // Live policies fail if they still require this source; pinned catalogs keep their captured bytes.
             if (UUID.test(record.generation)) await fs.rm(path.join(this.robotStore.robotPath(robotId), 'skillsets', record.generation), { recursive: true, force: true });
         });
     }
 
+    // Submission stores intent only. The wrapper captures bytes under its execution lease after dequeue.
     async start(robot, input, enqueue) {
-        const sets = [...new Set([...selectionNames(input.skillSets), ...selectionNames(input.skillset)])];
-        const names = selectionNames(input.skills, true);
-        return this.robotStore.withRobot(robot.id, async (current) => {
-            const selected = new Map();
-            const available = availableSkillsets(current);
-            const add = (set, skill) => {
-                const key = `${set.name}/${skill.name}`;
-                if ([...selected.values()].some((entry) => entry.skill.name === skill.name && entry.key !== key)) {
-                    throw invalid(`selected skills have duplicate native name: ${skill.name}`);
-                }
-                selected.set(key, { key, set, skill });
-            };
-            for (const name of sets) {
-                const set = available.find((entry) => entry.id === name);
-                if (!set) throw invalid(`skillset is not available for this robot: ${name}`);
-                for (const skill of set.skills) add(set.repository, skill);
-            }
-            for (const name of names) {
-                const [setName, skillName] = name.split('/');
-                const set = availableRepositories(current).find((entry) => entry.name === setName);
-                const skill = set?.skills.find((entry) => entry.name === skillName);
-                if (!skill) throw invalid(`skill is not available for this robot: ${name}`);
-                add(set, skill);
-            }
-            const parent = path.join(this.robotStore.robotPath(robot.id), 'runtime', 'tasks');
-            await fs.mkdir(parent, { recursive: true, mode: 0o700 });
-            const catalogId = crypto.randomUUID();
-            const directory = path.join(parent, catalogId);
-            await fs.mkdir(directory, { mode: 0o700 });
-            try {
-                const paths = [];
-                for (const { set, skill } of selected.values()) {
-                    if ((!set.builtin && !UUID.test(set.generation)) || !NAME.test(skill.name)) throw invalid('invalid stored skillset');
-                    const root = set.builtin ? copilotSkillsRoot : path.join(this.robotStore.robotPath(robot.id), 'skillsets', set.generation);
-                    const source = path.resolve(root, skill.directory);
-                    if (source !== root && !source.startsWith(`${root}${path.sep}`)) throw invalid('invalid stored skill path');
-                    const canonicalSource = await fs.realpath(source);
-                    const records = await this.discover(canonicalSource);
-                    if (records.length !== 1 || records[0].name !== skill.name || records[0].directoryPath !== canonicalSource) {
-                        throw invalid('selected skill folders must contain exactly their own SKILL.md');
-                    }
-                    paths.push(canonicalSource);
-                }
-                await fs.writeFile(path.join(directory, 'skill-catalog.json'), JSON.stringify(paths, null, 4) + '\n', { mode: 0o600 });
-                const selection = { catalogId, paths, skillSets: sets, skills: names,
-                    resolvedSkills: [...selected.keys()], revisions: Object.fromEntries([...selected.values()].map(({ set }) => [set.name, set.revision || set.digest])) };
-                return await enqueue(current, selection);
-            } catch (error) {
-                await fs.rm(directory, { recursive: true, force: true });
-                throw error;
-            }
-        });
+        const current = await this.robotStore.get(robot.id);
+        if (!current) throw invalid('robot not found');
+        const policyId = crypto.randomUUID();
+        const explicit = ['skillSets', 'skillset', 'skills'].some((key) => input[key] !== undefined);
+        const policy = await this.policies.ensure(current, policyId, { input: explicit ? input : { skillSets: [], skills: [] }, useDefaults: false });
+        try {
+            await this.live.resolve(current, policy, input.cwd || policy.scopeRoot);
+            return await enqueue(current, { policyId, version: 2 });
+        } catch (error) {
+            await fs.rm(this.policies.file(robot.id, policyId), { force: true });
+            throw error;
+        }
     }
 
-    async catalogPath(robotId, selection, warn = message => console.warn(message)) {
-        if (!selection || !UUID.test(selection.catalogId)) throw invalid('task has no saved skill catalog');
-        return this.robotStore.withRobot(robotId, async () => {
-            const directory = path.join(this.robotStore.robotPath(robotId), 'runtime', 'tasks', selection.catalogId);
-            const file = path.join(directory, 'skill-catalog.json');
-            // Existing copied catalogs remain readable; never migrate or delete their data.
-            let allowed = selection.paths;
-            if (!allowed) {
-                const legacy = path.join(this.robotStore.robotPath(robotId), 'runtime', 'skill-catalogs', selection.catalogId);
-                if (await treeDigest(legacy) !== selection.digest) throw invalid('saved task skill catalog changed');
-                allowed = selection.resolvedSkills.length ? (await this.discover(legacy)).map(skill => skill.directoryPath) : [];
-                await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-                try { await fs.writeFile(file, JSON.stringify(allowed), { flag: 'wx', mode: 0o600 }); }
-                catch (error) { if (error.code !== 'EEXIST') throw error; }
+    async inventory(robot, { policyId, cwd, policy } = {}) {
+        policy ||= await this.policies.read(robot.id, policyId);
+        if (!policy) throw invalid('skill policy is unavailable');
+        const result = await this.live.resolve(robot, policy, cwd);
+        return { skills: result.entries.map((entry) => ({ ...entry, key: entry.identity, id: entry.identity,
+            skillDir: entry.sourcePath, isInternal: Boolean(entry.builtin) })), diagnostics: result.diagnostics,
+            policyVersion: policy.policyVersion, policy, scopeRoot: result.scopeRoot, cwd: result.cwd };
+    }
+
+    async pinnedInventory(robot, policy) {
+        const directory = await this.catalogPath(robot.id, policy.pinnedCatalog);
+        const entries = policy.pinnedCatalog.entries || (policy.pinnedCatalog.resolvedSkills?.length === 0 ? [] : await this.discover(directory)).map((entry) => ({ identity: `pinned/${entry.name}`, name: entry.name, description: entry.description }));
+        return { skills: entries.map((entry) => ({ ...entry, enabled: true, state: 'pinned', type: 'anthropic',
+            skillDir: path.join(directory, entry.name), sourcePath: path.join(directory, entry.name) })),
+            policy, policyVersion: policy.policyVersion, diagnostics: policy.pinnedCatalog.diagnostics || [] };
+    }
+
+    async defaults(robot) {
+        const policyId = `defaults-${hashValue(await this.policies.scope())}`;
+        const policy = await this.policies.read(robot.id, policyId) || await this.policies.make(robot);
+        return { policyId, policy };
+    }
+
+    async setEnabled(robot, policyId, policyVersion, identity, enabled, cwd) {
+        if (typeof enabled !== 'boolean') throw invalid('enabled must be a boolean');
+        const inventory = await this.inventory(robot, { policyId, cwd });
+        if (inventory.policyVersion !== policyVersion) throw Object.assign(invalid('skill policy changed; reload before updating'), { statusCode: 409 });
+        if (inventory.policy.mode === 'pinned') throw invalid('pinned catalogs are immutable; use /skills live before changing selection');
+        const entry = inventory.skills.find((skill) => skill.identity === identity);
+        if (!entry) throw invalid('skill identity is unavailable');
+        let policy = structuredClone(inventory.policy);
+        policy.excludedSkills = policy.excludedSkills.filter((name) => name !== identity);
+        if (!enabled) policy.excludedSkills.push(identity);
+        else {
+            if (entry.state === 'invalid') throw invalid(entry.error || 'skill is invalid');
+            if (policy.excludedSources.includes(entry.source) || policy.excludedSources.includes(entry.sourceId) || Object.hasOwn(policy.overrides, entry.source)) throw invalid('source is excluded or overridden; change the source policy explicitly');
+            if (policy.excludedNames.includes(entry.name)) throw invalid('legacy name exclusion applies; remove it explicitly with /skills allow-name');
+            if ((entry.state === 'conflict' || entry.state === 'shadowed' || (!policy.selectors.skillSets.includes(entry.source) && !policy.selectors.skillSets.includes(entry.sourceId)))
+                && !policy.selectors.skills.includes(identity)) policy.selectors.skills.push(identity);
+            if (entry.source !== 'workspace' && entry.source !== 'copilot') {
+                const set = robot.skillsets.find((item) => item.name === entry.source);
+                policy.bindings[entry.source] = { source: set.source, generation: set.generation };
             }
-            const paths = JSON.parse(await fs.readFile(file, 'utf8'));
-            if (!Array.isArray(paths) || paths.some(value => typeof value !== 'string' || !allowed.includes(value))
-                || new Set(paths).size !== paths.length) throw invalid('saved task skill catalog changed');
-            const valid = [];
-            for (const source of paths) {
-                try {
-                    if (!(await fs.stat(source)).isDirectory() || !(await fs.stat(path.join(source, 'SKILL.md'))).isFile()) {
-                        throw invalid('saved skill path is not a skill directory');
-                    }
-                    if (await fs.realpath(source) !== source) throw invalid('saved skill path changed');
-                    valid.push(source);
-                } catch (error) {
-                    if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
-                    warn(`Removed unavailable skill from task catalog: ${source}`);
-                }
-            }
-            if (valid.length !== paths.length) {
-                const temporary = `${file}.${crypto.randomUUID()}.tmp`;
-                await fs.writeFile(temporary, JSON.stringify(valid, null, 4) + '\n', { mode: 0o600 });
-                await fs.rename(temporary, file);
-            }
-            return file;
-        });
+        }
+        // Resolve the proposed selection before committing it. Discovery and hashing
+        // stay outside the registry lock; update rechecks the version under the lock.
+        policy = await this.policies.rememberNameExclusions(robot, policy, cwd, inventory.skills);
+        const next = await this.inventory(robot, { policy, cwd });
+        const saved = await this.policies.update(robot.id, policyId, policyVersion, () => policy);
+        return { ...next, policy: saved, policyVersion: saved.policyVersion };
+    }
+
+    async catalogPath(robotId, selection) {
+        if (!selection || !(/^[a-f0-9]{64}$/.test(selection.catalogId) || UUID.test(selection.catalogId))) throw invalid('task has no saved skill catalog');
+        const directory = path.join(this.robotStore.robotPath(robotId), 'runtime', 'skill-catalogs', selection.catalogId);
+        if (await (/^[a-f0-9]{64}$/.test(selection.catalogId) ? catalogDigest(directory) : treeDigest(directory)) !== selection.digest) throw invalid('saved task skill catalog changed');
+        return directory;
     }
 
 }

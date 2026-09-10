@@ -21,6 +21,7 @@ export class REPLSession {
         this.engine = engine;
         this.options = options;
         this.workingDir = options.workingDir;
+        this.skillCatalogService = options.skillCatalog;
         this.skillCatalog = options.skillCatalog;
         this.sessionStore = options.sessionStore;
         this.interactions = options.interactions;
@@ -119,8 +120,10 @@ export class REPLSession {
         return result.outputText;
     }
 
-    _activateConversation(session) {
+    async _activateConversation(session) {
         this.currentConversation = session;
+        this.skillCatalog = this.skillCatalogService.forSession?.(session.sessionId) || this.skillCatalogService;
+        if (this.skillCatalog.command) await this.reloadSkills();
         return session;
     }
 
@@ -135,7 +138,7 @@ export class REPLSession {
     }
 
     async start() {
-        this.currentConversation = this.options.initialSession || await this.sessionStore.ensureCurrentSession();
+        await this._activateConversation(this.options.initialSession || await this.sessionStore.ensureCurrentSession());
         console.log(`\nAchilles CLI — ALA\n  cwd: ${this.workingDir}\n  session: ${this.currentConversation.sessionId}\n  ${this.skillCatalog.getSkills().length} Anthropic skills\nType / for commands, or describe what you need.\n`);
         this._printConversation(this.currentConversation);
         while (true) {
@@ -171,9 +174,19 @@ export class REPLSession {
                         assistantMessageId: commandTurn.assistantMessageId, turnId,
                     });
                 }
-                const result = await this.slashHandler.executeSlashCommand(parsed.command, parsed.rawArgs, {
-                    signal, onEvent, context: { ...commandOrigin, workingDir: this.workingDir, rawText: input },
-                });
+                let result;
+                if (this.skillCatalog.command && parsed.command === 'skills') {
+                    const response = await this.skillCatalog.command(this.currentConversation.sessionId, parsed.rawArgs);
+                    result = { handled: true, result: response.output };
+                } else {
+                    if (this.skillCatalog.command && parsed.command === 'skill' && /^(?:enable|disable)\b/i.test(parsed.rawArgs)) {
+                        throw new Error('Use /skills use <skillsets or set/skill> to change this session\'s selection.');
+                    }
+                    if (this.skillCatalog.command) await this.reloadSkills();
+                    result = await this.slashHandler.executeSlashCommand(parsed.command, parsed.rawArgs, {
+                        signal, onEvent, context: { ...commandOrigin, workingDir: this.workingDir, rawText: input },
+                    });
+                }
                 spinner.stop();
                 controls.suspendInput();
                 if (result.exitRepl) return true;

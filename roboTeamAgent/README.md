@@ -24,9 +24,9 @@ AchillesCLI integrates RoboTeam through its Anthropic `launch-robot` skill and s
 
 ## Development
 
-Administrators open Manage skills on a robot to add an HTTPS skill repository or remove an existing one. Expand a repository to inspect its skills and the descriptions and member lists from skillsets.md. The Markdown file uses one # heading per skillset and ## Description / ## Skills sections; a repository without this file contributes no skillsets. Robot discovery publishes generated selection IDs with descriptions. Choose by description and pass the IDs in skillSets. Resume and Continue reuse the saved selection.
+Administrators use each robot’s Manage skills dialog to register an HTTPS repository with a generated ID. The API also accepts absolute workspace sources and an optional explicit source name. Optional skillsets.md declares named subsets exposed through generated selection IDs. `robot_list` returns the robot description, available sets and skill frontmatter descriptions. Task calls accept comma-separated `skillSets` or its `skillset` alias for whole sets and `skills` for qualified names such as `documents/read-pdf`. AchillesCLI launch JSON also accepts arrays. Direct chat omission uses scoped defaults, initially `copilot,workspace` for default and empty for other robots. Delegated task omission selects no skills. RoboTeam stores a conversation policy reference before enqueueing and captures current selected files after queue wait. ALA receives `--skill-catalog`; continuation resolves the current policy unless explicitly pinned. Imports and task catalogs are private robot data, separate from the shared tool cache.
 
-`Delete robot` in the dashboard is administrator-only and requires confirmation, no unfinished tasks, and no retained container. It permanently removes that robot's home, imported repositories and task catalogs. Removing a repository makes its skills unavailable to future executions; RoboTeam prunes those paths from saved task manifests before starting or continuing. Source repositories remain untouched. See [Robots & Runs](docs/operations.html) for selectors and examples.
+`Delete robot` in the dashboard is administrator-only and requires confirmation, no unfinished tasks, and no retained container. It permanently removes that robot's home, imported repositories and task catalogs. Removing a repository makes its skills unavailable to live executions; a policy that still requires that source fails until explicitly changed. Pinned catalogs retain their captured bytes. Legacy path manifests remain unchanged and require explicit pin recovery before reuse. Source repositories remain untouched. See [Robots & Runs](docs/operations.html) for selectors and examples.
 
 ```sh
 npm test
@@ -67,6 +67,8 @@ Use when only the PDF needs inspection.
 
 Each member must match a skill's `name` in `SKILL.md` from that repository. The skillset name is its Markdown heading; no version field is required. No file means no declared skillsets. Choose the described combinations returned by `robot_list` and send their IDs through `launch-robot`'s `skillSets` parameter.
 
-Repositories without declared skillsets expose each skill’s name and description, grouped by repository ID, in robot discovery and the default robot’s turn context. Individual selections use `repository-id/skill-name` in `skills` and combine with selected skillsets. Delegated tasks never receive copilot automatically; direct default chats retain their base copilot skills. Resume reuses the saved catalog.
+Repositories without declared skillsets expose each skill’s name and description, grouped by repository ID, in robot discovery and the default robot’s turn context. Individual selections use `repository-id/skill-name` in `skills` and combine with selected skillsets. Delegated tasks never receive copilot automatically; direct default chats initially select copilot and workspace. Explicit empty selection stays empty. Resume captures current selected files unless pinned.
 
-See [Skills & Skillsets](docs/skills.html) for repository management, Markdown definitions and the task manifest flow.
+See [Skills & Skillsets](docs/skills.html) for repository management, Markdown definitions and the execution catalog flow.
+
+Local instruction skills use live conversation policies and capture current files at execution start. See [local skill discovery](docs/local-skills.html).

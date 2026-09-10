@@ -30,7 +30,8 @@ async function discoverSkills(roots) {
 
 async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-skillsets-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const releases = [];
+    t.after(async () => { for (const release of releases) await release(); await fs.rm(root, { recursive: true, force: true }); });
     const dataDir = path.join(root, 'private');
     const workspaceRoot = path.join(root, 'workspace');
     const source = path.join(workspaceRoot, 'repo');
@@ -44,25 +45,32 @@ async function fixture(t) {
     const store = new RobotStore({ dataDir });
     const robot = await store.create({ name: 'Analyst', specialization: 'Reports' });
     const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot, discoverSkills });
-    return { root, dataDir, source, store, robot, skillsets };
+    const capture = async (selectedRobot, input = {}) => {
+        const reference = await skillsets.start(selectedRobot, input, (_robot, selection) => selection);
+        assert.equal(reference.version, 2);
+        assert.equal(reference.catalogId, undefined, 'submission must not freeze execution bytes');
+        const result = await skillsets.live.capture(await store.get(selectedRobot.id), reference.policyId, source);
+        releases.push(result.release);
+        return result;
+    };
+    return { root, dataDir, source, store, robot, skillsets, capture, releases };
 }
 
 test('copilot is available but delegated tasks mount it only when explicitly selected', async (t) => {
     const f = await fixture(t);
     const robot = await f.store.ensureDefaultRobot();
-    const selected = await f.skillsets.start(robot, { skillSets: ['copilot'] }, (_robot, selection) => selection);
+    const selected = await f.capture(robot, { skillSets: ['copilot'] });
+    assert.deepEqual((await f.capture(robot)).resolvedSkills, []);
     assert.deepEqual([...selected.resolvedSkills].sort(), [
         'copilot/bash', 'copilot/launch-gpt-researcher',
         'copilot/launch-robot',
     ]);
     assert.ok(selected.resolvedSkills.every((name) => name.startsWith('copilot/')));
-    const delegatedDefault = await f.skillsets.start(robot, {}, (_robot, selection) => selection);
-    assert.deepEqual(delegatedDefault.resolvedSkills, []);
-    const other = await f.skillsets.start(f.robot, {}, (_robot, selection) => selection);
+    const other = await f.capture(f.robot);
     assert.deepEqual(other.resolvedSkills, []);
-    const explicit = await f.skillsets.start(f.robot, { skills: ['copilot/launch-robot'] }, (_robot, selection) => selection);
+    const explicit = await f.capture(f.robot, { skills: ['copilot/launch-robot'] });
     assert.deepEqual(explicit.resolvedSkills, ['copilot/launch-robot']);
-    await assert.rejects(f.skillsets.remove(robot.id, 'copilot'), /bundled read-only/i);
+    await assert.rejects(f.skillsets.remove(robot.id, 'copilot'), /reserved skill source/i);
 });
 
 test('imports allowed catalogs and publishes only skill names and frontmatter descriptions', async (t) => {
@@ -80,39 +88,108 @@ test('imports allowed catalogs and publishes only skill names and frontmatter de
     await assert.rejects(skillsets.add(robot.id, { name: 'documents', source }), /already exists/);
 });
 
-test('stores source paths without copying and prunes removed skills on continuation after service recreation', async (t) => {
+test('registration rejects duplicate names and canonical local sources without publishing generations', async t => {
+    const f = await fixture(t);
+    const alias = path.join(f.source, '..', 'alias');
+    const second = path.join(f.source, '..', 'second');
+    await fs.symlink(f.source, alias);
+    await fs.cp(f.source, second, { recursive: true });
+    const original = await f.skillsets.add(f.robot.id, { name: 'documents', source: alias });
+    assert.equal(original.source, f.source);
+    for (const input of [
+        { name: 'documents', source: second },
+        { name: 'alias-again', source: alias },
+        { name: 'canonical-again', source: `${f.source}/` },
+    ]) await assert.rejects(f.skillsets.add(f.robot.id, input), /already exists/);
+    assert.deepEqual((await f.store.get(f.robot.id)).skillsets, [original]);
+    assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')), [original.generation]);
+    assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')), []);
+});
+
+test('concurrent registrations reserve one repository identity under the robot lock', async t => {
+    const f = await fixture(t);
+    const second = path.join(f.source, '..', 'second');
+    await fs.cp(f.source, second, { recursive: true });
+    const results = await Promise.allSettled([f.source, second].map(source =>
+        f.skillsets.add(f.robot.id, { name: 'documents', source })));
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    assert.match(results.find(result => result.status === 'rejected').reason.message, /already exists/);
+    const saved = (await f.store.get(f.robot.id)).skillsets;
+    assert.equal(saved.length, 1);
+    assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')), [saved[0].generation]);
+    assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')), []);
+});
+
+for (const names of [['documents', 'documents-set-1'], ['documents-set-1', 'documents']]) {
+    test(`registration rejects repository/subset selector collisions after ${names[0]}`, async t => {
+        const f = await fixture(t);
+        const second = path.join(f.source, '..', 'second');
+        await fs.cp(f.source, second, { recursive: true });
+        const original = await f.skillsets.add(f.robot.id, { name: names[0], source: f.source });
+        await assert.rejects(f.skillsets.add(f.robot.id, { name: names[1], source: second }), /ambiguous skillset selector/);
+        assert.deepEqual((await f.store.get(f.robot.id)).skillsets, [original]);
+        assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')), [original.generation]);
+        assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')), []);
+    });
+}
+
+test('saved ambiguous selectors fail on creation and continuation while qualified individuals stay usable', async t => {
+    const f = await fixture(t);
+    const second = path.join(f.source, '..', 'second');
+    await fs.cp(f.source, second, { recursive: true });
+    await fs.writeFile(path.join(second, 'read-pdf/helper.txt'), 'second source helper');
+    await f.skillsets.add(f.robot.id, { name: 'documents', source: f.source });
+    const policy = await f.skillsets.policies.make(await f.store.get(f.robot.id), { skillSets: ['documents-set-1'] });
+    await f.skillsets.add(f.robot.id, { name: 'other', source: second });
+    await f.store.withRobot(f.robot.id, (robot, save) => save({ ...robot,
+        skillsets: robot.skillsets.map(repo => repo.name === 'other' ? { ...repo, name: 'documents-set-1' } : repo),
+    }));
+    const robot = await f.store.get(f.robot.id);
+    await assert.rejects(f.skillsets.policies.make(robot, { skillSets: ['documents-set-1'] }), /ambiguous skillset selector/);
+    await assert.rejects(f.skillsets.live.resolve(robot, policy, f.source), /ambiguous skillset selector/);
+    const selected = await f.capture(robot, { skills: ['documents-set-1/read-pdf'] });
+    assert.deepEqual(selected.resolvedSkills, ['documents-set-1/read-pdf']);
+    assert.equal(await fs.readFile(path.join(selected.catalogPath, 'read-pdf/helper.txt'), 'utf8'), 'second source helper');
+});
+
+test('queues only policy references and explicit pinning preserves execution bytes through task continuation', async (t) => {
     const f = await fixture(t);
     const repo = await f.skillsets.add(f.robot.id, { source: f.source });
     const manager = new RuntimeManager({ dataDir: f.dataDir, toolCache: {}, skillsets: f.skillsets });
     manager.shuttingDown = true;
     const started = await f.skillsets.start(f.robot, { skillSets: [`${repo.name}-set-1`, `${repo.name}-set-2`] },
-        (robot, selection) => manager.startTask(robot, 'simple', { cwd: f.source, task: 'Review', skillSelection: selection }));
+        (robot, reference) => manager.startTask(robot, 'simple', { cwd: f.source, task: 'Review', skillPolicyRef: reference.policyId, alaSessionId: reference.policyId }));
     const original = manager.tasks.get(started.taskId);
-    const selection = original.request.skillSelection;
+    assert.equal(original.request.skillSelection, undefined);
+    const selection = await f.skillsets.live.capture(await f.store.get(f.robot.id), original.request.skillPolicyRef, f.source);
+    f.releases.push(selection.release);
     assert.equal(selection.resolvedSkills.length, 2);
     const directory = await f.skillsets.catalogPath(f.robot.id, selection);
+    const { release, ...pinnedCatalog } = selection;
+    await f.skillsets.policies.update(f.robot.id, selection.policyId, selection.policyVersion, (policy) => ({ ...policy, mode: 'pinned', pinnedCatalog }));
     original.state = 'completed';
     await manager._saveTask(original);
     await f.skillsets.remove(f.robot.id, repo.name);
     await fs.writeFile(path.join(f.source, 'read-pdf/helper.txt'), 'changed upstream');
-    assert.equal(path.basename(directory), 'skill-catalog.json');
+    assert.equal(await fs.readFile(path.join(directory, 'read-pdf/helper.txt'), 'utf8'), 'original helper');
     const next = new RuntimeManager({ dataDir: f.dataDir, toolCache: {}, skillsets: f.skillsets });
     next.shuttingDown = true;
     const resumed = await next.resumeTask(f.robot, started.taskId, 'Continue review');
-    assert.deepEqual(next.tasks.get(resumed.taskId).request.skillSelection, selection);
-    const warnings = [];
-    assert.equal(await f.skillsets.catalogPath(f.robot.id, selection, message => warnings.push(message)), directory);
-    assert.deepEqual(JSON.parse(await fs.readFile(directory, 'utf8')), []);
-    assert.equal(warnings.length, 2);
+    assert.equal(next.tasks.get(resumed.taskId).request.skillPolicyRef, selection.policyId);
+    assert.equal(next.tasks.get(resumed.taskId).request.skillSelection, undefined);
+    assert.equal(next.tasks.get(resumed.taskId).alaSessionId, original.alaSessionId);
+    const continued = await f.skillsets.live.capture(await f.store.get(f.robot.id), selection.policyId, f.source);
+    f.releases.push(continued.release);
+    assert.equal(continued.catalogPath, directory);
     await assert.rejects(f.skillsets.start(f.robot, { skillSets: 'documents' }, () => {}), /not available/);
 });
 
 test('empty selection mounts no skills; individual selection excludes the rest', async (t) => {
     const f = await fixture(t);
-    const repo = await f.skillsets.add(f.robot.id, { source: f.source });
-    for (const [input, expected] of [[{}, []], [{ skills: `${repo.name}/read-pdf` }, ['read-pdf']]]) {
-        const selection = await f.skillsets.start(f.robot, input, (_robot, selected) => selected);
-        assert.deepEqual(JSON.parse(await fs.readFile(await f.skillsets.catalogPath(f.robot.id, selection), 'utf8')).map(value => path.basename(value)), expected);
+    await f.skillsets.add(f.robot.id, { name: 'documents', source: f.source });
+    for (const [input, expected] of [[{}, []], [{ skills: 'documents/read-pdf' }, ['read-pdf']]]) {
+        const selection = await f.capture(f.robot, input);
+        assert.deepEqual((await fs.readdir(await f.skillsets.catalogPath(f.robot.id, selection))).filter((name) => name !== '.catalog.json'), expected);
     }
     for (const input of [{ skills: '../secret' }, { skillSets: 'missing' }, { skills: 'documents/nope' }, { skills: {} }]) {
         await assert.rejects(f.skillsets.start(f.robot, input, () => assert.fail('must not enqueue')));
@@ -125,14 +202,15 @@ test('rejects symlinks, private/outside sources, invalid descriptors, duplicate 
     await fs.symlink('/etc/passwd', path.join(f.source, 'read-pdf/link'));
     await assert.rejects(f.skillsets.add(f.robot.id, { name: 'bad', source: f.source }), /symbolic/);
     await fs.unlink(path.join(f.source, 'read-pdf/link'));
-    const one = await f.skillsets.add(f.robot.id, { source: f.source });
+    await f.skillsets.add(f.robot.id, { name: 'one', source: f.source });
     const secondSource = path.join(f.source, '..', 'second');
     await fs.cp(f.source, secondSource, { recursive: true });
-    const two = await f.skillsets.add(f.robot.id, { source: secondSource });
-    await assert.rejects(f.skillsets.start(f.robot, { skillSets: [`${one.name}-set-1`, `${two.name}-set-1`] }, () => {}), /duplicate native name/);
-    const selection = await f.skillsets.start(f.robot, { skills: `${one.name}/read-pdf` }, (_robot, selected) => selected);
+    await f.skillsets.add(f.robot.id, { name: 'two', source: secondSource });
+    await assert.rejects(f.skillsets.start(f.robot, { skills: ['one/read-pdf', 'two/read-pdf'] }, () => {}), /duplicate native name/);
+    const selection = await f.capture(f.robot, { skills: 'one/read-pdf' });
     const directory = await f.skillsets.catalogPath(f.robot.id, selection);
-    await fs.writeFile(directory, JSON.stringify(['/etc']));
+    await fs.chmod(path.join(directory, 'read-pdf/helper.txt'), 0o600);
+    await fs.writeFile(path.join(directory, 'read-pdf/helper.txt'), 'tampered');
     await assert.rejects(f.skillsets.catalogPath(f.robot.id, selection), /changed/);
     await fs.writeFile(path.join(f.source, 'read-pdf/SKILL.md'), 'invalid');
     await assert.rejects(f.skillsets.add(f.robot.id, { name: 'bad', source: f.source }), /valid/);
@@ -172,12 +250,44 @@ test('skillsets.md validates named sections and known members, with no implicit 
 test('a described skillset mounts only its members with their resource files', async t => {
     const f = await fixture(t);
     const repo = await f.skillsets.add(f.robot.id, { source: f.source });
-    const selected = await f.skillsets.start(f.robot, { skillSets: [`${repo.name}-set-2`] }, (_robot, selection) => selection);
+    const selected = await f.capture(f.robot, { skillSets: [`${repo.name}-set-2`] });
     const directory = await f.skillsets.catalogPath(f.robot.id, selected);
-    const paths = JSON.parse(await fs.readFile(directory, 'utf8'));
-    assert.deepEqual(paths, [path.join(f.store.robotPath(f.robot.id), 'skillsets', repo.generation, 'read-pdf')]);
-    assert.equal(await fs.readFile(path.join(paths[0], 'helper.txt'), 'utf8'), 'original helper');
-    assert.deepEqual(await fs.readdir(path.dirname(directory)), ['skill-catalog.json']);
+    assert.deepEqual(selected.resolvedSkills, [`${repo.name}/read-pdf`]);
+    assert.equal(await fs.readFile(path.join(directory, 'read-pdf/helper.txt'), 'utf8'), 'original helper');
+    assert.deepEqual((await fs.readdir(directory)).sort(), ['.catalog.json', 'read-pdf']);
+    await fs.writeFile(path.join(f.source, 'read-pdf/helper.txt'), 'edited helper');
+    await fs.mkdir(path.join(f.source, 'added'));
+    await fs.writeFile(path.join(f.source, 'added/SKILL.md'), '---\nname: added\ndescription: Added locally\n---\n');
+    const policy = await f.skillsets.policies.read(f.robot.id, selected.policyId);
+    assert.deepEqual(policy.bindings[repo.name], { source: repo.source, generation: repo.generation });
+    const current = await f.skillsets.live.capture(await f.store.get(f.robot.id), selected.policyId, f.source);
+    f.releases.push(current.release);
+    assert.deepEqual(current.resolvedSkills, [`${repo.name}/read-pdf`], 'subset must not select new siblings');
+    assert.notEqual(current.revision, selected.revision);
+    assert.equal(await fs.readFile(path.join(current.catalogPath, 'read-pdf/helper.txt'), 'utf8'), 'edited helper');
+    const all = await f.capture(f.robot, { skillSets: [repo.name] });
+    assert.deepEqual(all.resolvedSkills.map(identity => identity.split('/')[1]).sort(), ['added', 'read-pdf', 'write-doc']);
+    const individual = await f.capture(f.robot, { skills: [`${repo.name}/added`] });
+    assert.deepEqual(individual.resolvedSkills, [`${repo.name}/added`]);
+});
+
+test('named membership fails on removal while exclusions and overlapping sets retain their meaning', async t => {
+    const f = await fixture(t);
+    const repo = await f.skillsets.add(f.robot.id, { source: f.source });
+    const selected = await f.capture(f.robot, { skillSets: [`${repo.name}-set-1`, `${repo.name}-set-2`] });
+    assert.equal(selected.resolvedSkills.length, 2, 'overlapping groups must not duplicate registrations');
+    const policy = await f.skillsets.policies.read(f.robot.id, selected.policyId);
+    await fs.rm(path.join(f.source, 'read-pdf'), { recursive: true });
+    await assert.rejects(f.skillsets.live.resolve(await f.store.get(f.robot.id), policy, f.source), /selected skill is unavailable/);
+    policy.excludedSkills.push(`${repo.name}/read-pdf`);
+    const remaining = await f.skillsets.live.resolve(await f.store.get(f.robot.id), policy, f.source);
+    assert.deepEqual(remaining.entries.filter(entry => entry.enabled).map(entry => entry.name), ['write-doc']);
+    policy.excludedSources.push(repo.name);
+    await f.skillsets.remove(f.robot.id, repo.name);
+    const empty = await f.skillsets.live.resolve(await f.store.get(f.robot.id), policy, f.source);
+    assert.deepEqual(empty.entries.filter(entry => entry.enabled), []);
+    policy.excludedSources = [];
+    await assert.rejects(f.skillsets.live.resolve(await f.store.get(f.robot.id), policy, f.source), /not available/);
 });
 
 
@@ -191,8 +301,8 @@ test('repositories without skillsets publish only skill metadata and support exa
     assert.equal(fallback[0].id, repo.name);
     assert.deepEqual(fallback[0].skills[0], { name: 'read-pdf', description: 'Can read-pdf' });
     assert.doesNotMatch(JSON.stringify(fallback), /PRIVATE FULL|directory|helper/);
-    const selected = await f.skillsets.start(robot, { skills: [`${repo.name}/read-pdf`] }, (_robot, selection) => selection);
-    assert.deepEqual(JSON.parse(await fs.readFile(await f.skillsets.catalogPath(robot.id, selected), 'utf8')).map(value => path.basename(value)), ['read-pdf']);
+    const selected = await f.capture(robot, { skills: [`${repo.name}/read-pdf`] });
+    assert.deepEqual(selected.resolvedSkills, [`${repo.name}/read-pdf`]);
 });
 
 
@@ -206,30 +316,28 @@ test('default chat gets copilot while a saved delegated default conversation sta
         updateSession: async (_id, update) => update(session),
     };
     const catalog = createRobotSkillCatalog({ context: { robot, store: f.store, skillsets: f.skillsets },
-        sessionStore, workingDir: f.root, discoverTaskSkills: discoverSkills });
-    const chat = await catalog.refresh('chat');
-    assert.equal(chat.skills.length, 3);
+        sessionStore, workingDir: f.source, discoverTaskSkills: discoverSkills });
+    const chatId = crypto.randomUUID();
+    const chat = await catalog.refresh(chatId);
+    assert.equal(chat.skills.filter(skill => skill.enabled).length, 3);
+    await catalog.command(chatId, 'use none');
+    assert.deepEqual((await catalog.refresh(chatId)).skills.filter(skill => skill.enabled), []);
     const empty = await f.skillsets.start(robot, {}, (_robot, selection) => selection);
-    session = { skillSelection: empty };
-    const delegated = await catalog.refresh('delegated');
-    assert.deepEqual(delegated.skills, []);
-    assert.equal(session.skillSelection, empty);
+    session = { skillPolicyRef: empty.policyId };
+    const delegated = await catalog.refresh(empty.policyId);
+    assert.deepEqual(delegated.skills.filter(skill => skill.enabled), []);
+    assert.equal(session.skillPolicyRef, empty.policyId);
 });
 
 
-test('prunes only missing paths, preserves valid skills, and does not restore re-added repositories', async t => {
+test('removed named sources fail live continuation and do not revive after re-registration', async t => {
     const f = await fixture(t);
     const repo = await f.skillsets.add(f.robot.id, { source: f.source });
-    const selection = await f.skillsets.start(f.robot, { skillSets: [`${repo.name}-set-1`] }, (_robot, value) => value);
-    const file = await f.skillsets.catalogPath(f.robot.id, selection);
-    const [first, second] = JSON.parse(await fs.readFile(file, 'utf8'));
-    await fs.rm(first, { recursive: true });
-    await f.skillsets.catalogPath(f.robot.id, selection, () => {});
-    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), [second]);
+    const selection = await f.capture(f.robot, { skillSets: [`${repo.name}-set-1`] });
     await f.skillsets.remove(f.robot.id, repo.name);
     await f.skillsets.add(f.robot.id, { source: f.source });
-    await f.skillsets.catalogPath(f.robot.id, selection, () => {});
-    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), []);
+    await assert.rejects(f.skillsets.live.capture(await f.store.get(f.robot.id), selection.policyId, f.source), /not available|unavailable/);
+    assert.equal(await fs.readFile(path.join(selection.catalogPath, 'read-pdf/helper.txt'), 'utf8'), 'original helper');
 });
 
 
@@ -241,7 +349,7 @@ test('empty legacy copied catalogs remain usable without deleting their director
     const file = await f.skillsets.catalogPath(f.robot.id, {
         catalogId, resolvedSkills: [], digest: crypto.createHash('sha256').digest('hex'),
     });
-    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), []);
+    assert.deepEqual(await fs.readdir(file), []);
     assert.ok((await fs.stat(legacy)).isDirectory());
 });
 
@@ -252,14 +360,16 @@ test('selected skills accept a symlinked runtime storage path and save canonical
     const alias = path.join(f.root, 'private-alias');
     await fs.symlink(f.dataDir, alias, 'dir');
     const store = new RobotStore({ dataDir: alias });
-    const skillsets = new RobotSkillsets({ robotStore: store, discoverSkills: async roots =>
+    const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot: path.dirname(f.source), discoverSkills: async roots =>
         discoverSkills(await Promise.all(roots.map(root => fs.realpath(root)))) });
     const robot = await store.get(f.robot.id);
     const set = publicSkillsets(robot).find(entry => !entry.builtin);
     const selected = await skillsets.start(robot, { skillSets: [set.id] }, (_robot, selection) => selection);
-    assert.equal(selected.paths.length, 2);
-    for (const directory of selected.paths) {
+    const inventory = await skillsets.inventory(robot, { policyId: selected.policyId, cwd: f.source });
+    const selectedPaths = inventory.skills.filter(skill => skill.enabled).map(skill => skill.sourcePath);
+    assert.equal(selectedPaths.length, 2);
+    for (const directory of selectedPaths) {
         assert.equal(directory, await fs.realpath(directory));
-        assert.ok(directory.startsWith(f.dataDir + path.sep));
+        assert.ok(directory.startsWith(f.source + path.sep));
     }
 });

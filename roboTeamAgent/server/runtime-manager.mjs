@@ -430,10 +430,15 @@ export class RuntimeManager {
             const args = ['--home', robotHome, '--cwd', cwd, '--taskFile', taskFile, '--ca', codingAgent];
             args.push('--session-id', task.alaSessionId, '--control-stdin');
             if (task.request.resumeSession) args.push('--resume-session');
-            if (task.request.skillSelection) {
-                if (!this.skillsets) throw new Error('task skill catalog service is unavailable');
-                args.push('--skill-catalog', await this.skillsets.catalogPath(robot.id, task.request.skillSelection, message => appendProgress(`${message}\n`)));
-            } else if (task.request.skillSets) args.push('--skillSets', task.request.skillSets);
+            // Catalog capture belongs to the wrapper's actual execution boundary after queue/cache wait.
+            if (this.skillsets) {
+                const policyId = task.request.skillPolicyRef || task.alaSessionId;
+                await this.skillsets.policies.ensure(robot, policyId, { legacy: task.request.skillSelection });
+                task.request.skillPolicyRef = policyId;
+                if (task.request.skillSelection) task.legacySkillSelection = task.request.skillSelection;
+                delete task.request.skillSelection;
+                await this._saveTask(task);
+            }
             if (task.request.model) args.push('--model', task.request.model);
             if (mcpAddress) args.push('--MCPServers', mcpAddress);
             task.state = 'running';
@@ -448,7 +453,7 @@ export class RuntimeManager {
                 ...(codingAgentPath ? { PATH: `${codingAgentPath}:${process.env.PATH || ''}` } : {}),
             };
             delete childEnv.ROBOTEAM_INTERNAL_TOKEN;
-            if (task.request.skillSelection) childEnv.ROBOTEAM_TASK_SKILL_SELECTION = JSON.stringify(task.request.skillSelection);
+            delete childEnv.ROBOTEAM_TASK_SKILL_SELECTION;
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
                 '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
@@ -457,6 +462,7 @@ export class RuntimeManager {
                 task.result = appendTail(task.result, chunk, TASK_RESULT_LIMIT);
             });
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
+                if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
                 if (event.type === 'messages-cancelled') appendProgress(`\nCancelled ${event.count} queued message(s).\n`);
                 if (event.type === 'session-ready') {
                     task.controlReady = true;
@@ -510,7 +516,7 @@ export class RuntimeManager {
         const file = path.join(directory, `${task.taskId}.task.json`);
         const temporary = `${file}.${crypto.randomUUID()}.tmp`;
         const record = { taskId: task.taskId, robotId: task.robotId, type: task.type,
-            state: task.state, request: task.request, alaSessionId: task.alaSessionId };
+            state: task.state, request: task.request, alaSessionId: task.alaSessionId, skillExecution: task.skillExecution, legacySkillSelection: task.legacySkillSelection };
         await fs.writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
         await fs.rename(temporary, file);
     }
@@ -544,7 +550,7 @@ export class RuntimeManager {
         const task = id ? this.tasks.get(id) : null;
         if (!task || task.robotId !== robotId) return null;
         const { child, request, cancelRequested, pendingMessages, controlReady, ...status } = task;
-        return { ...status, cwd: request.cwd, skillSelection: request.skillSelection ? structuredClone(request.skillSelection) : null,
+        return { ...status, cwd: request.cwd, skillPolicyRef: request.skillPolicyRef || null, skillExecution: task.skillExecution ? structuredClone(task.skillExecution) : null, skillSelection: request.skillSelection ? structuredClone(request.skillSelection) : null,
             queuePosition: this.taskQueuePosition(task) };
     }
 
@@ -607,6 +613,15 @@ export class RuntimeManager {
         if (message.length > 32768) throw new Error('Continuation prompt is too long.');
         if (this.manualControl.has(robot.id) && this.manualControl.get(robot.id) !== taskId) {
             throw new Error('Resume the task currently under manual control before continuing another task.');
+        }
+        if (this.skillsets) {
+            const policyId = internal.request.skillPolicyRef || internal.alaSessionId;
+            // A current conversation policy always wins over a terminal task's old request.
+            await this.skillsets.policies.ensure(robot, policyId, { legacy: internal.request.skillSelection });
+            internal.request.skillPolicyRef = policyId;
+            internal.legacySkillSelection ||= internal.request.skillSelection;
+            delete internal.request.skillSelection;
+            await this._saveTask(internal);
         }
         const resumed = this._enqueueTask(robot, internal.type, {
             ...internal.request,

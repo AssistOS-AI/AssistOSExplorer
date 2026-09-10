@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { skillsetMDParser } from './skillsetMDParser.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { skillError } from './skill-files.mjs';
 export const copilotSkillsRoot = path.resolve(fileURLToPath(new URL('../copilot/src/skills/', import.meta.url)));
 
 export function copilotSkillset() {
@@ -28,4 +29,13 @@ export function availableSkillsets(robot) {
         repository: repo,
         skills: definition.skills.map(name => repo.skills.find(skill => skill.name === name)),
     })));
+}
+
+export function resolveSkillsetSelector(repositories, definitions, selector) {
+    const sources = repositories.filter(repo => repo.name === selector);
+    const sets = definitions.filter(set => set.id === selector);
+    if (sources.length > 1 || sets.length > 1 || (sources.length && sets.length && sources[0].name !== sets[0].repository.name)) {
+        throw skillError(`ambiguous skillset selector: ${selector}; rename a repository or select qualified individual skills`);
+    }
+    return { repository: sets[0]?.repository || sources[0], definition: sets[0] };
 }

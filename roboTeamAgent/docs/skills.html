@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RoboTeam skills and skillsets</title><link rel="stylesheet" href="styles.css"><script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';mermaid.initialize({startOnLoad:true,theme:'neutral'});</script></head><body><div data-include="partials/header.html"></div><main class="page"><article class="document">
 <nav class="breadcrumbs"><a href="index.html">Documentation</a> / Skills and skillsets</nav>
 <h1>Skills and skillsets</h1>
-<p>Give each robot access to the procedures it needs, then select only the skills required for a particular task. RoboTeam manages repositories and selections; ALA reads the resulting path manifest and mounts the selected skill directories.</p>
+<p>Give each robot access to the procedures it needs, then select only the skills required for a particular task. RoboTeam manages repositories and selections; ALA mounts the resulting immutable execution catalog.</p>
 <h2>Add repositories to a robot</h2>
 <p>Open <strong>Manage skills</strong> on a robot card. Enter an HTTPS Git repository URL and choose <strong>Add repo</strong>. Expand a repository row to inspect skill names, plus each skillset's name, description and members. <strong>Remove</strong> unregisters the repository and deletes its imported files. These actions require an administrator.</p>
 <p>RoboTeam clones the repository into staging, validates its Anthropic <code>SKILL.md</code> descriptors and imports its files once into private storage under <code>robots/&lt;robot-id&gt;/skillsets/&lt;generation&gt;/</code>, beside the robot home. It does not run repository setup scripts. Each skill must contain its resources inside its own directory. Imports reject symlinks and special files and exclude <code>.git</code> and <code>node_modules</code>. Repository updates are not implemented.</p>
@@ -29,43 +29,39 @@ Use when only the PDF needs inspection.
 - read-pdf</code></pre>
 <p>The <code>skillsetMDParser</code> accepts multiline descriptions and case-insensitive section headings. It rejects duplicate skillset names, repeated or unknown sections, missing descriptions, empty member lists and unknown skill names. Skillset names may contain spaces. There is no version field or JSON wrapper. Empty or absent <code>skillsets.md</code> contributes no skillsets; a plain Anthropic skill repository remains supported.</p>
 <h2>Prompt and conversation ownership</h2>
-<p>RoboTeam sends the current request and, for the default robot, the delegation catalog and a rule to delegate when the user hints, indicates, or explicitly requests that someone else perform the task. Otherwise, the default robot performs the task itself. Every turn goes to ALA; RoboTeam performs no knowledge-memory lookup or response caching. ALA only points the coding agent to .agents/skills; the agent reads skill descriptors itself. RoboTeam does not repeat those instructions or replay UI transcripts; native coding-agent sessions retain conversation context. A launch-robot call creates a separate asynchronous task with its own conversation and task ID. The parent must supply the relevant context in its task description.</p>
+<p>RoboTeam sends the current request and, for the default robot, the delegation catalog and a rule to delegate when the user hints, indicates, or explicitly requests that someone else perform the task. Otherwise, the default robot performs the task itself. Every turn goes to ALA; RoboTeam performs no knowledge-memory lookup or response caching. ALA points the coding agent to .agents/skills and requires current descriptor reads on each turn; the agent reads skill descriptors itself. RoboTeam does not repeat those instructions or replay UI transcripts; native coding-agent sessions retain conversation context. A launch-robot call creates a separate asynchronous task with its own conversation and task ID. The parent must supply the relevant context in its task description.</p>
 <h2>What the default robot receives</h2>
 <p>At each default WebChat turn, RoboTeam supplies the available robots and their specializations. For each robot it includes its skillset names, descriptions, member names and generated selection IDs. Descriptions tell the default robot when a combination is useful; IDs distinguish selections from different repositories. For repositories without skillsets, it instead supplies each individual skill's <code>name</code> and <code>description</code>, grouped by repository ID. Discovery does not send full skill instructions.</p>
 <p>The default robot uses <code>launch-robot</code> with <code>skillSets</code> containing discovered IDs and/or <code>skills</code> containing qualified <code>repository-id/skill-name</code> selectors. Both accept arrays or comma-separated strings. RoboTeam expands the requested sets, adds individual selections and deduplicates the union. Two distinct selected skills with the same native name are rejected.</p>
-<p>Direct default chats automatically include the three bundled copilot skills. Every robot can select their bundled <code>copilot</code> skillset, but delegated tasks receive it only when explicitly requested, even when the delegated robot is named <code>default</code>. An omitted delegated selection mounts no skills. The full <code>SKILL.md</code> instructions become available only through the selected directories.</p>
+<p>Registration rejects duplicate repository names, equivalent local source paths and names that collide with a generated skillset ID. Existing ambiguous bare selectors report an error; select qualified individual skills or remove and register the conflicting source with a different name.</p>
+<p>Direct default chats initially include the three bundled copilot skills and live workspace skills; explicit exclusions or an empty selection remain authoritative. Every robot can select their bundled <code>copilot</code> skillset, but delegated tasks receive it only when explicitly requested, even when the delegated robot is named <code>default</code>. An omitted delegated selection mounts no skills. The full <code>SKILL.md</code> instructions become available only through the selected directories.</p>
 <figure class="diagram"><pre class="mermaid">flowchart TB
   subgraph RT["RoboTeam"]
     Repo["Manage skills: import Anthropic repositories and parse skillsets.md"]
     Default["Default robot: read discovery metadata and choose skillSets / skills"]
-    Prepare["Resolve selected skill directories and save task manifest"]
-    Resume["Resume / next turn: reopen saved manifest"]
-    Check["Remove missing skill paths and log omissions"]
+    Prepare["Validate selectors and save conversation policy"]
+    Resume["Resume / next turn: resolve current policy"]
+    Check["Capture current selected bytes after queue wait"]
     Repo --> Default --> Prepare --> Check
     Resume --> Check
     Remove["Remove repository: delete its imported files"] -.-> Check
   end
   subgraph Execution["ALA execution"]
-    Mount["Read path array, validate SKILL.md and mount each directory read-only"]
+    Mount["Validate captured catalog and mount selected directories read-only"]
     Agent["Coding agent reads /workspace/.agents/skills/name/SKILL.md"]
     Mount --> Agent
   end
-  Check -->|"--skill-catalog skill-catalog.json"| Mount
+  Check -->|"--skill-catalog captured-directory"| Mount
   classDef orchestration fill:#e5efff,stroke:#365c94,color:#172b49
   classDef execution fill:#e7f4e9,stroke:#397644,color:#193c20
   class Repo,Default,Prepare,Resume,Check,Remove orchestration
   class Mount,Agent execution</pre><figcaption><em>Robot skill selection and execution</em></figcaption></figure>
-<h2>Prepare the task manifest</h2>
-<p>A new selection creates <code>robots/&lt;robot-id&gt;/runtime/tasks/&lt;catalog-id&gt;/skill-catalog.json</code>. For a new delegated task, the catalog ID is its initial RoboTeam task ID. Conversations reference their catalog ID from saved session metadata; continuations reuse the original catalog folder. The file contains only an array of absolute paths as seen by the outer RoboTeam runtime:</p>
-<pre><code>[
-    "/data/robots/robot-id/skillsets/generation/read-pdf",
-    "/data/robots/robot-id/skillsets/generation/write-doc"
-]</code></pre>
-<p>RoboTeam keeps the selected source directories in place. It creates neither per-task skill copies nor symlinks. The manifest persists after task completion so Resume and Continue can reuse it. Private task metadata retains the original selectors and source references; ALA receives only the manifest path.</p>
+<h2>Prepare the execution catalog</h2>
+<p>Direct default chats initially select copilot and workspace skills. Explicit empty selections remain empty. Delegated tasks without a selection mount no skills, including when their target is default. Named skillset IDs select only their declared members; repository-qualified individual skills and explicit whole-repository selectors remain supported. Every later execution captures current selected bytes after queue wait, unless the conversation explicitly pins a catalog.</p>
+<p>The task stores a conversation policy reference before enqueueing. At execution start, RoboTeam validates source identities and captures selected descriptors, scripts and resources into an immutable private catalog under runtime/skill-catalogs. The catalog includes a revision and policy version. ALA receives --skill-catalog even when selection is empty; configured repositories cannot add skills to that execution.</p>
 <h2>Removed skills and continuation</h2>
-<p>Before each execution, RoboTeam validates the saved manifest against its original permitted paths and checks that each directory and its <code>SKILL.md</code> still exist. It removes missing entries, atomically rewrites the manifest and logs the omissions. It keeps valid entries in their original order. If none remain, the manifest becomes <code>[]</code> and the task continues without selected skills. It does not add defaults, re-expand skillsets or restore paths from a re-added repository.</p>
-<p>Resume preserves the native ALA session, home and cwd, but the coding agent may have fewer skills after a repository is removed. Corrupt manifests, unauthorized path additions and other validation failures stop the execution; only missing paths are pruned. Removal while an execution is already active can affect access to source resources; the pre-execution check does not protect an already running process.</p>
-<p>Catalog files and conversation metadata remain in robot storage until that robot is deleted. Older copied catalogs remain readable through a compatibility manifest without deleting or moving their files. There is no automatic cleanup or repository update mechanism in this flow.</p>
+<p>Local sources are read from their current working directories. New skills in an automatic workspace or selected whole local source are discovered without an update command. Named subsets do not automatically select new siblings. Missing required sources fail visibly; excluded identities remain excluded. Running executions retain their captured resources. Explicit /skills pin retains the last catalog, while /skills live resumes current-source capture.</p>
+<p>Legacy copied catalogs remain intact. Legacy path manifests are recovery evidence; explicit pinning validates and captures their remaining permitted sources into an immutable catalog without rewriting the old manifest. Missing or corrupt recovery sources fail. Read <a href="local-skills.html">local skill discovery</a> for exclusion, migration and retention rules.</p>
 <p>See <a href="operations.html">Robots &amp; Runs</a> for task controls and <a href="specsLoader.html?spec=DS006-ala-task-boundary.md">the ALA task boundary specification</a> for the execution contract.</p>
 
 <h2>Runtime dependencies and task notifications</h2>

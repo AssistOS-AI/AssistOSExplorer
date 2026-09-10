@@ -125,7 +125,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         let finish;
         const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
-        let release, turn, scriptContext, temporary, child, childDone;
+        let release, catalogRelease, turn, scriptContext, temporary, child, childDone;
         const env = { ...process.env };
         const sanitize = createSanitizer(context, env);
         const emit = async (event) => { await onEvent?.(sanitize(event)); };
@@ -138,7 +138,10 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (backend === 'pi' && permissionMode === 'ask-for-approval') {
                 throw new Error('Pi does not support ask-for-approval; select full-access or use Codex/OpenCode.');
             }
-            const snapshot = await skillCatalog.refresh(sessionId);
+            const snapshot = await skillCatalog.refresh(sessionId, { execution: true, cwd });
+            catalogRelease = snapshot.release;
+            if (snapshot.revision) await emit({ type: 'skill-catalog', revision: snapshot.revision, policyVersion: snapshot.policyVersion });
+            for (const diagnostic of snapshot.diagnostics || []) await emit({ type: 'diagnostic', category: 'skill-catalog', message: `${diagnostic.state}: ${diagnostic.message}` });
             const skills = snapshot.skills.filter((skill) => skill.enabled);
             const selectedSkillName = skillName;
             const selected = selectedSkillName ? skills.find((skill) => skill.name === selectedSkillName) : null;
@@ -184,7 +187,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             onControl?.((message) => {
                 if (!child.stdin.destroyed && !controller.signal.aborted) child.stdin.write(JSON.stringify(message) + '\n');
             });
-            childDone = consumeChild(child, { config, controller, context: captured, sessionId, turnId,
+            childDone = consumeChild(child, { config: { ...config, skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null }, controller, context: captured, sessionId, turnId,
                 assistantMessageId: turn.assistantMessageId, emit, sanitize });
             const outputText = await childDone;
             if (scriptContext) {
@@ -215,7 +218,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 try { if (scriptContext) await scriptContext.close(); }
                 finally { if (temporary) await fs.rm(temporary, { recursive: true, force: true }); }
             } finally {
-                try { await release?.(); } finally { active.delete(operation); finish(); }
+                try { await catalogRelease?.(); } finally { try { await release?.(); } finally { active.delete(operation); finish(); } }
             }
         }
     }
@@ -246,6 +249,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 ...(optionId === null ? { cancelled: true } : { optionId }) })}\n`);
         };
         const handle = async (event) => {
+            // The wrapper publishes the policy applied to this turn. A pinned envelope may carry an older policy version.
+            if (event.type === 'skill-catalog' && config.skillExecution) {
+                if (/^[a-f0-9]{64}$/.test(config.skillExecution.catalogId) && event.revision !== config.skillExecution.revision) throw new Error('ALA received a different execution catalog revision.');
+                return;
+            }
             if (!event || typeof event.type !== 'string') throw new Error('Malformed mandatory ALA event.');
             if (event.type === 'coding-agent-selected') {
                 if (event.agent !== config.backend || event.permissionMode !== config.permissionMode) throw new Error('ALA selected an unexpected backend or permission policy.');

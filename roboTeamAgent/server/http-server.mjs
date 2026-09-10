@@ -260,7 +260,7 @@ export function createRoboTeamServer(options) {
                 const startTypes = { 'start-desktop-task': 'desktop', 'start-browser-task': 'browser', 'start-simple-task': 'simple' };
                 if (startTypes[operation]) {
                     const task = await skillsets.start(robot, body, (current, skillSelection) => runtimeManager.startTask(current, startTypes[operation], {
-                        cwd: body.cwd, task: String(body.task || ''), skillSelection,
+                        cwd: body.cwd, task: String(body.task || ''), skillPolicyRef: skillSelection.policyId, alaSessionId: skillSelection.policyId,
                         model: body.model || null, ca: body.ca || 'codex',
                     }));
                     return sendJson(res, 202, {

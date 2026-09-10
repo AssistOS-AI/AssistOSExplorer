@@ -1,0 +1,9 @@
+# Runtime dependency selection
+
+RoboTeam uses the existing AdvancedLanguageAgent runtime for native execution, skill catalog isolation, and continued sessions. `package.json` pins that Git dependency to commit `af98d8e2a75139f2a64b175567767eeb5f7aecc7`, which supports both JSON skill manifests and live catalog directories and keeps native runtimes installed below `/workspace` visible inside the task sandbox. A moving branch reference could install an incompatible runtime during a fresh deployment.
+
+ALA is maintained at https://github.com/AssistOS-AI/AdvancedLanguageAgent and uses the MIT license, included in its installed `LICENSE`. Preserve that license when redistributing the package. To update, validate the proposed ALA commit with the repository suites and Ploinky's cross-repository skill acceptance test, then change the exact Git revision in `package.json`. Ploinky installs this manifest into its owned runtime dependency cache; a repository package lock does not select that cache's dependency versions.
+
+`scripts/verify-ala.mjs` validates the installed runtime through `resolveAlaInstallation`. A missing or incompatible ALA installation fails agent preparation. The runtime cannot be replaced with Node built-ins because ALA owns the native backend and sandbox protocol. This is an existing dependency; this change pins its revision and adds no package.
+
+ALA declares the `ploinky-agent-lib` package for standalone use. Managed Ploinky deployments must bind that package name to the single admitted workspace AgentLib source, just as they bind `achillesAgentLib`. They must not execute a private transitive copy. Native executables, Bubblewrap, and their existing installation requirements remain owned by the ALA and RoboTeam runtime setup. The propagation tests themselves use Node built-ins and require Node 22 or newer on Linux; their optional native mode also needs the configured native runtime and a dedicated authenticated home.

@@ -43,7 +43,7 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
     } else initialSession = await sessionStore.ensureCurrentSession();
     const robotContext = getRobotContext();
     const robotCatalog = robotContext ? createRobotSkillCatalog({ context: robotContext, sessionStore,
-        workingDir, discoverTaskSkills: installation.discoverTaskSkills }) : null;
+        workingDir, initialSessionId: initialSession.sessionId, discoverTaskSkills: installation.discoverTaskSkills }) : null;
     let catalog;
     const refresh = async () => {
         catalog = await createAnthropicSkillCatalog({
@@ -53,7 +53,7 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
         });
         return { skills: catalog.getSkills(), taskRepositories: catalog.getEnabledSkillDirectories() };
     };
-    if (options.skillSelection) initialSession = await sessionStore.updateSession(initialSession.sessionId,
+    if (options.skillSelection && !initialSession.skillPolicyRef && !initialSession.skillSelection && !options.resumeSession) initialSession = await sessionStore.updateSession(initialSession.sessionId,
         (session) => { session.skillSelection = options.skillSelection; });
     if (robotCatalog) await robotCatalog.refresh(initialSession.sessionId);
     else await refresh();
@@ -124,7 +124,7 @@ export async function main(args = process.argv.slice(2)) {
                 const connection = { sessionId: runtime.initialSession.sessionId, markdownEnabled: options.renderMarkdown };
                 const context = { workingDir: options.workingDir, rawText: options.prompt };
                 const onEvent = (event) => {
-                    if (event.type === 'diagnostic' && (options.debug || options.verbose)) console.error(event.message);
+                    if (event.type === 'diagnostic' && (event.category === 'skill-catalog' || options.debug || options.verbose)) console.error(event.message);
                 };
                 const result = options.prompt.startsWith('/')
                     ? await executeRuntimeCommand({ runtime, connection, input: options.prompt, context, signal: controller.signal, onEvent })
