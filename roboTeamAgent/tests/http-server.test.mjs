@@ -11,11 +11,16 @@ function authHeader(userId, roles = ['user']) {
 }
 
 async function startFixture(options = {}) {
-    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-http-test-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-http-test-'));
+    const dataDir = path.join(root, 'private');
+    const workspaceRoot = path.join(root, 'workspace');
+    await fs.mkdir(workspaceRoot);
     const robotStore = new RobotStore({ dataDir });
     await robotStore.initialize();
     const runs = new Map();
     const runtimeManager = {
+        workspaceRoot,
+        ...(process.env.LIVE_SKILLS_ALA_ROOT ? { alaCommand: path.join(process.env.LIVE_SKILLS_ALA_ROOT, 'bin/ala.mjs') } : {}),
         status: (id) => runs.get(id) || { state: 'stopped' },
         start: async (robot, mode) => {
             const run = { state: 'running', mode, sessionUrl: `/rt/api/robots/${robot.id}/session/` };
@@ -33,10 +38,11 @@ async function startFixture(options = {}) {
         server,
         robotStore,
         runtimeManager,
+        workspaceRoot,
         baseUrl: `http://127.0.0.1:${server.address().port}`,
         close: async () => {
             await new Promise((resolve) => server.close(resolve));
-            await fs.rm(dataDir, { recursive: true, force: true });
+            await fs.rm(root, { recursive: true, force: true });
         },
     };
 }
@@ -107,7 +113,7 @@ test('skillset mutations are admin-only, including rejection of internal agents'
     assert.equal(calls.length, 2);
 });
 
-test('task starts resolve an allowed catalog and ignore caller-supplied snapshots', async (t) => {
+test('task starts validate allowed policy intent and ignore caller-supplied snapshots and policy references', async (t) => {
     const fixture = await startFixture();
     t.after(fixture.close);
     const robot = await fixture.robotStore.create({ name: 'Catalog Task', specialization: 'Reports' });
@@ -120,18 +126,22 @@ test('task starts resolve an allowed catalog and ignore caller-supplied snapshot
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-roboteam-internal-token': 'test-token' },
         body: JSON.stringify({ operation: 'start-simple-task', robotName: robot.name,
-            cwd: '/workspace', task: 'Review', ...extra }),
+            cwd: fixture.workspaceRoot, task: 'Review', ...extra }),
     });
     const rejected = await start({ skillSets: 'not-allowed' });
     assert.equal(rejected.status, 400);
     assert.equal(requests.length, 0);
-    const accepted = await start({ skillSelection: { catalogId: 'forged', resolvedSkills: ['secret'] } });
+    const accepted = await start({ skillSelection: { catalogId: 'forged', resolvedSkills: ['secret'] }, skillPolicyRef: 'forged-policy', alaSessionId: 'forged-session' });
     assert.equal(accepted.status, 202);
     assert.equal(requests.length, 1);
-    assert.deepEqual(requests[0].request.skillSelection.resolvedSkills, []);
-    assert.notEqual(requests[0].request.skillSelection.catalogId, 'forged');
-    const catalog = await fixture.runtimeManager.skillsets.catalogPath(robot.id, requests[0].request.skillSelection);
-    assert.deepEqual(await fs.readdir(catalog), []);
+    const request = requests[0].request;
+    assert.equal(request.skillSelection, undefined);
+    assert.match(request.skillPolicyRef, /^[a-f0-9-]{36}$/);
+    assert.equal(request.alaSessionId, request.skillPolicyRef);
+    const skillsets = fixture.runtimeManager.skillsets;
+    const policy = await skillsets.policies.read(robot.id, request.skillPolicyRef);
+    assert.deepEqual(policy.selectors, { skillSets: [], skills: [] });
+    await assert.rejects(fs.readdir(skillsets.live.root(robot.id)), { code: 'ENOENT' }, 'queue submission does not capture execution bytes');
 });
 
 test('internal MCP control calls require only the generated service token', async () => {

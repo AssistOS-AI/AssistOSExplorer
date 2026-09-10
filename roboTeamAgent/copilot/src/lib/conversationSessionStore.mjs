@@ -140,6 +140,7 @@ function normalizeSession(raw, expectedId = '') {
         updatedAt,
         messages,
         ...(raw.cwd && path.isAbsolute(raw.cwd) ? { cwd: raw.cwd } : {}),
+        ...Object.fromEntries(['skillPolicyRef', 'legacySkillSelection', 'skillExecution', 'previousSkillExecution'].filter((key) => raw[key] !== undefined).map((key) => [key, structuredClone(raw[key])])),
         ...(raw.skillSelection ? { skillSelection: structuredClone(raw.skillSelection) } : {}),
         ...(raw.engine === undefined ? {} : { engine: normalizeEngine(raw.engine, sessionId) }),
     };

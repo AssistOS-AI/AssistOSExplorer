@@ -11,7 +11,8 @@ function formatHistory(entries = []) {
 }
 
 export async function executeRuntimeCommand({ runtime, connection, input, context = {}, signal, onEvent, emit = null }) {
-    const { workingDir, engine, skillCatalog, sessionStore, historyManager, backgroundTasks } = runtime;
+    const { workingDir, engine, sessionStore, historyManager, backgroundTasks } = runtime;
+    const skillCatalog = runtime.skillCatalog.forSession?.(connection.sessionId) || runtime.skillCatalog;
     if (/^\/skills(?:\s|$)/.test(input) && skillCatalog.command) {
         return skillCatalog.command(connection.sessionId, input.slice(7));
     }

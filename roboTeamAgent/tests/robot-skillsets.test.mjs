@@ -29,7 +29,8 @@ async function discoverSkills(roots) {
 
 async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-skillsets-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const releases = [];
+    t.after(async () => { for (const release of releases) await release(); await fs.rm(root, { recursive: true, force: true }); });
     const dataDir = path.join(root, 'private');
     const workspaceRoot = path.join(root, 'workspace');
     const source = path.join(workspaceRoot, 'repo');
@@ -42,23 +43,31 @@ async function fixture(t) {
     const store = new RobotStore({ dataDir });
     const robot = await store.create({ name: 'Analyst', specialization: 'Reports' });
     const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot, discoverSkills });
-    return { root, dataDir, source, store, robot, skillsets };
+    const capture = async (selectedRobot, input = {}) => {
+        const reference = await skillsets.start(selectedRobot, input, (_robot, selection) => selection);
+        assert.equal(reference.version, 2);
+        assert.equal(reference.catalogId, undefined, 'submission must not freeze execution bytes');
+        const result = await skillsets.live.capture(await store.get(selectedRobot.id), reference.policyId, source);
+        releases.push(result.release);
+        return result;
+    };
+    return { root, dataDir, source, store, robot, skillsets, capture, releases };
 }
 
 test('copilot is available to every robot but selected automatically only by default', async (t) => {
     const f = await fixture(t);
     const robot = await f.store.ensureDefaultRobot();
-    const selected = await f.skillsets.start(robot, {}, (_robot, selection) => selection);
+    const selected = await f.capture(robot);
     assert.deepEqual([...selected.resolvedSkills].sort(), [
         'copilot/bash', 'copilot/launch-gpt-researcher', 'copilot/launch-open-interpreter',
         'copilot/launch-robot', 'copilot/launch-web-search',
     ]);
     assert.ok(selected.resolvedSkills.every((name) => name.startsWith('copilot/')));
-    const other = await f.skillsets.start(f.robot, {}, (_robot, selection) => selection);
+    const other = await f.capture(f.robot);
     assert.deepEqual(other.resolvedSkills, []);
-    const explicit = await f.skillsets.start(f.robot, { skills: ['copilot/launch-robot'] }, (_robot, selection) => selection);
+    const explicit = await f.capture(f.robot, { skills: ['copilot/launch-robot'] });
     assert.deepEqual(explicit.resolvedSkills, ['copilot/launch-robot']);
-    await assert.rejects(f.skillsets.remove(robot.id, 'copilot'), /bundled read-only/i);
+    await assert.rejects(f.skillsets.remove(robot.id, 'copilot'), /reserved skill source/i);
 });
 
 test('imports allowed catalogs and publishes only skill names and frontmatter descriptions', async (t) => {
@@ -74,17 +83,21 @@ test('imports allowed catalogs and publishes only skill names and frontmatter de
     await assert.rejects(skillsets.add(robot.id, { name: 'documents', source }), /already exists/);
 });
 
-test('selects a union once and continues the saved catalog after removal and service recreation', async (t) => {
+test('queues only policy references and explicit pinning preserves execution bytes through task continuation', async (t) => {
     const f = await fixture(t);
     await f.skillsets.add(f.robot.id, { name: 'documents', source: f.source });
     const manager = new RuntimeManager({ dataDir: f.dataDir, toolCache: {}, skillsets: f.skillsets });
     manager.shuttingDown = true;
     const started = await f.skillsets.start(f.robot, { skillset: 'documents', skills: ['documents/read-pdf'] },
-        (robot, selection) => manager.startTask(robot, 'simple', { cwd: f.source, task: 'Review', skillSelection: selection }));
+        (robot, reference) => manager.startTask(robot, 'simple', { cwd: f.source, task: 'Review', skillPolicyRef: reference.policyId, alaSessionId: reference.policyId }));
     const original = manager.tasks.get(started.taskId);
-    const selection = original.request.skillSelection;
+    assert.equal(original.request.skillSelection, undefined);
+    const selection = await f.skillsets.live.capture(await f.store.get(f.robot.id), original.request.skillPolicyRef, f.source);
+    f.releases.push(selection.release);
     assert.equal(selection.resolvedSkills.length, 2);
     const directory = await f.skillsets.catalogPath(f.robot.id, selection);
+    const { release, ...pinnedCatalog } = selection;
+    await f.skillsets.policies.update(f.robot.id, selection.policyId, selection.policyVersion, (policy) => ({ ...policy, mode: 'pinned', pinnedCatalog }));
     original.state = 'completed';
     await manager._saveTask(original);
     await f.skillsets.remove(f.robot.id, 'documents');
@@ -93,8 +106,12 @@ test('selects a union once and continues the saved catalog after removal and ser
     const next = new RuntimeManager({ dataDir: f.dataDir, toolCache: {}, skillsets: f.skillsets });
     next.shuttingDown = true;
     const resumed = await next.resumeTask(f.robot, started.taskId, 'Continue review');
-    assert.deepEqual(next.tasks.get(resumed.taskId).request.skillSelection, selection);
-    assert.equal(await f.skillsets.catalogPath(f.robot.id, selection), directory);
+    assert.equal(next.tasks.get(resumed.taskId).request.skillPolicyRef, selection.policyId);
+    assert.equal(next.tasks.get(resumed.taskId).request.skillSelection, undefined);
+    assert.equal(next.tasks.get(resumed.taskId).alaSessionId, original.alaSessionId);
+    const continued = await f.skillsets.live.capture(await f.store.get(f.robot.id), selection.policyId, f.source);
+    f.releases.push(continued.release);
+    assert.equal(continued.catalogPath, directory);
     await assert.rejects(f.skillsets.start(f.robot, { skillSets: 'documents' }, () => {}), /not available/);
 });
 
@@ -102,8 +119,8 @@ test('empty selection mounts no skills; individual selection excludes the rest',
     const f = await fixture(t);
     await f.skillsets.add(f.robot.id, { name: 'documents', source: f.source });
     for (const [input, expected] of [[{}, []], [{ skills: 'documents/read-pdf' }, ['read-pdf']]]) {
-        const selection = await f.skillsets.start(f.robot, input, (_robot, selected) => selected);
-        assert.deepEqual(await fs.readdir(await f.skillsets.catalogPath(f.robot.id, selection)), expected);
+        const selection = await f.capture(f.robot, input);
+        assert.deepEqual((await fs.readdir(await f.skillsets.catalogPath(f.robot.id, selection))).filter((name) => name !== '.catalog.json'), expected);
     }
     for (const input of [{ skills: '../secret' }, { skillSets: 'missing' }, { skills: 'documents/nope' }, { skills: {} }]) {
         await assert.rejects(f.skillsets.start(f.robot, input, () => assert.fail('must not enqueue')));
@@ -118,8 +135,8 @@ test('rejects symlinks, private/outside sources, invalid descriptors, duplicate 
     await fs.unlink(path.join(f.source, 'read-pdf/link'));
     await f.skillsets.add(f.robot.id, { name: 'one', source: f.source });
     await f.skillsets.add(f.robot.id, { name: 'two', source: f.source });
-    await assert.rejects(f.skillsets.start(f.robot, { skillSets: ['one', 'two'] }, () => {}), /duplicate native name/);
-    const selection = await f.skillsets.start(f.robot, { skills: 'one/read-pdf' }, (_robot, selected) => selected);
+    await assert.rejects(f.skillsets.start(f.robot, { skills: ['one/read-pdf', 'two/read-pdf'] }, () => {}), /duplicate native name/);
+    const selection = await f.capture(f.robot, { skills: 'one/read-pdf' });
     const directory = await f.skillsets.catalogPath(f.robot.id, selection);
     await fs.chmod(path.join(directory, 'read-pdf/helper.txt'), 0o600);
     await fs.writeFile(path.join(directory, 'read-pdf/helper.txt'), 'tampered');
