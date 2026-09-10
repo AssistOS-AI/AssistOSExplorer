@@ -40,7 +40,50 @@ function command(args, input = '') {
 }
 
 function program(fn, args) {
-    return `(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid read-only runtime evidence'); process.exitCode = 1; });\n`;
+    const helpers = fn === readLiveSkillsSnapshot ? `const readLiveSkillsCodeHashes = ${readLiveSkillsCodeHashes.toString()};\n` : '';
+    return `${helpers}(${fn.toString()})(${JSON.stringify(args)}).catch(() => { console.error('Invalid read-only runtime evidence'); process.exitCode = 1; });\n`;
+}
+
+export function normalizeLiveSkillsImageId(value) {
+    assert.ok(typeof value === 'string' && /^(?:sha256:)?[0-9a-f]{64}$/.test(value), 'Expected one complete SHA-256 image identity.');
+    return value.replace(/^sha256:/, '');
+}
+
+// Ploinky links /code entries into this already verified repository mount.
+// This helper is serialized with the snapshot reader; keep its imports local.
+export async function readLiveSkillsCodeHashes({ expectedRepository, contractFiles }, { codeRoot = '/code', fsApi } = {}) {
+    const assert = (await import('node:assert/strict')).default;
+    const fs = fsApi || await import('node:fs');
+    const path = await import('node:path');
+    const { createHash } = await import('node:crypto');
+    assert.ok(typeof expectedRepository === 'string' && path.isAbsolute(expectedRepository)
+        && path.normalize(expectedRepository) === expectedRepository);
+    const sourceRoot = `${expectedRepository}/roboTeamAgent`;
+    assert.equal(fs.realpathSync(sourceRoot), sourceRoot, 'Verified RoboTeam source must remain canonical.');
+    assert.ok(Array.isArray(contractFiles) && contractFiles.length > 0 && new Set(contractFiles).size === contractFiles.length);
+    const hashes = {};
+    for (const file of contractFiles) {
+        assert.ok(typeof file === 'string' && /^[a-zA-Z0-9/.-]+\.mjs$/.test(file)
+            && !path.isAbsolute(file) && file.split('/').every(part => part && part !== '.' && part !== '..'));
+        const filename = `${sourceRoot}/${file}`;
+        const runtimeFile = `${codeRoot}/${file}`;
+        assert.equal(fs.realpathSync(filename), filename, 'Verified contract source contains a symlink.');
+        assert.equal(fs.realpathSync(runtimeFile), filename, 'Runtime contract file resolves outside its exact verified source.');
+        const fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+        try {
+            const before = fs.fstatSync(fd);
+            assert.ok(before.isFile() && before.nlink === 1 && before.size <= 4 * 1024 * 1024);
+            const data = fs.readFileSync(fd);
+            const after = fs.fstatSync(fd);
+            assert.ok(before.size === data.length && before.size === after.size && before.mtimeMs === after.mtimeMs
+                && before.ctimeMs === after.ctimeMs && fs.realpathSync(`/proc/self/fd/${fd}`) === filename,
+            'Verified contract file changed during its read.');
+            assert.equal(fs.realpathSync(filename), filename);
+            assert.equal(fs.realpathSync(runtimeFile), filename, 'Runtime contract link changed during its read.');
+            hashes[file] = createHash('sha256').update(data).digest('hex');
+        } finally { fs.closeSync(fd); }
+    }
+    return hashes;
 }
 
 // Executed inside the already pinned Box. Importing this observational reader does not create a registry.
@@ -64,7 +107,7 @@ async function readRegistryAndRuntime() {
 
 // Executed inside the exact running RoboTeam container. Never instantiate RobotStore, execute helpers,
 // update settings, or read native auth/progress. All paths below are derived and confined.
-export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, contractFiles }) {
+export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, contractFiles, expectedRepository }) {
     const assert = (await import('node:assert/strict')).default;
     const fs = await import('node:fs');
     const path = await import('node:path');
@@ -131,11 +174,7 @@ export async function readLiveSkillsSnapshot({ sessionId, folder, skillNames, co
         assert.match(name, /^[a-f0-9-]{36}-live-[a-f0-9]{8}-(control|probe|added)\.json$/);
         receipts[name] = json(`${receiptRoot}/${name}`, workspace, 4096);
     }
-    const codeHashes = {};
-    for (const file of contractFiles) {
-        assert.ok(/^[a-zA-Z0-9/.-]+\.mjs$/.test(file) && !file.includes('..'));
-        codeHashes[file] = hash(bytes(`/code/${file}`, '/code'));
-    }
+    const codeHashes = await readLiveSkillsCodeHashes({ expectedRepository, contractFiles });
     console.log(JSON.stringify({ robotRoot, session: { sessionId: session.sessionId, cwd: session.cwd,
         engine: session.engine, skillPolicyRef: session.skillPolicyRef, skillExecution: session.skillExecution,
         messages: session.messages.map(({ id, role, text, status, turnId }) => ({ id, role, text, status, turnId })) },
@@ -165,12 +204,14 @@ export function validateLiveSkillsRuntimeBinding(runtime, expectedRepository) {
     return runtime;
 }
 
-export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL, verifierPath }) {
+export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL, verifierPath }, {
+    collectRelease = collectCopilotReleaseEvidence, runCommand = command,
+} = {}) {
     assert.ok(env.SMOKE_PLOINKY_BOX_CONTAINER, 'Set the exact SMOKE_PLOINKY_BOX_CONTAINER name.');
     assert.ok(env.SMOKE_BOX_BASE_URL, 'Set SMOKE_BOX_BASE_URL to the selected host Box loopback origin.');
     assert.ok(env.SMOKE_WORKSPACE_ROOT && path.isAbsolute(env.SMOKE_WORKSPACE_ROOT), 'Set an absolute SMOKE_WORKSPACE_ROOT on the selected host.');
     const hostWorkspace = fs.realpathSync(env.SMOKE_WORKSPACE_ROOT);
-    const collect = () => collectCopilotReleaseEvidence({ manifestPath: env.SMOKE_RELEASE_MANIFEST,
+    const collect = () => collectRelease({ manifestPath: env.SMOKE_RELEASE_MANIFEST,
         verifierPath, baseURL, boxBaseURL: env.SMOKE_BOX_BASE_URL,
         expectedContainerName: env.SMOKE_PLOINKY_BOX_CONTAINER, expectedImageRef: env.SMOKE_EXPECT_BOX_IMAGE_REF,
         generationMaxAgeMs: env.SMOKE_BOX_MAX_GENERATION_AGE_MS });
@@ -184,13 +225,13 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
     const codeHashes = Object.fromEntries(CONTRACT_FILES.map(file => [file, liveSkillsHash(fs.readFileSync(path.join(hostRepository, 'roboTeamAgent', file)))]));
     let initialRuntime;
     async function binding() {
-        const [outer] = await command(['inspect', box.containerId]);
+        const [outer] = await runCommand(['inspect', box.containerId]);
         assert.equal(outer.Id, box.containerId);
         assert.equal(outer.State.Running, true);
         assert.equal(new Date(outer.State.StartedAt).toISOString(), new Date(box.startedAt).toISOString());
-        assert.equal(outer.Image, box.imageId);
+        assert.equal(normalizeLiveSkillsImageId(outer.Image), normalizeLiveSkillsImageId(box.imageId));
         validateWorkspaceSourceMount(outer.Mounts, hostWorkspace);
-        const runtime = validateLiveSkillsRuntimeBinding(await command(['exec', '-i', '--user', 'podman', box.containerId,
+        const runtime = validateLiveSkillsRuntimeBinding(await runCommand(['exec', '-i', '--user', 'podman', box.containerId,
             'node', '--input-type=module', '-'], program(readRegistryAndRuntime, {})), expectedRepository);
         if (initialRuntime) assert.deepEqual(runtime, initialRuntime, 'RoboTeam runtime was replaced, restarted or remounted during the test.');
         else initialRuntime = runtime;
@@ -201,9 +242,9 @@ export async function createLiveSkillsRuntimeReader({ env = process.env, baseURL
         release,
         async capture({ sessionId, fixture }) {
             const runtime = await binding();
-            const snapshot = await command(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
+            const snapshot = await runCommand(['exec', '-i', '--user', 'podman', box.containerId, 'podman', 'exec', '-i', runtime.containerId,
                 'node', '--input-type=module', '-'], program(readLiveSkillsSnapshot, {
-                sessionId, folder: fixture.folder, skillNames: [fixture.control.name, fixture.probe.name, fixture.added.name], contractFiles: CONTRACT_FILES,
+                sessionId, folder: fixture.folder, skillNames: [fixture.control.name, fixture.probe.name, fixture.added.name], contractFiles: CONTRACT_FILES, expectedRepository,
             }));
             assert.deepEqual(snapshot.codeHashes, codeHashes, 'Running Copilot source differs from the verified checkout.');
             return snapshot;
