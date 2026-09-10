@@ -14,6 +14,8 @@ export const QA_SCOPE = Object.freeze({
     box: 'ploinky-box-explorerqaworkspace-7a31ab7775eb',
     hash: '7a31ab7775eb',
 });
+// Full graph shutdown includes sequential service drains and identity checks.
+export const QUIESCE_EXEC_TIMEOUT_MS = 900_000;
 const FULL_ID = /^[a-f0-9]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const LABEL = 'io.assistos.ploinky-box.';
@@ -493,7 +495,7 @@ export function productionAdapters(scope = QA_SCOPE) {
         },
         async quiesce(item) {
             const source = fs.readFileSync(new URL('./quiesce-explorer-qa.mjs', import.meta.url), 'utf8');
-            const receipt = JSON.parse(inside(item, source, [], 180_000));
+            const receipt = JSON.parse(inside(item, source, [], QUIESCE_EXEC_TIMEOUT_MS));
             requireProof(receipt.result === 'passed', 'QA_QUIESCE_FAILED');
         },
         stop: item => command(item.engine, ['container', 'stop', '--time', '30', item.box.id], { env, timeout: 45_000 }),

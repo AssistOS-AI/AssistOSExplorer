@@ -400,3 +400,27 @@ test('the actual CLI refuses a foreign host without showing environment credenti
     assert.deepEqual(JSON.parse(result.stdout), { result: 'failed', code: 'QA_HOST_INVALID' });
     assert.doesNotMatch(result.stdout + result.stderr, /never-log-this/);
 });
+
+test('production recovery permits the bounded full graph shutdown without the former three minute cutoff', () => {
+    const helper = new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url).href;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import assert from 'node:assert/strict';
+        import childProcess from 'node:child_process';
+        import { syncBuiltinESMExports } from 'node:module';
+        let calls = 0;
+        childProcess.spawnSync = (program, args, options) => {
+            calls++;
+            assert.equal(program, 'podman');
+            assert.equal(options.timeout, 900_000);
+            assert(options.timeout > 199_229, 'Measured complete QA shutdown must fit');
+            assert.match(options.input, /createProductionAdapters/);
+            assert(args.includes('PLOINKY_ROUTER_HOST_PORT=8097'));
+            return { status: 0, stdout: JSON.stringify({ result: 'passed' }) };
+        };
+        syncBuiltinESMExports();
+        const { productionAdapters } = await import(process.argv[1]);
+        await productionAdapters().quiesce({ engine: 'podman', box: { id: process.argv[2] } });
+        assert.equal(calls, 1);
+    `, helper, FRESH], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(result.status, 0, result.stderr);
+});
