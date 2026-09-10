@@ -211,9 +211,33 @@ test('missing, short and stale current IDs cannot select a candidate by guessed 
 
 test('aliases use the supported CLI grammar and keep the prior auth policy', () => {
     assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'onlyOffice', alias: 'documents', auth: 'local' }),
-        ['enable', 'agent', 'AchillesIDE/onlyOffice', '--auth', 'pwd', 'as', 'documents']);
+        ['enable', 'agent', 'AchillesIDE/onlyOffice', 'isolated', '--auth', 'pwd', 'as', 'documents']);
     assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'onlyOffice', alias: '', auth: 'none' }),
-        ['enable', 'agent', 'AchillesIDE/onlyOffice', '--auth', 'none']);
+        ['enable', 'agent', 'AchillesIDE/onlyOffice', 'isolated', '--auth', 'none']);
+    assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'webmeetAgent', alias: '', auth: 'guest', runMode: 'global' }),
+        ['enable', 'agent', 'AchillesIDE/webmeetAgent', 'global', '--auth', 'guest']);
+    assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'gitAgent', alias: '', auth: 'none', runMode: 'devel', develRepo: 'work' }),
+        ['enable', 'agent', 'AchillesIDE/gitAgent', 'devel', 'work', '--auth', 'none']);
+});
+
+test('capture retains actual global, guest, embedded-profile and devel selection shapes', t => {
+    const f = fixture(t);
+    const records = {
+        webmeet: { type: 'agent', runtime: 'podman', containerId: OLD, repoName: 'AchillesIDE', agentName: 'webmeetAgent',
+            auth: { mode: 'guest' }, profile: 'default', runMode: 'global' },
+        git: { type: 'agent', runtime: 'podman', containerId: FAILED, repoName: 'AchillesIDE', agentName: 'gitAgent',
+            auth: { mode: 'none' }, profile: 'embedded', runMode: 'global' },
+        development: { type: 'agent', runtime: 'podman', containerId: FRESH, repoName: 'AchillesIDE', agentName: 'explorer',
+            auth: { mode: 'local' }, profile: 'default', runMode: 'devel', develRepo: 'work' },
+    };
+    write(path.join(f.scope.workspace, '.ploinky/agents.json'), records);
+    f.service.capture(f.backup);
+    const captured = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'))).agents;
+    for (const selection of captured) {
+        const original = records[selection.name];
+        assert.equal(selection.auth, original.auth.mode); assert.equal(selection.runMode, original.runMode);
+        assert.equal(selection.profile, original.profile); assert.equal(selection.develRepo, original.develRepo);
+    }
 });
 
 test('identity is checked again after acquiring the workspace mutation lock', async t => {
@@ -287,6 +311,83 @@ test('exact Box inspection rejects privilege, source-write and publication drift
     for (const change of [item => { item.HostConfig.Privileged = true; }, item => { item.Mounts[1].RW = true; },
         item => { item.HostConfig.PortBindings['8080/tcp'][0].HostIp = '0.0.0.0'; }, item => { item.Id = 'short'; }]) {
         const raw = f.raw(OLD); change(raw); assert.throws(() => sanitizeBox(raw, f.scope));
+    }
+});
+
+test('QA Podman empty UDP wildcard is admitted without normalizing the raw identity contract', t => {
+    const f = fixture(t), explicit = f.raw(OLD), empty = f.raw(OLD);
+    empty.HostConfig.PortBindings['7882/udp'][0].HostIp = '';
+    const captured = sanitizeBox(empty, f.scope);
+    assert.equal(captured.ports['7882/udp'][0].HostIp, '');
+    assert.equal(empty.HostConfig.PortBindings['7882/udp'][0].HostIp, '', 'inspection input must remain unchanged');
+    assert.notEqual(captured.contract, sanitizeBox(explicit, f.scope).contract, 'raw publication drift remains detectable');
+    for (const address of [undefined, null, '::', '127.0.0.1', '192.0.2.10']) {
+        const invalid = f.raw(OLD); invalid.HostConfig.PortBindings['7882/udp'][0].HostIp = address;
+        assert.throws(() => sanitizeBox(invalid, f.scope), String(address));
+    }
+    for (const mutate of [
+        raw => { raw.HostConfig.PortBindings['8080/tcp'][0].HostIp = ''; },
+        raw => { raw.HostConfig.PortBindings['7882/udp'].push({ HostIp: '', HostPort: '7882' }); },
+        raw => { raw.HostConfig.PortBindings['7000/tcp'] = [{ HostIp: '127.0.0.1', HostPort: '7000' }]; },
+    ]) {
+        const invalid = f.raw(OLD); mutate(invalid); assert.throws(() => sanitizeBox(invalid, f.scope));
+    }
+});
+
+test('a legacy image tag requires an exact inspected image ID and canonical immutable repository digest', t => {
+    const f = fixture(t), raw = f.raw(OLD);
+    raw.Config.Labels['io.assistos.ploinky-box.image-ref'] = 'docker.io/assistos/ploinky-box:latest';
+    raw.ImageName = raw.Config.Labels['io.assistos.ploinky-box.image-ref'];
+    const reference = `docker.io/assistos/ploinky-box@sha256:${'e'.repeat(64)}`;
+    const proof = { Id: `sha256:${IMAGE}`, Os: 'linux', Architecture: 'amd64', RepoDigests: [reference] };
+    assert.throws(() => sanitizeBox(raw, f.scope), { code: 'QA_IMAGE_NOT_PINNED' });
+    const admitted = sanitizeBox(raw, f.scope, proof);
+    assert.equal(admitted.imageReference, reference);
+    assert.equal(raw.Config.Labels['io.assistos.ploinky-box.image-ref'], 'docker.io/assistos/ploinky-box:latest');
+    const explicit = structuredClone(raw); explicit.Config.Labels['io.assistos.ploinky-box.image-ref'] = reference;
+    assert.notEqual(admitted.contract, sanitizeBox(explicit, f.scope).contract, 'original tag/config remains in the raw identity digest');
+    for (const change of [item => { item.Id = 'f'.repeat(64); }, item => { item.Architecture = 'arm64'; },
+        item => { item.Os = 'windows'; }, item => { item.RepoDigests = []; },
+        item => { item.RepoDigests = ['docker.io/assistos/ploinky-box:latest']; },
+        item => { item.RepoDigests = [`example.test/foreign@sha256:${'e'.repeat(64)}`]; }]) {
+        const invalid = structuredClone(proof); change(invalid);
+        assert.throws(() => sanitizeBox(raw, f.scope, invalid), { code: 'QA_IMAGE_NOT_PINNED' });
+    }
+});
+
+test('production routing initialization and readiness pass both selected QA ports to independent Box execs', t => {
+    const f = fixture(t), executable = path.join(f.root, 'podman'), record = path.join(f.root, 'exec.jsonl');
+    write(executable, `#!${process.execPath}
+        const fs = require('node:fs');
+        const args = process.argv.slice(2), source = fs.readFileSync(0, 'utf8');
+        fs.appendFileSync(process.env.QA_EXEC_RECORD, JSON.stringify({ args, source }) + '\\n');
+        for (const entry of ['PLOINKY_WORKSPACE_ROOT=/workspace', 'PLOINKY_ROUTER_HOST_PORT=8097', 'PLOINKY_MEDIA_HOST_PORT=7882']) {
+            if (!args.some((value, index) => value === '--env' && args[index + 1] === entry)) process.exit(31);
+        }
+        process.stdout.write(JSON.stringify({ ready: true, failed: false, generation: 'fixture', count: 1 }));
+    `);
+    fs.chmodSync(executable, 0o700);
+    const helper = new URL('../../../.github/scripts/rollback-explorer-qa.mjs', import.meta.url).href;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        const { productionAdapters } = await import(process.argv[1]);
+        const adapters = productionAdapters();
+        const item = { engine: 'podman', box: { id: process.argv[2] } };
+        await adapters.initialize(item);
+        await adapters.ready(item, { agents: [] });
+    `, helper, FRESH], { encoding: 'utf8', timeout: 5000, env: { ...process.env,
+        PATH: f.root + path.delimiter + process.env.PATH, QA_EXEC_RECORD: record,
+        PLOINKY_ROUTER_HOST_PORT: '9000', PLOINKY_MEDIA_HOST_PORT: '9001' } });
+    assert.equal(result.status, 0, result.stderr);
+    const calls = fs.readFileSync(record, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.match(calls[0].source, /initializeFreshEdgeRoutingSources/);
+    assert.match(calls[1].source, /loadActiveEdgeRoutingGeneration/);
+    for (const call of calls) {
+        assert.deepEqual(call.args.slice(0, 14), ['container', 'exec', '-i', '--user', 'podman', '--workdir', '/workspace',
+            '--env', 'PLOINKY_WORKSPACE_ROOT=/workspace', '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
+            '--env', 'PLOINKY_MEDIA_HOST_PORT=7882', FRESH]);
+        assert.equal(call.args.includes('PLOINKY_ROUTER_HOST_PORT=9000'), false);
+        assert.equal(call.args.includes('PLOINKY_MEDIA_HOST_PORT=9001'), false);
     }
 });
 

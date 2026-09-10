@@ -50,8 +50,10 @@ export function accountCapability(root, reviewedFiles = ACCOUNT_CAPABILITY) {
 }
 
 export function enableArguments(selection) {
-    const args = ['enable', 'agent', `${selection.repo}/${selection.agent}`, '--auth',
-        selection.auth === 'local' ? 'pwd' : selection.auth];
+    const mode = selection.runMode || 'isolated';
+    const args = ['enable', 'agent', `${selection.repo}/${selection.agent}`, mode];
+    if (mode === 'devel') args.push(selection.develRepo);
+    args.push('--auth', selection.auth === 'local' ? 'pwd' : selection.auth);
     if (selection.alias) args.push('as', selection.alias);
     return args;
 }
@@ -62,7 +64,9 @@ export async function restorePriorSelections({ selections, profile, readRegistry
     for (const selection of selections) {
         requireProof(NAME.test(selection.repo) && NAME.test(selection.agent)
             && (!selection.alias || NAME.test(selection.alias))
-            && ['none', 'local', 'sso'].includes(selection.auth), 'QA_SELECTION_INVALID');
+            && ['none', 'local', 'sso', 'guest'].includes(selection.auth)
+            && ['isolated', 'global', 'devel'].includes(selection.runMode || 'isolated')
+            && (selection.runMode !== 'devel' || NAME.test(selection.develRepo)), 'QA_SELECTION_INVALID');
         const registry = await readRegistry();
         const matches = Object.values(registry).filter(row => row?.type === 'agent'
             && row.repoName === selection.repo && row.agentName === selection.agent && (row.alias || '') === selection.alias);
@@ -70,6 +74,8 @@ export async function restorePriorSelections({ selections, profile, readRegistry
         if (matches.length) {
             requireProof((matches[0].profile || 'default') === selection.profile && matches[0].auth?.mode === selection.auth,
                 'QA_SELECTION_POLICY_CHANGED');
+            requireProof((matches[0].runMode || 'isolated') === (selection.runMode || 'isolated')
+                && (selection.runMode !== 'devel' || matches[0].develRepo === selection.develRepo), 'QA_SELECTION_MODE_CHANGED');
             continue;
         }
         requireProof(selection.profile === profile, 'QA_OPTIONAL_PROFILE_UNSUPPORTED');
@@ -120,10 +126,12 @@ function selectedAgents(root) {
     return Object.entries(readJson(file)).filter(([name]) => name !== '_config').map(([name, row]) => {
         requireProof(row?.type === 'agent' && row.runtime === 'podman' && FULL_ID.test(row.containerId)
             && NAME.test(name) && NAME.test(row.repoName) && NAME.test(row.agentName)
-            && (!row.alias || NAME.test(row.alias)) && ['none', 'local', 'sso'].includes(row.auth?.mode)
-            && (!row.runMode || row.runMode === 'isolated'), 'QA_AGENT_SELECTION_UNSUPPORTED');
+            && (!row.alias || NAME.test(row.alias)) && ['none', 'local', 'sso', 'guest'].includes(row.auth?.mode)
+            && (!row.runMode || ['isolated', 'global', 'devel'].includes(row.runMode))
+            && (row.runMode !== 'devel' || NAME.test(row.develRepo)), 'QA_AGENT_SELECTION_UNSUPPORTED');
         return { name, repo: row.repoName, agent: row.agentName, alias: row.alias || '',
-            profile: row.profile || 'default', auth: row.auth.mode, oldId: row.containerId };
+            profile: row.profile || 'default', auth: row.auth.mode, oldId: row.containerId,
+            runMode: row.runMode || 'isolated', ...(row.runMode === 'devel' ? { develRepo: row.develRepo } : {}) };
     }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -150,7 +158,7 @@ function durableEntries(root) {
     return entries;
 }
 
-export function sanitizeBox(item, scope = QA_SCOPE) {
+export function sanitizeBox(item, scope = QA_SCOPE, imageProof = null) {
     const labels = item?.Config?.Labels || {};
     const image = String(item?.Image || '').replace(/^sha256:/, '');
     const mounts = (item?.Mounts || []).map(({ Source, Destination, RW, Type }) => ({ Source, Destination, RW, Type }));
@@ -158,7 +166,13 @@ export function sanitizeBox(item, scope = QA_SCOPE) {
         && labels[LABEL + 'path-hash'] === scope.hash && labels[LABEL + 'role'] === 'box'
         && item.Config.User === 'podman' && item.HostConfig?.Privileged === false
         && item.HostConfig.Init === true && typeof item.State?.Running === 'boolean', 'QA_BOX_IDENTITY_INVALID');
-    assert.deepEqual(item.HostConfig.PortBindings, {
+    const ports = structuredClone(item.HostConfig.PortBindings);
+    // Podman can encode an IPv4 wildcard publication as an empty HostIp.
+    // Compare its meaning here while retaining the raw inspection in the identity digest.
+    if (ports?.['7882/udp']?.length === 1 && ports['7882/udp'][0]?.HostIp === '') {
+        ports['7882/udp'][0].HostIp = '0.0.0.0';
+    }
+    assert.deepEqual(ports, {
         '7882/udp': [{ HostIp: '0.0.0.0', HostPort: '7882' }],
         '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '8097' }],
     }, 'QA_BOX_PORTS_INVALID');
@@ -169,8 +183,17 @@ export function sanitizeBox(item, scope = QA_SCOPE) {
         requireProof(found.length === 1 && found[0].RW === false && found[0].Type === 'bind'
             && found[0].Source.startsWith(scope.workspace + '/'), 'QA_BOX_SOURCE_INVALID');
     }
-    const imageReference = labels[LABEL + 'image-ref'] || item.ImageName;
-    requireProof(/^[^\s]+@sha256:[a-f0-9]{64}$/.test(imageReference), 'QA_IMAGE_NOT_PINNED');
+    let imageReference = labels[LABEL + 'image-ref'] || item.ImageName;
+    if (!/^[^\s]+@sha256:[a-f0-9]{64}$/.test(imageReference)) {
+        // Older Boxes recorded the tag used at creation. Their exact local image
+        // inspection can prove an immutable repository digest without resolving that tag again.
+        requireProof(imageProof && String(imageProof.Id).replace(/^sha256:/, '') === image
+            && imageProof.Os === 'linux' && imageProof.Architecture === 'amd64', 'QA_IMAGE_NOT_PINNED');
+        const references = (Array.isArray(imageProof.RepoDigests) ? imageProof.RepoDigests : [])
+            .filter(reference => /^docker\.io\/assistos\/ploinky-box@sha256:[a-f0-9]{64}$/.test(reference)).sort();
+        requireProof(references.length > 0, 'QA_IMAGE_NOT_PINNED');
+        imageReference = references[0];
+    }
     return { id: item.Id, name: item.Name.replace(/^\//, ''), image, imageReference,
         running: item.State.Running, mounts, ports: item.HostConfig.PortBindings,
         contract: digest(JSON.stringify({ image, config: item.Config, hostConfig: item.HostConfig, mounts })) };
@@ -378,12 +401,25 @@ export function productionAdapters(scope = QA_SCOPE) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(PLOINKY_|CLOUDFLARE_)/.test(key)));
     const inside = (item, source, args = [], timeout = 120_000) => command(item.engine,
         ['container', 'exec', '-i', '--user', 'podman', '--workdir', '/workspace',
-            '--env', 'PLOINKY_WORKSPACE_ROOT=/workspace', item.box.id, 'node', '--input-type=module', '-', ...args],
+            '--env', 'PLOINKY_WORKSPACE_ROOT=/workspace', '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
+            '--env', 'PLOINKY_MEDIA_HOST_PORT=7882', item.box.id, 'node', '--input-type=module', '-', ...args],
         { input: source, timeout, env });
+    const sanitize = (engine, item) => {
+        const reference = item.Config?.Labels?.[LABEL + 'image-ref'] || item.ImageName;
+        let proof = null;
+        if (!/^[^\s]+@sha256:[a-f0-9]{64}$/.test(reference)) {
+            const id = String(item.Image || '').replace(/^sha256:/, '');
+            requireProof(FULL_ID.test(id), 'QA_IMAGE_NOT_PINNED');
+            const images = JSON.parse(command(engine, ['image', 'inspect', id], { env }));
+            requireProof(images.length === 1, 'QA_IMAGE_NOT_PINNED');
+            proof = images[0];
+        }
+        return { engine, box: sanitizeBox(item, scope, proof) };
+    };
     const inspect = (engine, id) => {
         const records = JSON.parse(command(engine, ['container', 'inspect', id], { env }));
         requireProof(records.length === 1, 'QA_INSPECTION_AMBIGUOUS');
-        return { engine, box: sanitizeBox(records[0], scope) };
+        return sanitize(engine, records[0]);
     };
     const adapters = {
         accountCapability,
@@ -430,7 +466,7 @@ export function productionAdapters(scope = QA_SCOPE) {
                     requireProof(rows.length === 1 && rows[0].Id === id, 'QA_INSPECTION_AMBIGUOUS');
                     const item = rows[0];
                     if (item.Config?.Labels?.[LABEL + 'path-hash'] === scope.hash
-                        || String(item.Name).replace(/^\//, '') === scope.box) result.push({ engine, box: sanitizeBox(item, scope) });
+                        || String(item.Name).replace(/^\//, '') === scope.box) result.push(sanitize(engine, item));
                 }
             }
             return result;
@@ -524,7 +560,9 @@ export function productionAdapters(scope = QA_SCOPE) {
                 const active=loadActiveEdgeRoutingGeneration({workspaceRoot:'/workspace'});
                 const matches=expected.every(old=>states.some(row=>row.repoName===old.repo&&row.agentName===old.agent
                     &&(registry[row.containerName]?.alias||'')===old.alias&&registry[row.containerName]?.containerId!==old.oldId
-                    &&(registry[row.containerName]?.profile||'default')===old.profile&&registry[row.containerName]?.auth?.mode===old.auth));
+                    &&(registry[row.containerName]?.profile||'default')===old.profile&&registry[row.containerName]?.auth?.mode===old.auth
+                    &&(registry[row.containerName]?.runMode||'isolated')===(old.runMode||'isolated')
+                    &&(old.runMode!=='devel'||registry[row.containerName]?.develRepo===old.develRepo)));
                 const failed=states.some(row=>['failed','error'].includes(row.state?.noWaitState));
                 const ready=matches&&states.length>=expected.length&&active.selector.publicationState==='ready'
                     &&states.every(row=>row.enabled&&row.state?.running&&row.state.status==='running'
