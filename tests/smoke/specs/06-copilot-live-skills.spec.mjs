@@ -9,7 +9,8 @@ import { openExplorer } from '../lib/explorer.mjs';
 import { createDirectory, openCopilotForDirectory } from '../lib/copilot.mjs';
 import { callAgentToolViaRouter } from '../lib/mcp.mjs';
 import { setComposer, waitForWebchatIdle, cancelWebchatGenerationIfActive } from '../lib/webchat.mjs';
-import { createRedactor } from '../lib/security.mjs';
+import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.mjs';
+import { observeLiveSkillsBrowser, captureLiveSkillsFailure, liveSkillsDiagnosticText } from '../lib/copilot-live-skills-diagnostics.mjs';
 import {
     createLiveSkillsFixture, liveSkillSources, liveSkillsPrompt, conversationFromSettingsURL,
     isCompletedLiveSkillsTurn, validateLiveSkillsTurn, policyEvidence, liveSkillsHash, LIVE_SKILLS_TURN_TIMEOUT_MS,
@@ -34,16 +35,11 @@ test.describe('Deployed Copilot live skills', () => {
             verifierPath: process.env.SMOKE_COPILOT_RELEASE_VERIFIER || path.resolve(here, '../../../../ploinky/tests/release/verifyCopilot421Bundle.mjs') });
         evidence.releaseBefore = reader.release;
         const errors = [];
-        const pages = new Map();
-        const observe = candidate => {
-            const onConsole = message => { if (message.type() === 'error') errors.push({ kind: 'console', sha256: liveSkillsHash(message.text()) }); };
-            const onPage = error => errors.push({ kind: 'pageerror', sha256: liveSkillsHash(error.message) });
-            const onRequest = request => errors.push({ kind: 'requestfailed', path: new URL(request.url()).pathname });
-            candidate.on('console', onConsole);
-            candidate.on('pageerror', onPage);
-            candidate.on('requestfailed', onRequest);
-            pages.set(candidate, () => { candidate.off('console', onConsole); candidate.off('pageerror', onPage); candidate.off('requestfailed', onRequest); });
-        };
+        const network = [];
+        const browser = observeLiveSkillsBrowser({ errors, network });
+        const { observe } = browser;
+        const failureCollector = createReleaseGateFailureCollector();
+        let primaryError;
         page.context().on('page', observe);
         let copilot;
         let settings;
@@ -129,6 +125,7 @@ test.describe('Deployed Copilot live skills', () => {
             await copilot.bringToFront();
         }
         async function turn(label, selected, available, absent = []) {
+            evidence.currentPhase = { label, stage: 'baseline', startedAt: new Date().toISOString() };
             assert.equal(await browserSessionId(), sessionId, 'Browser changed conversation between phases.');
             await waitForWebchatIdle(copilot, smokeConfig.timeouts.navigation);
             const baseline = await reader.capture({ sessionId, fixture });
@@ -139,20 +136,27 @@ test.describe('Deployed Copilot live skills', () => {
             const phase = randomUUID();
             const prompt = liveSkillsPrompt({ phase, selected });
             const hostStarted = Date.now();
+            evidence.currentPhase = { label, phase, stage: 'submit', startedAt: new Date(hostStarted).toISOString(),
+                baselineIds, selected: selected.map(skill => skill.name), absent: absent.map(skill => skill.name) };
             const input = copilot.waitForResponse(response => new URL(response.url()).pathname === '/webchat/input'
                 && response.request().method() === 'POST', { timeout: smokeConfig.timeouts.action });
             await setComposer(copilot, prompt);
             await copilot.locator('#send').click();
             assert.equal((await input).status(), 204, 'Browser input was not accepted.');
+            evidence.currentPhase.stage = 'persisted native completion';
             let snapshot;
             const remaining = () => Math.max(1, LIVE_SKILLS_TURN_TIMEOUT_MS - (Date.now() - hostStarted));
             await expect.poll(async () => {
                 snapshot = await reader.capture({ sessionId, fixture });
+                evidence.lastRuntime = snapshot;
+                evidence.currentPhase.elapsedMs = Date.now() - hostStarted;
                 return isCompletedLiveSkillsTurn(snapshot, baselineIds);
             }, { timeout: remaining(), intervals: [500], message: `${label}: one completed persisted native turn within 150 seconds` }).toBe(true);
+            evidence.currentPhase.stage = 'browser completion';
             await waitForWebchatIdle(copilot, remaining());
             assert.ok(Date.now() - hostStarted <= LIVE_SKILLS_TURN_TIMEOUT_MS, `${label} exceeded the 150 second completion budget.`);
             const inventory = await catalog(sessionId);
+            evidence.currentPhase.stage = 'catalog, receipt and continuation validation';
             const proof = validateLiveSkillsTurn({ snapshot, inventory, baselineIds, priorTurnIds: turnIds, sessionId,
                 nativeIdentity, fixture, phase, selected, available, absent, expectedPolicy, priorReceiptNames: receiptNames, priorReceiptHashes: receiptHashes,
                 priorRevision: evidence.phases.at(-1)?.revision,
@@ -173,8 +177,10 @@ test.describe('Deployed Copilot live skills', () => {
             evidence.phases.push({ label, ...proof, durationMs: Date.now() - hostStarted });
             await unchangedPolicies();
             assert.deepEqual(errors, [], 'Browser errors occurred during the composed gate.');
+            evidence.currentPhase.stage = 'passed';
         }
         try {
+            evidence.currentPhase = { label: 'setup', stage: 'Explorer and fixture setup' };
             await openExplorer(page);
             observe(page);
             const roots = (await fsTool('list_allowed_directories', {})).rawText || '';
@@ -233,41 +239,51 @@ test.describe('Deployed Copilot live skills', () => {
             evidence.releaseAfter = await reader.finish();
             evidence.policies = { defaults: defaultsBefore, untouched: untouchedBefore };
             evidence.result = 'passed';
+        } catch (error) {
+            primaryError = error;
+            await failureCollector.required('pre-cleanup failure capture', () => captureLiveSkillsFailure({
+                error, evidence, collector: failureCollector, copilot, testInfo,
+                captureRuntime: sessionId && receiptDirectoryCreated ? () => reader.capture({ sessionId, fixture }) : null,
+            }));
         } finally {
             // Detach before intentional popup closure cancels its SSE request. Earlier errors remain fatal.
             page.context().off('page', observe);
-            for (const detach of pages.values()) detach();
+            browser.detach();
             evidence.browserErrors = errors;
+            evidence.network = network;
             const cleanupErrors = [];
             if (copilot && !copilot.isClosed()) {
                 try { await cancelWebchatGenerationIfActive(copilot, { timeout: smokeConfig.timeouts.navigation }); }
-                catch { cleanupErrors.push('active native turn could not be cancelled'); }
+                catch (error) { cleanupErrors.push('active native turn could not be cancelled'); failureCollector.add('cancel active native turn', error); }
             }
             if (sessionId && receiptDirectoryCreated && cleanupErrors.length === 0) {
                 try {
                     const stopped = await reader.capture({ sessionId, fixture });
                     assert.notEqual(stopped.session.skillExecution?.active, true);
                     assert.ok(!stopped.session.messages.some(message => message.role === 'assistant' && message.status === 'pending'));
-                } catch { cleanupErrors.push('persisted native turn did not prove quiescence'); }
+                } catch (error) { cleanupErrors.push('persisted native turn did not prove quiescence'); failureCollector.add('persisted native quiescence', error); }
             }
             if (defaultsBefore && untouchedBefore) {
-                try { await unchangedPolicies(); } catch { cleanupErrors.push('policy preservation check failed'); }
+                try { await unchangedPolicies(); } catch (error) { cleanupErrors.push('policy preservation check failed'); failureCollector.add('policy preservation', error); }
             }
             for (const candidate of [settings, copilot]) {
-                if (candidate && !candidate.isClosed()) await candidate.close().catch(() => cleanupErrors.push('popup close failed'));
+                if (candidate && !candidate.isClosed()) await candidate.close().catch(error => { cleanupErrors.push('popup close failed'); failureCollector.add('popup close', error); });
             }
             if (directoryCreated && cleanupErrors.length === 0) {
                 try {
                     const removed = await fsTool('delete_directory', { path: fixture.folder });
                     assert.match(removed.rawText || '', /^Successfully deleted directory /);
                 }
-                catch { cleanupErrors.push('run-owned source/receipt cleanup failed'); }
+                catch (error) { cleanupErrors.push('run-owned source/receipt cleanup failed'); failureCollector.add('run-owned source/receipt cleanup', error); }
             }
             evidence.cleanup = cleanupErrors.length ? cleanupErrors : 'passed';
-            if (evidence.result !== 'passed' || cleanupErrors.length || errors.length) evidence.result = 'failed';
-            await testInfo.attach('copilot-live-skills-evidence.json', { body: Buffer.from(createRedactor()(JSON.stringify(evidence, null, 2))), contentType: 'application/json' });
-            assert.deepEqual(cleanupErrors, [], 'The gate did not safely clean its run-owned files or preserve policies.');
-            assert.deepEqual(errors, [], 'Browser errors occurred during the composed gate.');
+            if (errors.length) failureCollector.add('browser errors', new Error(liveSkillsDiagnosticText(errors)));
+            if (evidence.result !== 'passed' || primaryError || failureCollector.failures.length) evidence.result = 'failed';
+            evidence.secondaryFailures = failureCollector.failures.map(error => error.message);
+            await failureCollector.required('live-skills evidence attachment', () => testInfo.attach('copilot-live-skills-evidence.json', {
+                body: Buffer.from(liveSkillsDiagnosticText(evidence)), contentType: 'application/json',
+            }));
         }
+        failureCollector.throwIfAny({ primaryError, label: 'deployed Copilot live skills' });
     });
 });
