@@ -7,7 +7,7 @@ const HELP_TOPICS = {
     },
     skills: {
         title: 'Anthropic skills',
-        content: 'Skills use SKILL.md and directly executable scripts. The five built-ins are bash, launch-gpt-researcher, launch-open-interpreter, launch-web-search and launch-robot. /list skills lists the catalog; /read reads a descriptor; /exec runs an enabled skill through ALA. Disable packaged skills rather than removing them. External repository roots may override earlier roots. /reload refreshes the catalog.',
+        content: 'Skills use SKILL.md and directly executable scripts. The three built-ins are bash, launch-gpt-researcher, launch-robot. /list skills lists the catalog; /read reads a descriptor; /exec runs an enabled skill through ALA. Disable packaged skills rather than removing them. External repository roots may override earlier roots. /reload refreshes the catalog.',
     },
     sessions: {
         title: 'Workspace conversations',

@@ -4,7 +4,6 @@ export const SAFE_LIFECYCLE_CODES = Object.freeze([
     'PLOINKY_BWRAP_CAPABILITY_UNAVAILABLE',
     'PLOINKY_MANIFEST_SECURITY_INVALID',
     'PLOINKY_MANIFEST_SECURITY_PROFILE_UNSUPPORTED',
-    'PLOINKY_OPEN_INTERPRETER_BOX_UNAVAILABLE',
     'PLOINKY_RUNTIME_INPUT_CHANGED',
 ]);
 const safeLifecycleCodeSet = new Set(SAFE_LIFECYCLE_CODES);
@@ -15,7 +14,6 @@ const SAFE_MESSAGES = Object.freeze({
     PLOINKY_BWRAP_CAPABILITY_UNAVAILABLE: 'The delegated task sandbox capability is unavailable.',
     PLOINKY_MANIFEST_SECURITY_INVALID: 'The agent manifest security declaration is invalid.',
     PLOINKY_MANIFEST_SECURITY_PROFILE_UNSUPPORTED: 'The agent security profile is unsupported.',
-    PLOINKY_OPEN_INTERPRETER_BOX_UNAVAILABLE: 'Open Interpreter is unavailable in this Box runtime.',
     PLOINKY_RUNTIME_INPUT_CHANGED: 'The admitted runtime input changed before activation.',
 });
 

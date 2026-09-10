@@ -17,10 +17,11 @@ export async function action(invocation = {}) {
             const mode = clean(robot.run?.mode, 'stopped');
             const state = clean(robot.run?.state, 'stopped');
             const catalog = (robot.skillsets || []).map((set) => {
-                const skills = (set.skills || []).map((skill) => `    - ${clean(skill.id, `${set.name}/${skill.name}`)}: ${clean(skill.description)}`);
-                return [`  Skillset ${clean(set.name)}: ${clean(set.description)}`, ...skills].join('\n');
+                return `  ${clean(set.description)}\n    skillSets ID: ${clean(set.id)}\n    Skills: ${(set.skills || []).join(', ')}`;
             });
-            return [`- ${clean(robot.name, 'Unnamed robot')} — ${clean(robot.description || robot.specialization)} — ${mode}/${state}`, ...catalog].join('\n');
+            const individual = (robot.skillRepositories || []).flatMap(repo => (repo.skills || []).map(skill =>
+                `  Skill ${clean(repo.id)}/${clean(skill.name)}: ${clean(skill.description)}`));
+            return [`- ${clean(robot.name, 'Unnamed robot')} — ${clean(robot.description || robot.specialization)} — ${mode}/${state}`, ...catalog, ...individual].join('\n');
         }).join('\n');
     } catch (error) {
         return `Could not list RoboTeam robots: ${error?.message || 'request failed'}`;

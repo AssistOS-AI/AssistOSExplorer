@@ -8,6 +8,10 @@ const home = value('--home');
 const cwd = value('--cwd');
 const id = value('--session-id');
 const backend = value('--ca');
+if (args.includes('--ploinky-task')) throw new Error('Legacy Ploinky option was forwarded.');
+const folder = value('--folder');
+if (!folder || value('as') !== 'ploinky-runtime') throw new Error('Missing generic runtime mount.');
+if (!(await fs.stat(path.join(folder, 'tasks.sock'))).isSocket()) throw new Error('Missing task notification socket.');
 const prompt = await fs.readFile(value('--taskFile'), 'utf8');
 const config = JSON.parse(await fs.readFile(value('--config'), 'utf8'));
 const nativeRoot = path.join(home, '.ala', 'sessions');
@@ -44,7 +48,7 @@ if (prompt.includes('MALFORMED')) {
             break;
         }
     }
-    const output = JSON.stringify({ prompt, choice, resumed: args.includes('--resume-session'), config,
+    const output = JSON.stringify({ prompt, skill: args.includes('--skill') ? value('--skill') : null, choice, resumed: args.includes('--resume-session'), config,
         repositories: process.env.ALA_TASK_REPOSITORIES, model: args.includes('--model') ? value('--model') : null,
         credential: process.env.PLOINKY_AGENT_SECRET || process.env.SSO_ACCESS_TOKEN || null,
         privatePrompt: !args.some((arg) => arg.includes('PRIVATE_USER_PROMPT')) });

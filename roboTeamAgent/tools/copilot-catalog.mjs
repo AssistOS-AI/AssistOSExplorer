@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
-import { publicSkillsets } from '../server/robot-skillsets.mjs';
+import { publicSkillsets, publicRepositories } from '../server/robot-skillsets.mjs';
 import { loadAutocompleteCatalog, buildSessionCompletions, buildTaskActionCompletions } from '../copilot/src/mcp/list-slash-commands.mjs';
 
 try {
@@ -13,7 +13,7 @@ try {
     const sets = publicSkillsets(context.robot);
     // Discovery is metadata-only. Different allowed sets may contain the same native name;
     // conflicts are rejected only when both skills are selected for an execution.
-    const available = sets.flatMap((set) => set.skills.map((skill) => ({ ...skill,
+    const available = publicRepositories(context.robot).flatMap((set) => set.skills.map((skill) => ({ ...skill,
         enabled: set.builtin && context.robot.name === 'default', skillDir: workingDir })));
     const catalog = { getSkills: () => available };
     const result = process.argv.includes('--skills') ? { skillsets: sets, skills: available.map((skill) => ({
@@ -29,9 +29,8 @@ try {
             description: 'Select allowed robot skillsets for this session.', subCommands: [
                 { name: 'list', usage: '/skills list', description: 'List allowed robot skillsets' },
                 { name: 'use', usage: '/skills use <names|none>', description: 'Select session skills',
-                    argCompletions: [{ value: 'none', label: 'none' }, ...sets.flatMap((set) => [
-                        { value: set.name, label: set.name, description: set.description },
-                        ...set.skills.map((skill) => ({ value: skill.id, label: skill.id, description: skill.description }))])] },
+                    argCompletions: [{ value: 'none', label: 'none' }, ...sets.map((set) => (
+                        { value: set.id, label: set.description, description: set.skills.join(', ') }))] },
             ] });
     }
     process.stdout.write(JSON.stringify(result) + '\n');

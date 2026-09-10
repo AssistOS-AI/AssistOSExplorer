@@ -131,7 +131,7 @@ test('task starts resolve an allowed catalog and ignore caller-supplied snapshot
     assert.deepEqual(requests[0].request.skillSelection.resolvedSkills, []);
     assert.notEqual(requests[0].request.skillSelection.catalogId, 'forged');
     const catalog = await fixture.runtimeManager.skillsets.catalogPath(robot.id, requests[0].request.skillSelection);
-    assert.deepEqual(await fs.readdir(catalog), []);
+    assert.deepEqual(JSON.parse(await fs.readFile(catalog, 'utf8')), []);
 });
 
 test('internal MCP control calls require only the generated service token', async () => {
@@ -168,4 +168,26 @@ test('robot deletion requires an administrator role', async () => {
     } finally {
         await fixture.close();
     }
+});
+
+
+test('serves the skills dialog, shared theme and local font through the authenticated application', async t => {
+    const fixture = await startFixture();
+    t.after(fixture.close);
+    const response = await fetch(`${fixture.baseUrl}/skills-dialog.js`, {
+        headers: { 'x-ploinky-auth-info': authHeader('admin', ['admin']) },
+    });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /export function openSkillsDialog/);
+    const theme = await fetch(`${fixture.baseUrl}/`, {
+        headers: { 'x-ploinky-auth-info': authHeader('admin', ['admin']) },
+    });
+    assert.equal(theme.status, 200);
+    assert.match(await theme.text(), /assistosExplorerTheme/);
+    const font = await fetch(`${fixture.baseUrl}/InterVariable.woff2`, {
+        headers: { 'x-ploinky-auth-info': authHeader('admin', ['admin']) },
+    });
+    assert.equal(font.status, 200);
+    assert.equal(font.headers.get('content-type'), 'font/woff2');
+    assert.equal(Buffer.from(await font.arrayBuffer()).subarray(0, 4).toString(), 'wOF2');
 });

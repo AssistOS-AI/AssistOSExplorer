@@ -78,14 +78,14 @@ test('script task receipts attach authenticated observers to their originating c
     await assert.rejects(manager.observeScriptTask({ agentName: 'GPTResearcher', taskId: 'missing', toolName: 'execute-task' }, origin), /script_task_not_found/);
 });
 
-test('launch scripts call the Ploinky SDK directly and publish task receipts without sockets', async (t) => {
+test('launch scripts call the Ploinky SDK directly and publish task receipts through the Unix socket', async (t) => {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'direct-ploinky-test-'));
     t.after(() => fs.rm(workingDir, { recursive: true, force: true }));
     const tasks = [];
     const context = await createPloinkyTaskContext({ context: { workingDir }, env: { PLOINKY_MASTER_KEY: 'must-not-copy' }, onTask: (task) => tasks.push(task) });
     t.after(() => context.close());
     assert.equal((await fs.readFile(path.join(context.directory, 'context.json'), 'utf8')).includes('must-not-copy'), false);
-    assert.deepEqual((await fs.readdir(context.directory)).sort(), ['context.json', 'events']);
+    assert.deepEqual((await fs.readdir(context.directory)).sort(), ['context.json', 'tasks.sock']);
     let observer;
     const calls = [];
     const sdk = {

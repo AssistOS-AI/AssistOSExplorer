@@ -10,8 +10,6 @@
 export const BUILT_IN_SKILLS = {
   BASH: 'bash',
   LAUNCH_GPT_RESEARCHER: 'launch-gpt-researcher',
-  LAUNCH_OPEN_INTERPRETER: 'launch-open-interpreter',
-  LAUNCH_WEB_SEARCH: 'launch-web-search',
   LAUNCH_ROBOT: 'launch-robot',
 };
 

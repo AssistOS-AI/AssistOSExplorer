@@ -20,7 +20,7 @@ RoboTeam lets workspace administrators maintain durable robots and lets internal
 
 ### Workspace robot administration
 
-The dashboard must let an administrator register and remove allowed skillset repositories on each robot and delete an idle robot after confirmation. `robot_list` must return the robot description and available skillsets with each skill's qualified name and SKILL.md frontmatter description, not its full instructions. Allowed skillsets describe what a caller may select; registration alone must not activate them. See DS005 for authorization and import boundaries.
+The dashboard must let an administrator add and remove skill repositories through each robot’s Manage skills dialog and delete an idle robot after confirmation. `robot_list` must return the robot description and available skillsets from each repository’s skillsets.md with names, descriptions, member skill names and internal selection IDs, not full skill instructions. Skillsets describe combinations for a type of task; registration alone must not activate them. See DS005 for authorization and import boundaries.
 
 An authenticated administrator uses `robot_create` and `robot_delete` to manage workspace-scoped [robots](../wiki.html#definition-robot). `robot_list` lets an internal workspace agent discover the same shared catalog. Names must remain unique across the workspace, robots must not belong to individual users, and legacy `ownerUserId` metadata must not restrict access. Each robot owns a persistent home used as `/config` in a GUI container and as ALA `--home`, together with workspace, runtime, log, and download directories. Deletion must require the robot to have no active or queued work and no running container.
 
@@ -30,9 +30,9 @@ The MCP interface consists of `robot_create`, `robot_list`, `robot_delete`, `ope
 
 ### Robot conversations
 
-RoboTeam must declare the CLI/WebChat entrypoint; Explorer must select `robot=default` and the current directory. Every robot must support concurrent independent CLI conversations with one execution lease per conversation. A Simple task must use the same conversational wrapper and create a separate persisted session. Continuing it must reuse its ALA/native session, pinned backend, cwd and copied skill catalog.
+RoboTeam must declare the CLI/WebChat entrypoint; Explorer must select `robot=default` and the current directory. Every robot must support concurrent independent CLI conversations with one execution lease per conversation. A Simple task must use the same conversational wrapper and create a separate persisted session. Continuing it must reuse its ALA/native session, pinned backend, cwd and saved skill path manifest.
 
-The robot must own account state and copilot storage. Old AchillesCLI data must not be migrated or deleted. The bundled copilot skillset must be available to every robot, automatically selected only for default. `/skills use` must select allowed whole sets or qualified skills for that conversation. The registry must refuse robot deletion while a chat process or task retains its CLI usage lease.
+The robot must own account state and copilot storage. Old AchillesCLI data must not be migrated or deleted. The bundled copilot skillset must be available to every robot, automatically selected only for default. `/skills use` must select declared skillset IDs or qualified repository skills for that conversation. The registry must refuse robot deletion while a chat process or task retains its CLI usage lease.
 
 ### Retained visible workstation
 
@@ -44,7 +44,7 @@ RoboTeam must retain at most one GUI container per robot. A completed or stopped
 
 ### Queued observable ALA execution
 
-The three start tools must accept whole skillsets and individual qualified skills, validate them against the selected robot, and capture their union before entering the queue. Every continuation must retain that task's catalog even after an administrator removes the source from the robot's available list. New tasks cannot select removed skillsets. See DS006 for the immutable catalog and ALA argument contract.
+The three start tools must accept whole skillsets and individual qualified skills, validate them against the selected robot, and capture their union before entering the queue. Every continuation must reuse the task's path manifest, removing missing skills before execution without expanding its selection. New tasks cannot select removed skillsets. See DS006 for the path manifest and ALA argument contract.
 
 `startDesktopTaskForRobot`, `startBrowserTaskForRobot`, and `startSimpleALATaskForRobot` must use Ploinky's native asynchronous tool contract with full task-log retention and no fixed 30-second execution timeout. The initial MCP response returns the Ploinky task metadata. The tool process must remain alive while its RoboTeam task waits in the queue and while ALA runs. It must write readable intermediate ALA messages to standard error, reserve standard output for the final result, and exit only after ALA completes, fails, stops, or the native task is cancelled. The Ploinky task status is the caller-facing completion contract; `getTaskStatusForRobot` remains an internal view of RoboTeam queue position and execution state.
 

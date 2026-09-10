@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import { sendTaskEvent } from './taskEventClient.mjs';
 import { spawn } from 'node:child_process';
 
 const MAX_BYTES = 1024 * 1024;
@@ -9,7 +10,7 @@ const TARGETS = {
     'launch-robot': 'roboTeamAgent',
 };
 
-export async function createSkillInvocation({ skillName, input, contextDirectory = '/run/ploinky-task', sdk } = {}) {
+export async function createSkillInvocation({ skillName, input, contextDirectory = '/workspace/ploinky-runtime', sdk } = {}) {
     if (typeof input !== 'string') throw new TypeError('Skill input must be a string.');
     let setup;
     let standalone = false;
@@ -20,29 +21,26 @@ export async function createSkillInvocation({ skillName, input, contextDirectory
         // Direct script use inside a Ploinky agent needs no AchillesCLI service.
         setup = { version: 1, env: {}, workingDir: process.cwd() };
     }
-    if (setup.version !== 1 || !path.isAbsolute(setup.workingDir)) throw new Error('Invalid Ploinky task context.');
+    if ((!standalone && setup.version !== 2) || !path.isAbsolute(setup.workingDir)) throw new Error('Invalid Ploinky task context.');
     for (const [name, value] of Object.entries(setup.env || {})) {
         if (!name.startsWith('PLOINKY_') || /MASTER|PRIVATE_SECRET|SUBJECT|PASSWORD/i.test(name) || typeof value !== 'string') {
             throw new Error('Invalid SDK environment field.');
         }
         process.env[name] = value;
     }
-    const receipt = async (event) => {
-        const folder = path.join(contextDirectory, 'events');
+    const receipt = async event => {
         if (standalone) return;
-        await fs.access(folder);
-        const name = randomUUID();
-        const temporary = path.join(folder, name + '.tmp');
-        const text = JSON.stringify(event);
-        if (Buffer.byteLength(text) > MAX_BYTES) throw new Error('Task receipt exceeds 1 MiB.');
-        await fs.writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
-        await fs.rename(temporary, path.join(folder, name + '.json'));
+        try { await sendTaskEvent(path.join(contextDirectory, 'tasks.sock'), setup.eventToken, event); }
+        catch (cause) {
+            throw new Error(`Task ${event.task.taskId} already started, but its notification failed. Do not launch it again.`, { cause });
+        }
     };
     const clients = new Map();
     let module = sdk;
     let removeObserver;
     const load = async () => {
-        if (!module) module = await import('/Agent/client/AgentMcpClient.mjs');
+        if (!module) module = await import(standalone ? '/Agent/client/AgentMcpClient.mjs'
+            : pathToFileURL(path.join(contextDirectory, 'sdk/client/AgentMcpClient.mjs')).href);
         if (!removeObserver) removeObserver = module.setAgentTaskObserver(async (task) => {
             await receipt({ type: 'task-started', task: {
                 agentName: task.agentName, taskId: task.taskId, toolName: task.toolName,
@@ -61,16 +59,10 @@ export async function createSkillInvocation({ skillName, input, contextDirectory
     const target = TARGETS[skillName];
     const context = { workingDir: setup.workingDir, agentName: target,
         webchatResources: setup.resources || [], webchatPaths: setup.paths || [],
-        webchatOrigin: setup.origin || {}, providerLauncherResults: [] };
+        webchatOrigin: setup.origin || {} };
     const callAgentTool = async (agent, tool, payload) => (await clientFor(agent)).callToolWithoutWait(tool, payload);
     const ensureAgentRunning = async (ref) => (await clientFor(target || ref.split('/').at(-1))).ensureAgentRunning(ref);
     const getTaskStatus = async (id) => (await clientFor(target)).getTaskStatus(id);
-    let forwarded = 0;
-    const flushProviderLauncherResults = async () => {
-        while (forwarded < context.providerLauncherResults.length) {
-            await receipt({ type: 'provider-result', result: context.providerLauncherResults[forwarded++] });
-        }
-    };
     return {
         promptText: input, workingDir: setup.workingDir, context,
         resources: context.webchatResources, paths: context.webchatPaths, origin: context.webchatOrigin,
@@ -85,8 +77,7 @@ export async function createSkillInvocation({ skillName, input, contextDirectory
             return { success: result.success, output: result.stdout.trim(), stderr: result.stderr.trim(),
                 error: result.error || null, exitCode: result.status, signal: result.signal, timedOut: result.timedOut };
         },
-        flushProviderLauncherResults,
-        async close() { try { await flushProviderLauncherResults(); } finally { removeObserver?.(); } },
+        async close() { removeObserver?.(); },
     };
 }
 

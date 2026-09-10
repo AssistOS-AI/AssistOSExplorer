@@ -42,15 +42,13 @@ export async function resolveAlaInstallation({ env = process.env } = {}) {
             packageRoot = parent;
         }
         const load = (relative) => import(pathToFileURL(path.join(packageRoot, 'src', relative)).href);
-        const [repositories, prompts, discovery, service] = await Promise.all([
-            load('repositories.mjs'), load('anthropic-skills.mjs'),
+        const [repositories, discovery, service] = await Promise.all([
+            load('repositories.mjs'),
             load('coding-agents/discovery.mjs'), load('coding-agents/service.mjs'),
         ]);
         const api = {
             entryPath, packageRoot,
             discoverTaskSkills: repositories.discoverTaskSkills,
-            catalogSelectionPrompt: prompts.catalogSelectionPrompt,
-            selectedSkillPrompt: prompts.selectedSkillPrompt,
             discoverCodingAgents: discovery.discoverCodingAgents,
             createCodingAgentService: service.createCodingAgentService,
         };

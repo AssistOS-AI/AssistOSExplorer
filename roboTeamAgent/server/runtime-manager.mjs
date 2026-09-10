@@ -319,7 +319,7 @@ export class RuntimeManager {
 
     _newTask(robot, type, request, trackLatest = true) {
         const task = {
-            taskId: crypto.randomUUID(), robotId: robot.id, type, state: 'queued',
+            taskId: (!request.alaSessionId && request.skillSelection?.catalogId) || crypto.randomUUID(), robotId: robot.id, type, state: 'queued',
             createdAt: new Date().toISOString(), request, logTail: '', logSeq: 0,
             logTruncated: false, result: '', error: null,
             child: null, cancelRequested: false,
@@ -393,6 +393,12 @@ export class RuntimeManager {
 
     async _runTask(robot, task) {
         if (task.cancelRequested || task.state !== 'queued') return;
+        const appendProgress = (chunk) => {
+            const previousLength = task.logTail.length;
+            task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
+            if (task.logTail.length < previousLength + String(chunk).length) task.logTruncated = true;
+            task.logSeq += 1;
+        };
         try {
             task.state = 'starting';
             task.startedAt = new Date().toISOString();
@@ -426,7 +432,7 @@ export class RuntimeManager {
             if (task.request.resumeSession) args.push('--resume-session');
             if (task.request.skillSelection) {
                 if (!this.skillsets) throw new Error('task skill catalog service is unavailable');
-                args.push('--skill-catalog', await this.skillsets.catalogPath(robot.id, task.request.skillSelection));
+                args.push('--skill-catalog', await this.skillsets.catalogPath(robot.id, task.request.skillSelection, message => appendProgress(`${message}\n`)));
             } else if (task.request.skillSets) args.push('--skillSets', task.request.skillSets);
             if (task.request.model) args.push('--model', task.request.model);
             if (mcpAddress) args.push('--MCPServers', mcpAddress);
@@ -450,12 +456,6 @@ export class RuntimeManager {
             child.stdout?.on('data', (chunk) => {
                 task.result = appendTail(task.result, chunk, TASK_RESULT_LIMIT);
             });
-            const appendProgress = (chunk) => {
-                const previousLength = task.logTail.length;
-                task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
-                if (task.logTail.length < previousLength + String(chunk).length) task.logTruncated = true;
-                task.logSeq += 1;
-            };
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
                 if (event.type === 'messages-cancelled') appendProgress(`\nCancelled ${event.count} queued message(s).\n`);
                 if (event.type === 'session-ready') {

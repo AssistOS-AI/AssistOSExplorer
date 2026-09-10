@@ -24,9 +24,9 @@ AchillesCLI integrates RoboTeam through its Anthropic `launch-robot` skill and s
 
 ## Development
 
-Administrators manage allowed skillsets in each robot card using a unique name, description, and HTTPS Git URL or absolute workspace directory. `robot_list` returns the robot description, available sets and skill frontmatter descriptions. Task calls accept comma-separated `skillSets` or its `skillset` alias for whole sets and `skills` for qualified names such as `documents/read-pdf`. AchillesCLI launch JSON also accepts arrays. Omission selects no extra skills. RoboTeam copies the selected union before enqueueing and supplies ALA `--skill-catalog`; continuation retains that copy and source revisions even after catalog removal. Imports and task catalogs are private robot data, separate from the shared tool cache.
+Administrators open Manage skills on a robot to add an HTTPS skill repository or remove an existing one. Expand a repository to inspect its skills and the descriptions and member lists from skillsets.md. The Markdown file uses one # heading per skillset and ## Description / ## Skills sections; a repository without this file contributes no skillsets. Robot discovery publishes generated selection IDs with descriptions. Choose by description and pass the IDs in skillSets. Resume and Continue reuse the saved selection.
 
-`Delete robot` in the dashboard is administrator-only and requires confirmation, no unfinished tasks, and no retained container. It permanently removes that robot's home, imported skillsets and task catalogs. Removing only a skillset leaves completed and queued tasks' saved copies intact. Source repositories remain untouched. See [Robots & Runs](docs/operations.html) for selectors and examples.
+`Delete robot` in the dashboard is administrator-only and requires confirmation, no unfinished tasks, and no retained container. It permanently removes that robot's home, imported repositories and task catalogs. Removing a repository makes its skills unavailable to future executions; RoboTeam prunes those paths from saved task manifests before starting or continuing. Source repositories remain untouched. See [Robots & Runs](docs/operations.html) for selectors and examples.
 
 ```sh
 npm test
@@ -38,3 +38,35 @@ The canonical runtime, desktop, and browser image definitions live in `container
 RoboTeam resolves current tool versions at startup and rechecks them on demand after the fixed six-hour interval. Shell, Desktop and Browser tools prepare concurrently after HTTP listening, so downloads do not delay service readiness. Preparation reports each family in service logs; a failed family does not stop the service, and a later request retries it. Startup creates no robot GUI session. A cache hit avoids another installation. A new version is installed in a unique staging directory, probed, stamped, and atomically activated. Concurrent requests share the same preparation promise; failed resolution or installation falls back to the last valid generation. The graphical base images remain digest-pinned, and the Podman publication workflow resolves its rolling version-6 channel once to an exact digest for every architecture in one run.
 
 See [the documentation](docs/index.html) and [the design specifications](docs/specs/matrix.md) for the complete contract.
+
+
+A repository may define `skillsets.md` at its root:
+
+```markdown
+# report-review
+
+## Description
+
+Use when a report needs PDF inspection and a written review.
+
+## Skills
+
+- read-pdf
+- write-doc
+
+# pdf-inspection
+
+## Description
+
+Use when only the PDF needs inspection.
+
+## Skills
+
+- read-pdf
+```
+
+Each member must match a skill's `name` in `SKILL.md` from that repository. The skillset name is its Markdown heading; no version field is required. No file means no declared skillsets. Choose the described combinations returned by `robot_list` and send their IDs through `launch-robot`'s `skillSets` parameter.
+
+Repositories without declared skillsets expose each skill’s name and description, grouped by repository ID, in robot discovery and the default robot’s turn context. Individual selections use `repository-id/skill-name` in `skills` and combine with selected skillsets. Delegated tasks never receive copilot automatically; direct default chats retain their base copilot skills. Resume reuses the saved catalog.
+
+See [Skills & Skillsets](docs/skills.html) for repository management, Markdown definitions and the task manifest flow.

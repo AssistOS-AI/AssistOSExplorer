@@ -29,19 +29,19 @@ async function harness(t, interactions = {}) {
     const session = await store.createSession();
     let records = [{ name: 'bash', description: 'Run commands', skillDir: workingDir, enabled: true }];
     let models = { codex: 'native-first' };
-    const catalog = { async refresh() { return { skills: records.map((record) => ({ ...record })),
+    let robotCatalog;
+    const catalog = { async refresh() { return { robotCatalog, skills: records.map((record) => ({ ...record })),
         taskRepositories: records.filter((record) => record.enabled).map((record) => record.skillDir) }; } };
     const installation = {
         entryPath: childEntry,
         async discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; },
-        catalogSelectionPrompt(skills, prompt) { return `${skills.map((skill) => skill.name).join(',')}\n${prompt}`; },
-        selectedSkillPrompt(skill, prompt) { return `${skill.name}\n${prompt}`; },
     };
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: catalog, installation,
         settings: { readAchillesSettings: () => ({}), getCodingAgentModels: () => models, getPermissionMode: () => 'ask-for-approval' },
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
     t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); });
     return { workingDir, engine, store, sessionId: session.sessionId,
+        setRobotCatalog: next => { robotCatalog = next; },
         setSkills: (next) => { records = next; }, setModels: (next) => { models = next; } };
 }
 
@@ -108,18 +108,17 @@ test('native metadata mismatch and missing continuation preserve the conversatio
     assert.equal(await fs.readFile(h.store.sessionPath(h.sessionId), 'utf8'), before);
 });
 
-test('legacy history is prepended once and excludes context-false commands', async (t) => {
+test('UI history is never replayed and subsequent turns resume the native conversation', async (t) => {
     const h = await harness(t);
     const command = await h.store.beginCommand({ sessionId: h.sessionId, text: '/history' });
     await h.store.completeCommand(h.sessionId, command.assistantMessageId, 'EXCLUDED_COMMAND_RESULT');
     const previous = await h.store.beginTurn({ sessionId: h.sessionId, text: 'LEGACY_MARKER' });
     await h.store.completeTurn(h.sessionId, previous.assistantMessageId, 'Legacy reply');
     const first = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Now' })).outputText);
-    assert.match(first.prompt, /<prior-conversation>/);
-    assert.match(first.prompt, /LEGACY_MARKER/);
+    assert.equal(first.prompt, 'Now');
     assert.equal(first.prompt.includes('EXCLUDED_COMMAND_RESULT'), false);
     const second = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Again' })).outputText);
-    assert.equal(second.prompt.includes('<prior-conversation>'), false);
+    assert.equal(second.prompt, 'Again');
     assert.equal(second.resumed, true);
 });
 
@@ -156,7 +155,31 @@ test('coding provider names remain ordinary prompts without removed launcher rou
         { name: 'bash', skillDir: h.workingDir, enabled: true },
     ]);
     const delegated = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Ask codex to review this project' })).outputText);
-    assert.equal(delegated.prompt.split('\n')[0], 'bash');
+    assert.equal(delegated.prompt, 'Ask codex to review this project');
     const mentioned = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'What is Codex?' })).outputText);
-    assert.equal(mentioned.prompt.split('\n')[0], 'bash');
+    assert.equal(mentioned.prompt, 'What is Codex?');
+});
+
+
+test('the default robot receives description-based delegation choices in its native prompt', async t => {
+    const h = await harness(t);
+    h.setRobotCatalog([{ name: 'analyst', skillsets: [{ id: 'repo-a-set-1', description: 'Use for reviewing reports', skills: ['read-report'] }], skillRepositories: [{ id: 'repo-extra', skills: [{ name: 'verify', description: 'Verify report facts' }] }] }]);
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Review the report' });
+    const prompt = JSON.parse(result.outputText).prompt;
+    assert.match(prompt, /Use for reviewing reports/);
+    assert.match(prompt, /repo-a-set-1/);
+    assert.match(prompt, /Verify report facts/);
+    assert.match(prompt, /repository-id\/skill-name in skills/);
+    assert.match(prompt, /When delegating, choose a robot and skillsets or individual skills by their descriptions/);
+});
+
+
+test('explicit skill selection is an ALA argument, without a RoboTeam prompt wrapper', async t => {
+    const h = await harness(t);
+    const output = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId,
+        prompt: 'Inspect the project', skillName: 'bash' })).outputText);
+    assert.equal(output.prompt, 'Inspect the project');
+    assert.equal(output.skill, 'bash');
+    await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId,
+        prompt: 'Inspect', skillName: 'missing' }), /missing or disabled/);
 });

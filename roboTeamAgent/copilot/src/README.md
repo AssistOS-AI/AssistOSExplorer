@@ -20,8 +20,8 @@ Run this command from `achilles-cli/`. The dedicated native home defaults to `<p
 /read bash
 /exec bash /usr/bin/pwd
 /skills
-/skill disable launch-web-search
-/skill enable launch-web-search
+/skill disable launch-gpt-researcher
+/skill enable launch-gpt-researcher
 /list repos
 /add repo <git-url>
 /update repos
@@ -51,15 +51,15 @@ node src/cli.mjs --dir /absolute/path/to/project "Explain this project's entry p
 
 ## Product skills
 
-The automatic catalog contains exactly `bash`, `launch-gpt-researcher`, `launch-open-interpreter`, `launch-web-search` and `launch-robot`. Each folder owns Anthropic `SKILL.md`, `scripts/action.mjs`, `scripts/run.mjs` and local supporting material. Scripts import their local `scripts/ploinkyInvocation.mjs`, which imports Ploinky's `/Agent/client/AgentMcpClient.mjs`, never hidden host source.
+The automatic catalog contains exactly `bash`, `launch-gpt-researcher`, `launch-robot`. Each folder owns Anthropic `SKILL.md`, `scripts/action.mjs`, `scripts/run.mjs` and local supporting material. Scripts import their local `scripts/ploinkyInvocation.mjs`, which imports Ploinky's `/Agent/client/AgentMcpClient.mjs`, never hidden host source.
 
-Bash preserves argv/glob semantics without interpreting shell operators. Coding launchers preserve literal prompts and their fixed worker payloads. Open Interpreter retains its guarded transport and non-cacheable result. Web search intentionally returns unavailable without external calls. Robot discovery is `launch-robot/scripts/list.mjs`; compact `/exec launch-robot desktop: <task>` selects the ordinary startup-created robot `default` only when a name is omitted.
+Bash preserves argv/glob semantics without interpreting shell operators. Coding launchers preserve literal prompts and their fixed worker payloads. Robot discovery is `launch-robot/scripts/list.mjs`; compact `/exec launch-robot desktop: <task>` selects the ordinary startup-created robot `default` only when a name is omitted.
 
 ## Sessions and tasks
 
-Conversations, settings, input history, task journals and deterministic memory remain workspace-scoped under `.data/achilles-cli`. In Ploinky, the validated workspace root owns this state even for a nested project. Every connection pins its own selection while all authenticated workspace users can inspect saved sessions. Different sessions can run concurrently; the same session's execution lease prevents duplicate turns.
+Conversations, settings, input history and task journals remain workspace-scoped under `.data/achilles-cli`. In Ploinky, the validated workspace root owns this state even for a nested project. Every connection pins its own selection while all authenticated workspace users can inspect saved sessions. Different sessions can run concurrently; the same session's execution lease prevents duplicate turns.
 
-Stable message IDs retain task/progress placement. UI transcripts restore presentation, while native continuation restores conversational context. A legacy transcript is supplied once, excluding presentation-only records. Missing native continuation or changed home/cwd/backend fails without replacing history.
+Stable message IDs retain task/progress placement. UI transcripts restore presentation, while native continuation restores conversational context. UI transcripts are never replayed as native prompt context, including legacy transcripts. ALA alone constructs skill instructions from its mounted catalog. Missing native continuation or changed home/cwd/backend fails without replacing history.
 
 Delegated workers retain their own credentials and native sessions. The parent observes Router-mediated task metadata through immutable turn origin, persists logs without duplicate or stale events, and reattaches ongoing work after restart. Closing the UI does not stop a remote task; use its explicit task control.
 
@@ -70,11 +70,11 @@ Delegated workers retain their own credentials and native sessions. The parent o
 | `cli.mjs`, `index.mjs` | Trusted startup and surface selection. |
 | `lib/alaEngine.mjs` | Owned ALA execution, continuation, native events and transcript outcome. |
 | `lib/anthropicSkillCatalog.mjs` | Deterministic parser-backed catalog and enablement snapshot. |
-| `lib/ploinkyTaskContext.mjs`, skill-local `scripts/ploinkyInvocation.mjs` | Explicit Ploinky SDK configuration, direct script calls, and one-way task receipts for chat observation. |
+| `lib/ploinkyTaskContext.mjs`, skill-local `scripts/ploinkyInvocation.mjs` | Prepared read-only Ploinky runtime, direct SDK calls and acknowledged Unix-socket task notifications for chat observation. |
 | `lib/workspaceStateLock.mjs` | Short interprocess transactions and execution leases. |
 | `lib/conversationSessionStore.mjs`, `lib/workspaceTasks.mjs` | Authoritative UI history and delegated task persistence. |
 | `repl/`, `ui/`, `permissions/` | Deterministic commands, terminal presentation and native interaction choices. |
-| `skills/` | The five portable product skills. |
+| `skills/` | The three portable product skills. |
 
 ## Troubleshooting
 

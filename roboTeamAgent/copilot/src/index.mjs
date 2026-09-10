@@ -30,7 +30,6 @@ export { printHelp as printREPLHelp, showHistory, searchHistory } from './ui/Hel
 export { isWebchatEscapeControlChunk, handleWebchatControlChunk } from './lib/webchatControl.mjs';
 export { BUILT_IN_SKILLS } from './lib/constants.mjs';
 export { builtInSkillsDir, collectPloinkyRepoSkillRoots, resolveSkillCatalogRoots } from './lib/cliSkillRoots.mjs';
-export { lookupCachedProviderResultForPrompt, persistProviderLauncherResults } from './lib/providerLauncherMemory.mjs';
 export { parseCliOptions } from './lib/cliOptions.mjs';
 
 export async function createCliRuntime(options, { webchat = false } = {}) {

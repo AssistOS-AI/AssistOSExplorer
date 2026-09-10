@@ -12,22 +12,22 @@ describe('webchat envelope helpers', () => {
         const message = normalizeWebchatMessage(JSON.stringify({
             __webchatMessage: 1,
             version: 1,
-            text: '@open-interpreter summarize',
+            text: '@execution-worker summarize',
             attachments: [{ filename: 'notes.md', mime: 'text/markdown', localPath: 'shared/blob-1' }],
             origin: { publicBaseUrl: 'http://127.0.0.1:8080/webchat?agent=achilles-cli' },
             invocation: { token: 'caller-token' },
         }));
-        assert.equal(message.rawText, '@open-interpreter summarize');
+        assert.equal(message.rawText, '@execution-worker summarize');
         assert.match(message.text, /Attachments:/);
         assert.equal(message.attachments.length, 1);
         assert.equal(message.invocationToken, 'caller-token');
         assert.deepEqual(message.origin, { publicBaseUrl: 'http://127.0.0.1:8080' });
     });
 
-    it('preserves @open-interpreter as ordinary message text', () => {
-        const message = normalizeWebchatMessage('@open-interpreter list primes');
-        assert.equal(message.rawText, '@open-interpreter list primes');
-        assert.equal(message.text, '@open-interpreter list primes');
+    it('preserves @execution-worker as ordinary message text', () => {
+        const message = normalizeWebchatMessage('@execution-worker list primes');
+        assert.equal(message.rawText, '@execution-worker list primes');
+        assert.equal(message.text, '@execution-worker list primes');
         assert.deepEqual(message.references, []);
     });
 

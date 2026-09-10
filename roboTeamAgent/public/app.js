@@ -1,3 +1,4 @@
+import { openSkillsDialog } from './skills-dialog.js';
 import { openRobotTerminal } from './terminal.js';
 
 const config = globalThis.ROBOTEAM_CONFIG || {};
@@ -110,56 +111,6 @@ async function stopRobot(robot, button) {
     }
 }
 
-function renderSkillsets(card, robot, canAdmin) {
-    const list = card.querySelector('.skillset-list');
-    if (!robot.skillsets?.length) list.textContent = 'No skillsets configured.';
-    for (const set of robot.skillsets || []) {
-        const section = document.createElement('section');
-        section.className = 'skillset-entry';
-        const title = document.createElement('strong');
-        title.textContent = set.name;
-        const description = document.createElement('p');
-        description.textContent = set.description || set.source;
-        section.append(title, description);
-        const skills = document.createElement('ul');
-        for (const skill of set.skills || []) {
-            const item = document.createElement('li');
-            item.textContent = `${skill.id}: ${skill.description}`;
-            skills.append(item);
-        }
-        section.append(skills);
-        if (canAdmin && !set.builtin) {
-            const remove = document.createElement('button');
-            remove.className = 'button danger';
-            remove.type = 'button';
-            remove.textContent = 'Remove skillset';
-            remove.addEventListener('click', async () => {
-                if (!confirm(`Remove ${set.name} from ${robot.name}? Existing tasks keep their saved skills.`)) return;
-                remove.disabled = true;
-                try {
-                    await api(`api/robots/${robot.id}/skillsets`, { method: 'DELETE', body: { name: set.name } });
-                    await loadRobots();
-                } catch (error) { showError(error); remove.disabled = false; }
-            });
-            section.append(remove);
-        }
-        list.append(section);
-    }
-    const form = card.querySelector('.skillset-form');
-    form.hidden = !canAdmin;
-    form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        const submit = form.querySelector('button');
-        submit.disabled = true;
-        submit.textContent = 'Importing…';
-        try {
-            await api(`api/robots/${robot.id}/skillsets`, { method: 'POST', body: Object.fromEntries(new FormData(form)) });
-            await loadRobots();
-        } catch (error) { showError(error); }
-        finally { submit.disabled = false; submit.textContent = 'Add skillset'; }
-    });
-}
-
 function renderRobots(robots, canAdmin = false) {
     clearLogPollers();
     robotsList.replaceChildren();
@@ -185,7 +136,7 @@ function renderRobots(robots, canAdmin = false) {
             const params = new URLSearchParams({ agent: routeKey, robot: robot.name, 'workspace-dir': '.', 'forward-envelope': '1' });
             window.open(`/webchat?${params}`, '_blank', 'noopener');
         });
-        renderSkillsets(card, robot, canAdmin);
+        card.querySelector('.manage-skills').addEventListener('click', () => openSkillsDialog(robot, { api, onChanged: loadRobots, canAdmin }));
         const deleteButton = card.querySelector('.delete-robot');
         deleteButton.hidden = !canAdmin;
         deleteButton.disabled = robot.run.state !== 'stopped'

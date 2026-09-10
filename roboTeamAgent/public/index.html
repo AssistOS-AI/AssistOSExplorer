@@ -5,30 +5,52 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RoboTeam</title>
   <link rel="stylesheet" href="styles.css">
+  <script>
+    (() => {
+      const keys = ['assistosExplorerTheme', 'webchat_theme'];
+      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const syncTheme = () => {
+        let preference;
+        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+        catch { /* Browser settings may disable storage. */ }
+        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+        const root = document.documentElement;
+        root.classList.toggle('theme-dark', dark);
+        root.classList.toggle('theme-light', !dark);
+        root.setAttribute('theme', dark ? 'dark' : 'light');
+      };
+      syncTheme();
+      browserTheme.addEventListener('change', syncTheme);
+      window.addEventListener('storage', event => {
+        if (event.key === null || keys.includes(event.key)) syncTheme();
+      });
+      window.addEventListener('focus', syncTheme);
+      window.addEventListener('pageshow', syncTheme);
+    })();
+  </script>
 </head>
 <body>
   <main class="shell">
     <header class="hero">
       <div>
-        <p class="eyebrow">Persistent robot environments</p>
         <h1>RoboTeam</h1>
-        <p class="lede">Create robots with durable homes, then enter a disposable browser or full Linux desktop container.</p>
+        <p class="lede">Manage your robots, conversations and workstations.</p>
       </div>
       <button id="refreshButton" class="button secondary" type="button">Refresh</button>
     </header>
 
     <section class="panel" aria-labelledby="create-title">
-      <div class="section-heading"><div><p class="eyebrow">New robot</p><h2 id="create-title">Create a robot</h2></div></div>
+      <div class="section-heading"><h2 id="create-title">Create a robot</h2></div>
       <form id="createForm" class="robot-form">
         <label><span>Name</span><input name="name" maxlength="80" required placeholder="Research analyst"></label>
-        <label><span>Specialization</span><textarea name="specialization" maxlength="500" rows="3" placeholder="Competitive research and source verification"></textarea></label>
+        <label><span>Specialization</span><textarea name="specialization" maxlength="500" rows="1" placeholder="Competitive research and source verification"></textarea></label>
         <button class="button primary" type="submit">Create robot</button>
       </form>
       <p id="formMessage" class="message" role="status"></p>
     </section>
 
     <section class="robots" aria-labelledby="robots-title">
-      <div class="section-heading"><div><p class="eyebrow">Your team</p><h2 id="robots-title">Robots</h2></div><span id="robotCount" class="count">0 robots</span></div>
+      <div class="section-heading"><h2 id="robots-title">Robots</h2><span id="robotCount" class="count">0 robots</span></div>
       <div id="robotsList" class="robot-list" aria-live="polite"></div>
     </section>
   </main>
@@ -44,20 +66,10 @@
         <button class="button primary open-desktop" type="button">Start Desktop</button>
         <button class="button open-chat" type="button">Open Chat</button>
         <button class="button open-terminal" type="button" hidden>Open Terminal</button>
+        <button class="button secondary manage-skills" type="button">Manage skills</button>
         <button class="button danger delete-robot" type="button" hidden>Delete robot</button>
       </div>
       <p class="robot-session" hidden><span></span><a class="session-url" target="_blank" rel="noopener noreferrer"></a></p>
-      <details class="robot-skillsets">
-        <summary>Available skillsets</summary>
-        <p class="skillset-hint">Allowed sources only. A task selects whole skillsets or individual skills; continuations keep that selection.</p>
-        <div class="skillset-list"></div>
-        <form class="skillset-form" hidden>
-          <label><span>Skillset name</span><input name="name" required maxlength="100" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="documents"></label>
-          <label><span>Repository</span><input name="source" required maxlength="2048" placeholder="https://github.com/owner/skills.git or /workspace/skills"></label>
-          <label><span>Description</span><input name="description" maxlength="1000" placeholder="Document conversion and review"></label>
-          <button class="button secondary" type="submit">Add skillset</button>
-        </form>
-      </details>
       <div class="robot-log-controls">
         <button class="button secondary view-logs" type="button" aria-expanded="false">Logs</button>
       </div>

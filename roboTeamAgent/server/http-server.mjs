@@ -5,7 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAdminActor, requestActor } from './request-identity.mjs';
-import { RobotSkillsets, publicSkillsets } from './robot-skillsets.mjs';
+import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 
@@ -148,6 +148,8 @@ function publicRobot(robot, run) {
         specialization: robot.specialization,
         description: robot.specialization,
         skillsets: publicSkillsets(robot),
+        skillRepositories: individualSkillRepositories(robot),
+        repositories: publicRepositories(robot),
         createdAt: robot.createdAt,
         updatedAt: robot.updatedAt,
         run,
@@ -200,8 +202,10 @@ export function createRoboTeamServer(options) {
                 res.end(`globalThis.ROBOTEAM_CONFIG=${JSON.stringify({ publicBasePath, routeKey })};\n`);
                 return;
             }
+            if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(res, publicDir, 'InterVariable.woff2');
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
+            if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');
 
             const terminalRobotId = matchRobotPath(pathname, '/terminal');

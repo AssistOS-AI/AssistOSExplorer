@@ -6,12 +6,12 @@ import { ROBOTEAM_AGENT_REF } from '../src/skills/launch-robot/scripts/roboTeamC
 
 test('robot discovery includes allowed skillsets and skill descriptions without full instructions', async () => {
     const result = await action({ agentClient: { callToolWithoutWait: async () => ({ robots: [{
-        name: 'Analyst', description: 'Reports', skillsets: [{ name: 'docs', description: 'Documents',
-            skills: [{ name: 'read', id: 'docs/read', description: 'Read PDFs', instructions: 'PRIVATE BODY' }] }],
+        name: 'Analyst', description: 'Reports', skillsets: [{ id: 'repo-123-set-1', description: 'Read PDFs to prepare reports',
+            skills: ['read'] }],
     }] }) } });
     assert.match(result, /Reports/);
-    assert.match(result, /Skillset docs: Documents/);
-    assert.match(result, /docs\/read: Read PDFs/);
+    assert.match(result, /Read PDFs to prepare reports/);
+    assert.match(result, /skillSets ID: repo-123-set-1/);
     assert.doesNotMatch(result, /PRIVATE BODY/);
 });
 
@@ -64,4 +64,15 @@ test('reports a bounded RoboTeam MCP failure instead of treating it as an empty 
         },
     });
     assert.equal(result, 'Could not list RoboTeam robots: robot service unavailable');
+});
+
+
+test('discovery lists individual skills for a repository without skillsets', async () => {
+    const result = await action({ agentClient: { callToolWithoutWait: async () => ({ robots: [{
+        name: 'Analyst', skillsets: [], skillRepositories: [{ id: 'repo-reports', skills: [
+            { name: 'read-report', description: 'Read and summarize reports', instructions: 'PRIVATE BODY' },
+        ] }],
+    }] }) } });
+    assert.match(result, /Skill repo-reports\/read-report: Read and summarize reports/);
+    assert.doesNotMatch(result, /PRIVATE BODY|undefined/);
 });

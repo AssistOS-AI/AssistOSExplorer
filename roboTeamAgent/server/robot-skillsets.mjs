@@ -4,7 +4,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { availableSkillsets, copilotSkillsRoot } from './copilot-skillset.mjs';
+import { availableRepositories, availableSkillsets, copilotSkillsRoot } from './copilot-skillset.mjs';
+import { skillsetMDParser } from './skillsetMDParser.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -68,6 +69,13 @@ async function treeDigest(root) {
     return hash.digest('hex');
 }
 
+export async function readSkillsetDefinitions(directory, skills) {
+    let source;
+    try { source = await fs.readFile(path.join(directory, 'skillsets.md'), 'utf8'); }
+    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+    return skillsetMDParser(source, skills);
+}
+
 export class RobotSkillsets {
     constructor({ robotStore, workspaceRoot = '/workspace', alaCommand = resolveAlaCommand(), discoverSkills, execImpl = exec }) {
         Object.assign(this, { robotStore, workspaceRoot, alaCommand, discoverSkills, execImpl });
@@ -83,11 +91,9 @@ export class RobotSkillsets {
     }
 
     async add(robotId, input) {
-        const [name] = selectionNames([input.name]);
-        if (name === 'copilot') throw invalid('copilot is a bundled read-only skillset');
-        const description = String(input.description || '').trim();
+        const name = `repo-${crypto.randomUUID()}`;
         const source = String(input.source || '').trim();
-        if (!source || source.length > 2048 || description.length > 1000) throw invalid('invalid skillset source or description');
+        if (!source || source.length > 2048) throw invalid('invalid skillset source or description');
         const stagingRoot = path.join(this.robotStore.dataDir, 'skillset-imports');
         await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });
         const stage = await fs.mkdtemp(path.join(stagingRoot, 'import-'));
@@ -120,16 +126,17 @@ export class RobotSkillsets {
             if (!records.length || records.length > 100) throw invalid('skillset must contain 1 to 100 skills');
             const skills = records.map((skill) => ({ name: skill.name, description: skill.description,
                 directory: path.relative(imported, skill.directoryPath) }));
+            const definitions = await readSkillsetDefinitions(imported, skills);
             const digest = await treeDigest(imported);
             return await this.robotStore.withRobot(robotId, async (robot, save) => {
                 const available = robot.skillsets || [];
-                if (available.some((set) => set.name === name)) throw invalid('skillset name already exists');
+                if (available.some((set) => set.source === source)) throw invalid('repository already exists');
                 if (available.length >= 32) throw invalid('robot allows at most 32 skillsets');
                 const generation = crypto.randomUUID();
                 const parent = path.join(this.robotStore.robotPath(robotId), 'skillsets');
                 await fs.mkdir(parent, { recursive: true, mode: 0o700 });
                 await fs.rename(imported, path.join(parent, generation));
-                const record = { name, description, source, revision, digest, generation, skills };
+                const record = { name, source, revision, digest, generation, skills, definitions };
                 await save({ ...robot, skillsets: [...available, record] });
                 return record;
             });
@@ -143,7 +150,7 @@ export class RobotSkillsets {
             const record = (robot.skillsets || []).find((set) => set.name === name);
             if (!record) throw invalid('skillset not found');
             await save({ ...robot, skillsets: robot.skillsets.filter((set) => set.name !== name) });
-            // Task catalogs are independent copies. Remove only this exact imported generation.
+            // Saved manifests drop missing paths before the next execution. Remove this exact generation.
             if (UUID.test(record.generation)) await fs.rm(path.join(this.robotStore.robotPath(robotId), 'skillsets', record.generation), { recursive: true, force: true });
         });
     }
@@ -151,7 +158,6 @@ export class RobotSkillsets {
     async start(robot, input, enqueue) {
         const sets = [...new Set([...selectionNames(input.skillSets), ...selectionNames(input.skillset)])];
         const names = selectionNames(input.skills, true);
-        if (robot.name === 'default' && input.skillSets === undefined && input.skillset === undefined && input.skills === undefined) sets.push('copilot');
         return this.robotStore.withRobot(robot.id, async (current) => {
             const selected = new Map();
             const available = availableSkillsets(current);
@@ -163,36 +169,38 @@ export class RobotSkillsets {
                 selected.set(key, { key, set, skill });
             };
             for (const name of sets) {
-                const set = available.find((entry) => entry.name === name);
+                const set = available.find((entry) => entry.id === name);
                 if (!set) throw invalid(`skillset is not available for this robot: ${name}`);
-                for (const skill of set.skills) add(set, skill);
+                for (const skill of set.skills) add(set.repository, skill);
             }
             for (const name of names) {
                 const [setName, skillName] = name.split('/');
-                const set = available.find((entry) => entry.name === setName);
+                const set = availableRepositories(current).find((entry) => entry.name === setName);
                 const skill = set?.skills.find((entry) => entry.name === skillName);
                 if (!skill) throw invalid(`skill is not available for this robot: ${name}`);
                 add(set, skill);
             }
-            const parent = path.join(this.robotStore.robotPath(robot.id), 'runtime', 'skill-catalogs');
+            const parent = path.join(this.robotStore.robotPath(robot.id), 'runtime', 'tasks');
             await fs.mkdir(parent, { recursive: true, mode: 0o700 });
             const catalogId = crypto.randomUUID();
             const directory = path.join(parent, catalogId);
             await fs.mkdir(directory, { mode: 0o700 });
             try {
-                const budget = { bytes: 0, files: 0 };
+                const paths = [];
                 for (const { set, skill } of selected.values()) {
                     if ((!set.builtin && !UUID.test(set.generation)) || !NAME.test(skill.name)) throw invalid('invalid stored skillset');
                     const root = set.builtin ? copilotSkillsRoot : path.join(this.robotStore.robotPath(robot.id), 'skillsets', set.generation);
                     const source = path.resolve(root, skill.directory);
                     if (source !== root && !source.startsWith(`${root}${path.sep}`)) throw invalid('invalid stored skill path');
-                    await copyTree(source, path.join(directory, skill.name), budget);
+                    const canonicalSource = await fs.realpath(source);
+                    const records = await this.discover(canonicalSource);
+                    if (records.length !== 1 || records[0].name !== skill.name || records[0].directoryPath !== canonicalSource) {
+                        throw invalid('selected skill folders must contain exactly their own SKILL.md');
+                    }
+                    paths.push(canonicalSource);
                 }
-                if (selected.size) {
-                    const records = await this.discover(directory);
-                    if (records.length !== selected.size) throw invalid('selected skill folders contain nested skill descriptors');
-                }
-                const selection = { catalogId, digest: await treeDigest(directory), skillSets: sets, skills: names,
+                await fs.writeFile(path.join(directory, 'skill-catalog.json'), JSON.stringify(paths, null, 4) + '\n', { mode: 0o600 });
+                const selection = { catalogId, paths, skillSets: sets, skills: names,
                     resolvedSkills: [...selected.keys()], revisions: Object.fromEntries([...selected.values()].map(({ set }) => [set.name, set.revision || set.digest])) };
                 return await enqueue(current, selection);
             } catch (error) {
@@ -202,18 +210,67 @@ export class RobotSkillsets {
         });
     }
 
-    async catalogPath(robotId, selection) {
+    async catalogPath(robotId, selection, warn = message => console.warn(message)) {
         if (!selection || !UUID.test(selection.catalogId)) throw invalid('task has no saved skill catalog');
-        const directory = path.join(this.robotStore.robotPath(robotId), 'runtime', 'skill-catalogs', selection.catalogId);
-        if (await treeDigest(directory) !== selection.digest) throw invalid('saved task skill catalog changed');
-        return directory;
+        return this.robotStore.withRobot(robotId, async () => {
+            const directory = path.join(this.robotStore.robotPath(robotId), 'runtime', 'tasks', selection.catalogId);
+            const file = path.join(directory, 'skill-catalog.json');
+            // Existing copied catalogs remain readable; never migrate or delete their data.
+            let allowed = selection.paths;
+            if (!allowed) {
+                const legacy = path.join(this.robotStore.robotPath(robotId), 'runtime', 'skill-catalogs', selection.catalogId);
+                if (await treeDigest(legacy) !== selection.digest) throw invalid('saved task skill catalog changed');
+                allowed = selection.resolvedSkills.length ? (await this.discover(legacy)).map(skill => skill.directoryPath) : [];
+                await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+                try { await fs.writeFile(file, JSON.stringify(allowed), { flag: 'wx', mode: 0o600 }); }
+                catch (error) { if (error.code !== 'EEXIST') throw error; }
+            }
+            const paths = JSON.parse(await fs.readFile(file, 'utf8'));
+            if (!Array.isArray(paths) || paths.some(value => typeof value !== 'string' || !allowed.includes(value))
+                || new Set(paths).size !== paths.length) throw invalid('saved task skill catalog changed');
+            const valid = [];
+            for (const source of paths) {
+                try {
+                    if (!(await fs.stat(source)).isDirectory() || !(await fs.stat(path.join(source, 'SKILL.md'))).isFile()) {
+                        throw invalid('saved skill path is not a skill directory');
+                    }
+                    if (await fs.realpath(source) !== source) throw invalid('saved skill path changed');
+                    valid.push(source);
+                } catch (error) {
+                    if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error;
+                    warn(`Removed unavailable skill from task catalog: ${source}`);
+                }
+            }
+            if (valid.length !== paths.length) {
+                const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+                await fs.writeFile(temporary, JSON.stringify(valid, null, 4) + '\n', { mode: 0o600 });
+                await fs.rename(temporary, file);
+            }
+            return file;
+        });
     }
+
 }
 
 export function publicSkillsets(robot) {
-    return availableSkillsets(robot).map(({ name, description, source, revision, digest, builtin, skills }) => ({
-        builtin: Boolean(builtin),
-        name, description, source, revision: revision || digest,
-        skills: skills.map((skill) => ({ name: skill.name, id: `${name}/${skill.name}`, description: skill.description })),
+    return availableSkillsets(robot).map(({ id, name, description, repository, skills }) => ({
+        id, name, description, repositoryId: repository.name, builtin: Boolean(repository.builtin),
+        skills: skills.map(skill => skill.name),
+    }));
+}
+
+export function publicRepositories(robot) {
+    const sets = publicSkillsets(robot);
+    return availableRepositories(robot).map(repo => ({
+        id: repo.name, source: repo.source, builtin: Boolean(repo.builtin),
+        skills: repo.skills.map(({ name, description }) => ({ name, description, id: `${repo.name}/${name}` })),
+        skillsets: sets.filter(set => set.repositoryId === repo.name),
+    }));
+}
+
+export function individualSkillRepositories(robot) {
+    return availableRepositories(robot).filter(repo => !(repo.definitions || []).length).map(repo => ({
+        id: repo.name,
+        skills: repo.skills.map(({ name, description }) => ({ name, description })),
     }));
 }

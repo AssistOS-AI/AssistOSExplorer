@@ -1,12 +1,15 @@
+import fs from 'node:fs/promises';
 import { createAnthropicSkillCatalog } from './anthropicSkillCatalog.mjs';
-import { publicSkillsets } from '../../../server/robot-skillsets.mjs';
+import { publicSkillsets, individualSkillRepositories, selectionNames } from '../../../server/robot-skillsets.mjs';
 import { acquireExecutionLease } from './workspaceStateLock.mjs';
 
 export function createRobotSkillCatalog({ context, sessionStore, workingDir, discoverTaskSkills }) {
     let current = null;
+    let currentSelection = [];
     async function select(sessionId, input) {
         const robot = await context.store.get(context.robot.id);
         if (!robot) throw new Error('Robot was deleted.');
+        if (robot.name === 'default') input = { ...input, skillSets: [...new Set(['copilot', ...selectionNames(input.skillSets)])] };
         return context.skillsets.start(robot, input, async (_robot, skillSelection) => {
             await sessionStore.updateSession(sessionId, (session) => { session.skillSelection = skillSelection; });
             return skillSelection;
@@ -16,13 +19,21 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, dis
         async refresh(sessionId) {
             sessionId ||= (await sessionStore.ensureCurrentSession()).sessionId;
             let selection = sessionStore.loadSession(sessionId).skillSelection;
-            if (!selection) selection = await select(sessionId, {});
-            const directory = await context.skillsets.catalogPath(context.robot.id, selection);
+            if (!selection) selection = await select(sessionId, { skillSets: context.robot.name === 'default' ? ['copilot'] : [] });
+            const file = await context.skillsets.catalogPath(context.robot.id, selection);
+            const paths = JSON.parse(await fs.readFile(file, 'utf8'));
+            currentSelection = selection.paths
+                ? paths.map(path => selection.resolvedSkills[selection.paths.indexOf(path)])
+                : selection.resolvedSkills;
             const catalog = await createAnthropicSkillCatalog({ workingDir,
-                roots: selection.resolvedSkills.length ? [{ path: directory, builtIn: true }] : [], discoverTaskSkills });
+                roots: paths.map(path => ({ path, builtIn: true })), discoverTaskSkills });
             current = catalog;
-            return { catalogPath: directory, skills: catalog.getSkills().map((skill) => ({ ...skill, enabled: true })),
-                taskRepositories: catalog.getSkills().map((skill) => skill.skillDir) };
+            return { catalogPath: file, skills: catalog.getSkills().map((skill) => ({ ...skill, enabled: true })),
+                taskRepositories: catalog.getSkills().map((skill) => skill.skillDir),
+                robotCatalog: context.robot.name === 'default' ? (await context.store.list()).map(robot => ({
+                    name: robot.name, description: robot.specialization, skillsets: publicSkillsets(robot),
+                    skillRepositories: individualSkillRepositories(robot),
+                })) : undefined };
         },
         async command(sessionId, args) {
             const input = args.trim();
@@ -37,11 +48,11 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, dis
             }
             await this.refresh(sessionId);
             const robot = await context.store.get(context.robot.id);
-            const selection = sessionStore.loadSession(sessionId).skillSelection;
-            return { output: `Selected: ${selection.resolvedSkills.join(', ') || 'none'}\n\nAvailable skillsets:\n`
-                + publicSkillsets(robot).map((set) => `${set.name}: ${set.description}\n`
-                    + set.skills.map((skill) => `  ${skill.id}: ${skill.description}`).join('\n')).join('\n')
-                + '\n\nUse /skills use copilot,set/skill or /skills use none.' };
+            return { output: `Selected: ${currentSelection.join(', ') || 'none'}\n\nAvailable skillsets:\n`
+                + publicSkillsets(robot).map((set) => `${set.description} [${set.id}]\n`
+                    + `  Skills: ${set.skills.join(', ')}`).join('\n')
+                + individualSkillRepositories(robot).map(repo => '\n' + repo.skills.map(skill => `  ${repo.id}/${skill.name}: ${skill.description}`).join('\n')).join('')
+                + '\n\nUse /skills use copilot,repository-id/skill or /skills use none.' };
         },
         getSkills: () => current?.getSkills() || [],
         getSkill: (name) => current?.getSkill(name),

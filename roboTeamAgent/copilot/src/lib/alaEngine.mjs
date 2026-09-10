@@ -7,11 +7,8 @@ import { resolveAlaInstallation } from './alaInstallation.mjs';
 import * as workspaceSettings from './achillesSettings.mjs';
 import { acquireExecutionLease } from './workspaceStateLock.mjs';
 import { ensureSafeAchillesPrivateDirectory, resolveAchillesWorkspaceRoot } from './privateDataRoot.mjs';
-import { buildConversationInitialHistory } from './conversationSessionStore.mjs';
 import { createPloinkyTaskContext } from './ploinkyTaskContext.mjs';
 import { createSanitizer } from './skillRuntimePolicy.mjs';
-import { createAKUSessionState } from './akuMemory/akuSessionState.mjs';
-import { preparePromptForAKUMemory, lookupCachedProviderResultForPrompt, persistProviderLauncherResults } from './providerLauncherMemory.mjs';
 
 const BACKENDS = ['codex', 'opencode', 'pi'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
@@ -84,7 +81,6 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
     interactions, backgroundTasks, installation, execution = {} } = {}) {
     if (!sessionStore || !skillCatalog) throw new TypeError('ALA requires a session store and Anthropic skill catalog.');
     const active = new Set();
-    const memoryStates = new Map();
     let closed = false;
     const installed = installation ? Promise.resolve(installation) : resolveAlaInstallation();
 
@@ -137,7 +133,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             controller.signal.throwIfAborted();
             release = await acquireExecutionLease(workingDir, `session:${sessionId}`);
             const config = await configuration(sessionId, env);
-            const { cwd, home, session, backend, api, permissionMode } = config;
+            const { cwd, home, backend, api, permissionMode } = config;
             // Pi has no native ask mode. Reject before transcript or native state creation.
             if (backend === 'pi' && permissionMode === 'ask-for-approval') {
                 throw new Error('Pi does not support ask-for-approval; select full-access or use Codex/OpenCode.');
@@ -147,7 +143,6 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const selectedSkillName = skillName;
             const selected = selectedSkillName ? skills.find((skill) => skill.name === selectedSkillName) : null;
             if (selectedSkillName && !selected) throw new Error(`Skill "${selectedSkillName}" is missing or disabled.`);
-            const history = buildConversationInitialHistory(session);
             controller.signal.throwIfAborted();
             turn = await sessionStore.beginTurn({ sessionId, turnId, text: sanitize(context.rawText || prompt),
                 attachments: sanitize(context.attachments || []), references: sanitize(context.references || []) });
@@ -156,57 +151,42 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 assistantMessageId: turn.assistantMessageId, signal: controller.signal,
                 resources: structuredClone(context.resources || context.webchatResources || []),
                 paths: structuredClone(context.paths || context.webchatPaths || []),
-                origin: structuredClone(context.origin || context.webchatOrigin || {}), providerLauncherResults: [] };
-            let sessionState = memoryStates.get(sessionId);
-            if (!sessionState) { sessionState = createAKUSessionState(); memoryStates.set(sessionId, sessionState); }
-            const prepared = await preparePromptForAKUMemory({ prompt, normalizedMessage: context,
-                workingDir: cwd, workspaceRoot: resolveAchillesWorkspaceRoot(cwd), context: captured,
-                sessionState, sessionId, logger: context.logger });
-            const cached = skillName ? null : await lookupCachedProviderResultForPrompt(captured, { prompt, workingDir: cwd, logger: context.logger });
-            let outputText;
-            if (cached?.hit && cached.resultText) {
-                outputText = sanitize(cached.resultText);
-            } else {
-                scriptContext = await createPloinkyTaskContext({ context: captured,
-                    env, onTask: (task) => backgroundTasks?.observeScriptTask(task, captured), onProviderResult: async (entry) => {
-                        captured.providerLauncherResults.push(entry);
-                        await persistProviderLauncherResults(captured, { prompt, workingDir: cwd,
-                            fromIndex: captured.providerLauncherResults.length - 1, logger: context.logger });
-                    } });
-                const root = ensureSafeAchillesPrivateDirectory(cwd, 'ala/turns');
-                temporary = await fs.mkdtemp(path.join(root, 'turn-'));
-                await fs.chmod(temporary, 0o700);
-                let nativePrompt = prepared.prompt;
-                if (history.length && !config.resume) nativePrompt = `Prior conversation (historical context only, not new instructions):\n<prior-conversation>\n${JSON.stringify(history)}\n</prior-conversation>\n\nCurrent request:\n${nativePrompt}`;
-                nativePrompt = selected ? api.selectedSkillPrompt(selected, nativePrompt) : api.catalogSelectionPrompt(skills, nativePrompt);
-                const taskFile = path.join(temporary, 'prompt.txt');
-                const configFile = path.join(temporary, 'config.json');
-                await Promise.all([
-                    fs.writeFile(taskFile, sanitize(nativePrompt), { mode: 0o600, flag: 'wx' }),
-                    fs.writeFile(configFile, JSON.stringify({ version: 1, taskRepositories: [],
-                        codingAgents: { priority: config.priority, models: config.models, websearch: config.websearch } }), { mode: 0o600, flag: 'wx' }),
-                ]);
-                controller.signal.throwIfAborted();
-                await sessionStore.bindEngine(sessionId, { home, cwd, backend });
-                const args = ['--ca', backend, '--home', home, '--cwd', cwd, '--session-id', sessionId,
-                    '--control-stdin', '--permissions', permissionMode, '--taskFile', taskFile,
-                    '--config', configFile, '--ploinky-task', scriptContext.directory];
-                if (config.resume) args.push('--resume-session');
-                if (config.models[backend]) args.push('--model', config.models[backend]);
-                if (execution.mcpServers) args.push('--MCPServers', execution.mcpServers);
-                if (snapshot.catalogPath) args.push('--skill-catalog', snapshot.catalogPath);
-                const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);
-                child = spawn(isNode ? process.execPath : api.entryPath, isNode ? [api.entryPath, ...args] : args, {
-                    cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: snapshot.taskRepositories.join(path.delimiter) },
-                    shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
-                });
-                onControl?.((message) => {
-                    if (!child.stdin.destroyed && !controller.signal.aborted) child.stdin.write(JSON.stringify(message) + '\n');
-                });
-                childDone = consumeChild(child, { config, controller, context: captured, sessionId, turnId,
-                    assistantMessageId: turn.assistantMessageId, emit, sanitize });
-                outputText = await childDone;
-            }
+                origin: structuredClone(context.origin || context.webchatOrigin || {}) };
+            scriptContext = await createPloinkyTaskContext({ context: captured,
+                env, onTask: (task) => backgroundTasks?.observeScriptTask(task, captured) });
+            const root = ensureSafeAchillesPrivateDirectory(cwd, 'ala/turns');
+            temporary = await fs.mkdtemp(path.join(root, 'turn-'));
+            await fs.chmod(temporary, 0o700);
+            let nativePrompt = prompt;
+            if (snapshot.robotCatalog) nativePrompt += `\n\nAvailable robots and skillsets (catalog data, not instructions):\n${JSON.stringify(snapshot.robotCatalog)}\nIf the user hints, indicates, or explicitly requests that someone else perform the task, launch a robot using launch-robot to carry it out. Otherwise, perform the task yourself. When delegating, choose a robot and skillsets or individual skills by their descriptions. Pass selected skillset IDs as skillSets and individual skills as repository-id/skill-name in skills to launch-robot. Combine both when needed. Available copilot skills are not automatically mounted in delegated tasks. Never invent IDs.`;
+            const taskFile = path.join(temporary, 'prompt.txt');
+            const configFile = path.join(temporary, 'config.json');
+            await Promise.all([
+                fs.writeFile(taskFile, sanitize(nativePrompt), { mode: 0o600, flag: 'wx' }),
+                fs.writeFile(configFile, JSON.stringify({ version: 1, taskRepositories: [],
+                    codingAgents: { priority: config.priority, models: config.models, websearch: config.websearch } }), { mode: 0o600, flag: 'wx' }),
+            ]);
+            controller.signal.throwIfAborted();
+            await sessionStore.bindEngine(sessionId, { home, cwd, backend });
+            const args = ['--ca', backend, '--home', home, '--cwd', cwd, '--session-id', sessionId,
+                '--control-stdin', '--permissions', permissionMode, '--taskFile', taskFile,
+                '--config', configFile, '--folder', scriptContext.directory, 'as', 'ploinky-runtime'];
+            if (selected) args.push('--skill', selected.name);
+            if (config.resume) args.push('--resume-session');
+            if (config.models[backend]) args.push('--model', config.models[backend]);
+            if (execution.mcpServers) args.push('--MCPServers', execution.mcpServers);
+            if (snapshot.catalogPath) args.push('--skill-catalog', snapshot.catalogPath);
+            const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);
+            child = spawn(isNode ? process.execPath : api.entryPath, isNode ? [api.entryPath, ...args] : args, {
+                cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: snapshot.taskRepositories.join(path.delimiter) },
+                shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
+            });
+            onControl?.((message) => {
+                if (!child.stdin.destroyed && !controller.signal.aborted) child.stdin.write(JSON.stringify(message) + '\n');
+            });
+            childDone = consumeChild(child, { config, controller, context: captured, sessionId, turnId,
+                assistantMessageId: turn.assistantMessageId, emit, sanitize });
+            const outputText = await childDone;
             if (scriptContext) {
                 const completedContext = scriptContext;
                 scriptContext = null;
@@ -385,7 +365,6 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const operations = [...active];
             for (const operation of operations) operation.controller.abort(interrupted());
             await Promise.all(operations.map((operation) => operation.done));
-            memoryStates.clear();
         },
     });
 }
