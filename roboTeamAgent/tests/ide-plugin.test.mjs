@@ -32,7 +32,7 @@ test('declares an Explorer toolbar plugin immediately after WebMeet', async () =
     assert.doesNotMatch(source, /ROBOTEAM_INTERNAL_TOKEN|PLOINKY_MASTER_KEY|authorization|\/mcp/i);
 });
 
-test('opens the authenticated RoboTeam dashboard and follows host metadata', () => {
+test('opens the Explorer runtime loader for the RoboTeam dashboard and follows host metadata', () => {
     const listeners = new Map();
     const button = {
         addEventListener(type, listener) {
@@ -81,11 +81,15 @@ test('opens the authenticated RoboTeam dashboard and follows host metadata', () 
         assert.equal(button.title, 'Open profiles');
         assert.equal(button['aria-label'], 'Open profiles');
         assert.equal(icon.src, '/workspace-files/roboteam/icon.svg');
-        assert.deepEqual(calls, [[
-            '/base-agent-additional-server/roboTeamAgent/3001/',
-            '_blank',
-            'noopener,noreferrer',
-        ]]);
+        assert.equal(calls.length, 1);
+        assert.deepEqual(calls[0].slice(1), ['_blank', 'noopener,noreferrer']);
+        const waitingUrl = new URL(calls[0][0], 'https://workspace.test');
+        assert.equal(waitingUrl.pathname, '/explorer/index.html');
+        assert.ok(waitingUrl.hash.startsWith('#agent-runtime-wait?'));
+        const parameters = new URLSearchParams(waitingUrl.hash.split('?')[1]);
+        assert.equal(parameters.get('agentRef'), 'AchillesCLI/roboTeamAgent');
+        assert.equal(parameters.get('label'), 'RoboTeam');
+        assert.equal(parameters.get('target'), '/base-agent-additional-server/roboTeamAgent/3001/');
 
         presenter.afterUnload();
         assert.equal(listeners.has('click'), false);

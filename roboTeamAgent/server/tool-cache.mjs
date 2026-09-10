@@ -72,6 +72,22 @@ export class ToolCache {
         return this.prepareCodingAgent('codex');
     }
 
+    async warmup() {
+        this.log('[tool-cache] preparing startup tools');
+        const families = ['shell', 'desktop', 'browser'];
+        const results = await Promise.allSettled(families.map(async (family) => {
+            const tools = await (family === 'shell' ? this.prepareShellTools() : this.prepareMode(family));
+            this.log(`[tool-cache] startup ${family} tools ready`);
+            return tools;
+        }));
+        for (const [index, result] of results.entries()) {
+            if (result.status === 'rejected') {
+                this.log(`[tool-cache] startup ${families[index]} preparation failed: ${result.reason?.message || result.reason}; will retry on demand`);
+            }
+        }
+        return results;
+    }
+
     prepareShellTools() {
         return this._once('shell', async () => {
             const agents = await this.prepareCodingAgents();

@@ -22,7 +22,7 @@ test('retired agents and their documentation links are absent', async () => {
     }
 });
 
-test('documentation records first-use current-version tool caching', async () => {
+test('documentation records startup current-version tool caching', async () => {
     const sources = [
         await read('README.md'),
         await read('docs/images.html'),
@@ -33,6 +33,7 @@ test('documentation records first-use current-version tool caching', async () =>
         const plainText = source.replaceAll(/<[^>]+>|`/g, '');
         assert.match(plainText, /current/u);
         assert.match(plainText, /cache/u);
+        assert.match(plainText, /startup/u);
         assert.doesNotMatch(plainText, /(?:computer-use-linux 0\.5\.0|Playwright MCP 0\.0\.79|Supergateway 3\.4\.3|Codex 0\.152\.1)/u);
     }
 });
@@ -42,11 +43,12 @@ test('documentation explains executable placement and robot creation', async () 
     const images = await read('docs/images.html');
 
     assert.match(readme, /Creating a robot creates metadata and persistent directories only/);
-    assert.match(readme, /Codex, OpenCode, and Pi packages and mounts those cached generations/);
+    assert.match(readme, /Codex, OpenCode, and Pi packages/);
+    assert.match(readme, /desktop mounts the shared cache read-only/);
     assert.match(readme, /instead of being baked into the images or declared in RoboTeam's `package\.json`/);
     assert.match(images, /Codex is not baked in/);
     assert.match(images, /does not copy an image or install an executable/);
-    assert.match(images, /manual desktop mounts the active Codex, OpenCode, and Pi generations/);
+    assert.match(images, /manual desktop mounts the shared tool-cache root once/);
     assert.match(images, /last (?:valid|stamped) generation/i);
 });
 

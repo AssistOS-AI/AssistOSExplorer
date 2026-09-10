@@ -19,7 +19,9 @@
   <h2>Product vision</h2>
   <p class="lede">A robot is a durable virtual employee with a visible workstation. Its desktop or browser can be replaced without losing its home, account configuration, or work files.</p>
   <p>RoboTeam gives each workspace a shared catalog of named robots. Administrators create and delete ordinary records, and workspace agents assign work to them. At startup, RoboTeam creates the ordinary robot named exactly <code>default</code> only if it is missing; an existing one keeps its identity and home. A graphical task runs in a disposable Desktop or Browser container. The same Selkies session shows both automated actions and the final state, so a person can watch the work and open the workstation afterward.</p>
-  <p>Robot identity and state survive container replacement. RoboTeam keeps the robot home, selected working directory, downloads, logs, and coding-agent configuration outside the graphical container. Runtime tools are installed into a shared versioned cache on first use instead of being copied into each robot.</p>
+  <p>Robot identity and state survive container replacement. RoboTeam keeps the robot home, selected working directory, downloads, logs, and coding-agent configuration outside the graphical container. At service startup, runtime tools are prepared in a shared versioned cache in the background. Robots reuse the prepared tools; an immediate request waits for any preparation it needs.</p>
+
+  <p>The Explorer RoboTeam button opens a waiting page while the agent starts, then opens the dashboard automatically once its HTTP service, MCP and Router routes are ready. Startup failures remain visible with a retry control.</p>
 
   <h2>System boundary</h2>
   <p>RoboTeam is one globally enabled Ploinky agent. It owns robot records, container lifecycle, MCP bridges, the authenticated Selkies proxy, and task status. A robot is not another Ploinky agent. It is a workspace-scoped record with persistent directories and, when needed, one active Desktop or Browser container.</p>

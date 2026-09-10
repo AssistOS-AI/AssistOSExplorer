@@ -52,6 +52,11 @@ export class RoboTeamToolButton {
     openRoboTeam = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
-        window.open(ROBOTEAM_DASHBOARD_PATH, '_blank', 'noopener,noreferrer');
+        const parameters = new URLSearchParams({
+            agentRef: 'AchillesCLI/roboTeamAgent',
+            label: 'RoboTeam',
+            target: ROBOTEAM_DASHBOARD_PATH,
+        });
+        window.open(`/explorer/index.html#agent-runtime-wait?${parameters}`, '_blank', 'noopener,noreferrer');
     };
 }
