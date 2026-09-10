@@ -1,6 +1,60 @@
 import assert from 'node:assert/strict';
 import { conversationFromSettingsURL, liveSkillSources, liveSkillsPrompt, liveSkillsHash } from './copilot-live-skills.mjs';
 
+function literalTokens(command) {
+    assert.ok(typeof command === 'string' && command.length > 0 && command.length <= 4096, 'Invalid approval command length.');
+    // A deliberately small shell subset: literal words/quotes and &&. Reject
+    // expansions and escapes even inside quotes, before interpreting any text.
+    assert.match(command, /^[A-Za-z0-9_./ &'"-]+$/, 'Approval contains unsupported shell syntax.');
+    const tokens = [];
+    let word = '', quote = null, started = false;
+    const flush = () => {
+        if (started) tokens.push({ word });
+        word = ''; started = false;
+    };
+    for (let index = 0; index < command.length; index++) {
+        const char = command[index];
+        if (quote) {
+            if (char === quote) quote = null;
+            else word += char;
+        } else if (char === "'" || char === '"') {
+            quote = char; started = true;
+        } else if (char === ' ') flush();
+        else if (char === '&') {
+            assert.equal(command[++index], '&', 'Only && sequencing is supported.');
+            flush(); tokens.push({ and: true });
+        } else { word += char; started = true; }
+    }
+    assert.equal(quote, null, 'Unclosed approval command quote.');
+    flush();
+    assert.ok(tokens.length > 0 && tokens.length <= 128, 'Invalid approval token count.');
+    return tokens;
+}
+
+export function parseLiveSkillsApprovalCommand(command) {
+    let tokens = literalTokens(command);
+    let shell = null;
+    if (tokens[0].word === '/bin/bash') {
+        assert.equal(tokens.length, 3, 'The shell wrapper must contain exactly one command body.');
+        assert.equal(tokens[1].word, '-lc', 'Unexpected shell wrapper flags.');
+        assert.equal(typeof tokens[2].word, 'string');
+        shell = '/bin/bash -lc';
+        tokens = literalTokens(tokens[2].word);
+    }
+    const operations = [[]];
+    for (const token of tokens) {
+        if (token.and) {
+            assert.ok(operations.at(-1).length > 0, 'Empty approval command in sequence.');
+            operations.push([]);
+        } else {
+            assert.ok(token.word.length > 0, 'Empty approval argument.');
+            operations.at(-1).push(token.word);
+        }
+    }
+    assert.ok(operations.at(-1).length > 0 && operations.length <= 12, 'Invalid approval command sequence.');
+    return { shell, operations };
+}
+
 export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseURL, snapshot, fixture,
     sessionId, phase, selected, baselineIds, decisions, nativeIdentity }) {
     assert.equal(conversationFromSettingsURL(settingsURL, baseURL), sessionId, 'Approval changed browser conversation.');
@@ -50,20 +104,29 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
         files.set(`/workspace/.agents/skills/${skill.name}/SKILL.md`, { skill: skill.name, helper: false });
         files.set(`/workspace/.agents/skills/${skill.name}/receipt.mjs`, { skill: skill.name, helper: true });
     }
-    // Accept literal commands only. Shell wrappers, operators, flags, alternate
-    // interpreters and broader permission grants require separate investigation.
-    assert.equal(typeof detail.command, 'string');
-    const argv = detail.command.split(' ');
-    let helper = null;
-    if (argv[0] === 'cat') {
-        assert.ok(argv.length > 1 && argv.slice(1).every(file => files.has(file)), 'Read escaped the selected skill sources.');
-    } else {
-        assert.equal(argv[0], 'node', 'Unexpected native executable.');
-        assert.equal(argv.length, 3);
-        assert.equal(argv[2], phase, 'Helper approval used a different phase challenge.');
-        assert.equal(files.get(argv[1])?.helper, true, 'Execution escaped the selected receipt helper.');
-        helper = files.get(argv[1]).skill;
-        assert.ok(!decisions.some(decision => decision.helper === helper), 'The helper was already approved in this phase.');
+    // Native commandActions can be "unknown" for a compound command. They are
+    // diagnostic metadata, never authority to approve an unchecked operation.
+    const parsed = parseLiveSkillsApprovalCommand(detail.command);
+    const helpers = [];
+    const approvedHelpers = new Set(decisions.flatMap(decision => decision.helpers || (decision.helper ? [decision.helper] : [])));
+    const directories = new Set(['/workspace/.agents/skills', ...selected.map(skill => `/workspace/.agents/skills/${skill.name}`)]);
+    for (const argv of parsed.operations) {
+        if (argv[0] === 'cat') {
+            assert.ok(argv.length > 1 && argv.slice(1).every(file => files.has(file)), 'Read escaped the selected skill sources.');
+        } else if (argv[0] === 'ls') {
+            assert.ok(argv.length >= 2 && argv.length <= 4 && directories.has(argv.at(-1))
+                && argv.slice(1, -1).every(flag => ['-a', '-l', '-la', '-al'].includes(flag)),
+            'Listing escaped the selected skill directories or used unsupported flags.');
+        } else {
+            assert.equal(argv[0], 'node', 'Unexpected native executable.');
+            assert.equal(argv.length, 3);
+            assert.equal(argv[2], phase, 'Helper approval used a different phase challenge.');
+            assert.equal(files.get(argv[1])?.helper, true, 'Execution escaped the selected receipt helper.');
+            const helper = files.get(argv[1]).skill;
+            assert.ok(!approvedHelpers.has(helper) && !helpers.includes(helper), 'The helper was already approved in this phase.');
+            assert.ok(!Object.hasOwn(snapshot.receipts || {}, `${phase}-${helper}.json`), 'The helper already produced its phase receipt.');
+            helpers.push(helper);
+        }
     }
     assert.ok(Array.isArray(ui.options) && ui.options.length > 0);
     const allowed = ui.options.filter(option => option.label === 'Allow once' && option.description === 'Approve this operation.');
@@ -76,7 +139,8 @@ export function validateLiveSkillsApproval({ ui, browserURL, settingsURL, baseUR
     assert.ok(decisions.length < 12, 'Unexpected approval count in one native turn.');
     return { interactionId, buttonId: allowed[0].id, optionId: `choice_${match[2]}`, decision: 'accept',
         nativeThreadId: detail.threadId, nativeTurnId: detail.turnId, turnId: pending[0].turnId,
-        command: detail.command, commandSha256: liveSkillsHash(detail.command), revision: activeRevision, helper };
+        command: detail.command, commandSha256: liveSkillsHash(detail.command), revision: activeRevision,
+        ...parsed, helpers, helper: helpers.length === 1 ? helpers[0] : null };
 }
 
 export async function approveLiveSkillsRequest({ page, remaining, evidence, ...binding }) {

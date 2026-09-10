@@ -84,6 +84,23 @@ test('descriptor and helper-only edits change distinct consumed values and promp
     }
 });
 
+test('the native prompt discovers current catalog paths and requests the bounded approval command forms', () => {
+    const fixture = createLiveSkillsFixture();
+    const phase = randomUUID();
+    const prompt = liveSkillsPrompt({ phase, selected: [fixture.control, fixture.probe] });
+    assert.match(prompt, /Discover the currently registered skill paths from the current catalog/);
+    assert.match(prompt, /Use cat to read the selected current SKILL\.md and helper source files/);
+    assert.match(prompt, /use ls or ls -la only on the current skill catalog directory or a selected skill's directory/);
+    assert.match(prompt, /Use node to run each adjacent receipt helper with the phase UUID as its sole argument/);
+    assert.match(prompt, /literal absolute paths and arguments; commands may be sequenced with &&/);
+    assert.ok(prompt.includes(phase));
+    for (const skill of [fixture.control, fixture.probe]) {
+        assert.ok(prompt.includes(skill.name));
+        assert.ok(!prompt.includes(skill.descriptorMarker) && !prompt.includes(skill.helperMarker));
+        assert.ok(!prompt.includes(`/workspace/.agents/skills/${skill.name}/receipt.mjs`), 'The prompt must require current catalog discovery.');
+    }
+});
+
 const corruptions = {
     'stale completed assistant': input => { input.baselineIds = [input.snapshot.session.messages[1].id]; },
     'pending native turn': input => { input.snapshot.session.messages[1].status = 'pending'; },

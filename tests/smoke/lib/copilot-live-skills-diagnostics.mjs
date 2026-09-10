@@ -12,6 +12,8 @@ export function liveSkillsDiagnosticText(value) {
 export function observeLiveSkillsBrowser({ errors, network, now = () => new Date().toISOString() }) {
     const pages = new Map();
     const requests = new WeakMap();
+    const completedNoContent = new WeakSet();
+    const acknowledgementPaths = new Set(['/dpuAgent/mcp', '/roboTeamAgent/mcp', '/webchat/input', '/webchat/interaction']);
     let nextRequest = 0;
     function observe(page) {
         if (pages.has(page)) return;
@@ -34,13 +36,35 @@ export function observeLiveSkillsBrowser({ errors, network, now = () => new Date
             if (/\/mcp$|^\/webchat\/(input|control|events|interaction)$/.test(info.path)) network.push(record('request', info));
         };
         const onResponse = response => {
-            const info = requestInfo(response.request());
+            const request = response.request();
+            const info = requestInfo(request);
             info.responseStatus = response.status();
+            // MCPBrowserClient.sendMessage, WebChat postEnvelope and interaction
+            // responses and cancellations leave 204 acknowledgements unread.
+            // Chromium can cancel that empty fetch stream after delivering the response. The isolated browser
+            // regression proves server completion and this exact event order.
+            // Other statuses may have a body whose cancellation is a failure.
+            if (info.responseStatus === 204 && info.method === 'POST' && acknowledgementPaths.has(info.path)) {
+                try {
+                    const headers = response.headers();
+                    if (request.resourceType() === 'fetch' && !request.isNavigationRequest()
+                        && request.redirectedFrom() === null && !response.fromServiceWorker()
+                        && response.url() === request.url()
+                        && new URL(request.url()).origin === new URL(page.url()).origin
+                        && (headers['content-length'] === undefined || headers['content-length'] === '0')
+                        && headers['transfer-encoding'] === undefined) completedNoContent.add(request);
+                } catch { /* An incomplete response proof remains an actionable failure. */ }
+            }
             if (/\/mcp$|^\/webchat\/(input|control|events|interaction)$/.test(info.path)) network.push(record('response', info));
         };
-        const onFailure = request => errors.push(record('requestfailed', {
-            ...requestInfo(request), failure: request.failure()?.errorText || 'request failed',
-        }));
+        const onFailure = request => {
+            const info = requestInfo(request), failure = request.failure()?.errorText || 'request failed';
+            if (failure === 'net::ERR_ABORTED' && completedNoContent.has(request)) {
+                network.push(record('completed-no-content-transport', { ...info, failure }));
+                return;
+            }
+            errors.push(record('requestfailed', { ...info, failure }));
+        };
         for (const [event, listener] of Object.entries({ console: onConsole, pageerror: onPage,
             request: onRequest, response: onResponse, requestfailed: onFailure })) page.on(event, listener);
         pages.set(page, () => {
