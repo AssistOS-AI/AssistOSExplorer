@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Authentication policy · UserPersisto</title>
+        <link rel="stylesheet" href="dashboard.css">
+        <link rel="stylesheet" href="management.css">
+        <link rel="stylesheet" href="admin.css">
+    </head>
+    <body>
+        <div class="account-shell management-shell">
+            <header class="account-header"><a class="account-brand" href="./">UserPersisto</a><a href="/auth/logout">Sign out</a></header>
+            <nav class="account-navigation" aria-label="UserPersisto pages">
+                <a href="./">My Account</a>
+                <a href="users.html" data-capability="admin.users.manage" hidden>Users</a>
+                <a href="applications.html" data-capability="admin.agentSettings.manage" hidden>Applications</a>
+                <a href="authentication.html" data-capability="admin.agentSettings.manage" hidden>Authentication policy</a>
+            </nav>
+            <main id="management-root" data-initial-panel="policy" data-settings-scope="page">
+                <div class="page-heading"><h1>Authentication policy</h1><p>Choose the sign-in methods and registration rules for this workspace.</p></div>
+                <p id="userpersistoStatus" class="userpersisto-status" role="status" aria-live="polite">Loading…</p>
+                <a id="management-login" class="button-link" href="/auth/login" hidden>Sign in again</a>
+                <fieldset id="management-controls" class="management-controls" disabled hidden>
+                    <legend class="visually-hidden">Authentication policy</legend>
+                    <section class="userpersisto-panel" data-section="policy" data-admin-only>
+                        <div class="userpersisto-policy">
+                            <h2 class="userpersisto-card-title">Workspace authentication policy</h2>
+                            <div class="userpersisto-auth-methods-card">
+                                <div class="userpersisto-card-description">Administrator controls for everyone in this workspace. Choose the allowed sign-in methods and registration rules. Manage your own passkeys and authenticator app under Sign-in &amp; security.</div>
+                                <div class="userpersisto-grid">
+                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="password"> Password</span></label>
+                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="emailCode"> Email code</span></label>
+                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="passkey"> Passkey</span></label>
+                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="totp"> TOTP</span></label>
+                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="google"> Google</span></label>
+                                    <label class="form-item"><span class="form-label"><input id="selfRegistrationEnabled" type="checkbox"> Self-registration enabled</span></label>
+                                    <label class="form-item">
+                                        <span class="form-label">Default registration role</span>
+                                        <input id="defaultRegistrationRole" class="form-input" type="text" value="selfRegistered" spellcheck="false">
+                                    </label>
+                                    <label class="form-item">
+                                        <span class="form-label">Allowed redirect origins (one per line)</span>
+                                        <textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea>
+                                    </label>
+                                </div>
+                                <div id="authPolicySource" class="userpersisto-card-description" role="status"></div>
+                                <div class="userpersisto-auth-methods-card">
+                                    <div class="userpersisto-card-title">Google sign-in</div>
+                                    <div id="googleProviderStatus" class="userpersisto-provider-status" role="status">Loading Google readiness…</div>
+                                    <div class="userpersisto-card-description">A workspace operator configures the Google Web application credentials through Ploinky. New Google accounts always receive selfRegistered. Existing email matches require a fresh existing password, passkey or authenticator code and confirmation. Email-code login cannot authorize linking.</div>
+                                </div>
+                                <div class="userpersisto-actions">
+                                    <button type="button" class="general-button" data-local-action="saveAuthPolicy">Save authentication policy</button>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </fieldset>
+            </main>
+            <footer>Account settings apply to this workspace.</footer>
+        </div>
+        <script type="module" src="admin.mjs"></script>
+    </body>
+</html>

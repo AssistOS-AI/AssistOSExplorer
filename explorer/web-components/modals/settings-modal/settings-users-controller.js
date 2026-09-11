@@ -1,44 +1,36 @@
-export function getCurrentAgentName(win = globalThis.window) {
-    try {
-        const parts = win.location.pathname.split('/').filter(Boolean);
-        return parts[0] || 'explorer';
-    } catch (_) {
-        return 'explorer';
+export async function fetchAccountAccess(fetchImplementation = globalThis.fetch) {
+    const response = await fetchImplementation('/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/api/profile', {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.ok !== true || !payload.profile?.user) {
+        throw new Error('Account access could not be verified.');
     }
+    const capabilities = Array.isArray(payload.profile.capabilities) ? payload.profile.capabilities : [];
+    return {
+        users: capabilities.includes('admin.users.manage'),
+        settings: capabilities.includes('admin.agentSettings.manage'),
+    };
 }
 
 export const usersController = {
     async refreshUsersAccess() {
         if (this.state.usersAccessChecked) return;
         this.state.usersAccessChecked = true;
-        const agentName = getCurrentAgentName();
         try {
-            const response = await fetch(`/api/agents/${encodeURIComponent(agentName)}/users`, {
-                credentials: 'include',
-                headers: { Accept: 'application/json' }
-            });
-            this.state.usersAccess = response.ok;
+            const access = await fetchAccountAccess();
+            this.state.usersAccess = access.users;
+            this.state.accountSettingsAccess = access.settings;
         } catch (_) {
             this.state.usersAccess = false;
+            this.state.accountSettingsAccess = false;
         }
-        if (this.state.usersAccess && this.requestedInitialTab === 'users') {
+        if ((this.state.usersAccess || this.state.accountSettingsAccess) && this.requestedInitialTab === 'users') {
             this.state.activeTab = 'users';
             this.requestedInitialTab = '';
         }
         this.updateTabUI();
     },
-
-    async loadAdministrationPanel() {
-        if (!this.adminSettingsPanel || !this.state.usersAccess || this.state.activeTab !== "users"
-            || this.state.activeAdministrationTab === "applications") return;
-        if (this.adminSettingsPanel.presenterReadyPromise) {
-            await this.adminSettingsPanel.presenterReadyPromise.catch(() => {});
-        }
-        const presenter = this.adminSettingsPanel.webSkelPresenter;
-        if (presenter?.loadPage) {
-            presenter.loadPage().catch((error) => {
-                presenter.setStatus?.(error?.message || 'Administration settings could not be loaded.', 'error');
-            });
-        }
-    }
 };

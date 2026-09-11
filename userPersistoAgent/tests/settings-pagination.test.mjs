@@ -1,13 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
+import { UserpersistoSettings } from '../public/dashboard/management.mjs';
 
-const source = await fs.readFile(new URL('../IDE-plugins/userpersisto-settings/userpersisto-settings.js', import.meta.url), 'utf8');
-const { UserpersistoSettings } = await import(`data:text/javascript;base64,${Buffer.from(source.replace(/^import[\s\S]*?;\s*/, '')).toString('base64')}`);
+function roleRow(userId, roles) {
+    return {
+        dataset: { userId },
+        querySelectorAll: (selector) => selector === '[data-user-role]:checked' ? roles.map((value) => ({ value })) : [],
+        querySelector: () => null,
+    };
+}
 
 test('settings can navigate beyond 100 users and update a role on the last page', async () => {
     const users = Array.from({ length: 201 }, (_, index) => ({ id: `user-${index}`, email: `user${index}@example.test`, roles: ['user'] }));
-    const panel = new UserpersistoSettings({}, () => {});
+    const panel = new UserpersistoSettings({ getAttribute: () => 'users' }, () => {});
+    panel.state.authProfile = { capabilities: ['admin.users.manage'] };
     panel.renderUsers = () => {};
     panel.usersPreviousButton = {};
     panel.usersNextButton = {};
@@ -32,7 +38,7 @@ test('settings can navigate beyond 100 users and update a role on the last page'
     assert.equal(panel.state.users[0].id, 'user-200');
     assert.equal(panel.usersNextButton.disabled, true);
     assert.equal(panel.usersPageLabel.textContent, '201–201 of 201 users');
-    await panel.changeUserRole({ value: 'selfRegistered' }, 'user-200');
+    await panel.updateUser(roleRow('user-200', ['selfRegistered']), 'roles');
     assert.deepEqual(panel.state.users[0].roles, ['selfRegistered']);
     assert.equal(panel.state.usersStart, 200);
     panel.userSearchInput.value = 'user200';
@@ -43,9 +49,10 @@ test('settings can navigate beyond 100 users and update a role on the last page'
 });
 
 test('page load failure preserves the previous users and restores navigation', async () => {
-    const panel = new UserpersistoSettings({}, () => {});
+    const panel = new UserpersistoSettings({ getAttribute: () => 'users' }, () => {});
     panel.state.users = [{ id: 'existing' }];
     panel.state.usersTotal = 101;
+    panel.state.authProfile = { capabilities: ['admin.users.manage'] };
     panel.renderUsers = () => {};
     panel.usersNextButton = {};
     panel.callTool = async () => { throw new Error('provider unavailable'); };
@@ -61,9 +68,10 @@ test('settings default uses sole-role counts and searches all 603 accounts befor
     const users = Array.from({ length: 603 }, (_, index) => ({
         id: `user-${index}`, email: `reader-${index}@example.test`, roles: [index === 0 ? 'admin' : 'selfRegistered'],
     }));
-    const panel = new UserpersistoSettings({}, () => {});
+    const panel = new UserpersistoSettings({ getAttribute: () => 'users' }, () => {});
     panel.userSearchInput = { value: '' };
     panel.selfRegisteredCountEl = {};
+    panel.state.authProfile = { capabilities: ['admin.users.manage'] };
     panel.renderUsers = () => {};
     const calls = [];
     panel.callTool = async (name, args) => {
@@ -89,7 +97,7 @@ test('settings default uses sole-role counts and searches all 603 accounts befor
     assert.deepEqual(panel.state.users.map((user) => user.id), ['user-600']);
     assert.equal(calls.at(-1).args.excludeOnlyRole, '');
     assert.equal(calls.at(-1).args.includeRoleCounts, true);
-    await panel.changeUserRole({ value: 'user' }, 'user-600');
+    await panel.updateUser(roleRow('user-600', ['user']), 'roles');
     assert.equal(panel.state.selfRegisteredCount, 601);
     panel.userSearchInput.value = '';
     await panel.loadUsersPage(0);
@@ -97,7 +105,8 @@ test('settings default uses sole-role counts and searches all 603 accounts befor
 });
 
 test('a late previous search cannot overwrite a newer result or its navigation state', async () => {
-    const panel = new UserpersistoSettings({}, () => {});
+    const panel = new UserpersistoSettings({ getAttribute: () => 'users' }, () => {});
+    panel.state.authProfile = { capabilities: ['admin.users.manage'] };
     panel.renderUsers = () => {};
     panel.userSearchInput = { value: 'old' };
     let release;

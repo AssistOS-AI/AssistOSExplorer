@@ -90,7 +90,7 @@ export class SettingsModal {
             canManageAgentAvatars: false,
             usersAccessChecked: false,
             usersAccess: false,
-            activeAdministrationTab: 'users'
+            accountSettingsAccess: false,
         };
         this.invalidate();
     }
@@ -130,9 +130,7 @@ export class SettingsModal {
         this.avatarSection = this.element.querySelector('[data-section="avatar"]');
         this.accountSection = this.element.querySelector('[data-section="account"]');
         this.usersSection = this.element.querySelector('[data-section="users"]');
-        this.applicationsSection = this.element.querySelector('[data-administration-panel="applications"]');
         this.usersTab = this.element.querySelector('[data-admin-tab]');
-        this.adminSettingsPanel = this.element.querySelector('admin-settings-panel');
         this.listEl = this.element.querySelector("#keymapList");
         this.warningEl = this.element.querySelector("#keymapWarning");
         this.pluginSettingsListEl = this.element.querySelector("#pluginSettingsList");
@@ -245,13 +243,10 @@ export class SettingsModal {
                 this.renderAvatarSettings();
             });
         }
-        if (this.state.activeTab === "users") {
-            this.loadAdministrationPanel();
-        }
     }
 
     getAllowedTabs() {
-        return this.state.usersAccess ? [...BASE_TABS, 'users'] : BASE_TABS;
+        return this.state.usersAccess || this.state.accountSettingsAccess ? [...BASE_TABS, 'users'] : BASE_TABS;
     }
 
     updateTabUI() {
@@ -266,7 +261,7 @@ export class SettingsModal {
             tab.setAttribute("aria-selected", isActive ? "true" : "false");
         });
         if (this.usersTab) {
-            this.usersTab.hidden = !this.state.usersAccess;
+            this.usersTab.hidden = !this.state.usersAccess && !this.state.accountSettingsAccess;
         }
 
         const sections = [
@@ -295,11 +290,7 @@ export class SettingsModal {
                 || this.state.activeTab === "account";
         }
         this.syncEditorSettingsUi();
-        this.updateAdministrationTabs();
-        this.loadAdministrationPanel();
-        const accountScope = this.getAccountScope();
-        if (this.accountScope !== accountScope) this.unloadAccountPanel();
-        if (accountScope) void this.loadAccountPanel();
+        this.updateAccountLinks();
     }
 
     renderRows() {
@@ -459,12 +450,10 @@ export class SettingsModal {
     }
 
     afterUnload() {
-        this.unloadAccountPanel();
         this.invalidateCopilotRequests();
     }
 
     closeModal(payload) {
-        this.unloadAccountPanel();
         this.invalidateCopilotRequests();
         assistOS.UI.closeModal(this.element, payload);
     }

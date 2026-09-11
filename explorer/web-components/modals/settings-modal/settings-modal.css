@@ -451,37 +451,38 @@ settings-modal .avatar-agent-button.missing {
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
-settings-modal[data-active-tab="users"] .settings-content {
-    overflow: hidden;
+settings-modal .settings-page-links {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
 }
 
-settings-modal [data-section="users"] {
+settings-modal .settings-page-link {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    height: 100%;
-    min-height: 0;
+    gap: 6px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--text);
+    font-weight: 600;
+    text-decoration: none;
 }
 
-settings-modal .settings-administration-tabs {
-    display: flex;
-    flex: 0 0 auto;
-    gap: 8px;
-}
-
-settings-modal .settings-administration-panel {
-    flex: 1 1 auto;
-    min-height: 0;
-    min-width: 0;
-}
-
-settings-modal .settings-administration-panel[hidden] {
+settings-modal .settings-page-link[hidden] {
     display: none;
 }
 
-settings-modal [data-administration-panel="applications"] {
-    overflow: auto;
-    overscroll-behavior: contain;
+settings-modal .settings-page-link:hover,
+settings-modal .settings-page-link:focus-visible {
+    border-color: var(--accent);
+}
+
+settings-modal .settings-page-link span {
+    color: var(--text-soft);
+    font-size: 14px;
+    font-weight: 400;
 }
 
 settings-modal .plugin-settings-list {

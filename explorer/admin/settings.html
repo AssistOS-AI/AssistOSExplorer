@@ -5,38 +5,37 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Administration</title>
     <link rel="stylesheet" href="../shared/ui/ui-common.css">
-    <link rel="stylesheet" href="../plugins.css">
     <link rel="stylesheet" href="./settings.css">
 </head>
 <body>
 <main>
     <header>
-        <div>
-            <h1>Administration</h1>
-            <div class="agent-label" id="agentLabel"></div>
-        </div>
-        <a class="gray-button" href="/explorer/index.html" id="backLink">Back to Explorer</a>
+        <h1>Administration</h1>
+        <a class="gray-button" href="/explorer/index.html">Back to Explorer</a>
     </header>
-    <admin-settings-panel data-presenter="admin-settings-panel"></admin-settings-panel>
+    <p>Account administration is managed in UserPersisto. Each link opens a separate tab.</p>
+    <p id="account-status" role="status" aria-live="polite">Checking account access…</p>
+    <nav class="account-page-links" aria-label="Administration pages">
+        <a href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/users.html" target="_blank" rel="noopener noreferrer" data-account-access="users" hidden>Users</a>
+        <a href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/applications.html" target="_blank" rel="noopener noreferrer" data-account-access="settings" hidden>Applications</a>
+    </nav>
+    <a href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/" target="_blank" rel="noopener noreferrer">My Account</a>
 </main>
 <script type="module">
-    import WebSkel from '../shared/libs/webskel/webskel.mjs';
-    import assistosSDK from '../services/assistosSDK.js';
     import { initializeTheme } from '../shared/ui/theme.js';
-
-    const pathParts = window.location.pathname.split('/').filter(Boolean);
-    const agent = pathParts[0] || 'explorer';
-    window.ASSISTOS_AGENT_ID = window.ASSISTOS_AGENT_ID || agent;
+    import { fetchAccountAccess } from '../web-components/modals/settings-modal/settings-users-controller.js';
 
     initializeTheme();
-    const webSkel = await WebSkel.initialise('../webskel.json');
-    webSkel.appServices = assistosSDK;
-    window.UI = webSkel;
-
-    document.getElementById('agentLabel').textContent = `Agent: ${agent}`;
-    const backLink = document.getElementById('backLink');
-    backLink.href = `/${encodeURIComponent(agent)}/index.html`;
-    backLink.textContent = `Back to ${agent}`;
+    const status = document.getElementById('account-status');
+    try {
+        const access = await fetchAccountAccess();
+        document.querySelectorAll('[data-account-access]').forEach((link) => {
+            link.hidden = !access[link.dataset.accountAccess];
+        });
+        status.textContent = access.users || access.settings ? '' : 'Administrator access is required.';
+    } catch (_) {
+        status.textContent = 'Account access could not be verified. Open My Account to sign in again.';
+    }
 </script>
 </body>
 </html>

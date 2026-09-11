@@ -4,12 +4,45 @@ import { requireActiveActor } from '../lib/authorization.mjs';
 import { runTool } from '../tools/registry.mjs';
 
 const PREFIX = '/service/dashboard';
-const ASSETS = new Set(['index.html', 'main.js', 'dashboard.css', 'enrollment.js', 'enrollment.css']);
+const ASSETS = new Set([
+    'index.html', 'main.js', 'dashboard.css', 'enrollment.js', 'enrollment.css',
+    'users.html', 'applications.html', 'authentication.html', 'admin.mjs', 'admin.css',
+    'management.mjs', 'management.css', 'api.mjs',
+]);
+const PAGE_CAPABILITIES = new Map([
+    ['users.html', 'admin.users.manage'],
+    ['applications.html', 'admin.agentSettings.manage'],
+    ['authentication.html', 'admin.agentSettings.manage'],
+]);
 const OPERATIONS = new Map([
     ['auth/passkey/options', 'userpersisto_passkey_registration_options'],
     ['auth/passkey/verify', 'userpersisto_passkey_registration_verify'],
     ['auth/totp/start', 'userpersisto_totp_setup_start'],
     ['auth/totp/verify', 'userpersisto_totp_setup_verify'],
+]);
+const CLIENT_FIELDS = [
+    'client_id', 'client_name', 'redirect_uris', 'post_logout_redirect_uris',
+    'token_endpoint_auth_method', 'grant_types', 'response_types', 'scope', 'enabled',
+];
+const ADMIN_OPERATIONS = new Map([
+    ['users/list', { tool: 'userpersisto_user_list', fields: ['start', 'pageSize', 'search', 'excludeOnlyRole', 'includeRoleCounts'] }],
+    ['users/create', { tool: 'userpersisto_user_create', fields: ['email', 'username', 'displayName', 'password', 'roles'] }],
+    ['users/update', { tool: 'userpersisto_user_update', fields: ['userId', 'email', 'username', 'displayName', 'status'] }],
+    ['users/roles', { tool: 'userpersisto_user_roles_update', fields: ['userId', 'roles'] }],
+    ['users/password', { tool: 'userpersisto_auth_password_set', fields: ['userId', 'newPassword'], requireUserId: true }],
+    ['users/delete', { tool: 'userpersisto_user_update', fields: ['userId'], fixed: { status: 'blocked' } }],
+    ['applications/list', { tool: 'userpersisto_oidc_clients_list', fields: ['start', 'pageSize'] }],
+    ['applications/create', { tool: 'userpersisto_oidc_client_create', fields: CLIENT_FIELDS }],
+    ['applications/update', { tool: 'userpersisto_oidc_client_update', fields: CLIENT_FIELDS }],
+    ['applications/delete', { tool: 'userpersisto_oidc_client_delete', fields: ['client_id'] }],
+    ['applications/rotate', { tool: 'userpersisto_oidc_client_rotate_secret', fields: ['client_id'] }],
+    ['applications/status', { tool: 'userpersisto_oidc_status', fields: [] }],
+    ['policy/get', { tool: 'userpersisto_auth_policy_get', fields: [] }],
+    ['policy/set', {
+        tool: 'userpersisto_auth_policy_set',
+        fields: ['enabledAuthMethods', 'selfRegistrationEnabled', 'defaultRegistrationRole', 'allowedRedirectOrigins'],
+    }],
+    ['google/status', { tool: 'userpersisto_google_status', fields: [] }],
 ]);
 
 function fail(statusCode, code) {
@@ -107,7 +140,11 @@ export async function handleDashboard(req, res, url, { sendJson, serveStatic }) 
             return sendJson(res, 200, { ok: true, profile });
         }
         const asset = path === '/' ? 'index.html' : path.slice(1);
-        if (ASSETS.has(asset)) return serveStatic(res, `dashboard/${asset}`);
+        if (ASSETS.has(asset)) {
+            const capability = PAGE_CAPABILITIES.get(asset);
+            if (capability) await requireActiveActor(actorUserId, capability);
+            return serveStatic(res, `dashboard/${asset}`);
+        }
     } else {
         const body = parseBody(rawBody);
         if (path === '/api/profile') {
@@ -119,6 +156,22 @@ export async function handleDashboard(req, res, url, { sendJson, serveStatic }) 
             }
             const profile = await runTool('userpersisto_profile_update', args, context);
             return sendJson(res, 200, { ok: true, profile });
+        }
+        const adminPath = path.startsWith('/api/admin/') ? path.slice(11) : '';
+        const adminOperation = ADMIN_OPERATIONS.get(adminPath);
+        if (adminOperation) {
+            const capability = adminPath.startsWith('users/') ? 'admin.users.manage' : 'admin.agentSettings.manage';
+            await requireActiveActor(actorUserId, capability);
+            const args = {};
+            for (const field of adminOperation.fields) {
+                if (Object.hasOwn(body, field)) args[field] = body[field];
+            }
+            if (adminOperation.requireUserId && (typeof args.userId !== 'string' || !args.userId.trim())) {
+                fail(400, 'user_id_required');
+            }
+            Object.assign(args, adminOperation.fixed);
+            const result = await runTool(adminOperation.tool, args, context);
+            return sendJson(res, 200, { ok: true, result });
         }
         const operation = path.startsWith('/api/') ? OPERATIONS.get(path.slice(5)) : null;
         if (operation) {

@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
 import { AccountEnrollment } from '../public/dashboard/enrollment.js';
-import { dashboardApi, mountDashboard } from '../public/dashboard/main.js';
+import { dashboardApi, mountDashboard, startDashboard } from '../public/dashboard/main.js';
 
 class Element {
     constructor() {
@@ -185,7 +184,7 @@ test('dashboard API uses same-origin credentials and preserves structured enroll
 
 test('dashboard shows Explorer only with its capability and saves profile fields without trusting roles', async (t) => {
     const nodes = new Map();
-    const document = { getElementById: (id) => {
+    const document = { querySelectorAll: () => [], getElementById: (id) => {
         if (!nodes.has(id)) nodes.set(id, new Element());
         return nodes.get(id);
     } };
@@ -209,39 +208,42 @@ test('dashboard shows Explorer only with its capability and saves profile fields
     dashboard.dispose();
 });
 
-test('settings profile navigation and unload dispose the shared enrollment widget', async () => {
-    const source = await fs.readFile(new URL('../IDE-plugins/userpersisto-settings/userpersisto-settings.js', import.meta.url), 'utf8');
-    const { UserpersistoSettings } = await import(`data:text/javascript;base64,${Buffer.from(source.replace(/^import[\s\S]*?;\s*/, '')).toString('base64')}`);
-    const panel = new UserpersistoSettings(new Element(), () => {});
-    panel.state.authProfile = { roles: ['admin'] };
-    panel.refreshUsers = async () => {};
-    let disposed = 0;
-    panel.enrollmentWidget = { dispose() { disposed++; } };
-    panel.switchPanel(null, 'users');
-    assert.equal(disposed, 1);
-    panel.enrollmentWidget = { dispose() { disposed++; } };
-    panel.afterUnload();
-    assert.equal(disposed, 2);
-    assert.equal(panel.enrollmentMountEl, null);
-    assert.equal(panel.enrollmentWidget, null);
+test('leaving My Account clears setup secrets and ignores a pending setup response', async (t) => {
+    const nodes = new Map();
+    const document = { querySelectorAll: () => [], getElementById: (id) => {
+        if (!nodes.has(id)) nodes.set(id, new Element());
+        return nodes.get(id);
+    } };
+    let finishSetup;
+    t.mock.method(globalThis, 'fetch', async (path) => {
+        if (path === 'api/profile') return { ok: true, json: async () => ({ ok: true, profile: profile() }) };
+        return new Promise((resolve) => { finishSetup = resolve; });
+    });
+    const dashboard = mountDashboard(document);
+    await new Promise((resolve) => setImmediate(resolve));
+    const enrollment = nodes.get('account-enrollment');
+    enrollment.querySelector('[data-totp-start]').listeners.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    dashboard.dispose();
+    finishSetup({ ok: true, json: async () => setup });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(enrollment.querySelector('[data-totp-secret]').value, '');
+    assert.equal(enrollment.querySelector('[data-totp-uri]').value, '');
+    assert.equal(enrollment.querySelector('[data-totp-setup]').hidden, true);
 });
 
-test('the settings MCP wrapper preserves enrollment reasons for specific retry feedback', async () => {
-    const source = await fs.readFile(new URL('../IDE-plugins/userpersisto-settings/userpersisto-settings.js', import.meta.url), 'utf8');
-    const helperSource = (await fs.readFile(new URL('../../explorer/services/infrastructure/explorerApi.js', import.meta.url), 'utf8'))
-        .replace(/^import .+;\r?\n/gm, '');
-    const helperUrl = `data:text/javascript;base64,${Buffer.from(helperSource).toString('base64')}`;
-    const bindings = `import { ensureSuccess, parseToolResult } from ${JSON.stringify(helperUrl)};
-        const callAgentTool = async (_agent, name) => ({ content: [{ type: 'text', text: JSON.stringify(name.endsWith('_start') ? ${JSON.stringify(setup)} : { ok: false, reason: 'invalid_token' }) }] });`;
-    const { UserpersistoSettings } = await import(`data:text/javascript;base64,${Buffer.from(bindings + source.replace(/^import[\s\S]*?;\s*/, '')).toString('base64')}`);
-    const panel = new UserpersistoSettings(new Element(), () => {});
-    await assert.rejects(panel.callTool('userpersisto_totp_setup_verify', { token: '123456' }), (error) => {
-        assert.equal(error.name, 'ToolError');
-        assert.equal(error.data.reason, 'invalid_token');
-        assert.equal(error.message, 'Tool execution failed');
+test('dashboard API preserves enrollment reasons for specific retry feedback', async (t) => {
+    t.mock.method(globalThis, 'fetch', async (path) => ({
+        ok: path.endsWith('/start'),
+        status: path.endsWith('/start') ? 200 : 400,
+        json: async () => path.endsWith('/start') ? setup : { ok: false, reason: 'invalid_token' },
+    }));
+    await assert.rejects(dashboardApi('auth/totp/verify', { token: '123456' }), (error) => {
+        assert.equal(error.payload.reason, 'invalid_token');
+        assert.equal(error.status, 400);
         return true;
     });
-    const { widget } = fixture({ callTool: (name, args) => panel.callTool(name, args) });
+    const { widget } = fixture({ callTool: (name, args) => dashboardApi(name.endsWith('_start') ? 'auth/totp/start' : 'auth/totp/verify', args) });
     await widget.startTotp();
     widget.tokenInput.value = '123456';
     await widget.verifyTotp();
@@ -326,7 +328,7 @@ test('dashboard session errors offer a sign-in link returning to the account pag
     t.mock.method(globalThis, 'fetch', async () => ({ ok: false, json: async () => ({ ok: false, error: code }) }));
     for (code of ['not_authenticated', 'authentication_required', 'invalid_session']) {
         const nodes = new Map();
-        const document = { getElementById: (id) => {
+        const document = { querySelectorAll: () => [], getElementById: (id) => {
             if (!nodes.has(id)) nodes.set(id, new Element());
             return nodes.get(id);
         } };
@@ -359,7 +361,7 @@ test('session expiry after loading on save, enrollment, or profile refresh clear
     for (scenario of ['save', 'start', 'verify', 'refresh']) {
         profileCalls = 0;
         const nodes = new Map();
-        const document = { getElementById: (id) => {
+        const document = { querySelectorAll: () => [], getElementById: (id) => {
             if (!nodes.has(id)) nodes.set(id, new Element());
             return nodes.get(id);
         } };
@@ -391,4 +393,58 @@ test('session expiry after loading on save, enrollment, or profile refresh clear
         assert.equal(field('totp-setup').hidden, true, scenario);
         dashboard.dispose();
     }
+});
+
+
+test('My Account page lifecycle clears setup on pagehide and reloads a restored page', async (t) => {
+    const nodes = new Map();
+    const document = { querySelectorAll: () => [], getElementById: (id) => {
+        if (!nodes.has(id)) nodes.set(id, new Element());
+        return nodes.get(id);
+    } };
+    const events = new Map();
+    let reloads = 0;
+    const host = {
+        addEventListener: (name, callback, options) => { events.set(name, { callback, options }); },
+        location: { reload() { reloads++; } },
+    };
+    t.mock.method(globalThis, 'fetch', async (path) => ({
+        ok: true,
+        json: async () => path === 'api/profile' ? { ok: true, profile: profile() } : setup,
+    }));
+    startDashboard(document, host);
+    await new Promise((resolve) => setImmediate(resolve));
+    const enrollment = nodes.get('account-enrollment');
+    enrollment.querySelector('[data-totp-start]').listeners.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(enrollment.querySelector('[data-totp-secret]').value, setup.secret);
+    assert.equal(enrollment.querySelector('[data-totp-setup]').hidden, false);
+    events.get('pagehide').callback();
+    assert.deepEqual(events.get('pagehide').options, { once: true });
+    assert.equal(enrollment.querySelector('[data-totp-secret]').value, '');
+    assert.equal(enrollment.querySelector('[data-totp-uri]').value, '');
+    assert.equal(enrollment.querySelector('[data-totp-setup]').hidden, true);
+    assert.equal(enrollment.innerHTML, '');
+    events.get('pageshow').callback({ persisted: false });
+    assert.equal(reloads, 0);
+    events.get('pageshow').callback({ persisted: true });
+    assert.equal(reloads, 1);
+});
+
+test('My Account navigation disposes the page before a pending profile can restore content', async (t) => {
+    const nodes = new Map();
+    const document = { querySelectorAll: () => [], getElementById: (id) => {
+        if (!nodes.has(id)) nodes.set(id, new Element());
+        return nodes.get(id);
+    } };
+    const events = new Map();
+    const host = { addEventListener: (name, callback) => { events.set(name, callback); }, location: { reload() {} } };
+    let finishProfile;
+    t.mock.method(globalThis, 'fetch', () => new Promise((resolve) => { finishProfile = resolve; }));
+    startDashboard(document, host);
+    events.get('pagehide')();
+    finishProfile({ ok: true, json: async () => ({ ok: true, profile: profile() }) });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(nodes.get('account-email'), undefined, 'late profile must not render personal data');
+    assert.equal(nodes.get('account-enrollment').innerHTML, '');
 });

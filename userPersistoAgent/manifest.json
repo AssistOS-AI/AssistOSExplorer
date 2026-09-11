@@ -58,8 +58,8 @@
       "label": "My Account",
       "scope": "workspace",
       "pluginKey": "userPersistoAgent/userpersisto-settings",
-      "settingsComponent": "userpersisto-settings",
-      "adminOnly": false
+      "adminOnly": false,
+      "settingsUrl": "/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/"
     }
   ],
   "profiles": {

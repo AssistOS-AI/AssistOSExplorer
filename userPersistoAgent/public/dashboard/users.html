@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Users · UserPersisto</title>
+        <link rel="stylesheet" href="dashboard.css">
+        <link rel="stylesheet" href="management.css">
+        <link rel="stylesheet" href="admin.css">
+    </head>
+    <body>
+        <div class="account-shell management-shell">
+            <header class="account-header"><a class="account-brand" href="./">UserPersisto</a><a href="/auth/logout">Sign out</a></header>
+            <nav class="account-navigation" aria-label="UserPersisto pages">
+                <a href="./">My Account</a>
+                <a href="users.html" data-capability="admin.users.manage" hidden>Users</a>
+                <a href="applications.html" data-capability="admin.agentSettings.manage" hidden>Applications</a>
+                <a href="authentication.html" data-capability="admin.agentSettings.manage" hidden>Authentication policy</a>
+            </nav>
+            <main id="management-root" data-initial-panel="users" data-settings-scope="page">
+                <div class="page-heading"><h1>Users</h1><p>Find accounts, manage their details and choose who can access your workspace.</p></div>
+                <p id="userpersistoStatus" class="userpersisto-status" role="status" aria-live="polite">Loading…</p>
+                <a id="management-login" class="button-link" href="/auth/login" hidden>Sign in again</a>
+                <fieldset id="management-controls" class="management-controls" disabled hidden>
+                    <legend class="visually-hidden">Users</legend>
+                    <section class="userpersisto-panel" data-section="users" data-admin-only>
+                        <h2>Create user</h2>
+                        <div class="userpersisto-create-user">
+                            <label class="form-item"><span class="form-label">Username (optional)</span><input id="createUserUsername" class="form-input" type="text" autocomplete="off" minlength="3" maxlength="64"></label>
+                            <label class="form-item">
+                                <span class="form-label">Email</span>
+                                <input id="createUserEmail" class="form-input" type="email" required autocomplete="off" spellcheck="false">
+                            </label>
+                            <label class="form-item">
+                                <span class="form-label">Display name</span>
+                                <input id="createUserDisplayName" class="form-input" type="text" autocomplete="off" spellcheck="false">
+                            </label>
+                            <label class="form-item">
+                                <span class="form-label">Password (optional)</span>
+                                <input id="createUserPassword" class="form-input" type="password" autocomplete="new-password" spellcheck="false">
+                            </label>
+                            <label class="form-item">
+                                <span class="form-label">Role</span>
+                                <select id="createUserRole" class="form-input">
+                                    <option value="user">user</option>
+                                    <option value="admin">admin</option>
+                                    <option value="selfRegistered">selfRegistered</option>
+                                </select>
+                            </label>
+                            <div class="userpersisto-actions">
+                                <button type="button" class="general-button" data-local-action="createUser">Create user</button>
+                            </div>
+                        </div>
+                        <div class="userpersisto-actions userpersisto-actions-split">
+                            <input id="userSearchInput" class="form-input" type="search" placeholder="Search all users" aria-label="Search all users by name or email" spellcheck="false" maxlength="200">
+                            <button type="button" class="general-button" data-local-action="searchUsers">Search</button>
+                            <button type="button" class="gray-button" data-local-action="clearUserSearch">Clear search</button>
+                        </div>
+                        <div id="selfRegisteredCount" class="userpersisto-card-description" role="status"></div>
+                        <h2>Manage users</h2>
+                        <div id="usersList" class="userpersisto-list"></div>
+                        <nav class="userpersisto-actions" aria-label="User pages">
+                            <button id="usersPreviousButton" type="button" class="gray-button" data-local-action="previousUsersPage" disabled>Previous</button>
+                            <span id="usersPageLabel" role="status" aria-live="polite"></span>
+                            <button id="usersNextButton" type="button" class="gray-button" data-local-action="nextUsersPage" disabled>Next</button>
+                        </nav>
+                    </section>
+                </fieldset>
+            </main>
+            <footer>Account settings apply to this workspace.</footer>
+        </div>
+        <script type="module" src="admin.mjs"></script>
+    </body>
+</html>

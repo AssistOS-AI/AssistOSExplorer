@@ -1,0 +1,197 @@
+.userpersisto-panel {
+    display: grid;
+    gap: 14px;
+}
+
+.userpersisto-panel.hidden {
+    display: none;
+}
+
+.userpersisto-provider-status {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--secondary-text-color, #57606a);
+    font-size: 0.85rem;
+}
+
+.userpersisto-client-secret,
+.userpersisto-row-meta {
+    overflow-wrap: anywhere;
+}
+
+.userpersisto-grants {
+    display: grid;
+    gap: 8px;
+    border: 1px solid var(--border-color, #d0d7de);
+    border-radius: 8px;
+    padding: 12px;
+    color: var(--text-color, #24292f);
+}
+
+.userpersisto-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.userpersisto-create-user {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+    gap: 10px;
+    align-items: end;
+    border: 1px solid var(--border-color, #d0d7de);
+    border-radius: 8px;
+    padding: 10px;
+}
+
+.userpersisto-auth-methods-card {
+    display: grid;
+    gap: 14px;
+    border: 1px solid var(--border-color, #d0d7de);
+    border-radius: 8px;
+    padding: 14px;
+    background: var(--surface, #fff);
+}
+
+.userpersisto-auth-methods-header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.userpersisto-card-title {
+    color: var(--text-color, #24292f);
+    font-weight: 650;
+}
+
+.userpersisto-card-description,
+.userpersisto-auth-method-description {
+    color: var(--secondary-text-color, #57606a);
+    font-size: 0.84rem;
+    line-height: 1.35;
+}
+
+.userpersisto-auth-methods-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.userpersisto-auth-method-option {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    min-height: 74px;
+    border: 1px solid var(--border-color, #d0d7de);
+    border-radius: 8px;
+    padding: 12px;
+    background: var(--button-secondary-background, #f6f8fa);
+    cursor: pointer;
+}
+
+.userpersisto-auth-method-option input {
+    margin-top: 3px;
+}
+
+.userpersisto-auth-method-title {
+    display: block;
+    color: var(--text-color, #24292f);
+    font-weight: 600;
+}
+
+.userpersisto-auth-methods-actions {
+    justify-content: flex-end;
+}
+
+.userpersisto-mask {
+    min-height: 18px;
+    color: var(--secondary-text-color, #57606a);
+    font-size: 0.78rem;
+}
+
+.userpersisto-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.userpersisto-account-link {
+    color: var(--link-color, #264ec6);
+    font-size: 0.85rem;
+    padding: 8px;
+}
+
+.userpersisto-remove-secret {
+    width: max-content;
+}
+
+.userpersisto-actions-split .form-input {
+    max-width: 320px;
+}
+
+.userpersisto-list {
+    display: grid;
+    gap: 8px;
+    overflow: visible;
+}
+
+.userpersisto-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    border: 1px solid var(--border-color, #d0d7de);
+    border-radius: 8px;
+    padding: 10px;
+}
+
+.userpersisto-row-title {
+    font-weight: 600;
+}
+
+.userpersisto-row-controls {
+    display: grid;
+    grid-template-columns: minmax(180px, 220px) minmax(120px, 150px);
+    gap: 8px;
+    align-items: center;
+}
+
+.userpersisto-row-meta,
+.userpersisto-result,
+.userpersisto-status {
+    color: var(--secondary-text-color, #57606a);
+    font-size: 0.85rem;
+}
+
+.userpersisto-access {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    border-radius: 999px;
+    padding: 0 8px;
+    background: var(--button-secondary-background, #f6f8fa);
+    color: var(--secondary-text-color, #57606a);
+    font-size: 0.78rem;
+}
+
+.userpersisto-status.error {
+    color: var(--danger-color, #cf222e);
+}
+
+@media (max-width: 720px) {
+    ..userpersisto-grid,
+    .userpersisto-auth-methods-list,
+    .userpersisto-create-user,
+    .userpersisto-row,
+    .userpersisto-row-controls {
+        grid-template-columns: 1fr;
+    }
+}
+
+.userpersisto-policy {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}

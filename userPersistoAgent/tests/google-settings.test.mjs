@@ -1,13 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-
-const source = await readFile(new URL('../IDE-plugins/userpersisto-settings/userpersisto-settings.js', import.meta.url), 'utf8');
-const { UserpersistoSettings } = await import(`data:text/javascript;base64,${Buffer.from(source.replace(/^import[\s\S]*?;\s*/, '')).toString('base64')}`);
+import { UserpersistoSettings } from '../public/dashboard/management.mjs';
 
 function fixture() {
-    const panel = new UserpersistoSettings({}, () => {});
-    panel.state.authProfile = { roles: ['admin'] };
+    const panel = new UserpersistoSettings({ getAttribute: () => 'policy' }, () => {});
+    panel.state.activePanel = 'policy';
+    panel.state.authProfile = { roles: ['admin'], capabilities: ['admin.agentSettings.manage'] };
     panel.authMethodInputs = Object.fromEntries(['password', 'google'].map((method) => [method, { checked: false }]));
     panel.googleStatusEl = {};
     panel.authPolicySourceEl = {};
@@ -53,7 +51,7 @@ test('authorization loss or component removal prevents a pending readiness respo
     }
 });
 
-test('Google policy save uses the authorized tool and profile renders only safe method names', async () => {
+test('Google policy save requires a loaded policy and the page management capability', async () => {
     const panel = fixture();
     panel.authMethodInputs.google.checked = true;
     const calls = [];
@@ -61,12 +59,12 @@ test('Google policy save uses the authorized tool and profile renders only safe 
     panel.refreshAuthPolicy = async () => {};
     panel.refreshAuthProfile = async () => {};
     await panel.saveAuthPolicy();
+    assert.equal(calls.length, 0, 'unloaded policy cannot be saved');
+    panel.state.policyLoaded = true;
+    await panel.saveAuthPolicy();
     assert.deepEqual(calls[0].args.enabledAuthMethods, ['google']);
     assert.equal(calls[0].name, 'userpersisto_auth_policy_set');
     panel.state.authProfile = { user: { id: 'local' }, roles: ['user'], authMethods: [{ type: 'google', name: 'Google' }] };
-    panel.authProfileEl = {};
-    panel.renderAuthProfile();
-    assert.match(panel.authProfileEl.innerHTML, /Linked sign-in methods: Google/);
     await panel.saveAuthPolicy();
     assert.equal(calls.length, 1);
 });

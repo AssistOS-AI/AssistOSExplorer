@@ -270,10 +270,6 @@ export const runtimeSettingsController = {
 
     async openAgentSettings(_target, key) {
         if (!key) return;
-        if (key === "userpersisto-settings") {
-            this.switchTab(null, "account");
-            return;
-        }
         const item = this.state.agentSettingsItems.find((entry) => entry?.key === key);
         if (!item || !item.available || !item.sourcePlugin || (!item.settingsUrl && !item.settingsComponent)) {
             return;

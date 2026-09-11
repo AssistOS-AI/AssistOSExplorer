@@ -20,9 +20,12 @@
 
     <div class="settings-content">
         <section class="settings-section hidden" data-section="account" aria-label="My Account">
-            <div data-account-status role="status" aria-live="polite"></div>
-            <button type="button" class="gray-button" data-account-retry data-local-action="loadAccountPanel" hidden>Retry</button>
-            <div data-account-mount></div>
+            <p class="plugin-settings-description">Manage your account in UserPersisto. Each link opens a separate tab.</p>
+            <nav class="settings-page-links" aria-label="Account pages">
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/" target="_blank" rel="noopener noreferrer">My Account<span>Manage your profile and account details.</span></a>
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/#security-heading" target="_blank" rel="noopener noreferrer">Sign-in &amp; security<span>Manage your passkeys and authenticator app.</span></a>
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/authentication.html" target="_blank" rel="noopener noreferrer" data-account-capability="admin.agentSettings.manage" hidden>Authentication policy<span>Configure workspace sign-in methods and registration.</span></a>
+            </nav>
         </section>
         <section class="settings-section hidden" data-section="keymap">
             <p class="keymap-description">Focus a field and press a new shortcut. Use Backspace to clear.</p>
@@ -117,19 +120,12 @@
             </div>
         </section>
 
-        <section class="settings-section hidden" data-section="users">
-            <div class="settings-administration-tabs" role="tablist" aria-label="Administration tabs">
-                <button type="button" class="settings-tab active" id="administrationUsersTab" data-administration-tab="users" data-local-action="switchAdministrationTab users" role="tab" aria-selected="true" aria-controls="administrationUsersPanel">Users</button>
-                <button type="button" class="settings-tab" id="administrationApplicationsTab" data-administration-tab="applications" data-local-action="switchAdministrationTab applications" role="tab" aria-selected="false" aria-controls="administrationApplicationsPanel">Applications</button>
-            </div>
-            <div class="settings-administration-panel" id="administrationUsersPanel" data-administration-panel="users" role="tabpanel" aria-labelledby="administrationUsersTab">
-                <admin-settings-panel data-presenter="admin-settings-panel" data-embedded="true" data-auto-load="false"></admin-settings-panel>
-            </div>
-            <div class="settings-administration-panel" id="administrationApplicationsPanel" data-administration-panel="applications" role="tabpanel" aria-labelledby="administrationApplicationsTab" tabindex="0" hidden>
-                <div data-account-status role="status" aria-live="polite"></div>
-                <button type="button" class="gray-button" data-account-retry data-local-action="loadAccountPanel" hidden>Retry</button>
-                <div data-account-mount></div>
-            </div>
+        <section class="settings-section hidden" data-section="users" aria-label="Administration">
+            <p class="plugin-settings-description">Manage users and applications in UserPersisto. Each link opens a separate tab.</p>
+            <nav class="settings-page-links" aria-label="Administration pages">
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/users.html" target="_blank" rel="noopener noreferrer" data-account-capability="admin.users.manage" hidden>Users<span>Search accounts and manage their roles.</span></a>
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/applications.html" target="_blank" rel="noopener noreferrer" data-account-capability="admin.agentSettings.manage" hidden>Applications<span>Manage OAuth and OpenID Connect applications.</span></a>
+            </nav>
         </section>
     </div>
 

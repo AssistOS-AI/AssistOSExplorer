@@ -1,13 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-
-const source = await fs.readFile(new URL('../IDE-plugins/userpersisto-settings/userpersisto-settings.js', import.meta.url), 'utf8');
-const { UserpersistoSettings } = await import(`data:text/javascript;base64,${Buffer.from(source.replace(/^import[\s\S]*?;\s*/, '')).toString('base64')}`);
+import { UserpersistoSettings } from '../public/dashboard/management.mjs';
 
 function fixture() {
-    const panel = new UserpersistoSettings({ querySelectorAll: () => [] }, () => {});
-    panel.state.authProfile = { roles: ['admin'] };
+    const panel = new UserpersistoSettings({ querySelectorAll: () => [], getAttribute: () => 'applications' }, () => {});
+    panel.state.authProfile = { roles: ['admin'], capabilities: ['admin.agentSettings.manage'] };
     panel.state.activePanel = 'applications';
     panel.applicationInputs = Object.fromEntries([
         'client_id', 'client_name', 'redirect_uris', 'post_logout_redirect_uris', 'scope', 'token_endpoint_auth_method', 'enabled'
@@ -145,7 +142,7 @@ test('nonadministrators cannot load or mutate applications and pending responses
     await panel.deleteApplication(null, 'client');
     assert.equal(calls, 0);
 
-    panel.state.authProfile = { roles: ['admin'] };
+    panel.state.authProfile = { roles: ['admin'], capabilities: ['admin.agentSettings.manage'] };
     let resolve;
     panel.callTool = () => new Promise((done) => { resolve = done; });
     const pending = panel.saveApplication();
@@ -158,7 +155,7 @@ test('nonadministrators cannot load or mutate applications and pending responses
     assert.deepEqual(panel.state.applications, []);
 });
 
-test('rotation requires confirmation and the returned secret is cleared when changing panel', async () => {
+test('rotation requires confirmation and the returned secret is cleared when leaving the page', async () => {
     const panel = fixture();
     const calls = [];
     panel.callTool = async (name) => {
@@ -171,7 +168,7 @@ test('rotation requires confirmation and the returned secret is cleared when cha
     panel.confirmApplicationAction = async () => true;
     await panel.rotateApplicationSecret(null, 'app');
     assert.equal(panel.applicationSecretInput.value, 'rotated-once');
-    panel.switchPanel(null, 'policy');
+    panel.afterUnload();
     assert.equal(panel.applicationSecretInput.value, '');
     assert.equal(panel.applicationSecretBox.hidden, true);
 });

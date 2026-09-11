@@ -349,7 +349,7 @@ test('aggregateIdePlugins discovers UserPersisto and EmailAgent settings from re
                 ownerAgent: 'userPersistoAgent',
                 scope: 'workspace',
                 pluginKey: 'userPersistoAgent/userpersisto-settings',
-                settingsComponent: 'userpersisto-settings',
+                settingsUrl: '/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/',
                 adminOnly: false
             },
             {

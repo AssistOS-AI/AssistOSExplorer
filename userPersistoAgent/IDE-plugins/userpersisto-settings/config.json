@@ -9,5 +9,6 @@
   "type": "global",
   "autoPin": false,
   "dependencies": [],
-  "settings": "userpersisto-settings"
+  "settings": "userpersisto-settings",
+  "settingsUrl": "/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/"
 }

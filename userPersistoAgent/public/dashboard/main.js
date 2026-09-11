@@ -1,4 +1,5 @@
 import { AccountEnrollment } from './enrollment.js';
+import { updateAccountNavigation } from './api.mjs';
 
 const TOOL_PATHS = Object.freeze({
     userpersisto_passkey_registration_options: 'auth/passkey/options',
@@ -48,6 +49,7 @@ export function mountDashboard(document) {
             if (!disposed && (error.status === 401
                 || ['not_authenticated', 'authentication_required', 'invalid_session'].includes(code))) {
                 sessionExpired = true;
+                updateAccountNavigation(document, null);
                 enrollment.updateProfile(null);
                 content.hidden = true;
                 login.hidden = false;
@@ -72,6 +74,7 @@ export function mountDashboard(document) {
     function render(profile, updateFields = true) {
         if (disposed || sessionExpired) return;
         if (!profile?.user) throw new Error('Profile unavailable');
+        updateAccountNavigation(document, profile);
         select('account-email').textContent = profile.user.email || profile.user.id;
         select('account-role').textContent = (profile.roles || []).map((role) => role === 'selfRegistered' ? 'Member' : role).join(', ');
         select('account-methods').textContent = [...new Set((profile.authMethods || []).map((method) => METHOD_LABELS[method.type] || method.name || method.type))].join(' · ') || 'No sign-in methods configured';
@@ -120,4 +123,13 @@ export function mountDashboard(document) {
     return { dispose() { disposed = true; enrollment.dispose(); } };
 }
 
-if (typeof document !== 'undefined') mountDashboard(document);
+export function startDashboard(document, host = window) {
+    const dashboard = mountDashboard(document);
+    host.addEventListener('pagehide', () => dashboard.dispose(), { once: true });
+    host.addEventListener('pageshow', (event) => {
+        if (event.persisted) host.location.reload();
+    });
+    return dashboard;
+}
+
+if (typeof document !== 'undefined') startDashboard(document);

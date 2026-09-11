@@ -1,35 +1,41 @@
 <!doctype html>
 <html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>My Account</title>
-    <link rel="stylesheet" href="dashboard.css">
-</head>
-<body>
-    <div class="account-shell">
-        <header class="account-header"><a class="account-brand" href="./">My Account</a><a href="/auth/logout">Sign out</a></header>
-        <main>
-            <div class="page-heading"><p class="eyebrow">YOUR WORKSPACE ACCOUNT</p><p>Manage your profile and how you sign in.</p></div>
-            <p id="account-status" class="account-status" role="status" aria-live="polite">Loading your account…</p>
-            <a id="account-login" class="button-link" href="/auth/login" hidden>Sign in</a>
-            <div id="account-content" class="account-grid" hidden>
-                <section class="account-card profile-card" aria-labelledby="profile-heading">
-                    <div class="card-heading"><h2 id="profile-heading">Profile</h2><span class="pill" id="account-role"></span></div>
-                    <p class="account-email" id="account-email"></p>
-                    <form id="profile-form">
-                        <label for="display-name">Display name</label><input id="display-name" name="displayName" maxlength="200" autocomplete="name">
-                        <label for="username">Username <span class="optional">(optional)</span></label><input id="username" name="username" minlength="3" maxlength="64" autocomplete="username" spellcheck="false">
-                        <button type="submit" id="save-profile">Save profile</button>
-                    </form>
-                    <div class="account-details"><span class="detail-label">Sign-in methods</span><p id="account-methods"></p></div>
-                </section>
-                <section class="account-card" aria-labelledby="security-heading"><div class="card-heading"><h2 id="security-heading">Sign-in &amp; security</h2></div><p class="card-description">Add a convenient way to securely access your account.</p><div id="account-enrollment"></div></section>
-                <section class="account-access" aria-labelledby="access-heading"><div><h2 id="access-heading">Workspace access</h2><p id="workspace-access-message"></p></div><a id="open-explorer" class="button-link" href="/" hidden>Open Explorer <span aria-hidden="true">→</span></a></section>
-            </div>
-        </main>
-        <footer>Account settings apply to this workspace.</footer>
-    </div>
-    <script type="module" src="main.js"></script>
-</body>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>My Account</title>
+        <link rel="stylesheet" href="dashboard.css">
+    </head>
+    <body>
+        <div class="account-shell">
+            <header class="account-header"><a class="account-brand" href="./">UserPersisto</a><a href="/auth/logout">Sign out</a></header>
+            <nav class="account-navigation" aria-label="UserPersisto pages">
+                <a href="./">My Account</a>
+                <a href="users.html" data-capability="admin.users.manage" hidden>Users</a>
+                <a href="applications.html" data-capability="admin.agentSettings.manage" hidden>Applications</a>
+                <a href="authentication.html" data-capability="admin.agentSettings.manage" hidden>Authentication policy</a>
+            </nav>
+            <main>
+                <div class="page-heading"><h1>My Account</h1><p>Manage your profile and how you sign in.</p></div>
+                <p id="account-status" class="account-status" role="status" aria-live="polite">Loading your account…</p>
+                <a id="account-login" class="button-link" href="/auth/login" hidden>Sign in</a>
+                <div id="account-content" class="account-grid" hidden>
+                    <section class="account-card profile-card" aria-labelledby="profile-heading">
+                        <div class="card-heading"><h2 id="profile-heading">Profile</h2><span class="pill" id="account-role"></span></div>
+                        <p class="account-email" id="account-email"></p>
+                        <form id="profile-form">
+                            <label for="display-name">Display name</label><input id="display-name" name="displayName" maxlength="200" autocomplete="name">
+                            <label for="username">Username <span class="optional">(optional)</span></label><input id="username" name="username" minlength="3" maxlength="64" autocomplete="username" spellcheck="false">
+                            <button type="submit" id="save-profile">Save profile</button>
+                        </form>
+                        <div class="account-details"><span class="detail-label">Sign-in methods</span><p id="account-methods"></p></div>
+                    </section>
+                    <section class="account-card" aria-labelledby="security-heading"><div class="card-heading"><h2 id="security-heading">Sign-in &amp; security</h2></div><p class="card-description">Add a convenient way to securely access your account.</p><div id="account-enrollment"></div></section>
+                    <section class="account-access" aria-labelledby="access-heading"><div><h2 id="access-heading">Workspace access</h2><p id="workspace-access-message"></p></div><a id="open-explorer" class="button-link" href="/" hidden>Open Explorer <span aria-hidden="true">→</span></a></section>
+                </div>
+            </main>
+            <footer>Account settings apply to this workspace.</footer>
+        </div>
+        <script type="module" src="main.js"></script>
+    </body>
 </html>
