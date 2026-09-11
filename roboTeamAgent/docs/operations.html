@@ -131,6 +131,46 @@ Continue with the tests.</code></pre>
   <p><code>--home</code> supplies saved state; it does not contain a private copy of a coding-agent executable. RoboTeam resolves and caches the current Codex, OpenCode, and Pi npm packages. A concrete <code>--ca</code> selection places that CLI on ALA's <code>PATH</code>; <code>auto</code> prepares all three and lets ALA apply its configured priority. The Desktop mounts all three shared generations so a user can authenticate each CLI against the robot's persistent <code>/config</code> home. Use Codex for Desktop and Browser automation because task-local MCP URL injection is currently implemented only by the Codex adapter. OpenCode and Pi can run Simple tasks.</p>
 
   <p>The shared <code>server/robot-task.mjs</code> wrapper prepares a conversation and starts the ALA command above. Chat uses the same engine through <code>server/robot-cli.mjs</code>. The engine also passes <code>--session-id</code>, <code>--control-stdin</code>, <code>--permissions</code>, a private <code>--config</code>, and <code>--folder &lt;runtime-directory&gt; as ploinky-runtime</code> for direct SDK scripts. Conversation state is stored in <code>/data/robots/&lt;id&gt;/copilot</code>; ALA native metadata stays in the robot home.</p>
+  <h2 id="robot-runtime-diagram">Robot runtime and task delegation</h2>
+  <figure class="diagram">
+    <pre class="mermaid">flowchart LR
+    UI["WebChat UI"]
+    subgraph Team["RoboTeam agent"]
+        direction TB
+        CLI["RoboTeam CLI (WebChat)&lt;br/&gt;Conversation and task observer"]
+        subgraph Controller["Copilot / Achilles CLI"]
+            direction TB
+            ALA["ALA controller"]
+            subgraph Sandbox["Coding agent in Bubblewrap"]
+                Launch["launch-robot skill"]
+            end
+            ALA --> Launch
+        end
+        Tasks["RoboTeam task runtime"]
+        subgraph RobotA["Robot A — task execution"]
+            A["ALA → coding agent in Bubblewrap"]
+        end
+        subgraph RobotB["Robot B — task execution"]
+            B["ALA → coding agent in Bubblewrap"]
+        end
+        CLI -->|User task| ALA
+        Launch -. "Unix socket: task notifications / acknowledgements" .-> CLI
+        Launch -->|MCP via Ploinky Router| Tasks
+        Tasks --> A
+        Tasks --> B
+    end
+    UI <-->|Messages, progress and results via Ploinky| CLI
+    style Team fill:#d2e5f4,stroke:#334155,rx:24,ry:24
+    style Controller fill:#79aeda,stroke:#334155
+    style Sandbox fill:#b9d7ed,stroke:#334155
+    style RobotA fill:#79aeda,stroke:#334155
+    style RobotB fill:#79aeda,stroke:#334155
+    classDef surface fill:#d2e5f4,stroke:#334155,color:#111827
+    class UI,CLI,ALA,Launch,Tasks,A,B surface</pre>
+    <figcaption>The controller delegates separate tasks to robots; the Unix socket associates each launched task with its WebChat conversation.</figcaption>
+  </figure>
+  <p>RoboTeam prepares <code>ploinky-runtime</code> and passes <code>--folder &lt;path&gt; as ploinky-runtime</code> to ALA. The folder is mounted read-only at <code>/workspace/ploinky-runtime</code>; its <code>tasks.sock</code> carries task-start and live-session notifications with acknowledgements. MCP calls go through the Ploinky Router. Task logs and results are retrieved by the task observer, not sent through this socket. ALA runs outside the coding agent's Bubblewrap sandbox and only prepares its execution and mounts. A delegated robot can use the same notification channel when it has a launch skill selected.</p>
+
   <h2>Persistent task conversations</h2>
   <p>Each task receives an ALA session UUID. RoboTeam passes <code>--session-id &lt;uuid&gt; --control-stdin</code> and adds <code>--resume-session</code> on later executions. ALA stores the selected backend and native continuation under <code>&lt;robot-home&gt;/.ala/sessions/</code>; RoboTeam stores private task descriptors under the robot runtime directory. The backend is pinned for that conversation, including across process restarts. A missing native session causes an explicit failure instead of a fresh conversation.</p>
   <p>Stop cancels execution while preserving the conversation and GUI container. Resume sends <code>Continue.</code> for Simple tasks, or a current-screen observation instruction for Desktop and Browser tasks. A custom continuation sends the user's new prompt and, for GUI tasks, the observation instruction. Every execution has its own native Ploinky task, while AchillesCLI retains one local task id and WebChat log bubble. That bubble and Open Task both accept messages after completion or while the task runs. Queued messages are waiting for delivery; a receipt marked delivered means the backend accepted the message, not that it has completed the requested action.</p>
@@ -149,6 +189,7 @@ Continue with the tests.</code></pre>
   <h2>Nested sandbox diagnostics</h2>
   <p>The current RoboTeam container cannot mount ALA's private procfs inside an additional user namespace. ALA therefore uses its capability-assisted private-proc path, retains its other Bubblewrap boundaries, and drops all capabilities before Codex starts. An error stating that neither private-proc path is available indicates a runtime capability or seccomp regression. RoboTeam must not bypass ALA or start Codex unsandboxed.</p>
 <p>The dashboard and Manage skills dialog use Explorer’s Inter typography, shared color tokens and light/dark theme preference. RoboTeam reads assistosExplorerTheme, then webchat_theme, and follows the browser theme when neither is saved. Theme changes in another tab are applied automatically. Robot actions wrap on narrow screens.</p>
+<p>Stopping a graphical task from WebChat pauses its robot queue for manual control. Existing queued GUI tasks stay paused until Resume. If you stop all previous GUI tasks, launching a new GUI task returns control to automation. CLI tasks do not prevent this reset. Logs report when manual control blocks a queued task. The outer Ploinky operation may be running while its inner RoboTeam task is queued; a running desktop container also does not mean its task has started.</p>
 </article><p>Repositories without declared skillsets expose individual skill names and descriptions in robot discovery. Select them using repository-id/skill-name. Delegated tasks receive only explicitly selected skills, including copilot. Direct default chats initially select copilot and workspace; explicit exclusions and empty selections remain authoritative.</p></main>
 <script src="partials-loader.js"></script>
 </body>

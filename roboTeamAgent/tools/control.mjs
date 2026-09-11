@@ -124,6 +124,7 @@ async function runTaskUntilTerminal({ operation, input, user }) {
 
     let previousTail = '';
     let previousState = '';
+    let previousBlockedReason = '';
     while (!terminating) {
         const statusResult = await request('/api/control', {
             method: 'POST',
@@ -140,6 +141,10 @@ async function runTaskUntilTerminal({ operation, input, user }) {
             process.stderr.write(`RoboTeam task state: ${task.state}.\n`);
             previousState = task.state;
         }
+        if (task.blockedReason === 'manual-control' && previousBlockedReason !== task.blockedReason) {
+            process.stderr.write('RoboTeam queue is paused for manual control. Resume the interrupted task, or stop the remaining queued GUI tasks and launch a new one.\n');
+        }
+        previousBlockedReason = task.blockedReason || '';
         if (task.state === 'completed') {
             const outputText = String(task.result || '').trim();
             return { outputText, ...(continuation ? { continuation } : {}) };

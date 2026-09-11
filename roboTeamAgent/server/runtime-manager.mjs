@@ -335,6 +335,13 @@ export class RuntimeManager {
     _enqueueTask(robot, type, request, { first = false } = {}) {
         if (this.deletedRobots.has(robot.id)) throw new Error('robot was deleted');
         request = structuredClone(request);
+        // A new GUI request after all previous GUI work was stopped explicitly
+        // returns control to automation. Keep the pause while old work remains.
+        if (GUI_MODES.has(type) && this.manualControl.has(robot.id)
+            && ![...this.tasks.values()].some(task => task.robotId === robot.id
+                && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'stopping'].includes(task.state))) {
+            this.manualControl.delete(robot.id);
+        }
         const task = this._newTask(robot, type, request);
         if (type === 'simple') {
             queueMicrotask(() => { if (!this.shuttingDown) void this._runTask(robot, task); });
@@ -550,8 +557,13 @@ export class RuntimeManager {
         const task = id ? this.tasks.get(id) : null;
         if (!task || task.robotId !== robotId) return null;
         const { child, request, cancelRequested, pendingMessages, controlReady, ...status } = task;
-        return { ...status, cwd: request.cwd, skillPolicyRef: request.skillPolicyRef || null, skillExecution: task.skillExecution ? structuredClone(task.skillExecution) : null, skillSelection: request.skillSelection ? structuredClone(request.skillSelection) : null,
-            queuePosition: this.taskQueuePosition(task) };
+        return { ...status, cwd: request.cwd,
+            skillPolicyRef: request.skillPolicyRef || null,
+            skillExecution: task.skillExecution ? structuredClone(task.skillExecution) : null,
+            skillSelection: request.skillSelection ? structuredClone(request.skillSelection) : null,
+            queuePosition: this.taskQueuePosition(task),
+            ...(task.state === 'queued' && GUI_MODES.has(task.type) && this.manualControl.has(robotId)
+                ? { blockedReason: 'manual-control' } : {}) };
     }
 
     activeTaskStatus(robotId) {

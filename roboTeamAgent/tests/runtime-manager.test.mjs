@@ -542,3 +542,43 @@ test('replaces the retained GUI container when the next queued task needs anothe
     children[1].emit('close', 0, null);
     while (manager.taskStatus(robot.id, browser.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
 });
+
+test('new GUI work clears manual control after every previous GUI task was stopped', async () => {
+    const robot = { id: 'restart-a1b2c3', name: 'Restart' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    const active = manager._newTask(robot, 'browser', { cwd: '/workspace' });
+    active.state = 'running';
+    active.child = { kill() {} };
+    manager.activeTasks.set(robot.id, active.taskId);
+    const waiting = manager.startTask(robot, 'browser', { cwd: '/workspace' });
+    manager.takeControl(robot, active.taskId);
+    manager.stopTask(robot, null, waiting.taskId);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(manager.manualControl.has(robot.id), true);
+    // An unrelated CLI conversation must not keep the GUI pause alive.
+    manager._newTask(robot, 'simple', {}).state = 'running';
+    const executed = [];
+    manager._runTask = async (_robot, task) => { executed.push(task.taskId); task.state = 'completed'; };
+    const next = manager.startTask(robot, 'browser', { cwd: '/workspace' });
+    assert.equal(manager.manualControl.has(robot.id), false);
+    await manager._drainTaskQueue(robot);
+    assert.deepEqual(executed, []); // Old process still holds the execution slot.
+    manager.activeTasks.delete(robot.id);
+    await manager._drainTaskQueue(robot);
+    assert.deepEqual(executed, [next.taskId]);
+    manager.shuttingDown = true;
+});
+
+test('new work keeps manual control while a previous GUI task is still queued', async () => {
+    const robot = { id: 'paused-a1b2c3', name: 'Paused' };
+    const manager = new RuntimeManager({ toolCache: preparedToolCache });
+    manager.manualControl.set(robot.id, 'interrupted');
+    const old = manager._newTask(robot, 'desktop', {});
+    manager.taskQueues.set(robot.id, [old.taskId]);
+    const next = manager.startTask(robot, 'browser', {});
+    await manager._drainTaskQueue(robot);
+    assert.equal(manager.manualControl.has(robot.id), true);
+    assert.equal(manager.taskStatus(robot.id, next.taskId).blockedReason, 'manual-control');
+    assert.equal(manager.taskStatus(robot.id, next.taskId).state, 'queued');
+    manager.shuttingDown = true;
+});
