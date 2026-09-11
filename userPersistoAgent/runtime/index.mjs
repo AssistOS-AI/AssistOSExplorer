@@ -19,13 +19,18 @@ function browserLoginUrl(loginPath, redirectUri) {
     return login;
 }
 
+function relativeReturnTo(value) {
+    const text = typeof value === 'string' ? value : '';
+    return text.length <= 2048 && text.startsWith('/') && !text.startsWith('//') && !text.includes('\\') && !/[\u0000-\u001f]/.test(text) ? text : '';
+}
+
 function normalizeUser({ user, roles, capabilities }) {
     return {
         id: String(user.id),
         sub: String(user.id),
         username: String(user.username || ''),
-        name: String(user.displayName || user.email),
-        email: String(user.email),
+        name: String(user.displayName || user.username || user.email || ''),
+        email: String(user.email || ''),
         roles: Array.isArray(roles) ? roles : [],
         capabilities: Array.isArray(capabilities) ? capabilities : [],
         raw: { provider: 'userPersistoAgent', status: user.status }
@@ -84,12 +89,16 @@ export function resolveProviderConfig({ providerConfig = {}, readValue } = {}) {
 export function createProvider({ getConfig }) {
     return {
         name: 'AssistOSExplorer/userPersistoAgent',
-        async sso_begin_login({ redirectUri }) {
+        async sso_begin_login({ redirectUri, returnTo }) {
             const config = await getConfig();
             const loginUrl = browserLoginUrl(config.loginPath, redirectUri);
             const { request } = await postRuntime(config, 'sso-login-request', { redirectUri, clientId: 'explorer' });
             loginUrl.searchParams.set('requestId', request.providerState);
             loginUrl.searchParams.set('state', request.providerState);
+            // Informational only: the wizard's Start again link sends it back to the
+            // Router's /auth/login, which revalidates it as a safe relative target.
+            const safeReturnTo = relativeReturnTo(returnTo);
+            if (safeReturnTo) loginUrl.searchParams.set('returnTo', safeReturnTo);
             return {
                 authorizationUrl: loginUrl.toString(),
                 providerState: request.providerState,
@@ -104,16 +113,20 @@ export function createProvider({ getConfig }) {
                 providerSession: {
                     provider: 'userPersistoAgent',
                     userId: consumed.user.id,
+                    // Credential replacement/revocation advances the account generation;
+                    // the next Router revalidation of an older session is refused.
+                    generation: Number.isSafeInteger(consumed.generation) ? consumed.generation : 0,
                     expiresAt: Date.now() + 4 * 60 * 60 * 1000
                 }
             };
         },
         async sso_refresh_session({ providerSession }) {
             const config = await getConfig();
-            const described = await postRuntime(config, 'sso-user', { userId: providerSession?.userId || '' });
+            const generation = Number.isSafeInteger(providerSession?.generation) ? providerSession.generation : 0;
+            const described = await postRuntime(config, 'sso-user', { userId: providerSession?.userId || '', generation });
             return {
                 user: normalizeUser(described),
-                providerSession: { ...providerSession, expiresAt: Date.now() + 4 * 60 * 60 * 1000 }
+                providerSession: { ...providerSession, generation, expiresAt: Date.now() + 4 * 60 * 60 * 1000 }
             };
         },
         async sso_logout({ postLogoutRedirectUri }) {
@@ -129,10 +142,9 @@ export function createProvider({ getConfig }) {
                 ...(result.singleRoleCounts ? { singleRoleCounts: result.singleRoleCounts } : {}),
             };
         },
-        async sso_admin_create_user(input = {}) {
-            const config = await getConfig();
-            const result = await postRuntime(config, 'sso-admin-user-create', input);
-            return normalizeAdminUser(result.user);
+        async sso_admin_create_user() {
+            // Accounts are created only by completed sign-in; invitations are deferred.
+            throw Object.assign(new Error('user_creation_unsupported'), { code: 'user_creation_unsupported', statusCode: 400 });
         },
         async sso_admin_update_user(input = {}) {
             const config = await getConfig();

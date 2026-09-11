@@ -2,7 +2,9 @@ const ensuredStores = new WeakSet();
 
 // Field lists are documentation; Persisto does NOT enforce them. Validation lives in the domain modules.
 export const TYPES = {
-    user: { email: 'string', username: 'string', displayName: 'string', status: 'string', source: 'string', createdAt: 'string', updatedAt: 'string', emailVerifiedAt: 'string', passwordHash: 'string', loginAttempts: 'integer', lastLoginAttempt: 'string' },
+    // `email` is the verified sign-in mailbox ('' only for the configured-password
+    // administrator); `contactEmail` is unverified contact information.
+    user: { email: 'string', username: 'string', displayName: 'string', contactEmail: 'string', status: 'string', source: 'string', createdAt: 'string', updatedAt: 'string', emailVerifiedAt: 'string', authGeneration: 'integer', loginAttempts: 'integer', lastLoginAttempt: 'string' },
     role: { name: 'string', description: 'string', priority: 'integer' },
     permission: { capability: 'string', description: 'string', scope: 'string' },
     userRole: { key: 'string', userId: 'string', roleId: 'string' },
@@ -20,10 +22,12 @@ export const TYPES = {
     emailLog: { logId: 'string', providerMessageId: 'string', toEmailHash: 'string', template: 'string', result: 'string', correlationId: 'string', createdAt: 'string' },
     auditEvent: { auditId: 'string', actorId: 'string', action: 'string', target: 'string', result: 'string', reason: 'string', timestamp: 'string' },
     ssoLoginRequest: { providerState: 'string', redirectUri: 'string', clientId: 'string', expiresAt: 'string' },
-    ssoAuthCode: { code: 'string', providerState: 'string', userId: 'string', expiresAt: 'string', consumedAt: 'string' },
+    ssoAuthCode: { code: 'string', providerState: 'string', userId: 'string', authGeneration: 'integer', expiresAt: 'string', consumedAt: 'string' },
     oidcRecord: { recordKey: 'string', model: 'string', payload: 'string', expiresAt: 'integer', grantHash: 'string', clientHash: 'string', uidHash: 'string', userCodeHash: 'string' },
     externalIdentity: { identityKey: 'string', issuer: 'string', subject: 'string', userId: 'string', createdAt: 'string', lastUsedAt: 'string' },
     googleAuthTransaction: { stateHash: 'string', status: 'string', expiresAt: 'integer', payload: 'string', version: 'integer' },
+    authAttempt: { attemptKey: 'string', status: 'string', expiresAt: 'integer', payload: 'string', version: 'integer' },
+    authThrottle: { throttleKey: 'string', windowStartedAt: 'integer', count: 'integer', expiresAt: 'integer' },
 };
 
 const INDEXES = [
@@ -49,6 +53,8 @@ const INDEXES = [
     ['oidcRecord', 'recordKey'],
     ['externalIdentity', 'identityKey'],
     ['googleAuthTransaction', 'stateHash'],
+    ['authAttempt', 'attemptKey'],
+    ['authThrottle', 'throttleKey'],
 ];
 
 // [groupingName, type, field] -> get<Grouping>ObjectsBy<Field>()

@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import { credentialVersion } from './credentialVersion.mjs';
-import { getStore, flush } from '../store.mjs';
-import { getUserByEmail, getUserById, sanitizeUser } from '../users.mjs';
+import { getStore, flush, commitStagedPersistence } from '../store.mjs';
+import { serializePersisted } from '../serial.mjs';
+import { authGenerationOf, getUserByEmail, getUserById, sanitizeUser } from '../users.mjs';
 import { recordAudit } from '../audit.mjs';
+import { stageCredentialGenerationAdvance } from './generation.mjs';
 import { clearLoginFailures, isLoginLocked, recordLoginFailure, withLoginAttemptLock } from './login-attempts.mjs';
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -10,6 +12,7 @@ const PERIOD_SECONDS = 30;
 const DIGITS = 6;
 const WINDOW = 1;
 const SETUP_TTL_MS = 2 * 60 * 1000;
+const MAX_SETUP_ATTEMPTS = 5;
 
 function base32Encode(buffer) {
     let bits = 0;
@@ -109,10 +112,6 @@ function matchingCounter(secret, token, at = Date.now()) {
     return null;
 }
 
-function verifyToken(secret, token, at = Date.now()) {
-    return matchingCounter(secret, token, at) !== null;
-}
-
 function methodKey(userId) {
     return `${userId}:totp`;
 }
@@ -121,27 +120,16 @@ function setupChallengeId(userId) {
     return `totp-setup:${userId}`;
 }
 
-async function upsertSetupChallenge({ userId, secretEncrypted }) {
-    const store = await getStore();
-    const challengeId = setupChallengeId(userId);
-    const payload = {
-        subject: userId,
-        purpose: 'totp-setup',
-        codeHash: secretEncrypted,
-        expiresAt: new Date(Date.now() + SETUP_TTL_MS).toISOString(),
-        attempts: 0,
-        correlationId: ''
-    };
-    const existing = await store.getAuthChallengeByChallengeId(challengeId);
-    if (existing) {
-        await store.updateAuthChallenge(existing.id, payload);
-        return { ...existing, ...payload, challengeId };
+function setupMetadata(challenge) {
+    try {
+        const value = JSON.parse(challenge?.correlationId || '{}');
+        return value && typeof value === 'object' ? value : {};
+    } catch {
+        return {};
     }
-    return store.createAuthChallenge({ challengeId, ...payload });
 }
 
-async function upsertTotpMethod({ userId, secretEncrypted }) {
-    const store = await getStore();
+async function stageTotpMethod(store, { userId, secretEncrypted }) {
     const key = methodKey(userId);
     const payload = {
         userId,
@@ -166,80 +154,122 @@ export function generateToken(secret, counter = counterFor()) {
     return hotp(secret, counter);
 }
 
-export async function setupStart({ userId }) {
-    const user = await getUserById(userId);
-    if (!user) {
-        throw new Error(`Unknown user: ${userId}`);
-    }
-    const secret = base32Encode(crypto.randomBytes(20));
-    await upsertSetupChallenge({ userId: user.id, secretEncrypted: encryptSecret(secret) });
-    await recordAudit({ actorId: user.id, action: 'auth.totp.setup.start', target: user.id, result: 'ok' });
-    await flush();
-    const issuer = encodeURIComponent('UserPersisto');
-    const label = encodeURIComponent(user.email || user.id);
-    return {
-        ok: true,
-        secret,
-        otpauthUrl: `otpauth://totp/${issuer}:${label}?secret=${secret}&issuer=${issuer}&period=${PERIOD_SECONDS}&digits=${DIGITS}`
-    };
+// Stages a new secret without touching the current credential, which stays
+// usable until setupVerify replaces it. A newer start supersedes older setups.
+// The caller has consumed an operation grant bound to `generation`.
+export function setupStart({ userId, generation }) {
+    return serializePersisted('users', async () => {
+        const user = await getUserById(userId);
+        if (!user || user.status !== 'active') {
+            throw Object.assign(new Error('Account is not active.'), { code: 'user_not_active', statusCode: 403 });
+        }
+        const store = await getStore();
+        const secret = base32Encode(crypto.randomBytes(20));
+        const setupId = crypto.randomBytes(16).toString('base64url');
+        const payload = {
+            subject: user.id,
+            purpose: 'totp-setup',
+            codeHash: encryptSecret(secret),
+            expiresAt: new Date(Date.now() + SETUP_TTL_MS).toISOString(),
+            attempts: 0,
+            correlationId: JSON.stringify({ setupId, generation: Number.isSafeInteger(generation) ? generation : authGenerationOf(user) })
+        };
+        const existing = await store.getAuthChallengeByChallengeId(setupChallengeId(user.id));
+        await commitStagedPersistence(async () => {
+            if (existing) await store.updateAuthChallenge(existing.id, payload);
+            else await store.createAuthChallenge({ challengeId: setupChallengeId(user.id), ...payload });
+            await recordAudit({ actorId: user.id, action: 'auth.totp.setup.start', target: user.id, result: 'ok' }, { save: false });
+        });
+        const issuer = encodeURIComponent('UserPersisto');
+        const label = encodeURIComponent(user.email || user.username || user.id);
+        return {
+            ok: true,
+            setupId,
+            secret,
+            expiresAt: payload.expiresAt,
+            otpauthUrl: `otpauth://totp/${issuer}:${label}?secret=${secret}&issuer=${issuer}&period=${PERIOD_SECONDS}&digits=${DIGITS}`
+        };
+    });
 }
 
-export async function setupVerify({ userId, token }) {
+// Proves possession of the staged secret and, in one staged commit, installs
+// it. Replacing an enabled authenticator advances the account generation, which
+// revokes sessions and OIDC artifacts minted before the replacement.
+export function setupVerify({ userId, token, setupId }) {
+    return serializePersisted('users', async () => {
+        const store = await getStore();
+        const challenge = await store.getAuthChallengeByChallengeId(setupChallengeId(userId));
+        if (!challenge || challenge.subject !== userId || challenge.purpose !== 'totp-setup') {
+            return { ok: false, reason: 'setup_not_found' };
+        }
+        const metadata = setupMetadata(challenge);
+        if (typeof setupId !== 'string' || !setupId || metadata.setupId !== setupId) {
+            return { ok: false, reason: 'setup_superseded' };
+        }
+        const user = await getUserById(userId);
+        if (!user || user.status !== 'active' || metadata.generation !== authGenerationOf(user)
+            || new Date(challenge.expiresAt).getTime() < Date.now()) {
+            await store.deleteAuthChallenge(challenge.id);
+            await flush();
+            return { ok: false, reason: 'setup_expired' };
+        }
+        const counter = matchingCounter(decryptSecret(challenge.codeHash), token);
+        if (counter === null) {
+            const attempts = (challenge.attempts || 0) + 1;
+            if (attempts >= MAX_SETUP_ATTEMPTS) await store.deleteAuthChallenge(challenge.id);
+            else await store.updateAuthChallenge(challenge.id, { attempts });
+            await flush();
+            return { ok: false, reason: attempts >= MAX_SETUP_ATTEMPTS ? 'too_many_attempts' : 'invalid_token' };
+        }
+        const current = await store.getAuthMethodByKey(methodKey(userId));
+        const replacing = Boolean(current?.enabled && current.type === 'totp');
+        await commitStagedPersistence(async () => {
+            await stageTotpMethod(store, { userId, secretEncrypted: challenge.codeHash });
+            await store.deleteAuthChallenge(challenge.id);
+            if (replacing) await stageCredentialGenerationAdvance(userId);
+            await recordAudit({ actorId: userId, action: replacing ? 'auth.totp.replace' : 'auth.totp.setup.verify', target: userId, result: 'ok' }, { save: false });
+        });
+        return { ok: true, replaced: replacing };
+    });
+}
+
+async function verifyTotpForUser(user, token, { includeCredentialProof = false, action = 'auth.totp.login' } = {}) {
+    if (!user) return { ok: false, reason: 'invalid_credentials' };
+    if (user.status !== 'active') return { ok: false, reason: 'user_blocked' };
+    if (isLoginLocked(user)) return { ok: false, reason: 'account_locked' };
     const store = await getStore();
-    const challenge = await store.getAuthChallengeByChallengeId(setupChallengeId(userId));
-    if (!challenge || challenge.subject !== userId) {
-        return { ok: false, reason: 'setup_not_found' };
+    const method = await store.getAuthMethodByKey(methodKey(user.id));
+    if (!method || !method.enabled || method.type !== 'totp') {
+        return { ok: false, reason: 'totp_not_configured' };
     }
-    if (new Date(challenge.expiresAt).getTime() < Date.now()) {
-        await store.deleteAuthChallenge(challenge.id);
-        await flush();
-        return { ok: false, reason: 'setup_expired' };
+    const secret = decryptSecret(method.credential?.secretEncrypted);
+    const counter = matchingCounter(secret, token);
+    const lastUsedCounter = Number(method.credential?.lastUsedCounter ?? -1);
+    if (counter === null || counter <= lastUsedCounter) {
+        const reason = counter !== null && counter <= lastUsedCounter ? 'replayed_token' : 'invalid_token';
+        await recordLoginFailure(user);
+        await recordAudit({ actorId: user.id, action, target: user.id, result: 'denied', reason });
+        return { ok: false, reason };
     }
-    const secret = decryptSecret(challenge.codeHash);
-    if (!verifyToken(secret, token)) {
-        await store.updateAuthChallenge(challenge.id, { attempts: (challenge.attempts || 0) + 1 });
-        await flush();
-        return { ok: false, reason: 'invalid_token' };
-    }
-    await upsertTotpMethod({ userId, secretEncrypted: challenge.codeHash });
-    await store.deleteAuthChallenge(challenge.id);
-    await recordAudit({ actorId: userId, action: 'auth.totp.setup.verify', target: userId, result: 'ok' });
-    await flush();
-    return { ok: true };
+    const version = includeCredentialProof ? credentialVersion('totp', method.credential) : undefined;
+    await store.updateAuthMethod(method.id, {
+        credential: { ...method.credential, lastUsedCounter: counter },
+    });
+    const fresh = await clearLoginFailures(user);
+    await recordAudit({ actorId: user.id, action, target: user.id, result: 'ok' });
+    return { ok: true, user: sanitizeUser(fresh), ...(includeCredentialProof ? { credentialKey: method.key, credentialVersion: version } : {}) };
 }
 
 export async function loginVerify({ email, token }, { includeCredentialProof = false } = {}) {
     const normalizedEmail = String(email || '').trim().toLowerCase();
-    return withLoginAttemptLock(normalizedEmail, async () => {
-        const user = await getUserByEmail(normalizedEmail);
-        if (!user) return { ok: false, reason: 'invalid_credentials' };
-        if (user.status !== 'active') return { ok: false, reason: 'user_blocked' };
-        if (isLoginLocked(user)) return { ok: false, reason: 'account_locked' };
-        const store = await getStore();
-        const method = await store.getAuthMethodByKey(methodKey(user.id));
-        if (!method || !method.enabled || method.type !== 'totp') {
-            return { ok: false, reason: 'totp_not_configured' };
-        }
-        const secret = decryptSecret(method.credential?.secretEncrypted);
-        const counter = matchingCounter(secret, token);
-        const lastUsedCounter = Number(method.credential?.lastUsedCounter ?? -1);
-        if (counter === null || counter <= lastUsedCounter) {
-            await recordLoginFailure(user);
-            await recordAudit({
-                actorId: user.id,
-                action: 'auth.totp.login',
-                target: user.id,
-                result: 'denied',
-                reason: counter !== null && counter <= lastUsedCounter ? 'replayed_token' : 'invalid_token',
-            });
-            return { ok: false, reason: counter !== null && counter <= lastUsedCounter ? 'replayed_token' : 'invalid_token' };
-        }
-        const version = includeCredentialProof ? credentialVersion('totp', method.credential) : undefined;
-        await store.updateAuthMethod(method.id, {
-            credential: { ...method.credential, lastUsedCounter: counter },
-        });
-        const fresh = await clearLoginFailures(user);
-        await recordAudit({ actorId: user.id, action: 'auth.totp.login', target: user.id, result: 'ok' });
-        return { ok: true, user: sanitizeUser(fresh), ...(includeCredentialProof ? { credentialKey: method.key, credentialVersion: version } : {}) };
-    });
+    return withLoginAttemptLock(normalizedEmail, () => serializePersisted('users', async () =>
+        verifyTotpForUser(await getUserByEmail(normalizedEmail), token, { includeCredentialProof })));
+}
+
+// Re-authentication of an already signed-in account for a sensitive operation.
+// It shares the account's login lock, lockout counter and replay protection.
+export async function reauthenticationVerify({ userId, token }) {
+    const user = await getUserById(userId);
+    return withLoginAttemptLock(user?.email || `user:${userId}`, () => serializePersisted('users', async () =>
+        verifyTotpForUser(await getUserById(userId), token, { action: 'auth.totp.reauthenticate' })));
 }

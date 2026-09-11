@@ -6,8 +6,17 @@ const TOOL_PATHS = Object.freeze({
     userpersisto_passkey_registration_verify: 'auth/passkey/verify',
     userpersisto_totp_setup_start: 'auth/totp/start',
     userpersisto_totp_setup_verify: 'auth/totp/verify',
+    // Fresh confirmation and contact verification are My Account HTTP operations only.
+    reauth_start: 'reauth/start',
+    reauth_verify: 'reauth/verify',
+    reauth_google_complete: 'reauth/google/complete',
+    reauth_cancel: 'reauth/cancel',
+    contact_start: 'contact/start',
+    contact_verify: 'contact/verify',
 });
-const METHOD_LABELS = { password: 'Password', emailCode: 'Email code', passkey: 'Passkey', totp: 'Authenticator app' };
+const METHOD_LABELS = {
+    emailCode: 'Email code', passkey: 'Passkey', totp: 'Authenticator app', google: 'Google', adminPassword: 'Administrator password',
+};
 
 export async function dashboardApi(path, payload) {
     const response = await fetch(`api/${path}`, {
@@ -75,7 +84,8 @@ export function mountDashboard(document) {
         if (disposed || sessionExpired) return;
         if (!profile?.user) throw new Error('Profile unavailable');
         updateAccountNavigation(document, profile);
-        select('account-email').textContent = profile.user.email || profile.user.id;
+        // The configured-password administrator may have no sign-in email yet.
+        select('account-email').textContent = profile.user.email || profile.user.username || profile.user.id;
         select('account-role').textContent = (profile.roles || []).map((role) => role === 'selfRegistered' ? 'Member' : role).join(', ');
         select('account-methods').textContent = [...new Set((profile.authMethods || []).map((method) => METHOD_LABELS[method.type] || method.name || method.type))].join(' · ') || 'No sign-in methods configured';
         if (updateFields) { username.value = profile.user.username || ''; displayName.value = profile.user.displayName || ''; }

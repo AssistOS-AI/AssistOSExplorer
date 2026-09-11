@@ -15,6 +15,7 @@ const { updateAuthPolicy } = await import('../lib/policy.mjs');
 const { getStore, flush, resetStoreForTests } = await import('../lib/store.mjs');
 const { createLoginRequest, consumeAuthCode } = await import('../lib/sso.mjs');
 const { startService } = await import('../service/index.mjs');
+const setup = await import('./helpers/setup.mjs');
 
 let server;
 let baseUrl;
@@ -24,11 +25,9 @@ const credentialId = randomBytes(24).toString('base64url');
 
 before(async () => {
     await ensureSeedData();
-    const blocked = await createUser({
-        email: 'blocked@example.test',
-        password: 'blocked-password',
-        roles: ['user'],
-    });
+    setup.configureAdministratorPassword();
+    await setup.claimAdministrator();
+    const blocked = await createUser({ email: 'blocked@example.test', roles: ['user'], emailVerified: true });
     await updateUser(blocked.id, { status: 'blocked' });
     passkeyUser = await createUser({ email: 'passkey@example.test', roles: ['user'] });
     await (await getStore()).createAuthMethod({
@@ -40,14 +39,15 @@ before(async () => {
     });
     await flush();
     await updateAuthPolicy({
-        enabledAuthMethods: ['password', 'emailCode', 'passkey', 'totp'],
+        enabledAuthMethods: ['emailCode', 'passkey', 'totp'],
     });
     server = startService(0);
     if (!server.listening) await once(server, 'listening');
     baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
-function signedAssertion(options, { challenge = options.publicKey.challenge, origin = baseUrl, rpId = new URL(baseUrl).hostname, flags = 0x01, counter = 1 } = {}) {
+// UP|UV: passkeys must prove user verification, not only presence.
+function signedAssertion(options, { challenge = options.publicKey.challenge, origin = baseUrl, rpId = new URL(baseUrl).hostname, flags = 0x05, counter = 1 } = {}) {
     const authenticatorData = Buffer.alloc(37);
     createHash('sha256').update(rpId).digest().copy(authenticatorData);
     authenticatorData[32] = flags;
@@ -61,11 +61,14 @@ function signedAssertion(options, { challenge = options.publicKey.challenge, ori
     } };
 }
 
-async function passkeyOptions() {
-    const result = await post('/service/auth/passkey/options', { email: passkeyUser.email, origin: baseUrl });
+// Passkey challenges are bound to a live SSO parent (purpose sso-login:<requestId>).
+async function passkeyOptions(email = passkeyUser.email) {
+    const request = await createLoginRequest({ redirectUri: `${baseUrl}/auth/callback` });
+    const result = await post('/service/auth/passkey/options', { email, requestId: request.providerState });
     assert.equal(result.status, 200);
     assert.equal(result.body.ok, true);
-    return result.body;
+    assert.equal(result.body.publicKey.userVerification, 'required');
+    return { ...result.body, requestId: request.providerState };
 }
 
 function assertAuthenticationFailure(result) {
@@ -97,7 +100,7 @@ test('malformed passkey assertions return neutral authentication failures for ac
     for (const [name, assertion] of malformed) {
         await t.test(name, async () => {
             for (const email of [passkeyUser.email, 'blocked@example.test', 'missing@example.test']) {
-                assertAuthenticationFailure(await post('/service/auth/passkey/verify', { email, assertion, challengeKey: options.challengeKey, origin: baseUrl }));
+                assertAuthenticationFailure(await post('/service/auth/passkey/verify', { email, assertion, challengeKey: options.challengeKey, requestId: options.requestId }));
             }
         });
     }
@@ -113,6 +116,7 @@ test('passkey rejection keeps challenge, origin, relying party, presence and sig
         ['wrong browser origin', (options) => signedAssertion(options, { origin: 'https://evil.test' })],
         ['wrong relying party', (options) => signedAssertion(options, { rpId: 'evil.test' })],
         ['missing user presence', (options) => signedAssertion(options, { flags: 0 })],
+        ['presence without user verification', (options) => signedAssertion(options, { flags: 0x01 })],
         ['invalid signature', (options) => {
             const assertion = signedAssertion(options);
             assertion.response.signature = randomBytes(64).toString('base64url');
@@ -128,7 +132,7 @@ test('passkey rejection keeps challenge, origin, relying party, presence and sig
         await t.test(name, async () => {
             const options = await passkeyOptions();
             assertAuthenticationFailure(await post('/service/auth/passkey/verify', {
-                email: passkeyUser.email, assertion: makeAssertion(options), challengeKey: options.challengeKey, origin: baseUrl,
+                email: passkeyUser.email, assertion: makeAssertion(options), challengeKey: options.challengeKey, requestId: options.requestId,
             }));
         });
     }
@@ -137,16 +141,19 @@ test('passkey rejection keeps challenge, origin, relying party, presence and sig
 
 test('a valid signed passkey assertion completes SSO once and rejects assertion and counter replay', async () => {
     const options = await passkeyOptions();
-    const request = await createLoginRequest({ redirectUri: `${baseUrl}/auth/callback` });
-    const body = { email: passkeyUser.email, assertion: signedAssertion(options), challengeKey: options.challengeKey, origin: baseUrl, requestId: request.providerState };
+    // A challenge issued for one parent cannot complete another.
+    const otherRequest = await createLoginRequest({ redirectUri: `${baseUrl}/auth/callback` });
+    assertAuthenticationFailure(await post('/service/auth/passkey/verify', { email: passkeyUser.email, assertion: signedAssertion(options),
+        challengeKey: options.challengeKey, requestId: otherRequest.providerState }));
+    const body = { email: passkeyUser.email, assertion: signedAssertion(options), challengeKey: options.challengeKey, requestId: options.requestId };
     const signedIn = await post('/service/auth/passkey/verify', body);
     assert.equal(signedIn.status, 200);
     assert.equal(signedIn.body.ok, true);
-    assert.equal((await consumeAuthCode({ providerState: request.providerState, code: signedIn.body.code })).user.id, passkeyUser.id);
-    assertAuthenticationFailure(await post('/service/auth/passkey/verify', body));
+    assert.equal((await consumeAuthCode({ providerState: options.requestId, code: signedIn.body.code })).user.id, passkeyUser.id);
+    assert.equal((await post('/service/auth/passkey/verify', body)).body.error, 'login_request_invalid');
     const nextOptions = await passkeyOptions();
     assertAuthenticationFailure(await post('/service/auth/passkey/verify', {
-        ...body, assertion: signedAssertion(nextOptions, { counter: 1 }), challengeKey: nextOptions.challengeKey,
+        ...body, assertion: signedAssertion(nextOptions, { counter: 1 }), challengeKey: nextOptions.challengeKey, requestId: nextOptions.requestId,
     }));
     assert.equal((await (await getStore()).getAuthMethodByKey(`${passkeyUser.id}:passkey:${credentialId}`)).credential.counter, 1);
 });
@@ -168,25 +175,23 @@ test('invalid client challenges preserve pending passkey sign-ins with and witho
     let counter = 0;
     for (const [name, challenge] of cases) {
         await t.test(name, async () => {
-            const started = await post('/service/auth/passkey/options', { email: user.email, origin: baseUrl });
-            assert.equal(started.status, 200);
-            const options = started.body;
+            const options = await passkeyOptions(user.email);
             const assertion = signedAssertion(options, { counter: counter + 1 });
             assertion.id = pendingCredentialId;
             assertion.rawId = pendingCredentialId;
             const malformed = { ...assertion, response: { ...assertion.response, clientDataJSON: Buffer.from(JSON.stringify({
                 type: 'webauthn.get', challenge, origin: baseUrl,
             })).toString('base64url') } };
-            const request = await createLoginRequest({ redirectUri: `${baseUrl}/auth/callback` });
+            const request = { providerState: options.requestId };
             for (const challengeKey of [undefined, options.challengeKey]) {
                 assertAuthenticationFailure(await post('/service/auth/passkey/verify', {
-                    email: user.email, assertion: malformed, challengeKey, origin: baseUrl, requestId: request.providerState,
+                    email: user.email, assertion: malformed, challengeKey, requestId: request.providerState,
                 }));
                 assert.ok(await store.getAuthChallengeByChallengeId(options.challengeKey), 'invalid client challenge must not consume the pending challenge');
                 assert.equal((await store.getAuthMethodByKey(methodKey)).credential.counter, counter);
             }
             const completed = await post('/service/auth/passkey/verify', {
-                email: user.email, assertion, challengeKey: options.challengeKey, origin: baseUrl, requestId: request.providerState,
+                email: user.email, assertion, challengeKey: options.challengeKey, requestId: request.providerState,
             });
             assert.equal(completed.status, 200, 'the legitimate signed assertion must remain usable');
             assert.equal((await consumeAuthCode({ providerState: request.providerState, code: completed.body.code })).user.id, user.id);
@@ -212,16 +217,20 @@ async function post(path, body) {
 }
 
 test('public authentication failures do not reveal sensitive internal reasons', async () => {
+    const requests = await Promise.all(Array.from({ length: 6 }, () => createLoginRequest({ redirectUri: `${baseUrl}/auth/callback` })));
     const failures = await Promise.all([
-        post('/service/auth/password/login', { email: 'missing@example.test', password: 'wrong-password' }),
-        post('/service/auth/password/login', { email: 'blocked@example.test', password: 'blocked-password' }),
-        post('/service/auth/email-code/verify', { challengeId: 'missing', code: '000000' }),
-        post('/service/auth/passkey/options', { email: 'missing@example.test', origin: baseUrl }),
-        post('/service/auth/totp/verify', { email: 'missing@example.test', token: '000000' }),
+        post('/service/auth/admin/login', { requestId: requests[0].providerState, password: 'wrong-administrator-password' }),
+        post('/service/auth/passkey/options', { email: 'missing@example.test', requestId: requests[1].providerState }),
+        post('/service/auth/passkey/options', { email: 'blocked@example.test', requestId: requests[2].providerState }),
+        post('/service/auth/totp/verify', { email: 'missing@example.test', token: '000000', requestId: requests[3].providerState }),
+        post('/service/auth/totp/verify', { email: 'blocked@example.test', token: '000000', requestId: requests[4].providerState }),
     ]);
-
     for (const failure of failures) {
         assert.equal(failure.status, 401);
         assert.deepEqual(failure.body, { ok: false, error: 'authentication_failed' });
+    }
+    // Retired password endpoints no longer exist at all.
+    for (const path of ['/service/auth/password/login', '/service/auth/register']) {
+        assert.equal((await post(path, { email: 'blocked@example.test', password: 'guess-password', requestId: requests[5].providerState })).status, 404);
     }
 });

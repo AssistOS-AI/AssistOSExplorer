@@ -3,21 +3,18 @@ import { readFile } from 'node:fs/promises';
 import { extname, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
-import { loginWithPassword } from '../lib/auth/password.mjs';
-import { startEmailCode, verifyEmailCode } from '../lib/auth/email-code.mjs';
-import * as passkey from '../lib/auth/passkey.mjs';
-import * as totp from '../lib/auth/totp.mjs';
-import { getEnabledAuthMethods, getDefaultAuthMethod } from '../lib/auth/methods.mjs';
-import { createLoginRequest, issueAuthCode, consumeAuthCode, getSsoUser } from '../lib/sso.mjs';
+import { getEnabledAuthMethods } from '../lib/auth/methods.mjs';
+import { createLoginRequest, consumeAuthCode, getSsoUser } from '../lib/sso.mjs';
 import { runTool } from '../tools/registry.mjs';
-import { getSetupStatus, registerUser, listUsers, listRoles, createUser, updateUser, setUserRoles, deactivateUser, getUserRoles, getUserById, sanitizeUser } from '../lib/users.mjs';
+import { listUsers, listRoles, updateUser, setUserRoles, deactivateUser, getUserRoles, getUserById, sanitizeUser, authGenerationOf } from '../lib/users.mjs';
 import { requireActiveActor } from '../lib/authorization.mjs';
-import { getAuthPolicy, updateAuthPolicy, isAuthMethodEnabled } from '../lib/policy.mjs';
-import { setPassword } from '../lib/auth/password.mjs';
+import { getAuthPolicy, updateAuthPolicy } from '../lib/policy.mjs';
 import { handleOidc } from '../lib/oidc/http.mjs';
 import { handleDashboard } from './dashboard.mjs';
 import { createGoogleAuthHandlers } from './googleAuth.mjs';
-import { getGoogleStatus } from '../lib/auth/google.mjs';
+import { createSsoWizardHandlers } from './ssoWizard.mjs';
+import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
+import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 const MIME = {
@@ -80,26 +77,8 @@ function sendJson(res, status, body) {
     res.end(payload);
 }
 
-function sendAuthenticationFailure(res) {
-    return sendJson(res, 401, { ok: false, error: 'authentication_failed' });
-}
-
-function providerStateFrom(body) {
-    return String(body.requestId || body.providerState || body.state || '').trim();
-}
-
-function callbackPayload(issued, state) {
-    return {
-        ok: true,
-        code: issued.code,
-        redirectUri: issued.redirectUri,
-        state: String(state || '')
-    };
-}
-
-async function issueCallbackForUser(body, userId) {
-    const issued = await issueAuthCode({ providerState: providerStateFrom(body), userId });
-    return callbackPayload(issued, body.state);
+function unsupported(code, message) {
+    return Object.assign(new Error(message), { code, statusCode: 400 });
 }
 
 async function serveStatic(res, relPath) {
@@ -132,19 +111,21 @@ async function serveStatic(res, relPath) {
     }
 }
 
-async function handleGet(req, res, path) {
+async function handleGet(req, res, path, { emailStatus }) {
     if (path === '/service/auth/methods') {
-        const methods = await getEnabledAuthMethods();
+        const emailAvailable = (await emailStatus()).available === true;
+        const methods = (await getEnabledAuthMethods()).filter((method) => method !== 'emailCode' || emailAvailable);
         return sendJson(res, 200, {
             ok: true,
             methods,
-            defaultMethod: await getDefaultAuthMethod()
+            defaultMethod: methods[0] || ''
         });
     }
     if (path === '/service/auth/setup') {
-        const methods = await getEnabledAuthMethods();
-        return sendJson(res, 200, { ok: true, ...(await getSetupStatus()), enabledAuthMethods: methods,
-            defaultAuthMethod: methods[0] || '', googleAvailable: (await getGoogleStatus()).available });
+        const configuration = await wizardConfiguration({ emailAvailable: (await emailStatus()).available === true });
+        const methods = (await getEnabledAuthMethods()).filter((method) => method !== 'emailCode' || configuration.methods.emailCode);
+        return sendJson(res, 200, { ok: true, ...configuration, enabledAuthMethods: methods,
+            defaultAuthMethod: methods[0] || '', googleAvailable: configuration.methods.google });
     }
     if (path === '/service/auth' || path.startsWith('/service/auth/')) {
         return serveStatic(res, path.replace('/service/', ''));
@@ -152,7 +133,7 @@ async function handleGet(req, res, path) {
     return sendJson(res, 404, { ok: false, error: 'not_found' });
 }
 
-async function handlePost(req, res, path) {
+async function handlePost(req, res, path, handlers) {
     if (path === '/service/billing/stripe/webhook') {
         const raw = [];
         let size = 0;
@@ -169,88 +150,7 @@ async function handlePost(req, res, path) {
         return sendJson(res, 200, { ok: true, ...result });
     }
     const body = await readJson(req);
-    if (path === '/service/auth/register') {
-        const setup = await getSetupStatus();
-        if (!setup.needsInitialAdmin && !(await isAuthMethodEnabled('password'))) {
-            throw Object.assign(new Error('Password registration is not enabled.'), { code: 'auth_method_disabled', statusCode: 404 });
-        }
-        let registered;
-        const issued = await issueAuthCode({
-            providerState: providerStateFrom(body),
-            resolveUserId: async () => {
-                registered = await registerUser({ email: body.email, password: body.password });
-                return registered.user.id;
-            },
-        });
-        return sendJson(res, 201, {
-            ...callbackPayload(issued, body.state),
-            firstUser: registered.firstUser,
-        });
-    }
-    if (path === '/service/auth/password/login') {
-        if (!(await isAuthMethodEnabled('password'))) {
-            throw Object.assign(new Error('Password authentication is not enabled.'), { code: 'auth_method_disabled', statusCode: 404 });
-        }
-        const result = await loginWithPassword(body.email, body.password);
-        if (!result.ok) {
-            return sendAuthenticationFailure(res);
-        }
-        return sendJson(res, 200, await issueCallbackForUser(body, result.user.id));
-    }
-    if (path === '/service/auth/email-code/start') {
-        const started = await startEmailCode({
-            email: body.email,
-            purpose: 'login',
-            correlationId: providerStateFrom(body),
-            createSelfRegistered: false
-        });
-        return sendJson(res, 200, { ok: true, challengeId: started.challengeId });
-    }
-    if (path === '/service/auth/email-code/verify') {
-        if (!(await isAuthMethodEnabled('emailCode'))) {
-            throw Object.assign(new Error('Email-code authentication is not enabled.'), { code: 'auth_method_disabled', statusCode: 404 });
-        }
-        const result = await verifyEmailCode({ challengeId: body.challengeId, code: body.code, correlationId: providerStateFrom(body) });
-        if (!result.ok) {
-            return sendAuthenticationFailure(res);
-        }
-        return sendJson(res, 200, await issueCallbackForUser(body, result.user.id));
-    }
-    if (path === '/service/auth/passkey/options') {
-        if (!(await isAuthMethodEnabled('passkey'))) {
-            throw Object.assign(new Error('Passkey authentication is not enabled.'), { code: 'auth_method_disabled', statusCode: 404 });
-        }
-        const result = await passkey.loginOptions({ email: body.email, origin: body.origin, rpId: body.rpId });
-        if (!result.ok) {
-            return sendAuthenticationFailure(res);
-        }
-        return sendJson(res, 200, result);
-    }
-    if (path === '/service/auth/passkey/verify') {
-        if (!(await isAuthMethodEnabled('passkey'))) {
-            throw Object.assign(new Error('Passkey authentication is not enabled.'), { code: 'auth_method_disabled', statusCode: 404 });
-        }
-        const result = await passkey.loginVerify({
-            email: body.email,
-            assertion: body.assertion,
-            challengeKey: body.challengeKey,
-            origin: body.origin
-        });
-        if (!result.ok) {
-            return sendAuthenticationFailure(res);
-        }
-        return sendJson(res, 200, await issueCallbackForUser(body, result.user.id));
-    }
-    if (path === '/service/auth/totp/setup' || path === '/service/auth/totp/verify') {
-        if (!(await isAuthMethodEnabled('totp'))) {
-            throw Object.assign(new Error('TOTP authentication is not enabled.'), { code: 'auth_method_disabled', statusCode: 404 });
-        }
-        const result = await totp.loginVerify({ email: body.email, token: body.token });
-        if (!result.ok) {
-            return sendAuthenticationFailure(res);
-        }
-        return sendJson(res, 200, await issueCallbackForUser(body, result.user.id));
-    }
+    if (await handlers.wizard.handle(req, res, path, body, sendJson)) return;
     if (path === '/service/runtime/sso-login-request') {
         assertRuntimeSecret(req);
         const request = await createLoginRequest({ redirectUri: body.redirectUri, clientId: body.clientId });
@@ -259,12 +159,13 @@ async function handlePost(req, res, path) {
     if (path === '/service/runtime/sso-consume-code') {
         assertRuntimeSecret(req);
         const consumed = await consumeAuthCode({ providerState: body.providerState, code: body.code });
-        return sendJson(res, 200, { ok: true, ...consumed });
+        return sendJson(res, 200, { ok: true, ...consumed, generation: authGenerationOf(consumed.user) });
     }
     if (path === '/service/runtime/sso-user') {
         assertRuntimeSecret(req);
-        const described = await getSsoUser(body.userId);
-        return sendJson(res, 200, { ok: true, ...described });
+        // Provider sessions carry the account generation they were minted for.
+        const described = await getSsoUser(body.userId, { generation: body.generation });
+        return sendJson(res, 200, { ok: true, ...described, generation: authGenerationOf(described.user) });
     }
     if (path.startsWith('/service/runtime/sso-admin-')) {
         assertRuntimeSecret(req);
@@ -284,16 +185,8 @@ async function handlePost(req, res, path) {
             });
         }
         if (path === '/service/runtime/sso-admin-user-create') {
-            const user = await createUser({
-                email: body.email,
-                username: body.username || '',
-                displayName: body.name || body.displayName || '',
-                password: body.password || '',
-                roles: body.roles || ['user'],
-                source: 'admin',
-                actorId: actorUserId,
-            });
-            return sendJson(res, 201, { ok: true, user: { ...user, roles: await getUserRoles(user.id) } });
+            // Accounts come only from the setup decision and verified signup.
+            throw unsupported('user_creation_unsupported', 'Accounts are created by signing in; invitations are not available yet.');
         }
         if (path === '/service/runtime/sso-admin-user-update') {
             const patch = {};
@@ -301,6 +194,9 @@ async function handlePost(req, res, path) {
                 if (Object.prototype.hasOwnProperty.call(body, key)) patch[key] = body[key];
             }
             if (Object.prototype.hasOwnProperty.call(body, 'name')) patch.displayName = body.name;
+            if (Object.prototype.hasOwnProperty.call(body, 'password') && body.password !== undefined && body.password !== null && body.password !== '') {
+                throw unsupported('password_unsupported', 'Accounts do not have passwords.');
+            }
             // Administration addresses the persisted account regardless of its
             // active status; only the SSO projection requires an active account.
             const existing = await getUserById(String(body.userId || ''));
@@ -308,9 +204,6 @@ async function handlePost(req, res, path) {
             let user = Object.keys(patch).length
                 ? await updateUser(body.userId, patch, { actorId: actorUserId })
                 : sanitizeUser(existing);
-            if (Object.prototype.hasOwnProperty.call(body, 'password') && body.password) {
-                await setPassword({ userId: body.userId, newPassword: body.password, actorId: actorUserId });
-            }
             const roles = Object.prototype.hasOwnProperty.call(body, 'roles')
                 ? await setUserRoles(body.userId, body.roles, { actorId: actorUserId })
                 : await getUserRoles(body.userId);
@@ -324,7 +217,7 @@ async function handlePost(req, res, path) {
             return sendJson(res, 200, { ok: true, policy: await getAuthPolicy() });
         }
         if (path === '/service/runtime/sso-admin-policy-update') {
-            return sendJson(res, 200, { ok: true, policy: await updateAuthPolicy(body.policy || {}, { actorId: actorUserId }) });
+            return sendJson(res, 200, { ok: true, policy: await updateAuthPolicy(body.policy || {}, { actorId: actorUserId, emailStatus: handlers.emailStatus }) });
         }
     }
     if (path === '/internal/tool') {
@@ -338,35 +231,48 @@ async function handlePost(req, res, path) {
     return sendJson(res, 404, { ok: false, error: 'not_found' });
 }
 
-async function handle(req, res, google) {
+async function handle(req, res, handlers) {
+    const { google } = handlers;
     const url = new URL(req.url || '/', 'http://internal');
     try {
         if (url.pathname === '/service/dashboard' || url.pathname.startsWith('/service/dashboard/')) {
-            return await handleDashboard(req, res, url, { sendJson, serveStatic });
+            return await handleDashboard(req, res, url, { sendJson, serveStatic, google, deliverEmail: handlers.deliverEmail, emailStatus: handlers.emailStatus });
         }
         if (await google.handle(req, res)) return;
-        if (await handleOidc(req, res, { google })) return;
+        if (await handleOidc(req, res, { google, deliverEmail: handlers.deliverEmail, emailStatus: handlers.emailStatus })) return;
         if (req.method === 'GET' || req.method === 'HEAD') {
             if (req.method === 'HEAD') {
                 res.writeHead(405, { 'Cache-Control': 'no-store' });
                 return res.end();
             }
-            return await handleGet(req, res, url.pathname);
+            return await handleGet(req, res, url.pathname, handlers);
         }
         if (req.method !== 'POST') {
             return sendJson(res, 405, { ok: false, error: 'method_not_allowed' });
         }
-        return await handlePost(req, res, url.pathname);
+        return await handlePost(req, res, url.pathname, handlers);
     } catch (error) {
         const status = Number(error.statusCode) || 500;
         const code = String(error.code || (status < 500 ? error.message : 'internal_error'));
-        sendJson(res, status, { ok: false, error: code });
+        if (res.headersSent) return void (res.writableEnded || res.end());
+        const extra = {};
+        if (Number.isSafeInteger(error.retryAfter) && error.retryAfter > 0) {
+            extra.retryAfter = error.retryAfter;
+            res.setHeader('Retry-After', String(error.retryAfter));
+        }
+        if (Number.isSafeInteger(error.attemptsRemaining)) extra.attemptsRemaining = error.attemptsRemaining;
+        sendJson(res, status, { ok: false, error: code, ...extra });
     }
 }
 
+// `options.google`, `options.deliverEmail` and `options.emailStatus` are construction-time test seams;
+// no environment variable or request can select a provider or mail transport.
 export function startService(port, options = {}) {
-    const google = createGoogleAuthHandlers(options.google);
-    const server = http.createServer((req, res) => handle(req, res, google));
+    const deliverEmail = options.deliverEmail || sendAuthCode;
+    const emailStatus = options.emailStatus || (options.deliverEmail ? async () => ({ available: true }) : getEmailAuthCodeStatus);
+    const google = createGoogleAuthHandlers({ ...options.google, deliverEmail: options.google?.deliverEmail || deliverEmail });
+    const handlers = { google, deliverEmail, emailStatus, wizard: createSsoWizardHandlers({ deliverEmail, emailStatus }) };
+    const server = http.createServer((req, res) => handle(req, res, handlers));
     server.listen(port, () => {
         console.log(`[userPersisto] service listening on ${port}`);
     });

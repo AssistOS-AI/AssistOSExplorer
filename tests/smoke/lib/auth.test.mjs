@@ -5,8 +5,34 @@ import {
   assertDistinctAuthenticatedPrincipals,
   hasAuthenticatedSession,
   normalizePrincipalComponent,
+  readEmailCode,
+  totpToken,
   validateAuthenticatedPrincipal,
 } from './auth.mjs';
+
+test('authenticator codes follow RFC 6238 for a base32 secret', () => {
+  const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+  assert.equal(totpToken(secret, 59_000), '287082');
+  assert.equal(totpToken(secret, 1_111_111_109_000), '081804');
+  assert.equal(totpToken('gezd gnbv gy3t qojq gezd gnbv gy3t qojq', 59_000), '287082');
+  assert.throws(() => totpToken('not base32!'), /base32/);
+  assert.throws(() => totpToken(''), /empty/);
+});
+
+test('email codes come only from the configured command and must be newer than the baseline', async () => {
+  await assert.rejects(readEmailCode('member@example.test', { command: '' }), /BLOCKED: SMOKE_EMAIL_CODE_COMMAND/);
+  const outputs = ['old 111111', 'old 111111', 'log 111111\nlog 222222'];
+  const seen = [];
+  const code = await readEmailCode('member@example.test', {
+    command: 'print-code', after: '111111', intervalMs: 1, timeoutMs: 5_000,
+    run: async (command, email) => { seen.push([command, email]); return outputs.shift() ?? ''; },
+  });
+  assert.equal(code, '222222');
+  assert.deepEqual(seen[0], ['print-code', 'member@example.test']);
+  await assert.rejects(readEmailCode('member@example.test', {
+    command: 'print-code', after: '333333', intervalMs: 1, timeoutMs: 20, run: async () => 'still 333333',
+  }), /No new UserPersisto email code/);
+});
 
 test('session detection uses the account-neutral auth endpoint', async () => {
   const requested = [];

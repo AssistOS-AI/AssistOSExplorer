@@ -8,9 +8,10 @@ import {
 import {
   assertDistinctAuthenticatedPrincipals,
   readAuthenticatedPrincipal,
+  signIn,
 } from '../lib/auth.mjs';
 import {
-  createUserThroughAdministration,
+  assignRoleThroughAdministration,
   deleteUserThroughAdministrationIfPresent,
   openAdminUsers,
 } from '../lib/admin-users.mjs';
@@ -34,16 +35,21 @@ import {
   sendWebMeetChat,
 } from '../lib/webmeet.mjs';
 
-const generatedPassword = `e2e-${crypto.randomBytes(18).toString('base64url')}`;
+// Passwordless accounts: each signs up with an email code, then the
+// administrator grants its role. Codes come from SMOKE_EMAIL_CODE_COMMAND.
+const accountSuffix = `${smokeConfig.runId}-${crypto.randomBytes(4).toString('hex')}`.toLowerCase();
 const ownerAccount = Object.freeze({
-  username: `e2e-owner-${smokeConfig.runId}`,
-  password: generatedPassword,
+  username: `e2e-owner-${accountSuffix}`,
+  loginEmail: `e2e-owner-${accountSuffix}@${smokeConfig.accountEmailDomain}`,
+  signInMethod: 'emailCode',
 });
 const memberAccount = Object.freeze({
-  username: `e2e-member-${smokeConfig.runId}`,
-  password: generatedPassword,
+  username: `e2e-member-${accountSuffix}`,
+  loginEmail: `e2e-member-${accountSuffix}@${smokeConfig.accountEmailDomain}`,
+  signInMethod: 'emailCode',
 });
-const createdUsernames = [];
+const createdAccounts = [];
+const ACCOUNT_PAGE = '/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/';
 
 function documentRow(page, documentPath) {
   return page.locator(`tr[data-entry-path="${documentPath}"]`);
@@ -260,28 +266,33 @@ test.describe('Explorer QA acceptance', () => {
       baseURL: smokeConfig.baseURL,
       ignoreHTTPSErrors: true,
     });
-    const page = await context.newPage();
     try {
-      const dialog = await openAdminUsers(page);
-      for (const account of [memberAccount, ownerAccount]) {
-        await deleteUserThroughAdministrationIfPresent(dialog, account.username);
+      // Each account is created by its own completed email-code sign-up.
+      for (const account of [ownerAccount, memberAccount]) {
+        const signUpContext = await browser.newContext({ baseURL: smokeConfig.baseURL, ignoreHTTPSErrors: true });
+        try {
+          await signIn(await signUpContext.newPage(), account, ACCOUNT_PAGE);
+          createdAccounts.push(account);
+        } finally {
+          await signUpContext.close();
+        }
       }
-      await createUserThroughAdministration(dialog, ownerAccount, {
+      const dialog = await openAdminUsers(await context.newPage());
+      await assignRoleThroughAdministration(dialog, ownerAccount, {
         name: `E2E Owner ${smokeConfig.runId}`,
         role: 'admin',
       });
-      createdUsernames.push(ownerAccount.username);
-      await createUserThroughAdministration(dialog, memberAccount, {
+      await assignRoleThroughAdministration(dialog, memberAccount, {
         name: `E2E Member ${smokeConfig.runId}`,
+        role: 'user',
       });
-      createdUsernames.push(memberAccount.username);
     } finally {
       await context.close();
     }
   });
 
   test.afterAll(async ({ browser }, testInfo) => {
-    if (!createdUsernames.length) return;
+    if (!createdAccounts.length) return;
     testInfo.setTimeout(Math.max(smokeConfig.timeouts.test, 180_000));
     const context = await browser.newContext({
       baseURL: smokeConfig.baseURL,
@@ -290,8 +301,8 @@ test.describe('Explorer QA acceptance', () => {
     const page = await context.newPage();
     try {
       const dialog = await openAdminUsers(page);
-      for (const username of [...createdUsernames].reverse()) {
-        await deleteUserThroughAdministrationIfPresent(dialog, username);
+      for (const account of [...createdAccounts].reverse()) {
+        await deleteUserThroughAdministrationIfPresent(dialog, account);
       }
     } finally {
       await context.close();

@@ -1,10 +1,7 @@
 import { scryptSync, randomBytes, timingSafeEqual } from 'node:crypto';
-import { getStore, flush } from '../store.mjs';
-import { getUserByEmail, getUserById, sanitizeUser } from '../users.mjs';
-import { recordAudit } from '../audit.mjs';
-import { clearLoginFailures, isLoginLocked, recordLoginFailure, withLoginAttemptLock } from './login-attempts.mjs';
-import { credentialVersion } from './credentialVersion.mjs';
 
+// Hashing helpers for the deployment-configured administrator password. Ordinary
+// accounts are passwordless: there is no password registration, setter or login.
 const N = 16384;
 const r = 8;
 const p = 1;
@@ -40,43 +37,4 @@ export function verifyPassword(password, stored) {
     } catch {
         return false;
     }
-}
-
-const DUMMY_PASSWORD_HASH = hashPassword(randomBytes(32).toString('base64url'));
-
-export function loginWithPassword(email, password, { includeCredentialProof = false } = {}) {
-    const normalizedEmail = String(email || '').trim().toLowerCase();
-    return withLoginAttemptLock(normalizedEmail, async () => {
-        const user = await getUserByEmail(normalizedEmail);
-        const valid = verifyPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
-        if (!user) return { ok: false, reason: 'invalid_credentials' };
-        if (user.status !== 'active') return { ok: false, reason: 'user_blocked' };
-        if (isLoginLocked(user)) return { ok: false, reason: 'account_locked' };
-        if (!user.passwordHash || !valid) {
-            await recordLoginFailure(user);
-            await recordAudit({ actorId: user.id, action: 'auth.password.login', target: user.id, result: 'denied', reason: 'invalid_credentials' });
-            return { ok: false, reason: 'invalid_credentials' };
-        }
-        const version = includeCredentialProof ? credentialVersion('password', user.passwordHash) : undefined;
-        const fresh = await clearLoginFailures(user);
-        await recordAudit({ actorId: user.id, action: 'auth.password.login', target: user.id, result: 'ok' });
-        return { ok: true, user: sanitizeUser(fresh), ...(includeCredentialProof ? { credentialVersion: version } : {}) };
-    });
-}
-
-export async function setPassword({ userId, newPassword, actorId }) {
-    const user = await getUserById(userId);
-    if (!user) {
-        throw Object.assign(new Error('User not found.'), { code: 'user_not_found', statusCode: 404 });
-    }
-    await withLoginAttemptLock(user.email, async () => {
-        const store = await getStore();
-        await store.updateUser(user.id, {
-            passwordHash: hashPassword(newPassword),
-            loginAttempts: 0,
-            lastLoginAttempt: ''
-        });
-        await flush();
-    });
-    await recordAudit({ actorId: actorId || userId, action: 'auth.password.set', target: userId, result: 'ok' });
 }

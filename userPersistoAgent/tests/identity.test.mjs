@@ -5,9 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.PERSISTENCE_FOLDER = mkdtempSync(join(tmpdir(), 'userpersisto-identity-'));
+process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
 process.env.USERPERSISTO_DEV_BOOTSTRAP = 'true';
 
-const { ensureSeedData, ensureDevAdmin } = await import('../lib/bootstrap.mjs');
+const bootstrap = await import('../lib/bootstrap.mjs');
+const { ensureSeedData } = bootstrap;
+const { getInstallationSetup } = await import('../lib/setup.mjs');
 const users = await import('../lib/users.mjs');
 const authz = await import('../lib/authorization.mjs');
 const { resetStoreForTests } = await import('../lib/store.mjs');
@@ -39,9 +42,11 @@ test('selfRegistered users lack explorer.access', async () => {
     assert.deepEqual(caps.sort(), ['selfregistered.dashboard.access']);
 });
 
-test('dev bootstrap only runs on an empty user table', async () => {
-    await ensureDevAdmin();
+test('no account is seeded, even with the development flag: setup waits for the first completed sign-in', async () => {
+    assert.equal(typeof bootstrap.ensureDevAdmin, 'undefined');
+    await ensureSeedData();
     assert.equal(await users.getUserByEmail('admin@dev.local'), null);
+    assert.equal((await getInstallationSetup()).complete, false);
 });
 
 test('profile aggregates identity', async () => {

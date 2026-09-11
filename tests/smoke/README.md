@@ -42,12 +42,34 @@ uses the exact Ploinky checkout mounted read-only at `/opt/ploinky`. A different
 checkout is rejected even when it happens to name the same commit.
 
 The sign-in helper requires existing UserPersisto test accounts; it does not seed
-local browser credentials or create accounts. The three release gates require
-two distinct accounts. Complete the fresh
-installation's **Create admin account** flow, register the second account, and
-have the administrator grant that account the `user` role. Later public
-registration defaults to `selfRegistered`, which permits the account dashboard
-but does not permit Explorer access.
+local browser credentials. UserPersisto accounts are passwordless. The three
+release gates require two distinct accounts:
+
+1. Configure the deployment's administrator password with
+   `ploinky var USERPERSISTO_ADMIN_PASSWORD '<value>'`, restart UserPersisto,
+   and complete **Administrator sign-in** on the fresh installation. The first
+   completed sign-in becomes the administrator, so do this before any other
+   account signs in. A password-created administrator's Router username is
+   `administrator`.
+2. Sign up the second account with an email code, then have the administrator
+   grant it the `user` role. Later public sign-ups receive `selfRegistered`,
+   which permits the account dashboard but not Explorer access.
+
+The primary account signs in through **Administrator sign-in** with
+`SMOKE_ADMIN_PASSWORD` (no default; a missing value fails the test as BLOCKED).
+Other accounts use an email code or an enrolled authenticator app:
+`SMOKE_SIGN_IN_METHOD` and `SMOKE_SECONDARY_SIGN_IN_METHOD` accept
+`adminPassword`, `emailCode` (the secondary default) or `totp`. Email codes come
+from `SMOKE_EMAIL_CODE_COMMAND`, a shell command that prints the newest code for
+the address in `$SMOKE_EMAIL` (for example a test-mailbox reader, or the agent
+log when `USERPERSISTO_DEV_BOOTSTRAP=true` makes an undelivered code visible as
+`DEVELOPMENT email code`); the helper only accepts a code different from the one
+visible before the send. `SMOKE_TOTP_SECRET` and `SMOKE_SECONDARY_TOTP_SECRET`
+supply an enrolled authenticator's base32 secret instead. Treat all of these as
+secrets. `SMOKE_PASSWORD` and `SMOKE_SECONDARY_PASSWORD` apply only to Ploinky's
+local `/auth/login` form, never to UserPersisto. The helper refuses passwordless
+sign-in while the installation is unclaimed so a test member cannot become its
+administrator.
 
 `SMOKE_USERNAME` and `SMOKE_SECONDARY_USERNAME` identify the expected Router
 usernames when known. Set `SMOKE_LOGIN_EMAIL` and
@@ -56,32 +78,36 @@ independent account selectors and may differ from the stored usernames. Login
 emails otherwise default to the corresponding `SMOKE_USERNAME` value.
 
 ```bash
-SMOKE_USERNAME=owner SMOKE_LOGIN_EMAIL=owner@example.test \
-SMOKE_PASSWORD='<owner-password>' \
+SMOKE_USERNAME=administrator SMOKE_ADMIN_PASSWORD='<administrator-password>' \
 SMOKE_SECONDARY_USERNAME=member SMOKE_SECONDARY_LOGIN_EMAIL=member@example.test \
-SMOKE_SECONDARY_PASSWORD='<member-password>' \
+SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
 SMOKE_BASE_URL=http://127.0.0.1:8080 \
 npm test
 ```
 
-For UserPersisto, the helper submits credentials only to its recognized password
-form and verifies the resulting Router principal. A returned username matches
-only the configured username, and a returned email matches only the configured
-login email; either exact normalized field match identifies the configured
-account. The returned username remains the canonical principal label when it is
-present. Both accounts must have distinct immutable user ids and canonical
-principal labels and must not be guests.
+For UserPersisto, the helper drives the sign-in wizard: **Administrator sign-in**
+for the administrator, and Login mode with the account email followed by the
+email code or authenticator for other accounts. It then verifies the resulting
+Router principal. A returned username matches only the configured username, and
+a returned email matches only the configured login email; either exact
+normalized field match identifies the configured account. The returned username
+remains the canonical principal label when it is present. Both accounts must
+have distinct immutable user ids and canonical principal labels and must not be
+guests.
 
 Run the dedicated public QA acceptance gate in headless Chromium with:
 
 ```bash
-SMOKE_USERNAME=admin SMOKE_LOGIN_EMAIL='<qa-admin-email>' \
-SMOKE_PASSWORD='<qa-admin-password>' npm run test:qa
+SMOKE_USERNAME=administrator SMOKE_ADMIN_PASSWORD='<qa-administrator-password>' \
+SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
+npm run test:qa
 ```
 
-`test:qa` is pinned to `https://explorer-qa.axiologic.dev`. It creates two
-run-scoped Explorer users through the Administration UI, runs exactly two
-browser tests, and removes the generated users afterward. The first test
+`test:qa` is pinned to `https://explorer-qa.axiologic.dev`. Its two run-scoped
+Explorer users sign up with email codes under `SMOKE_ACCOUNT_EMAIL_DOMAIN`
+(default `example.test`); the administrator then assigns their roles through the
+Administration UI. It runs exactly two
+browser tests, and blocks the generated users afterward. The first test
 creates a `.docx` under `/Confidential/My Space`, proves the active
 editor is writable OnlyOffice with autosave enabled, makes a browser edit
 without clicking Save, and reopens the document to prove persistence. The
@@ -479,8 +505,9 @@ SMOKE_BROWSER_B_NETWORK_ID=external-net-b \
 SMOKE_BROWSER_A_EXPECTED_EGRESS_IPV4=198.51.100.21 \
 SMOKE_BROWSER_B_EXPECTED_EGRESS_IPV4=198.51.100.22 \
 SMOKE_NETWORK_ECHO_URL=https://echo.test.example/ip \
-SMOKE_USERNAME='<account-a>' SMOKE_PASSWORD='<account-a-password>' \
-SMOKE_SECONDARY_USERNAME='<account-b>' SMOKE_SECONDARY_PASSWORD='<account-b-password>' \
+SMOKE_USERNAME='<account-a>' SMOKE_ADMIN_PASSWORD='<administrator-password>' \
+SMOKE_SECONDARY_USERNAME='<account-b>' SMOKE_SECONDARY_LOGIN_EMAIL='<account-b-email>' \
+SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
 npm run test:webmeet-network-matrix
 ```
 

@@ -8,7 +8,11 @@
 .up-enrollment .up-secondary { background: transparent; color: var(--text-color, #1c2938); border-color: var(--border-color, #cdd5df); }
 .up-enrollment input, .up-enrollment textarea { width: 100%; box-sizing: border-box; min-height: 40px; padding: 10px; border: 1px solid var(--border-color, #cdd5df); border-radius: 6px; color: var(--text-color, #1c2938); background: var(--surface, #fff); font: 14px/1.4 ui-monospace, monospace; }
 .up-enrollment label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
-.up-enrollment .up-totp-setup { display: grid; gap: 16px; padding: 20px; border: 1px solid var(--border-color, #dce3ee); border-radius: 10px; background: var(--button-secondary-background, #f7f9fd); }
+.up-enrollment .up-totp-setup,
+.up-enrollment .up-reauth,
+.up-enrollment .up-contact { display: grid; gap: 16px; padding: 20px; border: 1px solid var(--border-color, #dce3ee); border-radius: 10px; background: var(--button-secondary-background, #f7f9fd); }
+.up-enrollment .up-contact-form { display: grid; gap: 12px; }
+.up-enrollment select { width: 100%; box-sizing: border-box; min-height: 40px; padding: 8px 10px; border: 1px solid var(--border-color, #cdd5df); border-radius: 6px; color: var(--text-color, #1c2938); background: var(--surface, #fff); font: 14px/1.4 system-ui, sans-serif; }
 .up-enrollment details { font-size: 13px; color: var(--secondary-text-color, #586579); }
 .up-enrollment summary { cursor: pointer; margin-bottom: 8px; }
 .up-enrollment-actions { display: flex; gap: 8px; flex-wrap: wrap; }

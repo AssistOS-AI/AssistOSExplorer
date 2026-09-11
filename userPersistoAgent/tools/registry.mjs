@@ -1,14 +1,13 @@
 import { getProfile, authorizeCapability, requireActiveActor } from '../lib/authorization.mjs';
-import { createUser, updateUser, listUsers, setUserRoles } from '../lib/users.mjs';
-import { loginWithPassword, setPassword } from '../lib/auth/password.mjs';
-import { startEmailCode, verifyEmailCode } from '../lib/auth/email-code.mjs';
+import { updateUser, listUsers, setUserRoles } from '../lib/users.mjs';
 import * as passkey from '../lib/auth/passkey.mjs';
 import * as totp from '../lib/auth/totp.mjs';
+import { consumeOperationGrant } from '../lib/auth/operationGrants.mjs';
 import * as credits from '../lib/credits.mjs';
 import * as billing from '../lib/billing.mjs';
 import { getSettings as getAgentSettings, saveSettings as saveAgentSettings } from '../lib/settings.mjs';
 import { getStore } from '../lib/store.mjs';
-import { getAuthPolicy, isAuthMethodEnabled, updateAuthPolicy } from '../lib/policy.mjs';
+import { environmentPolicyOverrides, getAuthPolicy, isAuthMethodEnabled, updateAuthPolicy } from '../lib/policy.mjs';
 import * as oidcClients from '../lib/oidc/clients.mjs';
 import { getGoogleStatus } from '../lib/auth/google.mjs';
 
@@ -76,18 +75,6 @@ const HANDLERS = {
             includeRoleCounts: args.includeRoleCounts ?? false,
         });
     },
-    userpersisto_user_create: async (args, context) => {
-        const actorId = await requireAdmin(context);
-        return createUser({
-            email: args.email,
-            displayName: args.displayName || '',
-            source: 'admin',
-            roles: args.roles || ['user'],
-            password: args.password || '',
-            username: args.username || '',
-            actorId,
-        });
-    },
     userpersisto_user_update: async (args, context) => {
         const actorId = await requireAdmin(context);
         return updateUser(args.userId, {
@@ -101,39 +88,14 @@ const HANDLERS = {
         await requireAdmin(context);
         return setUserRoles(args.userId, args.roles, { actorId: context.actorUserId });
     },
-    userpersisto_auth_password_login: async (args) => {
-        await requireAuthMethod('password');
-        return loginWithPassword(args.email, args.password);
-    },
-    userpersisto_auth_password_set: async (args, context) => {
-        const actor = requireActor(context);
-        await requireActiveActor(actor);
-        let target = actor;
-        if (args.userId && args.userId !== actor) {
-            await requireAdmin(context);
-            target = args.userId;
-        }
-        await setPassword({ userId: target, newPassword: args.newPassword, actorId: actor });
-        return { ok: true };
-    },
-    userpersisto_auth_email_code_start: async (args) => {
-        const started = await startEmailCode({
-            email: args.email,
-            purpose: args.purpose || 'login',
-            correlationId: args.correlationId || '',
-            createSelfRegistered: args.createSelfRegistered === true
-        });
-        return { challengeId: started.challengeId };
-    },
-    userpersisto_auth_email_code_verify: async (args) => {
-        await requireAuthMethod('emailCode');
-        return verifyEmailCode({ challengeId: args.challengeId, code: args.code });
-    },
+    // Enrollment starts only with a single-use grant from fresh My Account
+    // re-authentication, bound to this actor, operation and account generation.
     userpersisto_passkey_registration_options: async (args, context) => {
         await requireAuthMethod('passkey');
         const actor = requireActor(context);
         await requireActiveActor(actor);
-        return passkey.registrationOptions({ userId: actor, origin: args.origin, rpId: args.rpId });
+        const { generation } = await consumeOperationGrant({ userId: actor, operation: 'passkey.register', grant: args.grant });
+        return passkey.registrationOptions({ userId: actor, origin: args.origin, rpId: args.rpId, generation });
     },
     userpersisto_passkey_registration_verify: async (args, context) => {
         await requireAuthMethod('passkey');
@@ -146,34 +108,18 @@ const HANDLERS = {
             origin: args.origin,
         });
     },
-    userpersisto_passkey_login_options: async (args) => {
-        await requireAuthMethod('passkey');
-        return passkey.loginOptions({ email: args.email, origin: args.origin, rpId: args.rpId });
-    },
-    userpersisto_passkey_login_verify: async (args) => {
-        await requireAuthMethod('passkey');
-        return passkey.loginVerify({
-            email: args.email,
-            assertion: args.assertion,
-            challengeKey: args.challengeKey,
-            origin: args.origin
-        });
-    },
-    userpersisto_totp_setup_start: async (_args, context) => {
+    userpersisto_totp_setup_start: async (args, context) => {
         await requireAuthMethod('totp');
         const actor = requireActor(context);
         await requireActiveActor(actor);
-        return totp.setupStart({ userId: actor });
+        const { generation } = await consumeOperationGrant({ userId: actor, operation: 'totp.enroll', grant: args.grant });
+        return totp.setupStart({ userId: actor, generation });
     },
     userpersisto_totp_setup_verify: async (args, context) => {
         await requireAuthMethod('totp');
         const actor = requireActor(context);
         await requireActiveActor(actor);
-        return totp.setupVerify({ userId: actor, token: args.token });
-    },
-    userpersisto_totp_login_verify: async (args) => {
-        await requireAuthMethod('totp');
-        return totp.loginVerify({ email: args.email, token: args.token });
+        return totp.setupVerify({ userId: actor, token: args.token, setupId: args.setupId });
     },
     userpersisto_credits_balance: async (args, context) => {
         const actor = requireActor(context);
@@ -266,10 +212,8 @@ const HANDLERS = {
         await requireAdmin(context, 'admin.agentSettings.manage');
         return {
             ...await getAuthPolicy(),
-            environmentOverrides: [
-                'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS',
-                'USERPERSISTO_DEFAULT_REGISTRATION_ROLE', 'USERPERSISTO_SELF_REGISTRATION_ENABLED',
-            ].filter((name) => String(process.env[name] || '').trim()),
+            registrationRole: 'selfRegistered',
+            environmentOverrides: environmentPolicyOverrides(),
         };
     },
     userpersisto_auth_policy_set: async (args, context) => {

@@ -33,16 +33,20 @@ function context(record) {
 }
 
 function parentKey(payload) {
-    return JSON.stringify([payload.flow, payload.flow === 'explorer' ? payload.parent.requestId : payload.parent.uid]);
+    return JSON.stringify([payload.flow, payload.flow === 'explorer' ? payload.parent.requestId
+        : payload.flow === 'reauth' ? payload.parent.userId : payload.parent.uid]);
 }
 
 function validatePayload(payload, expiresAt, now) {
     const parent = payload?.parent;
-    if (!['explorer', 'oidc'].includes(payload?.flow) || !parent || typeof parent !== 'object'
+    if (!['explorer', 'oidc', 'reauth'].includes(payload?.flow) || !parent || typeof parent !== 'object'
         || !Number.isSafeInteger(parent.expiresAt) || parent.expiresAt < expiresAt
         || typeof parent.origin !== 'string' || typeof parent.redirectUri !== 'string'
         || (payload.flow === 'explorer' && (!parent.requestId || !parent.state))
         || (payload.flow === 'oidc' && (!parent.uid || !parent.clientId))
+        || (payload.flow === 'reauth' && (typeof parent.userId !== 'string' || !parent.userId
+            || !Number.isSafeInteger(parent.generation) || parent.generation < 0
+            || !['passkey.register', 'totp.enroll', 'contact.verify'].includes(parent.operation)))
         || !Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + GOOGLE_TRANSACTION_TTL_MS) {
         throw transactionError();
     }

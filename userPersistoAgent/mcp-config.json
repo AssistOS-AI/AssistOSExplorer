@@ -74,31 +74,9 @@
             "env": { "TOOL_NAME": "userpersisto_user_list" }
         },
         {
-            "name": "userpersisto_user_create",
-            "title": "Create user",
-            "description": "Admin: create a UserPersisto user.",
-            "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
-            "cwd": "/code",
-            "timeoutMs": 30000,
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "email": { "type": "string", "minLength": 5 },
-                    "displayName": { "type": "string" },
-                    "roles": { "type": "array", "items": { "type": "string" } },
-                    "password": { "type": "string" }
-                },
-                "required": ["email"],
-                "additionalProperties": false
-            },
-            "tags": ["admin"],
-            "env": { "TOOL_NAME": "userpersisto_user_create" }
-        },
-        {
             "name": "userpersisto_user_update",
             "title": "Update user",
-            "description": "Admin: update a UserPersisto user.",
+            "description": "Admin: update a user's username, display name or status. Sign-in email addresses cannot be changed here.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -107,7 +85,6 @@
                 "type": "object",
                 "properties": {
                     "userId": { "type": "string", "minLength": 1 },
-                    "email": { "type": "string", "minLength": 5 },
                     "username": { "type": "string", "maxLength": 64 },
                     "displayName": { "type": "string" },
                     "status": { "type": "string", "enum": ["active", "blocked"] }
@@ -139,89 +116,9 @@
             "env": { "TOOL_NAME": "userpersisto_user_roles_update" }
         },
         {
-            "name": "userpersisto_auth_password_login",
-            "title": "Password login",
-            "description": "Internal: verify password credentials.",
-            "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
-            "cwd": "/code",
-            "timeoutMs": 30000,
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "email": { "type": "string", "minLength": 5 },
-                    "password": { "type": "string", "minLength": 1 }
-                },
-                "required": ["email", "password"],
-                "additionalProperties": false
-            },
-            "tags": ["internal"],
-            "env": { "TOOL_NAME": "userpersisto_auth_password_login" }
-        },
-        {
-            "name": "userpersisto_auth_password_set",
-            "title": "Set password",
-            "description": "Set the current user's password; admins may target another user.",
-            "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
-            "cwd": "/code",
-            "timeoutMs": 30000,
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "userId": { "type": "string" },
-                    "newPassword": { "type": "string", "minLength": 8, "maxLength": 1024 }
-                },
-                "required": ["newPassword"],
-                "additionalProperties": false
-            },
-            "env": { "TOOL_NAME": "userpersisto_auth_password_set" }
-        },
-        {
-            "name": "userpersisto_auth_email_code_start",
-            "title": "Start email code",
-            "description": "Internal: create a hashed email-code challenge.",
-            "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
-            "cwd": "/code",
-            "timeoutMs": 30000,
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "email": { "type": "string", "minLength": 5 },
-                    "purpose": { "type": "string" },
-                    "correlationId": { "type": "string" }
-                },
-                "required": ["email"],
-                "additionalProperties": false
-            },
-            "tags": ["internal"],
-            "env": { "TOOL_NAME": "userpersisto_auth_email_code_start" }
-        },
-        {
-            "name": "userpersisto_auth_email_code_verify",
-            "title": "Verify email code",
-            "description": "Internal: verify an email-code challenge.",
-            "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
-            "cwd": "/code",
-            "timeoutMs": 30000,
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "challengeId": { "type": "string", "minLength": 1 },
-                    "code": { "type": "string", "pattern": "^\\d{6}$" }
-                },
-                "required": ["challengeId", "code"],
-                "additionalProperties": false
-            },
-            "tags": ["internal"],
-            "env": { "TOOL_NAME": "userpersisto_auth_email_code_verify" }
-        },
-        {
             "name": "userpersisto_passkey_registration_options",
             "title": "Passkey registration options",
-            "description": "Start passkey registration for the authenticated user.",
+            "description": "Start passkey registration for the authenticated user. Requires a single-use operation grant from fresh My Account re-authentication.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -230,8 +127,10 @@
                 "type": "object",
                 "properties": {
                     "origin": { "type": "string", "minLength": 1, "maxLength": 2048 },
-                    "rpId": { "type": "string", "minLength": 1, "maxLength": 253 }
+                    "rpId": { "type": "string", "minLength": 1, "maxLength": 253 },
+                    "grant": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
                 },
+                "required": ["grant"],
                 "additionalProperties": false
             },
             "env": { "TOOL_NAME": "userpersisto_passkey_registration_options" }
@@ -257,79 +156,25 @@
             "env": { "TOOL_NAME": "userpersisto_passkey_registration_verify" }
         },
         {
-            "name": "userpersisto_passkey_login_options",
-            "title": "Passkey login options",
-            "description": "Internal: start passkey login for an email address.",
-            "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
-            "cwd": "/code",
-            "timeoutMs": 30000,
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "email": { "type": "string", "minLength": 5 },
-                    "origin": { "type": "string", "minLength": 1, "maxLength": 2048 },
-                    "rpId": { "type": "string", "minLength": 1, "maxLength": 253 }
-                },
-                "required": ["email"],
-                "additionalProperties": false
-            },
-            "tags": ["internal"],
-            "env": { "TOOL_NAME": "userpersisto_passkey_login_options" }
-        },
-        {
-            "name": "userpersisto_passkey_login_verify",
-            "title": "Verify passkey login",
-            "description": "Internal: verify passkey login.",
-            "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
-            "cwd": "/code",
-            "timeoutMs": 30000,
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "email": { "type": "string", "minLength": 5 },
-                    "assertion": { "type": "object", "additionalProperties": true },
-                    "challengeKey": { "type": "string", "minLength": 1 },
-                    "origin": { "type": "string", "minLength": 1, "maxLength": 2048 }
-                },
-                "required": ["email", "assertion", "challengeKey"],
-                "additionalProperties": false
-            },
-            "tags": ["internal"],
-            "env": { "TOOL_NAME": "userpersisto_passkey_login_verify" }
-        },
-        {
             "name": "userpersisto_totp_setup_start",
             "title": "Start TOTP setup",
-            "description": "Start TOTP setup for the authenticated user.",
+            "description": "Stage a new authenticator for the authenticated user; an existing authenticator keeps working until verification replaces it. Requires a single-use operation grant from fresh My Account re-authentication.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
             "timeoutMs": 30000,
-            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "inputSchema": {
+                "type": "object",
+                "properties": { "grant": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" } },
+                "required": ["grant"],
+                "additionalProperties": false
+            },
             "env": { "TOOL_NAME": "userpersisto_totp_setup_start" }
         },
         {
             "name": "userpersisto_totp_setup_verify",
             "title": "Verify TOTP setup",
-            "description": "Verify and enable TOTP for the authenticated user.",
-            "command": "sh",
-            "args": ["tools/userpersisto_tool.sh"],
-            "cwd": "/code",
-            "timeoutMs": 30000,
-            "inputSchema": {
-                "type": "object",
-                "properties": { "token": { "type": "string", "pattern": "^\\d{6}$" } },
-                "required": ["token"],
-                "additionalProperties": false
-            },
-            "env": { "TOOL_NAME": "userpersisto_totp_setup_verify" }
-        },
-        {
-            "name": "userpersisto_totp_login_verify",
-            "title": "Verify TOTP login",
-            "description": "Internal: verify a TOTP login token.",
+            "description": "Verify the staged authenticator and enable it for the authenticated user. Replacing an existing authenticator signs out existing sessions.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -337,14 +182,13 @@
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "email": { "type": "string", "minLength": 5 },
-                    "token": { "type": "string", "pattern": "^\\d{6}$" }
+                    "token": { "type": "string", "pattern": "^\\d{6}$" },
+                    "setupId": { "type": "string", "minLength": 1, "maxLength": 64 }
                 },
-                "required": ["email", "token"],
+                "required": ["token", "setupId"],
                 "additionalProperties": false
             },
-            "tags": ["internal"],
-            "env": { "TOOL_NAME": "userpersisto_totp_login_verify" }
+            "env": { "TOOL_NAME": "userpersisto_totp_setup_verify" }
         },
         {
             "name": "userpersisto_credits_balance",
@@ -548,7 +392,7 @@
         {
             "name": "userpersisto_auth_policy_get",
             "title": "Get authentication policy",
-            "description": "Admin: read enabled login methods, self-registration, default role, and redirect origins.",
+            "description": "Admin: read enabled sign-in methods, self-registration, the fixed selfRegistered signup role, redirect origins and active environment overrides.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -560,7 +404,7 @@
         {
             "name": "userpersisto_auth_policy_set",
             "title": "Set authentication policy",
-            "description": "Admin: configure explicitly enabled login methods and self-registration policy.",
+            "description": "Admin: configure enabled passwordless sign-in methods, self-registration and redirect origins. Public signup always receives selfRegistered.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -572,10 +416,9 @@
                         "type": "array",
                         "minItems": 1,
                         "uniqueItems": true,
-                        "items": { "type": "string", "enum": ["password", "emailCode", "passkey", "totp", "google"] }
+                        "items": { "type": "string", "enum": ["emailCode", "passkey", "totp", "google"] }
                     },
                     "selfRegistrationEnabled": { "type": "boolean" },
-                    "defaultRegistrationRole": { "type": "string", "minLength": 1 },
                     "allowedRedirectOrigins": { "type": "array", "items": { "type": "string", "format": "uri" } }
                 },
                 "minProperties": 1,

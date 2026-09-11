@@ -70,18 +70,12 @@ export class UserpersistoSettings {
         this.usersPageLabel = this.element.querySelector("#usersPageLabel");
         this.usersPreviousButton = this.element.querySelector("#usersPreviousButton");
         this.usersNextButton = this.element.querySelector("#usersNextButton");
-        this.createUserUsernameInput = this.element.querySelector("#createUserUsername");
         this.policySaveButton = this.element.querySelector('[data-local-action="saveAuthPolicy"]');
-        this.createUserEmailInput = this.element.querySelector("#createUserEmail");
-        this.createUserDisplayNameInput = this.element.querySelector("#createUserDisplayName");
-        this.createUserPasswordInput = this.element.querySelector("#createUserPassword");
-        this.createUserRoleInput = this.element.querySelector("#createUserRole");
-        this.authMethodInputs = Object.fromEntries(["password", "emailCode", "passkey", "totp", "google"].map((method) => [
+        this.authMethodInputs = Object.fromEntries(["emailCode", "passkey", "totp", "google"].map((method) => [
             method,
             this.element.querySelector(`[data-auth-method="${method}"]`)
         ]));
         this.selfRegistrationInput = this.element.querySelector("#selfRegistrationEnabled");
-        this.defaultRegistrationRoleInput = this.element.querySelector("#defaultRegistrationRole");
         this.allowedRedirectOriginsInput = this.element.querySelector("#allowedRedirectOrigins");
         this.authPolicySourceEl = this.element.querySelector("#authPolicySource");
         this.googleStatusEl = this.element.querySelector("#googleProviderStatus");
@@ -190,7 +184,6 @@ export class UserpersistoSettings {
                 if (input) input.checked = enabled.has(method);
             }
             if (this.selfRegistrationInput) this.selfRegistrationInput.checked = policy.selfRegistrationEnabled !== false;
-            if (this.defaultRegistrationRoleInput) this.defaultRegistrationRoleInput.value = policy.defaultRegistrationRole || "selfRegistered";
             if (this.allowedRedirectOriginsInput) this.allowedRedirectOriginsInput.value = (policy.allowedRedirectOrigins || []).join("\n");
             if (this.authPolicySourceEl) this.authPolicySourceEl.textContent = policy.environmentOverrides?.length
                 ? `Effective environment overrides: ${policy.environmentOverrides.join(", ")}. Saved policy does not replace these operator settings.`
@@ -260,7 +253,6 @@ export class UserpersistoSettings {
             await this.callTool("userpersisto_auth_policy_set", {
                 enabledAuthMethods,
                 selfRegistrationEnabled: this.selfRegistrationInput?.checked === true,
-                defaultRegistrationRole: this.defaultRegistrationRoleInput?.value || "selfRegistered",
                 allowedRedirectOrigins: String(this.allowedRedirectOriginsInput?.value || "")
                     .split(/\r?\n|,/)
                     .map((value) => value.trim())
@@ -363,36 +355,6 @@ export class UserpersistoSettings {
         return this.state.users;
     }
 
-    async createUser() {
-        if (!this.isAdministrator() || this.state.userBusy) return;
-        if ([this.createUserUsernameInput, this.createUserEmailInput].some((input) => input?.reportValidity?.() === false)) return;
-        this.state.userBusy = true;
-        try {
-            const role = this.createUserRoleInput?.value || "user";
-            await this.callTool("userpersisto_user_create", {
-                username: this.createUserUsernameInput?.value || "",
-                email: this.createUserEmailInput?.value || "",
-                displayName: this.createUserDisplayNameInput?.value || "",
-                password: this.createUserPasswordInput?.value || "",
-                roles: [role]
-            });
-            if (!this.isAdministrator()) return;
-            [this.createUserUsernameInput, this.createUserEmailInput, this.createUserDisplayNameInput, this.createUserPasswordInput].forEach((input) => {
-                if (input) input.value = "";
-            });
-            if (this.userSearchInput) {
-                this.userSearchInput.value = "";
-            }
-            await this.loadUsersPage(0);
-            if (this.isAdministrator()) this.setStatus("User created.");
-        } catch (error) {
-            if (authorizationFailure(error)) this.revokeAdministrativeAccess();
-            this.setStatus(error?.message || "Failed to create user.", "error");
-        } finally {
-            this.state.userBusy = false;
-        }
-    }
-
     renderUsers() {
         if (!this.usersListEl) return;
         const users = this.filteredUsers();
@@ -411,7 +373,7 @@ export class UserpersistoSettings {
                         <p class="userpersisto-row-meta">${escapeHtml(user.id)} · Roles: ${escapeHtml(roles.join(", ") || "none")} · Status: ${escapeHtml(user.status || "unknown")}</p>
                     </div>
                     <div class="userpersisto-user-fields">
-                        ${textField("Email", "email", "email", 'required autocomplete="off"')}
+                        <div class="form-item"><span class="form-label">Email</span><span class="userpersisto-row-meta">${escapeHtml(user.email || "")}</span></div>
                         ${textField("Username (optional)", "username", "text", 'minlength="3" maxlength="64" autocomplete="off"')}
                         ${textField("Display name", "displayName", "text", 'maxlength="200" autocomplete="off"')}
                         <label class="form-item"><span class="form-label">Status</span><select class="form-input" data-user-field="status">${["active", "blocked"].map((status) => `<option value="${status}" ${user.status === status ? "selected" : ""}>${status === "active" ? "Active" : "Blocked"}</option>`).join("")}</select></label>
@@ -419,10 +381,6 @@ export class UserpersistoSettings {
                     <div><button type="button" class="general-button" data-user-action="details">Save details</button></div>
                     <fieldset class="userpersisto-role-choices"><legend>Roles</legend>${choices.map((role) => `<label><input type="checkbox" data-user-role value="${escapeHtml(role)}" ${roles.includes(role) ? "checked" : ""}> ${escapeHtml(role)}</label>`).join("")}</fieldset>
                     <div><button type="button" class="gray-button" data-user-action="roles">Save roles</button></div>
-                    <div class="userpersisto-user-fields">
-                        <label class="form-item"><span class="form-label">New password</span><input class="form-input" type="password" data-user-password autocomplete="new-password"></label>
-                    </div>
-                    <div><button type="button" class="gray-button" data-user-action="password">Reset password</button></div>
                 </section>`;
         }).join("");
         this.usersListEl.querySelectorAll("[data-user-action]").forEach((button) => {
@@ -448,12 +406,6 @@ export class UserpersistoSettings {
             name = "userpersisto_user_roles_update";
             args = { userId, roles: [...row.querySelectorAll("[data-user-role]:checked")].map((input) => input.value) };
             success = "User roles saved.";
-        } else if (action === "password") {
-            const password = row.querySelector("[data-user-password]");
-            if (!password?.value) { this.setStatus("Enter a new password.", "error"); return; }
-            name = "userpersisto_auth_password_set";
-            args = { userId, newPassword: password.value };
-            success = "User password reset.";
         } else return;
         this.state.userBusy = true;
         const buttons = [...row.querySelectorAll("button")];
@@ -461,8 +413,6 @@ export class UserpersistoSettings {
         try {
             await this.callTool(name, args);
             if (!this.isAdministrator()) return;
-            const password = row.querySelector("[data-user-password]");
-            if (password) password.value = "";
             // Recheck permissions after edits to the signed-in account, including self-demotion.
             if (userId === this.state.authProfile?.user?.id) await this.refreshAuthProfile();
             else await this.refreshUsers();

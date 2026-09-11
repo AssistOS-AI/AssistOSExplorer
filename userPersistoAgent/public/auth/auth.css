@@ -141,6 +141,46 @@ body {
   font-size: 0.9rem;
 }
 
-.status.error {
+.status.error,
+.status[role="alert"] {
   color: #b3261e;
+}
+
+/* Headings receive programmatic focus on every screen change so screen
+   readers announce it; they are not interactive, so no focus ring. */
+.auth-panel h1:focus {
+  outline: none;
+}
+
+.auth-method-list {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-method-list button {
+  background: #fff;
+  color: #172033;
+  border: 1px solid #cbd3df;
+  text-align: left;
+}
+
+.auth-method-list button:hover {
+  border-color: #1652c7;
+}
+
+.auth-admin-switch {
+  margin-top: 4px;
+}
+
+.auth-timer {
+  margin: 4px 0 0;
+  color: #48617e;
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+@media (max-width: 380px) {
+  .auth-panel {
+    padding: 16px;
+  }
 }

@@ -11,7 +11,6 @@ textarea.form-input { resize: vertical; }
 .gray-button { background: #f6f8fb; color: #1c2938; }
 button:disabled { opacity: .55; cursor: default; }
 .userpersisto-list { max-height: none; overflow: visible; }
-.userpersisto-create-user { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 20px; background: white; }
 .userpersisto-user-fields { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .userpersisto-row.user-editor { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 20px; background: white; }
 .userpersisto-policy { border: 0; }
@@ -19,7 +18,7 @@ button:disabled { opacity: .55; cursor: default; }
 .userpersisto-status { min-height: 22px; overflow-wrap: anywhere; }
 @media (max-width: 720px) {
     .management-shell { width: calc(100% - 32px); }
-    .userpersisto-create-user, .userpersisto-user-fields { grid-template-columns: 1fr; }
+    .userpersisto-user-fields { grid-template-columns: 1fr; }
     .userpersisto-auth-methods-header { flex-wrap: wrap; }
 }
 

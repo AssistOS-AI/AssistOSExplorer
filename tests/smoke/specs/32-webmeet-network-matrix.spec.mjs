@@ -83,9 +83,14 @@ test.describe('WebMeet native external-network matrix @external', () => {
     expect(networkA).not.toBe(networkB);
     expect(expectedEgressA).not.toBe(expectedEgressB);
     required('SMOKE_USERNAME');
-    required('SMOKE_PASSWORD');
     required('SMOKE_SECONDARY_USERNAME');
-    required('SMOKE_SECONDARY_PASSWORD');
+    // UserPersisto accounts are passwordless; only the designated administrator
+    // may use the deployment-configured administrator password.
+    for (const account of [smokeConfig.primaryUser, smokeConfig.secondaryUser]) {
+      if (account.signInMethod === 'adminPassword') required('SMOKE_ADMIN_PASSWORD');
+      else if (account.signInMethod === 'totp') expect(account.totpSecret, 'an enrolled authenticator secret is required').toBeTruthy();
+      else required('SMOKE_EMAIL_CODE_COMMAND');
+    }
     expect(
       normalizePrincipalComponent(smokeConfig.primaryUser.username, 'primary configured account username'),
     ).not.toBe(normalizePrincipalComponent(smokeConfig.secondaryUser.username, 'secondary configured account username'));

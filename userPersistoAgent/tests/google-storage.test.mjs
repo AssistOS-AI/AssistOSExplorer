@@ -12,6 +12,7 @@ import { TYPES } from '../lib/schema.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, getUserByEmail, getUserRoles } from '../lib/users.mjs';
 import { completeGoogleIdentity, GOOGLE_ISSUER } from '../lib/externalIdentities.mjs';
+import * as setup from './helpers/setup.mjs';
 import { createGoogleTransaction, readGoogleTransaction, transitionGoogleTransaction, prepareGoogleTransactionTransition, hashGoogleState } from '../lib/auth/googleTransactions.mjs';
 
 let folder;
@@ -23,9 +24,13 @@ async function fixture() {
     folder = await mkdtemp(join(tmpdir(), 'userpersisto-google-storage-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'isolated-google-storage-test-key';
-    process.env.USERPERSISTO_AUTH_METHODS = 'password,google';
+    process.env.USERPERSISTO_AUTH_METHODS = 'emailCode,google';
     await ensureSeedData();
-    await createUser({ email: 'owner@example.test', roles: ['admin'], password: 'owner-password' });
+    // Setup is claimed through the real configured-password decision, so later
+    // Google signups are ordinary selfRegistered accounts.
+    setup.configureAdministratorPassword();
+    await setup.claimAdministrator();
+    await createUser({ email: 'owner@example.test', roles: ['admin'], emailVerified: true });
 }
 
 async function transaction({ parentId = random(), expiresAt = Date.now() + 60000 } = {}) {
@@ -53,6 +58,7 @@ afterEach(async () => {
     await resetStoreForTests().catch(() => {});
     if (folder) await rm(folder, { recursive: true, force: true });
     delete process.env.USERPERSISTO_AUTH_METHODS;
+    setup.clearAdministratorPassword();
 });
 
 test('pending transactions are encrypted, independent of OIDC storage, and browser-bound across restart', async () => {

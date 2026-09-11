@@ -16,6 +16,14 @@ const HANDLERS = {
         return getSettings();
     },
     email_provider_status: () => providerStatus(),
+    email_auth_code_status: async () => {
+        const status = await providerStatus();
+        const templateId = await getSecret('EMAIL_AUTH_CODE_TEMPLATE_ID');
+        // Internal callers need one availability bit, never provider settings,
+        // sender addresses or credentials. This probe does not send email.
+        return { available: status.configured && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(status.fromEmail)
+            && (!templateId || (Number.isFinite(Number(templateId)) && Number(templateId) > 0)) };
+    },
     email_send_text: () => sendText({ to: args.to, subject: args.subject, text: args.text, html: args.html }),
     email_send_template: () => sendTemplate({ to: args.to, templateId: args.templateId, variables: args.variables || {} }),
     email_send_test: () => sendText({ to: args.to, subject: 'EmailAgent test', text: 'EmailAgent test email.' }),

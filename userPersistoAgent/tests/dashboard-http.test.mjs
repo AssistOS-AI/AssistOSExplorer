@@ -10,25 +10,30 @@ import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, getUserById, updateUser } from '../lib/users.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
 import { generateToken } from '../lib/auth/totp.mjs';
+import { resetEmailAttemptLimitsForTests } from '../lib/auth/emailAttempts.mjs';
 import { startService } from '../service/index.mjs';
 
 let folder, server, base, sign, member, other, blocked;
 const ORIGIN = 'https://account.example.test';
 const PROFILE = '/service/dashboard/api/profile';
+const mail = [];
 
 before(async () => {
     folder = await mkdtemp(join(tmpdir(), 'userpersisto-dashboard-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'test-dashboard-settings';
-    process.env.USERPERSISTO_AUTH_METHODS = 'password,passkey,totp';
+    process.env.USERPERSISTO_AUTH_METHODS = 'emailCode,passkey,totp';
     process.env.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS = ORIGIN;
     sign = await createRouterSigner();
     await ensureSeedData();
-    member = await createUser({ email: 'restricted@example.test', password: 'test-password', roles: ['selfRegistered'] });
+    member = await createUser({ email: 'restricted@example.test', roles: ['selfRegistered'], emailVerified: true });
     other = await createUser({ email: 'other@example.test', roles: ['user'] });
     blocked = await createUser({ email: 'blocked@example.test', roles: ['user'] });
     await updateUser(blocked.id, { status: 'blocked' }, { actorId: 'test' });
-    server = startService({ port: 0, host: '127.0.0.1' });
+    server = startService({ port: 0, host: '127.0.0.1' }, { deliverEmail: async (message) => {
+        mail.push(message);
+        return { delivered: true, providerMessageId: 'fixture' };
+    } });
     if (!server.listening) await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -50,6 +55,17 @@ async function request(path = PROFILE, { method = 'GET', body, rawBody, userId =
     return { response, data };
 }
 
+// Fresh re-authentication through a code sent to the verified sign-in mailbox.
+// The in-memory send budget is per address; reset it so many grants fit here.
+async function grantFor(operation, userId = member.id) {
+    resetEmailAttemptLimitsForTests();
+    const started = await request('/service/dashboard/api/reauth/start', { method: 'POST', userId, body: { operation, method: 'emailCode' } });
+    assert.equal(started.response.status, 200, JSON.stringify(started.data));
+    const verified = await request('/service/dashboard/api/reauth/verify', { method: 'POST', userId, body: { operation, method: 'emailCode', code: mail.at(-1).code } });
+    assert.equal(verified.response.status, 200, JSON.stringify(verified.data));
+    return verified.data.grant;
+}
+
 test('restricted accounts get their own sanitized profile and cannot change another account or roles', async () => {
     const { response, data } = await request();
     assert.equal(response.status, 200);
@@ -58,9 +74,10 @@ test('restricted accounts get their own sanitized profile and cannot change anot
     assert.equal(data.profile.capabilities.includes('explorer.access'), false);
     assert.deepEqual(data.profile.credits, { balance: 0, reservedBalance: 0 });
     assert.equal(data.profile.subscription, null);
-    assert.deepEqual(data.profile.authMethods, [{ type: 'password', name: 'Password' }]);
+    assert.deepEqual(data.profile.authMethods, [{ type: 'emailCode', name: 'Email code' }]);
+    assert.equal(data.profile.emailVerified, true);
     assert.deepEqual(data.profile.enrollments, { passkey: { configured: false, count: 0 }, totp: { configured: false, pending: false } });
-    assert.deepEqual(data.profile.allowedAuthMethods, ['password', 'passkey', 'totp']);
+    assert.deepEqual(data.profile.allowedAuthMethods, ['emailCode', 'passkey', 'totp']);
     assert.doesNotMatch(JSON.stringify(data), /passwordHash|loginAttempts|lastLoginAttempt|credential|codeHash/);
 
     const changed = await request(PROFILE, { method: 'POST', body: {
@@ -130,28 +147,72 @@ test('dashboard mutations require same-origin JSON, bounded objects, and an expl
     assert.equal((await getUserById(member.id)).displayName, 'Account owner');
 });
 
+test('enrollment needs a fresh single-use grant for the same account and operation', async () => {
+    for (const [endpoint, body] of [['auth/totp/start', {}], ['auth/passkey/options', {}], ['auth/totp/start', { grant: 'A'.repeat(43) }]]) {
+        const refused = await request(`/service/dashboard/api/${endpoint}`, { method: 'POST', body });
+        assert.deepEqual([refused.response.status, refused.data.error], [403, 'operation_grant_required'], endpoint);
+    }
+    // A grant for another operation is refused and spent.
+    const passkeyGrant = await grantFor('passkey.register');
+    const mismatched = await request('/service/dashboard/api/auth/totp/start', { method: 'POST', body: { grant: passkeyGrant } });
+    assert.deepEqual([mismatched.response.status, mismatched.data.error], [403, 'operation_grant_required']);
+    const spent = await request('/service/dashboard/api/auth/passkey/options', { method: 'POST', body: { grant: passkeyGrant } });
+    assert.equal(spent.response.status, 403);
+    // Another account cannot use this account's grant.
+    const foreignGrant = await grantFor('totp.enroll');
+    const foreign = await request('/service/dashboard/api/auth/totp/start', { method: 'POST', userId: other.id, body: { grant: foreignGrant } });
+    assert.equal(foreign.response.status, 403);
+    // Codes are bound to the operation: a totp.enroll code cannot yield another grant type.
+    await request('/service/dashboard/api/reauth/start', { method: 'POST', body: { operation: 'totp.enroll', method: 'emailCode' } });
+    const wrongOperation = await request('/service/dashboard/api/reauth/verify', { method: 'POST', body: { operation: 'passkey.register', method: 'emailCode', code: mail.at(-1).code } });
+    assert.equal(wrongOperation.response.status, 409);
+    const wrongCode = await request('/service/dashboard/api/reauth/verify', { method: 'POST', body: { operation: 'totp.enroll', method: 'emailCode', code: '000000' } });
+    assert.equal(wrongCode.data.error, 'code_invalid');
+    assert.equal(wrongCode.data.attemptsRemaining, 4);
+    const resend = await request('/service/dashboard/api/reauth/start', { method: 'POST', body: { operation: 'totp.enroll', method: 'emailCode' } });
+    assert.deepEqual([resend.response.status, resend.data.error], [429, 'resend_too_soon']);
+    assert.ok(resend.data.retryAfter > 0);
+    assert.equal((await request('/service/dashboard/api/reauth/cancel', { method: 'POST', body: {} })).response.status, 200);
+    // Methods that are not available for the account are refused before any proof is used.
+    const unverified = await request('/service/dashboard/api/reauth/start', { method: 'POST', userId: other.id, body: { operation: 'totp.enroll', method: 'emailCode' } });
+    assert.equal(unverified.response.status, 409);
+    for (const method of ['adminPassword', 'totp', 'password']) {
+        const unavailable = await request('/service/dashboard/api/reauth/start', { method: 'POST', body: { operation: 'totp.enroll', method } });
+        assert.deepEqual([unavailable.response.status, unavailable.data.error], [409, 'reauthentication_unavailable'], method);
+    }
+    const invalidOperation = await request('/service/dashboard/api/reauth/start', { method: 'POST', body: { operation: 'role.grant', method: 'emailCode' } });
+    assert.equal(invalidOperation.data.error, 'invalid_operation');
+    const profile = (await request()).data.profile;
+    assert.deepEqual(profile.reauthenticationMethods, ['emailCode']);
+    assert.doesNotMatch(JSON.stringify(profile), /grant:|operation-grant|reauth-code/);
+});
+
 test('TOTP enrollment stays bound to the account and exposes only safe configured/pending state', async () => {
-    const started = await request('/service/dashboard/api/auth/totp/start', { method: 'POST', body: { userId: other.id } });
+    const started = await request('/service/dashboard/api/auth/totp/start', { method: 'POST', body: { userId: other.id, grant: await grantFor('totp.enroll') } });
     assert.equal(started.response.status, 200);
     assert.ok(started.data.secret);
+    assert.ok(started.data.setupId);
     assert.match(started.data.otpauthUrl, /^otpauth:\/\/totp\//);
     const pending = await request();
     assert.deepEqual(pending.data.profile.enrollments.totp, { configured: false, pending: true });
     assert.doesNotMatch(JSON.stringify(pending.data), /secretEncrypted|codeHash|otpauthUrl/);
     assert.equal(JSON.stringify(pending.data).includes(started.data.secret), false);
-    const wrong = await request('/service/dashboard/api/auth/totp/verify', { method: 'POST', body: { token: 'invalid' } });
+    const wrong = await request('/service/dashboard/api/auth/totp/verify', { method: 'POST', body: { token: 'invalid', setupId: started.data.setupId } });
     assert.equal(wrong.response.status, 400);
     assert.equal(wrong.data.reason, 'invalid_token');
+    const unbound = await request('/service/dashboard/api/auth/totp/verify', { method: 'POST', body: { token: generateToken(started.data.secret) } });
+    assert.equal(unbound.data.reason, 'setup_superseded');
     const confirmed = await request('/service/dashboard/api/auth/totp/verify', {
-        method: 'POST', body: { userId: other.id, token: generateToken(started.data.secret) },
+        method: 'POST', body: { userId: other.id, token: generateToken(started.data.secret), setupId: started.data.setupId },
     });
     assert.equal(confirmed.response.status, 200);
     assert.equal(confirmed.data.ok, true);
     const profile = (await request()).data.profile;
     assert.deepEqual(profile.enrollments.totp, { configured: true, pending: false });
     assert.equal(profile.authMethods.some((method) => method.type === 'totp'), true);
+    assert.deepEqual(profile.reauthenticationMethods, ['emailCode', 'totp']);
     assert.deepEqual((await request(PROFILE, { userId: other.id })).data.profile.enrollments.totp, { configured: false, pending: false });
-    const repeated = await request('/service/dashboard/api/auth/totp/verify', { method: 'POST', body: { token: generateToken(started.data.secret) } });
+    const repeated = await request('/service/dashboard/api/auth/totp/verify', { method: 'POST', body: { token: generateToken(started.data.secret), setupId: started.data.setupId } });
     assert.equal(repeated.data.reason, 'setup_not_found');
 });
 
@@ -168,7 +229,7 @@ function cbor(value) {
 
 test('passkey enrollment preserves its challenge and pins account and browser origin', async () => {
     const started = await request('/service/dashboard/api/auth/passkey/options', {
-        method: 'POST', body: { userId: other.id, origin: 'https://evil.test', rpId: 'evil.test' },
+        method: 'POST', body: { userId: other.id, origin: 'https://evil.test', rpId: 'evil.test', grant: await grantFor('passkey.register') },
     });
     assert.equal(started.response.status, 200);
     const { challengeKey, publicKey } = started.data;
@@ -180,7 +241,7 @@ test('passkey enrollment preserves its challenge and pins account and browser or
     const cose = cbor(new Map([[1, 2], [3, -7], [-1, 1], [-2, Buffer.from(jwk.x, 'base64url')], [-3, Buffer.from(jwk.y, 'base64url')]]));
     const credentialId = randomBytes(24);
     const authData = Buffer.concat([
-        createHash('sha256').update(publicKey.rp.id).digest(), Buffer.from([0x41]),
+        createHash('sha256').update(publicKey.rp.id).digest(), Buffer.from([0x45]),
         Buffer.alloc(4), Buffer.alloc(16), Buffer.from([0, credentialId.length]), credentialId, cose,
     ]);
     const attestation = {
@@ -210,10 +271,10 @@ test('passkey enrollment preserves its challenge and pins account and browser or
 });
 
 test('policy changes disable enrollment immediately without losing configured-state information', async () => {
-    process.env.USERPERSISTO_AUTH_METHODS = 'password';
+    process.env.USERPERSISTO_AUTH_METHODS = 'emailCode';
     try {
         const profile = (await request()).data.profile;
-        assert.deepEqual(profile.allowedAuthMethods, ['password']);
+        assert.deepEqual(profile.allowedAuthMethods, ['emailCode']);
         assert.equal(profile.enrollments.totp.configured, true);
         assert.equal(profile.enrollments.passkey.configured, true);
         for (const endpoint of ['auth/totp/start', 'auth/totp/verify', 'auth/passkey/options', 'auth/passkey/verify']) {
@@ -222,6 +283,6 @@ test('policy changes disable enrollment immediately without losing configured-st
             assert.equal(result.data.error, 'auth_method_disabled');
         }
     } finally {
-        process.env.USERPERSISTO_AUTH_METHODS = 'password,passkey,totp';
+        process.env.USERPERSISTO_AUTH_METHODS = 'emailCode,passkey,totp';
     }
 });

@@ -42,6 +42,9 @@ test('email delivery tools require an agent caller', async () => {
         },
     });
     assert.doesNotThrow(() => assertEmailToolAuthorized('email_send_auth_code', agent));
+    assert.doesNotThrow(() => assertEmailToolAuthorized('email_auth_code_status', agent));
+    assert.throws(() => assertEmailToolAuthorized('email_auth_code_status', { user: { roles: ['admin'] } }),
+        (error) => error?.code === 'agent_invocation_required');
     assert.throws(
         () => assertEmailToolAuthorized('email_send_auth_code', {}),
         (error) => error?.code === 'agent_invocation_required'
@@ -64,4 +67,6 @@ test('legacy authInfo cannot authorize email tools', async () => {
         () => assertEmailToolAuthorized('email_send_auth_code', forged),
         (error) => error?.code === 'agent_invocation_required'
     );
+    assert.throws(() => assertEmailToolAuthorized('email_auth_code_status', forged),
+        (error) => error?.code === 'agent_invocation_required');
 });

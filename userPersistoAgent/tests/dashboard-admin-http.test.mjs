@@ -9,7 +9,6 @@ import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, getUserById, getUserRoles, updateUser, setUserRoles } from '../lib/users.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
 import { startService } from '../service/index.mjs';
-import { loginWithPassword } from '../lib/auth/password.mjs';
 
 const ORIGIN = 'https://account.example.test';
 const PREFIX = '/service/dashboard';
@@ -27,7 +26,7 @@ before(async () => {
     }
     sign = await createRouterSigner();
     await ensureSeedData();
-    admin = await createUser({ email: 'owner@example.test', roles: ['admin'], password: 'owner-test-password' });
+    admin = await createUser({ email: 'owner@example.test', roles: ['admin'], emailVerified: true });
     member = await createUser({ email: 'reader@example.test', displayName: 'Restricted Reader', roles: ['selfRegistered'] });
     blocked = await createUser({ email: 'blocked@example.test', roles: ['admin'] });
     await updateUser(blocked.id, { status: 'blocked' });
@@ -37,9 +36,10 @@ before(async () => {
         const permission = await store.getPermissionByCapability(capability);
         await store.createRolePermission({ key: `${role.id}:${permission.id}`, roleId: role.id, permissionId: permission.id });
     }
-    usersManager = await createUser({ email: 'users-manager@example.test', roles: ['usersManager'] });
-    settingsManager = await createUser({ email: 'settings-manager@example.test', roles: ['settingsManager'] });
-    server = startService({ port: 0, host: '127.0.0.1' });
+    // Every real account has a usable sign-in method; fixtures mirror that.
+    usersManager = await createUser({ email: 'users-manager@example.test', roles: ['usersManager'], emailVerified: true });
+    settingsManager = await createUser({ email: 'settings-manager@example.test', roles: ['settingsManager'], emailVerified: true });
+    server = startService({ port: 0, host: '127.0.0.1' }, { emailStatus: async () => ({ available: true }) });
     if (!server.listening) await once(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -124,18 +124,18 @@ test('admin APIs reject absent or forged authentication, inactive accounts, and 
 
 test('admin requests enforce exact-origin JSON, body bounds, signed integrity, and a fixed route map', async () => {
     for (const origin of ['', 'null', 'https://other.example.test', `${ORIGIN}/`, `${ORIGIN}, https://other.example.test`]) {
-        assert.equal((await adminRequest('users/create', { headers: { origin } })).response.status, 403);
+        assert.equal((await adminRequest('users/update', { headers: { origin } })).response.status, 403);
     }
-    assert.equal((await adminRequest('users/create', { headers: { 'content-type': 'text/plain' } })).response.status, 415);
+    assert.equal((await adminRequest('users/update', { headers: { 'content-type': 'text/plain' } })).response.status, 415);
     for (const rawBody of ['null', '[]', '"name"', '{broken']) {
-        assert.equal((await adminRequest('users/create', { rawBody })).response.status, 400);
+        assert.equal((await adminRequest('users/update', { rawBody })).response.status, 400);
     }
-    assert.equal((await adminRequest('users/create', { body: { displayName: 'x'.repeat(65536) } })).response.status, 413);
-    const tampered = await adminRequest('users/create', { body: { email: 'tampered@example.test' }, headers:
-        sign({ method: 'POST', path: `${PREFIX}/api/admin/users/create`, rawBody: '{}', userId: admin.id }),
+    assert.equal((await adminRequest('users/update', { body: { displayName: 'x'.repeat(65536) } })).response.status, 413);
+    const tampered = await adminRequest('users/update', { body: { userId: member.id, displayName: 'tampered' }, headers:
+        sign({ method: 'POST', path: `${PREFIX}/api/admin/users/update`, rawBody: '{}', userId: admin.id }),
     });
     assert.equal(tampered.response.status, 401);
-    for (const endpoint of ['tool', 'users/password/delete', 'userpersisto_user_create', 'applications/get']) {
+    for (const endpoint of ['tool', 'users/create', 'users/password', 'users/password/delete', 'userpersisto_user_create', 'applications/get']) {
         assert.equal((await adminRequest(endpoint, { body: { tool: 'userpersisto_user_create', email: 'arbitrary@example.test' } })).response.status, 404);
     }
     const headers = sign({ method: 'POST', path: `${PREFIX}/api/admin/users/list`, rawBody: '{}', userId: admin.id });
@@ -166,21 +166,21 @@ test('user search hides selfRegistered-only accounts by default and allows findi
     assert.ok(events.objects.some((event) => event.actorId === admin.id && event.action === 'user.roles.update'));
 });
 
-test('user CRUD ignores authority and protected fields, deactivates reversibly, and protects the final administrator', async () => {
-    const created = await adminRequest('users/create', { body: {
-        email: 'managed@example.test', password: 'managed-test-password', roles: ['user'],
-        actorId: member.id, actorUserId: member.id, source: 'selfRegistered', status: 'blocked', passwordHash: 'injected-hash',
-    } });
-    assert.equal(created.response.status, 200);
-    const userId = created.data.result.id;
-    assert.equal(created.data.result.status, 'active');
-    assert.doesNotMatch(JSON.stringify(created.data), /passwordHash|managed-test-password|injected-hash/);
+test('user administration ignores authority and protected fields, deactivates reversibly, and protects the final administrator', async () => {
+    const managed = await createUser({ email: 'managed@example.test', roles: ['user'], emailVerified: true });
+    const userId = managed.id;
     const updated = await adminRequest('users/update', { body: {
-        userId, displayName: 'Managed Reader', roles: ['admin'], passwordHash: 'injected-hash', actorId: member.id,
+        userId, displayName: 'Managed Reader', roles: ['admin'], passwordHash: 'injected-hash', actorId: member.id, email: 'hijacked@example.test',
     } });
     assert.equal(updated.response.status, 200);
     assert.equal(updated.data.result.displayName, 'Managed Reader');
+    assert.equal(updated.data.result.email, 'managed@example.test', 'sign-in email is not an editable field');
     assert.deepEqual(await getUserRoles(userId), ['user']);
+    assert.doesNotMatch(JSON.stringify(updated.data), /passwordHash|injected-hash/);
+    const emailOnly = await adminRequest('users/update', { body: { userId, email: 'hijacked@example.test' } });
+    assert.equal(emailOnly.response.status, 400);
+    assert.equal((await getUserById(userId)).email, 'managed@example.test');
+    assert.ok((await getUserById(userId)).emailVerifiedAt);
     const deleted = await adminRequest('users/delete', { body: { userId, status: 'active', email: 'overridden@example.test' } });
     assert.equal(deleted.response.status, 200);
     assert.equal((await getUserById(userId)).status, 'blocked');
@@ -203,35 +203,21 @@ test('user CRUD ignores authority and protected fields, deactivates reversibly, 
     assert.deepEqual(await getUserRoles(admin.id), ['admin']);
 });
 
-test('administrators reset the selected user password without accepting actor overrides', async () => {
-    const user = await createUser({ email: 'password-reset@example.test', roles: ['user'], password: 'original-test-password' });
-    for (const userId of [member.id, settingsManager.id]) {
-        const denied = await adminRequest('users/password', { userId, body: {
-            userId: user.id, newPassword: 'forbidden-test-password', actorUserId: admin.id,
-        } });
-        assert.equal(denied.response.status, 403);
+test('no administrator can create accounts or set passwords through the dashboard', async () => {
+    const before = (await adminRequest('users/list', { body: { includeRoleCounts: true } })).data.result.totalCount;
+    for (const userId of [admin.id, usersManager.id]) {
+        for (const [endpoint, body] of [
+            ['users/create', { email: 'created@example.test', password: 'created-test-password', roles: ['admin'] }],
+            ['users/password', { userId: member.id, newPassword: 'replacement-test-password' }],
+        ]) {
+            const result = await adminRequest(endpoint, { userId, body });
+            assert.equal(result.response.status, 404, endpoint);
+        }
     }
-    assert.equal((await loginWithPassword(user.email, 'original-test-password')).ok, true);
-    const reset = await adminRequest('users/password', { userId: usersManager.id, body: {
-        userId: user.id, newPassword: 'replacement-test-password', actorId: member.id, actorUserId: member.id,
-    } });
-    assert.equal(reset.response.status, 200);
-    assert.deepEqual(reset.data, { ok: true, result: { ok: true } });
-    assert.equal((await loginWithPassword(user.email, 'original-test-password')).ok, false);
-    assert.equal((await loginWithPassword(user.email, 'replacement-test-password')).ok, true);
-    const invalid = await adminRequest('users/password', { body: { userId: user.id, newPassword: 'short' } });
-    assert.equal(invalid.response.status, 400);
-    assert.equal(invalid.data.error, 'invalid_password');
-    for (const userId of [undefined, '', 4]) {
-        const missingTarget = await adminRequest('users/password', { body: { userId, newPassword: 'replacement-test-password' } });
-        assert.equal(missingTarget.response.status, 400);
-        assert.equal(missingTarget.data.error, 'user_id_required');
-    }
+    assert.equal((await adminRequest('users/list', { body: { includeRoleCounts: true } })).data.result.totalCount, before);
     const store = await getStore();
-    const events = await store.select('auditEvent', { target: user.id, action: 'auth.password.set' }, { pageSize: 100 });
-    assert.equal(events.objects.length, 1);
-    assert.equal(events.objects[0].actorId, usersManager.id);
-    assert.doesNotMatch(JSON.stringify(events.objects), /replacement-test-password|original-test-password/);
+    assert.equal((await store.select('auditEvent', { action: 'auth.password.set' }, { pageSize: 10 })).objects.length, 0);
+    assert.equal(Object.hasOwn(await getUserById(member.id), 'passwordHash'), false);
 });
 
 test('applications support sanitized CRUD, one-time secret rotation, public clients, and persisted capability checks', async () => {
@@ -275,14 +261,16 @@ test('applications support sanitized CRUD, one-time secret rotation, public clie
 test('policy and provider status use fixed whitelisted fields and preserve operator-only configuration', async () => {
     const initial = await adminRequest('policy/get');
     assert.equal(initial.response.status, 200);
-    assert.deepEqual(initial.data.result.enabledAuthMethods, ['password']);
+    assert.deepEqual(initial.data.result.enabledAuthMethods, ['emailCode', 'passkey', 'totp', 'google']);
+    assert.equal(initial.data.result.registrationRole, 'selfRegistered');
     const saved = await adminRequest('policy/set', { userId: settingsManager.id, body: {
-        enabledAuthMethods: ['password', 'totp'], selfRegistrationEnabled: false,
+        enabledAuthMethods: ['emailCode', 'totp'], selfRegistrationEnabled: false,
         defaultRegistrationRole: 'selfRegistered', allowedRedirectOrigins: [ORIGIN],
         googleClientSecret: 'ignored-secret', USERPERSISTO_GOOGLE_CLIENT_SECRET: 'ignored-secret', actorId: admin.id,
     } });
     assert.equal(saved.response.status, 200);
-    assert.deepEqual(saved.data.result.enabledAuthMethods, ['password', 'totp']);
+    assert.deepEqual(saved.data.result.enabledAuthMethods, ['emailCode', 'totp']);
+    assert.equal(Object.hasOwn(saved.data.result, 'defaultRegistrationRole'), false);
     assert.equal(saved.data.result.selfRegistrationEnabled, false);
     const store = await getStore();
     const stored = await store.getSystemSettingByKey('auth.policy');
@@ -295,5 +283,9 @@ test('policy and provider status use fixed whitelisted fields and preserve opera
     const oidc = await adminRequest('applications/status');
     assert.equal(oidc.response.status, 200);
     assert.equal(oidc.data.result.issuer, process.env.USERPERSISTO_OIDC_ISSUER);
-    assert.equal((await adminRequest('policy/set', { body: { defaultRegistrationRole: 'admin' } })).response.status, 400);
+    const retired = await adminRequest('policy/set', { body: { enabledAuthMethods: ['password'] } });
+    assert.equal(retired.response.status, 400);
+    assert.equal(retired.data.error, 'invalid_auth_method');
+    await adminRequest('policy/set', { body: { defaultRegistrationRole: 'admin', selfRegistrationEnabled: true } });
+    assert.equal(JSON.stringify(await store.getSystemSettingByKey('auth.policy')).includes('defaultRegistrationRole'), false);
 });

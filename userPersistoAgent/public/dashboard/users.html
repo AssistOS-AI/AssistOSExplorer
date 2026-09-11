@@ -24,33 +24,7 @@
                 <fieldset id="management-controls" class="management-controls" disabled hidden>
                     <legend class="visually-hidden">Users</legend>
                     <section class="userpersisto-panel" data-section="users" data-admin-only>
-                        <h2>Create user</h2>
-                        <div class="userpersisto-create-user">
-                            <label class="form-item"><span class="form-label">Username (optional)</span><input id="createUserUsername" class="form-input" type="text" autocomplete="off" minlength="3" maxlength="64"></label>
-                            <label class="form-item">
-                                <span class="form-label">Email</span>
-                                <input id="createUserEmail" class="form-input" type="email" required autocomplete="off" spellcheck="false">
-                            </label>
-                            <label class="form-item">
-                                <span class="form-label">Display name</span>
-                                <input id="createUserDisplayName" class="form-input" type="text" autocomplete="off" spellcheck="false">
-                            </label>
-                            <label class="form-item">
-                                <span class="form-label">Password (optional)</span>
-                                <input id="createUserPassword" class="form-input" type="password" autocomplete="new-password" spellcheck="false">
-                            </label>
-                            <label class="form-item">
-                                <span class="form-label">Role</span>
-                                <select id="createUserRole" class="form-input">
-                                    <option value="user">user</option>
-                                    <option value="admin">admin</option>
-                                    <option value="selfRegistered">selfRegistered</option>
-                                </select>
-                            </label>
-                            <div class="userpersisto-actions">
-                                <button type="button" class="general-button" data-local-action="createUser">Create user</button>
-                            </div>
-                        </div>
+                        <p class="userpersisto-card-description">Accounts are created when people sign in (Google, a verified email code, or the first-run administrator password). There is no separate account-creation form here.</p>
                         <div class="userpersisto-actions userpersisto-actions-split">
                             <input id="userSearchInput" class="form-input" type="search" placeholder="Search all users" aria-label="Search all users by name or email" spellcheck="false" maxlength="200">
                             <button type="button" class="general-button" data-local-action="searchUsers">Search</button>

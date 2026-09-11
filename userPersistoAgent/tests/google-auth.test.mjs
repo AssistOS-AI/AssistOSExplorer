@@ -71,3 +71,24 @@ test('a rotated signing key is verified after the library JWKS refresh interval'
         assert.equal((await fixture.protocol.exchange(config, await fixture.approve(next.url), next)).subject, fixture.state.subject);
     } finally { context.mock.timers.reset(); await fixture.close(); }
 });
+
+test('Google reauthentication requests and validates signed recent authentication time', async () => {
+    const fixture = await controlledGoogleProvider();
+    try {
+        const config = { clientId: 'controlled-google-client', clientSecret: 'controlled-google-secret', redirectUri: `${fixture.origin}/callback`, fingerprint: 'fixture' };
+        for (const authTime of [undefined, Math.floor(Date.now() / 1000) - 601, Math.floor(Date.now() / 1000) + 120]) {
+            fixture.state.claims = authTime === undefined ? {} : { auth_time: authTime };
+            const start = await fixture.protocol.authorization(config, { reauthentication: true });
+            const url = new URL(start.url);
+            assert.equal(url.searchParams.get('prompt'), 'select_account');
+            assert.deepEqual(JSON.parse(url.searchParams.get('claims')), { id_token: { auth_time: { essential: true } } });
+            await assert.rejects(fixture.protocol.exchange(config, await fixture.approve(start.url), { ...start, flow: 'reauth' }), {
+                code: 'google_recent_authentication_required',
+            });
+        }
+        fixture.state.claims = { auth_time: Math.floor(Date.now() / 1000) };
+        const start = await fixture.protocol.authorization(config, { reauthentication: true });
+        const identity = await fixture.protocol.exchange(config, await fixture.approve(start.url), { ...start, flow: 'reauth' });
+        assert.equal(identity.authenticatedAt, fixture.state.claims.auth_time * 1000);
+    } finally { await fixture.close(); }
+});

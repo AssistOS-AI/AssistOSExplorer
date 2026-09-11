@@ -10,21 +10,23 @@ import * as oidc from 'openid-client';
 import { controlledGoogleProvider, CookieBrowser, csrf } from './helpers/googleProvider.mjs';
 import { startService } from '../service/index.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
-import { registerUser, getUserByEmail, getUserRoles, updateUser } from '../lib/users.mjs';
+import { getUserByEmail, getUserRoles, updateUser } from '../lib/users.mjs';
 import { getStore, flush, resetStoreForTests, setStoreFaultInjectorForTests } from '../lib/store.mjs';
 import { updateAuthPolicy } from '../lib/policy.mjs';
 import { createLoginRequest, consumeAuthCode } from '../lib/sso.mjs';
 import { createOidcClient } from '../lib/oidc/clients.mjs';
 import { resetOidcProviderForTests } from '../lib/oidc/provider.mjs';
 import { getGoogleStatus } from '../lib/auth/google.mjs';
-import { verifyEmailCode, hashCode } from '../lib/auth/email-code.mjs';
+import { completeEmailSignIn } from '../lib/auth/signIn.mjs';
+import { syncAdministratorPasswordState } from '../lib/auth/adminPassword.mjs';
+import { getInstallationSetup } from '../lib/setup.mjs';
+import * as setup from './helpers/setup.mjs';
 import { setupStart, setupVerify, generateToken } from '../lib/auth/totp.mjs';
 import { loginVerify as verifyPasskey } from '../lib/auth/passkey.mjs';
-import { setPassword, loginWithPassword } from '../lib/auth/password.mjs';
 import { hashGoogleState } from '../lib/auth/googleTransactions.mjs';
 import { withPersistenceScope } from '../lib/persistence-scope.mjs';
 
-async function fixture(fn) {
+async function fixture(fn, { withOwner = true } = {}) {
     const provider = await controlledGoogleProvider();
     const folder = await mkdtemp(join(tmpdir(), 'google-http-'));
     const env = { ...process.env };
@@ -37,14 +39,21 @@ async function fixture(fn) {
         process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
         delete process.env.USERPERSISTO_AUTH_METHODS;
         delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
+        setup.resetAuthLimitsForTests();
         await ensureSeedData();
-        const { user: owner } = await registerUser({ email: 'owner@example.test', password: 'controlled-password' });
-        server = startService({ port: 0, host: '127.0.0.1' }, { google: { protocol: provider.protocol, deliverEmail: async (payload) => { mail = payload; return { delivered: true }; } } });
+        // The installation owner registers through the real verified-email path
+        // and is the designated administrator for the configured password.
+        const adminPassword = setup.configureAdministratorPassword();
+        const { user: owner = null, request: ownerRequest = null } = withOwner ? await setup.registerWithEmailCode('owner@example.test') : {};
+        // Handoff codes issued by the owner's own registration are not Google handoffs.
+        const googleHandoffs = async () => (await (await getStore()).select('ssoAuthCode')).objects.filter((code) => code.providerState !== ownerRequest?.providerState);
+        const deliverEmail = async (payload) => { mail = payload; return { delivered: true }; };
+        server = startService({ port: 0, host: '127.0.0.1' }, { google: { protocol: provider.protocol }, deliverEmail });
         if (!server.listening) await once(server, 'listening');
         const base = `http://127.0.0.1:${server.address().port}`;
         process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${base}/service/auth/google/callback`;
         process.env.USERPERSISTO_OIDC_ISSUER = `${base}/service/oidc`;
-        await updateAuthPolicy({ enabledAuthMethods: ['password', 'google'], defaultRegistrationRole: 'user' });
+        await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google'] });
         const begin = async (browser = new CookieBrowser(), state = 'distinct-router-core-state') => {
             const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
             const response = await browser.json(`${base}/service/auth/google/start`, { requestId: request.providerState, state });
@@ -75,7 +84,7 @@ async function fixture(fn) {
             assert.equal(started.status, 200);
             return { browser, start: await started.json() };
         };
-        await fn({ provider, base, folder, owner, begin, beginOidc, callback, mail: () => mail });
+        await fn({ provider, base, folder, owner, adminPassword, begin, beginOidc, callback, googleHandoffs, mail: () => mail });
     } finally {
         setStoreFaultInjectorForTests();
         if (server?.listening) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
@@ -88,29 +97,40 @@ async function fixture(fn) {
     }
 }
 
-for (const method of ['password', 'totp']) {
-    test(`replacing ${method} after reauthentication invalidates pending Google link confirmation`, () => fixture(async ({ owner, provider, begin, callback }) => {
+for (const method of ['adminPassword', 'totp', 'emailCode']) {
+    test(`replacing the ${method} credential after proof invalidates pending Google link confirmation`, () => fixture(async ({ owner, adminPassword, provider, begin, callback, mail }) => {
         let token;
         if (method === 'totp') {
-            await updateAuthPolicy({ enabledAuthMethods: ['password', 'google', 'totp'] });
+            await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google', 'totp'] });
             const setup = await setupStart({ userId: owner.id });
             token = generateToken(setup.secret);
-            assert.equal((await setupVerify({ userId: owner.id, token })).ok, true);
+            assert.equal((await setupVerify({ userId: owner.id, token, setupId: setup.setupId })).ok, true);
         }
         provider.state.email = owner.email;
         const flow = await begin();
         const returned = await callback(flow);
         let html = await (await flow.browser.fetch(returned.resume)).text();
-        html = await (await flow.browser.post(`${returned.resume}/authenticate`, {
-            csrf: csrf(html), method, password: 'controlled-password', token,
-        })).text();
-        assert.match(html, /Link Google and continue/);
-        if (method === 'password') {
-            await setPassword({ userId: owner.id, newPassword: 'replacement-password' });
-            assert.equal((await loginWithPassword(owner.email, 'controlled-password')).ok, false);
+        if (method === 'emailCode') {
+            html = await (await flow.browser.post(`${returned.resume}/send-link-code`, { csrf: csrf(html) })).text();
+            assert.ok(mail().correlationId.startsWith('google-link-email:'));
+            assert.equal(mail().to, owner.email);
+            html = await (await flow.browser.post(`${returned.resume}/verify-link-code`, { csrf: csrf(html), code: mail().code })).text();
         } else {
+            html = await (await flow.browser.post(`${returned.resume}/authenticate`, {
+                csrf: csrf(html), method, password: adminPassword, token,
+            })).text();
+        }
+        assert.match(html, /Link Google and continue/);
+        if (method === 'adminPassword') {
+            setup.configureAdministratorPassword();
+            await syncAdministratorPasswordState();
+        } else if (method === 'totp') {
             const replacement = await setupStart({ userId: owner.id });
-            assert.equal((await setupVerify({ userId: owner.id, token: generateToken(replacement.secret) })).ok, true);
+            assert.equal((await setupVerify({ userId: owner.id, token: generateToken(replacement.secret), setupId: replacement.setupId })).ok, true);
+        } else {
+            const store = await getStore();
+            await store.updateUser(owner.id, { authGeneration: 1 });
+            await flush();
         }
         const response = await flow.browser.post(`${returned.resume}/confirm-link`, { csrf: csrf(html) });
         assert.equal(response.status, 403);
@@ -122,7 +142,7 @@ for (const method of ['password', 'totp']) {
 
 for (const flowKind of ['explorer', 'oidc']) {
     for (const change of ['disable', 'rotate']) {
-        test(`${flowKind} rechecks Google ${change} queued after identity commit before handoff`, () => fixture(async ({ begin, beginOidc, callback, provider }) => {
+        test(`${flowKind} rechecks Google ${change} queued after identity commit before handoff`, () => fixture(async ({ begin, beginOidc, callback, provider, googleHandoffs }) => {
             const start = flowKind === 'explorer' ? begin : beginOidc;
             const flow = await start();
             const returned = await callback(flow);
@@ -133,7 +153,7 @@ for (const flowKind of ['explorer', 'oidc']) {
                 if (phase === 'after' && operation === 'updateGoogleAuthTransaction' && args[1]?.status === 'consumed') {
                     outside.runInAsyncScope(() => {
                         changed = withPersistenceScope(async () => {
-                            if (change === 'disable') await updateAuthPolicy({ enabledAuthMethods: ['password'] });
+                            if (change === 'disable') await updateAuthPolicy({ enabledAuthMethods: ['emailCode'] });
                             else process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'rotated-controlled-secret';
                             completed = true;
                         });
@@ -148,12 +168,12 @@ for (const flowKind of ['explorer', 'oidc']) {
             assert.ok([400, 403].includes(response.status), await response.text());
             assert.equal(response.headers.get('location'), null);
             const store = await getStore();
-            assert.equal((await store.select('ssoAuthCode')).objects.length, 0);
+            assert.equal((await googleHandoffs()).length, 0);
             const bindings = (await store.select('externalIdentity')).objects;
             assert.equal(bindings.length, 1);
             const user = await getUserByEmail(provider.state.email);
             assert.equal(bindings[0].userId, user.id);
-            await updateAuthPolicy({ enabledAuthMethods: ['password', 'google'] });
+            await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google'] });
             process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
             const retry = await start();
             const resumed = await callback(retry);
@@ -163,7 +183,7 @@ for (const flowKind of ['explorer', 'oidc']) {
         }));
     }
 
-    test(`${flowKind} expiry during identity staging denies handoff without poisoning storage`, () => fixture(async ({ begin, beginOidc, callback, provider, owner }) => {
+    test(`${flowKind} expiry during identity staging denies handoff without poisoning storage`, () => fixture(async ({ begin, beginOidc, callback, provider, owner, googleHandoffs }) => {
         const start = flowKind === 'explorer' ? begin : beginOidc;
         const flow = await start();
         const returned = await callback(flow);
@@ -189,7 +209,7 @@ for (const flowKind of ['explorer', 'oidc']) {
         assert.equal(response.status, 400);
         assert.equal(response.headers.get('location'), null);
         assert.equal((await getUserByEmail(owner.email)).id, owner.id);
-        assert.equal((await store.select('ssoAuthCode')).objects.length, 0);
+        assert.equal((await googleHandoffs()).length, 0);
         const created = await getUserByEmail(provider.state.email);
         assert.deepEqual(await getUserRoles(created.id), ['selfRegistered']);
         assert.equal((await store.select('externalIdentity')).objects[0].userId, created.id);
@@ -202,13 +222,13 @@ for (const flowKind of ['explorer', 'oidc']) {
 }
 
 test('Google is disabled/misconfigured safely and public readiness never returns config', () => fixture(async ({ base }) => {
-    await updateAuthPolicy({ enabledAuthMethods: ['password'] });
+    await updateAuthPolicy({ enabledAuthMethods: ['emailCode'] });
     assert.equal((await getGoogleStatus()).available, false);
-    await updateAuthPolicy({ enabledAuthMethods: ['password', 'google'] });
+    await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google'] });
     delete process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET;
     assert.equal((await getGoogleStatus()).available, false);
     const data = await (await fetch(`${base}/service/auth/setup`)).json();
-    assert.deepEqual(data.enabledAuthMethods, ['password']);
+    assert.deepEqual(data.enabledAuthMethods, ['emailCode']);
     assert.equal(data.googleAvailable, false);
     assert.ok(!JSON.stringify(data).includes('controlled-google'));
 }));
@@ -223,11 +243,79 @@ test('Explorer fresh registration uses selfRegistered and keeps independent core
     assert.equal(destination.searchParams.get('state'), flow.state);
     const authenticated = await consumeAuthCode({ providerState: flow.request.providerState, code: destination.searchParams.get('code') });
     assert.deepEqual(authenticated.roles, ['selfRegistered']);
-    assert.equal((await getUserByEmail(provider.state.email)).passwordHash, '');
+    assert.equal(Object.hasOwn(await getUserByEmail(provider.state.email), 'passwordHash'), false);
     assert.equal((await flow.browser.fetch(returned.url)).status, 400);
     assert.equal((await flow.browser.fetch(returned.resume)).status, 400);
     assert.equal(provider.state.exchanges, 1);
 }));
+
+async function completeGoogle(flow, callback) {
+    const returned = await callback(flow);
+    const response = await flow.browser.fetch(returned.resume);
+    assert.equal(response.status, 303, await response.clone().text());
+    const destination = new URL(response.headers.get('location'), returned.resume);
+    return consumeAuthCode({ providerState: flow.request.providerState, code: destination.searchParams.get('code') });
+}
+
+test('a Google-first completion claims the unclaimed installation even with public registration off', () => fixture(async ({ begin, callback, provider }) => {
+    assert.equal((await getInstallationSetup()).complete, false);
+    await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google'], selfRegistrationEnabled: false });
+    // Starting and approving at Google do not claim anything before completion.
+    const flow = await begin();
+    assert.equal((await getInstallationSetup()).complete, false);
+    const owner = await completeGoogle(flow, callback);
+    assert.deepEqual(owner.roles, ['admin']);
+    const claimed = await getInstallationSetup();
+    assert.deepEqual([claimed.complete, claimed.initialAdministratorId, claimed.method], [true, owner.user.id, 'google']);
+    assert.ok((await getUserByEmail('controlled@gmail.com')).emailVerifiedAt);
+    // Later public sign-up follows the registration policy.
+    provider.state.subject = 'later-google-subject';
+    provider.state.email = 'later@gmail.com';
+    const refused = await begin();
+    const returned = await callback(refused);
+    await refused.browser.fetch(returned.resume);
+    assert.equal(await getUserByEmail('later@gmail.com'), null);
+    await updateAuthPolicy({ selfRegistrationEnabled: true });
+    const later = await completeGoogle(await begin(), callback);
+    assert.deepEqual(later.roles, ['selfRegistered']);
+    assert.equal((await getInstallationSetup()).initialAdministratorId, owner.user.id);
+}, { withOwner: false }));
+
+test('an authoritative Google account links the matching verified mailbox with consent alone', () => fixture(async ({ begin, callback, provider, mail, googleHandoffs }) => {
+    const member = await setup.registerWithEmailCode('member@gmail.com');
+    assert.deepEqual(member.roles, ['selfRegistered']);
+    provider.state.subject = 'member-google-subject';
+    provider.state.email = 'member@gmail.com';
+    const flow = await begin();
+    const returned = await callback(flow);
+    const html = await (await flow.browser.fetch(returned.resume)).text();
+    assert.match(html, /Google verified that you control this address/);
+    assert.match(html, /name="method" value="googleAuthoritative"/);
+    const before = mail();
+    assert.equal((await (await getStore()).select('externalIdentity', {}, { start: 0, pageSize: 10 })).objects.length, 0, 'nothing links before consent');
+    const confirmed = await flow.browser.post(`${returned.resume}/confirm-link`, { csrf: csrf(html), method: 'googleAuthoritative' });
+    assert.equal(confirmed.status, 303, await confirmed.clone().text());
+    assert.equal(mail(), before, 'no code is sent for the authoritative shortcut');
+    const destination = new URL(confirmed.headers.get('location'), returned.resume);
+    const signedIn = await consumeAuthCode({ providerState: flow.request.providerState, code: destination.searchParams.get('code') });
+    assert.equal(signedIn.user.id, member.user.id, 'the existing account keeps its stable id');
+    assert.deepEqual(signedIn.roles, ['selfRegistered']);
+    const bindings = (await (await getStore()).select('externalIdentity', {}, { start: 0, pageSize: 10 })).objects;
+    assert.deepEqual(bindings.map((binding) => [binding.userId, binding.subject]), [[member.user.id, 'member-google-subject']]);
+    assert.equal((await googleHandoffs()).filter((code) => code.providerState === flow.request.providerState).length, 1);
+}));
+
+test('the password administrator\'s unverified contact address is never a Google link target', () => fixture(async ({ begin, callback, provider, adminPassword }) => {
+    const claimed = await setup.claimAdministrator(adminPassword, { contactEmail: 'ops@gmail.com' });
+    assert.equal(claimed.initialAdministrator, true);
+    provider.state.subject = 'ops-google-subject';
+    provider.state.email = 'ops@gmail.com';
+    const signedIn = await completeGoogle(await begin(), callback);
+    assert.notEqual(signedIn.user.id, claimed.user.id);
+    assert.deepEqual(signedIn.roles, ['selfRegistered']);
+    assert.equal((await (await getStore()).getExternalIdentitiesObjectsByUserId(claimed.user.id) || []).length, 0);
+    assert.deepEqual(await getUserRoles(claimed.user.id), ['admin']);
+}, { withOwner: false }));
 
 test('missing, copied, duplicate and mismatched callback proof cannot consume the valid attempt', () => fixture(async ({ begin, callback, provider }) => {
     const flow = await begin();
@@ -253,7 +341,7 @@ test('Explorer initiation rejects missing/foreign/null Origin, form posts and id
     assert.equal((await fetch(url, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: '{' })).status, 400);
 }));
 
-test('collision refuses email proof and requires fresh existing password then separate confirmation', () => fixture(async ({ base, owner, provider, begin, callback }) => {
+test('collision refuses reused codes, requires a fresh link-specific code, then separate confirmation', () => fixture(async ({ owner, provider, begin, callback, mail }) => {
     provider.state.email = owner.email;
     const flow = await begin();
     const returned = await callback(flow);
@@ -261,9 +349,21 @@ test('collision refuses email proof and requires fresh existing password then se
     let html = await response.text();
     assert.match(html, /Link your existing account/);
     assert.ok(!html.includes('name="email"'));
-    assert.equal((await flow.browser.post(`${returned.resume}/authenticate`, { csrf: csrf(html), method: 'emailCode', code: '123456' })).status, 400);
+    assert.match(html, /Email me a code/);
+    assert.ok(!html.includes('googleAuthoritative'), 'a non-authoritative address never offers the shortcut');
+    for (const method of ['emailCode', 'password', 'googleAuthoritative']) {
+        assert.equal((await flow.browser.post(`${returned.resume}/authenticate`, { csrf: csrf(html), method, code: '123456', password: 'guess' })).status, 400);
+    }
     assert.equal((await flow.browser.post(`${returned.resume}/confirm-link`, { csrf: csrf(html) })).status, 400);
-    response = await flow.browser.post(`${returned.resume}/authenticate`, { csrf: csrf(html), method: 'password', password: 'controlled-password' });
+    assert.equal((await flow.browser.post(`${returned.resume}/confirm-link`, { csrf: csrf(html), method: 'googleAuthoritative' })).status, 400);
+    assert.equal((await flow.browser.post(`${returned.resume}/verify-link-code`, { csrf: csrf(html), code: '123456' })).status, 400);
+    html = await (await flow.browser.post(`${returned.resume}/send-link-code`, { csrf: csrf(html) })).text();
+    assert.match(html, /A code has been sent/);
+    const linkCode = mail().code;
+    assert.match(await (await flow.browser.post(`${returned.resume}/send-link-code`, { csrf: csrf(html) })).text(), /Please wait/);
+    const wrong = linkCode === '000000' ? '111111' : '000000';
+    assert.match(await (await flow.browser.post(`${returned.resume}/verify-link-code`, { csrf: csrf(html), code: wrong })).text(), /Unable to verify that code/);
+    response = await flow.browser.post(`${returned.resume}/verify-link-code`, { csrf: csrf(html), code: linkCode });
     html = await response.text();
     assert.match(html, /Link Google and continue/);
     assert.equal((await (await getStore()).select('externalIdentity', {}, { start: 0, pageSize: 10 })).objects.length, 0);
@@ -289,13 +389,19 @@ test('third party registration mailbox proof stays transaction-bound and late co
     assert.equal(await getUserByEmail(provider.state.email), null);
     html = await (await flow.browser.post(`${returned.resume}/send-email-proof`, { csrf: csrf(html) })).text();
     assert.ok(mail().correlationId.startsWith('google-registration-email:'));
-    assert.equal((await verifyEmailCode({ challengeId: mail().correlationId, code: mail().code })).ok, false);
-    await registerUser({ email: provider.state.email, password: 'attacker-password' });
-    const response = await flow.browser.post(`${returned.resume}/verify-email-proof`, { csrf: csrf(html), code: mail().code });
+    const googleCode = mail().code;
+    // A Google mailbox code is not a wizard sign-in code for any attempt.
+    const wizardRequest = await createLoginRequest({ redirectUri: 'http://127.0.0.1/auth/callback' });
+    await assert.rejects(completeEmailSignIn({ parent: { flow: 'sso', id: wizardRequest.providerState, expiresAt: Date.parse(wizardRequest.expiresAt) },
+        browserProof: setup.newBrowserProof(), code: googleCode }), { code: 'attempt_invalid' });
+    // Meanwhile the address completes its own verified registration.
+    await setup.registerWithEmailCode(provider.state.email);
+    const response = await flow.browser.post(`${returned.resume}/verify-email-proof`, { csrf: csrf(html), code: googleCode });
     assert.equal(response.status, 400);
     assert.equal((await (await getStore()).select('externalIdentity', {}, { start: 0, pageSize: 10 })).objects.length, 0);
     html = await (await flow.browser.fetch(returned.resume)).text();
     assert.match(html, /Link your existing account/);
+    assert.match(html, /Email me a code/);
 }));
 
 test('new third-party registration requires and consumes its dedicated mailbox proof', () => fixture(async ({ provider, begin, callback, mail }) => {
@@ -307,14 +413,6 @@ test('new third-party registration requires and consumes its dedicated mailbox p
     const response = await flow.browser.post(`${returned.resume}/verify-email-proof`, { csrf: csrf(html), code: mail().code });
     assert.equal(response.status, 303, await response.clone().text());
     assert.ok((await getUserByEmail(provider.state.email)).emailVerifiedAt);
-}));
-
-test('ordinary email-code verifier rejects another purpose before consuming its challenge', () => fixture(async ({ owner }) => {
-    const store = await getStore();
-    await store.createAuthChallenge({ challengeId: 'foreign-proof', subject: owner.id, purpose: 'google-registration-email', correlationId: 'other',
-        expiresAt: new Date(Date.now() + 60_000).toISOString(), attempts: 0, codeHash: hashCode('123456', 'foreign-proof') });
-    assert.equal((await verifyEmailCode({ challengeId: 'foreign-proof', code: '123456' })).ok, false);
-    assert.ok(await store.getAuthChallengeByChallengeId('foreign-proof'));
 }));
 
 test('two browser attempts retain separate cookies and pending/verified attempts recover after store reopen', () => fixture(async ({ provider, begin, callback }) => {
@@ -342,14 +440,21 @@ test('provider denial and browser cancellation cannot produce an identity or rep
     const flow = await begin();
     const denied = await provider.approve(flow.start.authorizationUrl);
     const response = await flow.browser.fetch(denied);
-    assert.match(await response.text(), /Sign-in cancelled/);
+    assert.equal(response.status, 303);
+    const wizard = new URL(response.headers.get('location'), 'http://internal');
+    assert.equal(wizard.pathname, '/service/auth/');
+    assert.equal(wizard.searchParams.get('notice'), 'google-denied');
+    assert.equal(wizard.searchParams.get('requestId'), flow.request.providerState);
+    assert.equal(wizard.searchParams.get('state'), flow.state);
     assert.equal((await flow.browser.fetch(denied)).status, 400);
     assert.equal(provider.state.exchanges, 0);
     provider.state.mode = ''; provider.state.email = 'cancel@example.test';
     const next = await begin();
     const returned = await callback(next);
     const html = await (await next.browser.fetch(returned.resume)).text();
-    assert.equal((await next.browser.post(`${returned.resume}/cancel`, { csrf: csrf(html) })).status, 200);
+    const cancelled = await next.browser.post(`${returned.resume}/cancel`, { csrf: csrf(html) });
+    assert.equal(cancelled.status, 303);
+    assert.equal(new URL(cancelled.headers.get('location'), 'http://internal').searchParams.get('notice'), 'google-cancelled');
     assert.equal((await next.browser.fetch(returned.resume)).status, 400);
     assert.equal(await getUserByEmail(provider.state.email), null);
 }));
@@ -395,17 +500,18 @@ test('configuration, registration policy and parent expiry are rechecked after u
     }
 }));
 
-test('blocked collision and a disabled proven method cannot authorize confirmation', () => fixture(async ({ owner, provider, begin, callback }) => {
+test('blocked collision and a disabled proven method cannot authorize confirmation', () => fixture(async ({ owner, provider, begin, callback, mail }) => {
     provider.state.email = owner.email;
     const flow = await begin();
     const returned = await callback(flow);
     let html = await (await flow.browser.fetch(returned.resume)).text();
-    html = await (await flow.browser.post(`${returned.resume}/authenticate`, { csrf: csrf(html), method: 'password', password: 'controlled-password' })).text();
+    html = await (await flow.browser.post(`${returned.resume}/send-link-code`, { csrf: csrf(html) })).text();
+    html = await (await flow.browser.post(`${returned.resume}/verify-link-code`, { csrf: csrf(html), code: mail().code })).text();
     assert.match(html, /Link Google and continue/);
     process.env.USERPERSISTO_AUTH_METHODS = 'google';
     assert.ok((await flow.browser.post(`${returned.resume}/confirm-link`, { csrf: csrf(html) })).status >= 400);
     delete process.env.USERPERSISTO_AUTH_METHODS;
-    const member = await registerUser({ email: 'blocked@example.test', password: 'member-password' });
+    const member = await setup.registerWithEmailCode('blocked@example.test');
     provider.state.email = member.user.email; provider.state.subject = 'blocked';
     const blocked = await begin();
     const blockedReturn = await callback(blocked);
@@ -414,16 +520,24 @@ test('blocked collision and a disabled proven method cannot authorize confirmati
     assert.equal((await (await getStore()).select('externalIdentity')).objects.length, 0);
 }));
 
-test('policy cannot leave an unlinked administrator with only Google', () => fixture(async ({ base }) => {
+test('policy cannot leave an unlinked administrator with only Google, counting the configured password for its owner only', () => fixture(async ({ base }) => {
+    // The designated owner keeps the configured administrator password.
+    await updateAuthPolicy({ enabledAuthMethods: ['google'] });
+    await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google'] });
+    setup.clearAdministratorPassword();
     await assert.rejects(updateAuthPolicy({ enabledAuthMethods: ['google'] }), { code: 'administrator_auth_method_required' });
-    assert.deepEqual((await (await fetch(`${base}/service/auth/methods`)).json()).methods, ['password', 'google']);
+    // Environment overrides are part of the effective policy that is checked.
+    process.env.USERPERSISTO_AUTH_METHODS = 'google';
+    await assert.rejects(updateAuthPolicy({ selfRegistrationEnabled: false }), { code: 'administrator_auth_method_required' });
+    delete process.env.USERPERSISTO_AUTH_METHODS;
+    assert.deepEqual((await (await fetch(`${base}/service/auth/methods`)).json()).methods, ['emailCode', 'google']);
 }));
 
 test('an enrolled TOTP authenticates the collision but still needs explicit linking confirmation', () => fixture(async ({ provider, owner, begin, callback }) => {
-    await updateAuthPolicy({ enabledAuthMethods: ['password', 'google', 'totp'] });
+    await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google', 'totp'] });
     const setup = await setupStart({ userId: owner.id });
     const token = generateToken(setup.secret);
-    assert.equal((await setupVerify({ userId: owner.id, token })).ok, true);
+    assert.equal((await setupVerify({ userId: owner.id, token, setupId: setup.setupId })).ok, true);
     provider.state.email = owner.email;
     const flow = await begin();
     const returned = await callback(flow);
@@ -436,7 +550,7 @@ test('an enrolled TOTP authenticates the collision but still needs explicit link
 
 for (const change of ['counter advanced', 'replaced', 'removed']) {
     test(`real P-256 Google link proof checks its purpose and ${change} credential`, () => fixture(async ({ provider, owner, base, begin, callback }) => {
-        await updateAuthPolicy({ enabledAuthMethods: ['password', 'google', 'passkey'] });
+        await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google', 'passkey'] });
         const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
         const credentialId = randomBytes(24).toString('base64url');
         await (await getStore()).createAuthMethod({ key: `${owner.id}:passkey:${credentialId}`, userId: owner.id, type: 'passkey', enabled: true,
@@ -449,7 +563,7 @@ for (const change of ['counter advanced', 'replaced', 'removed']) {
         const options = await (await flow.browser.post(`${returned.resume}/challenge`, { csrf: csrf(html) })).json();
         const authenticatorData = Buffer.alloc(37);
         createHash('sha256').update(new URL(base).hostname).digest().copy(authenticatorData);
-        authenticatorData[32] = 0x01;
+        authenticatorData[32] = 0x05;
         authenticatorData.writeUInt32BE(1, 33);
         const clientDataJSON = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: options.publicKey.challenge, origin: base }));
         const signature = sign('sha256', Buffer.concat([authenticatorData, createHash('sha256').update(clientDataJSON).digest()]), privateKey);
@@ -486,7 +600,8 @@ test('downstream OIDC resumes browser interaction, local subject and explicit co
     let response = await browser.fetch(authorization);
     const interaction = new URL(response.headers.get('location'), issuer).href;
     const html = await (await browser.fetch(interaction)).text();
-    assert.match(html, /Continue with Google/);
+    const wizardConfig = JSON.parse(html.match(/<script type="application\/json" id="userpersisto-wizard-config">([^<]+)<\/script>/)[1]);
+    assert.equal(wizardConfig.methods.google, true);
     response = await browser.post(`${interaction}/google`, { csrf: csrf(html) });
     assert.equal(response.status, 200, await response.clone().text());
     const upstream = await provider.approve((await response.json()).authorizationUrl);
@@ -518,4 +633,28 @@ test('downstream OIDC resumes browser interaction, local subject and explicit co
     const info = await oidc.fetchUserInfo(config, tokens.access_token, user.id);
     assert.deepEqual(info.roles, ['selfRegistered']);
     assert.ok(!JSON.stringify(info).includes('controlled-user'));
+}));
+
+test('targeted Google cancellation binds browser and parent and preserves newer work', () => fixture(async ({ base, begin, callback, provider, mail }) => {
+    const first = await begin();
+    const newer = await begin(first.browser, 'newer-router-state');
+    const cancelPath = `${base}/service/auth/attempt/cancel`;
+    const args = { requestId: first.request.providerState, state: first.state, googleTransaction: first.start.transaction };
+    assert.equal((await new CookieBrowser().json(cancelPath, args)).status, 400, 'another browser cannot cancel');
+    assert.equal((await first.browser.json(cancelPath, { ...args, requestId: newer.request.providerState })).status, 400, 'another parent cannot cancel');
+    const email = 'cancel-new-email@example.test';
+    const startedEmail = await first.browser.json(`${base}/service/auth/email-code/start`, {
+        requestId: first.request.providerState, state: first.state, email, purpose: 'register',
+    });
+    assert.equal(startedEmail.status, 200, await startedEmail.clone().text());
+    const code = mail().code;
+    assert.equal((await first.browser.json(cancelPath, args)).status, 200);
+    assert.equal((await first.browser.fetch(await provider.approve(first.start.authorizationUrl))).status, 400, 'cancelled Google cannot resume');
+    const completedEmail = await first.browser.json(`${base}/service/auth/email-code/verify`, {
+        requestId: first.request.providerState, state: first.state, code,
+    });
+    assert.equal(completedEmail.status, 200, await completedEmail.clone().text());
+    assert.ok(await getUserByEmail(email), 'cancelling old Google leaves the new email proof usable');
+    const current = await callback(newer);
+    assert.equal((await newer.browser.fetch(current.resume)).status, 303, 'the newer Google transaction still completes');
 }));

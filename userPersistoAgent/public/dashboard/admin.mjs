@@ -16,7 +16,7 @@ export function mountManagement(document, host = window) {
     };
     panel.afterRender();
     const actions = new Set([
-        'createUser', 'searchUsers', 'clearUserSearch', 'previousUsersPage', 'nextUsersPage',
+        'searchUsers', 'clearUserSearch', 'previousUsersPage', 'nextUsersPage',
         'saveAuthPolicy', 'newApplication', 'saveApplication', 'refreshApplications',
         'clearApplicationSecret', 'previousApplicationsPage', 'nextApplicationsPage',
     ]);

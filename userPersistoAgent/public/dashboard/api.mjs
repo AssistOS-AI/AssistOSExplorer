@@ -1,9 +1,7 @@
 const MANAGEMENT_PATHS = Object.freeze({
     userpersisto_user_list: 'users/list',
-    userpersisto_user_create: 'users/create',
     userpersisto_user_update: 'users/update',
     userpersisto_user_roles_update: 'users/roles',
-    userpersisto_auth_password_set: 'users/password',
     userpersisto_user_delete: 'users/delete',
     userpersisto_oidc_clients_list: 'applications/list',
     userpersisto_oidc_client_create: 'applications/create',

@@ -7,13 +7,37 @@ import { OIDC_SERVICE_PATH, oidcIssuer } from './config.mjs';
 import { page, escapeHtml as esc } from './views.mjs';
 import { withPersistenceScope } from '../persistence-scope.mjs';
 import { serialize } from '../serial.mjs';
-import { getAuthPolicy, isAuthMethodEnabled } from '../policy.mjs';
-import { getSetupStatus, registerUser, getUserById } from '../users.mjs';
-import { loginWithPassword } from '../auth/password.mjs';
-import { startEmailCode, verifyEmailCode } from '../auth/email-code.mjs';
+import { isAuthMethodEnabled } from '../policy.mjs';
+import { authGenerationOf, getUserById } from '../users.mjs';
 import { loginVerify as verifyTotp } from '../auth/totp.mjs';
 import { loginOptions as passkeyOptions, loginVerify as verifyPasskey } from '../auth/passkey.mjs';
-import { getGoogleStatus } from '../auth/google.mjs';
+import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, startEmailSignIn } from '../auth/signIn.mjs';
+import { readAttempt } from '../auth/emailAttempts.mjs';
+import { completeAdministratorPassword } from '../auth/adminPassword.mjs';
+import { wizardConfiguration } from '../auth/wizardConfig.mjs';
+import { ensureBrowserProof, rateSourceOf, readBrowserProof } from '../auth/browserBinding.mjs';
+import { getEmailAuthCodeStatus, sendAuthCode } from '../email-agent-client.mjs';
+import { cancelGoogleTransactionForParent } from '../../service/googleAuth.mjs';
+
+// OIDC adapter for the shared wizard. JSON actions return wizard state; every
+// credential completion is a native form POST that ends in the engine's
+// interactionFinished redirect, so the browser keeps the cookie-bound flow.
+const JSON_ACTIONS = new Set(['attempt', 'attempt-cancel', 'discover', 'email-start', 'passkey-options']);
+const NATIVE_ACTIONS = new Set(['email-verify', 'totp', 'passkey-verify', 'admin-login']);
+const METHOD_FOR_ACTION = {
+    'email-start': 'emailCode', 'email-verify': 'emailCode', totp: 'totp', 'passkey-options': 'passkey', 'passkey-verify': 'passkey',
+};
+const NOTICES = new Set(['google-cancelled', 'google-denied', 'google-unavailable']);
+const FAILURE_MESSAGES = {
+    account_exists: 'An account already uses this email. Sign in instead.',
+    registration_disabled: 'Registration is not available.',
+    code_invalid: 'Unable to sign in. That code is not correct.',
+    code_expired: 'Unable to sign in. That code expired; request a new code.',
+    too_many_attempts: 'Unable to sign in. Too many incorrect codes; start again.',
+    rate_limited: 'Unable to sign in. Too many attempts; wait and try again.',
+    attempt_invalid: 'Unable to sign in. Start again.',
+    admin_password_unavailable: 'Administrator sign-in is not available.',
+};
 
 function json(res, status, data) {
     res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -62,6 +86,13 @@ function formBody(req) {
     return body;
 }
 
+function field(body, name, max) {
+    const value = body[name];
+    if (value === undefined) return '';
+    if (typeof value !== 'string' || value.length > max) throw Object.assign(new Error('invalid_request'), { code: 'invalid_request', statusCode: 400 });
+    return value;
+}
+
 function csrfFor(uid, key) { return createHmac('sha256', key).update(`oidc-interaction:${uid}`).digest('base64url'); }
 function same(a, b) {
     const left = Buffer.from(String(a || ''));
@@ -72,69 +103,112 @@ function form(url, csrf, body) {
     return `<form method="post" action="${esc(url)}"><input type="hidden" name="csrf" value="${esc(csrf)}">${body}</form>`;
 }
 
-async function renderInteraction(res, interaction, issuer, csrf, message = '', status = message ? 400 : 200, screenHint = interaction.params.screen_hint) {
-    const client = await getClientMetadata(interaction.params.client_id);
-    if (!client) return html(res, 400, page('Application unavailable', '<p>Return to the application and start again.</p>'));
-    const base = `${issuer.href}/interaction/${interaction.uid}`;
-    const identity = `<p class="muted">Continue to <strong>${esc(client.client_name || client.client_id)}</strong></p>`;
-    const abort = form(`${base}/abort`, csrf, '<button class="secondary">Cancel</button>');
-    if (interaction.prompt.name === 'consent') {
-        const user = await getUserById(interaction.session?.accountId);
-        if (!user || user.status !== 'active') throw Object.assign(new Error('login_required'), { statusCode: 401 });
-        const labels = { openid: 'Identify your account', profile: 'Read your name and username', email: 'Read your email address and verification status', roles: 'Read your roles', capabilities: 'Read your permissions', offline_access: 'Keep access when you are away', api: 'Access the application API' };
-        const scopes = String(interaction.params.scope || '').split(' ').filter(Boolean);
-        const permissions = scopes.map((scope) => `<li>${esc(labels[scope] || scope)}</li>`).join('');
-        return html(res, 200, page('Allow access?', `${identity}<p>Signed in as ${esc(user.email)}.</p><ul>${permissions}</ul>${form(`${base}/confirm`, csrf, '<button>Allow access</button>')}${abort}`), interaction.params.redirect_uri);
-    }
-    if (interaction.prompt.name !== 'login') throw Object.assign(new Error('interaction_required'), { statusCode: 400 });
-    const policy = await getAuthPolicy();
-    const enabled = policy.enabledAuthMethods;
-    const email = '<label>Email<input type="email" name="email" autocomplete="username" maxlength="254" required></label>';
-    const password = '<label>Password<input type="password" name="password" autocomplete="current-password" maxlength="1024" required></label>';
-    let forms = '';
-    if (enabled.includes('password')) forms += form(`${base}/login`, csrf, `${email}${password}<button>Sign in</button>`);
-    if (enabled.includes('emailCode')) forms += `<details${message && status === 200 ? ' open' : ''}><summary>Sign in with an email code</summary>${form(`${base}/email-start`, csrf, `${email}<button>Send code</button>`)}${form(`${base}/email-verify`, csrf, '<label>Email code<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label><button>Verify code</button>')}</details>`;
-    if (enabled.includes('totp')) forms += `<details><summary>Sign in with an authenticator</summary>${form(`${base}/totp`, csrf, `${email}<label>Authenticator code<input name="token" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label><button>Verify code</button>`)}</details>`;
-    if (enabled.includes('passkey')) forms += `<details><summary>Sign in with a passkey</summary>${form(`${base}/passkey-options`, csrf, `${email}<button data-passkey>Use passkey</button><p data-passkey-error class="error" role="alert"></p>`)}</details>`;
-    const setup = await getSetupStatus();
-    const googleAvailable = (await getGoogleStatus()).available;
-    const googleButton = googleAvailable ? `<link rel="stylesheet" href="${esc(issuer.href.replace(/\/oidc$/, '/auth/google-button.css'))}">${form(`${base}/google`, csrf, '<button data-google class="google-button" disabled><span class="google-icon" aria-hidden="true"></span>Continue with Google</button>')}` : '';
-    const canRegister = enabled.includes('password') && policy.selfRegistrationEnabled && !setup.needsInitialAdmin;
-    const signupFirst = (canRegister || (googleAvailable && policy.selfRegistrationEnabled)) && screenHint === 'signup';
-    if (canRegister) {
-        const registration = form(`${base}/register`, csrf, `${email}<label>New password<input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label><button>Create account</button>`);
-        forms = signupFirst
-            ? `${registration}<details><summary>Already registered? Sign in</summary>${forms}</details>`
-            : `${forms}<details><summary>Create an account</summary>${registration}</details>`;
-    }
-    if (googleAvailable) forms = `${googleButton}${forms}`;
-    if (googleAvailable || enabled.includes('passkey')) forms += `<script src="${esc(issuer.href)}/interaction.js" defer></script>`;
-    return html(res, status, page(signupFirst ? 'Create your account' : 'Sign in', `${identity}${message ? `<p class="${status >= 400 ? 'error' : 'muted'}" role="${status >= 400 ? 'alert' : 'status'}">${esc(message)}</p>` : ''}${forms}${abort}`), interaction.params.redirect_uri);
+function servicePath(issuer) {
+    return issuer.pathname.slice(0, -'oidc'.length);
 }
 
-async function interactionRequest(req, res, issuer, provider, match, google) {
+function authAsset(issuer, name) {
+    return `${issuer.origin}${servicePath(issuer)}auth/${name}`;
+}
+
+// The embedded configuration is data only; `<` is escaped so no markup can end
+// the script element, and CSP permits only same-origin scripts.
+function jsonScript(id, value) {
+    return `<script type="application/json" id="${id}">${JSON.stringify(value).replace(/</g, '\\u003c')}</script>`;
+}
+
+async function renderConsent(res, interaction, issuer, csrf, client) {
+    const base = `${issuer.href}/interaction/${interaction.uid}`;
+    const identity = `<p class="muted">Continue to <strong>${esc(client.client_name || client.client_id)}</strong></p>`;
+    const user = await getUserById(interaction.session?.accountId);
+    if (!user || user.status !== 'active') throw Object.assign(new Error('login_required'), { statusCode: 401 });
+    const labels = { openid: 'Identify your account', profile: 'Read your name and username', email: 'Read your email address and verification status', roles: 'Read your roles', capabilities: 'Read your permissions', offline_access: 'Keep access when you are away', api: 'Access the application API' };
+    const scopes = String(interaction.params.scope || '').split(' ').filter(Boolean);
+    const permissions = scopes.map((scope) => `<li>${esc(labels[scope] || scope)}</li>`).join('');
+    const signedInAs = user.email || user.username || user.displayName || 'your account';
+    return html(res, 200, page('Allow access?', `${identity}<p>Signed in as ${esc(signedInAs)}.</p><ul>${permissions}</ul>${form(`${base}/confirm`, csrf, '<button>Allow access</button>')}${form(`${base}/abort`, csrf, '<button class="secondary">Cancel</button>')}`), interaction.params.redirect_uri);
+}
+
+// Login prompt: the shared wizard shell. A native-POST failure re-renders it
+// with a visible, readable error and only the attempted email (never codes).
+async function renderWizard(res, interaction, issuer, csrf, client, { status = 200, failure = null, email = '', notice = '', emailAvailable = false } = {}) {
+    const base = `${issuer.href}/interaction/${interaction.uid}`;
+    const clientName = client.client_name || client.client_id;
+    const hint = interaction.params.screen_hint === 'signup' ? 'signup' : '';
+    const config = {
+        flow: 'oidc',
+        base,
+        csrf,
+        client: { name: clientName },
+        screenHint: hint,
+        expiresAt: interaction.exp * 1000,
+        notice: NOTICES.has(notice) ? notice : '',
+        failure,
+        email,
+        ...(await wizardConfiguration({ emailAvailable })),
+    };
+    const message = failure ? `<p class="error" role="alert" data-server-failure>${esc(failure.message)}</p>` : '';
+    const body = `<main id="auth_content" class="userpersisto-auth-shell" aria-live="polite">
+<section class="auth-panel" data-wizard-fallback><h1 tabindex="-1">${hint ? 'Create your account' : 'Sign in'}</h1><p class="auth-copy">Continue to <strong>${esc(clientName)}</strong></p>${message}<noscript><p>Enable JavaScript to sign in.</p></noscript>
+${form(`${base}/abort`, csrf, '<button type="submit" class="secondary">Cancel</button>')}</section>
+</main>${jsonScript('userpersisto-wizard-config', config)}<script type="module" src="${esc(authAsset(issuer, 'oidc-main.js'))}"></script>`;
+    const document = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${hint ? 'Create your account' : 'Sign in'} · UserPersisto</title><link rel="stylesheet" href="${esc(authAsset(issuer, 'auth.css'))}"><link rel="stylesheet" href="${esc(authAsset(issuer, 'google-button.css'))}"></head><body>${body}</body></html>`;
+    return html(res, status, document, interaction.params.redirect_uri);
+}
+
+function failureFrom(error) {
+    const code = String(error?.code || 'authentication_failed');
+    return { code, message: FAILURE_MESSAGES[code] || 'Unable to sign in. Check your details and try again.',
+        ...(Number.isSafeInteger(error?.attemptsRemaining) ? { attemptsRemaining: error.attemptsRemaining } : {}),
+        ...(Number.isSafeInteger(error?.retryAfter) ? { retryAfter: error.retryAfter } : {}) };
+}
+
+function jsonFailure(res, error) {
+    const status = Number(error?.statusCode);
+    if (!(status >= 400 && status < 500)) throw error;
+    return json(res, status, { ok: false, error: String(error.code || 'invalid_request'),
+        ...(Number.isSafeInteger(error.retryAfter) ? { retryAfter: error.retryAfter } : {}),
+        ...(Number.isSafeInteger(error.attemptsRemaining) ? { attemptsRemaining: error.attemptsRemaining } : {}) });
+}
+
+async function interactionRequest(req, res, issuer, provider, match, { google, deliverEmail, emailStatus }) {
     const [, uid, action = '', subaction = ''] = match;
     if (subaction && action !== 'google-resume') throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
+    const emailAvailable = (await emailStatus()).available === true;
     return serialize(`oidc-interaction:${uid}`, async () => {
         const interaction = await provider.interactionDetails(req, res);
-        if (interaction.uid !== uid || interaction.result) throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
-        if (!(await getClientMetadata(interaction.params.client_id))) throw Object.assign(new Error('invalid_client'), { statusCode: 400 });
+        if (interaction.uid !== uid) throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
+        if (interaction.result) {
+            // The committed result survives a lost redirect: the same
+            // cookie-bound browser continues to the engine's resume endpoint.
+            if (req.method === 'GET' && !action && typeof interaction.returnTo === 'string' && interaction.returnTo.startsWith(issuer.href)) {
+                res.writeHead(303, { Location: interaction.returnTo, 'Cache-Control': 'no-store' });
+                return res.end();
+            }
+            throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
+        }
+        const client = await getClientMetadata(interaction.params.client_id);
+        if (!client) throw Object.assign(new Error('invalid_client'), { statusCode: 400 });
+        const validateParent = async () => {
+            const fresh = await provider.interactionDetails(req, res);
+            if (fresh.uid !== uid || fresh.result || fresh.prompt.name !== 'login' || fresh.params.client_id !== interaction.params.client_id
+                || fresh.params.redirect_uri !== interaction.params.redirect_uri || !(await getClientMetadata(fresh.params.client_id))) {
+                throw Object.assign(new Error('invalid_request'), { code: 'attempt_expired', statusCode: 410 });
+            }
+        };
+        const parent = { flow: 'oidc', id: uid, expiresAt: interaction.exp * 1000 };
         const googleContext = {
             flow: 'oidc',
             parent: { uid, clientId: interaction.params.client_id, redirectUri: interaction.params.redirect_uri,
                 origin: issuer.origin, expiresAt: interaction.exp * 1000 },
-            validate: async () => {
-                const fresh = await provider.interactionDetails(req, res);
-                if (fresh.uid !== uid || fresh.result || fresh.prompt.name !== 'login' || fresh.params.client_id !== interaction.params.client_id
-                    || fresh.params.redirect_uri !== interaction.params.redirect_uri || !(await getClientMetadata(fresh.params.client_id))) {
-                    throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
-                }
-            },
+            validate: validateParent,
             complete: (user) => withPersistenceScope(async () => {
-                await googleContext.validate();
+                await validateParent();
                 const active = await getUserById(user.id);
-                if (!active || active.status !== 'active') throw Object.assign(new Error('login_required'), { statusCode: 401 });
-                await provider.interactionFinished(req, res, { login: { accountId: user.id, amr: ['federated'], provider: 'google' } }, { mergeWithLastSubmission: false });
+                if (!active || active.status !== 'active' || authGenerationOf(active) !== authGenerationOf(user)) {
+                    throw Object.assign(new Error('login_required'), { statusCode: 401 });
+                }
+                await provider.interactionFinished(req, res, { login: { accountId: user.id, authGeneration: authGenerationOf(user), amr: ['federated'], provider: 'google' } }, { mergeWithLastSubmission: false });
             }),
         };
         if (action === 'google-resume') {
@@ -144,7 +218,12 @@ async function interactionRequest(req, res, issuer, provider, match, google) {
         }
         const { cookieKeys } = await getOrCreateOidcKeys();
         const csrf = csrfFor(uid, cookieKeys[0]);
-        if (req.method === 'GET' && !action) return renderInteraction(res, interaction, issuer, csrf);
+        if (req.method === 'GET' && !action) {
+            if (interaction.prompt.name === 'consent') return renderConsent(res, interaction, issuer, csrf, client);
+            if (interaction.prompt.name !== 'login') throw Object.assign(new Error('interaction_required'), { statusCode: 400 });
+            const notices = new URL(req.url, issuer.origin).searchParams.getAll('notice');
+            return renderWizard(res, interaction, issuer, csrf, client, { notice: notices.length === 1 ? notices[0] : '', emailAvailable });
+        }
         if (req.method !== 'POST') return json(res, 405, { error: 'invalid_request' });
         const body = formBody(req);
         if (req.headers.origin !== issuer.origin || !same(body.csrf, csrf)) return json(res, 403, { error: 'invalid_request' });
@@ -153,6 +232,12 @@ async function interactionRequest(req, res, issuer, provider, match, google) {
             const fresh = await provider.interactionDetails(req, res);
             if (fresh.uid !== uid || fresh.result || !(await getClientMetadata(fresh.params.client_id))) {
                 throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
+            }
+            if (result.login) {
+                const active = await getUserById(result.login.accountId);
+                if (!active || active.status !== 'active' || result.login.authGeneration !== authGenerationOf(active)) {
+                    throw Object.assign(new Error('login_required'), { statusCode: 401 });
+                }
             }
             await provider.interactionFinished(req, res, result, { mergeWithLastSubmission });
         });
@@ -171,52 +256,95 @@ async function interactionRequest(req, res, issuer, provider, match, google) {
                 return finish({ consent: { grantId } }, true);
             });
         }
-        if (interaction.prompt.name !== 'login') return json(res, 400, { error: 'invalid_request' });
-        const methods = { login: 'password', register: 'password', 'email-start': 'emailCode', 'email-verify': 'emailCode', totp: 'totp', 'passkey-options': 'passkey', 'passkey-verify': 'passkey' };
-        const method = methods[action];
-        if (!method || !(await isAuthMethodEnabled(method))) return json(res, 400, { error: 'access_denied' });
+        if (interaction.prompt.name !== 'login' || (!JSON_ACTIONS.has(action) && !NATIVE_ACTIONS.has(action))) return json(res, 400, { error: 'invalid_request' });
+        const method = METHOD_FOR_ACTION[action];
+        if (method && !(await isAuthMethodEnabled(method))) return json(res, 400, { error: 'access_denied' });
+        const rateSource = rateSourceOf(req);
+        const cookie = { path: servicePath(issuer), secure: issuer.protocol === 'https:' };
         const challengeStore = new PersistoOidcAdapter('LoginChallenge');
-        let authenticated;
-        try {
-            if (action === 'login') authenticated = await loginWithPassword(body.email, body.password);
-            if (action === 'register') {
-                // The live, browser-bound interaction is checked before account creation.
-                const registered = await registerUser({ email: body.email, password: body.password }, { allowInitialAdmin: false });
-                authenticated = { ok: true, user: registered.user };
-            }
-            if (action === 'totp') authenticated = await verifyTotp({ email: body.email, token: body.token });
-            if (action === 'email-start') {
-                const started = await startEmailCode({ email: body.email, purpose: 'login', correlationId: uid });
-                await challengeStore.upsert(uid, { challengeId: started.challengeId, method: 'emailCode' }, 600);
-                return renderInteraction(res, interaction, issuer, csrf, 'If this account can sign in, a code has been sent.', 200, 'login');
-            }
-            if (action === 'email-verify') {
-                const stored = await challengeStore.find(uid);
-                if (stored?.method === 'emailCode') authenticated = await verifyEmailCode({ challengeId: stored.challengeId, code: body.code, correlationId: uid });
-            }
-            if (action === 'passkey-options') {
-                const options = await passkeyOptions({ email: body.email, origin: issuer.origin, rpId: issuer.hostname });
-                await challengeStore.upsert(uid, { email: body.email, challengeKey: options.challengeKey, method: 'passkey' }, 600);
+        if (JSON_ACTIONS.has(action)) {
+            try {
+                if (action === 'attempt') {
+                    const browserProof = ensureBrowserProof(req, res, cookie);
+                    return json(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable })), attempt: await attemptStatus({ parent, browserProof }) });
+                }
+                if (action === 'attempt-cancel') {
+                    if (body.googleTransaction !== undefined) {
+                        await cancelGoogleTransactionForParent({ req, handle: field(body, 'googleTransaction', 128), flow: 'oidc', parentId: uid });
+                        return json(res, 200, { ok: true, status: 'cancelled' });
+                    }
+                    const browserProof = readBrowserProof(req);
+                    await challengeStore.destroy(uid);
+                    return json(res, 200, { ok: true, ...(browserProof ? await cancelSignIn({ parent, browserProof }) : { status: 'cancelled' }) });
+                }
+                if (action === 'discover') {
+                    return json(res, 200, { ok: true, ...(await discoverAccount({ parent, email: field(body, 'email', 320), rateSource, validateParent, emailAvailable })) });
+                }
+                if (action === 'email-start') {
+                    if (!emailAvailable) throw Object.assign(new Error('auth_method_disabled'), { code: 'auth_method_disabled', statusCode: 404 });
+                    const browserProof = ensureBrowserProof(req, res, cookie);
+                    const started = await startEmailSignIn({ parent, browserProof, email: field(body, 'email', 320), purpose: field(body, 'purpose', 16),
+                        resend: body.resend === 'true', rateSource, validateParent, deliver: deliverEmail });
+                    return json(res, 200, { ok: true, ...started });
+                }
+                // passkey-options: retain the email and challenge server-side for this interaction.
+                const email = field(body, 'email', 320);
+                const options = await passkeyOptions({ email, origin: issuer.origin, rpId: issuer.hostname, purpose: `oidc-login:${uid}` });
+                if (!options.ok) return json(res, 401, { ok: false, error: 'authentication_failed' });
+                await challengeStore.upsert(uid, { email, challengeKey: options.challengeKey, method: 'passkey' }, 600);
                 return json(res, 200, options);
+            } catch (error) {
+                return jsonFailure(res, error);
+            }
+        }
+        let authenticated;
+        let amr;
+        let attemptedEmail = '';
+        try {
+            if (action === 'email-verify') {
+                const browserProof = readBrowserProof(req);
+                if (!browserProof) throw Object.assign(new Error('attempt_invalid'), { code: 'attempt_invalid', statusCode: 400 });
+                // A failed completion re-renders the wizard naming this attempt's address.
+                attemptedEmail = (await readAttempt({ parent, browserProof }).catch(() => null))?.email || '';
+                const result = await completeEmailSignIn({ parent, browserProof, code: field(body, 'code', 16), validateParent });
+                authenticated = { ok: true, user: result.user };
+                amr = ['emailCode'];
+            }
+            if (action === 'totp') {
+                attemptedEmail = field(body, 'email', 320);
+                authenticated = await verifyTotp({ email: attemptedEmail, token: field(body, 'token', 16) });
+                amr = ['totp'];
             }
             if (action === 'passkey-verify') {
                 const stored = await challengeStore.find(uid);
-                if (stored?.method === 'passkey') authenticated = await verifyPasskey({ email: stored.email,
-                    challengeKey: stored.challengeKey, assertion: JSON.parse(body.assertion || '{}'), origin: issuer.origin });
+                let assertion;
+                try { assertion = JSON.parse(field(body, 'assertion', 16 * 1024) || '{}'); } catch { assertion = null; }
+                if (stored?.method === 'passkey' && assertion) {
+                    attemptedEmail = stored.email;
+                    authenticated = await verifyPasskey({ email: stored.email, challengeKey: stored.challengeKey, assertion,
+                        origin: issuer.origin, purpose: `oidc-login:${uid}` });
+                }
+                amr = ['passkey'];
+            }
+            if (action === 'admin-login') {
+                const result = await completeAdministratorPassword({ password: field(body, 'password', 4096), rateSource,
+                    contactEmail: field(body, 'contactEmail', 320), validateParent });
+                authenticated = { ok: true, user: result.user };
+                amr = ['pwd'];
             }
         } catch (error) {
-            if (Number(error.statusCode) >= 500 || error.code === 'persistence_unavailable') throw error;
-            return renderInteraction(res, interaction, issuer, csrf, action === 'register'
-                ? 'Unable to create an account. Check your details and try again.'
-                : 'Unable to sign in. Check your details and try again.', 400, action === 'register' ? 'signup' : 'login');
+            if (!(Number(error.statusCode) >= 400 && Number(error.statusCode) < 500) || error.code === 'persistence_unavailable') throw error;
+            return renderWizard(res, interaction, issuer, csrf, client, { status: 400, failure: { ...failureFrom(error), action }, email: attemptedEmail, emailAvailable });
         }
-        if (!authenticated?.ok) return renderInteraction(res, interaction, issuer, csrf, 'Unable to sign in. Check your details and try again.', 400, 'login');
+        if (!authenticated?.ok) {
+            return renderWizard(res, interaction, issuer, csrf, client, { status: 400, failure: { ...failureFrom({ code: 'authentication_failed' }), action }, email: attemptedEmail, emailAvailable });
+        }
         await challengeStore.destroy(uid);
-        return finish({ login: { accountId: authenticated.user.id, amr: [method === 'password' ? 'pwd' : method] } });
+        return finish({ login: { accountId: authenticated.user.id, authGeneration: authGenerationOf(authenticated.user), amr } });
     });
 }
 
-export async function handleOidc(req, res, { google } = {}) {
+export async function handleOidc(req, res, { google, deliverEmail = sendAuthCode, emailStatus = getEmailAuthCodeStatus } = {}) {
     const path = new URL(req.url, 'http://internal').pathname;
     if (path !== OIDC_SERVICE_PATH && !path.startsWith(`${OIDC_SERVICE_PATH}/`)) return false;
     try {
@@ -234,12 +362,8 @@ export async function handleOidc(req, res, { google } = {}) {
         res.setHeader('Referrer-Policy', 'same-origin');
         res.setHeader('X-Content-Type-Options', 'nosniff');
         const interaction = new URL(suffix, issuer.origin).pathname.match(/^\/interaction\/([A-Za-z0-9_-]+)(?:\/([a-z-]+))?(?:\/([a-z-]+))?$/);
-        if (interaction) await interactionRequest(req, res, issuer, provider, interaction, google);
-        else if (suffix === '/interaction.js' && req.method === 'GET') {
-            const { readFile } = await import('node:fs/promises');
-            res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' });
-            res.end(await readFile(new URL('../../public/auth/oidc-interaction.js', import.meta.url)));
-        } else {
+        if (interaction) await interactionRequest(req, res, issuer, provider, interaction, { google, deliverEmail, emailStatus });
+        else {
             // No network-backed provider extensions are enabled. Exclude account,
             // client and grant mutations throughout local token validation/issuance.
             await withPersistenceScope(() => provider.callback()(req, res));

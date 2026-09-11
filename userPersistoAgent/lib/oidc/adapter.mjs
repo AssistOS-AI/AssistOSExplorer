@@ -152,6 +152,37 @@ export async function revokeOidcClientArtifacts(clientId, { persist = true } = {
     });
 }
 
+const ACCOUNT_MODELS = ['Session', 'Grant', 'AccessToken', 'RefreshToken', 'AuthorizationCode', 'Interaction'];
+
+// Credential replacement or revocation ends stored OIDC state for the account.
+// Self-contained ID tokens are not stored and remain valid until they expire.
+export async function revokeOidcAccountArtifacts(accountId, { persist = true } = {}) {
+    if (typeof accountId !== 'string' || !accountId) return;
+    return withOidcOperation(async () => {
+        const store = await getStore();
+        const grantIds = new Set();
+        const doomed = [];
+        for (const model of ACCOUNT_MODELS) {
+            for (const record of await store.getOidcModelsObjectsByModel(model) || []) {
+                const payload = decryptRecord(record);
+                if (payload?.accountId !== accountId && payload?.result?.login?.accountId !== accountId
+                    && payload?.session?.accountId !== accountId) continue;
+                if (model === 'Grant' && payload.jti) grantIds.add(payload.jti);
+                if (payload.grantId) grantIds.add(payload.grantId);
+                for (const authorization of Object.values(payload.authorizations || {})) {
+                    if (authorization?.grantId) grantIds.add(authorization.grantId);
+                }
+                doomed.push(record);
+            }
+        }
+        for (const grantId of grantIds) await revokeGrant(grantId, { persist: false });
+        for (const record of doomed) {
+            if (await store.getOidcRecordByRecordKey(record.recordKey)) await store.deleteOidcRecord(record.id);
+        }
+        if (persist) await flush();
+    });
+}
+
 export default class PersistoOidcAdapter {
     constructor(model) {
         this.model = model;

@@ -36,7 +36,6 @@ admin-users-settings .users-search-panel .users-search-help {
 }
 
 admin-users-settings .toolbar {
-    --admin-user-control-height: 36px;
     display: grid;
     grid-template-columns: 1fr 1fr 1fr 1fr auto;
     gap: 10px;
@@ -47,57 +46,9 @@ admin-users-settings .toolbar {
     align-items: end;
 }
 
-admin-users-settings .toolbar > .form-label {
-    display: grid;
-    grid-template-rows: auto var(--admin-user-control-height);
-    gap: 4px;
-    min-width: 0;
-    margin: 0;
-    line-height: 1.2;
-}
-
-admin-users-settings .toolbar .form-input,
-admin-users-settings .toolbar .password-field,
-admin-users-settings .toolbar custom-select,
-admin-users-settings .toolbar > .general-button {
-    height: var(--admin-user-control-height);
-}
-
-admin-users-settings .toolbar > .general-button {
-    align-self: end;
-    white-space: nowrap;
-}
-
 admin-users-settings [data-role="tableHost"] {
     padding: 14px;
     background: var(--bg);
-}
-
-admin-users-settings .password-field {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: stretch;
-}
-
-admin-users-settings .password-field input {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
-}
-
-admin-users-settings .password-toggle {
-    width: 38px;
-    border: 1px solid var(--border);
-    border-left: 0;
-    border-radius: 0 8px 8px 0;
-    background: var(--surface);
-    color: var(--text-soft);
-    cursor: pointer;
-}
-
-admin-users-settings .password-toggle img {
-    width: 16px;
-    height: 16px;
-    opacity: 0.72;
 }
 
 admin-users-settings table {
@@ -141,11 +92,6 @@ admin-users-settings .empty {
 
 admin-users-settings custom-select {
     min-width: 0;
-}
-
-admin-users-settings .toolbar custom-select .custom-select {
-    height: 100%;
-    margin-top: 0;
 }
 
 admin-users-settings .section-heading {

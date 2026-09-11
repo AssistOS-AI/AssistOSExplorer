@@ -1,11 +1,10 @@
 import { getStore, flush } from './store.mjs';
-import { hashPassword, validatePassword } from './auth/password.mjs';
 import { recordAudit } from './audit.mjs';
-import { assertRegistrationRoleAllowed, getAuthPolicy } from './policy.mjs';
 import { serializePersisted as serialize } from './serial.mjs';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/;
+const USER_ID_RE = /^USER\.[0-9a-z]+$/i;
 const USER_STATUSES = new Set(['active', 'blocked']);
 const PRIVATE_USER_FIELDS = new Set(['passwordHash', 'loginAttempts', 'lastLoginAttempt']);
 const USER_SCAN_PAGE_SIZE = 500;
@@ -22,10 +21,16 @@ export function sanitizeUser(user) {
     return Object.fromEntries(Object.entries(user).filter(([key]) => !PRIVATE_USER_FIELDS.has(key)));
 }
 
-function normalizeEmail(email) {
+export function normalizeEmail(email) {
     const normalized = String(email || '').trim().toLowerCase();
-    if (!EMAIL_RE.test(normalized)) throw userError('invalid_email', 'A valid email address is required.');
+    if (normalized.length > 254 || !EMAIL_RE.test(normalized)) throw userError('invalid_email', 'A valid email address is required.');
     return normalized;
+}
+
+// Only a non-empty, verified mailbox is a sign-in credential. An unverified
+// contact address, or the email-less configured administrator, never is.
+export function hasVerifiedMailbox(user) {
+    return Boolean(user && typeof user.email === 'string' && user.email && user.emailVerifiedAt);
 }
 
 function normalizeUsername(username) {
@@ -57,57 +62,80 @@ async function findUserByUsername(store, username, excludeUserId = '') {
 export async function getUserByEmail(email) {
     const store = await getStore();
     const key = String(email || '').trim().toLowerCase();
-    if (!key) return null;
+    if (!key || !key.includes('@')) return null;
     return (await store.hasUser(key)) ? store.getUser(key) : null;
 }
 
+// Persisto resolves a missing id through the email index too. Account ids are
+// always Persisto object ids, so an empty or email-shaped value is never one.
 export async function getUserById(id) {
+    if (typeof id !== 'string' || !USER_ID_RE.test(id)) return null;
     const store = await getStore();
     return (await store.hasUser(id)) ? store.getUser(id) : null;
+}
+
+function normalizeRoleNames(roles) {
+    return [...new Set((Array.isArray(roles) ? roles : []).map(String).map((role) => role.trim()).filter(Boolean))];
+}
+
+// Runs every predictable account-creation check without mutating, so staged
+// callers can validate before entering the fail-closed persistence boundary.
+// The only email-less account is the configured-password administrator.
+export async function assertNewUserAvailable({ email, username = '', roles = [], contactEmail = '', allowEmptyEmail = false }) {
+    const store = await getStore();
+    const normalizedEmail = allowEmptyEmail && email === '' ? '' : normalizeEmail(email);
+    const normalizedUsername = normalizeUsername(username);
+    const normalizedContact = contactEmail ? normalizeEmail(contactEmail) : '';
+    if (normalizedEmail ? await getUserByEmail(normalizedEmail) : await store.hasUser('')) {
+        throw userError('email_taken', 'Email is already in use.');
+    }
+    if (normalizedUsername && await findUserByUsername(store, normalizedUsername)) {
+        throw userError('username_taken', 'Username is already in use.');
+    }
+    const roleNames = normalizeRoleNames(roles);
+    if (!roleNames.length) throw userError('roles_required', 'At least one role is required.');
+    for (const roleName of roleNames) {
+        if (!(await store.getRoleByName(roleName))) throw userError('unknown_role', `Unknown role: ${roleName}`);
+    }
+    return { email: normalizedEmail, username: normalizedUsername, contactEmail: normalizedContact, roles: roleNames };
 }
 
 async function createUserInternal({
     email,
     username = '',
     displayName = '',
-    source = 'admin',
+    source = 'internal',
     roles = ['user'],
-    password = '',
     actorId = 'system',
     emailVerified = false,
+    contactEmail = '',
+    allowEmptyEmail = false,
 }, { save = true } = {}) {
     const store = await getStore();
-    const normalizedEmail = normalizeEmail(email);
-    const normalizedUsername = normalizeUsername(username);
-    if (await getUserByEmail(normalizedEmail)) throw userError('email_taken', 'Email is already in use.');
-    if (normalizedUsername && await findUserByUsername(store, normalizedUsername)) {
-        throw userError('username_taken', 'Username is already in use.');
-    }
-    const roleNames = [...new Set((Array.isArray(roles) ? roles : []).map(String).map((role) => role.trim()).filter(Boolean))];
-    if (!roleNames.length) throw userError('roles_required', 'At least one role is required.');
-    for (const roleName of roleNames) {
-        if (!(await store.getRoleByName(roleName))) throw userError('unknown_role', `Unknown role: ${roleName}`);
-    }
+    const normalized = await assertNewUserAvailable({ email, username, roles, contactEmail, allowEmptyEmail });
     const timestamp = new Date().toISOString();
     const user = await store.createUser({
-        email: normalizedEmail,
-        username: normalizedUsername,
+        email: normalized.email,
+        username: normalized.username,
         displayName: String(displayName || '').trim(),
+        contactEmail: normalized.contactEmail,
         status: 'active',
         source: String(source),
         createdAt: timestamp,
         updatedAt: timestamp,
-        emailVerifiedAt: emailVerified ? timestamp : '',
-        passwordHash: password ? hashPassword(password) : '',
+        emailVerifiedAt: emailVerified && normalized.email ? timestamp : '',
+        authGeneration: 0,
         loginAttempts: 0,
         lastLoginAttempt: '',
     });
-    await setUserRolesInternal(user.id, roleNames, { actorId, audit: false, save });
+    await setUserRolesInternal(user.id, normalized.roles, { actorId, audit: false, save });
     await recordAudit({ actorId, action: 'user.create', target: user.id, reason: source }, { save });
     if (save) await flush();
     return sanitizeUser(user);
 }
 
+// Internal domain and fixture helper. No HTTP route, runtime operation or tool
+// creates arbitrary accounts; public accounts come from the setup decision.
 export function createUser(input) {
     return serialize('users', () => createUserInternal(input));
 }
@@ -118,44 +146,18 @@ export function stageUser(input) {
     return createUserInternal(input, { save: false });
 }
 
-export async function getSetupStatus() {
+// Staged helper for credential replacement/revocation. Callers hold the users
+// lock and persistence scope; sessions and proofs bound to the old generation fail.
+export async function stageAuthGenerationIncrement(userId) {
     const store = await getStore();
-    const result = await store.select('user', {}, { start: 0, pageSize: 1 });
-    const totalCount = Number(result.totalCount ?? result.filteredCount ?? result.objects.length);
-    const policy = await getAuthPolicy();
-    return {
-        needsInitialAdmin: totalCount === 0,
-        userCount: totalCount,
-        selfRegistrationEnabled: policy.selfRegistrationEnabled,
-        enabledAuthMethods: policy.enabledAuthMethods,
-        defaultAuthMethod: policy.enabledAuthMethods[0] || 'password',
-    };
+    const user = await getUserById(userId);
+    if (!user) return null;
+    const authGeneration = (Number.isSafeInteger(user.authGeneration) ? user.authGeneration : 0) + 1;
+    return store.updateUser(user.id, { authGeneration, updatedAt: new Date().toISOString() });
 }
 
-export function registerUser({ email, password }, { allowInitialAdmin = true } = {}) {
-    return serialize('users', async () => {
-        validatePassword(password);
-        const store = await getStore();
-        const existing = await store.select('user', {}, { start: 0, pageSize: 1 });
-        const firstUser = Number(existing.totalCount ?? existing.filteredCount ?? existing.objects.length) === 0;
-        if (firstUser && !allowInitialAdmin) {
-            throw Object.assign(userError('initial_setup_required', 'Complete initial owner setup before self-registration.'), { statusCode: 403 });
-        }
-        const policy = await getAuthPolicy();
-        if (!firstUser && !policy.selfRegistrationEnabled) {
-            throw Object.assign(userError('registration_disabled', 'Self-registration is disabled.'), { statusCode: 403 });
-        }
-        if (!firstUser) await assertRegistrationRoleAllowed(policy.defaultRegistrationRole, store);
-        const roles = [firstUser ? 'admin' : policy.defaultRegistrationRole];
-        const user = await createUserInternal({
-            email,
-            password,
-            source: firstUser ? 'initial-setup' : 'self-registration',
-            roles,
-            actorId: firstUser ? 'initial-setup' : 'self-registration',
-        });
-        return { user, roles, firstUser };
-    });
+export function authGenerationOf(user) {
+    return Number.isSafeInteger(user?.authGeneration) ? user.authGeneration : 0;
 }
 
 export function updateUser(userId, patch = {}, { actorId = 'system' } = {}) {
@@ -164,14 +166,10 @@ export function updateUser(userId, patch = {}, { actorId = 'system' } = {}) {
         const user = await getUserById(userId);
         if (!user) throw userError('user_not_found', 'User not found.');
         const update = {};
-        if (patch.email !== undefined) {
-            const email = normalizeEmail(patch.email);
-            const owner = await getUserByEmail(email);
-            if (owner && owner.id !== user.id) throw userError('email_taken', 'Email is already in use.');
-            if (email !== user.email) {
-                update.email = email;
-                update.emailVerifiedAt = '';
-            }
+        // Sign-in mailboxes change only through fresh proof of the new address.
+        if (patch.email !== undefined && patch.email !== null) {
+            const email = typeof patch.email === 'string' ? patch.email.trim().toLowerCase() : patch.email;
+            if (email !== user.email) throw userError('email_change_unsupported', 'Email addresses cannot be changed here.');
         }
         if (patch.username !== undefined) {
             const username = normalizeUsername(patch.username);
@@ -188,9 +186,6 @@ export function updateUser(userId, patch = {}, { actorId = 'system' } = {}) {
         }
         if (!Object.keys(update).length) throw userError('no_changes_requested', 'No changes were submitted.');
         const changedFields = Object.keys(update);
-        const indexedEmail = update.email;
-        delete update.email;
-        if (indexedEmail !== undefined) await store.setEmailForUser(user.id, indexedEmail);
         update.updatedAt = new Date().toISOString();
         const next = await store.updateUser(user.id, update);
         await recordAudit({ actorId, action: 'user.update', target: user.id, reason: changedFields.join(',') });
@@ -221,7 +216,7 @@ export async function listUsers({ start = 0, pageSize = 50, search = '', exclude
                 const roles = await getUserRoles(user.id);
                 if (roles.length === 1) singleRoleCounts[roles[0]] = (singleRoleCounts[roles[0]] || 0) + 1;
                 if (excludeOnlyRole && roles.length === 1 && roles[0] === excludeOnlyRole) continue;
-                if (needle && ![user.email, user.username, user.displayName, user.id]
+                if (needle && ![user.email, user.contactEmail, user.username, user.displayName, user.id]
                     .some(value => String(value || '').toLowerCase().includes(needle))) continue;
                 if (totalCount >= start && users.length < pageSize) users.push({ ...sanitizeUser(user), roles });
                 totalCount++;

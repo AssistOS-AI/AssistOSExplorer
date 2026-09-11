@@ -8,7 +8,7 @@ export async function getEnabledAuthMethods() {
 }
 
 export async function getDefaultAuthMethod() {
-    return (await getEnabledAuthMethods())[0] || 'password';
+    return (await getEnabledAuthMethods())[0] || '';
 }
 
 export { isAuthMethodEnabled };

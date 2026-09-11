@@ -180,3 +180,10 @@ test('a rejected proof prevents sending the mutation', async (t) => {
     assert.equal(getProofCalls(), 1);
     assert.equal(calls.length, 0);
 });
+
+test('the panel no longer wires user creation or forwards passwords', async () => {
+    const source = await fs.readFile(sourcePath, 'utf8');
+    assert.doesNotMatch(source, /admin-users-create/);
+    assert.doesNotMatch(source, /createUser/);
+    assert.doesNotMatch(source, /password/i);
+});

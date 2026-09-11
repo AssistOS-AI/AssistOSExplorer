@@ -1,6 +1,28 @@
 {
   "tools": [
     {
+      "name": "email_auth_code_status",
+      "title": "Check authentication email availability",
+      "description": "Agent-to-agent: returns only whether authentication email is configured, without sending mail or exposing provider settings.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 5000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "tags": [
+        "internal"
+      ],
+      "env": {
+        "TOOL_NAME": "email_auth_code_status"
+      }
+    },
+    {
       "name": "email_config_get",
       "title": "Get email configuration",
       "description": "Returns the masked EmailAgent Mailjet configuration.",

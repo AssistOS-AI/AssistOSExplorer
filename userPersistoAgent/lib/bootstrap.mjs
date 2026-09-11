@@ -1,7 +1,7 @@
 import { getStore, flush } from './store.mjs';
-import { createUser } from './users.mjs';
-import { recordAudit } from './audit.mjs';
 
+// Roles and capabilities only. No account is seeded: the first completed Google,
+// verified-email or configured administrator-password sign-in claims setup.
 const ROLES = [
     { name: 'admin', description: 'Full administration', priority: 1 },
     { name: 'user', description: 'Explorer user', priority: 2 },
@@ -37,23 +37,4 @@ export async function ensureSeedData() {
         }
     }
     await flush();
-}
-
-export async function ensureDevAdmin() {
-    if (process.env.USERPERSISTO_DEV_BOOTSTRAP !== 'true') {
-        return;
-    }
-    const password = String(process.env.USERPERSISTO_DEV_PASSWORD || '');
-    if (!password) {
-        console.warn('[userPersisto] USERPERSISTO_DEV_BOOTSTRAP was ignored because USERPERSISTO_DEV_PASSWORD is not configured.');
-        return;
-    }
-    const store = await getStore();
-    const anyUsers = await store.select('user', {}, { pageSize: 1 });
-    if (anyUsers.totalCount > 0) {
-        return;
-    }
-    await createUser({ email: 'admin@dev.local', displayName: 'Dev Admin', source: 'dev-bootstrap', roles: ['admin'], password });
-    await recordAudit({ actorId: 'system', action: 'dev.bootstrap.admin', target: 'admin@dev.local', reason: 'USERPERSISTO_DEV_BOOTSTRAP=true and user table was empty' });
-    console.warn('[userPersisto] DEV BOOTSTRAP: created admin@dev.local with the explicitly configured development password.');
 }

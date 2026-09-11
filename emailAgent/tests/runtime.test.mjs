@@ -142,6 +142,7 @@ test('emailAgent starts its MCP server and executes verified email settings call
         params: {},
     }, sessionId);
     assert.deepEqual(listed.body.result?.tools?.map((tool) => tool.name).sort(), [
+        'email_auth_code_status',
         'email_config_get',
         'email_config_set',
         'email_provider_status',
@@ -182,6 +183,11 @@ test('emailAgent starts its MCP server and executes verified email settings call
     assert.equal(status.error, undefined, JSON.stringify(status));
     assert.notEqual(status.result?.isError, true, JSON.stringify(status));
     assert.deepEqual(JSON.parse(status.result.content[0].text), { configured: false, fromEmail: '' });
+    const agentActor = { kind: 'agent', id: 'agent:AssistOSExplorer/userPersistoAgent', roles: [] };
+    const unavailable = await callTool('email_auth_code_status', {}, agentActor);
+    assert.deepEqual(JSON.parse(unavailable.result.content[0].text), { available: false });
+    const publicStatus = await callTool('email_auth_code_status');
+    assert.equal(publicStatus.result?.isError, true, 'Even an administrator user cannot call the internal availability tool.');
 
     const apiKey = 'email-runtime-test-key-123456';
     const configured = await callTool('email_config_set', {
@@ -199,6 +205,7 @@ test('emailAgent starts its MCP server and executes verified email settings call
     assert.deepEqual(JSON.parse(retrieved.result.content[0].text), settings);
 
     const invalidInputs = [
+        ['email_auth_code_status', { unexpected: true }],
         ['email_provider_status', { unexpected: true }],
         ['email_config_set', { remove: [42] }],
         ['email_send_text', { to: 'recipient@example.test', subject: 'Subject' }],
@@ -223,6 +230,13 @@ test('emailAgent starts its MCP server and executes verified email settings call
     assert.equal(template.error, undefined, JSON.stringify(template));
     assert.equal(template.result?.isError, true, JSON.stringify(template));
     assert.match(template.result?.content?.[0]?.text || '', /MCP error -32603:.*Missing EmailAgent settings: MAILJET_API_SECRET/s);
+
+    await callTool('email_config_set', { MAILJET_API_SECRET: 'fixture-only-secret' });
+    const ready = await callTool('email_auth_code_status', {}, agentActor);
+    assert.deepEqual(JSON.parse(ready.result.content[0].text), { available: true }, 'Readiness exposes only a boolean and never sends mail.');
+    await callTool('email_config_set', { EMAIL_AUTH_CODE_TEMPLATE_ID: 'invalid-template' });
+    const invalidTemplate = await callTool('email_auth_code_status', {}, agentActor);
+    assert.deepEqual(JSON.parse(invalidTemplate.result.content[0].text), { available: false });
 
     const denied = await callTool('email_config_get', {}, { kind: 'user', id: 'user:email-member', roles: ['user'] });
     assert.equal(denied.error, undefined, JSON.stringify(denied));

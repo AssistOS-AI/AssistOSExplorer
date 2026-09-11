@@ -27,18 +27,13 @@
                         <div class="userpersisto-policy">
                             <h2 class="userpersisto-card-title">Workspace authentication policy</h2>
                             <div class="userpersisto-auth-methods-card">
-                                <div class="userpersisto-card-description">Administrator controls for everyone in this workspace. Choose the allowed sign-in methods and registration rules. Manage your own passkeys and authenticator app under Sign-in &amp; security.</div>
+                                <div class="userpersisto-card-description">Administrator controls for everyone in this workspace. Choose the allowed sign-in methods and registration rules. The first completed sign-in became the administrator; after that, self-registration governs public sign-up and new accounts receive the restricted selfRegistered role. Manage your own passkeys and authenticator app under Sign-in &amp; security.</div>
                                 <div class="userpersisto-grid">
-                                    <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="password"> Password</span></label>
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="emailCode"> Email code</span></label>
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="passkey"> Passkey</span></label>
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="totp"> TOTP</span></label>
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="google"> Google</span></label>
                                     <label class="form-item"><span class="form-label"><input id="selfRegistrationEnabled" type="checkbox"> Self-registration enabled</span></label>
-                                    <label class="form-item">
-                                        <span class="form-label">Default registration role</span>
-                                        <input id="defaultRegistrationRole" class="form-input" type="text" value="selfRegistered" spellcheck="false">
-                                    </label>
                                     <label class="form-item">
                                         <span class="form-label">Allowed redirect origins (one per line)</span>
                                         <textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea>
@@ -48,7 +43,7 @@
                                 <div class="userpersisto-auth-methods-card">
                                     <div class="userpersisto-card-title">Google sign-in</div>
                                     <div id="googleProviderStatus" class="userpersisto-provider-status" role="status">Loading Google readiness…</div>
-                                    <div class="userpersisto-card-description">A workspace operator configures the Google Web application credentials through Ploinky. New Google accounts always receive selfRegistered. Existing email matches require a fresh existing password, passkey or authenticator code and confirmation. Email-code login cannot authorize linking.</div>
+                                    <div class="userpersisto-card-description">A workspace operator configures the Google Web application credentials through Ploinky. After setup, new Google accounts receive selfRegistered. Linking an existing account requires explicit consent plus fresh proof: a link code sent to its verified sign-in email, an enrolled passkey or authenticator app, or the administrator password for the designated administrator. A Google account that is authoritative for that exact verified email may link with consent alone.</div>
                                 </div>
                                 <div class="userpersisto-actions">
                                     <button type="button" class="general-button" data-local-action="saveAuthPolicy">Save authentication policy</button>

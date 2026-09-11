@@ -7,11 +7,12 @@ function escapeCssAttributeValue(value) {
   return String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"');
 }
 
-function userRow(dialog, username) {
-  const escapedUsername = escapeCssAttributeValue(username);
-  return dialog.locator(
-    `tr[data-user-id]:has(input[data-field="username"][value="${escapedUsername}"])`
-  );
+// Rows are located by sign-in email: passwordless accounts created by signing
+// in may have no username.
+function userRow(dialog, email) {
+  return dialog.locator('admin-users-settings tr[data-user-id]').filter({
+    has: dialog.page().locator('td[data-label="Email"]', { hasText: new RegExp(`^\\s*${email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }),
+  });
 }
 
 async function expectDropdownAnchored(trigger, optionsList) {
@@ -40,8 +41,8 @@ export async function openAdminUsers(page) {
   await expect(administrationTab).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
   await administrationTab.click();
 
-  const form = dialog.locator('admin-users-settings form[data-role="createForm"]');
-  await expect(form).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
+  // Accounts are created by signing in; administration only searches and edits them.
+  await expect(dialog.locator('admin-users-settings form[data-role="searchForm"]')).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
   await expect(dialog.locator('admin-settings-panel [data-role="status"]')).toContainText(
     /\d+ users? loaded\./i,
     { timeout: smokeConfig.timeouts.navigation }
@@ -49,13 +50,23 @@ export async function openAdminUsers(page) {
   return dialog;
 }
 
-export async function createUserThroughAdministration(dialog, account, { name, role = 'user' }) {
-  const form = dialog.locator('admin-users-settings form[data-role="createForm"]');
-  await form.locator('input[name="username"]').fill(account.username);
-  await form.locator('input[name="password"]').fill(account.password);
-  await form.locator('input[name="name"]').fill(name);
+async function searchUsers(dialog, email) {
+  const search = dialog.locator('admin-users-settings form[data-role="searchForm"]');
+  await search.locator('input[data-role="userSearch"]').fill(email);
+  await search.getByRole('button', { name: 'Search', exact: true }).click();
+}
 
-  const roles = form.locator('custom-select[data-role="createRolesSelect"]');
+// Grants a role to an account that already exists because it signed in (new
+// public sign-ups start with the restricted selfRegistered role).
+export async function assignRoleThroughAdministration(dialog, account, { name = '', role = 'user' } = {}) {
+  const email = String(account.loginEmail || '').trim();
+  if (!email) throw new Error('Role assignment needs the account sign-in email.');
+  await searchUsers(dialog, email);
+  const row = userRow(dialog, email);
+  await expect(row).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
+  if (name) await row.locator('input[data-field="name"]').fill(name);
+
+  const roles = row.locator('custom-select[data-field="roles"]');
   const currentRole = roles.locator('.current-option');
   await expect(currentRole).not.toHaveText('');
   if ((await currentRole.innerText()).trim().toLowerCase() !== role.toLowerCase()) {
@@ -71,17 +82,19 @@ export async function createUserThroughAdministration(dialog, account, { name, r
     await roleOption.click();
   }
   await expect(currentRole).toHaveText(role);
-  await form.getByRole('button', { name: 'Add User' }).click();
-
-  const row = userRow(dialog, account.username);
-  await expect(row).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
-  await expect(row.locator('input[data-field="username"]')).toHaveValue(account.username);
-  await expect(row.locator('custom-select[data-field="roles"] .current-option')).toHaveText(role);
+  await row.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(dialog.locator('admin-settings-panel [data-role="status"]')).not.toContainText(/fail|error/i, { timeout: smokeConfig.timeouts.navigation });
+  await searchUsers(dialog, email);
+  await expect(userRow(dialog, email).locator('custom-select[data-field="roles"] .current-option')).toHaveText(role, { timeout: smokeConfig.timeouts.navigation });
   return row.getAttribute('data-user-id');
 }
 
-export async function deleteUserThroughAdministrationIfPresent(dialog, username) {
-  const row = userRow(dialog, username);
+// Administration "Delete" blocks the account; it never deletes sign-in history.
+export async function deleteUserThroughAdministrationIfPresent(dialog, account) {
+  const email = String(account?.loginEmail || '').trim();
+  if (!email) return false;
+  await searchUsers(dialog, email);
+  const row = userRow(dialog, email);
   if (await row.count() === 0) return false;
   await row.getByRole('button', { name: 'Delete' }).click();
   await expect(row).toHaveCount(0, { timeout: smokeConfig.timeouts.navigation });

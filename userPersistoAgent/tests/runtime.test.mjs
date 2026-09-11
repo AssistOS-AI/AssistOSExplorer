@@ -8,8 +8,10 @@ import { startService } from '../service/index.mjs';
 import { resetStoreForTests } from '../lib/store.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createProvider, resolveProviderConfig } from '../runtime/index.mjs';
-import { getUserById, getUserRoles, registerUser } from '../lib/users.mjs';
+import { getUserById, getUserRoles } from '../lib/users.mjs';
 import { issueAuthCode } from '../lib/sso.mjs';
+import { getStore, flush } from '../lib/store.mjs';
+import { registerWithEmailCode, resetAuthLimitsForTests } from './helpers/setup.mjs';
 
 test('SSO sends browsers to the public callback origin while provider calls stay private', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-public-login-'));
@@ -37,7 +39,17 @@ test('SSO sends browsers to the public callback origin while provider calls stay
             assert.equal(url.pathname, '/base-agent-additional-server/userPersistoAgent/7000/service/auth/');
             assert.equal(url.searchParams.get('requestId'), started.providerState);
             assert.equal(url.searchParams.get('state'), started.providerState);
+            assert.equal(url.searchParams.has('returnTo'), false);
         }
+        // The Router's return target is forwarded for the wizard's Start again link
+        // only when it is a relative path; the Router revalidates it on use.
+        const withReturn = new URL((await provider.sso_begin_login({ redirectUri: 'https://workspace.example.test/auth/callback', returnTo: '/explorer/?path=%2Fdocs' })).authorizationUrl);
+        assert.equal(withReturn.searchParams.get('returnTo'), '/explorer/?path=%2Fdocs');
+        for (const returnTo of ['//evil.example/', 'https://evil.example/', 'javascript:alert(1)', '/\\evil']) {
+            const unsafe = new URL((await provider.sso_begin_login({ redirectUri: 'https://workspace.example.test/auth/callback', returnTo })).authorizationUrl);
+            assert.equal(unsafe.searchParams.has('returnTo'), false, returnTo);
+        }
+        requests.length = 2;
         assert.deepEqual(requests, ['/service/runtime/sso-login-request', '/service/runtime/sso-login-request']);
         assert.equal(config.routerBaseUrl, privateBase);
         await assert.rejects(() => provider.sso_begin_login({ redirectUri: 'javascript:alert(1)' }));
@@ -58,8 +70,9 @@ test('provider account projections preserve optional fields and an email-only ac
     let server;
     try {
         await ensureSeedData();
-        const owner = await registerUser({ email: 'owner@example.test', password: 'owner-password-123' });
-        const member = await registerUser({ email: 'member@example.test', password: 'member-password-123' });
+        resetAuthLimitsForTests();
+        const owner = await registerWithEmailCode('owner@example.test');
+        const member = await registerWithEmailCode('member@example.test');
         server = startService({ port: 0, host: '127.0.0.1' });
         if (!server.listening) await once(server, 'listening');
         const provider = createProvider({ getConfig: async () => ({
@@ -73,6 +86,9 @@ test('provider account projections preserve optional fields and an email-only ac
         assert.equal(session.user.username, '');
         assert.equal(session.user.email, 'member@example.test');
         assert.equal((await provider.sso_refresh_session(session)).user.username, '');
+        assert.equal(session.providerSession.generation, 0);
+        await assert.rejects(provider.sso_admin_create_user({ actorUserId: owner.user.id, email: 'new@example.test', roles: ['admin'] }),
+            { code: 'user_creation_unsupported' });
 
         const listed = await provider.sso_admin_list_users({ actorUserId: owner.user.id });
         const row = listed.users.find((user) => user.id === member.user.id);
@@ -115,6 +131,11 @@ test('provider account projections preserve optional fields and an email-only ac
         });
         assert.equal(promoted.totalCount, 2);
         assert.equal(promoted.singleRoleCounts.selfRegistered ?? 0, 0);
+        // Credential replacement/revocation advances the account generation; the
+        // next Router revalidation of the older session is refused.
+        await (await getStore()).updateUser(member.user.id, { authGeneration: 1 });
+        await flush();
+        await assert.rejects(provider.sso_refresh_session(session), (error) => error.code === 'session_revoked' && error.statusCode === 401);
     } finally {
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         await resetStoreForTests();

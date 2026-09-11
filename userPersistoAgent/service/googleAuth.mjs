@@ -1,20 +1,28 @@
 import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { createGoogleProtocol, googleError, requireGoogleConfiguration, GOOGLE_CALLBACK_PATH } from '../lib/auth/google.mjs';
 import { createGoogleTransaction, readGoogleTransaction, transitionGoogleTransaction, prepareGoogleTransactionTransition, hashGoogleState } from '../lib/auth/googleTransactions.mjs';
-import { inspectGoogleIdentity, completeGoogleIdentity } from '../lib/externalIdentities.mjs';
+import { inspectGoogleIdentity, completeGoogleIdentity, mailboxVersion } from '../lib/externalIdentities.mjs';
 import { getLoginRequest, issueAuthCodeLocked } from '../lib/sso.mjs';
 import { serialize } from '../lib/serial.mjs';
 import { withPersistenceScope } from '../lib/persistence-scope.mjs';
-import { loginWithPassword } from '../lib/auth/password.mjs';
+import { authGenerationOf, getUserById } from '../lib/users.mjs';
+import { completeGoogleReauthentication, googleReauthenticationAccount } from '../lib/auth/operationGrants.mjs';
 import { loginVerify as verifyTotp } from '../lib/auth/totp.mjs';
 import { loginOptions, loginVerify } from '../lib/auth/passkey.mjs';
+import { verifyAdministratorPassword } from '../lib/auth/adminPassword.mjs';
 import { hashCode, codeHashMatches } from '../lib/auth/email-code.mjs';
+import { assertEmailVerifyBudget, deliverCode, developmentLogFallback, recordEmailVerifyFailure } from '../lib/auth/emailAttempts.mjs';
+import { rateSourceOf } from '../lib/auth/browserBinding.mjs';
 import { sendAuthCode } from '../lib/email-agent-client.mjs';
 import { page, escapeHtml as esc } from '../lib/oidc/views.mjs';
 
 const ROOT = '/service/auth/google';
 const HANDLE = /^[a-f0-9]{64}$/;
 const STATE = /^[A-Za-z0-9_-]{43}$/;
+const CODE_COOLDOWN_MS = 60_000;
+const MAX_CODE_FAILURES = 5;
+const MAX_CODE_SENDS = 5;
+const METHOD_LABELS = { emailCode: 'an email code', passkey: 'a passkey', totp: 'an authenticator code', adminPassword: 'the administrator password' };
 const same = (a, b) => {
     const left = Buffer.from(String(a || ''));
     const right = Buffer.from(String(b || ''));
@@ -51,10 +59,29 @@ function setProof(res, handle, config, value, expiresAt) {
     const previous = res.getHeader('Set-Cookie');
     res.setHeader('Set-Cookie', [...(Array.isArray(previous) ? previous : previous ? [previous] : []), header]);
 }
+
+// A stale browser start may finish after the wizard has moved on. Cancel only
+// that returned handle, never a newer attempt for the same parent.
+export async function cancelGoogleTransactionForParent({ req, handle, flow, parentId }) {
+    const config = await requireGoogleConfiguration();
+    const proof = { browserProof: cookie(req, handle, config), configFingerprint: config.fingerprint };
+    const transaction = await readGoogleTransaction(handle, { ...proof, statuses: ['pending', 'exchanging', 'verified'] });
+    const payload = transaction.payload;
+    if (payload.flow !== flow || (flow === 'explorer' ? payload.parent.requestId : payload.parent.uid) !== parentId) throw googleError();
+    await transitionGoogleTransaction(handle, proof, { from: ['pending', 'exchanging', 'verified'], to: 'cancelled' });
+    return { ok: true };
+}
 function resumePath(payload, handle, config) {
     return payload.flow === 'oidc'
         ? `${servicePath(config)}oidc/interaction/${payload.parent.uid}/google-resume?transaction=${handle}`
         : `${servicePath(config)}auth/google/resume/${handle}`;
+}
+// Declined or cancelled Google returns to the live wizard for the retained
+// parent; an expired parent there offers Start again.
+function wizardPath(payload, config, notice) {
+    if (payload.flow === 'oidc') return `${servicePath(config)}oidc/interaction/${encodeURIComponent(payload.parent.uid)}?notice=${notice}`;
+    const params = new URLSearchParams({ requestId: payload.parent.requestId, state: payload.parent.state, notice });
+    return `${servicePath(config)}auth/?${params}`;
 }
 function actionPath(base, action) {
     const url = new URL(base, 'http://internal');
@@ -101,7 +128,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
         const config = await requireGoogleConfiguration();
         if (req.headers.origin !== config.redirect.origin || context.parent.origin !== config.redirect.origin) throw googleError('invalid_request', 403);
         await context.validate();
-        const authorization = await protocol.authorization(config);
+        const authorization = await protocol.authorization(config, { reauthentication: context.flow === 'reauth' });
         await context.validate();
         const current = await requireGoogleConfiguration();
         if (current.fingerprint !== config.fingerprint) throw googleError();
@@ -112,7 +139,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                 clientId: config.clientId, redirectUri: config.redirectUri, csrf: randomBytes(32).toString('base64url') } });
         const handle = transaction.handle || transaction.stateHash;
         setProof(res, handle, config, proof, expiresAt);
-        return json(res, 200, { ok: true, authorizationUrl: authorization.url });
+        return json(res, 200, { ok: true, authorizationUrl: authorization.url, transaction: handle });
     }
 
     async function callback(req, res, url) {
@@ -124,9 +151,11 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
         const proof = { browserProof: cookie(req, handle, config), configFingerprint: config.fingerprint };
         const transaction = await readGoogleTransaction(handle, { ...proof, statuses: ['pending'] });
         if (url.searchParams.has('error')) {
+            // Google denial ends only this attempt; the parent wizard stays usable.
             await transitionGoogleTransaction(handle, proof, { from: ['pending'], to: 'cancelled' });
             setProof(res, handle, config, '', 0);
-            return html(res, 'Sign-in cancelled', '<p>Return to the application and start sign-in again.</p>');
+            if (transaction.payload.flow === 'reauth') return redirect(res, `${servicePath(config)}auth/google/confirmation?notice=cancelled`);
+            return redirect(res, wizardPath(transaction.payload, config, 'google-denied'));
         }
         const code = url.searchParams.get('code');
         if (typeof code !== 'string' || !code || code.length > 4096) throw googleError();
@@ -137,12 +166,46 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
             const identity = await protocol.exchange(config, callbackUrl, transaction.payload);
             if ((await requireGoogleConfiguration()).fingerprint !== config.fingerprint) throw googleError();
             const verified = await transitionGoogleTransaction(handle, proof, { from: ['exchanging'], to: 'verified', patch: { identity, state: undefined, nonce: undefined, verifier: undefined } });
+            if (verified.payload.flow === 'reauth') return redirect(res, `${servicePath(config)}auth/google/confirmation`);
             return redirect(res, resumePath(verified.payload, handle, config));
         } catch (error) {
             await transitionGoogleTransaction(handle, proof, { from: ['exchanging'], to: 'failed' });
             setProof(res, handle, config, '', 0);
+            if (transaction.payload.flow === 'reauth') {
+                return redirect(res, `${servicePath(config)}auth/google/confirmation?notice=${error?.code === 'google_recent_authentication_required' ? 'recent-authentication-required' : 'failed'}`);
+            }
             throw error;
         }
+    }
+
+    async function startReauthentication(req, res, { userId, operation, origin }) {
+        const config = await requireGoogleConfiguration();
+        const user = await googleReauthenticationAccount({ userId, operation });
+        const generation = authGenerationOf(user);
+        return start(req, res, {
+            flow: 'reauth',
+            parent: { userId, operation, generation, origin, redirectUri: `${config.redirect.origin}${servicePath(config)}dashboard/`, expiresAt: Date.now() + 300_000 },
+            validate: () => googleReauthenticationAccount({ userId, operation, generation }),
+        });
+    }
+
+    async function completeReauthentication(req, res, { userId, operation, handle, cancel = false }) {
+        const config = await requireGoogleConfiguration();
+        const proof = { browserProof: cookie(req, handle, config), configFingerprint: config.fingerprint };
+        const transaction = await readGoogleTransaction(handle, { ...proof, statuses: ['pending', 'exchanging', 'verified'] });
+        if (transaction.payload.flow !== 'reauth' || transaction.payload.parent.userId !== userId
+            || transaction.payload.parent.operation !== operation) throw googleError('invalid_request', 403);
+        if (cancel) {
+            await transitionGoogleTransaction(handle, proof, { from: ['pending', 'exchanging', 'verified'], to: 'cancelled' });
+            setProof(res, handle, config, '', 0);
+            return json(res, 200, { ok: true });
+        }
+        await googleReauthenticationAccount({ userId, operation, generation: transaction.payload.parent.generation });
+        if (transaction.status !== 'verified') return json(res, 200, { ok: true, pending: true });
+        const result = await completeGoogleReauthentication({ userId, operation, transaction,
+            prepareCompletion: () => prepareGoogleTransactionTransition(handle, proof, { from: 'verified', to: 'consumed' }) });
+        setProof(res, handle, config, '', 0);
+        return json(res, 200, result);
     }
 
     async function resume(req, res, context, handle, action = '', body = {}) {
@@ -164,34 +227,87 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                 payload = transaction.payload;
             };
             if (action === 'cancel') {
+                // Declining ends only this Google attempt and returns to the wizard.
                 await transitionGoogleTransaction(handle, proof, { from: ['verified'], to: 'cancelled' });
                 setProof(res, handle, config, '', 0);
-                return html(res, 'Sign-in cancelled', '<p>Return to the application and start sign-in again.</p>');
+                return redirect(res, wizardPath(payload, config, 'google-cancelled'));
             }
             let resolution = await inspectGoogleIdentity(payload.identity, { collisionTarget: payload.collision });
             if (payload.collision && (resolution.kind !== 'collision' || resolution.userId !== payload.collision.userId || resolution.email !== payload.collision.email)) throw googleError();
             if (resolution.kind === 'collision' && !payload.collision) {
-                await save({ collision: { userId: resolution.userId, email: resolution.email }, mailboxProof: undefined, emailProof: undefined, linkProof: undefined });
+                await save({ collision: { userId: resolution.userId, email: resolution.email }, mailboxProof: undefined, emailProof: undefined, linkProof: undefined, linkCode: undefined });
             }
             const base = resumePath(payload, handle, config);
-            const cancel = form(base, 'cancel', payload.csrf, '<button class="secondary">Cancel</button>');
+            const cancel = form(base, 'cancel', payload.csrf, `<button class="secondary">${resolution.kind === 'collision' ? 'Don’t link; go back' : 'Cancel'}</button>`);
             const render = (message = '') => {
-                let content = message ? `<p role="alert" class="error">${esc(message)}</p>` : '';
+                let content = message ? `<p role="alert" class="${/sent|verified/i.test(message) ? 'muted' : 'error'}">${esc(message)}</p>` : '';
                 if (resolution.kind === 'collision') {
-                    content += '<p>To link Google, authenticate with an existing password, passkey or authenticator. Email codes and existing sessions cannot authorize linking. Use your existing sign-in or contact an administrator if none is available.</p>';
-                    if (payload.linkProof) content += form(base, 'confirm-link', payload.csrf, '<button>Link Google and continue</button>');
-                    else for (const method of resolution.eligibleMethods) {
-                        if (method === 'password') content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="password">${input('password', 'Existing password', 'type="password" autocomplete="current-password" maxlength="1024"')}<button>Authenticate with password</button>`);
-                        if (method === 'totp') content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="totp">${input('token', 'Authenticator code', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6"')}<button>Authenticate with code</button>`);
-                        if (method === 'passkey') content += form(base, 'challenge', payload.csrf, '<button data-google-passkey>Authenticate with passkey</button>');
+                    const methods = resolution.eligibleMethods;
+                    content += `<p>An account for <strong>${esc(resolution.email)}</strong> already exists. To add Google sign-in to it, confirm that the account is yours. Linking does not change the account’s email address, roles or other sign-in methods.</p>`;
+                    if (payload.linkProof) {
+                        content += `<p>Account confirmed with ${esc(METHOD_LABELS[payload.linkProof.method] || 'your sign-in method')}.</p>${form(base, 'confirm-link', payload.csrf, '<button>Link Google and continue</button>')}`;
+                    } else {
+                        if (methods.includes('googleAuthoritative')) {
+                            content += `<p>Google verified that you control this address.</p>${form(base, 'confirm-link', payload.csrf, '<input type="hidden" name="method" value="googleAuthoritative"><button>Link Google and continue</button>')}`;
+                            if (methods.length > 2) content += '<p class="muted">Or confirm with another sign-in method:</p>';
+                        }
+                        if (methods.includes('emailCode') && !methods.includes('googleAuthoritative')) {
+                            content += form(base, 'send-link-code', payload.csrf, `<button>${payload.linkCode ? 'Send a new code' : 'Email me a code'}</button>`);
+                            if (payload.linkCode?.delivery && payload.linkCode.delivery !== 'failed') {
+                                content += form(base, 'verify-link-code', payload.csrf, `${input('code', 'Email code', 'inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"')}<button>Verify code</button>`);
+                            }
+                        }
+                        if (methods.includes('totp')) content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="totp">${input('token', 'Authenticator code', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6"')}<button>Confirm with authenticator</button>`);
+                        if (methods.includes('passkey')) content += form(base, 'challenge', payload.csrf, '<button data-google-passkey>Confirm with passkey</button>');
+                        if (methods.includes('adminPassword')) content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="adminPassword">${input('password', 'Administrator password', 'type="password" autocomplete="current-password" maxlength="1024"')}<button>Confirm with administrator password</button>`);
+                        if (!methods.length) content += '<p>This account has no sign-in method that can confirm linking. Sign in with your existing method, or contact an administrator.</p>';
                     }
                 } else content += `<p>Verify your current mailbox before creating an account.</p>${form(base, 'send-email-proof', payload.csrf, '<button>Send verification code</button>')}${form(base, 'verify-email-proof', payload.csrf, `${input('code', 'Email verification code', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6"')}<button>Verify and continue</button>`)}`;
                 content += `${cancel}<p data-google-error role="alert"></p><script src="${esc(servicePath(config))}auth/google-resume.js" defer></script>`;
                 return html(res, resolution.kind === 'collision' ? 'Link your existing account' : 'Verify your email', content, 200,
                     payload.flow === 'oidc' ? retained.redirectUri : '');
             };
+            // Mailbox codes for this transaction: bound to its handle, purpose and
+            // generation, capped attempts that a resend never resets, and the
+            // aggregate per-address budget shared with the wizard's codes.
+            const sendCode = async (field, purpose, extra = {}) => {
+                const previous = payload[field];
+                if (previous?.sentAt > Date.now() - CODE_COOLDOWN_MS && previous.delivery !== 'failed') return render('Please wait before requesting another code.');
+                if ((previous?.sends || 0) >= MAX_CODE_SENDS || (previous?.failures || 0) >= MAX_CODE_FAILURES) return render('Too many codes were requested. Start again.');
+                const generation = (previous?.generation || 0) + 1;
+                const code = String(randomInt(1_000_000)).padStart(6, '0');
+                const correlationId = `${purpose}:${handle}`;
+                const record = { hash: hashCode(code, `${correlationId}:${generation}`), generation, failures: previous?.failures || 0,
+                    sends: (previous?.sends || 0) + 1, sentAt: Date.now(), delivery: 'pending', ...extra };
+                await save({ [field]: record });
+                const outcome = await deliverCode(deliverEmail, { to: resolution.email, code, correlationId });
+                const delivery = developmentLogFallback({ to: resolution.email, code, delivery: outcome.delivery });
+                await save({ [field]: { ...record, delivery } });
+                if (delivery === 'failed') return render('We could not send the code. Try again later.');
+                if (delivery === 'unknown') return render('We could not confirm that the code was sent. If it does not arrive, request a new code after a minute.');
+                return render('A code has been sent. Check your inbox.');
+            };
+            const checkCode = async (field, purpose) => {
+                const record = payload[field];
+                if (!record?.delivery || record.delivery === 'failed' || record.delivery === 'pending' || record.failures >= MAX_CODE_FAILURES) throw googleError();
+                if (record.sentAt < Date.now() - 5 * 60_000) return { ok: false, message: 'That code expired. Request a new code.' };
+                try {
+                    await assertEmailVerifyBudget(resolution.email);
+                } catch (error) {
+                    if (error?.code === 'rate_limited') return { ok: false, message: 'Too many attempts. Wait and try again.' };
+                    throw error;
+                }
+                const submitted = typeof body.code === 'string' ? body.code.trim() : '';
+                if (!/^\d{6}$/.test(submitted) || !codeHashMatches(submitted, `${purpose}:${handle}:${record.generation}`, record.hash)) {
+                    await save({ [field]: { ...record, failures: record.failures + 1 } });
+                    await recordEmailVerifyFailure(resolution.email);
+                    return { ok: false, message: 'Unable to verify that code.' };
+                }
+                return { ok: true, record };
+            };
             if (['authenticate', 'challenge'].includes(action)) {
-                if (resolution.kind !== 'collision' || !resolution.eligibleMethods.includes(action === 'challenge' ? 'passkey' : body.method)) throw googleError();
+                const method = action === 'challenge' ? 'passkey' : body.method;
+                if (resolution.kind !== 'collision' || !['passkey', 'totp', 'adminPassword'].includes(method) || !resolution.eligibleMethods.includes(method)) throw googleError();
                 let result;
                 if (action === 'challenge') {
                     result = await loginOptions({ email: resolution.email, origin: retained.origin, purpose: `google-link:${handle}` });
@@ -199,41 +315,64 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                     await save({ passkeyChallenge: result.challengeKey });
                     return json(res, 200, result);
                 }
-                if (body.method === 'password') result = await loginWithPassword(resolution.email, body.password, { includeCredentialProof: true });
-                if (body.method === 'totp') result = await verifyTotp({ email: resolution.email, token: body.token }, { includeCredentialProof: true });
-                if (body.method === 'passkey') {
+                if (method === 'totp') result = await verifyTotp({ email: resolution.email, token: body.token }, { includeCredentialProof: true });
+                if (method === 'adminPassword') {
+                    // Proof binds to the designated administrator and credential version;
+                    // it never promotes or selects any other account.
+                    try {
+                        const verified = await verifyAdministratorPassword({ password: body.password, rateSource: rateSourceOf(req) });
+                        result = { ok: true, user: { id: resolution.userId }, credentialVersion: verified.credentialVersion };
+                    } catch (error) {
+                        if (error?.code === 'rate_limited') return render('Too many attempts. Wait and try again.');
+                        result = { ok: false };
+                    }
+                }
+                if (method === 'passkey') {
                     let assertion = body.assertion;
                     try { if (typeof assertion === 'string') assertion = JSON.parse(assertion); } catch { throw googleError(); }
                     result = await loginVerify({ email: resolution.email, assertion,
                         challengeKey: payload.passkeyChallenge, origin: retained.origin, purpose: `google-link:${handle}` }, { includeCredentialProof: true });
                 }
-                if (!result?.ok || result.user.id !== resolution.userId) return render('Unable to authenticate with that credential.');
-                await save({ linkProof: { transactionId: handle, userId: resolution.userId, email: resolution.email, method: body.method,
+                if (!result?.ok || result.user.id !== resolution.userId) return render('Unable to confirm with that credential.');
+                await save({ linkProof: { transactionId: handle, userId: resolution.userId, email: resolution.email, method,
                     authenticatedAt: Date.now(), credentialVersion: result.credentialVersion,
                     ...(result.credentialKey ? { credentialKey: result.credentialKey } : {}) }, passkeyChallenge: undefined });
                 return render();
             }
+            if (action === 'send-link-code') {
+                if (resolution.kind !== 'collision' || !resolution.eligibleMethods.includes('emailCode') || payload.linkProof) throw googleError();
+                const user = await getUserById(resolution.userId);
+                return sendCode('linkCode', 'google-link-email', { mailboxVersion: mailboxVersion(user) });
+            }
+            if (action === 'verify-link-code') {
+                if (resolution.kind !== 'collision' || !resolution.eligibleMethods.includes('emailCode') || payload.linkProof) throw googleError();
+                const checked = await checkCode('linkCode', 'google-link-email');
+                if (!checked.ok) return render(checked.message);
+                await save({ linkCode: undefined, linkProof: { transactionId: handle, userId: resolution.userId, email: resolution.email, method: 'emailCode',
+                    authenticatedAt: Date.now(), credentialVersion: checked.record.mailboxVersion } });
+                return render('Email verified.');
+            }
             if (action === 'send-email-proof') {
                 if (resolution.kind !== 'registration' || !resolution.mailboxProofRequired) throw googleError();
-                if (payload.emailProof?.sentAt > Date.now() - 60_000) return render('Please wait before requesting another code.');
-                const code = String(randomInt(1_000_000)).padStart(6, '0');
-                const emailProof = { hash: hashCode(code, `google-registration-email:${handle}`), attempts: 0, sentAt: Date.now(), delivered: false };
-                await save({ emailProof });
-                const delivery = await deliverEmail({ to: resolution.email, code, correlationId: `google-registration-email:${handle}` }).catch(() => null);
-                if (!delivery?.delivered) return render('Email delivery is unavailable. Try again later.');
-                await save({ emailProof: { ...emailProof, delivered: true } });
-                return render('A verification code has been sent.');
+                return sendCode('emailProof', 'google-registration-email');
             }
             if (action === 'verify-email-proof') {
                 if (resolution.kind !== 'registration' || !resolution.mailboxProofRequired) throw googleError();
-                const emailProof = payload.emailProof;
-                if (!emailProof?.delivered || emailProof.attempts >= 5) throw googleError();
-                await save({ emailProof: { ...emailProof, attempts: emailProof.attempts + 1 } });
-                if (!/^\d{6}$/.test(body.code || '') || !codeHashMatches(body.code, `google-registration-email:${handle}`, emailProof.hash)) return render('Unable to verify that code.');
+                const checked = await checkCode('emailProof', 'google-registration-email');
+                if (!checked.ok) return render(checked.message);
                 await save({ mailboxProof: { transactionId: handle, email: resolution.email, verifiedAt: Date.now() }, emailProof: undefined });
             }
             if (action === 'confirm-link') {
-                if (resolution.kind !== 'collision' || !payload.linkProof) throw googleError();
+                if (resolution.kind !== 'collision') throw googleError();
+                if (!payload.linkProof && body.method === 'googleAuthoritative' && resolution.eligibleMethods.includes('googleAuthoritative')) {
+                    // The narrow shortcut: explicit consent after Google verified an address
+                    // it is authoritative for, equal to the current verified mailbox.
+                    const now = Date.now();
+                    const user = await getUserById(resolution.userId);
+                    await save({ linkProof: { transactionId: handle, userId: resolution.userId, email: resolution.email, method: 'googleAuthoritative',
+                        authenticatedAt: now, credentialVersion: mailboxVersion(user) } });
+                }
+                if (!payload.linkProof) throw googleError();
                 await save({ linkProof: { ...payload.linkProof, confirmedAt: Date.now() } });
             } else if (action && action !== 'verify-email-proof') throw googleError();
             if (resolution.kind === 'collision' && action !== 'confirm-link') return render();
@@ -269,7 +408,15 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
         const url = new URL(req.url, 'http://internal');
         if (url.pathname !== ROOT && !url.pathname.startsWith(`${ROOT}/`)) return false;
         try {
-            if (url.pathname === `${ROOT}/start` && req.method === 'POST') {
+            if (url.pathname === `${ROOT}/confirmation` && req.method === 'GET') {
+                const notice = url.searchParams.get('notice');
+                const message = notice === 'recent-authentication-required'
+                    ? 'Google could not confirm a recent sign-in. Sign in to your Google Account again, then retry from My Account.'
+                    : notice === 'cancelled' ? 'Google confirmation was cancelled. Return to My Account to try again.'
+                        : notice === 'failed' ? 'Google confirmation failed. Return to My Account to try again.'
+                            : 'Google confirmation received. Return to My Account to continue. You may close this window.';
+                html(res, 'Account confirmation', `<p>${esc(message)}</p>`);
+            } else if (url.pathname === `${ROOT}/start` && req.method === 'POST') {
                 const config = await requireGoogleConfiguration();
                 if (req.headers.origin !== config.redirect.origin || String(req.headers['content-type'] || '').split(';')[0].trim() !== 'application/json') throw googleError('invalid_request', 403);
                 const body = await readBody(req);
@@ -286,7 +433,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                 await serialize(`sso-request:${transaction.payload.parent.requestId}`, async () => {
                     const context = await explorerContext(transaction.payload.parent.requestId, transaction.payload.parent.state);
                     context.complete = async (user, parent) => {
-                        const issued = await issueAuthCodeLocked({ providerState: parent.requestId, userId: user.id });
+                        const issued = await issueAuthCodeLocked({ providerState: parent.requestId, userId: user.id, generation: authGenerationOf(user) });
                         const location = new URL(issued.redirectUri);
                         location.searchParams.set('code', issued.code);
                         location.searchParams.set('state', parent.state);
@@ -305,5 +452,5 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
         }
         return true;
     }
-    return { handle, start, resume };
+    return { handle, start, resume, startReauthentication, completeReauthentication };
 }

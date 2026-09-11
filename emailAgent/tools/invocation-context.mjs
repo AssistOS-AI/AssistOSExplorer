@@ -31,6 +31,7 @@ export function assertEmailToolAuthorized(toolName, authInfo = {}) {
         'email_send_test',
     ]);
     const internalTools = new Set([
+        'email_auth_code_status',
         'email_send_text',
         'email_send_template',
         'email_send_auth_code',

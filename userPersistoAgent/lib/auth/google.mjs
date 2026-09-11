@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as oidc from 'openid-client';
 import { getAuthPolicy } from '../policy.mjs';
-import { getStore } from '../store.mjs';
 
 export const GOOGLE_ISSUER = 'https://accounts.google.com';
 export const GOOGLE_CALLBACK_PATH = '/service/auth/google/callback';
@@ -26,18 +25,17 @@ function configuration() {
         fingerprint: createHash('sha256').update(JSON.stringify([GOOGLE_ISSUER, clientId, clientSecret, redirectUri, settingsKey])).digest('base64url') };
 }
 
+// Google is usable during unclaimed setup too: the first completed Google
+// sign-in may claim the initial administrator through the setup decision.
 export async function getGoogleStatus() {
     const config = configuration();
     const policy = await getAuthPolicy();
     const enabled = policy.enabledAuthMethods.includes('google');
-    const store = await getStore();
-    const users = await store.select('user', {}, { start: 0, pageSize: 1 });
-    const setupComplete = !!users.objects?.length;
-    return { enabled, configured: config.valid, available: enabled && config.valid && setupComplete,
+    return { enabled, configured: config.valid, available: enabled && config.valid,
         missing: config.missing, redirectUri: config.redirect?.href || '', clientId: config.clientId,
         secretPresent: !!config.clientSecret, configurationSource: 'environment',
         policySource: process.env.USERPERSISTO_AUTH_METHODS?.trim() ? 'environment' : 'stored-or-default',
-        reason: !enabled ? 'disabled' : !config.valid ? 'configuration_incomplete' : !setupComplete ? 'setup_required' : 'ready' };
+        reason: !enabled ? 'disabled' : !config.valid ? 'configuration_incomplete' : 'ready' };
 }
 
 export async function requireGoogleConfiguration() {
@@ -63,13 +61,14 @@ export function createGoogleProtocol({ discover = (config) => oidc.discovery(new
         return cached.promise;
     }
     return {
-        async authorization(config) {
+        async authorization(config, { reauthentication = false } = {}) {
             const provider = await client(config);
             const verifier = oidc.randomPKCECodeVerifier();
             const state = oidc.randomState();
             const nonce = oidc.randomNonce();
             const url = oidc.buildAuthorizationUrl(provider, { scope: 'openid email', response_type: 'code', response_mode: 'query',
-                redirect_uri: config.redirectUri, state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256' });
+                redirect_uri: config.redirectUri, state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256',
+                ...(reauthentication ? { prompt: 'select_account', claims: JSON.stringify({ id_token: { auth_time: { essential: true } } }) } : {}) });
             return { url: url.href, state, nonce, verifier };
         },
         async exchange(config, callback, payload) {
@@ -93,9 +92,20 @@ export function createGoogleProtocol({ discover = (config) => oidc.discovery(new
                     || (claims.hd !== undefined && (typeof claims.hd !== 'string' || !/^[A-Za-z0-9.-]+$/.test(claims.hd) || claims.hd.length > 253))) {
                     throw googleError();
                 }
+                // Google's supported account chooser does not guarantee a new
+                // credential prompt. Require its signed authentication time;
+                // neither fresh token issuance nor consent is fresh proof.
+                if (payload.flow === 'reauth' && (!Number.isSafeInteger(claims.auth_time)
+                    || claims.auth_time < now - 300 || claims.auth_time > now + 30)) {
+                    throw googleError('google_recent_authentication_required', 401);
+                }
                 return { issuer: GOOGLE_ISSUER, subject: claims.sub, email: claims.email.trim().toLowerCase(), emailVerified: true,
+                    ...(payload.flow === 'reauth' ? { authenticatedAt: claims.auth_time * 1000 } : {}),
                     ...(claims.hd ? { hostedDomain: claims.hd.toLowerCase() } : {}) };
-            } catch { throw googleError(); }
+            } catch (error) {
+                if (error?.code === 'google_recent_authentication_required') throw error;
+                throw googleError();
+            }
         },
     };
 }

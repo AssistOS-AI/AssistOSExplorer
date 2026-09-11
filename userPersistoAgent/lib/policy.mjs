@@ -1,14 +1,19 @@
 import { getStore, flush } from './store.mjs';
 import { serialize } from './serial.mjs';
 import { withPersistenceScope } from './persistence-scope.mjs';
+import { getEmailAuthCodeStatus } from './email-agent-client.mjs';
 
-const AUTH_METHODS = new Set(['password', 'emailCode', 'passkey', 'totp', 'google']);
+// Ordinary accounts are passwordless. The deployment-configured administrator
+// password is a separate, single-account exception and never a policy method.
+const AUTH_METHODS = new Set(['emailCode', 'passkey', 'totp', 'google']);
+export const REGISTRATION_ROLE = 'selfRegistered';
+const POLICY_FIELDS = new Set(['enabledAuthMethods', 'selfRegistrationEnabled', 'allowedRedirectOrigins']);
 const DEFAULT_POLICY = Object.freeze({
-    enabledAuthMethods: ['password'],
+    enabledAuthMethods: ['emailCode', 'passkey', 'totp', 'google'],
     selfRegistrationEnabled: true,
-    defaultRegistrationRole: 'selfRegistered',
     allowedRedirectOrigins: [],
 });
+const warnedEnvironmentMethods = new Set();
 
 function policyError(code, message) {
     return Object.assign(new Error(message), { code, statusCode: 400 });
@@ -23,6 +28,20 @@ function uniqueStrings(value) {
 function envList(name) {
     const raw = String(process.env[name] || '').trim();
     return raw ? uniqueStrings(raw.split(',')) : null;
+}
+
+// An environment override naming a retired method (for example `password`)
+// must not re-enable it or take the whole sign-in surface down.
+function environmentMethods() {
+    const configured = envList('USERPERSISTO_AUTH_METHODS');
+    if (!configured) return null;
+    const supported = configured.filter((method) => AUTH_METHODS.has(method));
+    for (const method of configured.filter((entry) => !AUTH_METHODS.has(entry))) {
+        if (warnedEnvironmentMethods.has(method)) continue;
+        warnedEnvironmentMethods.add(method);
+        console.warn(`[userPersisto] USERPERSISTO_AUTH_METHODS ignores unsupported method "${method.slice(0, 32).replace(/[^A-Za-z0-9_-]/g, '')}".`);
+    }
+    return supported;
 }
 
 function normalizeOrigins(value) {
@@ -50,31 +69,28 @@ function normalizePolicy(input = {}) {
     if (!methods.length) {
         throw policyError('auth_method_required', 'At least one supported authentication method must be enabled.');
     }
-    const defaultRegistrationRole = String(input.defaultRegistrationRole || 'selfRegistered').trim();
-    if (!defaultRegistrationRole) {
-        throw policyError('registration_role_required', 'defaultRegistrationRole is required.');
-    }
     return {
         enabledAuthMethods: methods,
         selfRegistrationEnabled: input.selfRegistrationEnabled !== false,
-        defaultRegistrationRole,
         allowedRedirectOrigins: normalizeOrigins(input.allowedRedirectOrigins || []),
     };
 }
 
-export async function assertRegistrationRoleAllowed(roleName, store = null) {
+// Public signup always receives exactly `selfRegistered`. This fails closed if
+// that role was ever changed to grant administration or Explorer access.
+export async function assertRegistrationRoleAllowed(roleName = REGISTRATION_ROLE, store = null) {
     const persisto = store || await getStore();
     const normalizedRole = String(roleName || '').trim();
-    const role = normalizedRole ? await persisto.getRoleByName(normalizedRole) : null;
-    if (!role) throw policyError('unknown_role', `Unknown default registration role: ${normalizedRole}`);
+    const role = normalizedRole === REGISTRATION_ROLE ? await persisto.getRoleByName(normalizedRole) : null;
+    if (!role) throw policyError('unknown_role', `Unknown registration role: ${normalizedRole}`);
     const links = await persisto.getRolePermsObjectsByRoleId(role.id) || [];
     for (const link of links) {
-        const permission = await persisto.getPermission(link.permissionId);
-        if (String(permission?.capability || '').startsWith('admin.')) {
-            throw policyError(
-                'registration_role_must_be_non_admin',
-                'The default registration role must not grant administrative capabilities.',
-            );
+        const capability = String((await persisto.getPermission(link.permissionId))?.capability || '');
+        if (capability.startsWith('admin.') || capability === 'explorer.access') {
+            throw Object.assign(policyError(
+                'registration_role_must_be_restricted',
+                'The registration role must not grant administrative or Explorer access.',
+            ), { statusCode: 503 });
         }
     }
     return role;
@@ -85,34 +101,51 @@ async function readStoredPolicy(store) {
     return record?.value && typeof record.value === 'object' ? record.value : null;
 }
 
-export async function getAuthPolicy() {
-    const store = await getStore();
-    const stored = await readStoredPolicy(store);
-    const merged = { ...DEFAULT_POLICY, ...(stored || {}) };
-    const configuredMethods = envList('USERPERSISTO_AUTH_METHODS');
+function storedFields(value) {
+    return Object.fromEntries(Object.entries(value || {}).filter(([key]) => POLICY_FIELDS.has(key)));
+}
+
+function applyEnvironment(policy) {
+    const merged = { ...policy };
+    const configuredMethods = environmentMethods();
     const configuredOrigins = envList('USERPERSISTO_ALLOWED_REDIRECT_ORIGINS');
     if (configuredMethods) merged.enabledAuthMethods = configuredMethods;
     if (configuredOrigins) merged.allowedRedirectOrigins = configuredOrigins;
-    if (String(process.env.USERPERSISTO_DEFAULT_REGISTRATION_ROLE || '').trim()) {
-        merged.defaultRegistrationRole = String(process.env.USERPERSISTO_DEFAULT_REGISTRATION_ROLE).trim();
-    }
     if (String(process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED || '').trim()) {
         merged.selfRegistrationEnabled = String(process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED).trim().toLowerCase() === 'true';
     }
-    return normalizePolicy(merged);
+    return merged;
 }
 
-export async function updateAuthPolicy(patch = {}, { actorId = 'system' } = {}) {
+export function environmentPolicyOverrides() {
+    return ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']
+        .filter((name) => String(process.env[name] || '').trim());
+}
+
+export async function getAuthPolicy() {
+    const store = await getStore();
+    const stored = await readStoredPolicy(store);
+    return normalizePolicy(applyEnvironment({ ...DEFAULT_POLICY, ...storedFields(stored) }));
+}
+
+export async function updateAuthPolicy(patch = {}, { actorId = 'system', emailStatus = getEmailAuthCodeStatus } = {}) {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw policyError('invalid_policy', 'Policy must be an object.');
+    const unknown = Object.keys(patch).find((key) => !POLICY_FIELDS.has(key));
+    if (unknown) throw policyError('invalid_policy_field', `Unsupported policy field: ${unknown.slice(0, 64)}`);
+    // Resolve provider readiness once, outside the durable-write scope. Do not
+    // hold the store lock over agent network calls or probe again per account.
+    const emailAvailable = (await emailStatus()).available === true;
     return serialize('auth.policy', () => withPersistenceScope(async () => {
         const store = await getStore();
-        const current = await getAuthPolicy();
-        const next = normalizePolicy({ ...current, ...patch });
-        await assertRegistrationRoleAllowed(next.defaultRegistrationRole, store);
-        if (next.enabledAuthMethods.includes('google')) await assertAdministratorMethodRemains(store, next);
+        const stored = normalizePolicy({ ...DEFAULT_POLICY, ...storedFields(await readStoredPolicy(store)), ...patch });
+        // Environment overrides win at read time, so check the policy that will
+        // actually apply after this save rather than only the stored value.
+        const effective = normalizePolicy(applyEnvironment(stored));
+        await assertAdministratorMethodRemains(store, effective, emailAvailable);
         const existing = await store.getSystemSettingByKey('auth.policy');
         const record = {
             key: 'auth.policy',
-            value: next,
+            value: stored,
             updatedAt: new Date().toISOString(),
             updatedBy: String(actorId || 'system'),
         };
@@ -122,37 +155,62 @@ export async function updateAuthPolicy(patch = {}, { actorId = 'system' } = {}) 
             await store.createSystemSetting(record);
         }
         await flush();
-        return next;
+        return effective;
     }));
 }
 
-async function assertAdministratorMethodRemains(store, policy) {
-    const { getGoogleStatus } = await import('./auth/google.mjs');
-    const googleConfigured = (await getGoogleStatus()).configured;
-    let hasAdministrator = false;
+// Deliberate policy saves must leave every active administrator at least one
+// usable sign-in method. Optional passkey/TOTP enrollment is never required.
+async function assertAdministratorMethodRemains(store, policy, emailAvailable) {
+    let stranded = false;
     for (let start = 0; ; start += 100) {
         const page = await store.select('user', { status: 'active' }, { start, pageSize: 100 });
         for (const user of page.objects) {
-            const roles = await store.getUserRolesObjectsByUserId(user.id) || [];
-            let administrator = false;
-            for (const link of roles) {
-                const role = await store.getRole(link.roleId);
-                const permissions = role ? await store.getRolePermsObjectsByRoleId(role.id) || [] : [];
-                for (const permission of permissions) {
-                    if ((await store.getPermission(permission.permissionId))?.capability === 'admin.agentSettings.manage') administrator = true;
-                }
-            }
-            if (!administrator) continue;
-            hasAdministrator = true;
-            if (policy.enabledAuthMethods.includes('password') && user.passwordHash) return;
-            if (policy.enabledAuthMethods.includes('emailCode')) return;
-            const methods = await store.getAuthMethodsObjectsByUserId(user.id) || [];
-            if (methods.some((method) => method.enabled && ['passkey', 'totp'].includes(method.type) && policy.enabledAuthMethods.includes(method.type))) return;
-            if (googleConfigured && (await store.getExternalIdentitiesObjectsByUserId(user.id) || []).some((binding) => binding.issuer === 'https://accounts.google.com')) return;
+            if (!(await hasCapability(store, user.id, 'admin.agentSettings.manage'))) continue;
+            if ((await usableSignInMethods(user, { store, policy, emailAvailable })).length) continue;
+            stranded = true;
         }
         if (page.objects.length < 100) break;
     }
-    if (hasAdministrator) throw policyError('administrator_auth_method_required', 'Keep an enrolled administrator sign-in method enabled before saving this policy.');
+    if (stranded) throw policyError('administrator_auth_method_required', 'Keep a usable administrator sign-in method enabled before saving this policy.');
+}
+
+async function hasCapability(store, userId, capability) {
+    for (const link of await store.getUserRolesObjectsByUserId(userId) || []) {
+        const role = await store.getRole(link.roleId);
+        for (const permission of role ? await store.getRolePermsObjectsByRoleId(role.id) || [] : []) {
+            if ((await store.getPermission(permission.permissionId))?.capability === capability) return true;
+        }
+    }
+    return false;
+}
+
+// Sign-in methods an account can actually use under the effective policy and
+// configuration: the administrator password only for its designated account,
+// email code only with a verified mailbox, passkey/TOTP only when enrolled and
+// reachable through the account's sign-in email, Google only when configured
+// and bound. Read-only; safe inside the persistence scope.
+export async function usableSignInMethods(user, { store = null, policy = null, includeAdministratorPassword = true, emailAvailable = false } = {}) {
+    if (!user || user.status !== 'active') return [];
+    const persisto = store || await getStore();
+    const effective = policy || await getAuthPolicy();
+    const enabled = effective.enabledAuthMethods;
+    const methods = [];
+    if (includeAdministratorPassword) {
+        const { administratorPasswordUsableFor } = await import('./auth/adminPassword.mjs');
+        if (await administratorPasswordUsableFor(user.id)) methods.push('adminPassword');
+    }
+    if (emailAvailable && enabled.includes('emailCode') && user.email && user.emailVerifiedAt) methods.push('emailCode');
+    const credentials = await persisto.getAuthMethodsObjectsByUserId(user.id) || [];
+    for (const type of ['passkey', 'totp']) {
+        if (user.email && enabled.includes(type) && credentials.some((method) => method.enabled && method.type === type)) methods.push(type);
+    }
+    if (enabled.includes('google')) {
+        const { getGoogleStatus } = await import('./auth/google.mjs');
+        const bound = (await persisto.getExternalIdentitiesObjectsByUserId(user.id) || []).some((binding) => binding.issuer === 'https://accounts.google.com');
+        if (bound && (await getGoogleStatus()).configured) methods.push('google');
+    }
+    return methods;
 }
 
 export async function isAuthMethodEnabled(method) {

@@ -56,9 +56,6 @@ export class AdminSettingsPanel {
 
     bindEvents() {
         if (this.element.dataset.boundAdminSettingsPanel) return;
-        this.element.addEventListener('admin-users-create', (event) => {
-            this.createUser(event.detail || {}).catch((error) => this.setStatus(error.message, 'error'));
-        });
         this.element.addEventListener('admin-users-save', (event) => {
             this.saveUser(event.detail?.userId, event.detail?.body || {}).catch((error) => this.setStatus(error.message, 'error'));
         });
@@ -174,21 +171,6 @@ export class AdminSettingsPanel {
             await component.presenterReadyPromise.catch(() => {});
         }
         component.webSkelPresenter?.setState?.(state);
-    }
-
-    async createUser(detail) {
-        this.setStatus('Creating user...');
-        await this.request(this.apiBase, {
-            method: 'POST',
-            body: JSON.stringify({
-                username: detail.username,
-                email: detail.email,
-                password: detail.password,
-                name: detail.name,
-                roles: parseRoles(detail.roles)
-            })
-        });
-        await this.reloadAfterMutation();
     }
 
     async saveUser(userId, body) {

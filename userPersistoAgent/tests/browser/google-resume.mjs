@@ -11,9 +11,9 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import * as oidc from 'openid-client';
 import { controlledGoogleProvider } from '../helpers/googleProvider.mjs';
+import * as setup from '../helpers/setup.mjs';
 import { startService } from '../../service/index.mjs';
 import { ensureSeedData } from '../../lib/bootstrap.mjs';
-import { registerUser } from '../../lib/users.mjs';
 import { getStore, flush, resetStoreForTests } from '../../lib/store.mjs';
 import * as totp from '../../lib/auth/totp.mjs';
 import { updateAuthPolicy } from '../../lib/policy.mjs';
@@ -33,7 +33,8 @@ let application;
 let proxy;
 let browser;
 const httpsMode = process.env.GOOGLE_BROWSER_HTTPS === 'true';
-const linkMethod = process.env.GOOGLE_BROWSER_LINK_METHOD || 'password';
+const linkMethod = process.env.GOOGLE_BROWSER_LINK_METHOD || 'emailCode';
+const mail = [];
 const browserHost = process.env.GOOGLE_BROWSER_HOST || (linkMethod === 'passkey' ? 'localhost' : '127.0.0.1');
 
 async function closeServer(server) {
@@ -88,7 +89,7 @@ async function startHttpsProxy(port) {
 }
 
 async function verify() {
-    assert.ok(['password', 'totp', 'passkey'].includes(linkMethod), 'GOOGLE_BROWSER_LINK_METHOD must be password, totp or passkey.');
+    assert.ok(['emailCode', 'adminPassword', 'totp', 'passkey'].includes(linkMethod), 'GOOGLE_BROWSER_LINK_METHOD must be emailCode, adminPassword, totp or passkey.');
     assert.ok(['127.0.0.1', 'localhost'].includes(browserHost), 'GOOGLE_BROWSER_HOST must be 127.0.0.1 or localhost.');
     assert.ok(isAbsolute(runtimePath), 'GOOGLE_BROWSER_PLAYWRIGHT_MODULE must name an absolute existing module path.');
     const { chromium } = await import(pathToFileURL(runtimePath).href);
@@ -101,28 +102,32 @@ async function verify() {
     process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
     delete process.env.USERPERSISTO_AUTH_METHODS;
     delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
-    delete process.env.USERPERSISTO_DEFAULT_REGISTRATION_ROLE;
     delete process.env.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS;
     await ensureSeedData();
-    const password = 'controlled-browser-password';
-    const { user: owner } = await registerUser({ email: 'browser-owner@example.test', password });
+    // The installation owner claims setup through the real verified-email path;
+    // a random administrator password makes it the designated administrator too.
+    const adminPassword = setup.configureAdministratorPassword();
+    const { user: owner } = await setup.registerWithEmailCode('browser-owner@example.test');
     const store = await getStore();
     let totpSecret;
     if (linkMethod === 'totp') {
-        const setup = await totp.setupStart({ userId: owner.id });
-        totpSecret = setup.secret;
-        assert.equal((await totp.setupVerify({ userId: owner.id, token: totp.generateToken(totpSecret) })).ok, true, 'Fixture TOTP enrollment must succeed before the Google attempt.');
+        const enrollment = await totp.setupStart({ userId: owner.id });
+        totpSecret = enrollment.secret;
+        assert.equal((await totp.setupVerify({ userId: owner.id, token: totp.generateToken(totpSecret), setupId: enrollment.setupId })).ok, true, 'Fixture TOTP enrollment must succeed before the Google attempt.');
     }
     google = await controlledGoogleProvider();
     google.state.email = owner.email;
-    service = startService({ port: 0, host: '127.0.0.1' }, { google: { protocol: google.protocol } });
+    service = startService({ port: 0, host: '127.0.0.1' }, {
+        google: { protocol: google.protocol },
+        deliverEmail: async (message) => { mail.push(message); return { delivered: true, providerMessageId: 'browser-fixture' }; },
+    });
     if (!service.listening) await once(service, 'listening');
     const secure = httpsMode ? await startHttpsProxy(service.address().port) : null;
     const serviceOrigin = secure?.origin || `http://${browserHost}:${service.address().port}`;
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${serviceOrigin}/service/auth/google/callback`;
     const issuer = `${serviceOrigin}/service/oidc`;
     process.env.USERPERSISTO_OIDC_ISSUER = issuer;
-    await updateAuthPolicy({ enabledAuthMethods: [...new Set(['password', 'google', linkMethod])] });
+    await updateAuthPolicy({ enabledAuthMethods: [...new Set(['emailCode', 'google', ...(linkMethod === 'adminPassword' ? [] : [linkMethod])])] });
 
     let config;
     let callbackUri;
@@ -229,23 +234,26 @@ async function verify() {
     page.on('console', (message) => {
         if (message.type() === 'error' && message.text().includes('Content Security Policy')) cspErrors += 1;
     });
-    phase = 'establishing ordinary password login and existing application consent';
+    phase = 'establishing passwordless email-code login and existing application consent';
     await page.goto(`${applicationOrigin}/start`);
     await page.getByRole('textbox', { name: 'Email', exact: true }).fill(owner.email);
-    await page.getByRole('textbox', { name: 'Password', exact: true }).fill(password);
-    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await page.getByRole('button', { name: 'Next', exact: true }).click();
+    await page.getByRole('button', { name: 'Email me a code', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Code', exact: true }).waitFor();
+    await page.getByRole('textbox', { name: 'Code', exact: true }).fill(mail.at(-1).code);
+    await page.getByRole('button', { name: 'Verify', exact: true }).click();
     await page.getByRole('button', { name: 'Allow access', exact: true }).click();
     await page.getByRole('heading', { name: 'Client completed', exact: true }).waitFor();
     assert.equal(successfulCallbacks, 1, 'Ordinary login must establish a verified application session.');
 
-    phase = 'holding the deferred Google handler before the first possible click';
-    let releaseInteractionScript;
-    let observeInteractionScript;
-    const scriptGate = new Promise((resolve) => { releaseInteractionScript = resolve; });
-    const scriptHeld = new Promise((resolve) => { observeInteractionScript = resolve; });
-    const interactionScriptPattern = '**/service/oidc/interaction.js';
-    const holdInteractionScript = async (route) => {
-        observeInteractionScript();
+    phase = 'holding the wizard module before the first possible click';
+    let releaseWizardScript;
+    let observeWizardScript;
+    const scriptGate = new Promise((resolve) => { releaseWizardScript = resolve; });
+    const scriptHeld = new Promise((resolve) => { observeWizardScript = resolve; });
+    const wizardScriptPattern = '**/service/auth/oidc-main.js';
+    const holdWizardScript = async (route) => {
+        observeWizardScript();
         await scriptGate;
         await route.continue();
     };
@@ -253,24 +261,20 @@ async function verify() {
     const observeGooglePost = (request) => {
         if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/google')) prematureGooglePosts += 1;
     };
-    await page.route(interactionScriptPattern, holdInteractionScript);
+    await page.route(wizardScriptPattern, holdWizardScript);
     page.on('request', observeGooglePost);
     try {
         await page.goto(`${applicationOrigin}/start`, { waitUntil: 'commit' });
-        const earlyButton = page.getByRole('button', { name: 'Continue with Google', exact: true });
-        await earlyButton.waitFor({ state: 'visible' });
         await scriptHeld;
-        assert.equal(await earlyButton.isDisabled(), true, 'Google must stay disabled until its submit handler is installed.');
-        const interactionUrl = page.url();
-        await earlyButton.click({ force: true });
-        assert.equal(page.url(), interactionUrl, 'An early Google click must not navigate to a JSON response.');
-        assert.equal(prematureGooglePosts, 0, 'An early Google click must not create a native form request.');
+        // The server shell renders no Google control; only the loaded wizard does.
+        assert.equal(await page.getByRole('button', { name: 'Continue with Google', exact: true }).count(), 0, 'Google must not be offered before the wizard module loads.');
+        assert.equal(prematureGooglePosts, 0, 'No Google request can start before the wizard module loads.');
     } finally {
-        releaseInteractionScript();
+        releaseWizardScript();
         page.off('request', observeGooglePost);
     }
-    await page.waitForFunction(() => document.querySelector('[data-google]')?.disabled === false);
-    await page.unroute(interactionScriptPattern, holdInteractionScript);
+    await page.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
+    await page.unroute(wizardScriptPattern, holdWizardScript);
     phase = 'completing controlled Google authorization into the collision page';
     const googleStart = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/google'));
     await page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
@@ -291,10 +295,19 @@ async function verify() {
     assert.equal(proofCookie.secure, httpsMode, 'HTTPS proof cookie must require Secure.');
     assert.equal(proofCookie.name.startsWith('__Secure-'), httpsMode, 'Secure prefix must follow configured HTTPS.');
     phase = `submitting native ${linkMethod} reauthentication with its browser-generated Origin`;
-    if (linkMethod === 'password') await page.getByRole('textbox', { name: 'Existing password', exact: true }).fill(password);
+    if (linkMethod === 'emailCode') {
+        const sent = mail.length;
+        await page.getByRole('button', { name: 'Email me a code', exact: true }).click();
+        await page.getByRole('textbox', { name: 'Email code', exact: true }).waitFor();
+        assert.equal(mail.length, sent + 1, 'A link-specific code must be sent to the verified mailbox.');
+        assert.ok(mail.at(-1).correlationId.startsWith('google-link-email:'), 'The link code must be bound to the Google transaction.');
+        await page.getByRole('textbox', { name: 'Email code', exact: true }).fill(mail.at(-1).code);
+    }
+    if (linkMethod === 'adminPassword') await page.getByLabel('Administrator password', { exact: true }).fill(adminPassword);
     if (linkMethod === 'totp') await page.getByRole('textbox', { name: 'Authenticator code', exact: true }).fill(totp.generateToken(totpSecret));
-    const authenticationResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/google-resume/authenticate'));
-    const button = { password: 'Authenticate with password', totp: 'Authenticate with code', passkey: 'Authenticate with passkey' }[linkMethod];
+    const completionPath = linkMethod === 'emailCode' ? '/google-resume/verify-link-code' : '/google-resume/authenticate';
+    const authenticationResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith(completionPath));
+    const button = { emailCode: 'Verify code', adminPassword: 'Confirm with administrator password', totp: 'Confirm with authenticator', passkey: 'Confirm with passkey' }[linkMethod];
     await page.getByRole('button', { name: button, exact: true }).click();
     let authenticated;
     try { authenticated = await authenticationResponse; } catch (error) {
@@ -329,7 +342,7 @@ async function verify() {
     assert.equal(bindings.length, 1, 'Confirmation must create exactly one Google binding.');
     assert.equal(bindings[0].userId, owner.id, 'The binding must belong to the authenticated local user.');
     assert.equal((await context.cookies(`${serviceOrigin}/service/`)).filter((cookie) => /^(?:__Secure-)?up_google_/.test(cookie.name)).length, 0, 'Successful completion must clear the attempt proof cookie.');
-    output(`PASS Chromium ${browser.version()} ${httpsMode ? 'HTTPS' : 'HTTP'} ${browserHost} ${linkMethod}: deferred-handler early click, native form Origin, explicit linking, consented callback CSP, local subject and roles, scoped host-only proof cookie.`);
+    output(`PASS Chromium ${browser.version()} ${httpsMode ? 'HTTPS' : 'HTTP'} ${browserHost} ${linkMethod}: passwordless wizard sign-in, no Google control before the wizard loads, native form Origin, explicit linking, consented callback CSP, local subject and roles, scoped host-only proof cookie.`);
 }
 
 try {
@@ -341,6 +354,7 @@ try {
     process.exitCode = 1;
 } finally {
     await Promise.allSettled([browser?.close(), closeServer(application), closeServer(proxy), closeServer(service), google?.close()]);
+    setup.clearAdministratorPassword();
     resetOidcProviderForTests();
     await resetStoreForTests();
     if (folder) await rm(folder, { recursive: true, force: true });

@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, updateUser, getUserById, getUserRoles } from '../lib/users.mjs';
-import { verifyPassword } from '../lib/auth/password.mjs';
 import { resetStoreForTests } from '../lib/store.mjs';
 import { startService } from '../service/index.mjs';
 
@@ -20,8 +19,8 @@ test('provider administration updates a blocked account without an internal erro
     let server;
     try {
         await ensureSeedData();
-        const admin = await createUser({ email: 'admin@example.test', roles: ['admin'], password: 'admin-password-1' });
-        const target = await createUser({ email: 'blocked@example.test', roles: ['selfRegistered'], password: 'old-password-1' });
+        const admin = await createUser({ email: 'admin@example.test', roles: ['admin'], emailVerified: true });
+        const target = await createUser({ email: 'blocked@example.test', roles: ['selfRegistered'], emailVerified: true });
         await updateUser(target.id, { status: 'blocked' }, { actorId: admin.id });
         server = startService({ port: 0, host: '127.0.0.1' });
         if (!server.listening) await once(server, 'listening');
@@ -41,10 +40,19 @@ test('provider administration updates a blocked account without an internal erro
         assert.equal(roleOnly.body.user.username, '');
         assert.equal(roleOnly.body.user.passwordHash, undefined);
         assert.deepEqual(await getUserRoles(target.id), ['user']);
+        // Accounts are passwordless and sign-in mailboxes change only with fresh proof.
+        const before = await getUserById(target.id);
         const password = await bridge('sso-admin-user-update', { actorUserId: admin.id, userId: target.id, password: 'new-password-12' });
-        assert.equal(password.status, 200, JSON.stringify(password.body));
-        assert.equal(password.body.user.status, 'blocked');
-        assert.equal(verifyPassword('new-password-12', (await getUserById(target.id)).passwordHash), true);
+        assert.deepEqual([password.status, password.body.error], [400, 'password_unsupported']);
+        const email = await bridge('sso-admin-user-update', { actorUserId: admin.id, userId: target.id, email: 'other@example.test' });
+        assert.deepEqual([email.status, email.body.error], [400, 'email_change_unsupported']);
+        const created = await bridge('sso-admin-user-create', { actorUserId: admin.id, email: 'new@example.test', password: 'new-password-12', roles: ['admin'] });
+        assert.deepEqual([created.status, created.body.error], [400, 'user_creation_unsupported']);
+        assert.deepEqual(await getUserById(target.id), before);
+        const unchangedEmail = await bridge('sso-admin-user-update', { actorUserId: admin.id, userId: target.id, email: target.email, displayName: 'Renamed' });
+        assert.equal(unchangedEmail.status, 200, JSON.stringify(unchangedEmail.body));
+        assert.equal(unchangedEmail.body.user.displayName, 'Renamed');
+        assert.equal(unchangedEmail.body.user.status, 'blocked');
         const projection = await bridge('sso-user', { userId: target.id });
         assert.equal(projection.status, 403);
         assert.equal(projection.body.error, 'user_not_active');

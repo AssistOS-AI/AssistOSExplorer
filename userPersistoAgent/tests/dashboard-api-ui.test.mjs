@@ -20,6 +20,7 @@ test('management reads use profile GET and fixed admin POST routes with same-ori
     assert.equal(calls[0].options.method, 'GET');
     assert.equal(calls[0].options.body, undefined);
     assert.ok(calls[1].url.pathname.endsWith('/dashboard/api/admin/users/list'));
+    assert.equal(calls[1].url.search, '', 'arguments travel only in the POST body, never the query string');
     assert.equal(calls[1].options.method, 'POST');
     assert.equal(calls[1].options.headers['Content-Type'], 'application/json');
     assert.deepEqual(JSON.parse(calls[1].options.body), { search: '../applications/rotate', start: 0 });
@@ -55,13 +56,13 @@ test('management failures preserve authorization metadata and malformed JSON fai
     await assert.rejects(callManagementTool('userpersisto_oidc_status'), /Unable to complete/);
 });
 
-test('password reset sends only its selected route and structured password body', async (t) => {
-    const calls = [];
-    t.mock.method(globalThis, 'fetch', async (url, options) => { calls.push({ url, options }); return response({ ok: true, result: { ok: true } }); });
-    await callManagementTool('userpersisto_auth_password_set', { userId: 'member', newPassword: 'local-test-password' });
-    assert.ok(calls[0].url.pathname.endsWith('/dashboard/api/admin/users/password'));
-    assert.deepEqual(JSON.parse(calls[0].options.body), { userId: 'member', newPassword: 'local-test-password' });
-    assert.equal(calls[0].url.search, '');
+test('management tool map no longer exposes retired account-creation or password routes', async (t) => {
+    let requests = 0;
+    t.mock.method(globalThis, 'fetch', async () => { requests++; return response({ ok: true }); });
+    for (const name of ['userpersisto_user_create', 'userpersisto_auth_password_set']) {
+        await assert.rejects(callManagementTool(name, {}), /Unknown account action/, name);
+    }
+    assert.equal(requests, 0, 'retired routes never reach the network');
 });
 
 test('account navigation hides each management link without its capability, including after revocation', () => {

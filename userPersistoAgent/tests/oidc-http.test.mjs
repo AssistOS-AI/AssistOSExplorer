@@ -7,14 +7,17 @@ import { once } from 'node:events';
 import * as client from 'openid-client';
 import { startService } from '../service/index.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
-import { registerUser, updateUser, setUserRoles, getSetupStatus, getUserByEmail } from '../lib/users.mjs';
+import { updateUser, setUserRoles, getUserByEmail, getUserRoles } from '../lib/users.mjs';
+import { getInstallationSetup } from '../lib/setup.mjs';
+import * as setup from './helpers/setup.mjs';
 import { createOidcClient, updateOidcClient, rotateOidcClientSecret } from '../lib/oidc/clients.mjs';
 import { resetOidcProviderForTests } from '../lib/oidc/provider.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
 import { updateAuthPolicy } from '../lib/policy.mjs';
 
-const password = 'correct-oidc-test-password';
 const redirect = 'https://client.example.test/callback';
+// Construction-time delivery capture: the real email transport is never used.
+const mail = [];
 
 class Browser {
     cookies = new Map();
@@ -42,12 +45,16 @@ async function fixture(fn) {
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'disposable-oidc-test-encryption-key';
     delete process.env.USERPERSISTO_AUTH_METHODS;
+    delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
+    setup.resetAuthLimitsForTests();
+    mail.length = 0;
     let server;
     try {
         await ensureSeedData();
-        const { user: owner } = await registerUser({ email: 'owner@example.test', password });
-        const { user } = await registerUser({ email: 'member@example.test', password });
-        server = startService({ port: 0, host: '127.0.0.1' });
+        setup.configureAdministratorPassword();
+        const { user: owner } = await setup.registerWithEmailCode('owner@example.test');
+        const { user } = await setup.registerWithEmailCode('member@example.test');
+        server = startService({ port: 0, host: '127.0.0.1' }, { deliverEmail: async (message) => { mail.push(message); return { delivered: true, providerMessageId: 'fixture' }; } });
         if (!server.listening) await once(server, 'listening');
         const base = `http://127.0.0.1:${server.address().port}`;
         const issuer = `${base}/service/oidc`;
@@ -62,6 +69,7 @@ async function fixture(fn) {
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         resetOidcProviderForTests();
         await resetStoreForTests();
+        setup.clearAdministratorPassword();
         delete process.env.USERPERSISTO_OIDC_ISSUER;
         await rm(folder, { recursive: true, force: true });
     }
@@ -84,7 +92,42 @@ async function begin(config, { scope = 'openid profile email offline_access role
     return { browser, verifier, nonce, state, location: response.headers.get('location') };
 }
 
-async function complete(flow, email = 'member@example.test', { action = 'login', allow = true } = {}) {
+function wizardConfig(html) {
+    const match = html.match(/<script type="application\/json" id="userpersisto-wizard-config">([^<]+)<\/script>/);
+    assert.ok(match, html);
+    return JSON.parse(match[1]);
+}
+
+// Drives the wizard's own endpoints: JSON attempt/email-start, then the native
+// email-verify form POST that ends in the engine redirect.
+async function emailSignIn(browser, location, html, email, purpose) {
+    const token = csrf(html);
+    const attempt = await browser.post(`${location}/attempt`, { csrf: token });
+    assert.equal(attempt.status, 200, await attempt.clone().text());
+    const started = await browser.post(`${location}/email-start`, { csrf: token, email, purpose });
+    assert.equal(started.status, 200, await started.clone().text());
+    return browser.post(`${location}/email-verify`, { csrf: token, code: mail.at(-1).code });
+}
+
+test('credential rotation revokes a completed login before the browser resumes OIDC', async () => fixture(async ({ config, owner }) => {
+    const { syncAdministratorPasswordState } = await import('../lib/auth/adminPassword.mjs');
+    await syncAdministratorPasswordState();
+    const flow = await begin(config);
+    const page = await flow.browser.fetch(flow.location);
+    const submitted = await emailSignIn(flow.browser, flow.location, await page.text(), owner.email, 'login');
+    assert.equal(submitted.status, 303, await submitted.clone().text());
+    const resume = submitted.headers.get('location');
+    setup.configureAdministratorPassword();
+    await syncAdministratorPasswordState();
+    const replay = await flow.browser.fetch(resume);
+    assert.ok(replay.status >= 400, `stale resume unexpectedly returned ${replay.status}: ${await replay.clone().text()}`);
+    const revisit = await flow.browser.fetch(flow.location);
+    assert.ok(revisit.status >= 400, 'the completed interaction cannot resurrect the login');
+    const fresh = await begin(config, {}, flow.browser);
+    assert.match(await (await fresh.browser.fetch(fresh.location)).text(), /userpersisto-wizard-config/);
+}));
+
+async function complete(flow, email = 'member@example.test', { purpose = 'login', allow = true } = {}) {
     let location = flow.location;
     for (let step = 0; step < 10; step++) {
         if (location.startsWith(redirect)) return new URL(location);
@@ -93,9 +136,9 @@ async function complete(flow, email = 'member@example.test', { action = 'login',
         assert.equal(response.status, 200, await response.clone().text());
         const body = await response.text();
         const consent = body.includes('Allow access?');
-        const submission = await flow.browser.post(`${location}/${consent ? allow ? 'confirm' : 'abort' : action}`, {
-            csrf: csrf(body), ...(consent ? {} : { email, password }),
-        });
+        const submission = consent
+            ? await flow.browser.post(`${location}/${allow ? 'confirm' : 'abort'}`, { csrf: csrf(body) })
+            : await emailSignIn(flow.browser, location, body, email, purpose);
         assert.equal(submission.status, 303, await submission.clone().text());
         location = submission.headers.get('location');
     }
@@ -125,7 +168,7 @@ test('independent OIDC client discovers, authenticates with PKCE, verifies RS256
     assert.equal(jwks.keys[0].d, undefined);
     const info = await client.fetchUserInfo(config, tokens.access_token, user.id);
     assert.equal(info.email, 'member@example.test');
-    assert.equal(info.email_verified, false);
+    assert.equal(info.email_verified, true);
     assert.deepEqual(info.roles, ['selfRegistered']);
     assert.deepEqual(info.capabilities, ['selfregistered.dashboard.access']);
     assert.equal(info.passwordHash, undefined);
@@ -149,8 +192,11 @@ test('browser binding, exact origin, CSRF token, consent denial, prompt none and
     assert.equal(loginPage.headers.get('referrer-policy'), 'same-origin');
     assert.match(loginPage.headers.get('content-security-policy'), /form-action 'self' https:\/\/client\.example\.test;/);
     const form = await loginPage.text();
-    assert.equal((await flow.browser.post(`${flow.location}/login`, { email: user.email, password, csrf: csrf(form) }, 'https://evil.example')).status, 403);
-    assert.equal((await flow.browser.post(`${flow.location}/login`, { email: user.email, password, csrf: 'wrong' })).status, 403);
+    for (const action of ['attempt', 'email-start', 'email-verify', 'admin-login']) {
+        assert.equal((await flow.browser.post(`${flow.location}/${action}`, { email: user.email, purpose: 'login', csrf: csrf(form) }, 'https://evil.example')).status, 403);
+        assert.equal((await flow.browser.post(`${flow.location}/${action}`, { email: user.email, purpose: 'login', csrf: 'wrong' })).status, 403);
+    }
+    assert.equal(mail.length, 0, 'rejected requests never send mail');
     const callback = await complete(flow);
     const tokens = await client.authorizationCodeGrant(config, callback, { pkceCodeVerifier: flow.verifier, expectedState: flow.state, expectedNonce: flow.nonce });
     assert.deepEqual(await client.fetchUserInfo(config, tokens.access_token, user.id), { sub: user.id });
@@ -271,37 +317,62 @@ test('client disabling revokes existing grants and public browser token/UserInfo
     await assert.rejects(client.refreshTokenGrant(config, tokens.refresh_token));
 }));
 
-test('OIDC registration uses normal user policy and disabled methods cannot bypass it', async () => fixture(async ({ config, owner, admin }) => {
+test('OIDC registration uses normal user policy and disabled methods cannot bypass it', async () => fixture(async ({ config, admin }) => {
     const flow = await begin(config, { screen_hint: 'signup' });
     const registrationPage = await flow.browser.fetch(flow.location);
     const registrationHtml = await registrationPage.text();
-    assert.match(registrationHtml, /<h1>Create your account<\/h1>/);
-    assert.ok(registrationHtml.indexOf('/register"') < registrationHtml.indexOf('/login"'));
-    assert.match(registrationHtml, /<summary>Already registered\? Sign in<\/summary>/);
-    const callback = await complete(flow, 'new-oidc@example.test', { action: 'register' });
+    assert.match(registrationHtml, /<h1 tabindex="-1">Create your account<\/h1>/);
+    const shell = wizardConfig(registrationHtml);
+    assert.deepEqual([shell.screenHint, shell.setupComplete, shell.registration, shell.client.name], ['signup', true, true, 'test-client']);
+    assert.equal(shell.csrf, csrf(registrationHtml));
+    const callback = await complete(flow, 'new-oidc@example.test', { purpose: 'register' });
     const token = await client.authorizationCodeGrant(config, callback, { pkceCodeVerifier: flow.verifier, expectedState: flow.state, expectedNonce: flow.nonce });
     const registered = await client.fetchUserInfo(config, token.access_token, token.claims().sub);
     assert.deepEqual(registered.roles, ['selfRegistered']);
     assert.deepEqual(registered.capabilities, ['selfregistered.dashboard.access']);
+    assert.equal(registered.email_verified, true);
     await updateAuthPolicy({ enabledAuthMethods: ['totp'] }, admin);
     const next = await begin(config, { screen_hint: 'signup' });
     const body = await (await next.browser.fetch(next.location)).text();
-    assert.ok(!body.includes('/login"'));
-    assert.ok(!body.includes('/register"'));
-    assert.match(body, /<h1>Sign in<\/h1>/);
-    assert.equal((await next.browser.post(`${next.location}/login`, { email: owner.email, password, csrf: csrf(body) })).status, 400);
+    const restricted = wizardConfig(body);
+    assert.deepEqual(restricted.methods, { emailCode: false, passkey: false, totp: true, google: false });
+    assert.equal(restricted.registration, false);
+    const denied = await next.browser.post(`${next.location}/email-start`, { csrf: csrf(body), email: 'blocked-signup@example.test', purpose: 'register' });
+    assert.equal(denied.status, 400);
+    assert.deepEqual(await denied.json(), { error: 'access_denied' });
+    for (const retired of ['login', 'register']) {
+        assert.equal((await next.browser.post(`${next.location}/${retired}`, { email: 'owner@example.test', password: 'guess-password', csrf: csrf(body) })).status, 400);
+    }
 }));
 
-test('signup hint retains existing sign-in and consent; retry errors show the attempted form', async () => fixture(async ({ config, owner, user }) => {
+test('signup hint retains existing sign-in and consent; failed codes re-render the wizard with a readable error', async () => fixture(async ({ config, owner, user }) => {
     for (const email of [owner.email, user.email]) {
         const flow = await begin(config, { screen_hint: 'signup' });
         const body = await (await flow.browser.fetch(flow.location)).text();
-        const failed = await flow.browser.post(`${flow.location}/login`, { email, password: 'invalid-password', csrf: csrf(body) });
+        const token = csrf(body);
+        assert.equal((await flow.browser.post(`${flow.location}/attempt`, { csrf: token })).status, 200);
+        const discovered = await (await flow.browser.post(`${flow.location}/discover`, { csrf: token, email })).json();
+        assert.deepEqual([discovered.exists, discovered.methods.emailCode], [true, true]);
+        const conflict = await flow.browser.post(`${flow.location}/email-start`, { csrf: token, email, purpose: 'register' });
+        assert.equal(conflict.status, 409);
+        assert.equal((await conflict.json()).error, 'account_exists');
+        assert.equal((await flow.browser.post(`${flow.location}/email-start`, { csrf: token, email, purpose: 'login' })).status, 200);
+        const wrong = mail.at(-1).code === '000000' ? '111111' : '000000';
+        const failed = await flow.browser.post(`${flow.location}/email-verify`, { csrf: token, code: wrong });
         assert.equal(failed.status, 400);
         const failedHtml = await failed.text();
-        assert.match(failedHtml, /<h1>Sign in<\/h1>/);
-        assert.ok(failedHtml.indexOf('/login"') < failedHtml.indexOf('/register"'));
-        const callback = await complete(flow, email);
+        assert.match(failedHtml, /Unable to sign in/);
+        const failure = wizardConfig(failedHtml).failure;
+        assert.deepEqual([failure.code, failure.attemptsRemaining, failure.action], ['code_invalid', 4, 'email-verify']);
+        assert.equal(wizardConfig(failedHtml).email, email, 'the re-rendered wizard names the attempted address');
+        assert.ok(!failedHtml.includes(mail.at(-1).code));
+        const submitted = await flow.browser.post(`${flow.location}/email-verify`, { csrf: token, code: mail.at(-1).code });
+        assert.equal(submitted.status, 303, await submitted.clone().text());
+        // A reload after a lost response resumes the committed result instead of signing in again.
+        const reloaded = await flow.browser.fetch(flow.location);
+        assert.equal(reloaded.status, 303);
+        assert.equal(reloaded.headers.get('location'), submitted.headers.get('location'));
+        const callback = await complete({ ...flow, location: submitted.headers.get('location') }, email);
         const tokens = await client.authorizationCodeGrant(config, callback, { pkceCodeVerifier: flow.verifier, expectedState: flow.state, expectedNonce: flow.nonce });
         assert.ok(tokens.access_token);
         const returning = await begin(config, { screen_hint: 'signup' }, flow.browser);
@@ -309,50 +380,53 @@ test('signup hint retains existing sign-in and consent; retry errors show the at
         assert.match(await consent.text(), /<h1>Allow access\?<\/h1>/);
         assert.equal((await complete(returning, email, { allow: false })).searchParams.get('error'), 'access_denied');
     }
-    const registration = await begin(config, { screen_hint: 'signup' });
-    const body = await (await registration.browser.fetch(registration.location)).text();
-    const failed = await registration.browser.post(`${registration.location}/register`, { email: 'invalid', password, csrf: csrf(body) });
-    assert.equal(failed.status, 400);
-    const failedHtml = await failed.text();
-    assert.match(failedHtml, /<h1>Create your account<\/h1>/);
-    assert.match(failedHtml, /Unable to create an account/);
-    assert.equal(await getUserByEmail('invalid'), null);
+}));
+
+test('a late same-email account during OIDC registration re-renders the wizard as a collision for that address', async () => fixture(async ({ config }) => {
+    const flow = await begin(config, { screen_hint: 'signup' });
+    const body = await (await flow.browser.fetch(flow.location)).text();
+    const token = csrf(body);
+    assert.equal((await flow.browser.post(`${flow.location}/attempt`, { csrf: token })).status, 200);
+    assert.equal((await flow.browser.post(`${flow.location}/email-start`, { csrf: token, email: 'late@example.test', purpose: 'register' })).status, 200);
+    const pendingCode = mail.at(-1).code;
+    await setup.registerWithEmailCode('late@example.test');
+    const collided = await flow.browser.post(`${flow.location}/email-verify`, { csrf: token, code: pendingCode });
+    assert.equal(collided.status, 400);
+    const rendered = wizardConfig(await collided.text());
+    assert.deepEqual([rendered.failure.code, rendered.failure.action, rendered.email], ['account_exists', 'email-verify', 'late@example.test']);
 }));
 
 test('absent or unknown signup hints preserve sign-in-first, and signup policy is rechecked after rendering', async () => fixture(async ({ config, admin }) => {
     for (const params of [{}, { screen_hint: 'login' }, { screen_hint: '<script>signup</script>' }]) {
         const flow = await begin(config, params);
         const html = await (await flow.browser.fetch(flow.location)).text();
-        assert.match(html, /<h1>Sign in<\/h1>/);
-        assert.ok(html.indexOf('/login"') < html.indexOf('/register"'));
+        assert.match(html, /<h1 tabindex="-1">Sign in<\/h1>/);
+        assert.equal(wizardConfig(html).screenHint, '');
         assert.ok(!html.includes('<script>signup</script>'));
     }
     const flow = await begin(config, { screen_hint: 'signup' });
     const body = await (await flow.browser.fetch(flow.location)).text();
     await updateAuthPolicy({ selfRegistrationEnabled: false }, admin);
-    const failed = await flow.browser.post(`${flow.location}/register`, { email: 'disabled@example.test', password, csrf: csrf(body) });
-    assert.equal(failed.status, 400);
-    assert.ok(!(await failed.text()).includes('/register"'));
+    const failed = await flow.browser.post(`${flow.location}/email-start`, { csrf: csrf(body), email: 'disabled@example.test', purpose: 'register' });
+    assert.equal(failed.status, 403);
+    assert.equal((await failed.json()).error, 'registration_disabled');
     assert.equal(await getUserByEmail('disabled@example.test'), null);
     const next = await begin(config, { screen_hint: 'signup' });
-    const html = await (await next.browser.fetch(next.location)).text();
-    assert.match(html, /<h1>Sign in<\/h1>/);
-    assert.ok(!html.includes('/register"'));
+    assert.equal(wizardConfig(await (await next.browser.fetch(next.location)).text()).registration, false);
 }));
 
-test('OIDC registration cannot create an initial administrator when client metadata survives an empty user store', async () => fixture(async ({ config, owner, user }) => {
+test('setup stays claimed when every account is removed: OIDC signup then creates only selfRegistered', async () => fixture(async ({ config, owner, user }) => {
     const store = await getStore();
     await store.deleteUser(owner.id);
     await store.deleteUser(user.id);
-    assert.equal((await getSetupStatus()).needsInitialAdmin, true);
+    assert.equal((await getInstallationSetup()).complete, true);
     const flow = await begin(config, { screen_hint: 'signup' });
     const body = await (await flow.browser.fetch(flow.location)).text();
-    assert.ok(!body.includes('/register"'));
-    const failed = await flow.browser.post(`${flow.location}/register`, { email: 'public-owner@example.test', password, csrf: csrf(body), allowInitialAdmin: 'true' });
-    assert.equal(failed.status, 400);
-    assert.equal((await getSetupStatus()).userCount, 0);
-    assert.equal(await getUserByEmail('public-owner@example.test'), null);
-    const setup = await registerUser({ email: 'setup-owner@example.test', password });
-    assert.equal(setup.firstUser, true);
-    assert.deepEqual(setup.roles, ['admin']);
+    assert.equal(wizardConfig(body).setupComplete, true);
+    const callback = await complete({ ...flow }, 'public-owner@example.test', { purpose: 'register' });
+    const tokens = await client.authorizationCodeGrant(config, callback, { pkceCodeVerifier: flow.verifier, expectedState: flow.state, expectedNonce: flow.nonce });
+    const created = await getUserByEmail('public-owner@example.test');
+    assert.equal(tokens.claims().sub, created.id);
+    assert.deepEqual(await getUserRoles(created.id), ['selfRegistered']);
+    assert.equal((await getInstallationSetup()).initialAdministratorId, owner.id);
 }));

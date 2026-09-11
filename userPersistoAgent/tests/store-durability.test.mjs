@@ -5,10 +5,12 @@ import { readFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { getStore, flush, resetStoreForTests } from '../lib/store.mjs';
+import { getStore, flush, resetStoreForTests, setStoreFaultInjectorForTests } from '../lib/store.mjs';
 import { SNAPSHOT_FILE } from '../lib/durable-storage.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
-import { createUser, registerUser, getUserRoles } from '../lib/users.mjs';
+import { createUser, getUserRoles } from '../lib/users.mjs';
+import { getInstallationSetup } from '../lib/setup.mjs';
+import { claimAdministrator, clearAdministratorPassword, configureAdministratorPassword, registerWithEmailCode, resetAuthLimitsForTests } from './helpers/setup.mjs';
 import { grant, getBalance } from '../lib/credits.mjs';
 
 process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
@@ -79,19 +81,24 @@ test('rename failure rejects the commit and never acknowledges the staged change
     assert.equal((await (await getStore()).select('user')).totalCount, 1);
 });
 
-test('concurrent flush cannot publish an initial user without its administrator role', async () => {
+test('concurrent flush cannot publish an initial user without its administrator role and setup record', async () => {
     await fixture();
     await ensureSeedData();
+    resetAuthLimitsForTests();
     let done = false;
     let samples = 0;
     const [registration] = await Promise.all([
-        registerUser({ email: 'atomic-owner@example.test', password: 'owner-password' }).finally(() => { done = true; }),
+        registerWithEmailCode('atomic-owner@example.test').finally(() => { done = true; }),
         (async () => {
             do {
                 await flush();
                 const objects = Object.values(JSON.parse(JSON.parse(readFileSync(join(folder, SNAPSHOT_FILE), 'utf8')).payload));
                 const user = objects.find((entry) => entry.email === 'atomic-owner@example.test');
-                if (user) assert.ok(objects.some((entry) => entry.userId === user.id && entry.roleId), 'durable initial user must have a role');
+                const setupRecord = objects.find((entry) => entry.key === 'installation.setup');
+                if (user) {
+                    assert.ok(objects.some((entry) => entry.userId === user.id && entry.roleId), 'durable initial user must have a role');
+                    assert.equal(setupRecord?.value?.initialAdministratorId, user.id, 'setup completion commits with the owner');
+                } else assert.equal(setupRecord, undefined, 'setup never completes without its owner');
                 samples += 1;
             } while (!done);
         })(),
@@ -99,6 +106,34 @@ test('concurrent flush cannot publish an initial user without its administrator 
     assert.ok(samples);
     await resetStoreForTests();
     assert.deepEqual(await getUserRoles(registration.user.id), ['admin']);
+});
+
+test('a failure while staging the setup record leaves neither owner nor setup after restart', async () => {
+    for (const method of ['emailCode', 'adminPassword']) {
+        await fixture();
+        await ensureSeedData();
+        resetAuthLimitsForTests();
+        const password = configureAdministratorPassword();
+        setStoreFaultInjectorForTests(async (phase, name, args) => {
+            if (phase === 'before' && name === 'createSystemSetting' && args[0]?.key === 'installation.setup') throw new Error('injected setup write failure');
+        });
+        const attempt = method === 'emailCode' ? registerWithEmailCode('interrupted-owner@example.test') : claimAdministrator(password);
+        await assert.rejects(attempt);
+        // The staged commit fails closed: nothing more is served from this process.
+        await assert.rejects(getInstallationSetup(), { code: 'persistence_unavailable' });
+        await resetStoreForTests().catch(() => {});
+        const store = await getStore();
+        assert.equal((await getInstallationSetup()).complete, false, `${method}: setup stays unclaimed`);
+        assert.equal((await store.select('user')).totalCount, 0, `${method}: no ambiguous owner exists`);
+        // A later completion claims the installation normally.
+        resetAuthLimitsForTests();
+        const retried = method === 'emailCode' ? await registerWithEmailCode('interrupted-owner@example.test') : await claimAdministrator(password);
+        assert.equal(retried.initialAdministrator, true);
+        assert.equal((await getInstallationSetup()).initialAdministratorId, retried.user.id);
+        clearAdministratorPassword();
+        await resetStoreForTests();
+        await rm(folder, { recursive: true, force: true });
+    }
 });
 
 test('a corrupt snapshot fails startup without falling back to legacy data', async () => {

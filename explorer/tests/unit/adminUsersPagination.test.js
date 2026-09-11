@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { AdminSettingsPanel } from '../../web-components/components/admin-settings-panel/admin-settings-panel.js';
 import { AdminUsersSettings } from '../../web-components/components/admin-users-settings/admin-users-settings.js';
 
@@ -108,7 +109,7 @@ test('latest search wins over stale results and a failed search can be retried',
     assert.equal(panel.state.loaded, true);
 });
 
-test('saving an email-only account preserves empty optional profile fields while changing its role', async (t) => {
+test('saving a user row displays email read-only and omits email and password from the update payload', async (t) => {
     const previousDocument = globalThis.document;
     globalThis.document = { createElement: () => ({ dataset: {}, innerHTML: '' }) };
     t.after(() => {
@@ -118,10 +119,13 @@ test('saving an email-only account preserves empty optional profile fields while
     const child = new AdminUsersSettings({}, () => {});
     const user = { id: 'USER.2', email: 'member@example.test', username: '', name: '', roles: ['selfRegistered'] };
     const row = child.createUserRow(user);
+    assert.ok(row.innerHTML.includes(user.email), 'email is shown as read-only text');
+    assert.doesNotMatch(row.innerHTML, /data-field="email"|data-field="password"|password-toggle/);
     const fields = [...row.innerHTML.matchAll(/<input\b[^>]*>/g)].map(([tag]) => ({
         dataset: { field: tag.match(/data-field="([^"]+)"/)[1] },
         value: tag.match(/value="([^"]*)"/)?.[1] || '',
     }));
+    assert.equal(fields.length, 2);
     assert.equal(fields.find((input) => input.dataset.field === 'username').value, '');
     assert.equal(fields.find((input) => input.dataset.field === 'name').value, '');
     fields.push({ dataset: { field: 'roles' }, value: 'user' });
@@ -130,6 +134,15 @@ test('saving an email-only account preserves empty optional profile fields while
     child.dispatch = (event, detail) => mutations.push({ event, detail });
     await child.submitUserRowAction(row, 'save');
     assert.deepEqual(mutations, [{ event: 'admin-users-save', detail: {
-        userId: user.id, body: { username: '', email: user.email, name: '', roles: ['user'] },
+        userId: user.id, body: { username: '', name: '', roles: ['user'] },
     } }]);
+});
+
+test('the users template has no create-user form and no password column or toggle', async () => {
+    const htmlUrl = new URL('../../web-components/components/admin-users-settings/admin-users-settings.html', import.meta.url);
+    const jsUrl = new URL('../../web-components/components/admin-users-settings/admin-users-settings.js', import.meta.url);
+    const html = await fs.readFile(htmlUrl, 'utf8');
+    const source = await fs.readFile(jsUrl, 'utf8');
+    assert.doesNotMatch(html, /data-role="createForm"|createRolesSelect|Add User|type="password"/);
+    assert.doesNotMatch(source, /admin-users-create|submitCreateUser|togglePasswordVisibility|Password Reset|data-field="password"/);
 });

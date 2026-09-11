@@ -15,6 +15,8 @@ const runtimeRoot = process.env.PLOINKY_AGENT_RUNTIME_ROOT
     || fileURLToPath(new URL('../../../ploinky/Agent', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+// Generated per test process: the deployment administrator password is never a committed literal.
+const ADMIN_PASSWORD = `runtime-${randomBytes(18).toString('base64url')}`;
 
 async function freePort() {
     const server = net.createServer();
@@ -44,6 +46,7 @@ async function startRuntime(t, root, options = {}) {
         USERPERSISTO_RUNTIME_SECRET: 'runtime-test-bridge-secret',
         USERPERSISTO_OIDC_ISSUER: '',
         USERPERSISTO_DEV_BOOTSTRAP: '',
+        USERPERSISTO_ADMIN_PASSWORD: ADMIN_PASSWORD,
         USERPERSISTO_AUTH_METHODS: '',
         USERPERSISTO_SERVICE_PORT: String(servicePort),
         PORT: String(mcpPort),
@@ -108,11 +111,12 @@ async function registerOwner(runtime) {
         redirectUri: `http://127.0.0.1:${runtime.servicePort}/auth/callback`,
     }, { bridge: true });
     assert.equal(request.status, 200);
-    const registered = await post(runtime, '/service/auth/register', {
-        requestId: request.body.request.providerState,
-        email: 'runtime-owner@example.test', password: 'runtime-owner-password',
+    // The first owner claims setup through the configured administrator password.
+    const registered = await post(runtime, '/service/auth/admin/login', {
+        requestId: request.body.request.providerState, password: ADMIN_PASSWORD,
     });
-    assert.equal(registered.status, 201);
+    assert.equal(registered.status, 200, JSON.stringify(registered.body));
+    assert.equal(registered.body.initialAdministrator, true);
     const consumed = await post(runtime, '/service/runtime/sso-consume-code', {
         providerState: request.body.request.providerState, code: registered.body.code,
     }, { bridge: true });
@@ -149,18 +153,19 @@ test('MCP starts after the durable service and drains before HTTP/store; normal 
     const runtime = await startRuntime(t, root, { env });
     await waitFor(() => existsSync(env.RUNTIME_TEST_STATE), runtime);
     const started = JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8'));
-    assert.equal(started.setup.needsInitialAdmin, true);
+    assert.equal(started.setup.setupComplete, false);
+    assert.equal(started.setup.adminPassword, true);
     await registerOwner(runtime);
     assert.equal((await post(runtime, '/internal/tool', { name: 'userpersisto_profile_get' })).status, 401);
     runtime.child.kill('SIGTERM');
     assert.deepEqual(await runtime.exited, { code: 0, signal: null }, runtime.output());
-    assert.equal(JSON.parse(await readFile(`${env.RUNTIME_TEST_STATE}.drained`, 'utf8')).needsInitialAdmin, false);
+    assert.equal(JSON.parse(await readFile(`${env.RUNTIME_TEST_STATE}.drained`, 'utf8')).setupComplete, true);
     assert.equal(existsSync(join(root, 'persisto/.userpersisto.writer.json')), false);
     await rm(env.RUNTIME_TEST_STATE);
 
     const restarted = await startRuntime(t, root, { env });
     await waitFor(() => existsSync(env.RUNTIME_TEST_STATE), restarted);
-    assert.equal(JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8')).setup.needsInitialAdmin, false);
+    assert.equal(JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8')).setup.setupComplete, true);
     restarted.child.kill('SIGTERM');
     assert.deepEqual(await restarted.exited, { code: 0, signal: null }, restarted.output());
 });
@@ -190,7 +195,7 @@ test('an abruptly killed runtime is replaced by a new generation without losing 
         PLOINKY_AGENT_ENABLE_GENERATION: 'runtime-generation-after-box-restart',
     } });
     await waitFor(() => existsSync(env.RUNTIME_TEST_STATE), restarted);
-    assert.equal(JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8')).setup.needsInitialAdmin, false);
+    assert.equal(JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8')).setup.setupComplete, true);
     const lockOwner = JSON.parse(await readFile(join(root, 'persisto/.userpersisto.writer.json'), 'utf8'));
     assert.equal(lockOwner.instanceId, 'runtime-instance-after-box-restart');
     assert.equal(lockOwner.enableGeneration, 'runtime-generation-after-box-restart');
@@ -291,7 +296,9 @@ test('the bundled AgentServer advertises every schema and forwards signed valida
     };
     const profile = await successful(profileTool.name, {});
     assert.equal(profile.user.id, userId);
-    assert.equal(profile.user.email, 'runtime-owner@example.test');
+    assert.equal(profile.user.username, 'administrator');
+    assert.equal(profile.user.email, '');
+    assert.deepEqual(profile.authMethods, [{ type: 'adminPassword', name: 'Administrator password' }]);
     const updated = await successful('userpersisto_profile_update', { displayName: 'Runtime Owner' });
     assert.equal(updated.user.displayName, 'Runtime Owner');
     await successful('userpersisto_user_roles_update', { userId, roles: ['admin', 'user'] });

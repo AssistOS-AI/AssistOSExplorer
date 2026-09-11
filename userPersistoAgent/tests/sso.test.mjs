@@ -72,3 +72,19 @@ test('an invalid login request cannot run registration side effects', async () =
     );
     assert.equal(called, false);
 });
+
+test('credential revocation fences both a pending handoff and delayed issuance', async () => {
+    const { serializePersisted } = await import('../lib/serial.mjs');
+    const { commitStagedPersistence } = await import('../lib/store.mjs');
+    const { stageCredentialGenerationAdvance } = await import('../lib/auth/generation.mjs');
+    const user = await createUser({ email: 'revoked-handoff@example.test', roles: ['user'] });
+    const first = await sso.createLoginRequest({ redirectUri: 'http://localhost:8080/auth/callback' });
+    const issued = await sso.issueAuthCode({ providerState: first.providerState, userId: user.id, generation: 0 });
+    const delayed = await sso.createLoginRequest({ redirectUri: 'http://localhost:8080/auth/callback' });
+    await serializePersisted('users', () => commitStagedPersistence(() => stageCredentialGenerationAdvance(user.id)));
+    assert.equal(await sso.isAuthCodeLive({ providerState: first.providerState, code: issued.code }), false);
+    await assert.rejects(sso.consumeAuthCode({ providerState: first.providerState, code: issued.code }), { code: 'session_revoked' });
+    await assert.rejects(sso.issueAuthCode({ providerState: delayed.providerState, userId: user.id, generation: 0 }), { code: 'session_revoked' });
+    const fresh = await sso.issueAuthCode({ providerState: delayed.providerState, userId: user.id, generation: 1 });
+    assert.equal((await sso.consumeAuthCode({ providerState: delayed.providerState, code: fresh.code })).user.authGeneration, 1);
+});

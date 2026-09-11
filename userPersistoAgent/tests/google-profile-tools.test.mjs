@@ -40,13 +40,13 @@ test('profile projects a linked Google label without exposing identity or transa
 }));
 
 test('Google status and policy source require current administrative capability and never return a secret', async () => fixture(async () => {
-    const admin = await createUser({ email: 'admin@example.test', roles: ['admin'], password: 'existing-password' });
-    const secondAdmin = await createUser({ email: 'backup@example.test', roles: ['admin'], password: 'backup-password' });
+    const admin = await createUser({ email: 'admin@example.test', roles: ['admin'], emailVerified: true });
+    const secondAdmin = await createUser({ email: 'backup@example.test', roles: ['admin'], emailVerified: true });
     const user = await createUser({ email: 'user@example.test', roles: ['user'] });
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'test-client';
     process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'private-secret-never-project';
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = 'http://127.0.0.1:8080/base-agent-additional-server/userPersistoAgent/7000/service/auth/google/callback';
-    process.env.USERPERSISTO_AUTH_METHODS = 'password';
+    process.env.USERPERSISTO_AUTH_METHODS = 'emailCode';
     const status = await runTool('userpersisto_google_status', {}, { actorUserId: admin.id });
     assert.equal(status.secretPresent, true);
     assert.equal(status.enabled, false);
@@ -54,6 +54,12 @@ test('Google status and policy source require current administrative capability 
     assert.doesNotMatch(JSON.stringify(status), /private-secret-never-project/);
     const policy = await runTool('userpersisto_auth_policy_get', {}, { actorUserId: admin.id });
     assert.deepEqual(policy.environmentOverrides, ['USERPERSISTO_AUTH_METHODS']);
+    assert.equal(policy.registrationRole, 'selfRegistered');
+    assert.equal(Object.hasOwn(policy, 'defaultRegistrationRole'), false);
+    // A retired method named by the environment is ignored rather than re-enabled.
+    process.env.USERPERSISTO_AUTH_METHODS = 'password,emailCode';
+    assert.deepEqual((await runTool('userpersisto_auth_policy_get', {}, { actorUserId: admin.id })).enabledAuthMethods, ['emailCode']);
+    process.env.USERPERSISTO_AUTH_METHODS = 'emailCode';
     await assert.rejects(() => runTool('userpersisto_google_status', {}, { actorUserId: user.id, actorRoles: ['admin'] }), { code: 'admin_required' });
     await updateUser(admin.id, { status: 'blocked' }, { actorId: secondAdmin.id });
     await assert.rejects(() => runTool('userpersisto_google_status', {}, { actorUserId: admin.id, actorRoles: ['admin'] }), { code: 'invalid_session' });

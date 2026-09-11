@@ -1,10 +1,10 @@
 import crypto from 'node:crypto';
 import { credentialVersion } from './credentialVersion.mjs';
 import { getStore, flush } from '../store.mjs';
-import { getUserByEmail, getUserById, sanitizeUser } from '../users.mjs';
+import { authGenerationOf, getUserByEmail, getUserById, sanitizeUser } from '../users.mjs';
 import { recordAudit } from '../audit.mjs';
 import { assertBrowserOriginAllowed } from '../policy.mjs';
-import { serialize } from '../serial.mjs';
+import { serialize, serializePersisted } from '../serial.mjs';
 
 const CHALLENGE_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_RP_NAME = 'UserPersisto';
@@ -269,7 +269,7 @@ function verifySignature({ alg, publicKeyJwk, signature, signedData }) {
     return crypto.verify(algorithm, signedData, key, signature);
 }
 
-async function storeChallenge({ userId = '', email = '', type, rpId, origin }) {
+async function storeChallenge({ userId = '', email = '', type, rpId, origin, generation }) {
     const store = await getStore();
     const challenge = base64urlEncode(crypto.randomBytes(32));
     const challengeId = crypto.randomUUID();
@@ -280,7 +280,7 @@ async function storeChallenge({ userId = '', email = '', type, rpId, origin }) {
         codeHash: challenge,
         expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS).toISOString(),
         attempts: 0,
-        correlationId: JSON.stringify({ type, rpId, origin, email })
+        correlationId: JSON.stringify({ type, rpId, origin, email, ...(Number.isSafeInteger(generation) ? { generation } : {}) })
     });
     await flush();
     return { challengeId, challenge };
@@ -363,7 +363,9 @@ async function findCredentialById(credentialId, userId = '') {
     }
 }
 
-export async function registrationOptions({ userId, origin = '', rpId = '', rpName = DEFAULT_RP_NAME }) {
+// The registration challenge is created only after the caller consumed a fresh
+// operation grant and is bound to the account generation that grant carried.
+export async function registrationOptions({ userId, origin = '', rpId = '', rpName = DEFAULT_RP_NAME, generation }) {
     const user = await getUserById(userId);
     if (!user) {
         throw new Error(`Unknown user: ${userId}`);
@@ -378,7 +380,8 @@ export async function registrationOptions({ userId, origin = '', rpId = '', rpNa
         email: user.email,
         type: 'registration',
         rpId: resolvedRpId,
-        origin: normalizedOrigin
+        origin: normalizedOrigin,
+        generation: Number.isSafeInteger(generation) ? generation : authGenerationOf(user)
     });
     const existing = (await authMethodsForUser(user.id))
         .filter((method) => method.type === 'passkey')
@@ -395,8 +398,9 @@ export async function registrationOptions({ userId, origin = '', rpId = '', rpNa
             rp,
             user: {
                 id: base64urlEncode(Buffer.from(user.id)),
-                name: user.email,
-                displayName: user.displayName || user.email
+                // The configured-password administrator has no sign-in email.
+                name: user.email || user.username || user.id,
+                displayName: user.displayName || user.email || user.username || user.id
             },
             pubKeyCredParams: [
                 { type: 'public-key', alg: -7 },
@@ -407,13 +411,45 @@ export async function registrationOptions({ userId, origin = '', rpId = '', rpNa
             attestation: 'none',
             authenticatorSelection: {
                 residentKey: 'preferred',
-                userVerification: 'preferred'
+                userVerification: 'required'
             }
         }
     };
 }
 
+// Verification failures are client errors ({ ok: false }); only persistence
+// failures propagate. The consumed challenge cannot be reused either way.
 export async function registrationVerify({ userId, attestation, challengeKey, origin = '' }) {
+    let verified;
+    try {
+        verified = await verifyRegistration({ userId, attestation, challengeKey, origin });
+    } catch (error) {
+        if (error?.code === 'persistence_unavailable' || Number(error?.statusCode) >= 500) throw error;
+        await recordAudit({ actorId: userId, action: 'auth.passkey.register', target: userId, result: 'denied', reason: String(error?.message || 'invalid_registration').slice(0, 200) });
+        return { ok: false, reason: 'registration_failed' };
+    }
+    return serializePersisted('users', async () => {
+        const user = await getUserById(userId);
+        const { credentialId, payload, counter, generation } = verified;
+        if (!user || user.status !== 'active' || generation !== authGenerationOf(user)) {
+            return { ok: false, reason: 'registration_failed' };
+        }
+        // Recheck after taking the same exclusion as credential replacement;
+        // validation alone must not permit a stale enrollment to commit later.
+        const existing = await findCredentialById(credentialId);
+        if (existing && existing.userId !== userId) return { ok: false, reason: 'registration_failed' };
+        const key = `${userId}:passkey:${credentialId}`;
+        const store = await getStore();
+        const saved = existing
+            ? await store.updateAuthMethod(existing.id, payload)
+            : await store.createAuthMethod({ key, ...payload });
+        await recordAudit({ actorId: userId, action: 'auth.passkey.register', target: userId, result: 'ok', reason: credentialId });
+        await flush();
+        return { ok: true, credential: { key: saved.key, userId: saved.userId, credentialId, counter } };
+    });
+}
+
+async function verifyRegistration({ userId, attestation, challengeKey, origin }) {
     const credential = attestation || {};
     const response = credential.response || {};
     const { clientData, clientDataBuffer } = requireClientData(response, 'webauthn.create', undefined, undefined);
@@ -423,6 +459,11 @@ export async function registrationVerify({ userId, attestation, challengeKey, or
         type: 'registration',
         userId
     });
+    const user = await getUserById(userId);
+    if (!user || user.status !== 'active') throw new Error('Account is not active.');
+    if (Number.isSafeInteger(challengeRecord.metadata.generation) && challengeRecord.metadata.generation !== authGenerationOf(user)) {
+        throw new Error('Account credentials changed during registration.');
+    }
     const expectedOrigin = String(challengeRecord.metadata.origin || '');
     if (expectedOrigin) await assertBrowserOriginAllowed(expectedOrigin);
     if (origin && normalizeOrigin({ origin }) !== expectedOrigin) throw new Error('WebAuthn origin changed during registration.');
@@ -434,6 +475,10 @@ export async function registrationVerify({ userId, attestation, challengeKey, or
     if (!(authData.flags & 0x01)) {
         throw new Error('WebAuthn user presence was not verified.');
     }
+    // Passkeys are a primary sign-in and linking proof: require user verification.
+    if (!(authData.flags & 0x04)) {
+        throw new Error('WebAuthn user verification was not performed.');
+    }
     if (!authData.credential) {
         throw new Error('WebAuthn attested credential data is missing.');
     }
@@ -444,7 +489,6 @@ export async function registrationVerify({ userId, attestation, challengeKey, or
     if (existing && existing.userId !== userId) {
         throw new Error('Passkey credential is already registered.');
     }
-    const key = `${userId}:passkey:${credentialId}`;
     const payload = {
         userId,
         type: 'passkey',
@@ -458,13 +502,7 @@ export async function registrationVerify({ userId, attestation, challengeKey, or
         },
         enabled: true
     };
-    const store = await getStore();
-    const saved = existing
-        ? await store.updateAuthMethod(existing.id, payload)
-        : await store.createAuthMethod({ key, ...payload });
-    await recordAudit({ actorId: userId, action: 'auth.passkey.register', target: userId, result: 'ok', reason: credentialId });
-    await flush();
-    return { ok: true, credential: { key: saved.key, userId: saved.userId, credentialId, counter: authData.counter } };
+    return { credentialId, payload, counter: authData.counter, generation: authGenerationOf(user) };
 }
 
 export async function loginOptions({ email, origin = '', rpId = '', purpose = 'login' }) {
@@ -489,12 +527,13 @@ export async function loginOptions({ email, origin = '', rpId = '', purpose = 'l
         email: user.email,
         type: purpose,
         rpId: resolvedRpId,
-        origin: normalizedOrigin
+        origin: normalizedOrigin,
+        generation: authGenerationOf(user)
     });
     const publicKey = {
         challenge,
         timeout: CHALLENGE_TTL_MS,
-        userVerification: 'preferred',
+        userVerification: 'required',
         allowCredentials: methods.map((method) => ({
             type: 'public-key',
             id: method.credential.credentialId,
@@ -536,10 +575,21 @@ export async function loginVerify({ email, assertion, challengeKey, origin = '',
         if (!(authData.flags & 0x01)) {
             throw new Error('WebAuthn user presence was not verified.');
         }
+        if (!(authData.flags & 0x04)) {
+            throw new Error('WebAuthn user verification was not performed.');
+        }
         const clientHash = crypto.createHash('sha256').update(clientDataBuffer).digest();
         const signedData = Buffer.concat([authDataBuffer, clientHash]);
         let version;
-        await serialize(`webauthn-credential:${user.id}:${credentialId}`, async () => {
+        let authenticatedUser;
+        await serialize(`webauthn-credential:${user.id}:${credentialId}`, () => serializePersisted('users', async () => {
+            authenticatedUser = await getUserById(user.id);
+            if (!authenticatedUser || authenticatedUser.status !== 'active'
+                || authGenerationOf(authenticatedUser) !== authGenerationOf(user)
+                || (Number.isSafeInteger(challengeRecord.metadata.generation)
+                    && challengeRecord.metadata.generation !== authGenerationOf(authenticatedUser))) {
+                throw new Error('Account credentials changed during authentication.');
+            }
             const stored = await findCredentialById(credentialId, user.id);
             if (!stored || !stored.enabled) throw new Error('Passkey is not registered.');
             if (Number(stored.credential.counter || 0) > 0 && authData.counter <= Number(stored.credential.counter || 0)) {
@@ -556,10 +606,10 @@ export async function loginVerify({ email, assertion, challengeKey, origin = '',
             await (await getStore()).updateAuthMethod(stored.id, {
                 credential: { ...stored.credential, counter: authData.counter }
             });
-        });
-        await recordAudit({ actorId: user.id, action: 'auth.passkey.login', target: user.id, result: 'ok', reason: credentialId });
-        await flush();
-        return { ok: true, user: sanitizeUser(user), credentialKey: `${user.id}:passkey:${credentialId}`,
+            await recordAudit({ actorId: user.id, action: 'auth.passkey.login', target: user.id, result: 'ok', reason: credentialId });
+            await flush();
+        }));
+        return { ok: true, user: sanitizeUser(authenticatedUser), credentialKey: `${user.id}:passkey:${credentialId}`,
             ...(includeCredentialProof ? { credentialVersion: version } : {}) };
     } catch (error) {
         await recordAudit({ actorId: user.id, action: 'auth.passkey.login', target: user.id, result: 'denied', reason: error.message });
