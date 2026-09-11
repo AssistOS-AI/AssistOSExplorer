@@ -1168,7 +1168,7 @@
     },
     {
       "name": "set_skills_manifest_skill_enabled",
-      "description": "Enable or disable one skill from a repository entry in ploinky-skills-manifest.json.",
+      "description": "Enable or disable a named skillset as a batch, or one skill for repositories without skillsets.md.",
       "command": "tools/explorer_tool.sh",
       "cwd": "workspace",
       "env": {
@@ -1182,7 +1182,12 @@
           "type": "string"
         },
         "skill": {
-          "type": "string"
+          "type": "string",
+          "optional": true
+        },
+        "skillset": {
+          "type": "string",
+          "optional": true
         },
         "enabled": {
           "type": "boolean"

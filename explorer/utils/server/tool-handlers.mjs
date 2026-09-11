@@ -1,3 +1,4 @@
+import { skillsetMDParser } from './skillsetMDParser.mjs';
 import { createReadStream } from 'node:fs';
 import { EXPORT_LEDGER, skillTreeDigest, syncManagedSkillExports } from './managed-skill-exports.mjs';
 import { execFileSync, spawn } from 'node:child_process';
@@ -408,6 +409,14 @@ export function createToolHandlers({
 
   async function ensureSkillRepoCached(entry, { pull = false } = {}) {
     const repoName = normalizeRepoName(entry.name || deriveRepoNameFromUrl(entry.url));
+    const local = path.join(workspaceRoot, repoName);
+    const git = await fs.stat(path.join(local, '.git')).catch(() => null);
+    if (git && (git.isFile() || git.isDirectory())) {
+      const canonical = await fs.realpath(local);
+      const workspace = await fs.realpath(workspaceRoot);
+      if (!canonical.startsWith(`${workspace}${path.sep}`)) throw new Error('Skill repository escapes workspace');
+      return canonical;
+    }
     const repoPath = path.join(reposCacheRoot, repoName);
     await fs.mkdir(reposCacheRoot, { recursive: true });
     if (await repoPathExists(repoPath)) {
@@ -441,6 +450,14 @@ export function createToolHandlers({
     return skills.sort((left, right) => left.localeCompare(right));
   }
 
+  async function readRepoSkillsets(repoPath, availableSkills) {
+    const source = await fs.readFile(path.join(repoPath, 'skillsets.md'), 'utf8').catch(error => {
+      if (error.code === 'ENOENT') return '';
+      throw error;
+    });
+    return skillsetMDParser(source, availableSkills);
+  }
+
   async function ensureClaudeSymlink(folder) {
     const claudePath = path.join(folder, '.claude');
     const target = canonicalAgentsDir;
@@ -467,9 +484,14 @@ export function createToolHandlers({
         sources.push({ name: skill, path: path.join(repoPath, 'skills', skill), source: { url: entry.url, name: entry.name, branch: entry.branch || null } });
       }
     }
-    const result = syncManagedSkillExports({ folder, owner: 'manifest', sources });
+    const result = syncManagedSkillExports({ folder, owner: 'manifest', sources, mode: 'symlink' });
     await ensureClaudeSymlink(folder);
-    invalidateCachesForPath(path.join(folder, canonicalAgentsDir));
+    const skillsPath = path.join(folder, canonicalSkillsDir);
+    invalidateStructureIndexSubtree(skillsPath);
+    for (const name of [...result.installed, ...result.removed]) {
+      invalidateCachesForPath(path.join(skillsPath, name));
+    }
+    invalidateCachesForPath(skillsPath);
     return result;
   }
 
@@ -501,10 +523,10 @@ export function createToolHandlers({
       const record = Object.hasOwn(ledger.entries, entry.name) ? ledger.entries[entry.name] : null;
       let state = 'local';
       if (record) {
-        try { state = entry.isDirectory() && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
+        try { state = (record.kind === 'symlink' ? entry.isSymbolicLink() : entry.isDirectory()) && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
         catch { state = 'modified'; }
       }
-      const descriptor = entry.isDirectory() ? await fs.lstat(path.join(skillsDir, entry.name, 'SKILL.md')).catch(() => null) : null;
+      const descriptor = (entry.isDirectory() || entry.isSymbolicLink()) ? await fs.stat(path.join(skillsDir, entry.name, 'SKILL.md')).catch(() => null) : null;
       outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || null });
       if (state === 'modified' || (selected.has(entry.name) && state === 'local')) diagnostics.push({ name: entry.name, reason: `${state}-output-preserved` });
     }
@@ -518,7 +540,7 @@ export function createToolHandlers({
     for (const entry of entries) {
       let repoPath = path.join(reposCacheRoot, entry.name);
       let cacheError = '';
-      if (!await repoPathExists(repoPath)) {
+      {
         try {
           repoPath = await ensureSkillRepoCached(entry);
         } catch (error) {
@@ -532,6 +554,7 @@ export function createToolHandlers({
         repoPath,
         cached: exists,
         availableSkills,
+        skillsets: exists ? (await readRepoSkillsets(repoPath, availableSkills)).map(set => ({ ...set, enabled: set.skills.every(skill => entry.skills.includes(skill)), partial: set.skills.some(skill => entry.skills.includes(skill)) && !set.skills.every(skill => entry.skills.includes(skill)) })) : [],
         cacheError
       });
     }
@@ -1243,7 +1266,8 @@ export function createToolHandlers({
     }
 
     const entries = await readSkillsManifestEntries(manifestPath);
-    const nextEntry = { ...repoEntry, skills: availableSkills };
+    const definitions = await readRepoSkillsets(repoPath, availableSkills);
+    const nextEntry = { ...repoEntry, skills: definitions.length ? [...new Set(definitions.flatMap(set => set.skills))] : availableSkills };
     const existingIndex = entries.findIndex((entry) => entry.name === name || entry.url === url);
     const nextEntries = existingIndex === -1
       ? [...entries, nextEntry]
@@ -1264,7 +1288,7 @@ export function createToolHandlers({
     const data = parseArgs(SetSkillsManifestSkillEnabledArgsSchema, args, 'set_skills_manifest_skill_enabled');
     const { folder, manifestPath } = await skillsManifestPathForFolder(data.folderPath);
     const repoName = normalizeRepoName(data.repoName);
-    const skill = normalizeSkillName(data.skill);
+    if (typeof data.enabled !== 'boolean') throw new Error('enabled must be a boolean');
     const entries = await readSkillsManifestEntries(manifestPath);
     const index = entries.findIndex((entry) => entry.name === repoName);
     if (index === -1) {
@@ -1272,12 +1296,24 @@ export function createToolHandlers({
     }
     const repoPath = await ensureSkillRepoCached(entries[index]);
     const availableSkills = await listRepoSkillNames(repoPath);
-    if (!availableSkills.includes(skill)) {
-      throw new Error(`Skill '${skill}' is not available in repository '${repoName}'.`);
+    const definitions = await readRepoSkillsets(repoPath, availableSkills);
+    let members;
+    if (definitions.length) {
+      if (data.skill !== undefined) throw new Error('Use skillset controls for this repository.');
+      const set = definitions.find(set => set.name === data.skillset);
+      if (!set) throw new Error('Unknown skillset.');
+      members = set.skills;
+    } else {
+      if (data.skillset !== undefined) throw new Error('This repository has no skillsets.');
+      const skill = normalizeSkillName(data.skill);
+      if (!availableSkills.includes(skill)) throw new Error(`Skill '${skill}' is not available in repository '${repoName}'.`);
+      members = [skill];
     }
     const current = new Set(entries[index].skills || []);
-    if (data.enabled) current.add(skill);
-    else current.delete(skill);
+    for (const member of members) {
+      if (data.enabled) current.add(member);
+      else current.delete(member);
+    }
     const nextEntries = entries.map((entry, entryIndex) => entryIndex === index
       ? { ...entry, skills: Array.from(current).sort((left, right) => left.localeCompare(right)) }
       : entry);

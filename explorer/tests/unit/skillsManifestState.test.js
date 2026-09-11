@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { syncManagedSkillExports } from '../../utils/server/managed-skill-exports.mjs';
 import { createToolHandlers } from '../../utils/server/tool-handlers.mjs';
 
 async function writeFile(filePath, content) {
@@ -113,7 +114,7 @@ async function createAchillesCopilotBasicSkillsRepo(rootDir) {
   return { repoDir, skills };
 }
 
-function createHandlers(workspaceRoot) {
+function createHandlers(workspaceRoot, invalidated = []) {
   return createToolHandlers({
     fs,
     path,
@@ -127,7 +128,7 @@ function createHandlers(workspaceRoot) {
       return resolved;
     },
     workspaceRoot,
-    invalidateCachesForPath() {},
+    invalidateCachesForPath(value) { invalidated.push(value); },
     readFileWithCache() {},
     listDirectoryDetailedWithCache() {},
     indexDirectory() {},
@@ -335,6 +336,10 @@ test('edited owned descriptor and executable modes survive replacement and remov
     const handlers = createHandlers(workspaceRoot);
     const args = { folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' };
     await handlers.add_skills_manifest_repo(args);
+    // Recreate an owned copy from the previous export format before testing migration protection.
+    await fs.unlink(path.join(projectDir, '.agents', 'skills', 'alpha-skill'));
+    await fs.unlink(path.join(projectDir, '.agents', '.ploinky-skill-exports.json'));
+    syncManagedSkillExports({ folder: projectDir, owner: 'manifest', sources: [{ name: 'alpha-skill', path: path.join(repoDir, 'skills/alpha-skill') }] });
     const output = path.join(projectDir, '.agents', 'skills', 'alpha-skill', 'SKILL.md');
     const original = await fs.readFile(output, 'utf8');
     await fs.chmod(output, 0o755);
@@ -381,4 +386,56 @@ test('same-name exports from two repositories are rejected without a traversal-o
     assert.deepEqual(state.repositories.map((entry) => entry.name), ['first']);
     assert.equal(state.skillOutputs[0].source.name, 'first');
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('skillset controls batch symlink exports, prefer workspace sources and preserve local files', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skillsets-'));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    await writeFile(path.join(repoDir, 'skills', 'beta-skill', 'SKILL.md'), '---\nname: beta-skill\n---\n');
+    await writeFile(path.join(repoDir, 'skillsets.md'), '# reports\n## Description\nWrite reports\n## Skills\n- alpha-skill\n- beta-skill\n\n# reading\n## Description\nRead\n## Skills\n- alpha-skill\n');
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir);
+    const invalidated = [];
+    const handlers = createHandlers(workspaceRoot, invalidated);
+    const add = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: path.basename(repoDir) }));
+    assert.equal(add.repositories[0].repoPath, repoDir);
+    const alpha = path.join(projectDir, '.agents/skills/alpha-skill');
+    const beta = path.join(projectDir, '.agents/skills/beta-skill');
+    assert.equal((await fs.lstat(alpha)).isSymbolicLink(), true);
+    assert.equal(await fs.readlink(alpha), path.relative(path.dirname(alpha), path.join(repoDir, 'skills/alpha-skill')));
+    assert.equal(path.isAbsolute(await fs.readlink(alpha)), false);
+    await writeFile(path.join(repoDir, 'skills/alpha-skill/helper.txt'), 'live source');
+    assert.equal(await fs.readFile(path.join(alpha, 'helper.txt'), 'utf8'), 'live source');
+    const args = { folderPath: projectDir, repoName: path.basename(repoDir), skillset: 'reading', enabled: false };
+    invalidated.length = 0;
+    const off = parseJsonResponse(await handlers.set_skills_manifest_skill_enabled(args));
+    assert.equal(off.repositories[0].skillsets[0].partial, true);
+    assert.ok(invalidated.includes(alpha), 'removed skill cache is invalidated');
+    assert.ok(invalidated.includes(path.dirname(alpha)), 'skills listing cache is invalidated');
+    await assert.rejects(fs.lstat(alpha), { code: 'ENOENT' });
+    assert.equal((await fs.lstat(beta)).isSymbolicLink(), true);
+    await assert.rejects(handlers.set_skills_manifest_skill_enabled({ ...args, skillset: undefined, skill: 'beta-skill' }), /skillset controls/);
+    await handlers.set_skills_manifest_skill_enabled({ ...args, skillset: 'reports', enabled: true });
+    assert.equal((await fs.lstat(alpha)).isSymbolicLink(), true);
+    // A user replacement must survive removal of the repository registration.
+    await fs.unlink(beta);
+    await writeFile(path.join(beta, 'SKILL.md'), 'local replacement');
+    await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: path.basename(repoDir) });
+    await assert.rejects(fs.lstat(alpha), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(beta, 'SKILL.md'), 'utf8'), 'local replacement');
+    assert.equal(await fs.readFile(path.join(repoDir, 'skills/alpha-skill/helper.txt'), 'utf8'), 'live source');
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+
+test('published MCP schema admits a skillset toggle without an individual skill', async () => {
+  const config = JSON.parse(await fs.readFile(new URL('../../mcp-config.json', import.meta.url), 'utf8'));
+  const tool = config.tools.find(tool => tool.name === 'set_skills_manifest_skill_enabled');
+  assert.equal(tool.inputSchema.skill.optional, true);
+  assert.equal(tool.inputSchema.skillset.type, 'string');
+  assert.equal(tool.inputSchema.skillset.optional, true);
+  assert.equal(tool.inputSchema.enabled.type, 'boolean');
 });

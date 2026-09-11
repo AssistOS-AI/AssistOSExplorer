@@ -326,8 +326,13 @@ export async function executeFileExpMenuItem(fileExp, item, context = null, opti
         context: effectiveContext,
         plugin,
         host: {
-            refreshDirectory: async () => {
-                await fileExp.loadDirectory(fileExp.state.path);
+            refreshDirectory: async ({ invalidateDescendants = false } = {}) => {
+                if (invalidateDescendants) {
+                    for (const cachedPath of fileExp.caches.dirListing.keys()) {
+                        fileExp.caches.dirListing.invalidate(fileExp, cachedPath);
+                    }
+                }
+                await fileExp.refresh();
             },
             showStatus: (message, isError = false) => {
                 fileExp.showStatus(message, isError);

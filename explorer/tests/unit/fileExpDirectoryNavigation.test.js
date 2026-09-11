@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { FileExpEntries } from '../../web-components/components/file-exp-entries/file-exp-entries.js';
 import { createFileExpCaches } from '../../web-components/pages/file-exp/file-exp-caches.js';
 import { FileExp } from '../../web-components/pages/file-exp/file-exp.js';
-import { loadDirectory } from '../../web-components/pages/file-exp/file-exp-navigation-controller.js';
+import { loadDirectory, refreshDirectory, loadStateFromURL } from '../../web-components/pages/file-exp/file-exp-navigation-controller.js';
 import { normalizePath, parentPath } from '../../web-components/pages/file-exp/file-exp-utils.js';
 
 test('tree directory navigation does not acquire the global loader', async () => {
@@ -216,3 +216,83 @@ test('child revalidation delegates a local tree patch without rendering the host
     assert.equal(updated.entries[0].name, 'fresh');
     assert.equal(renders, 0);
 });
+
+
+test('refresh replaces expanded child listings after skills are enabled or disabled', async () => {
+    const child = '/.achilles-cli/.agents/skills';
+    const caches = createFileExpCaches();
+    let diskEntries = [{ name: 'enabled-skill', type: 'directory' }];
+    const host = {
+        state: { path: '/', treeRootPath: '/', directoryViewMode: 'tree' },
+        treeViewState: { expandedPaths: new Set([child]), childrenCache: new Map([[child, []]]), loadingPaths: new Set() },
+        caches, normalizePath,
+        withLoader: operation => operation(),
+        sortEntries: entries => entries,
+        getCachedDirectoryContent: path => caches.dirListing.read(host, path),
+        loadDirectoryContent: async path => path === child ? diskEntries : [],
+        setEntries: async () => {}, renderEntries() {},
+        getEntriesPresenter: () => presenter
+    };
+    const presenter = {
+        getHostPresenter: () => host,
+        getTreeViewState: () => host.treeViewState,
+        patchRows() {},
+        revealTreeDirectory: FileExpEntries.prototype.revealTreeDirectory
+    };
+    caches.dirListing.set(host, child, []);
+    await refreshDirectory(host);
+    assert.deepEqual(host.treeViewState.childrenCache.get(child), diskEntries);
+    assert.ok(host.treeViewState.expandedPaths.has(child));
+    diskEntries = [];
+    await refreshDirectory(host);
+    assert.deepEqual(host.treeViewState.childrenCache.get(child), []);
+    assert.ok(host.treeViewState.expandedPaths.has(child));
+});
+
+
+for (const target of ['/project/.agents/skills', '/project/.agents/skills/SKILL.md']) {
+    test(`page reload keeps workspace siblings and reveals ancestors for ${target}`, async () => {
+        const previousWindow = globalThis.window;
+        globalThis.window = { location: { hash: '#file-exp' + target } };
+        try {
+            const listings = new Map([
+                ['/', [{ name: 'project', type: 'directory' }, { name: 'other-project', type: 'directory' }]],
+                ['/project', [{ name: '.agents', type: 'directory' }]],
+                ['/project/.agents', [{ name: 'skills', type: 'directory' }]],
+                ['/project/.agents/skills', [{ name: 'SKILL.md', type: 'file' }]]
+            ]);
+            let openedFile;
+            const host = {
+                state: { path: '/', directoryViewMode: 'tree', treeRootPath: '/' },
+                treeViewState: { expandedPaths: new Set(), childrenCache: new Map(), loadingPaths: new Set() },
+                normalizePath, parentPath, caches: createFileExpCaches(),
+                sortEntries: entries => entries,
+                loadDirectoryContent: async path => listings.get(path) || [],
+                updateNavigationLocation(path) { this.state.path = path; },
+                setEntries: async entries => { host.state.entries = entries; },
+                renderBreadcrumbs() {}, renderEntries() {},
+                getEntriesPresenter: () => presenter,
+                loadDirectory: path => loadDirectory(host, path),
+                openFile: async path => { openedFile = path; },
+                showStatus(message) { throw new Error(message); }
+            };
+            const presenter = {
+                getHostPresenter: () => host,
+                getTreeViewState: () => host.treeViewState,
+                patchRows() {},
+                revealTreeDirectory: FileExpEntries.prototype.revealTreeDirectory
+            };
+            await loadStateFromURL(host);
+            assert.equal(host.state.treeRootPath, '/');
+            assert.deepEqual(host.state.entries, listings.get('/'));
+            for (const path of ['/project', '/project/.agents', '/project/.agents/skills']) {
+                assert.ok(host.treeViewState.expandedPaths.has(path), path);
+                assert.deepEqual(host.treeViewState.childrenCache.get(path), listings.get(path));
+            }
+            if (target.endsWith('.md')) assert.equal(openedFile, target);
+        } finally {
+            if (previousWindow === undefined) delete globalThis.window;
+            else globalThis.window = previousWindow;
+        }
+    });
+}

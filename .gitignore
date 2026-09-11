@@ -25,16 +25,6 @@
 *.DS_Store
 # >>> ploinky default-skills >>>
 .claude
-.agents/skills/achilles-skill-builder/
-.agents/skills/achilles-specs/
-.agents/skills/antropic-skill-build/
-.agents/skills/article-build/
-.agents/skills/create-akus/
-.agents/skills/cskill-build/
-.agents/skills/dgskill-build/
-.agents/skills/gamp-specs/
 .agents/skills/manage-ploinky-agents/
-.agents/skills/oskill-build/
-.agents/skills/review-specs/
 .agents/skills/webskel-ui-engineering/
 # <<< ploinky default-skills <<<

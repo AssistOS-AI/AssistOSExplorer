@@ -279,7 +279,7 @@ export function buildToolDefinitions(zodToJsonSchema, schemas) {
     },
     {
       name: 'set_skills_manifest_skill_enabled',
-      description: 'Enable or disable one skill from a repository entry in ploinky-skills-manifest.json.',
+      description: 'Enable or disable a named skillset as a batch, or one skill for repositories without skillsets.md.',
       inputSchema: zodToJsonSchema(SetSkillsManifestSkillEnabledArgsSchema)
     },
     {
