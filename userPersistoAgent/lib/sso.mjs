@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { getStore, flush } from './store.mjs';
+import { getStore, flush, commitStagedPersistence } from './store.mjs';
+import { withPersistenceScope } from './persistence-scope.mjs';
 import { getUserById, getUserRoles } from './users.mjs';
 import { getUserCapabilities } from './authorization.mjs';
 import { recordAudit } from './audit.mjs';
@@ -32,32 +33,39 @@ export async function createLoginRequest({ redirectUri, clientId = 'explorer' })
 
 export function issueAuthCode({ providerState, userId = '', resolveUserId = null }) {
     const normalizedState = String(providerState || '');
-    return serialize(`sso-request:${normalizedState}`, async () => {
+    return serialize(`sso-request:${normalizedState}`, () => issueAuthCodeLocked({ providerState: normalizedState, userId, resolveUserId }));
+}
+
+export async function getLoginRequest(providerState) {
+    const store = await getStore();
+    const request = await store.getSsoLoginRequestByProviderState(String(providerState || ''));
+    if (!request) throw ssoError('login_request_invalid', 'Unknown or expired login request');
+    if (Date.parse(request.expiresAt) <= Date.now()) throw ssoError('login_request_expired', 'Login request expired');
+    await assertRedirectUriAllowed(request.redirectUri);
+    return request;
+}
+
+// Trusted domain callers must hold sso-request:<providerState> before entering.
+export async function issueAuthCodeLocked({ providerState, userId = '', resolveUserId = null }) {
+    const normalizedState = String(providerState || '');
+    await getLoginRequest(normalizedState);
+    const resolvedUserId = typeof resolveUserId === 'function' ? await resolveUserId() : userId;
+    return withPersistenceScope(async () => {
         const store = await getStore();
-        if (!(await store.hasSsoLoginRequest(normalizedState))) {
-            throw ssoError('login_request_invalid', 'Unknown or expired login request');
-        }
-        const request = await store.getSsoLoginRequestByProviderState(normalizedState);
-        if (new Date(request.expiresAt).getTime() < Date.now()) {
-            await store.deleteSsoLoginRequest(request.id);
-            await flush();
-            throw ssoError('login_request_expired', 'Login request expired');
-        }
-        const resolvedUserId = typeof resolveUserId === 'function'
-            ? await resolveUserId()
-            : userId;
+        const request = await getLoginRequest(normalizedState);
         await describeUser(resolvedUserId);
-        const code = randomUUID();
-        await store.createSsoAuthCode({
-            code,
-            providerState: normalizedState,
-            userId: resolvedUserId,
-            expiresAt: new Date(Date.now() + CODE_TTL_MS).toISOString(),
-            consumedAt: ''
+        return commitStagedPersistence(async () => {
+            const code = randomUUID();
+            await store.createSsoAuthCode({
+                code,
+                providerState: normalizedState,
+                userId: resolvedUserId,
+                expiresAt: new Date(Date.now() + CODE_TTL_MS).toISOString(),
+                consumedAt: ''
+            });
+            await store.deleteSsoLoginRequest(request.id);
+            return { code, redirectUri: request.redirectUri };
         });
-        await store.deleteSsoLoginRequest(request.id);
-        await flush();
-        return { code, redirectUri: request.redirectUri };
     });
 }
 

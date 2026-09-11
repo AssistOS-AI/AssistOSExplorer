@@ -54,7 +54,7 @@
         {
             "name": "userpersisto_user_list",
             "title": "List users",
-            "description": "Admin: list UserPersisto users.",
+            "description": "Admin: search all users before pagination, optionally exclude an exact sole role and return global sole-role counts.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -63,7 +63,10 @@
                 "type": "object",
                 "properties": {
                     "start": { "type": "integer", "minimum": 0 },
-                    "pageSize": { "type": "integer", "minimum": 1 }
+                    "pageSize": { "type": "integer", "minimum": 1, "maximum": 500 },
+                    "search": { "type": "string", "maxLength": 200 },
+                    "excludeOnlyRole": { "type": "string", "maxLength": 128 },
+                    "includeRoleCounts": { "type": "boolean" }
                 },
                 "additionalProperties": false
             },
@@ -569,7 +572,7 @@
                         "type": "array",
                         "minItems": 1,
                         "uniqueItems": true,
-                        "items": { "type": "string", "enum": ["password", "emailCode", "passkey", "totp"] }
+                        "items": { "type": "string", "enum": ["password", "emailCode", "passkey", "totp", "google"] }
                     },
                     "selfRegistrationEnabled": { "type": "boolean" },
                     "defaultRegistrationRole": { "type": "string", "minLength": 1 },
@@ -580,6 +583,18 @@
             },
             "tags": ["admin"],
             "env": { "TOOL_NAME": "userpersisto_auth_policy_set" }
+        },
+        {
+            "name": "userpersisto_google_status",
+            "title": "Get Google sign-in readiness",
+            "description": "Admin: read Google policy and configuration readiness, exact callback, missing setting names and secret presence without retrieving secret values.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_google_status" }
         },
         {
             "name": "userpersisto_billing_checkout_create",

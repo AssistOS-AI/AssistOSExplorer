@@ -8,6 +8,32 @@ import { withPersistenceScope } from './persistence-scope.mjs';
 const require = createRequire(import.meta.url);
 
 let storePromise = null;
+let activeDurable = null;
+let faultInjector = null;
+
+export function setStoreFaultInjectorForTests(injector = null) {
+    faultInjector = injector;
+}
+
+export function poisonStore(cause) {
+    if (!activeDurable) throw cause;
+    return activeDurable.poison(cause);
+}
+
+// This is a fail-closed staging boundary, not rollback. Call only after domain
+// validation while holding users/domain exclusion. Helpers inside must not save.
+export async function commitStagedPersistence(operation) {
+    return withPersistenceScope(async () => {
+        await getStore();
+        try {
+            const result = await operation();
+            await flush();
+            return result;
+        } catch (cause) {
+            throw poisonStore(cause);
+        }
+    });
+}
 
 function ensurePersistoGlobals() {
     if (!globalThis.$$) {
@@ -33,6 +59,7 @@ async function initialise() {
     ensurePersistoGlobals();
     const { initialisePersisto } = require('../vendor/Persisto/src/persistence/Persisto.cjs');
     const durable = await createDurableStorage(folder);
+    activeDurable = durable;
     try {
         const persisto = await initialisePersisto(durable.storage, { smartLog: async () => {} });
         await ensureSchema(persisto);
@@ -43,9 +70,12 @@ async function initialise() {
             get(target, name) {
                 if (typeof target[name] !== 'function') return target[name];
                 return (...args) => withPersistenceScope(() => {
-                    const operation = tail.then(() => {
+                    const operation = tail.then(async () => {
                         if (name !== 'shutDown') durable.check();
-                        return target[name](...args);
+                        await faultInjector?.('before', String(name), args);
+                        const result = await target[name](...args);
+                        await faultInjector?.('after', String(name), args);
+                        return result;
                     });
                     tail = operation.catch(() => {});
                     return operation;
@@ -78,6 +108,8 @@ export async function resetStoreForTests() {
         }
     } finally {
         storePromise = null;
+        activeDurable = null;
+        faultInjector = null;
         resetSerialForTests();
     }
 }

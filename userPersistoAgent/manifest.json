@@ -1,115 +1,136 @@
 {
-    "name": "userPersistoAgent",
-    "description": "Authority for users, roles, capabilities, auth strategies, credits, subscriptions, Stripe billing, and audit. Uses embedded Persisto as its durable store and acts as the workspace SSO provider.",
-    "container": "docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669",
-    "ssoProvider": true,
-    "agent": "exec sh /code/scripts/start.sh",
-    "readiness": {
-        "protocol": "mcp"
-    },
-    "enable": [
-        "emailAgent"
-    ],
-    "volumes": {
-        ".data/userPersistoAgent": "/data"
-    },
-    "routerAccess": {
-        "httpRoutes": [
-            {
-                "path": "/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/*",
-                "access": "authenticated"
-            },
-            {
-                "path": "/base-agent-additional-server/userPersistoAgent/7000/service/oidc/*",
-                "access": "public",
-                "publicProtocol": {
-                    "methods": ["GET", "HEAD", "POST", "OPTIONS"],
-                    "allowLoopbackRedirects": true,
-                    "allowCors": true
-                }
-            },
-            {
-                "path": "/base-agent-additional-server/userPersistoAgent/7000/service/auth/*",
-                "access": "guest"
-            },
-            {
-                "path": "/base-agent-additional-server/userPersistoAgent/7000/service/runtime/*",
-                "access": "guest"
-            },
-            {
-                "path": "/base-agent-additional-server/userPersistoAgent/7000/service/billing/stripe/webhook",
-                "access": "public",
-                "publicProtocol": { "methods": ["POST"] }
-            }
-        ]
-    },
-    "ideSettings": [
-        {
-            "key": "userpersisto-settings",
-            "label": "My Account",
-            "scope": "workspace",
-            "pluginKey": "userPersistoAgent/userpersisto-settings",
-            "settingsComponent": "userpersisto-settings",
-            "adminOnly": false
+  "name": "userPersistoAgent",
+  "description": "Authority for users, roles, capabilities, auth strategies, credits, subscriptions, Stripe billing, and audit. Uses embedded Persisto as its durable store and acts as the workspace SSO provider.",
+  "container": "docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669",
+  "ssoProvider": true,
+  "agent": "exec sh /code/scripts/start.sh",
+  "readiness": {
+    "protocol": "mcp"
+  },
+  "enable": [
+    "emailAgent"
+  ],
+  "volumes": {
+    ".data/userPersistoAgent": "/data"
+  },
+  "routerAccess": {
+    "httpRoutes": [
+      {
+        "path": "/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/*",
+        "access": "authenticated"
+      },
+      {
+        "path": "/base-agent-additional-server/userPersistoAgent/7000/service/oidc/*",
+        "access": "public",
+        "publicProtocol": {
+          "methods": [
+            "GET",
+            "HEAD",
+            "POST",
+            "OPTIONS"
+          ],
+          "allowLoopbackRedirects": true,
+          "allowCors": true
         }
-    ],
-    "profiles": {
-        "default": {
-            "install": "sh /code/scripts/installPersisto.sh",
-            "env": {
-                "PERSISTENCE_FOLDER": {
-                    "required": false,
-                    "default": "/data/persisto"
-                },
-                "USERPERSISTO_OIDC_ISSUER": {
-                    "required": false,
-                    "default": ""
-                },
-                "USERPERSISTO_SETTINGS_KEY": {
-                    "generatedSecret": true
-                },
-                "USERPERSISTO_RUNTIME_SECRET": {
-                    "sharedGeneratedSecret": true
-                },
-                "USERPERSISTO_DEV_BOOTSTRAP": {
-                    "required": false,
-                    "default": ""
-                },
-                "USERPERSISTO_AUTH_METHODS": {
-                    "required": false,
-                    "default": ""
-                },
-                "USERPERSISTO_ALLOWED_REDIRECT_ORIGINS": {
-                    "required": false,
-                    "default": ""
-                },
-                "USERPERSISTO_DEFAULT_REGISTRATION_ROLE": {
-                    "required": false
-                },
-                "USERPERSISTO_SELF_REGISTRATION_ENABLED": {
-                    "required": false
-                },
-                "PORT": {
-                    "required": false,
-                    "default": "7001"
-                },
-                "USERPERSISTO_SERVICE_PORT": {
-                    "required": false,
-                    "default": "7000"
-                },
-                "STRIPE_PUBLISHABLE_KEY": {
-                    "required": false,
-                    "default": ""
-                },
-                "PLOINKY_ROUTER_PORT": {
-                    "required": false
-                }
-            }
-        },
-        "dev": {
-            "env": {
-                "USERPERSISTO_DEV_BOOTSTRAP": ""
-            }
+      },
+      {
+        "path": "/base-agent-additional-server/userPersistoAgent/7000/service/auth/*",
+        "access": "guest"
+      },
+      {
+        "path": "/base-agent-additional-server/userPersistoAgent/7000/service/runtime/*",
+        "access": "guest"
+      },
+      {
+        "path": "/base-agent-additional-server/userPersistoAgent/7000/service/billing/stripe/webhook",
+        "access": "public",
+        "publicProtocol": {
+          "methods": [
+            "POST"
+          ]
         }
+      }
+    ]
+  },
+  "ideSettings": [
+    {
+      "key": "userpersisto-settings",
+      "label": "My Account",
+      "scope": "workspace",
+      "pluginKey": "userPersistoAgent/userpersisto-settings",
+      "settingsComponent": "userpersisto-settings",
+      "adminOnly": false
     }
+  ],
+  "profiles": {
+    "default": {
+      "install": "sh /code/scripts/installPersisto.sh",
+      "env": {
+        "PERSISTENCE_FOLDER": {
+          "required": false,
+          "default": "/data/persisto"
+        },
+        "USERPERSISTO_OIDC_ISSUER": {
+          "required": false,
+          "default": ""
+        },
+        "USERPERSISTO_SETTINGS_KEY": {
+          "generatedSecret": true
+        },
+        "USERPERSISTO_RUNTIME_SECRET": {
+          "sharedGeneratedSecret": true
+        },
+        "USERPERSISTO_DEV_BOOTSTRAP": {
+          "required": false,
+          "default": ""
+        },
+        "USERPERSISTO_AUTH_METHODS": {
+          "required": false,
+          "default": ""
+        },
+        "USERPERSISTO_ALLOWED_REDIRECT_ORIGINS": {
+          "required": false,
+          "default": ""
+        },
+        "USERPERSISTO_DEFAULT_REGISTRATION_ROLE": {
+          "required": false
+        },
+        "USERPERSISTO_SELF_REGISTRATION_ENABLED": {
+          "required": false
+        },
+        "PORT": {
+          "required": false,
+          "default": "7001"
+        },
+        "USERPERSISTO_SERVICE_PORT": {
+          "required": false,
+          "default": "7000"
+        },
+        "STRIPE_PUBLISHABLE_KEY": {
+          "required": false,
+          "default": ""
+        },
+        "PLOINKY_ROUTER_PORT": {
+          "required": false
+        },
+        "USERPERSISTO_GOOGLE_CLIENT_ID": {
+          "required": false,
+          "default": ""
+        },
+        "USERPERSISTO_GOOGLE_CLIENT_SECRET": {
+          "required": false,
+          "default": ""
+        },
+        "USERPERSISTO_GOOGLE_REDIRECT_URI": {
+          "required": false,
+          "default": ""
+        }
+      }
+    },
+    "dev": {
+      "env": {
+        "USERPERSISTO_DEV_BOOTSTRAP": ""
+      }
+    }
+  }
 }

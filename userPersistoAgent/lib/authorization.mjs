@@ -1,6 +1,7 @@
 import { getStore } from './store.mjs';
 import { getUserById, getUserRoles } from './users.mjs';
 import { getEnabledAuthMethods } from './auth/methods.mjs';
+import { GOOGLE_ISSUER } from './externalIdentities.mjs';
 
 export async function getUserCapabilities(userId) {
     const store = await getStore();
@@ -78,6 +79,10 @@ export async function getProfile(userId) {
     if (user.passwordHash) authMethods.push({ type: 'password', name: 'Password' });
     if (passkeyCount) authMethods.push({ type: 'passkey', name: 'Passkey' });
     if (totpConfigured) authMethods.push({ type: 'totp', name: 'Authenticator app' });
+    const externalIdentities = await store.getExternalIdentitiesObjectsByUserId(userId) || [];
+    if (externalIdentities.some((identity) => identity.issuer === GOOGLE_ISSUER)) {
+        authMethods.push({ type: 'google', name: 'Google' });
+    }
     const { passwordHash, loginAttempts, lastLoginAttempt, ...safeUser } = user;
     return {
         user: safeUser,

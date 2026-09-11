@@ -52,6 +52,10 @@ class Element {
         }
     }
     prepend(child) { child.parentElement = this; this.children.unshift(child); }
+    remove() {
+        if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+        this.parentElement = null;
+    }
     replaceChildren(...children) {
         this.children.forEach((child) => { child.parentElement = null; });
         this.children = [];
@@ -232,6 +236,32 @@ test('registration-disabled and password-disabled installations expose no create
         assert.equal(root.querySelector('select'), null, 'a disabled default is not added as another method');
         assertLabels(root);
     }
+});
+
+test('Google-only registration has no password form and never sends account or role overrides', async () => {
+    const { root, calls, redirects } = await fixture({ methods: ['google'], post: () => response({ authorizationUrl: 'https://accounts.google.com/authorize' }) });
+    assert.equal(root.querySelector('input'), null);
+    await button(root, 'Create account').fire('click');
+    assert.equal(root.querySelector('input'), null);
+    await button(root, 'Continue with Google').fire('click');
+    assert.deepEqual(calls[0].body, { requestId, state });
+    assert.equal(calls[0].path, 'google/start');
+    assert.deepEqual(redirects, ['https://accounts.google.com/authorize']);
+});
+
+test('no effective methods cannot fall back to password and a detached Google response cannot redirect', async () => {
+    const empty = await fixture({ methods: [] });
+    assert.match(empty.root.textContent, /No sign-in methods/);
+    assert.equal(empty.root.querySelector('form'), null);
+    let release;
+    const pending = new Promise((resolve) => { release = resolve; });
+    const { root, redirects } = await fixture({ methods: ['password', 'google'], post: () => pending });
+    const click = button(root, 'Continue with Google').fire('click');
+    await settle();
+    await button(root, 'Create account').fire('click');
+    release(response({ authorizationUrl: 'https://accounts.google.com/authorize' }));
+    await click;
+    assert.deepEqual(redirects, []);
 });
 
 test('method selection honors an enabled default and posts password and authenticator credentials without changing SSO state', async () => {

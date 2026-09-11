@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { getStore, flush } from './store.mjs';
 
-export async function recordAudit({ actorId = 'system', action, target = '', result = 'ok', reason = '' }) {
+export async function recordAudit({ actorId = 'system', action, target = '', result = 'ok', reason = '' }, { save = true } = {}) {
     if (!action) {
         throw new Error('audit action is required');
     }
@@ -13,8 +13,8 @@ export async function recordAudit({ actorId = 'system', action, target = '', res
         target: String(target),
         result: String(result),
         reason: String(reason),
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
     });
-    await flush();
+    if (save) await flush();
     return event;
 }

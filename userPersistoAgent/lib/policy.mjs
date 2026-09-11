@@ -1,7 +1,8 @@
 import { getStore, flush } from './store.mjs';
 import { serialize } from './serial.mjs';
+import { withPersistenceScope } from './persistence-scope.mjs';
 
-const AUTH_METHODS = new Set(['password', 'emailCode', 'passkey', 'totp']);
+const AUTH_METHODS = new Set(['password', 'emailCode', 'passkey', 'totp', 'google']);
 const DEFAULT_POLICY = Object.freeze({
     enabledAuthMethods: ['password'],
     selfRegistrationEnabled: true,
@@ -102,11 +103,12 @@ export async function getAuthPolicy() {
 }
 
 export async function updateAuthPolicy(patch = {}, { actorId = 'system' } = {}) {
-    return serialize('auth.policy', async () => {
+    return serialize('auth.policy', () => withPersistenceScope(async () => {
         const store = await getStore();
         const current = await getAuthPolicy();
         const next = normalizePolicy({ ...current, ...patch });
         await assertRegistrationRoleAllowed(next.defaultRegistrationRole, store);
+        if (next.enabledAuthMethods.includes('google')) await assertAdministratorMethodRemains(store, next);
         const existing = await store.getSystemSettingByKey('auth.policy');
         const record = {
             key: 'auth.policy',
@@ -121,7 +123,36 @@ export async function updateAuthPolicy(patch = {}, { actorId = 'system' } = {}) 
         }
         await flush();
         return next;
-    });
+    }));
+}
+
+async function assertAdministratorMethodRemains(store, policy) {
+    const { getGoogleStatus } = await import('./auth/google.mjs');
+    const googleConfigured = (await getGoogleStatus()).configured;
+    let hasAdministrator = false;
+    for (let start = 0; ; start += 100) {
+        const page = await store.select('user', { status: 'active' }, { start, pageSize: 100 });
+        for (const user of page.objects) {
+            const roles = await store.getUserRolesObjectsByUserId(user.id) || [];
+            let administrator = false;
+            for (const link of roles) {
+                const role = await store.getRole(link.roleId);
+                const permissions = role ? await store.getRolePermsObjectsByRoleId(role.id) || [] : [];
+                for (const permission of permissions) {
+                    if ((await store.getPermission(permission.permissionId))?.capability === 'admin.agentSettings.manage') administrator = true;
+                }
+            }
+            if (!administrator) continue;
+            hasAdministrator = true;
+            if (policy.enabledAuthMethods.includes('password') && user.passwordHash) return;
+            if (policy.enabledAuthMethods.includes('emailCode')) return;
+            const methods = await store.getAuthMethodsObjectsByUserId(user.id) || [];
+            if (methods.some((method) => method.enabled && ['passkey', 'totp'].includes(method.type) && policy.enabledAuthMethods.includes(method.type))) return;
+            if (googleConfigured && (await store.getExternalIdentitiesObjectsByUserId(user.id) || []).some((binding) => binding.issuer === 'https://accounts.google.com')) return;
+        }
+        if (page.objects.length < 100) break;
+    }
+    if (hasAdministrator) throw policyError('administrator_auth_method_required', 'Keep an enrolled administrator sign-in method enabled before saving this policy.');
 }
 
 export async function isAuthMethodEnabled(method) {

@@ -24,6 +24,8 @@ async function callUserPersistoTool(name, args = {}) {
     if (parsed?.ok === false || parsed?.error) {
         const error = new Error(parsed.error || `${name} failed.`);
         error.payload = parsed;
+        error.code = parsed.code;
+        error.statusCode = parsed.statusCode;
         throw error;
     }
     return parsed;
@@ -40,6 +42,12 @@ function escapeHtml(value) {
 
 function settingValue(settings, key) {
     return String(settings?.[key] || "");
+}
+
+function authorizationFailure(error) {
+    return [401, 403].includes(Number(error?.statusCode || error?.status))
+        || ["authentication_required", "invalid_session", "admin_required"].includes(error?.code || error?.payload?.code)
+        || /admin access is required|authentication required/i.test(String(error?.message || ""));
 }
 
 function userRoles(user = {}) {
@@ -68,6 +76,7 @@ export class UserpersistoSettings {
             usersStart: 0,
             usersPageSize: 100,
             usersTotal: 0,
+            selfRegisteredCount: 0,
             usersLoading: false,
             authProfile: null,
             applications: [],
@@ -100,6 +109,7 @@ export class UserpersistoSettings {
         this.panelTabs = Array.from(this.element.querySelectorAll("[data-panel]"));
         this.usersListEl = this.element.querySelector("#usersList");
         this.userSearchInput = this.element.querySelector("#userSearchInput");
+        this.selfRegisteredCountEl = this.element.querySelector("#selfRegisteredCount");
         this.usersPageLabel = this.element.querySelector("#usersPageLabel");
         this.usersPreviousButton = this.element.querySelector("#usersPreviousButton");
         this.usersNextButton = this.element.querySelector("#usersNextButton");
@@ -111,13 +121,15 @@ export class UserpersistoSettings {
         this.enrollmentMountEl = this.element.querySelector("#authEnrollment");
         this.profileUsernameInput = this.element.querySelector("#profileUsername");
         this.profileDisplayNameInput = this.element.querySelector("#profileDisplayName");
-        this.authMethodInputs = Object.fromEntries(["password", "emailCode", "passkey", "totp"].map((method) => [
+        this.authMethodInputs = Object.fromEntries(["password", "emailCode", "passkey", "totp", "google"].map((method) => [
             method,
             this.element.querySelector(`[data-auth-method="${method}"]`)
         ]));
         this.selfRegistrationInput = this.element.querySelector("#selfRegistrationEnabled");
         this.defaultRegistrationRoleInput = this.element.querySelector("#defaultRegistrationRole");
         this.allowedRedirectOriginsInput = this.element.querySelector("#allowedRedirectOrigins");
+        this.authPolicySourceEl = this.element.querySelector("#authPolicySource");
+        this.googleStatusEl = this.element.querySelector("#googleProviderStatus");
         this.applicationsListEl = this.element.querySelector("#applicationsList");
         this.applicationsPageLabel = this.element.querySelector("#applicationsPageLabel");
         this.applicationsPreviousButton = this.element.querySelector("#applicationsPreviousButton");
@@ -155,7 +167,7 @@ export class UserpersistoSettings {
     bindEvents() {
         if (this.element.dataset.userpersistoBound === "true") return;
         this.element.dataset.userpersistoBound = "true";
-        this.userSearchInput?.addEventListener("input", () => this.renderUsers());
+        this.userSearchInput?.addEventListener("input", () => { void this.loadUsersPage(0); });
         this.element.addEventListener("userpersisto-panel-change", (event) => {
             this.switchPanel(null, event.detail?.panel);
         });
@@ -302,6 +314,7 @@ export class UserpersistoSettings {
                 node.hidden = !isAdmin;
             });
             if (!isAdmin) this.clearApplications();
+            if (!isAdmin) this.clearAuthPolicy();
             if (!isAdmin && this.state.activePanel !== "auth") {
                 this.state.activePanel = "auth";
                 this.renderPanels();
@@ -316,6 +329,7 @@ export class UserpersistoSettings {
         } catch (error) {
             this.state.authProfile = null;
             this.clearApplications();
+            this.clearAuthPolicy();
             this.element.querySelectorAll("[data-admin-only]").forEach((node) => { node.hidden = true; });
             this.renderAuthProfile();
             this.setStatus(error?.message || "Failed to load profile.", "error");
@@ -337,8 +351,14 @@ export class UserpersistoSettings {
     }
 
     async refreshAuthPolicy() {
+        if (!this.isAdministrator()) return;
+        const requestId = this.policyRequestId = (this.policyRequestId || 0) + 1;
         try {
-            const policy = await this.callTool("userpersisto_auth_policy_get");
+            const [policy, google] = await Promise.all([
+                this.callTool("userpersisto_auth_policy_get"),
+                this.callTool("userpersisto_google_status"),
+            ]);
+            if (requestId !== this.policyRequestId || !this.isAdministrator()) return;
             const enabled = new Set(Array.isArray(policy.enabledAuthMethods) ? policy.enabledAuthMethods : []);
             for (const [method, input] of Object.entries(this.authMethodInputs || {})) {
                 if (input) input.checked = enabled.has(method);
@@ -346,12 +366,52 @@ export class UserpersistoSettings {
             if (this.selfRegistrationInput) this.selfRegistrationInput.checked = policy.selfRegistrationEnabled !== false;
             if (this.defaultRegistrationRoleInput) this.defaultRegistrationRoleInput.value = policy.defaultRegistrationRole || "selfRegistered";
             if (this.allowedRedirectOriginsInput) this.allowedRedirectOriginsInput.value = (policy.allowedRedirectOrigins || []).join("\n");
+            if (this.authPolicySourceEl) this.authPolicySourceEl.textContent = policy.environmentOverrides?.length
+                ? `Effective environment overrides: ${policy.environmentOverrides.join(", ")}. Saved policy does not replace these operator settings.`
+                : "Effective policy uses the saved workspace settings or defaults.";
+            if (this.googleStatusEl) this.googleStatusEl.textContent = [
+                google.available ? "Google is ready." : google.enabled ? "Google is unavailable." : "Google is disabled.",
+                `Configuration: ${google.configured ? "complete" : "incomplete"}; source: ${google.configurationSource || "environment"}.`,
+                `Client secret: ${google.secretPresent === true ? "present" : "missing"}.`,
+                google.clientId ? `Client ID: ${google.clientId}` : "",
+                google.redirectUri ? `Exact callback: ${google.redirectUri}` : "",
+                google.missing?.length ? `Missing settings: ${google.missing.join(", ")}.` : "",
+                google.reason ? `Readiness: ${google.reason}.` : "",
+            ].filter(Boolean).join("\n");
         } catch (error) {
+            if (requestId !== this.policyRequestId || !this.isAdministrator()) return;
+            this.clearAuthPolicy();
+            if (authorizationFailure(error)) this.revokeAdministrativeAccess();
             this.setStatus(error?.message || "Failed to load authentication policy.", "error");
         }
     }
 
+    clearAuthPolicy() {
+        this.policyRequestId = (this.policyRequestId || 0) + 1;
+        this.state.settingsLoaded = false;
+        if (this.googleStatusEl) this.googleStatusEl.textContent = "Google readiness is unavailable.";
+        if (this.authPolicySourceEl) this.authPolicySourceEl.textContent = "";
+        for (const input of Object.values(this.authMethodInputs || {})) {
+            if (input) input.checked = false;
+        }
+    }
+
+    revokeAdministrativeAccess() {
+        this.state.authProfile = null;
+        this.clearAuthPolicy();
+        this.clearApplications();
+        this.usersRequestId = (this.usersRequestId || 0) + 1;
+        this.state.users = [];
+        this.state.usersTotal = 0;
+        this.state.selfRegisteredCount = 0;
+        this.state.usersLoading = false;
+        this.element.querySelectorAll?.("[data-admin-only]").forEach((node) => { node.hidden = true; });
+        this.renderUsers();
+        this.renderUsersPagination();
+    }
+
     async saveAuthPolicy() {
+        if (!this.isAdministrator()) return;
         const enabledAuthMethods = Object.entries(this.authMethodInputs || {})
             .filter(([, input]) => input?.checked)
             .map(([method]) => method);
@@ -369,10 +429,13 @@ export class UserpersistoSettings {
                     .map((value) => value.trim())
                     .filter(Boolean)
             });
+            if (!this.isAdministrator()) return;
             await this.refreshAuthPolicy();
             await this.refreshAuthProfile();
             this.setStatus("Authentication policy saved.");
         } catch (error) {
+            if (!this.isAdministrator()) return;
+            if (authorizationFailure(error)) this.revokeAdministrativeAccess();
             this.setStatus(error?.message || "Failed to save authentication policy.", "error");
         }
     }
@@ -387,12 +450,14 @@ export class UserpersistoSettings {
         }
         const roles = Array.isArray(profile.roles) ? profile.roles : [];
         const capabilities = Array.isArray(profile.capabilities) ? profile.capabilities : [];
+        const methods = Array.isArray(profile.authMethods) ? profile.authMethods : [];
         this.authProfileEl.innerHTML = `
             <div class="userpersisto-row">
                 <div>
                     <div class="userpersisto-row-title">${escapeHtml(profile.user.email || profile.user.id)}</div>
                     <div class="userpersisto-row-meta">Roles: ${escapeHtml(roles.join(", ") || "none")}</div>
                     <div class="userpersisto-row-meta">Capabilities: ${escapeHtml(capabilities.join(", ") || "none")}</div>
+                    <div class="userpersisto-row-meta">Linked sign-in methods: ${escapeHtml(methods.map((method) => method.name).join(", ") || "none")}</div>
                 </div>
             </div>
         `;
@@ -433,6 +498,8 @@ export class UserpersistoSettings {
     }
 
     afterUnload() {
+        this.usersRequestId = (this.usersRequestId || 0) + 1;
+        this.clearAuthPolicy();
         this.clearEnrollment();
         this.enrollmentMountEl = null;
         this.clearApplicationSecret();
@@ -443,14 +510,19 @@ export class UserpersistoSettings {
     }
 
     async loadUsersPage(start = 0) {
-        if (this.state.usersLoading) return;
+        const requestId = this.usersRequestId = (this.usersRequestId || 0) + 1;
+        const search = String(this.userSearchInput?.value || "").trim();
         this.state.usersLoading = true;
         this.renderUsersPagination();
         try {
             const payload = await this.callTool("userpersisto_user_list", {
                 start,
                 pageSize: this.state.usersPageSize,
+                search,
+                excludeOnlyRole: search ? "" : "selfRegistered",
+                includeRoleCounts: true,
             });
+            if (requestId !== this.usersRequestId) return;
             this.state.users = Array.isArray(payload.users)
                 ? payload.users
                 : Array.isArray(payload.objects)
@@ -458,13 +530,22 @@ export class UserpersistoSettings {
                     : [];
             this.state.usersStart = start;
             this.state.usersTotal = Number.isSafeInteger(payload.totalCount) ? payload.totalCount : start + this.state.users.length;
+            this.state.selfRegisteredCount = Number.isSafeInteger(payload.singleRoleCounts?.selfRegistered)
+                ? payload.singleRoleCounts.selfRegistered : 0;
+            if (!this.state.users.length && start > 0 && this.state.usersTotal <= start) {
+                return this.loadUsersPage(Math.max(0, Math.ceil(this.state.usersTotal / this.state.usersPageSize) - 1) * this.state.usersPageSize);
+            }
             this.renderUsers();
             this.setStatus("");
         } catch (error) {
+            if (requestId !== this.usersRequestId) return;
+            if (authorizationFailure(error)) this.revokeAdministrativeAccess();
             this.setStatus(error?.message || "Failed to load users.", "error");
         } finally {
-            this.state.usersLoading = false;
-            this.renderUsersPagination();
+            if (requestId === this.usersRequestId) {
+                this.state.usersLoading = false;
+                this.renderUsersPagination();
+            }
         }
     }
 
@@ -484,21 +565,11 @@ export class UserpersistoSettings {
         if (this.usersPageLabel) this.usersPageLabel.textContent = usersLoading
             ? "Loading users…"
             : `${users.length ? usersStart + 1 : 0}–${usersStart + users.length} of ${usersTotal} users`;
+        if (this.selfRegisteredCountEl) this.selfRegisteredCountEl.textContent = `${this.state.selfRegisteredCount} accounts have only the selfRegistered role. Search all users to find and manage them.`;
     }
 
     filteredUsers() {
-        const query = String(this.userSearchInput?.value || "").trim().toLowerCase();
-        if (!query) return this.state.users;
-        return this.state.users.filter((user) => {
-            const haystack = [
-                user.id,
-                user.email,
-                user.displayName,
-                user.status,
-                ...userRoles(user)
-            ].join(" ").toLowerCase();
-            return haystack.includes(query);
-        });
+        return this.state.users;
     }
 
     async createUser() {

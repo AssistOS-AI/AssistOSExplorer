@@ -3,6 +3,7 @@ import { getStore, flush } from '../store.mjs';
 import { getUserByEmail, getUserById, sanitizeUser } from '../users.mjs';
 import { recordAudit } from '../audit.mjs';
 import { clearLoginFailures, isLoginLocked, recordLoginFailure, withLoginAttemptLock } from './login-attempts.mjs';
+import { credentialVersion } from './credentialVersion.mjs';
 
 const N = 16384;
 const r = 8;
@@ -43,7 +44,7 @@ export function verifyPassword(password, stored) {
 
 const DUMMY_PASSWORD_HASH = hashPassword(randomBytes(32).toString('base64url'));
 
-export function loginWithPassword(email, password) {
+export function loginWithPassword(email, password, { includeCredentialProof = false } = {}) {
     const normalizedEmail = String(email || '').trim().toLowerCase();
     return withLoginAttemptLock(normalizedEmail, async () => {
         const user = await getUserByEmail(normalizedEmail);
@@ -56,9 +57,10 @@ export function loginWithPassword(email, password) {
             await recordAudit({ actorId: user.id, action: 'auth.password.login', target: user.id, result: 'denied', reason: 'invalid_credentials' });
             return { ok: false, reason: 'invalid_credentials' };
         }
+        const version = includeCredentialProof ? credentialVersion('password', user.passwordHash) : undefined;
         const fresh = await clearLoginFailures(user);
         await recordAudit({ actorId: user.id, action: 'auth.password.login', target: user.id, result: 'ok' });
-        return { ok: true, user: sanitizeUser(fresh) };
+        return { ok: true, user: sanitizeUser(fresh), ...(includeCredentialProof ? { credentialVersion: version } : {}) };
     });
 }
 

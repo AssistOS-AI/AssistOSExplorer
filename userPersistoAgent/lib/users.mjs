@@ -75,7 +75,7 @@ async function createUserInternal({
     password = '',
     actorId = 'system',
     emailVerified = false,
-}) {
+}, { save = true } = {}) {
     const store = await getStore();
     const normalizedEmail = normalizeEmail(email);
     const normalizedUsername = normalizeUsername(username);
@@ -102,14 +102,20 @@ async function createUserInternal({
         loginAttempts: 0,
         lastLoginAttempt: '',
     });
-    await setUserRolesInternal(user.id, roleNames, { actorId, audit: false });
-    await recordAudit({ actorId, action: 'user.create', target: user.id, reason: source });
-    await flush();
+    await setUserRolesInternal(user.id, roleNames, { actorId, audit: false, save });
+    await recordAudit({ actorId, action: 'user.create', target: user.id, reason: source }, { save });
+    if (save) await flush();
     return sanitizeUser(user);
 }
 
 export function createUser(input) {
     return serialize('users', () => createUserInternal(input));
+}
+
+// Trusted domain callers must hold the users lock and persistence scope, and
+// poison the store if any staged mutation fails before the final snapshot save.
+export function stageUser(input) {
+    return createUserInternal(input, { save: false });
 }
 
 export async function getSetupStatus() {
@@ -162,7 +168,10 @@ export function updateUser(userId, patch = {}, { actorId = 'system' } = {}) {
             const email = normalizeEmail(patch.email);
             const owner = await getUserByEmail(email);
             if (owner && owner.id !== user.id) throw userError('email_taken', 'Email is already in use.');
-            if (email !== user.email) update.email = email;
+            if (email !== user.email) {
+                update.email = email;
+                update.emailVerifiedAt = '';
+            }
         }
         if (patch.username !== undefined) {
             const username = normalizeUsername(patch.username);
@@ -274,7 +283,7 @@ async function assertAnotherActiveAdmin(excludedUserId) {
     throw userError('last_admin_required', 'At least one active admin user is required.');
 }
 
-async function setUserRolesInternal(userId, roleNames, { actorId = 'system', audit = true } = {}) {
+async function setUserRolesInternal(userId, roleNames, { actorId = 'system', audit = true, save = true } = {}) {
     const store = await getStore();
     const user = await getUserById(userId);
     if (!user) throw userError('user_not_found', 'User not found.');
@@ -304,8 +313,8 @@ async function setUserRolesInternal(userId, roleNames, { actorId = 'system', aud
     for (const link of existing) {
         if (!requestedRoleIds.has(link.roleId)) await store.deleteUserRole(link.key);
     }
-    if (audit) await recordAudit({ actorId, action: 'user.roles.update', target: userId, reason: uniqueNames.join(',') });
-    await flush();
+    if (audit) await recordAudit({ actorId, action: 'user.roles.update', target: userId, reason: uniqueNames.join(',') }, { save });
+    if (save) await flush();
     return uniqueNames.sort();
 }
 

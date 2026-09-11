@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { credentialVersion } from './credentialVersion.mjs';
 import { getStore, flush } from '../store.mjs';
 import { getUserByEmail, getUserById, sanitizeUser } from '../users.mjs';
 import { recordAudit } from '../audit.mjs';
@@ -466,7 +467,7 @@ export async function registrationVerify({ userId, attestation, challengeKey, or
     return { ok: true, credential: { key: saved.key, userId: saved.userId, credentialId, counter: authData.counter } };
 }
 
-export async function loginOptions({ email, origin = '', rpId = '' }) {
+export async function loginOptions({ email, origin = '', rpId = '', purpose = 'login' }) {
     const user = await getUserByEmail(email);
     if (!user) {
         return { ok: false, reason: 'invalid_credentials' };
@@ -486,7 +487,7 @@ export async function loginOptions({ email, origin = '', rpId = '' }) {
     const { challengeId, challenge } = await storeChallenge({
         userId: user.id,
         email: user.email,
-        type: 'login',
+        type: purpose,
         rpId: resolvedRpId,
         origin: normalizedOrigin
     });
@@ -506,7 +507,7 @@ export async function loginOptions({ email, origin = '', rpId = '' }) {
     return { ok: true, challengeKey: challengeId, publicKey };
 }
 
-export async function loginVerify({ email, assertion, challengeKey, origin = '' }) {
+export async function loginVerify({ email, assertion, challengeKey, origin = '', purpose = 'login' }, { includeCredentialProof = false } = {}) {
     const user = await getUserByEmail(email);
     if (!user) {
         return { ok: false, reason: 'invalid_credentials' };
@@ -521,7 +522,7 @@ export async function loginVerify({ email, assertion, challengeKey, origin = '' 
         const challengeRecord = await consumeChallenge({
             challenge: clientData.challenge,
             challengeKey,
-            type: 'login',
+            type: purpose,
             userId: user.id
         });
         const expectedOrigin = String(challengeRecord.metadata.origin || '');
@@ -537,6 +538,7 @@ export async function loginVerify({ email, assertion, challengeKey, origin = '' 
         }
         const clientHash = crypto.createHash('sha256').update(clientDataBuffer).digest();
         const signedData = Buffer.concat([authDataBuffer, clientHash]);
+        let version;
         await serialize(`webauthn-credential:${user.id}:${credentialId}`, async () => {
             const stored = await findCredentialById(credentialId, user.id);
             if (!stored || !stored.enabled) throw new Error('Passkey is not registered.');
@@ -550,13 +552,15 @@ export async function loginVerify({ email, assertion, challengeKey, origin = '' 
                 signedData
             });
             if (!valid) throw new Error('Invalid WebAuthn signature.');
+            if (includeCredentialProof) version = credentialVersion('passkey', stored.credential);
             await (await getStore()).updateAuthMethod(stored.id, {
                 credential: { ...stored.credential, counter: authData.counter }
             });
         });
         await recordAudit({ actorId: user.id, action: 'auth.passkey.login', target: user.id, result: 'ok', reason: credentialId });
         await flush();
-        return { ok: true, user: sanitizeUser(user) };
+        return { ok: true, user: sanitizeUser(user), credentialKey: `${user.id}:passkey:${credentialId}`,
+            ...(includeCredentialProof ? { credentialVersion: version } : {}) };
     } catch (error) {
         await recordAudit({ actorId: user.id, action: 'auth.passkey.login', target: user.id, result: 'denied', reason: error.message });
         return { ok: false, reason: error.message };

@@ -22,6 +22,8 @@ export const TYPES = {
     ssoLoginRequest: { providerState: 'string', redirectUri: 'string', clientId: 'string', expiresAt: 'string' },
     ssoAuthCode: { code: 'string', providerState: 'string', userId: 'string', expiresAt: 'string', consumedAt: 'string' },
     oidcRecord: { recordKey: 'string', model: 'string', payload: 'string', expiresAt: 'integer', grantHash: 'string', clientHash: 'string', uidHash: 'string', userCodeHash: 'string' },
+    externalIdentity: { identityKey: 'string', issuer: 'string', subject: 'string', userId: 'string', createdAt: 'string', lastUsedAt: 'string' },
+    googleAuthTransaction: { stateHash: 'string', status: 'string', expiresAt: 'integer', payload: 'string', version: 'integer' },
 };
 
 const INDEXES = [
@@ -45,6 +47,8 @@ const INDEXES = [
     ['ssoLoginRequest', 'providerState'],
     ['ssoAuthCode', 'code'],
     ['oidcRecord', 'recordKey'],
+    ['externalIdentity', 'identityKey'],
+    ['googleAuthTransaction', 'stateHash'],
 ];
 
 // [groupingName, type, field] -> get<Grouping>ObjectsBy<Field>()
@@ -60,6 +64,7 @@ const GROUPINGS = [
     ['oidcModels', 'oidcRecord', 'model'],
     ['oidcGrants', 'oidcRecord', 'grantHash'],
     ['oidcClients', 'oidcRecord', 'clientHash'],
+    ['externalIdentities', 'externalIdentity', 'userId'],
 ];
 
 export async function ensureSchema(persisto) {

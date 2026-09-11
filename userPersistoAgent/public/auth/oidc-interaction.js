@@ -27,3 +27,26 @@ document.querySelectorAll('[data-passkey]').forEach((button) => {
         }
     });
 });
+
+document.querySelectorAll('[data-google]').forEach((button) => {
+    button.form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        button.disabled = true;
+        try {
+            const response = await fetch(button.form.action, { method: 'POST', body: new URLSearchParams(new FormData(button.form)), credentials: 'same-origin' });
+            const result = await response.json();
+            if (!response.ok || !result.authorizationUrl) throw new Error('Unable to continue with Google. Try another sign-in method.');
+            window.location.assign(result.authorizationUrl);
+        } catch {
+            button.disabled = false;
+            let error = button.form.querySelector('[role="alert"]');
+            if (!error) {
+                error = document.createElement('p');
+                error.setAttribute('role', 'alert');
+                button.form.append(error);
+            }
+            error.textContent = 'Unable to continue with Google. Try another sign-in method.';
+        }
+    });
+    button.disabled = false;
+});

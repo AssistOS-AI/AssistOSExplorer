@@ -108,6 +108,7 @@
                         <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="emailCode"> Email code</span></label>
                         <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="passkey"> Passkey</span></label>
                         <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="totp"> TOTP</span></label>
+                        <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="google"> Google</span></label>
                         <label class="form-item"><span class="form-label"><input id="selfRegistrationEnabled" type="checkbox"> Self-registration enabled</span></label>
                         <label class="form-item">
                             <span class="form-label">Default registration role</span>
@@ -117,6 +118,12 @@
                             <span class="form-label">Allowed redirect origins (one per line)</span>
                             <textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea>
                         </label>
+                    </div>
+                    <div id="authPolicySource" class="userpersisto-card-description" role="status"></div>
+                    <div class="userpersisto-auth-methods-card">
+                        <div class="userpersisto-card-title">Google sign-in</div>
+                        <div id="googleProviderStatus" class="userpersisto-provider-status" role="status">Loading Google readiness…</div>
+                        <div class="userpersisto-card-description">A workspace operator configures the Google Web application credentials through Ploinky. New Google accounts always receive selfRegistered. Existing email matches require a fresh existing password, passkey or authenticator code and confirmation. Email-code login cannot authorize linking.</div>
                     </div>
                     <div class="userpersisto-actions">
                         <button type="button" class="general-button" data-local-action="saveAuthPolicy">Save authentication policy</button>
@@ -152,9 +159,10 @@
                 </div>
             </div>
             <div class="userpersisto-actions userpersisto-actions-split">
-                <input id="userSearchInput" class="form-input" type="search" placeholder="Filter users on this page" aria-label="Filter users on this page" spellcheck="false">
+                <input id="userSearchInput" class="form-input" type="search" placeholder="Search all users" aria-label="Search all users by name or email" spellcheck="false" maxlength="200">
                 <button type="button" class="general-button" data-local-action="refreshUsers">Refresh</button>
             </div>
+            <div id="selfRegisteredCount" class="userpersisto-card-description" role="status"></div>
             <div id="usersList" class="userpersisto-list"></div>
             <nav class="userpersisto-actions" aria-label="User pages">
                 <button id="usersPreviousButton" type="button" class="gray-button" data-local-action="previousUsersPage" disabled>Previous</button>

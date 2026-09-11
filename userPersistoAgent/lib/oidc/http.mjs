@@ -13,6 +13,7 @@ import { loginWithPassword } from '../auth/password.mjs';
 import { startEmailCode, verifyEmailCode } from '../auth/email-code.mjs';
 import { loginVerify as verifyTotp } from '../auth/totp.mjs';
 import { loginOptions as passkeyOptions, loginVerify as verifyPasskey } from '../auth/passkey.mjs';
+import { getGoogleStatus } from '../auth/google.mjs';
 
 function json(res, status, data) {
     res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -25,7 +26,7 @@ function html(res, status, body, redirectUri) {
     const callbackOrigin = redirectUri ? ` ${new URL(redirectUri).origin}` : '';
     res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
         'Referrer-Policy': 'same-origin', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
-        'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'self'${callbackOrigin}; frame-ancestors 'none'; base-uri 'none'` });
+        'Content-Security-Policy': `default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'${callbackOrigin}; frame-ancestors 'none'; base-uri 'none'` });
     res.end(body);
 }
 
@@ -94,31 +95,60 @@ async function renderInteraction(res, interaction, issuer, csrf, message = '', s
     if (enabled.includes('password')) forms += form(`${base}/login`, csrf, `${email}${password}<button>Sign in</button>`);
     if (enabled.includes('emailCode')) forms += `<details${message && status === 200 ? ' open' : ''}><summary>Sign in with an email code</summary>${form(`${base}/email-start`, csrf, `${email}<button>Send code</button>`)}${form(`${base}/email-verify`, csrf, '<label>Email code<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label><button>Verify code</button>')}</details>`;
     if (enabled.includes('totp')) forms += `<details><summary>Sign in with an authenticator</summary>${form(`${base}/totp`, csrf, `${email}<label>Authenticator code<input name="token" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label><button>Verify code</button>`)}</details>`;
-    if (enabled.includes('passkey')) forms += `<details><summary>Sign in with a passkey</summary>${form(`${base}/passkey-options`, csrf, `${email}<button data-passkey>Use passkey</button><p data-passkey-error class="error" role="alert"></p>`)}<script src="${esc(issuer.href)}/interaction.js" defer></script></details>`;
+    if (enabled.includes('passkey')) forms += `<details><summary>Sign in with a passkey</summary>${form(`${base}/passkey-options`, csrf, `${email}<button data-passkey>Use passkey</button><p data-passkey-error class="error" role="alert"></p>`)}</details>`;
     const setup = await getSetupStatus();
+    const googleAvailable = (await getGoogleStatus()).available;
+    const googleButton = googleAvailable ? `<link rel="stylesheet" href="${esc(issuer.href.replace(/\/oidc$/, '/auth/google-button.css'))}">${form(`${base}/google`, csrf, '<button data-google class="google-button" disabled><span class="google-icon" aria-hidden="true"></span>Continue with Google</button>')}` : '';
     const canRegister = enabled.includes('password') && policy.selfRegistrationEnabled && !setup.needsInitialAdmin;
-    const signupFirst = canRegister && screenHint === 'signup';
+    const signupFirst = (canRegister || (googleAvailable && policy.selfRegistrationEnabled)) && screenHint === 'signup';
     if (canRegister) {
         const registration = form(`${base}/register`, csrf, `${email}<label>New password<input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="1024" required></label><button>Create account</button>`);
         forms = signupFirst
             ? `${registration}<details><summary>Already registered? Sign in</summary>${forms}</details>`
             : `${forms}<details><summary>Create an account</summary>${registration}</details>`;
     }
+    if (googleAvailable) forms = `${googleButton}${forms}`;
+    if (googleAvailable || enabled.includes('passkey')) forms += `<script src="${esc(issuer.href)}/interaction.js" defer></script>`;
     return html(res, status, page(signupFirst ? 'Create your account' : 'Sign in', `${identity}${message ? `<p class="${status >= 400 ? 'error' : 'muted'}" role="${status >= 400 ? 'alert' : 'status'}">${esc(message)}</p>` : ''}${forms}${abort}`), interaction.params.redirect_uri);
 }
 
-async function interactionRequest(req, res, issuer, provider, match) {
-    const [, uid, action = ''] = match;
+async function interactionRequest(req, res, issuer, provider, match, google) {
+    const [, uid, action = '', subaction = ''] = match;
+    if (subaction && action !== 'google-resume') throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
     return serialize(`oidc-interaction:${uid}`, async () => {
         const interaction = await provider.interactionDetails(req, res);
         if (interaction.uid !== uid || interaction.result) throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
         if (!(await getClientMetadata(interaction.params.client_id))) throw Object.assign(new Error('invalid_client'), { statusCode: 400 });
+        const googleContext = {
+            flow: 'oidc',
+            parent: { uid, clientId: interaction.params.client_id, redirectUri: interaction.params.redirect_uri,
+                origin: issuer.origin, expiresAt: interaction.exp * 1000 },
+            validate: async () => {
+                const fresh = await provider.interactionDetails(req, res);
+                if (fresh.uid !== uid || fresh.result || fresh.prompt.name !== 'login' || fresh.params.client_id !== interaction.params.client_id
+                    || fresh.params.redirect_uri !== interaction.params.redirect_uri || !(await getClientMetadata(fresh.params.client_id))) {
+                    throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
+                }
+            },
+            complete: (user) => withPersistenceScope(async () => {
+                await googleContext.validate();
+                const active = await getUserById(user.id);
+                if (!active || active.status !== 'active') throw Object.assign(new Error('login_required'), { statusCode: 401 });
+                await provider.interactionFinished(req, res, { login: { accountId: user.id, amr: ['federated'], provider: 'google' } }, { mergeWithLastSubmission: false });
+            }),
+        };
+        if (action === 'google-resume') {
+            const params = new URL(req.url, issuer.origin).searchParams;
+            if (params.getAll('transaction').length !== 1) throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
+            return google.resume(req, res, googleContext, params.get('transaction'), subaction, req.method === 'POST' ? formBody(req) : {});
+        }
         const { cookieKeys } = await getOrCreateOidcKeys();
         const csrf = csrfFor(uid, cookieKeys[0]);
         if (req.method === 'GET' && !action) return renderInteraction(res, interaction, issuer, csrf);
         if (req.method !== 'POST') return json(res, 405, { error: 'invalid_request' });
         const body = formBody(req);
         if (req.headers.origin !== issuer.origin || !same(body.csrf, csrf)) return json(res, 403, { error: 'invalid_request' });
+        if (action === 'google') return google.start(req, res, googleContext);
         const finish = (result, mergeWithLastSubmission = false) => withPersistenceScope(async () => {
             const fresh = await provider.interactionDetails(req, res);
             if (fresh.uid !== uid || fresh.result || !(await getClientMetadata(fresh.params.client_id))) {
@@ -162,7 +192,7 @@ async function interactionRequest(req, res, issuer, provider, match) {
             }
             if (action === 'email-verify') {
                 const stored = await challengeStore.find(uid);
-                if (stored?.method === 'emailCode') authenticated = await verifyEmailCode({ challengeId: stored.challengeId, code: body.code });
+                if (stored?.method === 'emailCode') authenticated = await verifyEmailCode({ challengeId: stored.challengeId, code: body.code, correlationId: uid });
             }
             if (action === 'passkey-options') {
                 const options = await passkeyOptions({ email: body.email, origin: issuer.origin, rpId: issuer.hostname });
@@ -186,7 +216,7 @@ async function interactionRequest(req, res, issuer, provider, match) {
     });
 }
 
-export async function handleOidc(req, res) {
+export async function handleOidc(req, res, { google } = {}) {
     const path = new URL(req.url, 'http://internal').pathname;
     if (path !== OIDC_SERVICE_PATH && !path.startsWith(`${OIDC_SERVICE_PATH}/`)) return false;
     try {
@@ -203,8 +233,8 @@ export async function handleOidc(req, res) {
         req.headers['x-forwarded-proto'] = issuer.protocol.slice(0, -1);
         res.setHeader('Referrer-Policy', 'same-origin');
         res.setHeader('X-Content-Type-Options', 'nosniff');
-        const interaction = new URL(suffix, issuer.origin).pathname.match(/^\/interaction\/([A-Za-z0-9_-]+)(?:\/([a-z-]+))?$/);
-        if (interaction) await interactionRequest(req, res, issuer, provider, interaction);
+        const interaction = new URL(suffix, issuer.origin).pathname.match(/^\/interaction\/([A-Za-z0-9_-]+)(?:\/([a-z-]+))?(?:\/([a-z-]+))?$/);
+        if (interaction) await interactionRequest(req, res, issuer, provider, interaction, google);
         else if (suffix === '/interaction.js' && req.method === 'GET') {
             const { readFile } = await import('node:fs/promises');
             res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' });

@@ -16,6 +16,8 @@ import { getAuthPolicy, updateAuthPolicy, isAuthMethodEnabled } from '../lib/pol
 import { setPassword } from '../lib/auth/password.mjs';
 import { handleOidc } from '../lib/oidc/http.mjs';
 import { handleDashboard } from './dashboard.mjs';
+import { createGoogleAuthHandlers } from './googleAuth.mjs';
+import { getGoogleStatus } from '../lib/auth/google.mjs';
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 const MIME = {
@@ -23,7 +25,9 @@ const MIME = {
     '.js': 'text/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
-    '.svg': 'image/svg+xml'
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.ttf': 'font/ttf'
 };
 
 function assertRuntimeSecret(req) {
@@ -137,7 +141,9 @@ async function handleGet(req, res, path) {
         });
     }
     if (path === '/service/auth/setup') {
-        return sendJson(res, 200, { ok: true, ...(await getSetupStatus()) });
+        const methods = await getEnabledAuthMethods();
+        return sendJson(res, 200, { ok: true, ...(await getSetupStatus()), enabledAuthMethods: methods,
+            defaultAuthMethod: methods[0] || '', googleAvailable: (await getGoogleStatus()).available });
     }
     if (path === '/service/auth' || path.startsWith('/service/auth/')) {
         return serveStatic(res, path.replace('/service/', ''));
@@ -203,7 +209,7 @@ async function handlePost(req, res, path) {
         if (!(await isAuthMethodEnabled('emailCode'))) {
             throw Object.assign(new Error('Email-code authentication is not enabled.'), { code: 'auth_method_disabled', statusCode: 404 });
         }
-        const result = await verifyEmailCode({ challengeId: body.challengeId, code: body.code });
+        const result = await verifyEmailCode({ challengeId: body.challengeId, code: body.code, correlationId: providerStateFrom(body) });
         if (!result.ok) {
             return sendAuthenticationFailure(res);
         }
@@ -331,13 +337,14 @@ async function handlePost(req, res, path) {
     return sendJson(res, 404, { ok: false, error: 'not_found' });
 }
 
-async function handle(req, res) {
+async function handle(req, res, google) {
     const url = new URL(req.url || '/', 'http://internal');
     try {
         if (url.pathname === '/service/dashboard' || url.pathname.startsWith('/service/dashboard/')) {
             return await handleDashboard(req, res, url, { sendJson, serveStatic });
         }
-        if (await handleOidc(req, res)) return;
+        if (await google.handle(req, res)) return;
+        if (await handleOidc(req, res, { google })) return;
         if (req.method === 'GET' || req.method === 'HEAD') {
             if (req.method === 'HEAD') {
                 res.writeHead(405, { 'Cache-Control': 'no-store' });
@@ -356,8 +363,9 @@ async function handle(req, res) {
     }
 }
 
-export function startService(port) {
-    const server = http.createServer(handle);
+export function startService(port, options = {}) {
+    const google = createGoogleAuthHandlers(options.google);
+    const server = http.createServer((req, res) => handle(req, res, google));
     server.listen(port, () => {
         console.log(`[userPersisto] service listening on ${port}`);
     });

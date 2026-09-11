@@ -5,7 +5,7 @@ summary: Defines UserPersisto identity bootstrap, authentication policy, account
 
 # DS012 UserPersisto
 
-## Product boundary
+## Introduction
 
 UserPersisto is the durable identity and account authority for Explorer deployments. It owns users, roles, capabilities, authentication state, SSO sessions, OAuth applications, OIDC grants and tokens, credit balances, subscriptions, Stripe event state, payment projections, and audit events. Persisto is its primary database. EmailAgent owns transactional delivery and Stripe remains the external monetary source of truth. [DS013 OAuth/OIDC](DS013-oauth-oidc.md) defines its standards-facing provider contract.
 
@@ -13,9 +13,11 @@ Ploinky remains provider-neutral. Explorer selects UserPersisto through `sso.pro
 
 All Explorer registration and login flows use UserPersisto, including password authentication. Ploinky no longer provides a browser password store or local authentication mode. The manifest's SSO requirement is authoritative; retired local authentication declarations are rejected. A missing or unavailable provider must fail closed. This release does not preserve existing workspace authentication modes or migrate local accounts into UserPersisto.
 
-## Installation bootstrap and registration
+## Core Content
 
-A new durable store contains roles and capabilities but no user account. The public setup response reports `needsInitialAdmin: true`. Registration requires an email address and a string password of 8–1024 characters; missing, empty, non-string, or out-of-range passwords return `400 invalid_password` before any account or role is created. Username and display name are optional profile fields. A rejected password does not consume the first-owner slot or a valid login request, so a corrected retry can complete setup. Public authentication POST bodies must be JSON objects. Malformed JSON, null, arrays, and scalar bodies return `400 invalid_json` before credential processing or account creation.
+### Installation bootstrap and registration
+
+A new durable store contains roles and capabilities but no user account. The public setup response reports `needsInitialAdmin: true`. Registration requires an email address and a string password of 8–1024 characters; missing, empty, non-string, or out-of-range passwords return `400 invalid_password` before any account or role is created. Username and display name are optional profile fields. A rejected password does not consume the first-owner slot or a valid login request, so a corrected retry can complete setup. Public JSON authentication endpoints require object bodies. Malformed JSON, null, arrays, and scalar bodies return `400 invalid_json` before credential processing or account creation. OIDC interaction and Google resume forms retain the form-encoded contracts in DS013.
 
 Username and display name remain optional throughout provider projections and administration. An omitted username is returned as an empty string, never synthesized from the email address. A display label may fall back to email, but editable username and name fields retain their stored values. Saving a role-only change for an email-only account must not create or validate a fabricated username. Password sign-in continues to use email regardless of whether a username is set.
 
@@ -27,13 +29,13 @@ Development bootstrap is disabled by default and must never create a predictable
 
 User deletion through the provider administration contract is a reversible deactivation: the account becomes `blocked`. Provider administration continues to address a blocked account: role, profile, and password updates succeed and leave it blocked until an authorized status change reactivates it. Blocking an administrator or removing its administrator role is rejected when it would leave no other active administrator.
 
-## Authentication policy
+### Authentication policy
 
-The durable authentication policy contains enabled methods, whether later self-registration is allowed, the default registration role, and allowed browser redirect origins. If no policy or environment override exists, only password authentication is enabled. Email code, passkey, and TOTP entry points must reject requests until an administrator explicitly enables the corresponding method.
+The durable authentication policy contains enabled methods, whether later self-registration is allowed, the default registration role, and allowed browser redirect origins. If no policy or environment override exists, only password authentication is enabled. Email code, passkey, TOTP and Google entry points reject requests until explicitly enabled. Google additionally requires complete operator configuration and completed owner setup. Public method/setup projections expose effective availability only; missing optional Google configuration must not break password login. Environment overrides remain authoritative and administrator settings identify their names.
 
 The Ploinky SSO authentication page mounts one form at a time. During first installation it shows only owner registration, without a sign-in switch, regardless of the later self-registration policy. Otherwise it starts with sign-in. When more than one method is enabled, a labeled **Sign-in method** select chooses the single visible form. An enabled configured default is selected initially; a disabled default must never add a method or form to the page. A single enabled method needs no selector. Every input and select has an associated label.
 
-The sign-in view offers a **Create account** button styled as a link only when later self-registration and password authentication are both enabled. It switches to registration without submitting the sign-in form; registration offers a **Sign in** link back. Registration explains: “Your account starts with dashboard access by default. Ask an administrator for access to Explorer.” The owner form separately explains that the first account becomes administrator. Switching views or sign-in methods clears entered passwords, authenticator/email codes, and pending email challenge state, while the entered email address is carried over to the newly mounted form. It retains the original URL's SSO state and provider request identifier for every authentication request. A response from an abandoned form must not show an error, restore a challenge, or redirect the new view; switching away also cancels an outstanding browser passkey prompt.
+The sign-in view offers **Create account** when later self-registration and an effective registration method are available. Password registration retains its email/password form; Google registration is independently available without enabling password registration. Registration offers **Sign in** back and explains that the account starts with dashboard access and an administrator grants Explorer access. The owner form explains that the first account becomes administrator and never offers Google. Switching views or sign-in methods clears entered passwords, authenticator/email codes, and pending email challenge state, while the entered email address is carried over to the newly mounted form. It retains the original URL's SSO state and provider request identifier for every authentication request. A response from an abandoned form must not show an error, restore a challenge, or redirect the new view; switching away also cancels an outstanding browser passkey prompt.
 
 Email-code login never creates a previously unknown account. User registration is a distinct email-and-password operation. Passwords are hashed and never returned by user, profile, SSO, or administration responses. Public authentication errors must not disclose credential hashes or distinguish sensitive internal failures.
 
@@ -43,7 +45,25 @@ Ploinky binds each pending login transaction to an independent browser proof in 
 
 The browser login URL uses the validated callback's public origin, preserving its hostname and port. The configured login path must remain on that origin. Runtime bridge calls continue to use the private `routerBaseUrl`; a loopback bridge address must never replace a remote browser's public login address or change the host of its callback proof cookie.
 
-## Roles and capabilities
+### Roles and capabilities
+
+Google authenticates an external identity with the pinned canonical issuer `https://accounts.google.com` and its verified case-sensitive subject. UserPersisto resolves that tuple to an immutable local owner; email is never the binding key. Returning linked users retain their local ID, profile, credentials and current roles, even if Google changes the email claim. Missing or blocked local owners deny authentication without email fallback or replacement. New Google registrations require an existing installation owner, current enabled self-registration and a safe `selfRegistered` role. They receive exactly that role, independently of the password registration default, and no password is synthesized. Registration policy never demotes an existing linked account or prevents its normal sign-in.
+
+#### Google registration and collision linking
+
+An unbound Google identity that matches a local normalized email must prove fresh authentication with that exact account's already enrolled, enabled password, passkey or TOTP credential and then submit an explicit **Link Google and continue** confirmation. All steps remain in the same live parent and browser-bound transaction. Existing sessions, Google claims, email-code sessions and mailbox proof are ineligible, including for historically verified local emails. Linking cannot enroll, reset or replace a credential as a shortcut. A collision with no eligible existing credential ends with ordinary sign-in or administrator recovery guidance; it never creates a second account.
+
+The server selects and retains the collision account ID and email. Confirmation rechecks that ID, unchanged local email, active status, current Google policy, enabled credential, parent validity, identity ownership and the account's existing Google grouping. Initially a local user may have only one Google identity; replacement, transfer and unlinking are unsupported. A changed local email invalidates the attempt instead of selecting a new target. A newly discovered email collision after a registration mailbox challenge follows exactly the same non-email linking rule. Passkey challenges bind purpose, transaction and target before consumption. Pending proofs retain only a digest of the credential material actually verified, plus its enrolled key when applicable. Confirmation compares that digest under the identity persistence scope; password resets, TOTP replacement, passkey replacement or removal invalidate the proof. Ordinary usage counters do not. Ordinary email-code login rejects challenges with another purpose before consumption.
+
+New registration requires a usable Google-verified email. A Gmail address or verified Workspace `hd` assertion may provide current email authority; a third-party address without that authority additionally requires fresh EmailAgent proof before reserving any user or email. This `google-registration-email` proof lives inside the encrypted Google transaction, has bounded attempts/expiry and cannot authenticate through ordinary login endpoints. Delivery failure creates no account. Accepted current proof may set `emailVerifiedAt`; an administrative email change clears it.
+
+This direct-linking rule does not claim global prevention of account pre-hijacking. Inherited ordinary account tools let an active email-login actor set a password or enroll passkey/TOTP outside this linking UI and later start a fresh Google attempt with that credential; other attacker-controlled credentials can remain. Historical credential provenance, general recovery and credential revocation remain deferred.
+
+#### Google identity durability
+
+`externalIdentity` stores only the canonical issuer, subject, immutable local `userId`, identity key and timestamps. Its unique key is SHA-256 over the encoded issuer/subject tuple and lookup compares the original tuple. Grouping by user provides only a safe `{ type: 'google', name: 'Google' }` profile method. Profile, user lists, SSO and UserInfo never expose provider subjects, transaction payloads, proofs, tokens or keys. No duplicate Google `authMethod` row is created and no email-based backfill occurs when reopening old snapshots.
+
+Trusted external registration/linking validates policy, role and uniqueness before staging the user, roles, binding and audit without intermediate flushes, then commits one snapshot. Lock order is parent flow, users/domain, persistence scope; non-reentrant locks must not be reacquired from their locked helper. Network requests never run inside the persistence scope. An unexpected error after staging poisons the store so no unrelated later flush can publish partial state. Failure after rename but before directory fsync can leave a complete unacknowledged identity after restart: a fresh attempt resolves its existing binding without duplicate creation or replayed success. A failed downstream handoff may leave a complete identity; it never authorizes reissuing a consumed result.
 
 The initial role policy is:
 
@@ -59,7 +79,7 @@ Administrative MCP and provider operations re-read the persisted actor and its c
 
 Agent tools authorize only the runtime-verified invocation grant. User-supplied top-level context, role, actor, or capability fields are data and never authority. EmailAgent similarly restricts settings to a verified administrator and delivery operations to a verified agent caller.
 
-## Account dashboard and credential enrollment
+### Account dashboard and credential enrollment
 
 The account dashboard is served at `/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/`. Its manifest route requires an authenticated Ploinky session. Any active UserPersisto account may read and update its own profile and enroll permitted sign-in methods there, including accounts without `explorer.access`. Explorer declares this path as its `routerAccess.capabilityDeniedRedirect`: a denied HTML document GET is redirected to the dashboard, while API calls, mutations, MCP, SSE, and WebSocket traffic keep their denial responses. The redirect is a local same-origin path and must not redirect back to the denied resource.
 
@@ -84,9 +104,9 @@ Profile responses retain user, roles, capabilities, credits, and subscription da
 
 The dashboard and the Settings → My Account → Profile panel share enrollment controls. Passkey registration uses the browser credential API and retains the returned challenge key through verification. TOTP setup shows the manual key/URI and requires a confirming code before becoming configured. Transient setup values are cleared on success, cancellation, navigation, and component removal; they are never stored in browser storage. These are alternative sign-in methods; this revision does not introduce step-up or a mandatory second factor.
 
-## Explorer administration and settings
+### Explorer administration and settings
 
-Explorer's user-administration router surface uses UserPersisto SSO. Ploinky applies exact-origin and session-bound CSRF protection, forces current provider-session validation, verifies administrator status, and delegates list, create, update, and deactivate operations through provider-neutral methods. UserPersisto re-authorizes the persisted actor before mutating data. Both administration interfaces expose Previous/Next controls and total counts in pages of 100 users; the router validates `start` and `pageSize` (maximum 500) and preserves pagination metadata. Mutations reload the current page, and deletion of the last row moves to the preceding valid page. The UserPersisto name/email filter is explicitly limited to the displayed page. Provider-backed create/update forms include email.
+Explorer's user-administration router surface uses UserPersisto SSO. Ploinky applies exact-origin and session-bound CSRF protection, forces current provider-session validation, verifies administrator status, and delegates list, create, update, and deactivate operations through provider-neutral methods. UserPersisto re-authorizes the persisted actor before mutating data. Both administration interfaces expose Previous/Next controls and total counts in pages of 100 users; the router validates `start` and `pageSize` (maximum 500) and preserves pagination metadata. Mutations reload the current page, and deletion or role changes that empty the last page move to the preceding valid page. Both default lists request `excludeOnlyRole=selfRegistered` and `includeRoleCounts=true`, presenting only a count of accounts whose sole role is `selfRegistered`. Nonempty search clears the exclusion and searches email, username, display name and local ID across all users before pagination. Role promotion updates both the default list and global counts. `userpersisto_user_list` forwards the same bounded `search`, `excludeOnlyRole` and `includeRoleCounts` inputs; browser filtering must not hide matching users on another page. Provider-backed create/update forms include email.
 
 Ploinky's retired `/auth/account` and login-branding settings routes are unavailable. Explorer Administration loads only the provider-backed users API and does not offer local login branding. Old local browser credentials cannot authorize Marketplace, policy, or other protected controls. The verified local CLI operator channel remains a separate runtime control channel; it does not provide browser password login or establish an Explorer user session.
 
@@ -94,7 +114,7 @@ The UserPersisto settings component is visible to authenticated users for their 
 
 The administrator-only Applications panel registers OAuth/OIDC clients and provides create, edit, enable/disable, delete, secret rotation, and pagination in pages of 100. It displays the configured issuer and discovery URL, or an explicit disabled state. Explorer exposes this panel under **Settings → Administration → Applications**. Client secrets are generated by the server and returned only on creation or rotation; the UI displays that value once in a transient field, never in client lists or browser storage, and clears it on refresh, navigation, dismissal, or loss of administrator status. The server re-reads `admin.agentSettings.manage` for every application operation; UI visibility is not authorization.
 
-## Credit and payment journal
+### Credit and payment journal
 
 Credits use an append-only `creditTx` journal and a reconciled `creditAccount` projection. Each stable business reference produces a deterministic transaction identifier. Repeating an identical operation is a no-op that returns the reconciled balance; reusing a reference with different financial data is rejected. Amounts are positive safe integers and a balance or reserved balance may never become negative.
 
@@ -106,7 +126,7 @@ Checkout creation accepts an explicit client idempotency key or generates one, s
 
 Subscription events retrieve the current Stripe subscription resource instead of trusting delivery order or second-resolution event timestamps. A canceled subscription is a durable terminal tombstone for its provider identifier. Stripe retrieval or identity-validation failures leave the event retryable; they do not restore a stale active state.
 
-## Durability and deployment constraints
+### Durability and deployment constraints
 
 UserPersisto and EmailAgent use the same immutable Ploinky Node image as Explorer. Their workspace data roots are `.data/userPersistoAgent` and `.data/emailAgent`, each mounted at `/data`; Persisto retains its `/data/persisto` directory and EmailAgent retains `/data/settings.enc.json`. Before upgrading an existing deployment that used `.ploinky/data/userPersistoAgent` or `.ploinky/data/emailAgent`, stop the affected agents and migrate their data into the corresponding `.data` roots. The runtime does not read those retired paths automatically.
 
@@ -120,17 +140,17 @@ Save failures propagate as `503 persistence_unavailable` and poison the cached s
 
 These guarantees require one active UserPersisto writer for a persistence volume. An exclusive `.userpersisto.writer.json` lock refuses a live or ambiguous second writer and records the owning Ploinky instance and enable generation when available. Normal shutdown releases its own lock. After an abrupt Box or agent-process stop, a replacement may remove the unchanged predecessor lock only when local process liveness proves that its owner is gone, or when a complete current Ploinky identity proves that a foreign-container lock belongs to a legacy or different generation. A malformed lock, a live local owner, or a foreign lock from the current generation remains fail-closed. The filesystem must provide exclusive creation, atomic same-directory rename, and fsync semantics. Multiple active writers and high-availability failover remain unsupported. Operators must back up the Persisto volume, retain Stripe event history, and reconcile the local payment projection against Stripe after storage recovery. This credit journal is application accounting; financial custody, regulated bookkeeping, tax, chargeback, and revenue-recognition requirements remain outside this component.
 
-## Compatibility scope and deliberate deferrals
+### Compatibility scope and deliberate deferrals
 
 This revision provides the existing Ploinky identity-provider interface alongside the OAuth 2.0 / OpenID Connect endpoints specified in DS013: discovery, JWKS, authorization code with mandatory S256 PKCE, token exchange, UserInfo, refresh-token rotation, confidential client credentials, introspection, revocation, and RP-initiated logout. Operators enable these endpoints with an explicit public issuer; existing Ploinky SSO behavior remains available independently. OIDC interactions use the existing enabled authentication methods and registration policy, with browser-bound login and explicit scope consent. OAuth tokens do not authenticate requests to protected Explorer routes.
 
-This scope does not imply full Keycloak feature parity or OpenID certification. SAML, identity federation, social login, password recovery, verified-email workflows, step-up authentication, mandatory multi-factor policy, dynamic client registration, implicit/hybrid/password grants, device authorization, and high availability remain deferred. Existing email-code, passkey, and TOTP authentication remain administrator opt-ins; passkey and TOTP credentials can be enrolled from the account dashboard or Profile panel.
+This scope does not imply full Keycloak feature parity or OpenID certification. SAML, general identity federation/social login beyond the pinned Google client, password recovery, general verified-email workflows, step-up authentication, mandatory multi-factor policy, dynamic client registration, implicit/hybrid/password grants, device authorization, and high availability remain deferred. Existing email-code, passkey, and TOTP authentication remain administrator opt-ins; passkey and TOTP credentials can be enrolled from the account dashboard or Profile panel.
 
 The seeded `admin`, `user`, and `selfRegistered` roles and their capability links are durable. User assignment and registration-role policy are implemented, while arbitrary role/capability definition administration is deferred. Ploinky revalidates provider sessions on its configured cadence (30 seconds by default), except user-administration requests, which force a remote validation. Deployments needing immediate route revocation must lower that interval or add provider-driven revocation.
 
 The initial public owner-claim flow is operationally sensitive. A fresh deployment must expose it only on a trusted network or behind an installation secret until the first account is established. High availability requires a future transactional or single-leader storage design; starting two writers against the same Persisto volume is not a supported scaling strategy.
 
-## Verification contract
+### Verification contract
 
 Runtime verification starts the declared shell command, proves that HTTP and persistence initialize before MCP readiness, and exercises signed tool calls with nonempty arguments through the real MCP dispatcher. Missing or invalid arguments and unauthorized callers must be rejected. Tests also cover HTTP bind failure, an unexpected MCP exit, signal propagation, ordered drain, writer-lock release, a graceful restart that retains the installation owner, and replacement after an abrupt kill that retains the owner while fencing live writers.
 
@@ -141,3 +161,7 @@ OAuth/OIDC changes additionally satisfy DS013's protocol, durable credential, cl
 Dashboard verification includes restricted-account access, own-profile updates, forged/replayed/mismatched HTTP tokens, unknown and blocked accounts, same-origin JSON enforcement, oversized/malformed input, safe enrollment summaries, full passkey and TOTP registration, policy changes, and transient UI cleanup. The public-login regression must prove that the browser stays on the callback origin while the runtime bridge remains private. HTTP integration tests use the current Ploinky `Agent` tree, selectable through `PLOINKY_AGENT_RUNTIME_ROOT`, and the configured shared AgentLib source.
 
 Public authentication UI regressions exercise actual form and switch events: owner-only setup, registration policy gating, one visible form, enabled/default method selection, associated labels, sensitive-input and challenge cleanup, unchanged SSO request fields, passkey request conversion, and ignored responses from abandoned forms. Tests must include switching back to the same method before an earlier challenge response arrives.
+
+## Conclusion
+
+UserPersisto preserves durable local identity, current authorization and financial consistency across Explorer and registered applications. Optional Google verification changes the sign-in credential, never the local account authority.

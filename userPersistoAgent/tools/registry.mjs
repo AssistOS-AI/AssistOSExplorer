@@ -10,6 +10,7 @@ import { getSettings as getAgentSettings, saveSettings as saveAgentSettings } fr
 import { getStore } from '../lib/store.mjs';
 import { getAuthPolicy, isAuthMethodEnabled, updateAuthPolicy } from '../lib/policy.mjs';
 import * as oidcClients from '../lib/oidc/clients.mjs';
+import { getGoogleStatus } from '../lib/auth/google.mjs';
 
 async function requireAdmin(context, capability = 'admin.users.manage') {
     const actor = requireActor(context);
@@ -67,7 +68,13 @@ const HANDLERS = {
     }),
     userpersisto_user_list: async (args, context) => {
         await requireAdmin(context);
-        return listUsers({ start: args.start || 0, pageSize: args.pageSize || 50 });
+        return listUsers({
+            start: args.start ?? 0,
+            pageSize: args.pageSize ?? 50,
+            search: args.search ?? '',
+            excludeOnlyRole: args.excludeOnlyRole ?? '',
+            includeRoleCounts: args.includeRoleCounts ?? false,
+        });
     },
     userpersisto_user_create: async (args, context) => {
         const actorId = await requireAdmin(context);
@@ -257,11 +264,21 @@ const HANDLERS = {
     },
     userpersisto_auth_policy_get: async (_args, context) => {
         await requireAdmin(context, 'admin.agentSettings.manage');
-        return getAuthPolicy();
+        return {
+            ...await getAuthPolicy(),
+            environmentOverrides: [
+                'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS',
+                'USERPERSISTO_DEFAULT_REGISTRATION_ROLE', 'USERPERSISTO_SELF_REGISTRATION_ENABLED',
+            ].filter((name) => String(process.env[name] || '').trim()),
+        };
     },
     userpersisto_auth_policy_set: async (args, context) => {
         const actorId = await requireAdmin(context, 'admin.agentSettings.manage');
         return updateAuthPolicy(args, { actorId });
+    },
+    userpersisto_google_status: async (_args, context) => {
+        await requireAdmin(context, 'admin.agentSettings.manage');
+        return getGoogleStatus();
     },
     userpersisto_oidc_clients_list: async (args, context) => oidcClients.listOidcClients(args, { actorId: requireActor(context) }),
     userpersisto_oidc_client_create: async (args, context) => oidcClients.createOidcClient(args, { actorId: requireActor(context) }),

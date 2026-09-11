@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { credentialVersion } from './credentialVersion.mjs';
 import { getStore, flush } from '../store.mjs';
 import { getUserByEmail, getUserById, sanitizeUser } from '../users.mjs';
 import { recordAudit } from '../audit.mjs';
@@ -207,7 +208,7 @@ export async function setupVerify({ userId, token }) {
     return { ok: true };
 }
 
-export async function loginVerify({ email, token }) {
+export async function loginVerify({ email, token }, { includeCredentialProof = false } = {}) {
     const normalizedEmail = String(email || '').trim().toLowerCase();
     return withLoginAttemptLock(normalizedEmail, async () => {
         const user = await getUserByEmail(normalizedEmail);
@@ -233,11 +234,12 @@ export async function loginVerify({ email, token }) {
             });
             return { ok: false, reason: counter !== null && counter <= lastUsedCounter ? 'replayed_token' : 'invalid_token' };
         }
+        const version = includeCredentialProof ? credentialVersion('totp', method.credential) : undefined;
         await store.updateAuthMethod(method.id, {
             credential: { ...method.credential, lastUsedCounter: counter },
         });
         const fresh = await clearLoginFailures(user);
         await recordAudit({ actorId: user.id, action: 'auth.totp.login', target: user.id, result: 'ok' });
-        return { ok: true, user: sanitizeUser(fresh) };
+        return { ok: true, user: sanitizeUser(fresh), ...(includeCredentialProof ? { credentialKey: method.key, credentialVersion: version } : {}) };
     });
 }

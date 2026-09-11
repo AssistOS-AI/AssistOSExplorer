@@ -5,13 +5,15 @@ summary: Defines UserPersisto OAuth 2.0 / OpenID Connect interoperability, durab
 
 # DS013 OAuth / OpenID Connect
 
-## Product boundary
+## Introduction
 
 UserPersisto is an OAuth 2.0 authorization server and OpenID Connect provider for administrator-registered applications. It uses the pinned `oidc-provider` engine for protocol processing and Persisto for application metadata, signing material, browser sessions, interactions, grants, authorization codes, and tokens. The existing Ploinky SSO interface is retained. External OAuth tokens do not become Ploinky session cookies, verified invocation grants, or permission to access protected Explorer routes.
 
 This contract covers a practical interoperable subset: authorization code with S256 PKCE, discovery, RS256 ID tokens, UserInfo, refresh-token rotation, confidential client credentials, token introspection and revocation, and RP-initiated logout. It does not claim OpenID certification or full Keycloak feature parity. The authoritative discovery document describes the enabled features; applications must not assume features from a different provider's discovery response.
 
-## Issuer and deployment configuration
+## Core Content
+
+### Issuer and deployment configuration
 
 | Configuration | Contract |
 | --- | --- |
@@ -26,7 +28,7 @@ The agent manifest declares a generic `publicProtocol` route boundary. Ploinky p
 
 Router deployments require the accompanying Ploinky `publicProtocol` implementation and UserPersisto changes together. Installing the agent alone on an older Router does not establish the required public protocol boundary. Ploinky's normal dependency preparation installs the declared provider package before mounting runtime dependencies; the agent's installation hook must not rewrite that mounted dependency tree.
 
-## Standard endpoints
+### Standard endpoints
 
 Paths in this table are relative to the configured issuer. Clients should discover them instead of assembling them from assumptions.
 
@@ -44,7 +46,7 @@ Paths in this table are relative to the configured issuer. Clients should discov
 
 Discovery and JWKS are public resources. Token endpoints accept standard OAuth client authentication: `client_secret_basic`, `client_secret_post`, or `none` for registered public clients. Unknown clients, disabled clients, invalid secrets, unsupported grants, redirect mismatch, missing/invalid PKCE, expired codes, and replayed codes fail before a token is issued. Confidential clients also use PKCE for authorization-code requests.
 
-## Application administration
+### Application administration
 
 Every application tool resolves the acting user from verified runtime invocation context and re-reads the persisted `admin.agentSettings.manage` capability. Caller-supplied actor, roles, or capability fields cannot authorize an operation. Dynamic client registration is disabled.
 
@@ -67,27 +69,62 @@ The Administration Applications panel is available to administrators, under **Se
 
 A generated confidential secret is visible only in the create/rotation response and a transient copyable field. It is never retained in the presenter state, browser storage, application list, or logs. Refreshing, changing panels, dismissing the field, closing the modal, or losing administrator status clears the displayed secret. Applications must save it immediately in their own server-side secret store. Rotating a secret requires coordinating the relying application's deployment; it does not retrieve the previous value.
 
-## User authentication and consent
+### User authentication and consent
 
 OIDC interactions are bound to the initiating browser and a live engine interaction. HTTP-only, SameSite=Lax cookies are secure on HTTPS, and signed using durable cookie keys. Login and consent mutations require the current interaction proof and accepted same-origin browser context. An interaction URL or copied callback alone is insufficient to authenticate another browser. Redirect URLs are taken from the validated authorization request, never from an arbitrary form destination.
 
 Browser responses use `Referrer-Policy: same-origin`: cross-origin destinations receive no referrer, while same-origin form submissions retain the `Origin` required by interaction CSRF checks. Interaction CSP allows form submission to the provider and the origin of that interaction's already validated callback, because browsers apply `form-action` to the subsequent authorization redirect chain. It does not allow arbitrary external form destinations. POST bodies are limited to 56 KiB and a ten-second read deadline before entering the persistence scope. An incomplete oversized or timed-out request receives its error response and then closes its connection and body reader.
 
-Password, email-code, TOTP, and passkey authentication reuse UserPersisto's existing credential checks and persisted policy. Only enabled methods are offered and accepted. Email-code authentication cannot create an unknown account. TOTP and passkey authentication require an existing enrollment, which the account dashboard and My Account Profile panel provide as specified in DS012. Registration remains a distinct email/password action governed by DS012's password and later-registration rules, defaulting to `selfRegistered` with dashboard-only access. OIDC registration cannot create the initial administrator: an empty user store hides registration and rejects account creation inside the serialized user-registration operation. The existing Ploinky first-owner setup must be completed separately. Disabling registration hides and rejects it, including submissions from a form opened before the policy changed. Recovery, step-up authentication, and verified-email workflows remain outside this scope.
+Password, email-code, TOTP, and passkey authentication reuse UserPersisto's existing credential checks and persisted policy. Only enabled methods are offered and accepted. Email-code authentication cannot create an unknown account. TOTP and passkey authentication require an existing enrollment, which the account dashboard and My Account Profile panel provide as specified in DS012. Registration remains a distinct email/password action governed by DS012's password and later-registration rules, defaulting to `selfRegistered` with dashboard-only access. OIDC registration cannot create the initial administrator: an empty user store hides registration and rejects account creation inside the serialized user-registration operation. The existing Ploinky first-owner setup must be completed separately. Disabling registration hides and rejects it, including submissions from a form opened before the policy changed. Recovery, step-up authentication and general email verification remain outside this scope; the bounded Google new-registration mailbox prerequisite below is separate from email-code login.
 
-An authorization request may include the optional UI extension `screen_hint=signup`. If the engine requires a login interaction and password self-registration is available, the page starts with **Create your account**, an email and new-password form, and an **Already registered? Sign in** disclosure containing the enabled sign-in methods. Absent or unrecognized hints preserve the sign-in-first page. Password sign-in and registration failures display the attempted form; no hint changes the registration role, enables a disabled method, forces a new login for an existing provider session, or bypasses consent. The hint is retained by the provider's authorization engine and is not taken from arbitrary interaction-page query parameters.
+An authorization request may include the optional UI extension `screen_hint=signup`. If the engine requires a login interaction and an effective self-registration method is available, the page starts with **Create your account**, the enabled password form and/or Google option, and an **Already registered? Sign in** disclosure containing the enabled sign-in methods. Absent or unrecognized hints preserve the sign-in-first page. Password sign-in and registration failures display the attempted form; no hint changes the registration role, enables a disabled method, forces a new login for an existing provider session, or bypasses consent. The hint is retained by the provider's authorization engine and is not taken from arbitrary interaction-page query parameters.
 
-Applications may open the ordinary authorization URL in a separate browser popup; no popup-specific protocol parameter or embedded form API is required. Registration and login remain provider-owned, same-origin form submissions. The relying application's registered callback must complete PKCE exchange and verify its own state, nonce, issuer, audience, signature, and token expiry before notifying its opener. The provider does not send credentials or identity messages directly to an opener; iframe embedding remains disabled.
+Applications may open the ordinary authorization URL in a separate browser popup; no popup-specific protocol parameter or embedded form API is required. Registration and login remain provider-owned, same-origin form submissions. The relying application must complete PKCE exchange and verify its own state, nonce, issuer, audience, signature, and token expiry before publishing its own session; a callback may relay only the bounded response URL to the original tab for those checks. The provider does not send credentials or identity messages directly to an opener; iframe embedding remains disabled.
 
 After authentication, the user sees the registered application name and requested scopes and explicitly accepts or denies consent. Consent is not automatically accepted for administrator-owned applications. The grant records the approved scopes and account. A denied request returns an OAuth error only to the validated redirect URI. `state` is echoed according to the protocol; the relying party must verify it. OIDC requests should also send and validate a fresh `nonce`.
 
-## Claims and token lifecycle
+### Optional Google authentication
+
+UserPersisto is a confidential Google Web application client for the canonical issuer `https://accounts.google.com`; it remains a separate OIDC provider for ScriptaHub and other registered applications. The two sets of client IDs, issuer, state, nonce, PKCE verifier, callback and cookies are independent. The pinned runtime `openid-client` 6.8.7 performs discovery, `ClientSecretPost`, authorization-code exchange and S256 PKCE. Nonrepudiation checks are explicitly enabled, requiring an ID token with RS256 signature validated against JWKS plus exact issuer/audience, authorized party when present or required, nonce, expiry and issuance-time sanity. Production HTTPS and issuer verification cannot be disabled or selected by requests; controlled providers are injected only during test construction. The request uses only `openid email`, code/query mode, and never requests offline Google access or stores Google access/refresh tokens. Provider errors are rendered neutrally without upstream prose or credentials.
+
+Optional configuration is `USERPERSISTO_GOOGLE_CLIENT_ID`, operator-provided `USERPERSISTO_GOOGLE_CLIENT_SECRET` and exact `USERPERSISTO_GOOGLE_REDIRECT_URI`. The validator accepts a canonical HTTPS callback or exact configured loopback HTTP URL ending in `/service/auth/google/callback`. Supported browser deployments require the full Router path `/base-agent-additional-server/userPersistoAgent/7000/service/auth/google/callback`; isolated direct-port HTTP fixtures are testing infrastructure, not the browser runtime contract. The administrator-only `userpersisto_google_status` requires current `admin.agentSettings.manage` and returns enabled/configured/available flags, missing variable names, callback/client ID, configuration source, secret-presence boolean and a safe readiness reason. Secrets have no browser editing or masking-fragment field and remain in Ploinky configuration, separate from billing settings. Google starts disabled; enabling it must preserve a usable administrator sign-in method. Configuration fingerprint changes and method disabling invalidate pending completion.
+
+Each `googleAuthTransaction` is durable and indexed by its random state's hash. Its encrypted payload binds independent browser-proof hash, nonce, verifier, exact configured callback/client, configuration fingerprint, original Explorer request/core state or OIDC UID/client context, and bounded proof/confirmation state. AES-256-GCM uses the retained settings key and Google-specific authenticated context. A distinct HttpOnly, host-only, SameSite=Lax cookie per attempt is scoped to the Router-visible UserPersisto `/service/` prefix; Secure is mandatory on HTTPS and non-Secure is restricted to configured loopback HTTP. Never use Domain, readable storage or a `__Host-` name with a narrower path. State/handle is a selector, never proof. The deadline is at most five minutes and the parent's remaining lifetime; no restart/resume extends it.
+
+| Internal route | Contract |
+| --- | --- |
+| `POST /service/auth/google/start` | Exact-origin JSON Explorer start; retains provider request ID separately from original Router state. Rejects caller-selected issuer, callback, role and account. |
+| `POST /service/oidc/interaction/:uid/google` | Existing interaction cookie, Origin and CSRF checks; starts Google inside the existing popup. |
+| `GET /service/auth/google/callback` | Handles explicitly before auth static fallback; validates state, browser proof, expiry and fingerprint, durably claims exchange once, then verifies Google outside persistence locks. |
+| `GET /service/auth/google/resume/:handle` | Rechecks retained Explorer login request and proof before local resolution/completion. |
+| `GET /service/oidc/interaction/:uid/google-resume?transaction=:handle` | Returns to original interaction cookie path, revalidates `interactionDetails`, original UID/client and proof before resolution. |
+| Resume action POSTs | Authenticate/challenge/confirm-link/send-email-proof/verify-email-proof/cancel require exact Origin, transaction proof, purpose-bound CSRF and original parent; bodies do not choose a target or destination. |
+
+Missing/wrong proof must not consume another browser's valid attempt. Duplicate critical parameters, simultaneous code/error, expired state, changed configuration and replay reject. Durable `pending` survives restart while proof/parent/deadline remain valid. A claimed `exchanging` transaction is nonretryable after ambiguous network or process failure; start fresh. Durable verified identity may resume without exchanging again. Consumed/failed/cancelled tombstones retain replay rejection through original expiry, erasing verifier/nonce/claims when no longer required; bounded ordinary reads/writes clean expiry without an idle timer.
+
+Google verification resolves local identity under DS012's registration and collision rules before downstream success. The terminal transaction transition is prepared and validated before identity staging under one continuous persistence scope. Expiry while staging cannot poison otherwise valid storage; the complete identity may persist, but no handoff is issued. Google policy, configuration fingerprint and deadline are checked again in the same persistence scope as downstream completion, so a queued disable or rotation takes effect before a new result is issued. Passkey reauthentication retains the existing credential's RP ID and exact origin validation; linking cannot change either to bypass browser eligibility. WebAuthn requires a relying-party domain, so the IP-address preview cannot establish native passkey acceptance. Use a configured hostname with matching credentials and callback registrations; `localhost` is available for isolated browser tests. See the [WebAuthn RP ID requirements](https://www.w3.org/TR/webauthn-3/#rp-id).
+
+OIDC resumes only through the original engine's `interactionFinished` using the local account and an accurate federated method marker. Current account and client checks and ordinary application consent remain mandatory; Google consent never grants ScriptaHub scopes. Explorer issues its existing SSO handoff with the retained provider request, then returns a validated relative `/auth/callback` preserving original Router core state. No Google handler sets a Ploinky session cookie. UserPersisto cannot inspect Router-only in-memory pending state: a Router restart may reject the later handoff after a complete local identity commit. Fresh login reuses that binding and no failed callback creates a Router session.
+
+The Google auth wildcard retains guest transport admission; it does not gain an overlapping public-route override. Local redirects are fixed same-origin relative paths with the public Router prefix; Google authorization uses same-origin initiation fetch followed by explicit navigation to the verified HTTPS URL. The server-rendered OIDC Google button remains disabled until its submit handler is installed; an early click while the deferred script loads must not submit the JSON initiation endpoint as a native navigation. OIDC cookie paths stay unchanged. Callback/redirect responses use no-store, no-referrer, no third-party assets and no code/token logging. Google resume forms and ordinary interaction pages use `Referrer-Policy: same-origin` so native form POSTs retain the exact Origin required for CSRF checks. OIDC resume form CSP permits the retained, validated client callback origin through the authorization redirect chain; it cannot select an arbitrary destination. Framing remains denied.
+
+### ScriptaHub popup completion and cancellation
+
+Authentication and its action callers negotiate an explicit grant API version and action owner. An incompatible cached caller/provider pair cannot begin sign-in or publish a protected action; it shows reload guidance. Reader iframe delegation requires the same version from its parent, and current generated pages refresh shared script version queries when this contract changes.
+
+The ScriptaHub original tab retains outer PKCE/state/nonce, exchanges UserPersisto's code, verifies tokens and reads current UserInfo. Its callback only relays the bounded URL through strict origin/source/state `postMessage` and a same-origin BroadcastChannel keyed by unpredictable state. Both transports validate exact callback origin/path and one state, deliver at most once and acknowledge delivery only. Missing or throwing BroadcastChannel retains strict opener transport; both transports unavailable yields retry guidance and no local success. Apparent `popup.closed` after COOP is advisory; no iframe or persistent localStorage relay is introduced.
+
+Original-tab Cancel, an attempt generation and a monotonic whole-attempt deadline cover configuration, discovery, current-account validation, authorization, token exchange, UserInfo and delayed Continue. Cancellation settles promptly and invalidates local publication even if network work completes later. Every await, navigation, shared-state write and cleanup checks generation/ownership and remaining lifetime. Late old errors cannot clear a newer or unrelated valid session; stale finalizers cannot erase a retry's state/UI.
+
+Sign-in produces a private verified candidate session. `requireAccount` returns a one-shot action grant whose synchronous publication rechecks current attempt, expiry, cancellation and token freshness, commits the candidate, consumes the grant and performs the exact retained action without an intervening await. The grant remains cancellable until publication; failure cannot authorize automatic replay. PDF destination, edition/language and modified-click Continue stay bound to the original action; stale click/auxclick cannot navigate. Feedback rechecks connected form, latest draft, validity and agreement immediately before its mail handoff. Anonymous reading and direct PDF URLs remain public. Cancel governs local ScriptaHub session/action publication, never rollback of remote Google/UserPersisto commits. Closing/reloading the original tab loses the pending action by design.
+
+### Claims and token lifecycle
 
 | Scope | Claims or effect |
 | --- | --- |
 | `openid` | OIDC subject identifier and ID token. `sub` is the durable UserPersisto user ID. |
 | `profile` | `name` and `preferred_username` when available. |
-| `email` | `email` and truthful `email_verified` state. This implementation does not introduce email verification. |
+| `email` | `email` and truthful `email_verified` state from the local profile, including accepted current Google-registration proof. It does not claim universal verification of historical accounts. |
 | `roles` | Current persisted role IDs. |
 | `capabilities` | Current effective persisted capabilities. |
 | `offline_access` | Allows a refresh token only when the client also permits the refresh-token grant, the authorization request uses `prompt=consent`, and the user consents. |
@@ -103,7 +140,7 @@ API consumers use authenticated introspection under the confidential client that
 
 RP-initiated logout clears the provider's browser session through the confirmation flow. Only registered post-logout redirect URIs are accepted. The relying application must separately clear its own session. The existing custom Ploinky SSO session is separate; logging out of an OIDC relying party does not claim to log out every Ploinky or third-party application.
 
-## Durability and failure behavior
+### Durability and failure behavior
 
 The protocol adapter encrypts stored payloads, client secrets, RS256 private signing material, and cookie keys using AES-256-GCM derived from the stable settings encryption key, with authenticated storage context. Persisto's snapshot makes writes durable. The adapter supports expiry, UID/user-code lookup where required by the engine, token consumption, and grant-wide revocation without relying on process memory. Consumed records remain available for replay detection until their expiry. Client enable/disable/update/delete and secret rotation must be visible without restarting the provider.
 
@@ -111,7 +148,7 @@ Expired records are removed when looked up and through a bounded sweep on ordina
 
 Storage errors fail closed and follow DS012's poisoned-store behavior; an unpersisted code, grant, key, or token must never be acknowledged as durable success. A mismatched or unavailable encryption key must fail instead of silently generating replacement material. Preserve both the encrypted snapshot and its key in backups. Multiple writers and HA failover remain unsupported.
 
-## Setup and client examples
+### Setup and client examples
 
 Complete the existing first-owner setup, retain the generated settings key, configure the issuer on the UserPersisto agent, and restart it. From an administrator session, open **Settings → Administration → Applications** and verify the displayed issuer/discovery URL. Register exact application callbacks and save any generated confidential secret in the application server's secret store.
 
@@ -151,14 +188,18 @@ A server application uses `client_secret_basic` (or `client_secret_post`) with t
 
 That service submits `grant_type=client_credentials&scope=api` to the discovered token endpoint with HTTP Basic client authentication. It receives an opaque access token, not an ID token or a human-user identity. Its resource handler must explicitly validate current activity through the discovered introspection endpoint using the same client's confidential credentials before applying its own API policy.
 
-## Verification contract and deliberate deferrals
+### Verification contract and deliberate deferrals
 
 Verification must exercise real protocol HTTP requests with a standards client or equivalent independent token verification, not only mocks of engine methods. Required cases include exact discovery/issuer URLs behind the Router, public JWKS with stable restart identity, authorization and nonce, S256 PKCE failures, exact redirect rejection, confidential client authentication, token and refresh replay, expiry, scope-filtered UserInfo, current blocked-user and disabled-client enforcement, cross-client introspection/revocation rejection, machine grants, consent denial, browser/CSRF binding, enabled-method policy, registration, logout, and persistence failure/restart behavior.
 
 Administrator tests must reject untrusted invocation context and nonadministrators, validate malformed metadata, enforce public/confidential grant restrictions, prove secret-at-rest protection and one-time responses, and verify update/disable/delete/rotation take effect without provider restart. UI tests cover structured creation/editing, pages beyond 500 clients, deletion from the final page, failed saves preserving inputs, HTML escaping, secret clearing, and loss of authorization during a request. Browser verification covers real form interactions and visible error/success states. Router tests prove protocol requests work without a Ploinky session while adjacent routes remain protected.
 
-Dynamic client registration, implicit/hybrid and password grants, device authorization, SAML, upstream identity federation/social login, advanced MFA enrollment, password recovery, email verification, DPoP, PAR/JAR, resource indicators, automated signing-key rotation, multi-tenant realms, high availability, and OpenID conformance certification remain outside this revision. These are explicit scope boundaries, not undocumented assumptions about Keycloak equivalence.
+Dynamic client registration, implicit/hybrid and password grants, device authorization, SAML, general upstream identity federation beyond the pinned Google client, advanced MFA enrollment, password recovery, general email verification, DPoP, PAR/JAR, resource indicators, automated signing-key rotation, multi-tenant realms, high availability, and OpenID conformance certification remain outside this revision. These are explicit scope boundaries, not undocumented assumptions about Keycloak equivalence.
 
-## Standards references
+### Standards references
 
 The provider contract follows the authorization-code and identity concepts in [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html), PKCE in [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636.html), current security guidance in [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.html), and the logout flow in [OpenID Connect RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html). This implementation's narrower supported profile and verification evidence govern claims of compatibility.
+
+## Conclusion
+
+UserPersisto remains the issuer of local application identity and consent. Its optional Google client uses a separate, verified browser transaction before completing the original provider interaction; protocol, persistence and cancellation boundaries remain explicit.

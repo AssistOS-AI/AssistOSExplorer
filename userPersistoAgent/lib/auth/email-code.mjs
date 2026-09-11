@@ -12,7 +12,7 @@ const MIN_START_INTERVAL_MS = 60 * 1000;
 const MAX_RATE_LIMIT_SUBJECTS = 10_000;
 const lastStartedAt = new Map();
 
-function hashCode(code, challengeId) {
+export function hashCode(code, challengeId) {
     const key = process.env.USERPERSISTO_SETTINGS_KEY || '';
     if (!key) {
         throw new Error('USERPERSISTO_SETTINGS_KEY is required to hash auth codes.');
@@ -20,7 +20,7 @@ function hashCode(code, challengeId) {
     return createHmac('sha256', key).update(`${challengeId}:${code}`).digest('base64url');
 }
 
-function codeHashMatches(code, challengeId, expectedHash) {
+export function codeHashMatches(code, challengeId, expectedHash) {
     const actual = Buffer.from(hashCode(code, challengeId));
     const expected = Buffer.from(String(expectedHash || ''));
     return actual.length === expected.length && timingSafeEqual(actual, expected);
@@ -90,7 +90,7 @@ export async function startEmailCode({ email, purpose = 'login', correlationId =
     return { challengeId, code, user: sanitizeUser(user) };
 }
 
-export function verifyEmailCode({ challengeId, code }) {
+export function verifyEmailCode({ challengeId, code, correlationId }) {
     const normalizedChallengeId = String(challengeId || '');
     return serialize(`email-code:${normalizedChallengeId}`, async () => {
         const store = await getStore();
@@ -98,6 +98,10 @@ export function verifyEmailCode({ challengeId, code }) {
             return { ok: false, reason: 'challenge_not_found' };
         }
         const challenge = await store.getAuthChallengeByChallengeId(normalizedChallengeId);
+        // Email proof belonging to enrollment or federation is never login proof.
+        if (challenge.purpose !== 'login' || (correlationId !== undefined && challenge.correlationId !== correlationId)) {
+            return { ok: false, reason: 'challenge_not_found' };
+        }
         if (new Date(challenge.expiresAt).getTime() < Date.now()) {
             await store.deleteAuthChallenge(challenge.id);
             await flush();

@@ -10,6 +10,12 @@ export const SNAPSHOT_FILE = '.userpersisto.snapshot.json';
 const LOCK_FILE = '.userpersisto.writer.json';
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const liveOwnerTokens = new Set();
+let faultInjector = null;
+
+// Explicit test injection; configuration and HTTP input cannot enable faults.
+export function setDurableStorageFaultInjectorForTests(injector = null) {
+    faultInjector = injector;
+}
 
 function unavailable(cause) {
     return Object.assign(new Error('Durable storage is unavailable; restart after repairing storage.', { cause }), {
@@ -161,6 +167,10 @@ export async function createDurableStorage(folder) {
 
     let failure = null;
     let closed = false;
+    const poison = (cause) => {
+        failure ||= unavailable(cause);
+        return failure;
+    };
     const check = () => {
         if (failure) throw failure;
         if (closed) throw unavailable(new Error('Storage is closed.'));
@@ -226,6 +236,7 @@ export async function createDurableStorage(folder) {
                 if (await readFile(lockPath, 'utf8') !== owner) throw new Error('Persisto writer lock was replaced.');
                 await strategy.saveAll();
                 if (!changed) return;
+                await faultInjector?.('before-snapshot-write');
                 const payload = JSON.stringify(objects);
                 temporaryPath = join(folder, `.userpersisto-${randomUUID()}.tmp`);
                 const file = await open(temporaryPath, 'wx', 0o600);
@@ -235,15 +246,16 @@ export async function createDurableStorage(folder) {
                 } finally {
                     await file.close();
                 }
+                await faultInjector?.('before-snapshot-rename');
                 await rename(temporaryPath, join(folder, SNAPSHOT_FILE));
+                await faultInjector?.('after-snapshot-rename');
                 const directory = await open(folder, 'r');
                 try { await directory.sync(); } finally { await directory.close(); }
                 changed = false;
             } catch (cause) {
                 // Dirty flags may already be cleared by Persisto. Fail closed so
                 // a cached retry cannot acknowledge an uncommitted operation.
-                failure = unavailable(cause);
-                throw failure;
+                throw poison(cause);
             } finally {
                 if (temporaryPath) await unlink(temporaryPath).catch(() => {});
             }
@@ -260,7 +272,7 @@ export async function createDurableStorage(folder) {
                 return typeof target[name] === 'function' ? target[name].bind(target) : target[name];
             },
         });
-        return { storage: facade, check, abandon: () => { closed = true; release(); } };
+        return { storage: facade, check, poison, abandon: () => { closed = true; release(); } };
     } catch (cause) {
         release();
         throw unavailable(cause);

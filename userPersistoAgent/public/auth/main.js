@@ -211,6 +211,21 @@ function viewSwitch(prompt, label, view) {
     ]);
 }
 
+function googleButton(form) {
+    return element('button', { type: 'button', className: 'google-button', text: 'Continue with Google', onClick: async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            const result = await request('google/start', { requestId, state });
+            if (!isCurrentForm(form)) return;
+            window.location.assign(result.authorizationUrl);
+        } catch {
+            setStatus(form, 'Unable to continue with Google. Try another sign-in method.', true);
+            button.disabled = false;
+        }
+    } }, [element('span', { className: 'google-icon', 'aria-hidden': 'true' })]);
+}
+
 function render() {
     // Sensitive inputs never survive a view or method switch; the entered email address is carried over.
     const enteredEmail = root.querySelector('input[name="email"]')?.value || '';
@@ -218,7 +233,9 @@ function render() {
     passkeyController?.abort();
     passkeyController = null;
     emailChallengeId = '';
-    const canRegister = setup.selfRegistrationEnabled && methods.includes('password');
+    const googleAvailable = !setup.needsInitialAdmin && methods.includes('google');
+    const passwordRegistration = setup.needsInitialAdmin || methods.includes('password');
+    const canRegister = setup.selfRegistrationEnabled && (passwordRegistration || googleAvailable);
     const registrationTitle = setup.needsInitialAdmin ? 'Create the installation owner' : 'Create an account';
     const registrationCopy = setup.needsInitialAdmin
         ? 'The first account becomes administrator. Only email and password are required.'
@@ -236,8 +253,12 @@ function render() {
         submitRegistration(registrationForm);
     });
     if (setup.needsInitialAdmin || (currentView === 'register' && canRegister)) {
+        if (!passwordRegistration) {
+            registrationForm.querySelectorAll('label, input, button[type="submit"]').forEach((node) => node.remove());
+        }
+        if (googleAvailable) registrationForm.append(googleButton(registrationForm));
         if (!setup.needsInitialAdmin) registrationForm.append(viewSwitch('Already have an account?', 'Sign in', 'login'));
-        registrationForm.querySelector('[name="email"]').value = enteredEmail;
+        if (registrationForm.querySelector('[name="email"]')) registrationForm.querySelector('[name="email"]').value = enteredEmail;
         root.replaceChildren(registrationForm);
         return;
     }
@@ -294,7 +315,7 @@ function render() {
     const panels = { password: passwordForm, emailCode: emailCodeForm, passkey: passkeyForm, totp: totpForm };
     const enabledMethods = methodOrder();
     if (!enabledMethods.includes(selectedMethod)) selectedMethod = enabledMethods[0];
-    const form = panels[selectedMethod];
+    const form = panels[selectedMethod] || (googleAvailable ? element('form', { className: 'auth-panel' }, [element('h1', { text: 'Sign in', tabindex: '-1' })]) : null);
     if (!form) {
         root.replaceChildren(element('p', { className: 'auth-panel', text: 'No sign-in methods are available. Contact an administrator.' }));
         return;
@@ -312,8 +333,9 @@ function render() {
         const [heading, ...fields] = form.children;
         form.replaceChildren(heading, element('label', { for: 'auth-method', text: 'Sign-in method' }), selector, ...fields);
     }
+    if (googleAvailable) form.append(googleButton(form));
     if (canRegister) form.append(viewSwitch('New here?', 'Create account', 'register'));
-    form.querySelector('[name="email"]').value = enteredEmail;
+    if (form.querySelector('[name="email"]')) form.querySelector('[name="email"]').value = enteredEmail;
     root.replaceChildren(form);
 }
 
@@ -321,7 +343,7 @@ try {
     const [methodsResponse, setupResponse] = await Promise.all([fetch('methods'), fetch('setup')]);
     const [methodsData, setupData] = await Promise.all([methodsResponse.json(), setupResponse.json()]);
     if (methodsResponse.ok && methodsData.ok !== false) {
-        methods = Array.isArray(methodsData.methods) && methodsData.methods.length ? methodsData.methods : methods;
+        methods = Array.isArray(methodsData.methods) ? methodsData.methods : methods;
         defaultMethod = methodsData.defaultMethod || defaultMethod;
     }
     if (setupResponse.ok && setupData.ok !== false) setup = { ...setup, ...setupData };
