@@ -372,7 +372,9 @@ function createUpgradeForwarder({
 }
 
 function defaultDocumentServerCommand(env) {
-  return String(env?.ONLYOFFICE_DOCUMENT_SERVER_COMMAND || '/bin/bash scripts/run-document-server-with-autoassembly.sh').trim();
+  return env?.ONLYOFFICE_DOCUMENT_SERVER_COMMAND
+    ? String(env.ONLYOFFICE_DOCUMENT_SERVER_COMMAND).trim()
+    : undefined;
 }
 
 export function startDocumentServerProcess({
@@ -381,11 +383,14 @@ export function startDocumentServerProcess({
   signalProcessGroup = process.kill,
   command = defaultDocumentServerCommand(env),
 } = {}) {
-  if (!command) {
+  if (command !== undefined && !command) {
     throw new Error('OnlyOffice document server command is required.');
   }
 
-  const child = spawnProcess('/bin/bash', ['-lc', command], {
+  const args = command === undefined
+    ? [fileURLToPath(new URL('../scripts/run-document-server-with-autoassembly.sh', import.meta.url))]
+    : ['-lc', command];
+  const child = spawnProcess('/bin/bash', args, {
     detached: true,
     env,
     stdio: 'inherit',
