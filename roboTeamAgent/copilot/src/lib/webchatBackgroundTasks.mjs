@@ -229,6 +229,7 @@ export async function createWebchatBackgroundTaskManager({
                     task: {
                         id: record.id,
                         targetAgent: record.targetAgent,
+                        robotName: record.robotName,
                         remoteTaskId: record.remoteTaskId,
                         toolName: record.toolName,
                         description: record.description,
@@ -308,6 +309,7 @@ export async function createWebchatBackgroundTaskManager({
             id,
             ...association(existing || origin),
             targetAgent: agentName,
+            robotName: trim(args?.robotName || metadata?.robotName || existing?.robotName).slice(0, 160),
             remoteTaskId: taskId,
             toolName: trim(toolName) || trim(metadata?.toolName),
             description: existing?.description || describeTask(agentName, toolName, args),

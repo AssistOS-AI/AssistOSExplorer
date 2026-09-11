@@ -333,3 +333,14 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; }
 }
+
+.skill-recommendations { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
+.recommended-repository { display: flex; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.recommended-repository-info { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.recommended-repository p { margin: 4px 0 0; }
+.recommended-repository > button { flex-shrink: 0; }
+
+.skillset-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: start; }
+.skillset-item > strong { grid-column: 1; grid-row: 1; }
+.skillset-item > .button { grid-column: 2; grid-row: 1; justify-self: end; }
+.skillset-item > p, .skillset-item > .skill-members { grid-column: 1 / -1; }

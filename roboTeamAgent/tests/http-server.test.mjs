@@ -94,10 +94,11 @@ test('skillset mutations are admin-only, including rejection of internal agents'
     const fixture = await startFixture({ skillsets: {
         add: async (...args) => calls.push(['add', ...args]),
         remove: async (...args) => calls.push(['remove', ...args]),
+        setSkillsetEnabled: async (...args) => calls.push(['toggle', ...args]),
     } });
     t.after(fixture.close);
     const robot = await fixture.robotStore.create({ name: 'Skills', specialization: 'Documents' });
-    for (const method of ['POST', 'DELETE']) {
+    for (const method of ['POST', 'DELETE', 'PATCH']) {
         for (const headers of [{ 'x-ploinky-auth-info': authHeader('user') }, { 'x-roboteam-internal-token': 'test-token' }]) {
             const response = await fetch(`${fixture.baseUrl}/api/robots/${robot.id}/skillsets`, {
                 method, headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'docs' }),
@@ -110,7 +111,13 @@ test('skillset mutations are admin-only, including rejection of internal agents'
         });
         assert.equal(response.status, 200);
     }
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
+    const removeUrl = `${fixture.baseUrl}/api/robots/${robot.id}/skillsets?name=repo-4d529e42-fad0-43b7-b357-95029c882355`;
+    const denied = await fetch(removeUrl, { method: 'DELETE', headers: { 'x-ploinky-auth-info': authHeader('user') } });
+    assert.equal(denied.status, 403);
+    const removed = await fetch(removeUrl, { method: 'DELETE', headers: { 'x-ploinky-auth-info': authHeader('admin', ['admin']) } });
+    assert.equal(removed.status, 200);
+    assert.deepEqual(calls.at(-1), ['remove', robot.id, 'repo-4d529e42-fad0-43b7-b357-95029c882355']);
 });
 
 test('task starts validate allowed policy intent and ignore caller-supplied snapshots and policy references', async (t) => {

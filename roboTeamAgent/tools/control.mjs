@@ -180,7 +180,15 @@ async function main() {
     let result;
 
     if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, specialization: input.specialization || '' }, user });
-    else if (operation === 'robot-list') result = await request('/api/robots', { user });
+    else if (operation === 'robot-list') {
+        result = await request('/api/robots', { user });
+        // Repository management includes disabled combinations; discovery must omit them.
+        for (const robot of result.robots || []) {
+            for (const repo of robot.repositories || []) {
+                repo.skillsets = (repo.skillsets || []).filter(set => set.enabled !== false);
+            }
+        }
+    }
     else if (operation === 'message-task') result = await request('/api/control', {
         method: 'POST', body: { operation, ...decodeContinuationHandle(input.handle), prompt: input.prompt }, user,
         timeoutMs: 40000,

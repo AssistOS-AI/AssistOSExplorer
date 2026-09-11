@@ -16,9 +16,11 @@ export function copilotSkillset() {
 }
 
 export function availableRepositories(robot) {
+    const imported = (robot.skillsets || []).filter(repo => repo.name !== 'copilot');
+    if (robot.name !== 'default') return imported;
     const copilot = copilotSkillset();
     const definitions = skillsetMDParser(fs.readFileSync(path.join(copilotSkillsRoot, 'skillsets.md'), 'utf8'), copilot.skills);
-    return [{ ...copilot, definitions }, ...(robot.skillsets || []).filter(repo => repo.name !== 'copilot')];
+    return [{ ...copilot, definitions }, ...imported];
 }
 
 export function availableSkillsets(robot) {

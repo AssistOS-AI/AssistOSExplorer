@@ -538,7 +538,7 @@ test('overlapping launches notify only their initiating turn and retain session 
         let release;
         const gate = new Promise((resolve) => { release = resolve; });
         const event = (id) => ({ agentName: 'worker', toolName: 'execute-task', taskId: id,
-            arguments: { prompt: id }, metadata: { status: 'queued' }, getTaskStatus: () => new Promise(() => {}) });
+            arguments: { prompt: id, robotName: 'analyst' }, metadata: { status: 'queued' }, getTaskStatus: () => new Promise(() => {}) });
         const pendingAlpha = runWithSkillRuntimeOrigin(alpha, async () => {
             await gate;
             return observer(event('remote-alpha'));
@@ -555,6 +555,8 @@ test('overlapping launches notify only their initiating turn and retain session 
         ]);
         assert.equal(getTask(workspace, alphaResult.id).sessionId, 'alpha');
         assert.equal(getTask(workspace, betaResult.id).sessionId, 'beta');
+        assert.equal((await betaWaiter.promise).robotName, 'analyst');
+        assert.equal(getTask(workspace, betaResult.id).robotName, 'analyst');
     } finally {
         manager.close();
         fs.rmSync(workspace, { recursive: true, force: true });

@@ -142,6 +142,17 @@ export class RobotSkillsets {
         } finally { await fs.rm(stage, { recursive: true, force: true }); }
     }
 
+    async setSkillsetEnabled(robotId, { id, enabled }) {
+        if (typeof id !== 'string' || typeof enabled !== 'boolean') throw invalid('skillset id and boolean enabled are required');
+        return this.robotStore.withRobot(robotId, async (robot, save) => {
+            if (!availableSkillsets(robot).some(set => set.id === id)) throw invalid('skillset not found');
+            const disabled = new Set(robot.disabledSkillsets || []);
+            if (enabled) disabled.delete(id);
+            else disabled.add(id);
+            await save({ ...robot, disabledSkillsets: [...disabled] });
+        });
+    }
+
     async remove(robotId, name) {
         if (name === 'copilot' || name === 'workspace') throw invalid('copilot and workspace are reserved skill sources');
         selectionNames([name]);
@@ -231,15 +242,17 @@ export class RobotSkillsets {
 
 }
 
-export function publicSkillsets(robot) {
-    return availableSkillsets(robot).map(({ id, name, description, repository, skills }) => ({
+export function publicSkillsets(robot, { includeDisabled = false } = {}) {
+    const disabled = new Set(robot.disabledSkillsets || []);
+    return availableSkillsets(robot).filter(set => includeDisabled || !disabled.has(set.id)).map(({ id, name, description, repository, skills }) => ({
         id, name, description, repositoryId: repository.name, builtin: Boolean(repository.builtin),
+        ...(includeDisabled ? { enabled: !disabled.has(id) } : {}),
         skills: skills.map(skill => skill.name),
     }));
 }
 
 export function publicRepositories(robot) {
-    const sets = publicSkillsets(robot);
+    const sets = publicSkillsets(robot, { includeDisabled: true });
     return availableRepositories(robot).map(repo => ({
         id: repo.name, source: repo.source, builtin: Boolean(repo.builtin),
         skills: repo.skills.map(({ name, description }) => ({ name, description, id: `${repo.name}/${name}` })),

@@ -229,11 +229,12 @@ export function createRoboTeamServer(options) {
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
             }
             const skillsetsId = matchRobotPath(pathname, '/skillsets');
-            if (skillsetsId && ['POST', 'DELETE'].includes(req.method)) {
+            if (skillsetsId && ['POST', 'DELETE', 'PATCH'].includes(req.method)) {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
                 if (req.method === 'POST') await skillsets.add(skillsetsId, body);
-                else await skillsets.remove(skillsetsId, body.name);
+                else if (req.method === 'PATCH') await skillsets.setSkillsetEnabled(skillsetsId, body);
+                else await skillsets.remove(skillsetsId, url.searchParams.get('name') ?? body.name);
                 return sendJson(res, 200, { ok: true });
             }
             if (pathname === '/api/control' && req.method === 'POST') {

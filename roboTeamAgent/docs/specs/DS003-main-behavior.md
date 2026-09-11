@@ -32,7 +32,7 @@ The MCP interface consists of `robot_create`, `robot_list`, `robot_delete`, `ope
 
 RoboTeam must declare the CLI/WebChat entrypoint; Explorer must select `robot=default` and the current directory. Every robot must support concurrent independent CLI conversations with one execution lease per conversation. A Simple task must use the same conversational wrapper and create a separate persisted session. Continuing it must reuse its ALA/native session, pinned backend, cwd and saved skill path manifest.
 
-The robot must own account state and copilot storage. Old AchillesCLI data must not be migrated or deleted. The bundled copilot skillset must be available to every robot, automatically selected only for default. `/skills use` must select declared skillset IDs or qualified repository skills for that conversation. The registry must refuse robot deletion while a chat process or task retains its CLI usage lease.
+The robot must own account state and copilot storage. Old AchillesCLI data must not be migrated or deleted. The bundled copilot skillset must be available only to default, where it is automatically selected. `/skills use` must select declared skillset IDs or qualified repository skills for that conversation. The registry must refuse robot deletion while a chat process or task retains its CLI usage lease.
 
 ### Retained visible workstation
 

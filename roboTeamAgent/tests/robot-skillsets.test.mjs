@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
-import { RobotSkillsets, publicSkillsets, individualSkillRepositories } from '../server/robot-skillsets.mjs';
+import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from '../server/robot-skillsets.mjs';
 import { RuntimeManager } from '../server/runtime-manager.mjs';
 
 async function discoverSkills(roots) {
@@ -56,7 +56,26 @@ async function fixture(t) {
     return { root, dataDir, source, store, robot, skillsets, capture, releases };
 }
 
-test('copilot is available but delegated tasks mount it only when explicitly selected', async (t) => {
+test('disabled skillsets persist per robot and disappear only from discovery', async (t) => {
+    const f = await fixture(t);
+    await f.skillsets.add(f.robot.id, { name: 'documents', source: f.source });
+    const id = 'documents-set-1';
+    await f.skillsets.setSkillsetEnabled(f.robot.id, { id, enabled: false });
+    const saved = await f.store.get(f.robot.id);
+    assert.deepEqual(publicSkillsets(saved).map(set => set.id), ['documents-set-2']);
+    assert.equal(publicRepositories(saved)[0].skillsets[0].enabled, false);
+    assert.deepEqual(individualSkillRepositories(saved), [], 'disabled combinations must not leak through individual-skill fallback');
+    assert.equal((await f.capture(saved, { skillSets: [id] })).resolvedSkills.length, 2, 'saved task selections remain usable');
+    const other = await f.store.create({ name: 'Other', specialization: 'Reports' });
+    await f.skillsets.add(other.id, { name: 'documents', source: f.source });
+    assert.equal(publicSkillsets(await f.store.get(other.id)).length, 2);
+    await assert.rejects(f.skillsets.setSkillsetEnabled(f.robot.id, { id: 'missing', enabled: false }), /not found/);
+    await assert.rejects(f.skillsets.setSkillsetEnabled(f.robot.id, { id, enabled: 'false' }), /boolean/);
+    await f.skillsets.setSkillsetEnabled(f.robot.id, { id, enabled: true });
+    assert.equal(publicSkillsets(await f.store.get(f.robot.id)).length, 2);
+});
+
+test('copilot is registered only on default and rejects selection on other robots', async (t) => {
     const f = await fixture(t);
     const robot = await f.store.ensureDefaultRobot();
     const selected = await f.capture(robot, { skillSets: ['copilot'] });
@@ -68,8 +87,9 @@ test('copilot is available but delegated tasks mount it only when explicitly sel
     assert.ok(selected.resolvedSkills.every((name) => name.startsWith('copilot/')));
     const other = await f.capture(f.robot);
     assert.deepEqual(other.resolvedSkills, []);
-    const explicit = await f.capture(f.robot, { skills: ['copilot/launch-robot'] });
-    assert.deepEqual(explicit.resolvedSkills, ['copilot/launch-robot']);
+    assert.equal(publicSkillsets(f.robot).some(set => set.builtin), false);
+    await assert.rejects(f.capture(f.robot, { skills: ['copilot/launch-robot'] }), /unavailable|not available/);
+    await assert.rejects(f.capture(f.robot, { skillSets: ['copilot'] }), /unavailable|not available/);
     await assert.rejects(f.skillsets.remove(robot.id, 'copilot'), /reserved skill source/i);
 });
 
@@ -77,7 +97,7 @@ test('imports allowed catalogs and publishes only skill names and frontmatter de
     const { skillsets, robot, source, store } = await fixture(t);
     await skillsets.add(robot.id, { name: 'documents', description: 'Read and write documents', source });
     const all = publicSkillsets(await store.get(robot.id));
-    assert.equal(all.find((set) => set.id === 'copilot').skills.length, 3);
+    assert.equal(all.some(set => set.id === 'copilot'), false);
     const catalog = all.filter((set) => !set.builtin);
     assert.equal(catalog[0].skills.length, 2);
     assert.equal(catalog[0].skills[0], 'read-pdf');

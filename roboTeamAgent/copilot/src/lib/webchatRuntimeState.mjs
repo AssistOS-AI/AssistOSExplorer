@@ -5,6 +5,7 @@ export function createWebchatRuntimeStateEnvelope(model, { backend = null } = {}
         __webchatRuntimeState: 1,
         version: 1,
         backend,
+        ...(process.env.ROBOTEAM_COPILOT_ROBOT_NAME ? { robotName: process.env.ROBOTEAM_COPILOT_ROBOT_NAME } : {}),
         model: typeof model === 'string' && model.trim() ? model.trim() : null,
     };
 }

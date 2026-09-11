@@ -209,6 +209,7 @@ function normalizeTask(raw) {
             } } : {}),
         id: String(raw.id),
         targetAgent: String(raw.targetAgent || '').slice(0, 160),
+        ...(typeof raw.robotName === 'string' && raw.robotName.trim() ? { robotName: raw.robotName.trim().slice(0, 160) } : {}),
         remoteTaskId: String(raw.remoteTaskId || '').slice(0, 200),
         toolName: String(raw.toolName || '').slice(0, 160),
         description: String(raw.description || '').replace(/\s+/g, ' ').trim().slice(0, 240),
