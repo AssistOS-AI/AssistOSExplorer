@@ -37,6 +37,8 @@ function normalizeState(raw = {}) {
         manifestPath: raw.manifestPath || '',
         folderPath: raw.folderPath || '',
         installedSkills: Array.isArray(raw.installedSkills) ? raw.installedSkills : [],
+        skillOutputs: Array.isArray(raw.skillOutputs) ? raw.skillOutputs : [],
+        diagnostics: Array.isArray(raw.diagnostics) ? raw.diagnostics : [],
         skillRepositories: Array.isArray(raw.skillRepositories) ? raw.skillRepositories : [],
         repositories: repositories.map((repo) => ({
             url: String(repo.url || ''),
@@ -158,7 +160,8 @@ export class EditSkillsManifestModal {
             manifestPath,
             folderPath: this.folderPath,
             repositories,
-            installedSkills: Array.from(new Set(repositories.flatMap((repo) => repo.skills || []))).sort((left, right) => left.localeCompare(right)),
+            installedSkills: [],
+            diagnostics: [{ reason: 'Only manifest selections are available; installed output has not been verified.' }],
             skillRepositories: []
         };
     }
@@ -199,7 +202,7 @@ export class EditSkillsManifestModal {
                 this.state.skillRepositories = await this.loadMarketplaceSkillRepositories();
             }
             this.manifestPath = this.state.manifestPath || this.manifestPath;
-            this.setStatus('', '');
+            this.showExportStatus(null, '');
         } catch (error) {
             try {
                 const raw = await this.loadStateFromManifestFile();
@@ -260,6 +263,12 @@ export class EditSkillsManifestModal {
         this.statusEl.classList.toggle('is-info', type === 'info');
     }
 
+    showExportStatus(result, success) {
+        const diagnostics = [...(result?.exportResult?.diagnostics || []), ...(this.state.diagnostics || [])];
+        const messages = [...new Set(diagnostics.map((item) => `${item.name ? `${item.name}: ` : ''}${item.message || item.reason || 'Export conflict'}`))];
+        this.setStatus([success, ...messages].filter(Boolean).join(' '), 'info');
+    }
+
     render() {
         for (const repo of this.state.repositories) {
             if (repo.name && !this.seenRepos.has(repo.name)) {
@@ -318,6 +327,7 @@ export class EditSkillsManifestModal {
                         <div class="edit-skills-manifest-skill-row ${installed ? 'is-enabled' : 'is-disabled'}">
                             <div>
                                 <span class="edit-skills-manifest-skill-name">${escapeHtml(skill)}</span>
+                                <span>${escapeHtml(this.state.skillOutputs.find((item) => item.name === skill)?.state || 'not exported')} · ${installed ? 'selected for export' : 'not selected'}</span>
                             </div>
                             <button class="edit-skills-manifest-skill-action ${installed ? 'gray-button danger' : 'is-add'}" type="button" data-repo-name="${escapeHtml(repo.name)}" data-skill-name="${escapeHtml(skill)}" data-skill-enabled="${installed ? 'false' : 'true'}" ${this.busy ? 'disabled' : ''}>${installed ? 'Remove' : 'Add'}</button>
                         </div>
@@ -380,7 +390,7 @@ export class EditSkillsManifestModal {
             if (this.urlInput) this.urlInput.value = '';
             if (this.nameInput) this.nameInput.value = '';
             if (this.branchInput) this.branchInput.value = '';
-            this.setStatus(result?.message || `${name || url} added.`, 'info');
+            this.showExportStatus(result, result?.message || `${name || url} added.`);
         } catch (error) {
             this.setStatus(error?.message || 'Could not add repository.', 'error');
         } finally {
@@ -404,7 +414,7 @@ export class EditSkillsManifestModal {
         this.setBusy(true);
         this.setStatus(`${enabled ? 'Adding' : 'Removing'} ${skill}...`, 'info');
         try {
-            await this.callJsonTool('set_skills_manifest_skill_enabled', {
+            const result = await this.callJsonTool('set_skills_manifest_skill_enabled', {
                 folderPath: this.folderPath,
                 repoName,
                 skill,
@@ -412,7 +422,7 @@ export class EditSkillsManifestModal {
             });
             await this.refreshStateAfterMutation();
             this.changed = true;
-            this.setStatus(`${skill} ${enabled ? 'added' : 'removed'}.`, 'info');
+            this.showExportStatus(result, `${skill} ${enabled ? 'selected' : 'deselected'} for export.`);
         } catch (error) {
             this.setStatus(error?.message || 'Could not update skill.', 'error');
         } finally {
@@ -426,13 +436,13 @@ export class EditSkillsManifestModal {
         this.setBusy(true);
         this.setStatus(`Removing ${repoName}...`, 'info');
         try {
-            await this.callJsonTool('remove_skills_manifest_repo', {
+            const result = await this.callJsonTool('remove_skills_manifest_repo', {
                 folderPath: this.folderPath,
                 repoName
             });
             await this.refreshStateAfterMutation();
             this.changed = true;
-            this.setStatus(`${repoName} removed.`, 'info');
+            this.showExportStatus(result, `${repoName} removed from manifest.`);
         } catch (error) {
             this.setStatus(error?.message || 'Could not remove repository.', 'error');
         } finally {

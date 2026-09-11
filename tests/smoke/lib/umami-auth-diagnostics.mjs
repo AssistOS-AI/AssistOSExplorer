@@ -7,7 +7,10 @@ import {
 } from './fixtures.mjs';
 
 const unauthorizedBody = { error: { message: 'Unauthorized', code: 'unauthorized', status: 401 } };
-const unauthorizedConsole = 'Failed to load resource: the server responded with a status of 401 (Unauthorized)';
+const unauthorizedConsoles = new Set([
+  'Failed to load resource: the server responded with a status of 401 (Unauthorized)',
+  'Failed to load resource: the server responded with a status of 401 ()',
+]);
 
 export function beginUmamiSignedOutProof(page, { verifyUrl, timeout }) {
   const checkpoint = checkpointPageDiagnostics(page, 'Umami signed-out login authorization check');
@@ -25,7 +28,7 @@ export function beginUmamiSignedOutProof(page, { verifyUrl, timeout }) {
     });
   };
   const onConsole = (message) => {
-    if (message.type() === 'error' && message.text() === unauthorizedConsole
+    if (message.type() === 'error' && unauthorizedConsoles.has(message.text())
       && message.location().url === verifyUrl) consoles.push(message);
   };
   page.on('response', onResponse);
@@ -53,7 +56,7 @@ export function beginUmamiSignedOutProof(page, { verifyUrl, timeout }) {
       expect(consoles.length, 'no additional prelogin denial console is permitted').toBe(1);
       const expected = [
         { kind: 'response', type: 'error', status: 401, url: verifyUrl, method: 'POST' },
-        { kind: 'console', type: 'error', text: unauthorizedConsole, locationUrl: verifyUrl },
+        { kind: 'console', type: 'error', text: consoles[0].text(), locationUrl: verifyUrl },
       ];
       acknowledgeExactPageDiagnostics(page, checkpoint, expected);
       return { signedOutVerifications: 1, status: 401, completed: true };

@@ -21,7 +21,8 @@
     "test:full": "SMOKE_GITHUB=1 SMOKE_GPT_RESEARCHER=1 SMOKE_ONLYOFFICE=1 SMOKE_UMAMI=1 SMOKE_WEBMEET_HEADLESS=1 SMOKE_WEBMEET_MEDIA=1 SMOKE_OPEN_INTERPRETER=1 SMOKE_WEBTTY_CORE=1 node ./scripts/run-playwright.mjs",
     "install:browsers": "playwright install chromium",
     "test:webtty": "SMOKE_WEBTTY_CORE=1 node ./scripts/run-playwright.mjs --project=chromium specs/01-webtty-core.spec.mjs",
-    "show-report": "playwright show-report"
+    "show-report": "playwright show-report",
+    "test:copilot-live-skills": "SMOKE_COPILOT_LIVE_SKILLS=1 node ./scripts/run-playwright.mjs --project=chromium --workers=1 --retries=0 specs/06-copilot-live-skills.spec.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0"

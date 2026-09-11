@@ -16,6 +16,7 @@ env:
   PUBLIC_HOST: 'explorer-qa.axiologic.dev'
   PUBLIC_URL: 'https://explorer-qa.axiologic.dev'
   CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'
+  CLOUDFLARE_SELECTED_TUNNEL_ID: '89dd05b5-05a7-4bd4-9626-ec4343b07c67'
   CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'
   CLOUDFLARE_TUNNEL_SECRET_HANDLE: 'publication/explorer-qa-tunnel'
   CLOUDFLARE_API_SECRET_HANDLE: 'publication/explorer-qa-api'
@@ -32,6 +33,11 @@ jobs:
       contents: read
 
     steps:
+      - name: Check out the reviewed deployment helpers
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Validate GitHub configuration
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
@@ -181,9 +187,10 @@ jobs:
           };
 
           const named = requireSuccess(parse(listPath), 'named tunnel');
-          if (!Array.isArray(named) || named.length > 1
+          if (!Array.isArray(named) || named.length !== 1
+            || named[0]?.id !== process.env.CLOUDFLARE_SELECTED_TUNNEL_ID
             || named.some((entry) => entry?.id === sharedTunnelId)) {
-            throw new Error('active explorer-qa tunnel inventory is ambiguous or aliases the protected shared tunnel');
+            throw new Error('selected existing Explorer QA tunnel is missing, ambiguous, or has a different identity; deployment cannot create a tunnel');
           }
           const records = requireSuccess(parse(dnsPath), 'Explorer QA DNS');
           if (!Array.isArray(records) || records.length > 1) {
@@ -306,7 +313,6 @@ jobs:
           umask 077
 
           TUNNEL_LIST_RESPONSE=''
-          TUNNEL_MUTATION_RESPONSE=''
           TUNNEL_TOKEN_RESPONSE=''
           TUNNEL_DETAIL_RESPONSE=''
           TUNNEL_CONFIG_RESPONSE=''
@@ -317,8 +323,7 @@ jobs:
           cleanup_local_files() {
             for target in \
               "$TUNNEL_LIST_RESPONSE" \
-              "$TUNNEL_MUTATION_RESPONSE" \
-              "$TUNNEL_TOKEN_RESPONSE" \
+                "$TUNNEL_TOKEN_RESPONSE" \
               "$TUNNEL_DETAIL_RESPONSE" \
               "$TUNNEL_CONFIG_RESPONSE" \
               "$TUNNEL_DNS_RESPONSE" \
@@ -342,7 +347,6 @@ jobs:
           trap cleanup_local_files EXIT
 
           TUNNEL_LIST_RESPONSE="$(mktemp /tmp/explorer_qa_provision_list.XXXXXX)"
-          TUNNEL_MUTATION_RESPONSE="$(mktemp /tmp/explorer_qa_provision_mutation.XXXXXX)"
           TUNNEL_TOKEN_RESPONSE="$(mktemp /tmp/explorer_qa_provision_token.XXXXXX)"
           TUNNEL_DETAIL_RESPONSE="$(mktemp /tmp/explorer_qa_provision_detail.XXXXXX)"
           TUNNEL_CONFIG_RESPONSE="$(mktemp /tmp/explorer_qa_provision_config.XXXXXX)"
@@ -362,36 +366,18 @@ jobs:
 
           const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
           const tunnels = payload?.success === true ? payload.result : null;
-          if (!Array.isArray(tunnels) || tunnels.length > 1) {
-            throw new Error('dedicated Explorer QA tunnel inventory is ambiguous');
+          if (!Array.isArray(tunnels) || tunnels.length !== 1
+            || tunnels[0]?.id !== process.env.CLOUDFLARE_SELECTED_TUNNEL_ID
+            || tunnels[0]?.name !== process.env.CLOUDFLARE_TUNNEL_NAME
+            || tunnels[0]?.deleted_at != null) {
+            throw new Error('selected existing Explorer QA tunnel is missing or changed; deployment cannot create a tunnel');
           }
           process.stdout.write(String(tunnels[0]?.id || ''));
           NODE
           )"
           CLOUDFLARE_TUNNEL_CREATED='false'
-          if [ -z "$CLOUDFLARE_TUNNEL_ID" ]; then
-            curl -fsS \
-              -X POST \
-              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              -H 'Content-Type: application/json' \
-              --data '{"name":"explorer-qa","config_src":"cloudflare"}' \
-              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel" \
-              > "$TUNNEL_MUTATION_RESPONSE"
-            CLOUDFLARE_TUNNEL_ID="$(
-              node --input-type=module - "$TUNNEL_MUTATION_RESPONSE" <<'NODE'
-          import fs from 'node:fs';
-
-          const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          const tunnel = payload?.success === true ? payload.result : null;
-          if (!tunnel || tunnel.name !== 'explorer-qa' || tunnel.deleted_at != null) {
-            throw new Error('Cloudflare did not create the exact dedicated Explorer QA tunnel');
-          }
-          process.stdout.write(String(tunnel.id || ''));
-          NODE
-            )"
-            CLOUDFLARE_TUNNEL_CREATED='true'
-          fi
           if [[ ! "$CLOUDFLARE_TUNNEL_ID" =~ ^[a-f0-9-]{36}$ ]] ||
+            [ "$CLOUDFLARE_TUNNEL_ID" != "$CLOUDFLARE_SELECTED_TUNNEL_ID" ] ||
             [ "$CLOUDFLARE_TUNNEL_ID" = "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" ]; then
             echo "::error::Dedicated Explorer QA tunnel identity is malformed or aliases the protected shared tunnel"
             exit 1
@@ -447,11 +433,12 @@ jobs:
           const detail = parseResult(detailPath, 'dedicated tunnel detail');
           const config = parseResult(configPath, 'dedicated tunnel configuration');
           const records = parseResult(dnsPath, 'dedicated tunnel DNS');
-          if (!Array.isArray(named) || named.length !== 1 || named[0]?.id !== selectedId
+          if (selectedId !== process.env.CLOUDFLARE_SELECTED_TUNNEL_ID || created !== 'false'
+            || !Array.isArray(named) || named.length !== 1 || named[0]?.id !== selectedId
             || detail?.id !== selectedId || detail?.name !== 'explorer-qa'
             || detail?.deleted_at != null
             || (detail?.account_tag != null && detail.account_tag !== process.env.CLOUDFLARE_ACCOUNT_ID)) {
-            throw new Error('dedicated Explorer QA tunnel create/reuse did not converge to one exact identity');
+            throw new Error('dedicated Explorer QA tunnel reuse did not converge to the selected existing identity');
           }
           const ingress = config?.config?.ingress ?? config?.ingress ?? [];
           if (!Array.isArray(ingress) || ingress.length > 2) {
@@ -476,9 +463,6 @@ jobs:
             || records[0]?.content !== expectedTarget
             || records[0]?.proxied !== true)) {
             throw new Error('Explorer QA DNS does not target the selected dedicated tunnel');
-          }
-          if (created === 'true' && (ingress.length > 1 || records.length !== 0)) {
-            throw new Error('new dedicated tunnel was not empty at its create/reuse boundary');
           }
           NODE
           curl -fsS \
@@ -518,13 +502,11 @@ jobs:
           export CLOUDFLARE_TUNNEL_TOKEN
           rm -f \
             "$TUNNEL_LIST_RESPONSE" \
-            "$TUNNEL_MUTATION_RESPONSE" \
             "$TUNNEL_TOKEN_RESPONSE" \
             "$TUNNEL_DETAIL_RESPONSE" \
             "$TUNNEL_CONFIG_RESPONSE" \
             "$TUNNEL_DNS_RESPONSE"
           TUNNEL_LIST_RESPONSE=''
-          TUNNEL_MUTATION_RESPONSE=''
           TUNNEL_TOKEN_RESPONSE=''
           TUNNEL_DETAIL_RESPONSE=''
           TUNNEL_CONFIG_RESPONSE=''
@@ -540,12 +522,17 @@ jobs:
 
           LOCAL_ENV_FILE="$(mktemp /tmp/explorer_qa_deploy.XXXXXX)"
           REMOTE_ENV_FILE="/tmp/$(basename "$LOCAL_ENV_FILE")"
+          QA_QUIESCE_SOURCE="$(cat "$GITHUB_WORKSPACE/.github/scripts/quiesce-explorer-qa.mjs")"
+          QA_QUIESCE_SHA="$(printf '%s' "$QA_QUIESCE_SOURCE" | sha256sum | awk '{print $1}')"
+          QA_ROLLBACK_SOURCE="$(cat "$GITHUB_WORKSPACE/.github/scripts/rollback-explorer-qa.mjs")"
+          QA_ROLLBACK_SHA="$(printf '%s' "$QA_ROLLBACK_SOURCE" | sha256sum | awk '{print $1}')"
           {
             write_shell_var WORKSPACE
             write_shell_var ROUTER_PORT
             write_shell_var PUBLIC_HOST
             write_shell_var PUBLIC_URL
             write_shell_var CLOUDFLARE_TUNNEL_NAME
+            write_shell_var CLOUDFLARE_SELECTED_TUNNEL_ID
             write_shell_var CLOUDFLARE_TUNNEL_ID
             write_shell_var CLOUDFLARE_TUNNEL_SECRET_HANDLE
             write_shell_var CLOUDFLARE_API_SECRET_HANDLE
@@ -557,6 +544,10 @@ jobs:
             write_shell_var PLOINKY_MASTER_KEY
             write_shell_var SOUL_GATEWAY_WORKSPACE
             write_shell_var SOUL_GATEWAY_ROUTER_PORT
+            write_shell_var QA_QUIESCE_SOURCE
+            write_shell_var QA_QUIESCE_SHA
+            write_shell_var QA_ROLLBACK_SOURCE
+            write_shell_var QA_ROLLBACK_SHA
           } > "$LOCAL_ENV_FILE"
 
           REMOTE_ENV_UPLOADED='true'
@@ -575,13 +566,42 @@ jobs:
             -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=10 \
-            "${SSH_USER}@${SSH_HOST}" "bash -s -- '$REMOTE_ENV_FILE'" <<'REMOTE'
+            "${SSH_USER}@${SSH_HOST}" "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_ENV_FILE'" <<'REMOTE'
           set -euo pipefail
+          umask 077
           REMOTE_ENV_FILE="${1:-}"
           CLOUDFLARE_CREDENTIAL_FILE=""
           PROTECTED_BEFORE_FILE=""
           PROTECTED_AFTER_FILE=""
+          QA_WORKSPACE_LOCK_PID=""
+          assert_qa_workspace_lock_held() {
+            test -n "$QA_WORKSPACE_LOCK_PID" || return 1
+          node --input-type=module - "$QA_BACKUP_DIR-lock-ready.json" "$QA_WORKSPACE_LOCK_PID" "$BOX_INSTANCE" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const receipt = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.deepEqual(receipt, { held: true, pid: Number(process.argv[3]), instance: process.argv[4] });
+          process.kill(receipt.pid, 0);
+          NODE
+          }
+          release_qa_workspace_lock() {
+            if [ -z "$QA_WORKSPACE_LOCK_PID" ]; then return; fi
+            printf '%s\n' release > "$QA_BACKUP_DIR-lock-release" || return 1
+            if ! wait "$QA_WORKSPACE_LOCK_PID"; then
+              echo '[deploy-qa] ERROR: the workspace archive lock did not release cleanly.' >&2
+              return 1
+            fi
+            node --input-type=module - "$QA_BACKUP_DIR-lock-released.json" "$QA_WORKSPACE_LOCK_PID" "$BOX_INSTANCE" <<'NODE' || return 1
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const receipt = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.deepEqual(receipt, { released: true, pid: Number(process.argv[3]), instance: process.argv[4] });
+          NODE
+            QA_WORKSPACE_LOCK_PID=""
+          }
           cleanup_remote_files() {
+            local status=$?
+            release_qa_workspace_lock || status=1
             rm -f "$REMOTE_ENV_FILE"
             if [ -n "$CLOUDFLARE_CREDENTIAL_FILE" ]; then
               rm -f "$CLOUDFLARE_CREDENTIAL_FILE"
@@ -592,6 +612,7 @@ jobs:
             if [ -n "$PROTECTED_AFTER_FILE" ]; then
               rm -f "$PROTECTED_AFTER_FILE"
             fi
+            exit "$status"
           }
           case "$REMOTE_ENV_FILE" in
             /tmp/explorer_qa_deploy.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
@@ -610,6 +631,14 @@ jobs:
           . "$REMOTE_ENV_FILE"
           set +a
           rm -f "$REMOTE_ENV_FILE"
+          if [ "$(printf '%s' "$QA_QUIESCE_SOURCE" | sha256sum | awk '{print $1}')" != "$QA_QUIESCE_SHA" ]; then
+            echo '[deploy-qa] ERROR: deployment shutdown helper changed in transfer.'
+            exit 1
+          fi
+          if [ "$(printf '%s' "$QA_ROLLBACK_SOURCE" | sha256sum | awk '{print $1}')" != "$QA_ROLLBACK_SHA" ]; then
+            echo '[deploy-qa] ERROR: deployment recovery helper changed in transfer.'
+            exit 1
+          fi
 
           case "${WORKSPACE:-}" in
             ''|.|..|*[!A-Za-z0-9._-]*)
@@ -654,8 +683,9 @@ jobs:
             echo "[deploy-qa] ERROR: Cloudflare account or zone identifiers are malformed."
             exit 1
           fi
-          if [[ ! "$CLOUDFLARE_TUNNEL_ID" =~ ^[a-f0-9-]{36}$ ]]; then
-            echo "[deploy-qa] ERROR: the authorized existing Cloudflare tunnel ID is malformed."
+          if [ "$CLOUDFLARE_SELECTED_TUNNEL_ID" != '89dd05b5-05a7-4bd4-9626-ec4343b07c67' ] ||
+            [ "$CLOUDFLARE_TUNNEL_ID" != "$CLOUDFLARE_SELECTED_TUNNEL_ID" ]; then
+            echo "[deploy-qa] ERROR: the Cloudflare tunnel is not the exact authorized existing QA identity."
             exit 1
           fi
           if [ -z "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
@@ -834,84 +864,355 @@ jobs:
             echo "[deploy-qa] ERROR: exact QA Box identity is ambiguous across engines or immutable IDs."
             exit 1
           fi
-          echo "[deploy-qa] Removing only the exact Explorer QA Box, labeled volumes, and identity directory..."
-          for record in "${QA_CONTAINER_RECORDS[@]}"; do
-            IFS='|' read -r engine container_id _ <<< "$record"
-            "$engine" container rm -f "$container_id"
-          done
-          for record in "${QA_VOLUME_RECORDS[@]}"; do
-            IFS='|' read -r engine volume_name _ <<< "$record"
-            "$engine" volume rm "$volume_name"
-          done
-          if ! node --input-type=module - "$WORK_DIR" <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-
-          const target = path.resolve(process.argv[2]);
-          if (target !== '/home/admin/explorerQaWorkspace') {
-            throw new Error(`refusing recursive cleanup outside exact QA identity: ${target}`);
-          }
-          try {
-            const current = fs.lstatSync(target);
-            if (!current.isDirectory() || current.isSymbolicLink()
-              || (typeof process.getuid === 'function' && current.uid !== process.getuid())) {
-              throw new Error(`refusing unsafe QA identity directory: ${target}`);
-            }
-            fs.rmSync(target, { recursive: true, force: false, maxRetries: 3 });
-          } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
-          }
-          NODE
-          then
-            echo "[deploy-qa] Root-owned nested runtime data requires the pinned privileged cleanup fallback."
-            sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-
-          if (typeof process.getuid !== 'function' || process.getuid() !== 0) {
-            throw new Error('privileged QA cleanup did not run as root');
-          }
-          const target = path.resolve(process.argv[2]);
-          if (target !== '/home/admin/explorerQaWorkspace') {
-            throw new Error(`refusing privileged cleanup outside exact QA identity: ${target}`);
-          }
-          try {
-            const current = fs.lstatSync(target);
-            if (!current.isDirectory() || current.isSymbolicLink()) {
-              throw new Error(`refusing unsafe privileged QA identity directory: ${target}`);
-            }
-            fs.rmSync(target, { recursive: true, force: false, maxRetries: 3 });
-          } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
-          }
-          NODE
-          fi
-          for engine in podman docker; do
-            command -v "$engine" >/dev/null 2>&1 || continue
-            if [ -n "$($engine container ls -aq --filter "label=io.assistos.ploinky-box.path-hash=$BOX_PATH_HASH")" ] ||
-              "$engine" container inspect "$BOX_INSTANCE" >/dev/null 2>&1 ||
-              [ -n "$($engine volume ls -q --filter "label=io.assistos.ploinky-box.path-hash=$BOX_PATH_HASH")" ]; then
-              echo "[deploy-qa] ERROR: exact QA orphan resources remained after cleanup."
-              exit 1
-            fi
-            for volume_role in "${QA_VOLUME_ROLES[@]}"; do
-              if "$engine" volume inspect "$BOX_INSTANCE-$volume_role" >/dev/null 2>&1; then
-                echo "[deploy-qa] ERROR: exact QA volume remained after cleanup."
-                exit 1
-              fi
-            done
-          done
-          if [ -e "$WORK_DIR" ] || [ -L "$WORK_DIR" ]; then
-            echo "[deploy-qa] ERROR: exact QA identity directory remained after cleanup."
+          if [ "${#QA_VOLUME_RECORDS[@]}" -ne 0 ]; then
+            echo "[deploy-qa] ERROR: QA has named volumes; back them up and review their durable-data restore before redeploying."
             exit 1
           fi
-          echo "[deploy-qa] Exact prior Explorer QA deployment cleanup verified."
+          assert_qa_preservation_admission() {
+          sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+
+          // BEGIN QA preservation admission
+          const target = process.argv[2];
+          assert.equal(target, '/home/admin/explorerQaWorkspace');
+          const present = file => { try { return fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
+          const workspace = present(target);
+          if (workspace) {
+              assert(workspace.isDirectory() && !workspace.isSymbolicLink(), 'Unsafe QA workspace');
+              for (const name of ['.ploinky', '.data', '.runtime']) {
+                  const stat = present(path.join(target, name));
+                  if (stat) assert(stat.isDirectory() && !stat.isSymbolicLink(), 'Durable state must not escape the QA workspace');
+              }
+              const env = present(path.join(target, '.env'));
+              if (env) assert(env.isFile() && env.nlink === 1 && env.uid === workspace.uid, 'Unsafe operator .env file');
+              const master = present(path.join(target, '.ploinky/master-key'));
+              if (present(path.join(target, '.data'))) assert(master?.isFile(), 'Durable QA data requires its original master key');
+              for (const name of ['master-key', '.secrets', 'passwords.enc', 'ploinky_subject_identity_ed25519_v1.enc']) {
+                  const stat = present(path.join(target, '.ploinky', name));
+                  if (stat) assert(stat.isFile() && stat.nlink === 1, 'Unsafe QA encryption identity');
+              }
+              const runtime = path.join(target, '.runtime');
+              if (present(runtime)) assert(fs.readdirSync(runtime).every(name => name === 'ploinky'), 'Unreviewed files in the managed runtime directory');
+              const managed = ['.runtime/ploinky', 'AdvancedLanguageAgent'];
+              const generations = path.join(target, '.ploinky/agentlib/generations');
+              if (present(generations)) {
+                  assert(fs.lstatSync(generations).isDirectory() && !fs.lstatSync(generations).isSymbolicLink(), 'Unsafe shared-library generations');
+                  for (const name of fs.readdirSync(generations)) {
+                      assert.match(name, /^[a-f0-9]{40}-[a-f0-9]{12}$/, 'Unreviewed shared-library generation');
+                      managed.push(path.join('.ploinky/agentlib/generations', name));
+                  }
+              }
+              const repos = path.join(target, '.ploinky/repos');
+              if (present(repos)) {
+                  assert(fs.lstatSync(repos).isDirectory(), 'Unsafe managed repository directory');
+                  managed.push(...fs.readdirSync(repos).map(name => path.join('.ploinky/repos', name)));
+              }
+              for (const relative of managed) {
+                  const directory = path.join(target, relative), stat = present(directory);
+                  if (!stat) continue;
+                  assert(stat.isDirectory() && !stat.isSymbolicLink(), 'A managed source path needs explicit review');
+                  const git = args => execFileSync('git', ['-c', `safe.directory=${directory}`, '-C', directory, ...args], {
+                      encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+                  }).trim();
+                  assert.equal(git(['rev-parse', '--show-toplevel']), directory, 'Managed source must be its own repository');
+                  const origin = git(['remote', 'get-url', 'origin']);
+                  if (relative.startsWith('.ploinky/agentlib/generations/')) {
+                      assert(['/workspace/.ploinky/agentlib/mirror.git', path.join(target, '.ploinky/agentlib/mirror.git')].includes(origin), 'Unreviewed shared-library source origin');
+                      assert.equal(git(['rev-parse', 'HEAD']), path.basename(relative).slice(0, 40), 'Shared-library generation commit changed');
+                  } else assert.match(origin, /^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i, 'Unreviewed managed source origin');
+                  assert.equal(git(['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']), '', 'Local managed source edits require reconciliation before redeployment');
+              }
+              const desiredFile = path.join(target, '.ploinky/edge-desired.json');
+              if (present(desiredFile)) {
+                  assert(present(desiredFile).isFile(), 'Unsafe routing intent');
+                  const desired = JSON.parse(fs.readFileSync(desiredFile, 'utf8'));
+                  assert.deepEqual(Object.keys(desired).sort(), ['cloudflare', 'hosts', 'media'], 'Unreviewed routing intent');
+                  assert.deepEqual(Object.keys(desired.hosts), ['explorer-qa.axiologic.dev'], 'Unreviewed QA host mapping');
+                  assert.deepEqual(desired.hosts['explorer-qa.axiologic.dev'], {
+                      agent: 'AchillesIDE/explorer',
+                      routerSurfaces: ['browser-auth', 'agent-mcp', 'user-admin', 'workspace-assets', 'blob-transfer', 'marketplace-ui', 'webchat', 'webtty'],
+                  }, 'Unreviewed QA router surfaces');
+                  assert.equal(desired.cloudflare.tunnelId, '89dd05b5-05a7-4bd4-9626-ec4343b07c67', 'Unreviewed QA tunnel selection');
+                  assert.equal(desired.cloudflare.tunnelTokenSecret, 'publication/explorer-qa-tunnel');
+                  assert.equal(desired.cloudflare.apiTokenSecret, 'publication/explorer-qa-api');
+                  assert.deepEqual(desired.media, { publicIPv4: '45.136.70.141', addressMode: 'direct' });
+              }
+          }
+          console.log('[deploy-qa] Durable-state admission passed before stopping the previous runtime.');
+          // END QA preservation admission
+          NODE
+          }
+          assert_qa_preservation_admission
+          sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+
+          // BEGIN QA capacity admission
+          const target = process.argv[2];
+          assert.equal(target, '/home/admin/explorerQaWorkspace');
+          const available = fs.statfsSync(path.dirname(target), { bigint: true });
+          const freeBytes = available.bavail * available.bsize;
+          const priorBytes = fs.existsSync(target)
+              ? BigInt(execFileSync('du', ['-s', '-B1', '--', target], { encoding: 'utf8', stdio: 'pipe' }).trim().split(/\s+/)[0]) : 0n;
+          const minimum = 25n * 1024n ** 3n;
+          const required = priorBytes + 4n * 1024n ** 3n > minimum ? priorBytes + 4n * 1024n ** 3n : minimum;
+          assert(freeBytes >= required, 'Insufficient QA capacity for retained backup and fresh runtime; review a scoped archive/recovery operation before stopping services');
+          console.log('[deploy-qa] Capacity admission passed before stopping the previous runtime.');
+          // END QA capacity admission
+          NODE
+          resolve_default_branch() {
+            local repository_url="$1"
+            local symref_record default_ref default_branch
+            if ! symref_record="$(git ls-remote --symref "$repository_url" HEAD)"; then
+              echo "[deploy-qa] ERROR: unable to resolve the default branch for $repository_url." >&2
+              return 1
+            fi
+            default_ref="$({
+              printf '%s\n' "$symref_record" |
+                awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }'
+            })"
+            case "$default_ref" in
+              refs/heads/*) ;;
+              *)
+                echo "[deploy-qa] ERROR: remote HEAD for $repository_url is not a branch." >&2
+                return 1
+                ;;
+            esac
+            default_branch="${default_ref#refs/heads/}"
+            git check-ref-format --branch "$default_branch" >/dev/null
+            printf '%s\n' "$default_branch"
+          }
+
+          mkdir -p "$HOME/.qa-deployment-backups"
+          chmod 700 "$HOME/.qa-deployment-backups"
+          QA_BACKUP_DIR="$(mktemp -d "$HOME/.qa-deployment-backups/redeploy-XXXXXXXX")"
+          export QA_BACKUP_DIR
+          QA_HELPER_DIR="${QA_BACKUP_DIR}-helpers"
+          mkdir -m 700 "$QA_HELPER_DIR"
+          printf '%s' "$QA_ROLLBACK_SOURCE" > "$QA_HELPER_DIR/rollback-explorer-qa.mjs"
+          printf '%s' "$QA_QUIESCE_SOURCE" > "$QA_HELPER_DIR/quiesce-explorer-qa.mjs"
+          # BEGIN QA outer archive lock acquisition
+          QA_LOCK_RUNTIME_ROOT="$WORK_DIR"
+          if [ ! -f "$WORK_DIR/.runtime/ploinky/ploinky-box/locks.mjs" ]; then
+            if [ "${#QA_CONTAINER_RECORDS[@]}" -ne 0 ]; then
+              echo '[deploy-qa] ERROR: the existing QA runtime has no proven workspace lock module.'
+              exit 1
+            fi
+            node --input-type=module - "$WORK_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const workspace = process.argv[2];
+          assert.equal(workspace, '/home/admin/explorerQaWorkspace');
+          if (fs.existsSync(workspace)) {
+              const stat = fs.lstatSync(workspace);
+              assert(stat.isDirectory() && !stat.isSymbolicLink());
+              assert.equal(fs.readdirSync(workspace).length, 0, 'Cold lock bootstrap requires an absent or empty workspace');
+          }
+          NODE
+            QA_LOCK_RUNTIME_ROOT="$QA_HELPER_DIR/lock-runtime"
+            mkdir -m 700 "$QA_LOCK_RUNTIME_ROOT"
+            mkdir -m 700 "$QA_LOCK_RUNTIME_ROOT/.runtime"
+            QA_LOCK_SOURCE="$QA_LOCK_RUNTIME_ROOT/.runtime/ploinky"
+            QA_LOCK_BRANCH="$(resolve_default_branch https://github.com/AssistOS-AI/ploinky.git)"
+            QA_LOCK_COMMIT="$(git ls-remote --exit-code --heads https://github.com/AssistOS-AI/ploinky.git "refs/heads/$QA_LOCK_BRANCH" | awk 'NR == 1 { print $1 }')"
+            [[ "$QA_LOCK_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+            git clone --no-checkout https://github.com/AssistOS-AI/ploinky.git "$QA_LOCK_SOURCE"
+            git -C "$QA_LOCK_SOURCE" fetch origin "$QA_LOCK_COMMIT"
+            git -C "$QA_LOCK_SOURCE" checkout --detach "$QA_LOCK_COMMIT"
+            test "$(git -C "$QA_LOCK_SOURCE" rev-parse HEAD)" = "$QA_LOCK_COMMIT"
+            test -z "$(git -C "$QA_LOCK_SOURCE" status --porcelain=v1 --untracked-files=all)"
+            test -f "$QA_LOCK_SOURCE/ploinky-box/locks.mjs"
+            printf '%s|%s\n' "$QA_LOCK_BRANCH" "$QA_LOCK_COMMIT" > "$QA_BACKUP_DIR-lock-source.txt"
+          fi
+          cat > "$QA_HELPER_DIR/hold-workspace-lock.mjs" <<'NODE'
+          // BEGIN QA archive lock holder
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { fileURLToPath, pathToFileURL } from 'node:url';
+
+          export async function holdArchiveLock({ adapters, scope, runtimeRoot, backup, parentPid, intervalMs = 100 }) {
+              adapters.assertHost();
+              assert.equal(process.ppid, parentPid, 'Archive lock holder must remain attached to the deploying shell');
+              let lock, reason, resolveStopped;
+              const stopped = new Promise(resolve => { resolveStopped = resolve; });
+              const stop = value => { if (!reason) { reason = value; resolveStopped(value); } };
+              const interrupted = () => stop('interrupted');
+              process.on('SIGTERM', interrupted); process.on('SIGINT', interrupted);
+              const timer = setInterval(() => {
+                  if (process.ppid !== parentPid) return stop('parent-exited');
+                  try {
+                      const file = `${backup}-lock-release`, stat = fs.lstatSync(file);
+                      assert(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1
+                          && stat.uid === process.getuid() && (stat.mode & 0o077) === 0);
+                      assert.equal(fs.readFileSync(file, 'utf8'), 'release\n');
+                      stop('released');
+                  } catch (error) { if (error.code !== 'ENOENT') stop('invalid-release'); }
+              }, intervalMs);
+              try {
+                  lock = await adapters.acquireWorkspaceLock(runtimeRoot);
+                  assert.equal(reason, undefined, 'Archive lock acquisition was interrupted');
+                  fs.writeFileSync(`${backup}-lock-ready.json`, JSON.stringify({ held: true, pid: process.pid, instance: scope.box }), { flag: 'wx', mode: 0o600 });
+                  assert.equal(await stopped, 'released', 'Archive operation ended without a deliberate release');
+              } finally {
+                  clearInterval(timer); process.removeListener('SIGTERM', interrupted); process.removeListener('SIGINT', interrupted);
+                  if (lock) {
+                      lock.release();
+                      fs.writeFileSync(`${backup}-lock-released.json`, JSON.stringify({ released: true, pid: process.pid, instance: scope.box }), { flag: 'wx', mode: 0o600 });
+                  }
+              }
+          }
+          if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+              const [runtimeRoot, backup, helper, parentPid] = process.argv.slice(2);
+              const { productionAdapters, QA_SCOPE } = await import(pathToFileURL(helper));
+              try { await holdArchiveLock({ adapters: productionAdapters(), scope: QA_SCOPE, runtimeRoot, backup, parentPid: Number(parentPid) }); }
+              catch { process.stderr.write('[deploy-qa] Workspace archive lock failed.\n'); process.exitCode = 1; }
+          }
+          // END QA archive lock holder
+          NODE
+          node "$QA_HELPER_DIR/hold-workspace-lock.mjs" "$QA_LOCK_RUNTIME_ROOT" "$QA_BACKUP_DIR" \
+            "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$$" > "$QA_BACKUP_DIR-lock.log" 2>&1 &
+          QA_WORKSPACE_LOCK_PID=$!
+          for _ in $(seq 1 350); do
+            if [ -f "$QA_BACKUP_DIR-lock-ready.json" ]; then break; fi
+            kill -0 "$QA_WORKSPACE_LOCK_PID" || { wait "$QA_WORKSPACE_LOCK_PID"; exit 1; }
+            sleep 0.1
+          done
+          assert_qa_workspace_lock_held
+          # END QA outer archive lock acquisition
+          assert_qa_preservation_admission
+          assert_qa_workspace_lock_held
+          QA_CAPTURE="$(node "$QA_HELPER_DIR/rollback-explorer-qa.mjs" capture "$QA_BACKUP_DIR" --lock-held)"
+          QA_CAPTURED_CONTAINERS="$(cat "$QA_BACKUP_DIR/prior-containers.txt")"
+          QA_EXPECTED_CONTAINERS="$(printf '%s\n' "${QA_CONTAINER_RECORDS[@]}")"
+          if [ "$QA_CAPTURED_CONTAINERS" != "$QA_EXPECTED_CONTAINERS" ]; then
+            echo '[deploy-qa] ERROR: QA Box identity changed before workspace-lock acquisition; no services were stopped.'
+            exit 1
+          fi
+          mv "$QA_HELPER_DIR" "$QA_BACKUP_DIR/helpers"
+          QA_HELPER_DIR="$QA_BACKUP_DIR/helpers"
+          if ! printf '%s' "$QA_CAPTURE" | node --input-type=module -e '
+            import fs from "node:fs";
+            const result = JSON.parse(fs.readFileSync(0, "utf8"));
+            if (result.rollbackSupported !== true) process.exit(1);
+          '; then
+            echo '[deploy-qa] ERROR: the previous runtime cannot preserve saved accounts during recovery. A reviewed forward migration is required; services remain running.'
+            exit 1
+          fi
+          for record in "${QA_CONTAINER_RECORDS[@]}"; do
+            IFS='|' read -r engine container_id _ <<< "$record"
+            if [ "$("$engine" container inspect "$container_id" --format '{{.State.Running}}')" = 'true' ]; then
+              assert_qa_workspace_lock_held
+              echo "[deploy-qa] Stopping nested QA services before the consistent durable-data backup..."
+              printf '%s' "$QA_QUIESCE_SOURCE" | "$engine" container exec -i --user podman \
+                --workdir /workspace --env PLOINKY_WORKSPACE_ROOT=/workspace \
+                --env PLOINKY_ROUTER_HOST_PORT=8097 --env PLOINKY_MEDIA_HOST_PORT=7882 \
+                "$container_id" node --input-type=module - > "$QA_BACKUP_DIR-quiesce.log"
+              assert_qa_workspace_lock_held
+              "$engine" container stop --time 30 "$container_id"
+            fi
+            if [ "$("$engine" container inspect "$container_id" --format '{{.State.Running}}')" != 'false' ]; then
+              echo "[deploy-qa] ERROR: exact QA Box is not stopped; no workspace files have been moved."
+              exit 1
+            fi
+          done
+          sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" "$QA_BACKUP_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+
+          // BEGIN QA durable workspace preservation
+          const [target, backup] = process.argv.slice(2);
+          assert.equal(target, '/home/admin/explorerQaWorkspace');
+          assert.equal(path.dirname(backup), '/home/admin/.qa-deployment-backups');
+          assert.match(path.basename(backup), /^redeploy-[A-Za-z0-9]{8}$/);
+          assert.equal(process.getuid(), 0);
+          const backupStat = fs.lstatSync(backup);
+          assert(backupStat.isDirectory() && !backupStat.isSymbolicLink());
+          assert.deepEqual(fs.readdirSync(backup).sort(), ['helpers', 'prior-containers.txt', 'rollback-authority.json'], 'The backup must contain only the early recovery authority and helpers');
+          for (const name of ['prior-containers.txt', 'rollback-authority.json']) {
+              const stat = fs.lstatSync(path.join(backup, name));
+              assert(stat.isFile() && stat.nlink === 1 && stat.uid === backupStat.uid && (stat.mode & 0o077) === 0, 'Unsafe early recovery authority');
+          }
+          const source = path.join(backup, 'workspace');
+          let original;
+          try { original = fs.lstatSync(target); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+          if (original) {
+              assert(original.isDirectory() && !original.isSymbolicLink(), 'The pinned QA workspace must be a directory');
+              if (fs.existsSync(path.join(target, '.data'))) {
+                  assert(fs.statSync(path.join(target, '.ploinky/master-key')).isFile(), 'Durable QA data requires its original workspace master key');
+              }
+              fs.renameSync(target, source);
+          }
+          fs.mkdirSync(target, { mode: 0o700 });
+          fs.chownSync(target, original?.uid ?? backupStat.uid, original?.gid ?? backupStat.gid);
+          fs.mkdirSync(path.join(target, '.ploinky'), { mode: 0o700 });
+          fs.chownSync(path.join(target, '.ploinky'), original?.uid ?? backupStat.uid, original?.gid ?? backupStat.gid);
+          const copied = [];
+          const compare = (from, to) => {
+              const left = fs.lstatSync(from), right = fs.lstatSync(to);
+              assert.equal(left.mode & 0o170000, right.mode & 0o170000, 'Copied entry type changed');
+              assert.equal(left.uid, right.uid, 'Copied entry owner changed');
+              assert.equal(left.gid, right.gid, 'Copied entry group changed');
+              assert.equal(left.mode & 0o7777, right.mode & 0o7777, 'Copied entry permissions changed');
+              if (left.isSymbolicLink()) assert.equal(fs.readlinkSync(from), fs.readlinkSync(to), 'Copied link target changed');
+              else if (left.isDirectory()) {
+                  const names = fs.readdirSync(from).sort();
+                  assert.deepEqual(names, fs.readdirSync(to).sort(), 'Copied directory entries changed');
+                  for (const name of names) compare(path.join(from, name), path.join(to, name));
+              } else if (left.isFile()) execFileSync('cmp', ['-s', '--', from, to], { stdio: 'pipe' });
+              else throw new Error('Unsupported durable entry type requires explicit review');
+          };
+          const copy = relative => {
+              const from = path.join(source, relative), to = path.join(target, relative);
+              try { fs.lstatSync(from); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+              fs.mkdirSync(path.dirname(to), { recursive: true });
+              execFileSync('cp', ['-a', '--reflink=auto', '--', from, to], { stdio: 'pipe' });
+              compare(from, to);
+              copied.push(relative);
+          };
+          if (original) {
+              const regenerated = new Set(['.ploinky', '.runtime', 'AdvancedLanguageAgent']);
+              for (const name of fs.readdirSync(source)) if (!regenerated.has(name)) copy(name);
+              const runtimeEntries = new Set(['agents.json', 'routing.json', 'running', 'run', 'logs', 'box',
+                  'deps', 'repos', 'agentlib', 'container-runtime', 'graph-skill-scope.json', 'data']);
+              const state = path.join(source, '.ploinky');
+              if (fs.existsSync(state)) {
+                  for (const name of fs.readdirSync(state)) if (!runtimeEntries.has(name)) copy(path.join('.ploinky', name));
+              }
+              const data = path.join(state, 'data');
+              if (fs.existsSync(data)) {
+                  for (const name of fs.readdirSync(data)) {
+                      if (!['edge-publication', 'edge-routing', 'router-security'].includes(name)) copy(path.join('.ploinky/data', name));
+                  }
+              }
+          }
+          fs.writeFileSync(path.join(backup, 'preservation.json'), JSON.stringify({ version: 1, target, source: original ? source : null,
+              copied, exactCopiesVerified: true, runtimeStateRestored: false, createdAt: new Date().toISOString() }) + '\n', { flag: 'wx', mode: 0o600 });
+          console.log('[deploy-qa] Prior workspace retained; durable files and their encryption identities copied and compared. Runtime state will be regenerated.');
+          // END QA durable workspace preservation
+          NODE
+          assert_qa_workspace_lock_held
+          if [ -f "$QA_BACKUP_DIR-quiesce.log" ]; then mv "$QA_BACKUP_DIR-quiesce.log" "$QA_BACKUP_DIR/quiesce.log"; fi
+          printf '%s\n' "$QA_QUIESCE_SOURCE" > "$QA_BACKUP_DIR/quiesce-source.mjs"
+          for record in "${QA_CONTAINER_RECORDS[@]}"; do
+            IFS='|' read -r engine container_id _ <<< "$record"
+            "$engine" container rename "$container_id" "$BOX_INSTANCE-rollback-${QA_BACKUP_DIR##*/}"
+          done
+          echo "[deploy-qa] Exact prior Explorer QA runtime retired and retained stopped for rollback; durable data restored from $QA_BACKUP_DIR/workspace."
 
           mkdir -p "$WORK_DIR"
           chmod 700 "$WORK_DIR"
+          cd "$WORK_DIR"
           node --input-type=module - "$WORK_DIR/.env" <<'NODE'
           import fs from 'node:fs';
 
+          // BEGIN QA bootstrap environment
           const target = process.argv[2];
           const key = String(process.env.PLOINKY_MASTER_KEY || '');
           const content = `PLOINKY_MASTER_KEY=${key}\n`;
@@ -924,15 +1225,15 @@ jobs:
               || (typeof process.getuid === 'function' && current.uid !== process.getuid())) {
               throw new Error(`refusing unsafe workspace master-key target: ${target}`);
             }
-            if (fs.readFileSync(target, 'utf8') !== content) {
-              throw new Error('existing QA workspace master key does not match the authorized key');
-            }
+            // Existing operator settings remain byte-for-byte intact. Managed
+            // Box encryption uses the preserved .ploinky/master-key identity.
             fs.chmodSync(target, 0o600);
           } catch (error) {
             if (error?.code !== 'ENOENT') throw error;
             fs.writeFileSync(target, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
             fs.chmodSync(target, 0o600);
           }
+          // END QA bootstrap environment
           NODE
           unset PLOINKY_MASTER_KEY
           mkdir -p "$WORK_DIR/.runtime"
@@ -972,28 +1273,6 @@ jobs:
               ;;
           esac
 
-          resolve_default_branch() {
-            local repository_url="$1"
-            local symref_record default_ref default_branch
-            if ! symref_record="$(git ls-remote --symref "$repository_url" HEAD)"; then
-              echo "[deploy-qa] ERROR: unable to resolve the default branch for $repository_url." >&2
-              return 1
-            fi
-            default_ref="$({
-              printf '%s\n' "$symref_record" |
-                awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }'
-            })"
-            case "$default_ref" in
-              refs/heads/*) ;;
-              *)
-                echo "[deploy-qa] ERROR: remote HEAD for $repository_url is not a branch." >&2
-                return 1
-                ;;
-            esac
-            default_branch="${default_ref#refs/heads/}"
-            git check-ref-format --branch "$default_branch" >/dev/null
-            printf '%s\n' "$default_branch"
-          }
 
           GRAPH_REPOSITORIES=(
             'AchillesIDE|https://github.com/AssistOS-AI/AssistOSExplorer.git'
@@ -1037,30 +1316,10 @@ jobs:
           PLOINKY_BRANCH="$(resolve_default_branch "$PLOINKY_URL")"
           echo "[deploy-qa] Selected Ploinky/$PLOINKY_BRANCH."
 
-          if [ -x "$RUNTIME_DIR/bin/ploinky" ] &&
-            [ -f "$RUNTIME_DIR/ploinky-box/bin/ploinky-box.mjs" ]; then
-            echo "[deploy-qa] Stopping the existing QA Box before updating its mounted runtime..."
-            if ! env PLOINKY_WORKSPACE_ROOT="$WORK_DIR" "$RUNTIME_DIR/bin/ploinky" stop; then
-              echo "[deploy-qa] The inner graceful stop failed; proving the outer Box stopped..."
-              if ! STOPPED_BOX_STATUS="$(inspect_outer_box_status)"; then
-                echo "[deploy-qa] ERROR: unable to inspect the Box after the degraded stop."
-                exit 1
-              fi
-              case "$STOPPED_BOX_STATUS" in
-                *"Ploinky Box: stopped"*)
-                  echo "[deploy-qa] The exact outer Box is stopped; continuing recovery."
-                  ;;
-                *)
-                  printf '%s\n' "$STOPPED_BOX_STATUS"
-                  echo "[deploy-qa] ERROR: the Box remained running or ambiguous after the degraded stop."
-                  exit 1
-                  ;;
-              esac
-            fi
-          fi
           git -C "$RUNTIME_DIR" fetch --prune origin \
             "refs/heads/$PLOINKY_BRANCH:refs/remotes/origin/$PLOINKY_BRANCH"
-          git -C "$RUNTIME_DIR" checkout --detach --force "refs/remotes/origin/$PLOINKY_BRANCH"
+          git -C "$RUNTIME_DIR" checkout -B "$PLOINKY_BRANCH" "refs/remotes/origin/$PLOINKY_BRANCH"
+          git -C "$RUNTIME_DIR" branch --set-upstream-to="origin/$PLOINKY_BRANCH" "$PLOINKY_BRANCH"
           git -C "$RUNTIME_DIR" reset --hard "refs/remotes/origin/$PLOINKY_BRANCH"
           git -C "$RUNTIME_DIR" clean -ffd
 
@@ -1235,6 +1494,24 @@ jobs:
           fi
           echo "[deploy-qa] Box plan: $PLAN_JSON"
 
+          # The supervisor takes this same outer lock. Release only after capture,
+          # quiesce, exact outer stop, complete preservation and fresh source staging.
+          assert_qa_workspace_lock_held
+          release_qa_workspace_lock
+          for suffix in lock-ready.json lock-released.json lock-release lock.log lock-source.txt; do
+            if [ -f "$QA_BACKUP_DIR-$suffix" ]; then mv "$QA_BACKUP_DIR-$suffix" "$QA_BACKUP_DIR/$suffix"; fi
+          done
+          if [ -d "$QA_HELPER_DIR/lock-runtime" ]; then
+            node --input-type=module - "$QA_HELPER_DIR/lock-runtime" "$QA_BACKUP_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [staging, backup] = process.argv.slice(2);
+          assert.equal(staging, path.join(backup, 'helpers/lock-runtime'));
+          assert.equal(fs.realpathSync(staging), staging);
+          fs.rmSync(staging, { recursive: true });
+          NODE
+          fi
           echo "[deploy-qa] Preparing the exact QA Box..."
           node --input-type=module - \
             "$RUNTIME_DIR/ploinky-box/supervisor.mjs" \
@@ -1265,6 +1542,40 @@ jobs:
             echo "[deploy-qa] ERROR: exact Box instance '$BOX_INSTANCE' was not found."
             exit 1
           fi
+
+          "$BOX_ENGINE" container exec --user podman --workdir /workspace \
+            --env PLOINKY_WORKSPACE_ROOT=/workspace "$BOX_INSTANCE" node --input-type=module -e '
+              const { initializeFreshEdgeRoutingSources } = await import("/opt/ploinky/cli/sandbox/edgeGeneration.js");
+              initializeFreshEdgeRoutingSources({ workspaceRoot: "/workspace" });
+            '
+          sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" "$QA_BACKUP_DIR" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+
+          // BEGIN QA policy restoration
+          const [target, backup] = process.argv.slice(2);
+          assert.equal(target, '/home/admin/explorerQaWorkspace');
+          assert.equal(path.dirname(backup), '/home/admin/.qa-deployment-backups');
+          assert.match(path.basename(backup), /^redeploy-[A-Za-z0-9]{8}$/);
+          const relative = '.ploinky/data/router-security';
+          const source = path.join(backup, 'workspace', relative);
+          const destination = path.join(target, relative);
+          assert(fs.existsSync(path.join(destination, 'policy-state.json')), 'Initialize fresh routing sources before restoring durable policy');
+          const copied = [];
+          for (const name of ['policy-state.json', 'sessions-revocations.json', 'policy-audit.log', 'policy-audit-archive']) {
+              const from = path.join(source, name), to = path.join(destination, name);
+              if (!fs.existsSync(from)) continue;
+              execFileSync('cp', ['-a', '--reflink=auto', '--', from, to], { stdio: 'pipe' });
+              execFileSync('diff', ['-qr', '--', from, to], { stdio: 'pipe' });
+              copied.push(name);
+          }
+          fs.writeFileSync(path.join(backup, 'policy-restoration.json'), JSON.stringify({ copied, exactCopiesVerified: true,
+              compiledGenerationsRestored: false }) + '\n', { flag: 'wx', mode: 0o600 });
+          console.log('[deploy-qa] Durable access policy, revocations and audit history restored before graph activation.');
+          // END QA policy restoration
+          NODE
 
           echo "[deploy-qa] Binding ALA to the one Ploinky-selected AgentLib and checking its CLI contract..."
           "$BOX_ENGINE" container exec -i --user podman "$BOX_INSTANCE" \
@@ -1547,6 +1858,50 @@ jobs:
                 ;;
             esac
           done
+          node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$QA_BACKUP_DIR" "$WORK_DIR" "$PLOINKY" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+
+          // BEGIN QA prior selection restoration
+          const [helper, backup, workspace, cli] = process.argv.slice(2);
+          assert.equal(workspace, '/home/admin/explorerQaWorkspace');
+          const { productionAdapters, restorePriorSelections } = await import(helper);
+          const adapters = productionAdapters();
+          const authority = JSON.parse(fs.readFileSync(path.join(backup, 'rollback-authority.json'), 'utf8'));
+          const boxes = adapters.boxes().filter(item => item.box.name === 'ploinky-box-explorerqaworkspace-7a31ab7775eb');
+          assert.equal(boxes.length, 1, 'Current QA Box is ambiguous');
+          const current = boxes[0];
+          assert(current.box.running && current.box.id !== authority.predecessor?.box.id, 'Expected a fresh QA Box');
+          const assertCurrent = () => {
+              const found = adapters.boxes().filter(item => item.box.id === current.box.id);
+              assert.equal(found.length, 1, 'Current QA Box disappeared');
+              assert.equal(found[0].box.contract, current.box.contract, 'Current QA Box changed');
+              assert(found[0].box.running, 'Current QA Box stopped');
+          };
+          const profileFile = path.join(workspace, '.ploinky/profile');
+          const profile = fs.existsSync(profileFile) ? fs.readFileSync(profileFile, 'utf8').trim() || 'default' : 'default';
+          const restored = await restorePriorSelections({ selections: authority.agents, profile,
+              readRegistry: () => {
+                  assertCurrent();
+                  return JSON.parse(execFileSync(current.engine, ['container', 'exec', '--user', 'podman', current.box.id,
+                      'node', '-e', 'process.stdout.write(require("fs").readFileSync("/workspace/.ploinky/agents.json","utf8"))'],
+                  { encoding: 'utf8', stdio: 'pipe', timeout: 30000 }));
+              },
+              enable: args => {
+                  assertCurrent();
+                  execFileSync(cli, args, { cwd: workspace, env: process.env, stdio: 'pipe', timeout: 600000 });
+              },
+          });
+          const readiness = await adapters.ready(current, authority);
+          assert(readiness.ready, 'Restored QA selections are not ready');
+          assertCurrent();
+          fs.writeFileSync(path.join(backup, 'restored-selections.json'), JSON.stringify({ restored, readiness,
+              boxId: current.box.id }) + '\n', { flag: 'wx', mode: 0o600 });
+          console.log('[deploy-qa] Prior agent choices restored and checked against the fresh runtime.');
+          // END QA prior selection restoration
+          NODE
           for repository_record in "${GRAPH_REPOSITORIES[@]}"; do
             IFS='|' read -r repository_name _ <<< "$repository_record"
             expected_branch="${EXPECTED_BRANCHES[$repository_name]}"
@@ -1819,7 +2174,7 @@ jobs:
             printf -- '- Cloudflare DNS record: `%s`\n' "${EXPLORER_QA_DNS_RECORD_ID:-not-created}"
             printf -- '- Protected shared tunnel: `%s` unchanged at `%s`\n' \
               "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" "${PROTECTED_CLOUDFLARE_DIGEST:-not-snapshotted}"
-            echo "- Rollback: dispatch \`destroy-explorer-qa.yml\` with \`confirm_destroy=true\`; teardown uses the deployed runtime and configured repository defaults."
+            echo "- Recovery: use the retained protected backup and reviewed rollback helper; destroying QA does not restore its data."
             echo "- Public URL: \`${PUBLIC_URL}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 

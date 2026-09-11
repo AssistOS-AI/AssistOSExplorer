@@ -8,6 +8,7 @@ import { initializeTheme } from './shared/ui/theme.js';
 import { fetchAuthenticatedUser } from './services/infrastructure/authApi.js';
 import { isAdminUser } from './services/auth/adminUser.js';
 import {
+    completeInitialApplicationRoute,
     mountInitialApplicationRoute,
     resolveInitialHashedRoute
 } from './services/runtime/initial-application-route.js';
@@ -481,7 +482,7 @@ async function start() {
 
     loader?.close?.();
     loader?.remove?.();
-    await mountInitialApplicationRoute({
+    const mountedPresenter = await mountInitialApplicationRoute({
         webSkel,
         pageContent,
         route: {
@@ -490,7 +491,7 @@ async function start() {
             preserveHash: suppressNavigationHash
         }
     });
-    window.webSkel = webSkel;
+    void completeInitialApplicationRoute({ webSkel, presenter: mountedPresenter });
     clearBootstrapReloadState(window);
     if (isFileExplorerRoute) {
         window.setTimeout(() => {

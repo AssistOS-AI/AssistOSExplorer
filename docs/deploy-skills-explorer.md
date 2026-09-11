@@ -27,9 +27,17 @@ repository revision and the outer Box's locked AgentLib identity. The paired
 destroy workflow requires only its explicit destructive confirmation and
 preserves the deployed runtime as the authority for teardown.
 
+An ordinary QA redeployment preserves workspace data. Before shutdown, the workflow rejects modified managed sources, unreviewed volumes or routing intent, unsupported recovery code, and insufficient disk space. It captures the exact predecessor, source revisions, image and agent selections in a new protected backup directory. A host lock serializes deployment and recovery operations. The workflow also holds Ploinky’s workspace mutation lock from capture through shutdown, preservation and source staging, so an ordinary CLI restart cannot interrupt the backup. It releases that lock before fresh Box preparation.
+
+The shutdown helper pins every registered container and its mounts. It drains OnlyOffice while DPU and Router remain available, stops consumers before providers, and requires PostgreSQL to report a clean shutdown. Router and its watchdog exit last. Failed or uncertain shutdown leaves the workspace in place. After shutdown, the workflow retains the stopped Box and its base image, moves the complete workspace under `/home/admin/.qa-deployment-backups/`, and copies durable files back with byte, ownership and permission comparisons. Operator files, local skills, database files and symlink targets remain intact. The master key, encrypted accounts and secrets, and subject-signing identity stay together. Fresh routing initialization precedes restoration of access policy, session revocations and audit history. Runtime registries, leases and compiled generations are regenerated.
+
+Each backup contains reviewed recovery helpers and an authority record written before any stop or move. Run `node BACKUP/helpers/rollback-explorer-qa.mjs plan BACKUP --current-id FULL_ID` for a read-only recovery check, then replace `plan` with `execute` for the selected recovery operation. Use `absent` only when the failed replacement Box is absent. Recovery creates a fresh Box from the predecessor's pinned base image and clean source revisions, copies the saved durable data, restores policy and agent choices, and verifies new runtime identities and readiness. It preserves the predecessor and failed replacement snapshots. Recovery does not resume saved nested containers and does not claim browser acceptance.
+
+Older runtimes that overwrite saved accounts during graph registration cannot be used for exact-code rollback. The workflow rejects them before shutdown. They require a separately reviewed forward migration using fixed source revisions and the authoritative saved data. Low disk capacity likewise requires a scoped operator recovery plan. A complete quiesced GNU tar archive can be streamed over SSH to protected local storage with checksum verification and numeric ownership, ACLs and xattrs retained. Record that off-host archive dependency before clearing any proven generated QA cache. Never prune unrelated host resources. Retain backups and image references until data preservation and browser acceptance pass; retained predecessor Boxes require explicit review before a later automated deployment.
+
 QA also clones `AdvancedLanguageAgent` into the fresh workspace root from its remote default branch and records its exact commit. Before starting Explorer, the workflow links ALA's package dependency to the prepared Box's `/opt/ploinky-agentlib`, exercises the real loader, and checks the CLI options required by RoboTeam. It rejects a second AgentLib copy, a shadowing checkout, incompatible CLI options, or a dirty or moved ALA revision. No separate `npm install` is used for ALA, and this prerequisite does not change the fourteen-agent readiness gate.
 
-Copilot runs through RoboTeam’s ordinary `default` robot; the retired `AchillesCLI/achilles-cli` agent is not a dependency. The default graph excludes `onlyOffice`, `webmeetScribeAgent`, and `webmeetStt`; readiness requires fourteen runtimes and ten no-wait completions. Administrators can enable these optional agents individually through Explorer Marketplace after deployment. Meeting Secretary uses final browser SpeechRecognition transcripts and does not depend on the separate STT service. Existing workspace enablement choices are preserved.
+Copilot runs through RoboTeam’s ordinary `default` robot; the retired `AchillesCLI/achilles-cli` agent is not a dependency. The default graph excludes `onlyOffice`, `webmeetScribeAgent`, and `webmeetStt`; readiness requires fourteen runtimes and ten no-wait completions. After that baseline is ready, QA restores prior optional agent selections through the supported CLI and verifies their aliases, authentication modes, profiles and readiness. Administrators can also enable optional agents through Explorer Marketplace. Meeting Secretary uses final browser SpeechRecognition transcripts and does not depend on the separate STT service.
 
 The same AchillesIDE checkout supplies `AchillesIDE/liveKitServerAgent` alongside WebMeet. Deployment repository lists must not install a separate media-runtime repository or `basic`. LiveKit keeps its immutable image, readiness contract, `.data/liveKitServerAgent/` storage, Router signaling/private Twirp paths, and single UDP `7882` media mux. Its relocation does not change the fourteen-runtime or ten-no-wait gate. The image publication workflow in `container-image-builds` must select the `liveKitServerAgent/` build context from AssistOSExplorer. Integrate that source selection and the matching Ploinky listener profile before retiring the previous runtime source.
 
@@ -45,15 +53,17 @@ Never expose secret values in commands, logs, reports, or artifacts.
 
 ## Required sequence
 
-1. Back up application data, then complete the destructive credential/state
-   prerequisites documented by Ploinky operations.
+1. Preserve a consistent backup of application data and its encryption keys.
+   Ordinary QA redeployment must retain accounts, documents, local skills,
+   access policies and revocations. A requested test-workspace reset is a
+   separate operation with its own explicit target.
 2. Build or pull the pinned multi-architecture box and dependency images.
 3. Configure either explicit local-only mode or a complete dedicated-tunnel
    Cloudflare configuration. Never create a quick tunnel. The tracked Explorer
-   QA workflow may create or reuse exactly one persistent `explorer-qa` tunnel
-   only when the selected operation explicitly authorizes that test resource;
+   QA workflow requires the existing `explorer-qa` tunnel
+   `89dd05b5-05a7-4bd4-9626-ec4343b07c67` and fails if it is absent or ambiguous;
    it must preserve the pinned shared `proxies` tunnel and unrelated DNS,
-   validate the new connector credential against the selected account/tunnel,
+   validate the connector credential against the selected account/tunnel,
    and keep connector and management credentials in separate encrypted handles.
 4. Configure the literal public media IPv4 and external relay service.
 5. Recreate the Box explicitly under the semantic Box contract.

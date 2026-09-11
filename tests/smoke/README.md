@@ -661,3 +661,7 @@ SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
   sufficient.
 - External provider checks must stay opt-in unless the repository owns all required credentials and runtime configuration.
 - Tests that create rooms, uploads, users, branches, or files must use `SMOKE_RUN_ID` in names and clean up when the UI exposes cleanup.
+
+## Composed Copilot live skills gate
+
+Run `npm run test:copilot-live-skills` on the selected local or QA deployment host with the exact Box, workspace and release manifest pins described in [copilot-live-skills.md](./copilot-live-skills.md). One continuing deployed native conversation covers descriptor edits, helper-only edits, addition, UI disable/re-enable and deletion. Every turn requires its captured catalog, unchanged native continuation and fresh helper-written receipt; the test has no acceptance retries. This supplements the separate native and settings tests.

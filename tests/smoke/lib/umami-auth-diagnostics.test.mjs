@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { EventEmitter } from 'node:events';
 import { after, before, test } from 'node:test';
 import { chromium } from '@playwright/test';
 
@@ -19,7 +20,7 @@ async function withSignedOutPage(options, run) {
     if (request.url === verifyPath) {
       const authorized = request.headers.authorization === 'Bearer fixture-secret-token';
       requests.push({ method: request.method, authorized });
-      response.writeHead(authorized ? 200 : 401, { 'Content-Type': 'application/json' });
+      response.writeHead(authorized ? 200 : 401, options.reasonPhrase ?? 'Unauthorized', { 'Content-Type': 'application/json' });
       response.end(JSON.stringify(authorized
         ? { id: 'fixture-id', username: 'fixture-user', role: 'admin', isAdmin: true, teams: [] }
         : options.body || denial));
@@ -72,6 +73,73 @@ test('the completed signed-out denial is explicit, retained, and cannot excuse l
     await expect.poll(() => diagnostics.actionableEvents().length).toBe(2);
     assert.deepEqual(diagnostics.actionableEvents().map(({ kind }) => kind).sort(), ['console', 'response']);
   });
+});
+
+test('a real empty 401 reason phrase is acknowledged with its actual console signature', async () => {
+  await withSignedOutPage({ reasonPhrase: '' }, async ({ diagnostics, proof }) => {
+    assert.deepEqual(await proof(), { signedOutVerifications: 1, status: 401, completed: true });
+    const consoleEvent = diagnostics.events.find(({ kind }) => kind === 'console');
+    assert.equal(consoleEvent.text, 'Failed to load resource: the server responded with a status of 401 ()');
+    assert.deepEqual(diagnostics.actionableEvents(), []);
+  });
+});
+
+test('both exact spellings retain every denial boundary and reject unrelated or duplicate diagnostics', async () => {
+  const verifyUrl = `https://fixture.invalid${verifyPath}`;
+  const texts = [
+    'Failed to load resource: the server responded with a status of 401 (Unauthorized)',
+    'Failed to load resource: the server responded with a status of 401 ()',
+  ];
+  for (const text of texts) {
+    for (const [name, change] of Object.entries({
+      'wrong method': { method: 'GET' },
+      'wrong status': { status: 403 },
+      'wrong response URL': { responseUrl: `${verifyUrl}?unexpected=1` },
+      'wrong console URL': { consoleUrl: `${verifyUrl}/other` },
+      'wrong console type': { consoleType: 'warning' },
+      'unrecognized reason phrase': { text: text.replace(/\([^)]*\)$/, '(Forbidden)') },
+      'extra whitespace': { text: `${text} ` },
+      'substituted body': { body: { error: { message: 'private-denial-sentinel' } } },
+      'unreadable body': { unreadable: true },
+      'wrong content type': { contentType: 'text/plain' },
+      'incomplete response': { completionError: new Error('incomplete-private-sentinel') },
+      'failed completion promise': { rejectedCompletion: true },
+      'failed request': { failure: { errorText: 'net::ERR_ABORTED' } },
+      'missing response': { responseCount: 0 },
+      'missing console': { consoleCount: 0 },
+      'duplicate response': { responseCount: 2 },
+      'duplicate console': { consoleCount: 2 },
+      'both console spellings': { extraConsole: texts.find((value) => value !== text) },
+      'unrelated error': { unrelatedError: true },
+    })) {
+      const page = new EventEmitter();
+      const diagnostics = attachPageDiagnostics(page, {}, 'strict-denial');
+      const proof = beginUmamiSignedOutProof(page, { verifyUrl, timeout: 20 });
+      const response = {
+        url: () => change.responseUrl ?? verifyUrl,
+        status: () => change.status ?? 401,
+        request: () => ({ method: () => change.method ?? 'POST', failure: () => change.failure ?? null }),
+        headers: () => ({ 'content-type': change.contentType ?? 'application/json' }),
+        json: async () => { if (change.unreadable) throw new Error('private-body-sentinel'); return change.body ?? denial; },
+        finished: async () => { if (change.rejectedCompletion) throw new Error('private-completion-sentinel'); return change.completionError ?? null; },
+      };
+      const emitConsole = (value) => page.emit('console', {
+        type: () => change.consoleType ?? 'error', text: () => value,
+        location: () => ({ url: change.consoleUrl ?? verifyUrl }),
+      });
+      for (let index = 0; index < (change.responseCount ?? 1); index += 1) page.emit('response', response);
+      for (let index = 0; index < (change.consoleCount ?? 1); index += 1) emitConsole(change.text ?? text);
+      if (change.extraConsole) emitConsole(change.extraConsole);
+      if (change.unrelatedError) page.emit('pageerror', new Error('unrelated browser error'));
+      await assert.rejects(proof, (error) => {
+        assert.equal(/private-(?:denial|body|completion)-sentinel/.test(String(error)), false, name);
+        return true;
+      }, name);
+      assert.ok(diagnostics.actionableEvents().length > 0, name);
+      assert.equal(page.listenerCount('response'), 1, 'proof response listener is removed');
+      assert.equal(page.listenerCount('console'), 1, 'proof console listener is removed');
+    }
+  }
 });
 
 test('wrong denial method, substituted body, and extra denials cannot be acknowledged', async () => {

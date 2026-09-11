@@ -20,12 +20,17 @@ export function resolveAgentRuntimeTarget({ agentRef, target }, origin = window.
     const normalizedAgentRef = normalizeAgentRef(agentRef);
     const agentName = normalizedAgentRef.split('/')[1];
     const targetUrl = new URL(String(target || ''), origin);
+    const servicePrefix = `/base-agent-additional-server/${agentName}/`;
+    const serviceSuffix = targetUrl.pathname.startsWith(servicePrefix)
+        ? targetUrl.pathname.slice(servicePrefix.length) : '';
+    const servicePort = serviceSuffix.match(/^([1-9][0-9]{0,4})\//)?.[1];
+    const isAgentService = servicePort !== undefined && Number(servicePort) <= 65535;
     if (
         targetUrl.origin !== origin
         || targetUrl.username
         || targetUrl.password
         || targetUrl.hash
-        || !targetUrl.pathname.startsWith(`/${agentName}/`)
+        || (!targetUrl.pathname.startsWith(`/${agentName}/`) && !isAgentService)
     ) {
         throw new Error('The agent runtime target is invalid.');
     }

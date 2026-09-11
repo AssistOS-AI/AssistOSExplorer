@@ -38,7 +38,7 @@ const WORKFLOWS = [
       'EXPLORER_QA_CLOUDFLARE_ZONE_ID',
       'EXPLORER_QA_PLOINKY_MASTER_KEY',
       'Cloudflare management and connector authorities must be separate credentials',
-      'dedicated Explorer QA tunnel create/reuse did not converge to one exact identity',
+      'dedicated Explorer QA tunnel reuse did not converge to the selected existing identity',
       'connector token claims do not match the dedicated Explorer QA tunnel/account',
       'dedicated Explorer QA tunnel has shared or ambiguous ingress',
       'Explorer QA DNS does not target the selected dedicated tunnel',
@@ -90,26 +90,27 @@ const WORKFLOWS = [
       'Public edge returned the host-bound Explorer login and rejected a WebAssist selector switch.',
       'Dedicated Explorer QA tunnel id=',
       'EXPLORER_QA_DNS_RECORD_ID=',
-      'destroy-explorer-qa.yml',
+      'Recovery: use the retained protected backup and reviewed rollback helper',
       'SOUL_GATEWAY_WORKSPACE:',
       'SOUL_GATEWAY_ROUTER_PORT:',
       'refusing to operate on the production Soul Gateway workspace',
       'protected Soul Gateway became unhealthy during QA deployment',
-      'The inner graceful stop failed; proving the outer Box stopped',
-      'Ploinky Box: stopped',
-      'the Box remained running or ambiguous after the degraded stop',
       'inspect_outer_box_status() {',
       'createBoxSupervisor().inspectBoxStatus()',
       'process.stdout.write(formatBoxStatus(status))',
       'BOX_STATUS="$(inspect_outer_box_status)"',
-      'STOPPED_BOX_STATUS="$(inspect_outer_box_status)"',
       "[ \"$BOX_PATH_HASH\" != '7a31ab7775eb' ]",
       'QA_VOLUME_ROLES=(workspace containers ploinky-deps)',
       'io.assistos.ploinky-box.path-hash',
-      'Exact prior Explorer QA deployment cleanup verified',
-      "target !== '/home/admin/explorerQaWorkspace'",
-      'Root-owned nested runtime data requires the pinned privileged cleanup fallback',
-      'refusing privileged cleanup outside exact QA identity',
+      'Exact prior Explorer QA runtime retired',
+      'hold-workspace-lock.mjs',
+      'release_qa_workspace_lock',
+      'QA Box identity changed before workspace-lock acquisition',
+      "assert.equal(target, '/home/admin/explorerQaWorkspace')",
+      'BEGIN QA durable workspace preservation',
+      'BEGIN QA policy restoration',
+      'exactCopiesVerified: true',
+      'compiledGenerationsRestored: false',
       'snapshot_protected_resources()',
       'Protected host resource identities remained unchanged',
     ],
@@ -316,7 +317,8 @@ test('Explorer QA deploy resolves graph defaults and Ploinky-locked AgentLib ind
   assert.match(source, /"\$RUNTIME_DIR\/ploinky-box\/dependencies\.lock\.json"/);
   assert.match(source, /EXPECTED_AGENTLIB_BRANCH="\$\(resolve_default_branch "\$AGENTLIB_URL"\)"/);
   assert.match(source, /PLOINKY_BRANCH="\$\(resolve_default_branch "\$PLOINKY_URL"\)"/);
-  assert.match(source, /checkout --detach --force "refs\/remotes\/origin\/\$PLOINKY_BRANCH"/);
+  assert.match(source, /checkout -B "\$PLOINKY_BRANCH" "refs\/remotes\/origin\/\$PLOINKY_BRANCH"/);
+  assert.match(source, /branch --set-upstream-to="origin\/\$PLOINKY_BRANCH" "\$PLOINKY_BRANCH"/);
   assert.match(source, /BRANCH_ARGS\+=\(--repo-branch "\$repository_name=\$default_branch"\)/);
   assert.match(source, /--dry-run --port "\$ROUTER_PORT" start explorer "\$\{BRANCH_ARGS\[@\]\}"/);
   assert.match(source, /"\$PLOINKY" start explorer "\$\{BRANCH_ARGS\[@\]\}"/);
@@ -413,7 +415,7 @@ test('Explorer QA dedicated tunnel provisioning is fail-closed and preserves the
   );
 
   for (const required of [
-    "--data '{\"name\":\"explorer-qa\",\"config_src\":\"cloudflare\"}'",
+    "CLOUDFLARE_SELECTED_TUNNEL_ID: '89dd05b5-05a7-4bd4-9626-ec4343b07c67'",
     'named.length !== 1 || named[0]?.id !== selectedId',
     "ingress[0]?.service !== 'http://127.0.0.1:8080'",
     'records[0]?.content !== expectedTarget',
@@ -492,17 +494,18 @@ test('Explorer QA dedicated tunnel validator rejects malformed, shared, ambiguou
       ['--input-type=module', '-', ...files, selectedId, created],
       {
         encoding: 'utf8',
-        env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, PUBLIC_HOST: hostname },
+        env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, PUBLIC_HOST: hostname, CLOUDFLARE_SELECTED_TUNNEL_ID: selectedId },
         input: script,
       },
     );
   };
   try {
-    assert.equal(run({ created: 'true' }).status, 0, 'new empty dedicated tunnel must pass');
+    assert.notEqual(run({ created: 'true' }).status, 0, 'a newly created tunnel is never authorized by redeploy');
+    assert.notEqual(run({ named: [] }).status, 0, 'absence must fail before provisioning');
     assert.equal(
-      run({ ingress: null, created: 'true' }).status,
+      run({ ingress: null }).status,
       0,
-      'new dedicated tunnel with no Cloudflare configuration object must pass as empty ingress',
+      'existing selected tunnel with no configuration object may have empty ingress',
     );
     assert.notEqual(run({ ingress: { unexpected: true } }).status, 0);
     assert.equal(run({

@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import { EXPORT_LEDGER, skillTreeDigest, syncManagedSkillExports } from './managed-skill-exports.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { jsonResponse, textResponse } from './responses.mjs';
@@ -454,39 +455,62 @@ export function createToolHandlers({
     }
   }
 
-  async function copyDirectory(src, dest) {
-    await fs.rm(dest, { recursive: true, force: true });
-    await fs.cp(src, dest, { recursive: true, force: true });
-  }
-
   async function syncSkillsManifestInstall(folder, entries) {
-    const selected = new Map();
-    const repoStates = [];
+    const sources = [];
     for (const entry of entries) {
       const repoPath = await ensureSkillRepoCached(entry);
-      const availableSkills = await listRepoSkillNames(repoPath);
-      const available = new Set(availableSkills);
+      const available = new Set(await listRepoSkillNames(repoPath));
       for (const skill of entry.skills) {
         if (!available.has(skill)) {
           throw new Error(`Skill '${skill}' is listed for repo '${entry.name}' but is not available in cache.`);
         }
-        selected.set(skill, { repoPath, repoName: entry.name, skill });
+        sources.push({ name: skill, path: path.join(repoPath, 'skills', skill), source: { url: entry.url, name: entry.name, branch: entry.branch || null } });
       }
-      repoStates.push({ ...entry, repoPath, availableSkills });
     }
-
-    const skillsDir = path.join(folder, canonicalSkillsDir);
-    await fs.rm(skillsDir, { recursive: true, force: true });
-    await fs.mkdir(skillsDir, { recursive: true });
-    for (const [skill, source] of selected.entries()) {
-      await copyDirectory(path.join(source.repoPath, 'skills', skill), path.join(skillsDir, skill));
-    }
+    const result = syncManagedSkillExports({ folder, owner: 'manifest', sources });
     await ensureClaudeSymlink(folder);
     invalidateCachesForPath(path.join(folder, canonicalAgentsDir));
-    return {
-      installedSkills: Array.from(selected.keys()).sort((left, right) => left.localeCompare(right)),
-      repositories: repoStates
-    };
+    return result;
+  }
+
+  async function readSkillExportState(folder, entries) {
+    const selected = new Set(entries.flatMap((entry) => entry.skills || []));
+    const diagnostics = [];
+    const outputs = [];
+    const agents = path.join(folder, canonicalAgentsDir);
+    const skillsDir = path.join(folder, canonicalSkillsDir);
+    for (const directory of [agents, skillsDir]) {
+      const stat = await fs.lstat(directory).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+      if (!stat) return { installedSkills: [], skillOutputs: [...selected].map((name) => ({ name, state: 'missing', selected: true })), diagnostics };
+      if (!stat.isDirectory()) return { installedSkills: [], skillOutputs: [], diagnostics: [{ reason: 'export-directory-is-not-a-real-directory', path: directory }] };
+    }
+    let ledger = { entries: {} };
+    const ledgerPath = path.join(agents, EXPORT_LEDGER);
+    try {
+      const stat = await fs.lstat(ledgerPath);
+      if (!stat.isFile()) throw new Error('Ownership ledger is not a regular file.');
+      ledger = JSON.parse(await fs.readFile(ledgerPath, 'utf8'));
+      if (ledger.version !== 1 || !ledger.entries || typeof ledger.entries !== 'object' || Array.isArray(ledger.entries)) throw new Error('Unsupported ownership ledger.');
+    } catch (error) {
+      if (error.code !== 'ENOENT') diagnostics.push({ reason: 'ownership-ledger-unavailable', message: error.message });
+      ledger = { entries: {} };
+    }
+    const presentNames = new Set();
+    for (const entry of await fs.readdir(skillsDir, { withFileTypes: true })) {
+      presentNames.add(entry.name);
+      const record = Object.hasOwn(ledger.entries, entry.name) ? ledger.entries[entry.name] : null;
+      let state = 'local';
+      if (record) {
+        try { state = entry.isDirectory() && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
+        catch { state = 'modified'; }
+      }
+      const descriptor = entry.isDirectory() ? await fs.lstat(path.join(skillsDir, entry.name, 'SKILL.md')).catch(() => null) : null;
+      outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || null });
+      if (state === 'modified' || (selected.has(entry.name) && state === 'local')) diagnostics.push({ name: entry.name, reason: `${state}-output-preserved` });
+    }
+    for (const name of selected) if (!presentNames.has(name)) outputs.push({ name, state: 'missing', selected: true, installed: false });
+    outputs.sort((a, b) => a.name.localeCompare(b.name));
+    return { installedSkills: outputs.filter((item) => item.installed).map((item) => item.name), skillOutputs: outputs, diagnostics };
   }
 
   async function buildSkillsManifestState(folder, manifestPath, entries) {
@@ -511,12 +535,12 @@ export function createToolHandlers({
         cacheError
       });
     }
-    const installedSkills = Array.from(new Set(entries.flatMap((entry) => entry.skills || []))).sort((a, b) => a.localeCompare(b));
+    const exportState = await readSkillExportState(folder, entries);
     return {
       manifestPath,
       folderPath: folder,
       repositories,
-      installedSkills,
+      ...exportState,
       skillRepositories: await listKnownSkillRepositories().catch(() => [])
     };
   }
@@ -1224,10 +1248,11 @@ export function createToolHandlers({
     const nextEntries = existingIndex === -1
       ? [...entries, nextEntry]
       : entries.map((entry, index) => index === existingIndex ? nextEntry : entry);
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
-    await syncSkillsManifestInstall(folder, nextEntries);
     return jsonResponse({
       ...await buildSkillsManifestState(folder, manifestPath, nextEntries),
+      exportResult,
       ok: true,
       added: true,
       cached: true,
@@ -1256,9 +1281,9 @@ export function createToolHandlers({
     const nextEntries = entries.map((entry, entryIndex) => entryIndex === index
       ? { ...entry, skills: Array.from(current).sort((left, right) => left.localeCompare(right)) }
       : entry);
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
-    await syncSkillsManifestInstall(folder, nextEntries);
-    return jsonResponse(await buildSkillsManifestState(folder, manifestPath, nextEntries));
+    return jsonResponse({ ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult });
   }
 
   async function handleRemoveSkillsManifestRepo(args) {
@@ -1270,9 +1295,9 @@ export function createToolHandlers({
     if (nextEntries.length === entries.length) {
       throw new Error(`Repository '${repoName}' is not in the skills manifest.`);
     }
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
     await writeSkillsManifestEntries(manifestPath, nextEntries);
-    await syncSkillsManifestInstall(folder, nextEntries);
-    return jsonResponse(await buildSkillsManifestState(folder, manifestPath, nextEntries));
+    return jsonResponse({ ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult });
   }
 
   function getInvocationIdentity() {
