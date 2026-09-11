@@ -1,6 +1,4 @@
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
@@ -14,9 +12,8 @@ import {
   finalizeOnlyOfficeGate,
 } from '../lib/onlyoffice-gate-diagnostics.mjs';
 import { resolvePloinkyExecutable } from '../lib/ploinky-executable.mjs';
+import { onlyOfficeGateTimeouts, restartOnlyOffice } from '../lib/onlyoffice-lifecycle.mjs';
 import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.mjs';
-
-const execFileAsync = promisify(execFile);
 
 function readDpuState() {
   if (!dpuData.exists('state.json')) {
@@ -189,17 +186,6 @@ async function forceSaveDocument(editorFrame) {
   await saveButton.click();
 }
 
-async function restartOnlyOffice(executable) {
-  if (!smokeConfig.workspaceRoot) {
-    throw new Error('SMOKE_WORKSPACE_ROOT is required for the targeted OnlyOffice restart.');
-  }
-  const { stdout, stderr } = await execFileAsync(executable, ['restart', 'onlyOffice'], {
-    cwd: smokeConfig.workspaceRoot,
-    env: { ...process.env, PLOINKY_CWD: smokeConfig.workspaceRoot }
-  });
-  return { stdout: String(stdout || ''), stderr: String(stderr || '') };
-}
-
 async function waitForOnlyOfficeSession(page, documentPath) {
   let lastPayload = null;
   await expect.poll(async () => {
@@ -259,15 +245,18 @@ test.describe('DPU and OnlyOffice @external', () => {
   test.skip(!smokeConfig.flags.onlyoffice, 'Set SMOKE_ONLYOFFICE=1 to run OnlyOffice/DPU smoke checks.');
 
   test('Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart', async ({ browser }, testInfo) => {
-    // A targeted OnlyOffice replacement includes graceful shutdown, image
-    // recreation, and semantic readiness. On a cold Box that bounded lifecycle
-    // legitimately exceeds the generic two-minute UI smoke budget.
-    test.setTimeout(Math.max(smokeConfig.timeouts.test, 300_000));
+    const lifecycleTimeouts = onlyOfficeGateTimeouts({ uiTimeoutMs: smokeConfig.timeouts.test });
+    test.setTimeout(lifecycleTimeouts.testTimeoutMs);
     expect(
       dpuData.exists(),
       `DPU data root should exist at ${dpuData.describe()}. Set SMOKE_WORKSPACE_ROOT or SMOKE_DPU_DATA_ROOT for local deployments.`
     ).toBe(true);
     const ploinkyExecutable = resolvePloinkyExecutable();
+    const restartOptions = {
+      executable: ploinkyExecutable,
+      workspaceRoot: smokeConfig.workspaceRoot,
+      timeoutMs: lifecycleTimeouts.restartTimeoutMs,
+    };
 
     const fileName = `smoke-onlyoffice-${smokeConfig.runId}.docx`;
     const documentPath = `/Confidential/My Space/${fileName}`;
@@ -373,7 +362,7 @@ test.describe('DPU and OnlyOffice @external', () => {
       expect(preDrainSnapshot?.updatedAt).toBe(callbackSnapshot.updatedAt);
 
       diagnostics.setPhase('targeted-restart');
-      const restartResult = await restartOnlyOffice(ploinkyExecutable);
+      const restartResult = await restartOnlyOffice(restartOptions);
       expect(restartResult.stderr).not.toMatch(/failed to (?:restart|start)|managed restart failed/i);
       expect(restartResult.stdout).toMatch(/✓ Agent restarted(?: \([^)]+\))?\./);
 
@@ -457,7 +446,10 @@ test.describe('DPU and OnlyOffice @external', () => {
           targetedRestart: {
             status: restartResult.status,
             code: restartResult.code,
+            elapsedMs: restartResult.elapsedMs,
+            timeoutMs: restartResult.timeoutMs,
           },
+          lifecycleTimeouts,
           reopenedBlobSha256: reopenedSnapshot.blobSha256,
           continuationBlobSha256: continuationSnapshot.blobSha256,
           continuedEditSavedAndReopened: true,
@@ -490,16 +482,29 @@ test.describe('DPU and OnlyOffice @external', () => {
         cleanupTarget: { documentPath },
         cleanup: async () => {
           createdObjectId ||= findDpuObjectByName(fileName, preExistingIds)?.id || null;
+          let finalDrain = null;
           // Complete the native save/disconnect handshake before deleting the
           // callback's storage target. This second restart also exercises drain
           // after recovery, including retired keys from the first generation.
           if (createdObjectId && activeEditorFrame && !activeEditorFrame.isDetached()) {
-            const finalDrain = await restartOnlyOffice(ploinkyExecutable);
+            diagnostics.setPhase('cleanup-targeted-restart');
+            finalDrain = await restartOnlyOffice(restartOptions);
             expect(finalDrain.stderr).not.toMatch(/failed to (?:restart|start)|managed restart failed/i);
             expect(finalDrain.stdout).toMatch(/✓ Agent restarted(?: \([^)]+\))?\./);
           }
+          diagnostics.setPhase('cleanup-document-deletion');
           const result = await deleteConfidentialDocument(page, documentPath, createdObjectId);
-          return { documentPath, objectId: createdObjectId, ...result };
+          return {
+            documentPath,
+            objectId: createdObjectId,
+            ...result,
+            finalDrain: finalDrain ? {
+              status: finalDrain.status,
+              code: finalDrain.code,
+              elapsedMs: finalDrain.elapsedMs,
+              timeoutMs: finalDrain.timeoutMs,
+            } : null,
+          };
         },
       });
     }

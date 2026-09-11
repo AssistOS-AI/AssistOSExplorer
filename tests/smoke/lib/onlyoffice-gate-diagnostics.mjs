@@ -36,11 +36,14 @@ async function attachJson(testInfo, name, value) {
   await testInfo.attach(name, { path: outputPath, contentType: 'application/json' });
 }
 
-export function createOnlyOfficeGateDiagnostics(context) {
+export function createOnlyOfficeGateDiagnostics(context, { now = () => performance.now() } = {}) {
   const events = [];
+  const phaseTimings = [];
+  const startedAt = now();
+  let phaseStartedAt = startedAt;
   let phase = 'initialization';
   let contextClosed = false;
-  const record = (event) => events.push({ phase, ...event });
+  const record = (event) => events.push({ phase, elapsedMs: Math.round(now() - startedAt), ...event });
   // Context events cover the first navigation, every iframe, and any new page.
   // Lifecycle disruption is evidence, never a reason to filter browser errors.
   context.on('console', (message) => record({
@@ -77,6 +80,11 @@ export function createOnlyOfficeGateDiagnostics(context) {
   function snapshot() {
     return JSON.parse(safeJson({
       contextClosed,
+      phaseTimings: [...phaseTimings, {
+        phase,
+        startedAfterMs: Math.round(phaseStartedAt - startedAt),
+        elapsedMs: Math.round(now() - phaseStartedAt),
+      }],
       ignoredBrowserErrors: 0,
       consoleErrors: events.filter((event) => event.kind === 'console' && event.type === 'error'),
       pageErrors: events.filter((event) => event.kind === 'pageerror'),
@@ -85,7 +93,16 @@ export function createOnlyOfficeGateDiagnostics(context) {
   }
 
   return Object.freeze({
-    setPhase(value) { phase = String(value); },
+    setPhase(value) {
+      const changedAt = now();
+      phaseTimings.push({
+        phase,
+        startedAfterMs: Math.round(phaseStartedAt - startedAt),
+        elapsedMs: Math.round(changedAt - phaseStartedAt),
+      });
+      phase = String(value);
+      phaseStartedAt = changedAt;
+    },
     snapshot,
     assertNoErrors() {
       const evidence = snapshot();

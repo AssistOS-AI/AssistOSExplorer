@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,30 @@ import {
 import { createReleaseGateFailureCollector } from './release-gate-failures.mjs';
 
 const execFileAsync = promisify(execFile);
+
+test('OnlyOffice timing evidence distinguishes both restarts from deletion and final evidence', () => {
+  const context = new EventEmitter();
+  let elapsed = 0;
+  const diagnostics = createOnlyOfficeGateDiagnostics(context, { now: () => elapsed });
+  elapsed = 17_737;
+  diagnostics.setPhase('targeted-restart');
+  elapsed += 152_519;
+  diagnostics.setPhase('reopen');
+  elapsed = 185_667;
+  diagnostics.setPhase('cleanup-targeted-restart');
+  elapsed += 152_519;
+  diagnostics.setPhase('cleanup-document-deletion');
+  elapsed += 1000;
+  diagnostics.setPhase('evidence');
+  const timings = diagnostics.snapshot().phaseTimings;
+  assert.deepEqual(timings.filter((entry) => entry.phase.endsWith('targeted-restart')), [
+    { phase: 'targeted-restart', startedAfterMs: 17_737, elapsedMs: 152_519 },
+    { phase: 'cleanup-targeted-restart', startedAfterMs: 185_667, elapsedMs: 152_519 },
+  ]);
+  assert.equal(timings.find((entry) => entry.phase === 'cleanup-document-deletion').elapsedMs, 1000);
+  assert.equal(timings.at(-1).phase, 'evidence');
+  assert.equal(timings.at(-1).elapsedMs, 0);
+});
 
 function testEvidence(root, { rejectAttachment = '' } = {}) {
   const attachments = [];
