@@ -26,10 +26,12 @@ async function createEmailAgentClient() {
     return module.createAgentClient('emailAgent');
 }
 
-// Query the internal, boolean-only readiness tool before entering a persistence
-// scope. A missing, denied, malformed or slow provider is unavailable. Neither
-// client acquisition nor shutdown may extend the caller's bounded wait.
+// Explicit development log delivery remains usable without an email provider.
+// Otherwise query the internal, boolean-only readiness tool before entering a
+// persistence scope. Missing, denied, malformed or slow providers fail closed;
+// client acquisition and shutdown cannot extend the bounded wait.
 export async function getEmailAuthCodeStatus({ createClient = createEmailAgentClient, timeoutMs = 2000 } = {}) {
+    if (process.env.USERPERSISTO_DEV_BOOTSTRAP === 'true') return { available: true };
     const deadline = Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 10_000 ? timeoutMs : 2000;
     let client;
     let timedOut = false;

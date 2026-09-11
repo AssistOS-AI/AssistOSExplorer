@@ -7,8 +7,8 @@ import { once } from 'node:events';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { getAuthPolicy, updateAuthPolicy, usableSignInMethods } from '../lib/policy.mjs';
 import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
-import { getUserById } from '../lib/users.mjs';
-import { createLoginRequest } from '../lib/sso.mjs';
+import { getUserById, listUsers } from '../lib/users.mjs';
+import { consumeAuthCode, createLoginRequest } from '../lib/sso.mjs';
 import { resetStoreForTests } from '../lib/store.mjs';
 import { withPersistenceScope } from '../lib/persistence-scope.mjs';
 import { startService } from '../service/index.mjs';
@@ -21,7 +21,7 @@ async function fixture(run) {
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-email-readiness-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'readiness-fixture-key';
-    for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED',
+    for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_DEV_BOOTSTRAP',
         'USERPERSISTO_GOOGLE_CLIENT_ID', 'USERPERSISTO_GOOGLE_CLIENT_SECRET', 'USERPERSISTO_GOOGLE_REDIRECT_URI']) delete process.env[name];
     setup.resetAuthLimitsForTests();
     const servers = [];
@@ -107,4 +107,55 @@ test('default production status fails closed without an EmailAgent client, while
     const configured = await (await fetch(`${controlled}/service/auth/setup`)).json();
     assert.equal(configured.methods.emailCode, true);
     assert.equal(configured.registration, true);
+}));
+
+test('an unconfigured service completes first-owner signup through development log delivery only after explicit enablement', () => fixture(async ({ start }) => {
+    const base = await start();
+    const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
+    const browser = new CookieBrowser();
+    const post = (path, body = {}) => browser.json(`${base}/service/auth/${path}`, { requestId: request.providerState, ...body });
+    const email = 'development-owner@example.test';
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...parts) => { warnings.push(parts.join(' ')); };
+    try {
+        for (const value of [undefined, 'false', 'TRUE', '1']) {
+            if (value === undefined) delete process.env.USERPERSISTO_DEV_BOOTSTRAP;
+            else process.env.USERPERSISTO_DEV_BOOTSTRAP = value;
+            const configuration = await (await post('attempt')).json();
+            assert.equal(configuration.methods.emailCode, false);
+            assert.equal(configuration.registration, false);
+            assert.equal((await post('email-code/start', { email, purpose: 'register' })).status, 404);
+        }
+        assert.equal(warnings.length, 0);
+        assert.equal((await listUsers()).totalCount, 0, 'startup and rejected attempts seed no account');
+
+        process.env.USERPERSISTO_DEV_BOOTSTRAP = 'true';
+        await ensureSeedData();
+        assert.equal((await listUsers()).totalCount, 0, 'the development flag never seeds an administrator');
+        const configuration = await (await post('attempt')).json();
+        assert.equal(configuration.methods.emailCode, true);
+        assert.equal(configuration.registration, true);
+        const started = await post('email-code/start', { email, purpose: 'register' });
+        assert.equal(started.status, 200);
+        assert.equal((await started.json()).challenge.delivery, 'development-log');
+        assert.equal((await listUsers()).totalCount, 0, 'requesting a code does not claim setup');
+        const code = warnings.find((warning) => warning.startsWith(`[userPersisto] DEVELOPMENT email code for ${email}: `))?.match(/: (\d{6})$/)?.[1];
+        assert.equal(typeof code, 'string', 'a labelled code was captured without printing it');
+        const verified = await post('email-code/verify', { code });
+        assert.equal(verified.status, 200);
+        const completion = await verified.json();
+        assert.equal(completion.created, true);
+        assert.equal(completion.initialAdministrator, true);
+        const identity = await consumeAuthCode({ providerState: request.providerState, code: completion.code });
+        assert.equal(identity.user.email, email);
+        assert.deepEqual(identity.roles, ['admin']);
+        assert.equal((await listUsers()).totalCount, 1);
+
+        delete process.env.USERPERSISTO_DEV_BOOTSTRAP;
+        assert.equal((await (await fetch(`${base}/service/auth/setup`)).json()).methods.emailCode, false,
+            'disabling development delivery restores the production readiness check');
+    } finally {
+        console.warn = originalWarn;
+    }
 }));

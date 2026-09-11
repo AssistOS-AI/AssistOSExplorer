@@ -1,6 +1,27 @@
-import test from 'node:test';
+import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
+
+const originalDevelopmentMode = process.env.USERPERSISTO_DEV_BOOTSTRAP;
+beforeEach(() => { delete process.env.USERPERSISTO_DEV_BOOTSTRAP; });
+after(() => {
+    if (originalDevelopmentMode === undefined) delete process.env.USERPERSISTO_DEV_BOOTSTRAP;
+    else process.env.USERPERSISTO_DEV_BOOTSTRAP = originalDevelopmentMode;
+});
+
+test('only the exact explicit development flag makes log delivery available without a provider', async () => {
+    let calls = 0;
+    const createClient = async () => { calls += 1; throw new Error('missing provider'); };
+    for (const value of [undefined, '', 'false', 'TRUE', '1', ' true ']) {
+        if (value === undefined) delete process.env.USERPERSISTO_DEV_BOOTSTRAP;
+        else process.env.USERPERSISTO_DEV_BOOTSTRAP = value;
+        assert.deepEqual(await getEmailAuthCodeStatus({ createClient }), { available: false });
+    }
+    assert.equal(calls, 6);
+    process.env.USERPERSISTO_DEV_BOOTSTRAP = 'true';
+    assert.deepEqual(await getEmailAuthCodeStatus({ createClient }), { available: true });
+    assert.equal(calls, 6, 'development log delivery does not require a readiness provider');
+});
 
 test('email readiness uses the internal status tool and returns only a strict availability bit', async () => {
     for (const [response, available] of [
