@@ -6,9 +6,8 @@ import { invalidateDpuState, isDpuManagedPath } from "./file-exp-dpu-provider.js
 async function loadTreeContext(fileExp, targetDirectoryPath, options = {}) {
     const { selectedPath = null, historyMode = 'push' } = options;
     const normalizedTargetPath = fileExp.normalizePath(targetDirectoryPath || '/');
-    const treeRootPath = normalizedTargetPath === '/'
-        ? '/'
-        : (fileExp.parentPath(normalizedTargetPath) || '/');
+    // The URL selects a branch; it must not replace the workspace tree root.
+    const treeRootPath = '/';
 
     fileExp.updateNavigationLocation(normalizedTargetPath, {
         selectedPath,
@@ -180,6 +179,15 @@ export async function refreshDirectory(fileExp) {
             ? (fileExp.state.treeRootPath || currentPath || '/')
             : currentPath;
         const selectedPath = fileExp.normalizePath(fileExp.state.selectedPath || '');
+        const expandedPaths = fileExp.state.directoryViewMode === 'tree'
+            ? [...(fileExp.treeViewState?.expandedPaths || [])] : [];
+        if (fileExp.state.directoryViewMode === 'tree' && fileExp.treeViewState) {
+            const tree = fileExp.treeViewState;
+            const paths = new Set([...expandedPaths, ...tree.childrenCache.keys(), ...tree.loadingPaths]);
+            for (const path of paths) fileExp.caches.dirListing.invalidate(fileExp, path);
+            tree.childrenCache.clear();
+            tree.loadingPaths.clear();
+        }
         const dpuRefreshTargets = [listingPath, currentPath, selectedPath].filter((targetPath) => isDpuManagedPath(targetPath));
         if (dpuRefreshTargets.length > 0) {
             invalidateDpuState(fileExp, dpuRefreshTargets);
@@ -204,7 +212,10 @@ export async function refreshDirectory(fileExp) {
             const entriesPresenter = fileExp.getEntriesPresenter();
             if (entriesPresenter && typeof entriesPresenter.revealTreeDirectory === 'function') {
                 fileExp.pendingTreeReveal = null;
-                await entriesPresenter.revealTreeDirectory(currentPath, { preserveExisting: true });
+                const paths = [...new Set([...expandedPaths, currentPath])].sort((left, right) => left.split('/').length - right.split('/').length);
+                for (const path of paths) {
+                    await entriesPresenter.revealTreeDirectory(path, { preserveExisting: true });
+                }
             } else {
                 fileExp.pendingTreeReveal = { path: currentPath, preserveExisting: true };
             }

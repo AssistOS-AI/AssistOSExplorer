@@ -26,7 +26,7 @@ export async function getMenuItems({ context, plugin }) {
 
     return [{
         id: 'achilles-ide:edit-skills-manifest',
-        label: 'Edit Skills Manifest',
+        label: 'Manage skills',
         icon: plugin?.icon || '',
         action: 'edit-skills-manifest'
     }];
@@ -44,7 +44,7 @@ export async function executeMenuAction({ action, context, host }) {
 
     const count = Number.isFinite(result.count) ? result.count : 0;
     host?.showStatus?.(`Updated skills manifest with ${count} installed ${count === 1 ? 'skill' : 'skills'}.`);
-    await host?.refreshDirectory?.();
+    await host?.refreshDirectory?.({ invalidateDescendants: true });
 }
 
 export async function activateMenuItem({ context, host }) {

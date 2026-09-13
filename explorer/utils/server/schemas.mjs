@@ -317,7 +317,8 @@ export function createSchemas(z) {
   const SetSkillsManifestSkillEnabledArgsSchema = z.object({
     folderPath: z.string(),
     repoName: z.string(),
-    skill: z.string(),
+    skill: z.string().optional(),
+    skillset: z.string().optional(),
     enabled: z.boolean()
   });
   const RemoveSkillsManifestRepoArgsSchema = z.object({

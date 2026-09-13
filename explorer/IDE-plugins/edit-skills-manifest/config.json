@@ -3,8 +3,8 @@
     "contributionType": "menu",
     "id": "edit-skills-manifest",
     "location": ["file-exp:context-menu:directory"],
-    "label": "Edit Skills Manifest",
-    "tooltip": "Edit ploinky-skills-manifest.json for the selected folder",
+    "label": "Manage skills",
+    "tooltip": "Manage skill repositories and skillsets for this folder",
     "icon": "./icon.svg",
     "menuModule": "menu-contributions.js",
     "dependencies": [

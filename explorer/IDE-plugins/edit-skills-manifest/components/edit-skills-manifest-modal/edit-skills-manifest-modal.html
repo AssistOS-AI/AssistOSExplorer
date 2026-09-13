@@ -1,23 +1,15 @@
-<div class="modal-header">
-    <div class="modal-title">Edit Skills Manifest</div>
-    <div class="close" data-local-action="closeModal" aria-label="Close">
-        <img class="close-icon" src="/explorer/assets/icons/x-mark.svg" alt="close">
-    </div>
-</div>
-<div class="modal-body edit-skills-manifest-modal-body">
-    <div class="edit-skills-manifest-path" data-manifest-path></div>
-    <form class="edit-skills-manifest-add-row" data-add-form>
-        <input id="editSkillsManifestRepoInput" name="repositoryUrl" type="text" autocomplete="off" spellcheck="false" placeholder="Git URL or known repo name">
-        <input id="editSkillsManifestNameInput" name="repositoryName" type="text" autocomplete="off" spellcheck="false" placeholder="Name (optional)">
-        <input id="editSkillsManifestBranchInput" name="repositoryBranch" type="text" autocomplete="off" spellcheck="false" placeholder="Branch (optional)">
-        <button class="general-button" type="submit">Add repo</button>
-    </form>
-    <div class="edit-skills-manifest-scroll">
-        <div class="edit-skills-manifest-presets">
-            <div class="edit-skills-manifest-section-title">Suggested repositories</div>
-            <div class="edit-skills-manifest-preset-list" data-preset-list></div>
-        </div>
-        <div class="edit-skills-manifest-status" data-status hidden></div>
-        <div class="edit-skills-manifest-list" data-repository-list></div>
-    </div>
-</div>
+<header class="skills-dialog-heading">
+    <h2>Manage skills</h2>
+    <button type="button" class="button secondary" data-local-action="closeModal">Close</button>
+</header>
+<div data-repository-list></div>
+<section class="skill-recommendations">
+    <h3>Recommended repositories</h3>
+    <p class="muted">Registered in Ploinky. Workspace checkouts are preferred.</p>
+    <div data-preset-list></div>
+</section>
+<form class="repository-form" data-add-form>
+    <label>Repository URL<input id="editSkillsManifestRepoInput" name="repositoryUrl" type="text" required autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/skills.git"></label>
+    <button class="button primary" type="submit">Add repo</button>
+</form>
+<p class="message" data-status hidden></p>

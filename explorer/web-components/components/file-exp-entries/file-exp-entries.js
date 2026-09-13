@@ -669,6 +669,17 @@ export class FileExpEntries {
         if (!options.preserveExisting) {
             treeViewState.expandedPaths.clear();
         }
+        if (!options.skipAncestors) {
+            const ancestors = [];
+            let parent = normalizedPath.slice(0, normalizedPath.lastIndexOf('/')) || '/';
+            while (parent !== rootPath && parent !== '/' && parent.startsWith(rootPath === '/' ? '/' : `${rootPath}/`)) {
+                ancestors.unshift(parent);
+                parent = parent.slice(0, parent.lastIndexOf('/')) || '/';
+            }
+            for (const ancestor of ancestors) {
+                await this.revealTreeDirectory(ancestor, { preserveExisting: true, skipAncestors: true });
+            }
+        }
         treeViewState.expandedPaths.add(normalizedPath);
 
         if (treeViewState.childrenCache.has(normalizedPath)) {

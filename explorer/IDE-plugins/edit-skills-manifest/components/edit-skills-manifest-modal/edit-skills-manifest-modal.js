@@ -15,7 +15,7 @@ function escapeHtml(value = '') {
 }
 
 function normalizeRepoKey(value = '') {
-    return String(value || '').trim().replace(/\/+$/, '').toLowerCase();
+    return String(value || '').trim().replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase();
 }
 
 function repoMatchesKnownRepository(repo, repository) {
@@ -48,7 +48,8 @@ function normalizeState(raw = {}) {
             repoPath: String(repo.repoPath || ''),
             skills: Array.isArray(repo.skills) ? repo.skills : [],
             availableSkills: Array.isArray(repo.availableSkills) ? repo.availableSkills : [],
-            cacheError: String(repo.cacheError || '')
+            cacheError: String(repo.cacheError || ''),
+            skillsets: Array.isArray(repo.skillsets) ? repo.skillsets : []
         }))
     };
 }
@@ -273,7 +274,7 @@ export class EditSkillsManifestModal {
         for (const repo of this.state.repositories) {
             if (repo.name && !this.seenRepos.has(repo.name)) {
                 this.seenRepos.add(repo.name);
-                this.expandedRepos.add(repo.name);
+
             }
         }
         this.renderPresets();
@@ -296,12 +297,12 @@ export class EditSkillsManifestModal {
         this.presetListEl.innerHTML = repositories.map((repository, index) => {
             const alreadyAdded = this.state.repositories.some((repo) => repoMatchesKnownRepository(repo, repository));
             return `
-                <div class="edit-skills-manifest-preset-row ${alreadyAdded ? 'is-added' : ''}">
+                <div class="recommended-repository ${alreadyAdded ? 'is-added' : ''}">
                     <div>
-                        <div class="edit-skills-manifest-preset-name">${escapeHtml(repository.name || repository.label || repository.url)}</div>
-                        <div class="edit-skills-manifest-preset-url">${escapeHtml(repository.url)}</div>
+                        <div class="recommended-name">${escapeHtml(repository.name || repository.label || repository.url)}</div>
+                        <div class="muted">${escapeHtml(repository.label || '')}</div>
                     </div>
-                    <button class="general-button edit-skills-manifest-preset-add" type="button" data-preset-index="${index}" ${alreadyAdded || this.busy ? 'disabled' : ''}>${alreadyAdded ? 'Added' : 'Add'}</button>
+                    <button class="button secondary" type="button" data-preset-index="${index}" ${alreadyAdded || this.busy ? 'disabled' : ''}>${alreadyAdded ? 'Added' : 'Add repo'}</button>
                 </div>
             `;
         }).join('');
@@ -310,46 +311,18 @@ export class EditSkillsManifestModal {
     renderList() {
         if (!this.listEl) return;
         if (!this.state.repositories.length) {
-            this.listEl.innerHTML = '<div class="edit-skills-manifest-empty">No skill repositories configured.</div>';
+            this.listEl.innerHTML = '<p>No repositories added yet.</p>';
             return;
         }
-
-        this.listEl.innerHTML = this.state.repositories.map((repo) => {
-            const repoExpanded = this.expandedRepos.has(repo.name);
+        this.listEl.innerHTML = this.state.repositories.map(repo => {
             const selected = new Set(repo.skills);
-            const skills = repo.availableSkills.length
-                ? repo.availableSkills
-                : repo.skills;
-            const skillsHtml = skills.length
-                ? skills.map((skill) => {
-                    const installed = selected.has(skill);
-                    return `
-                        <div class="edit-skills-manifest-skill-row ${installed ? 'is-enabled' : 'is-disabled'}">
-                            <div>
-                                <span class="edit-skills-manifest-skill-name">${escapeHtml(skill)}</span>
-                                <span>${escapeHtml(this.state.skillOutputs.find((item) => item.name === skill)?.state || 'not exported')} · ${installed ? 'selected for export' : 'not selected'}</span>
-                            </div>
-                            <button class="edit-skills-manifest-skill-action ${installed ? 'gray-button danger' : 'is-add'}" type="button" data-repo-name="${escapeHtml(repo.name)}" data-skill-name="${escapeHtml(skill)}" data-skill-enabled="${installed ? 'false' : 'true'}" ${this.busy ? 'disabled' : ''}>${installed ? 'Remove' : 'Add'}</button>
-                        </div>
-                    `;
-                }).join('')
-                : `<div class="edit-skills-manifest-empty">${escapeHtml(repo.cacheError || 'No cached skills found for this repository.')}</div>`;
-            return `
-                <section class="edit-skills-manifest-repo-card ${repoExpanded ? 'is-expanded' : 'is-collapsed'}">
-                    <div class="edit-skills-manifest-repo-header" data-repo-toggle="${escapeHtml(repo.name)}" aria-expanded="${repoExpanded ? 'true' : 'false'}">
-                        <button class="edit-skills-manifest-repo-toggle" type="button" tabindex="-1" ${this.busy ? 'disabled' : ''}>
-                            <span class="edit-skills-manifest-repo-arrow" aria-hidden="true"></span>
-                            <span class="edit-skills-manifest-repo-meta">
-                                <span class="edit-skills-manifest-repo-name">${escapeHtml(repo.name)}</span>
-                                <span class="edit-skills-manifest-url">${escapeHtml(repo.url)}</span>
-                                ${repo.branch ? `<span class="edit-skills-manifest-branch">branch: ${escapeHtml(repo.branch)}</span>` : ''}
-                            </span>
-                        </button>
-                        <button class="gray-button danger edit-skills-manifest-remove-repo" type="button" title="Remove repository" aria-label="Remove repository" data-remove-repo="${escapeHtml(repo.name)}" ${this.busy ? 'disabled' : ''}>Remove Repo</button>
-                    </div>
-                    <div class="edit-skills-manifest-skill-list" aria-hidden="${repoExpanded ? 'false' : 'true'}" style="${repoExpanded ? '' : 'display: none;'}">${skillsHtml}</div>
-                </section>
-            `;
+            const skills = repo.availableSkills.length ? repo.availableSkills : repo.skills;
+            const sets = repo.skillsets || [];
+            const skillList = sets.length
+                ? '<ul>' + skills.map(skill => '<li><strong>' + escapeHtml(skill) + '</strong></li>').join('') + '</ul>'
+                : skills.map(skill => '<div class="individual-skill"><strong>' + escapeHtml(skill) + '</strong><button class="button secondary" type="button" data-repo-name="' + escapeHtml(repo.name) + '" data-skill-name="' + escapeHtml(skill) + '" data-skill-enabled="' + !selected.has(skill) + '" ' + (this.busy ? 'disabled' : '') + '>' + (selected.has(skill) ? 'Disable' : 'Enable') + '</button></div>').join('');
+            const combinations = sets.map(set => '<article class="skillset-item"><strong>' + escapeHtml(set.name) + '</strong><p>' + escapeHtml(set.description) + '</p><p class="muted">' + (set.partial ? 'Partially enabled' : set.enabled ? 'Enabled' : 'Disabled') + '</p><button class="button secondary" type="button" data-repo-name="' + escapeHtml(repo.name) + '" data-skillset-name="' + escapeHtml(set.name) + '" data-skill-enabled="' + !set.enabled + '" ' + (this.busy ? 'disabled' : '') + '>' + (set.enabled ? 'Disable' : 'Enable') + '</button><ul class="skill-members">' + set.skills.map(skill => '<li>' + escapeHtml(skill) + '</li>').join('') + '</ul></article>').join('');
+            return '<section class="repository-row"><details ' + (this.expandedRepos.has(repo.name) ? 'open' : '') + '><summary data-repo-toggle="' + escapeHtml(repo.name) + '">' + escapeHtml(repo.cached && repo.repoPath ? repo.repoPath : repo.url || repo.name) + '</summary><div class="repository-content"><h3>Skills (' + skills.length + ')</h3>' + skillList + '<h3>Skillsets</h3>' + (combinations || '<p class="muted">No skillsets defined in skillsets.md.</p>') + (repo.cacheError ? '<p class="error">' + escapeHtml(repo.cacheError) + '</p>' : '') + '</div></details><button class="button danger" type="button" data-remove-repo="' + escapeHtml(repo.name) + '" ' + (this.busy ? 'disabled' : '') + '>Remove</button></section>';
         }).join('');
     }
 
@@ -363,11 +336,11 @@ export class EditSkillsManifestModal {
         this.renderList();
     }
 
-    async addRepository() {
+    async addRepository(preset = null) {
         if (this.busy) return;
-        const url = String(this.urlInput?.value || '').trim();
-        const name = String(this.nameInput?.value || '').trim() || deriveRepoNameFromUrl(url);
-        const branch = String(this.branchInput?.value || '').trim();
+        const url = String(preset?.url || this.urlInput?.value || '').trim();
+        const name = String(preset?.name || '').trim() || deriveRepoNameFromUrl(url);
+        const branch = String(preset?.branch || '').trim();
         if (!url) {
             this.setStatus('Repository URL or known repo name is required.', 'error');
             return;
@@ -406,10 +379,10 @@ export class EditSkillsManifestModal {
         if (this.urlInput) this.urlInput.value = preset.url;
         if (this.nameInput) this.nameInput.value = preset.name || deriveRepoNameFromUrl(preset.url);
         if (this.branchInput) this.branchInput.value = preset.branch || '';
-        await this.addRepository();
+        await this.addRepository(preset);
     }
 
-    async setSkillEnabled(repoName, skill, enabled) {
+    async setSkillEnabled(repoName, skill, enabled, isSkillset = false) {
         if (this.busy) return;
         this.setBusy(true);
         this.setStatus(`${enabled ? 'Adding' : 'Removing'} ${skill}...`, 'info');
@@ -417,10 +390,10 @@ export class EditSkillsManifestModal {
             const result = await this.callJsonTool('set_skills_manifest_skill_enabled', {
                 folderPath: this.folderPath,
                 repoName,
-                skill,
+                ...(isSkillset ? { skillset: skill } : { skill }),
                 enabled
             });
-            await this.refreshStateAfterMutation();
+            this.state = mergeSkillRepositories(normalizeState(result), this.state);
             this.changed = true;
             this.showExportStatus(result, `${skill} ${enabled ? 'selected' : 'deselected'} for export.`);
         } catch (error) {
@@ -474,14 +447,15 @@ export class EditSkillsManifestModal {
             return;
         }
 
-        const skillButton = event.target?.closest?.('[data-skill-name]');
+        const skillButton = event.target?.closest?.('[data-skill-name], [data-skillset-name]');
         if (skillButton && this.element.contains(skillButton)) {
             event.preventDefault();
             if (!skillButton.disabled) {
                 void this.setSkillEnabled(
                     skillButton.dataset.repoName || '',
-                    skillButton.dataset.skillName || '',
-                    skillButton.dataset.skillEnabled === 'true'
+                    skillButton.dataset.skillsetName || skillButton.dataset.skillName || '',
+                    skillButton.dataset.skillEnabled === 'true',
+                    skillButton.hasAttribute('data-skillset-name')
                 );
             }
         }
