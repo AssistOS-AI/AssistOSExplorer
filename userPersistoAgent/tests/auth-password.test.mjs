@@ -37,7 +37,7 @@ afterEach(async () => {
 });
 
 test('a retired administrator password cannot advertise sign-in or claim installation setup', async () => {
-    assert.deepEqual(await getEnabledAuthMethods(), ['emailCode', 'passkey', 'totp']);
+    assert.deepEqual(await getEnabledAuthMethods(), ['emailCode', 'passkey', 'totp', 'google']);
     assert.equal(await getDefaultAuthMethod(), 'emailCode');
     const configuration = await wizardConfiguration({ emailAvailable: true });
     assert.equal(Object.hasOwn(configuration, 'adminPassword'), false);

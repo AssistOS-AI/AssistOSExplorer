@@ -23,7 +23,6 @@ async function fixture(run) {
         process.env.PERSISTENCE_FOLDER = folder;
         process.env.USERPERSISTO_SETTINGS_KEY = 'controlled-reauth-settings';
         process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
-        process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
         delete process.env.USERPERSISTO_AUTH_METHODS;
         delete process.env.USERPERSISTO_ADMIN_PASSWORD;
         const sign = await createRouterSigner();
@@ -37,9 +36,9 @@ async function fixture(run) {
         const browser = new CookieBrowser();
         const parent = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
         const start = await (await browser.json(`${base}/service/auth/google/start`, { requestId: parent.providerState, state: 'router-reauth-fixture' })).json();
-        const callback = await browser.fetch(await provider.approve(start.authorizationUrl));
-        assert.equal(callback.status, 303);
-        assert.equal((await browser.fetch(new URL(callback.headers.get('location'), base))).status, 303);
+        const credential = await provider.submit(start.authorizationUrl, browser);
+        assert.equal(credential.status, 200);
+        assert.equal((await browser.fetch(new URL((await credential.json()).redirectUrl, base))).status, 303);
         const user = await getUserByEmail(provider.state.email);
         assert.ok(user);
         const request = async (path, body = {}, { actor = user.id, client = browser, headers = {}, unsigned = false } = {}) => {
@@ -58,9 +57,9 @@ async function fixture(run) {
         };
         const approve = async (flow) => {
             provider.state.claims = { auth_time: Math.floor(Date.now() / 1000) };
-            const response = await browser.fetch(await provider.approve(flow.authorizationUrl));
-            assert.equal(response.status, 303, await response.clone().text());
-            assert.equal(response.headers.get('location'), '/service/auth/google/confirmation');
+            const response = await provider.submit(flow.authorizationUrl, browser);
+            assert.equal(response.status, 200, await response.clone().text());
+            assert.equal((await response.json()).redirectUrl, '/service/auth/google/confirmation');
         };
         await run({ provider, browser, base, user, request, begin, approve });
     } finally {
@@ -119,15 +118,16 @@ test('Google confirmation cancellation, stale generation and missing provider fr
     await fixture(async ({ begin, approve, request, browser, provider, user }) => {
         const cancelled = await begin();
         assert.equal((await request('reauth/cancel', { ...cancelled, method: 'google' })).status, 200);
-        assert.equal((await browser.fetch(await provider.approve(cancelled.authorizationUrl))).status, 400);
+        assert.equal((await browser.fetch(cancelled.authorizationUrl)).status, 400);
         const stale = await begin();
         await approve(stale);
         await (await getStore()).updateUser(user.id, { authGeneration: user.authGeneration + 1 });
         assert.equal((await request('reauth/google/complete', stale)).status, 409);
         const missing = await begin();
         provider.state.claims = {};
-        const response = await browser.fetch(await provider.approve(missing.authorizationUrl));
-        assert.equal(response.headers.get('location'), '/service/auth/google/confirmation?notice=recent-authentication-required');
+        const response = await provider.submit(missing.authorizationUrl, browser);
+        assert.equal(response.status, 401);
+        assert.equal((await response.json()).error, 'google_recent_authentication_required');
         assert.equal((await request('reauth/google/complete', missing)).status, 400);
         assert.equal((await (await getStore()).select('authChallenge', { purpose: 'operation-grant' })).objects.length, 0);
     });

@@ -1,6 +1,6 @@
 import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
-import { createGoogleProtocol, googleError, requireGoogleConfiguration, GOOGLE_CALLBACK_PATH } from '../lib/auth/google.mjs';
-import { createGoogleTransaction, readGoogleTransaction, transitionGoogleTransaction, prepareGoogleTransactionTransition, hashGoogleState } from '../lib/auth/googleTransactions.mjs';
+import { createGoogleProtocol, googleError, requireGoogleConfiguration } from '../lib/auth/google.mjs';
+import { createGoogleTransaction, readGoogleTransaction, transitionGoogleTransaction, prepareGoogleTransactionTransition } from '../lib/auth/googleTransactions.mjs';
 import { inspectGoogleIdentity, completeGoogleIdentity, mailboxVersion } from '../lib/externalIdentities.mjs';
 import { getLoginRequest, issueAuthCodeLocked } from '../lib/sso.mjs';
 import { serialize } from '../lib/serial.mjs';
@@ -13,10 +13,11 @@ import { hashCode, codeHashMatches } from '../lib/auth/email-code.mjs';
 import { assertEmailVerifyBudget, deliverCode, developmentLogFallback, recordEmailVerifyFailure } from '../lib/auth/emailAttempts.mjs';
 import { sendAuthCode } from '../lib/email-agent-client.mjs';
 import { page, escapeHtml as esc } from '../lib/oidc/views.mjs';
+import { readOidcDocument } from '../lib/oidc/adapter.mjs';
+import { getClientMetadata } from '../lib/oidc/clients.mjs';
 
 const ROOT = '/service/auth/google';
 const HANDLE = /^[a-f0-9]{64}$/;
-const STATE = /^[A-Za-z0-9_-]{43}$/;
 const CODE_COOLDOWN_MS = 60_000;
 const MAX_CODE_FAILURES = 5;
 const MAX_CODE_SENDS = 5;
@@ -126,52 +127,110 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
         const config = await requireGoogleConfiguration();
         if (req.headers.origin !== config.redirect.origin || context.parent.origin !== config.redirect.origin) throw googleError('invalid_request', 403);
         await context.validate();
-        const authorization = await protocol.authorization(config, { reauthentication: context.flow === 'reauth' });
+        const authorization = { state: randomBytes(32).toString('base64url'), nonce: randomBytes(32).toString('base64url') };
         await context.validate();
         const current = await requireGoogleConfiguration();
         if (current.fingerprint !== config.fingerprint) throw googleError();
         const proof = randomBytes(32).toString('base64url');
         const expiresAt = Math.min(Date.now() + 300_000, context.parent.expiresAt);
         const transaction = await createGoogleTransaction({ state: authorization.state, browserProof: proof, expiresAt, configFingerprint: config.fingerprint,
-            payload: { flow: context.flow, parent: context.parent, state: authorization.state, verifier: authorization.verifier, nonce: authorization.nonce,
+            payload: { flow: context.flow, mode: config.mode, parent: context.parent, state: authorization.state, verifier: authorization.verifier, nonce: authorization.nonce,
                 clientId: config.clientId, redirectUri: config.redirectUri, csrf: randomBytes(32).toString('base64url') } });
         const handle = transaction.handle || transaction.stateHash;
         setProof(res, handle, config, proof, expiresAt);
-        return json(res, 200, { ok: true, authorizationUrl: authorization.url, transaction: handle });
+        const authorizationUrl = new URL(`${servicePath(config)}auth/google/sign-in?transaction=${handle}`, config.redirect.origin).href;
+        return json(res, 200, { ok: true, authorizationUrl, transaction: handle });
     }
 
-    async function callback(req, res, url) {
+    async function validateGisParent(payload, config) {
+        if (payload.parent.origin !== config.redirect.origin || payload.parent.expiresAt <= Date.now()) throw googleError();
+        if (payload.flow === 'explorer') {
+            const context = await explorerContext(payload.parent.requestId, payload.parent.state);
+            if (context.parent.redirectUri !== payload.parent.redirectUri) throw googleError();
+            await context.validate();
+        } else if (payload.flow === 'oidc') {
+            // OIDC cookies intentionally remain on the OIDC path. The Google
+            // browser proof binds this step; the ordinary resume validates the
+            // engine's browser cookie before any account or session is issued.
+            const parent = await readOidcDocument('Interaction', payload.parent.uid);
+            if (!parent || parent.result || parent.prompt?.name !== 'login'
+                || parent.params?.client_id !== payload.parent.clientId
+                || parent.params?.redirect_uri !== payload.parent.redirectUri
+                || !(await getClientMetadata(payload.parent.clientId))) throw googleError();
+        } else if (payload.flow === 'reauth') {
+            await googleReauthenticationAccount({ userId: payload.parent.userId,
+                operation: payload.parent.operation, generation: payload.parent.generation });
+        } else throw googleError();
+    }
+
+    function gisDestination(payload, handle, config, cancelled = false) {
+        if (payload.flow === 'reauth') return `${servicePath(config)}auth/google/confirmation${cancelled ? '?notice=cancelled' : ''}`;
+        return cancelled ? wizardPath(payload, config, 'google-cancelled') : resumePath(payload, handle, config);
+    }
+
+    async function gisPage(req, res, url) {
         const config = await requireGoogleConfiguration();
-        for (const key of ['state', 'code', 'error', 'iss']) if (url.searchParams.getAll(key).length > 1) throw googleError();
-        const state = url.searchParams.get('state');
-        if (!STATE.test(state || '') || (url.searchParams.has('code') === url.searchParams.has('error'))) throw googleError();
-        const handle = hashGoogleState(state);
+        if (config.mode !== 'gis' || url.searchParams.getAll('transaction').length !== 1
+            || [...url.searchParams.keys()].some(key => key !== 'transaction')) throw googleError();
+        const handle = url.searchParams.get('transaction');
+        const transaction = await readGoogleTransaction(handle, {
+            browserProof: cookie(req, handle, config), configFingerprint: config.fingerprint, statuses: ['pending'],
+        });
+        if (transaction.payload.mode !== 'gis') throw googleError();
+        await validateGisParent(transaction.payload, config);
+        const assetBase = `${servicePath(config)}auth/`;
+        const browserConfig = JSON.stringify({
+            clientId: config.clientId, nonce: transaction.payload.nonce, transaction: handle,
+            credentialUrl: `${assetBase}google/credential`, cancelUrl: `${assetBase}google/cancel`,
+            cancelRedirectUrl: gisDestination(transaction.payload, handle, config, true),
+            expiresAt: transaction.expiresAt, reauthentication: transaction.payload.flow === 'reauth',
+        }).replaceAll('<', '\\u003c').replaceAll('>', '\\u003e').replaceAll('&', '\\u0026');
+        // Only this dedicated page loads Google's browser SDK. No credentials
+        // or identity tokens are placed in its URL, storage, or response cache.
+        res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+            'Referrer-Policy': config.redirect.protocol === 'http:' ? 'no-referrer-when-downgrade' : 'strict-origin-when-cross-origin',
+            'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+            'X-Frame-Options': 'DENY', 'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; style-src 'self' https://accounts.google.com/gsi/style; font-src 'self'; img-src 'self' https://*.googleusercontent.com; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        });
+        res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in with Google · UserPersisto</title><link rel="stylesheet" href="${esc(assetBase)}auth.css"></head><body><main class="userpersisto-auth-shell"><section class="auth-panel"><h1>Sign in with Google</h1><p>Continue to your local UserPersisto account.</p><div id="google-sign-in-button"></div><p id="google-sign-in-status" role="status" aria-live="polite">Loading Google sign-in…</p><p id="google-sign-in-timer"></p><button id="google-sign-in-retry" type="button" hidden>Retry</button><button id="google-sign-in-cancel" type="button">Back to sign-in</button></section></main><script id="google-sign-in-config" type="application/json">${browserConfig}</script><script type="module" src="${esc(assetBase)}google-sign-in.mjs"></script></body></html>`);
+    }
+
+    async function gisCredential(req, res, cancel = false) {
+        const config = await requireGoogleConfiguration();
+        if (config.mode !== 'gis' || req.headers.origin !== config.redirect.origin
+            || String(req.headers['content-type'] || '').split(';')[0].trim() !== 'application/json') throw googleError('invalid_request', 403);
+        const body = await readBody(req);
+        if (Object.keys(body).some(key => !['transaction', ...(cancel ? [] : ['credential'])].includes(key))
+            || !HANDLE.test(body.transaction || '')
+            || (!cancel && (typeof body.credential !== 'string' || !body.credential || body.credential.length > 16384))) throw googleError();
+        const handle = body.transaction;
         const proof = { browserProof: cookie(req, handle, config), configFingerprint: config.fingerprint };
-        const transaction = await readGoogleTransaction(handle, { ...proof, statuses: ['pending'] });
-        if (url.searchParams.has('error')) {
-            // Google denial ends only this attempt; the parent wizard stays usable.
-            await transitionGoogleTransaction(handle, proof, { from: ['pending'], to: 'cancelled' });
+        const transaction = await readGoogleTransaction(handle, { ...proof, statuses: cancel ? ['pending', 'exchanging', 'verified'] : ['pending'] });
+        if (transaction.payload.mode !== 'gis') throw googleError();
+        if (cancel) {
+            await transitionGoogleTransaction(handle, proof, { from: ['pending', 'exchanging', 'verified'], to: 'cancelled' });
             setProof(res, handle, config, '', 0);
-            if (transaction.payload.flow === 'reauth') return redirect(res, `${servicePath(config)}auth/google/confirmation?notice=cancelled`);
-            return redirect(res, wizardPath(transaction.payload, config, 'google-denied'));
+            return json(res, 200, { ok: true, redirectUrl: gisDestination(transaction.payload, handle, config, true) });
         }
-        const code = url.searchParams.get('code');
-        if (typeof code !== 'string' || !code || code.length > 4096) throw googleError();
+        await validateGisParent(transaction.payload, config);
         await transitionGoogleTransaction(handle, proof, { from: ['pending'], to: 'exchanging' });
         try {
-            const callbackUrl = new URL(config.redirectUri);
-            callbackUrl.search = url.search;
-            const identity = await protocol.exchange(config, callbackUrl, transaction.payload);
+            const identity = await protocol.verifyCredential(config, body.credential, transaction.payload);
+            body.credential = '';
             if ((await requireGoogleConfiguration()).fingerprint !== config.fingerprint) throw googleError();
-            const verified = await transitionGoogleTransaction(handle, proof, { from: ['exchanging'], to: 'verified', patch: { identity, state: undefined, nonce: undefined, verifier: undefined } });
-            if (verified.payload.flow === 'reauth') return redirect(res, `${servicePath(config)}auth/google/confirmation`);
-            return redirect(res, resumePath(verified.payload, handle, config));
+            await validateGisParent(transaction.payload, config);
+            const verified = await transitionGoogleTransaction(handle, proof, {
+                from: ['exchanging'], to: 'verified', patch: { identity, state: undefined, nonce: undefined, verifier: undefined },
+            });
+            return json(res, 200, { ok: true, redirectUrl: gisDestination(verified.payload, handle, config) });
         } catch (error) {
-            await transitionGoogleTransaction(handle, proof, { from: ['exchanging'], to: 'failed' });
+            body.credential = '';
+            // Cancellation may have consumed the attempt while key retrieval
+            // was pending. It must never be revived by a late verification.
+            try { await transitionGoogleTransaction(handle, proof, { from: ['exchanging'], to: 'failed' }); } catch { /* fail closed */ }
             setProof(res, handle, config, '', 0);
-            if (transaction.payload.flow === 'reauth') {
-                return redirect(res, `${servicePath(config)}auth/google/confirmation?notice=${error?.code === 'google_recent_authentication_required' ? 'recent-authentication-required' : 'failed'}`);
-            }
             throw error;
         }
     }
@@ -394,7 +453,10 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
         const url = new URL(req.url, 'http://internal');
         if (url.pathname !== ROOT && !url.pathname.startsWith(`${ROOT}/`)) return false;
         try {
-            if (url.pathname === `${ROOT}/confirmation` && req.method === 'GET') {
+            if (url.pathname === `${ROOT}/sign-in` && req.method === 'GET') await gisPage(req, res, url);
+            else if ([`${ROOT}/credential`, `${ROOT}/cancel`].includes(url.pathname) && req.method === 'POST') {
+                await gisCredential(req, res, url.pathname === `${ROOT}/cancel`);
+            } else if (url.pathname === `${ROOT}/confirmation` && req.method === 'GET') {
                 const notice = url.searchParams.get('notice');
                 const message = notice === 'recent-authentication-required'
                     ? 'Google could not confirm a recent sign-in. Sign in to your Google Account again, then retry from My Account.'
@@ -408,8 +470,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                 const body = await readBody(req);
                 if (Object.keys(body).some((key) => !['requestId', 'state'].includes(key)) || typeof body.requestId !== 'string' || body.requestId.length > 512) throw googleError();
                 await serialize(`sso-request:${body.requestId}`, async () => start(req, res, await explorerContext(body.requestId, body.state)));
-            } else if (url.pathname === GOOGLE_CALLBACK_PATH && req.method === 'GET') await callback(req, res, url);
-            else {
+            } else {
                 const match = url.pathname.match(/^\/service\/auth\/google\/resume\/([a-f0-9]{64})(?:\/([a-z-]+))?$/);
                 if (!match) throw googleError('invalid_request', 404);
                 const config = await requireGoogleConfiguration();
@@ -433,7 +494,9 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                 res.setHeader('Connection', 'close');
                 res.once('finish', () => req.destroy());
             }
-            if (!res.headersSent) html(res, 'Unable to continue', '<p>Start sign-in again or use an existing sign-in method. If this continues, contact an administrator.</p>', Number(error.statusCode) || 503);
+            if (!res.headersSent && [`${ROOT}/credential`, `${ROOT}/cancel`].includes(url.pathname)) {
+                json(res, Number(error.statusCode) || 503, { ok: false, error: error.code === 'google_recent_authentication_required' ? error.code : 'google_authentication_failed' });
+            } else if (!res.headersSent) html(res, 'Unable to continue', '<p>Start sign-in again or use an existing sign-in method. If this continues, contact an administrator.</p>', Number(error.statusCode) || 503);
             else if (!res.writableEnded) res.end();
         }
         return true;

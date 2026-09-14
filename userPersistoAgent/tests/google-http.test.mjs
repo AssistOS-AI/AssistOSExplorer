@@ -22,7 +22,6 @@ import { getInstallationSetup } from '../lib/setup.mjs';
 import * as setup from './helpers/setup.mjs';
 import { setupStart, setupVerify, generateToken } from '../lib/auth/totp.mjs';
 import { loginVerify as verifyPasskey } from '../lib/auth/passkey.mjs';
-import { hashGoogleState } from '../lib/auth/googleTransactions.mjs';
 import { withPersistenceScope } from '../lib/persistence-scope.mjs';
 
 const updateAuthPolicy = (patch, context = {}) => updatePolicy(patch, { ...context, emailStatus: async () => ({ available: true }) });
@@ -37,7 +36,6 @@ async function fixture(fn, { withOwner = true } = {}) {
         process.env.PERSISTENCE_FOLDER = folder;
         process.env.USERPERSISTO_SETTINGS_KEY = 'controlled-settings-key';
         process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
-        process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
         delete process.env.USERPERSISTO_AUTH_METHODS;
         delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
         setup.resetAuthLimitsForTests();
@@ -61,10 +59,10 @@ async function fixture(fn, { withOwner = true } = {}) {
             return { browser, request, start, state };
         };
         const callback = async (flow) => {
-            const url = await provider.approve(flow.start.authorizationUrl);
-            const response = await flow.browser.fetch(url);
-            assert.equal(response.status, 303, await response.clone().text());
-            return { url, resume: new URL(response.headers.get('location'), base).href };
+            const { url, body } = await provider.credential(flow.start.authorizationUrl, flow.browser);
+            const response = await flow.browser.json(url, body);
+            assert.equal(response.status, 200, await response.clone().text());
+            return { url, body, resume: new URL((await response.json()).redirectUrl, base).href };
         };
         const beginOidc = async () => {
             const clientId = `controlled-${randomBytes(8).toString('hex')}`;
@@ -150,7 +148,7 @@ for (const flowKind of ['explorer', 'oidc']) {
                     outside.runInAsyncScope(() => {
                         changed = withPersistenceScope(async () => {
                             if (change === 'disable') await updateAuthPolicy({ enabledAuthMethods: ['emailCode'] });
-                            else process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'rotated-controlled-secret';
+                            else process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'rotated-controlled-client';
                             completed = true;
                         });
                     });
@@ -170,7 +168,7 @@ for (const flowKind of ['explorer', 'oidc']) {
             const user = await getUserByEmail(provider.state.email);
             assert.equal(bindings[0].userId, user.id);
             await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google'] });
-            process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
+            process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
             const retry = await start();
             const resumed = await callback(retry);
             assert.equal((await retry.browser.fetch(resumed.resume)).status, 303);
@@ -183,9 +181,8 @@ for (const flowKind of ['explorer', 'oidc']) {
         const start = flowKind === 'explorer' ? begin : beginOidc;
         const flow = await start();
         const returned = await callback(flow);
-        const state = new URL(flow.start.authorizationUrl).searchParams.get('state');
         const store = await getStore();
-        const transaction = await store.getGoogleAuthTransactionByStateHash(hashGoogleState(state));
+        const transaction = await store.getGoogleAuthTransactionByStateHash(flow.start.transaction);
         const realNow = Date.now;
         let expired = false;
         let response;
@@ -221,7 +218,7 @@ test('Google is disabled/misconfigured safely and public readiness never returns
     await updateAuthPolicy({ enabledAuthMethods: ['emailCode'] });
     assert.equal((await getGoogleStatus()).available, false);
     await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google'] });
-    delete process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET;
+    delete process.env.USERPERSISTO_GOOGLE_CLIENT_ID;
     assert.equal((await getGoogleStatus()).available, false);
     const data = await (await fetch(`${base}/service/auth/setup`)).json();
     assert.deepEqual(data.enabledAuthMethods, ['emailCode']);
@@ -229,7 +226,7 @@ test('Google is disabled/misconfigured safely and public readiness never returns
     assert.ok(!JSON.stringify(data).includes('controlled-google'));
 }));
 
-test('Explorer fresh registration uses selfRegistered and keeps independent core state; callbacks cannot replay', () => fixture(async ({ begin, callback, provider }) => {
+test('Explorer fresh registration uses selfRegistered and keeps independent core state; credentials cannot replay', () => fixture(async ({ begin, callback, provider }) => {
     const flow = await begin();
     const returned = await callback(flow);
     const response = await flow.browser.fetch(returned.resume);
@@ -240,9 +237,9 @@ test('Explorer fresh registration uses selfRegistered and keeps independent core
     const authenticated = await consumeAuthCode({ providerState: flow.request.providerState, code: destination.searchParams.get('code') });
     assert.deepEqual(authenticated.roles, ['selfRegistered']);
     assert.equal(Object.hasOwn(await getUserByEmail(provider.state.email), 'passwordHash'), false);
-    assert.equal((await flow.browser.fetch(returned.url)).status, 400);
+    assert.equal((await flow.browser.json(returned.url, returned.body)).status, 400);
     assert.equal((await flow.browser.fetch(returned.resume)).status, 400);
-    assert.equal(provider.state.exchanges, 1);
+    assert.equal(provider.state.verifications, 1);
 }));
 
 async function completeGoogle(flow, callback) {
@@ -317,18 +314,18 @@ test('retired administrator passwords cannot confirm a Google collision for an e
     assert.deepEqual(await getUserRoles(owner.id), ['admin']);
 }));
 
-test('missing, copied, duplicate and mismatched callback proof cannot consume the valid attempt', () => fixture(async ({ begin, callback, provider }) => {
+test('missing, copied and mismatched credential proof cannot consume the valid attempt', () => fixture(async ({ begin, provider }) => {
     const flow = await begin();
-    const url = await provider.approve(flow.start.authorizationUrl);
-    assert.equal((await new CookieBrowser().fetch(url)).status, 400);
-    const duplicate = new URL(url); duplicate.searchParams.append('state', 'other');
-    assert.equal((await flow.browser.fetch(duplicate)).status, 400);
-    const both = new URL(url); both.searchParams.set('error', 'bad');
-    assert.equal((await flow.browser.fetch(both)).status, 400);
-    assert.equal(provider.state.exchanges, 0);
-    const response = await flow.browser.fetch(url);
-    assert.equal(response.status, 303);
-    assert.equal(provider.state.exchanges, 1);
+    const { url, body } = await provider.credential(flow.start.authorizationUrl, flow.browser);
+    assert.equal((await new CookieBrowser().json(url, body)).status, 400);
+    assert.equal((await flow.browser.json(url, { ...body, transaction: 'wrong' })).status, 400);
+    assert.equal((await flow.browser.json(url, { ...body, credential: '' })).status, 400);
+    assert.equal((await flow.browser.json(url, { ...body, roles: ['admin'] })).status, 400);
+    assert.equal((await flow.browser.json(url, body, 'https://foreign.example')).status, 403);
+    assert.equal(provider.state.verifications, 0);
+    const response = await flow.browser.json(url, body);
+    assert.equal(response.status, 200);
+    assert.equal(provider.state.verifications, 1);
 }));
 
 test('Explorer initiation rejects missing/foreign/null Origin, form posts and identity overrides', () => fixture(async ({ base }) => {
@@ -435,20 +432,21 @@ test('two browser attempts retain separate cookies and pending/verified attempts
     assert.equal((await (await getStore()).select('externalIdentity')).objects.length, 2);
 }));
 
-test('provider denial and browser cancellation cannot produce an identity or replay', () => fixture(async ({ provider, begin, callback }) => {
-    provider.state.mode = 'denied';
+test('GIS cancellation and resume cancellation cannot produce an identity or replay', () => fixture(async ({ provider, begin, callback }) => {
     const flow = await begin();
-    const denied = await provider.approve(flow.start.authorizationUrl);
-    const response = await flow.browser.fetch(denied);
-    assert.equal(response.status, 303);
-    const wizard = new URL(response.headers.get('location'), 'http://internal');
+    const credential = await provider.credential(flow.start.authorizationUrl, flow.browser);
+    const cancelUrl = new URL(credential.config.cancelUrl, credential.url);
+    const response = await flow.browser.json(cancelUrl, { transaction: flow.start.transaction });
+    assert.equal(response.status, 200);
+    const wizard = new URL((await response.json()).redirectUrl, 'http://internal');
     assert.equal(wizard.pathname, '/service/auth/');
-    assert.equal(wizard.searchParams.get('notice'), 'google-denied');
+    assert.equal(wizard.searchParams.get('notice'), 'google-cancelled');
     assert.equal(wizard.searchParams.get('requestId'), flow.request.providerState);
     assert.equal(wizard.searchParams.get('state'), flow.state);
-    assert.equal((await flow.browser.fetch(denied)).status, 400);
-    assert.equal(provider.state.exchanges, 0);
-    provider.state.mode = ''; provider.state.email = 'cancel@example.test';
+    assert.equal((await flow.browser.json(credential.url, credential.body)).status, 400);
+    assert.equal((await flow.browser.json(cancelUrl, { transaction: flow.start.transaction })).status, 400);
+    assert.equal(provider.state.verifications, 0);
+    provider.state.email = 'cancel@example.test';
     const next = await begin();
     const returned = await callback(next);
     const html = await (await next.browser.fetch(returned.resume)).text();
@@ -459,23 +457,23 @@ test('provider denial and browser cancellation cannot produce an identity or rep
     assert.equal(await getUserByEmail(provider.state.email), null);
 }));
 
-test('an ambiguous timed-out token exchange fails once and does not hold persistence or redeem again', () => fixture(async ({ provider, begin }) => {
+test('a timed-out credential key lookup fails once and does not hold persistence or verify again', () => fixture(async ({ provider, begin }) => {
     let release;
-    provider.state.tokenGate = new Promise((resolve) => { release = resolve; });
+    provider.state.verificationGate = new Promise((resolve) => { release = resolve; });
     try {
         const flow = await begin();
-        const returned = await provider.approve(flow.start.authorizationUrl);
-        const pending = flow.browser.fetch(returned);
+        const returned = await provider.credential(flow.start.authorizationUrl, flow.browser);
+        const pending = flow.browser.json(returned.url, returned.body);
         const deadline = Date.now() + 1000;
-        while (!provider.state.exchanges && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-        assert.equal(provider.state.exchanges, 1);
+        while (!provider.state.verifications && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.equal(provider.state.verifications, 1);
         // This durable operation completes while upstream is still held.
         await updateAuthPolicy({ selfRegistrationEnabled: false });
         const response = await pending;
         assert.equal(response.status, 400);
         release();
-        assert.equal((await flow.browser.fetch(returned)).status, 400);
-        assert.equal(provider.state.exchanges, 1);
+        assert.equal((await flow.browser.json(returned.url, returned.body)).status, 400);
+        assert.equal(provider.state.verifications, 1);
         assert.equal(await getUserByEmail(provider.state.email), null);
     } finally { release(); }
 }));
@@ -485,7 +483,7 @@ test('configuration, registration policy and parent expiry are rechecked after u
         provider.state.subject = change; provider.state.email = `${change}@gmail.com`;
         const flow = await begin();
         const returned = await callback(flow);
-        if (change === 'configuration') process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'changed';
+        if (change === 'configuration') process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'changed';
         if (change === 'registration') await updateAuthPolicy({ selfRegistrationEnabled: false });
         if (change === 'parent') {
             const store = await getStore();
@@ -495,7 +493,7 @@ test('configuration, registration policy and parent expiry are rechecked after u
         }
         assert.ok((await flow.browser.fetch(returned.resume)).status >= 400, change);
         assert.equal(await getUserByEmail(provider.state.email), null);
-        process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
+        process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
         await updateAuthPolicy({ selfRegistrationEnabled: true });
     }
 }));
@@ -600,10 +598,9 @@ test('downstream OIDC resumes browser interaction, local subject and explicit co
     assert.equal(wizardConfig.methods.google, true);
     response = await browser.post(`${interaction}/google`, { csrf: csrf(html) });
     assert.equal(response.status, 200, await response.clone().text());
-    const upstream = await provider.approve((await response.json()).authorizationUrl);
-    response = await browser.fetch(upstream);
-    assert.equal(response.status, 303, await response.clone().text());
-    const resume = new URL(response.headers.get('location'), base).href;
+    response = await provider.submit((await response.json()).authorizationUrl, browser);
+    assert.equal(response.status, 200, await response.clone().text());
+    const resume = new URL((await response.json()).redirectUrl, base).href;
     assert.ok(resume.includes('/google-resume?transaction='));
     assert.equal((await new CookieBrowser().fetch(resume)).status, 400);
     response = await browser.fetch(resume);
@@ -645,7 +642,7 @@ test('targeted Google cancellation binds browser and parent and preserves newer 
     assert.equal(startedEmail.status, 200, await startedEmail.clone().text());
     const code = mail().code;
     assert.equal((await first.browser.json(cancelPath, args)).status, 200);
-    assert.equal((await first.browser.fetch(await provider.approve(first.start.authorizationUrl))).status, 400, 'cancelled Google cannot resume');
+    assert.equal((await first.browser.fetch(first.start.authorizationUrl)).status, 400, 'cancelled Google cannot resume');
     const completedEmail = await first.browser.json(`${base}/service/auth/email-code/verify`, {
         requestId: first.request.providerState, state: first.state, code,
     });

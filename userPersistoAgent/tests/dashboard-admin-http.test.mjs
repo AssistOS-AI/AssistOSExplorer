@@ -282,7 +282,8 @@ test('policy and provider status use fixed whitelisted fields and preserve opera
     assert.equal(JSON.stringify(stored).includes('ignored-secret'), false);
     const google = await adminRequest('google/status');
     assert.equal(google.response.status, 200);
-    assert.equal(google.data.result.configured, false);
+    assert.equal(google.data.result.configured, true);
+    assert.equal(google.data.result.configurationSource, 'local-default');
     assert.equal(JSON.stringify(google.data).includes('ignored-secret'), false);
     const oidc = await adminRequest('applications/status');
     assert.equal(oidc.response.status, 200);

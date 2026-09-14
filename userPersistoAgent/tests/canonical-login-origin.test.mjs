@@ -22,7 +22,6 @@ async function fixture(fn) {
         process.env.USERPERSISTO_SETTINGS_KEY = 'canonical-login-test-settings';
         process.env.USERPERSISTO_RUNTIME_SECRET = 'canonical-login-test-runtime';
         process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
-        process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
         delete process.env.USERPERSISTO_AUTH_METHODS;
         delete process.env.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS;
         await ensureSeedData();
@@ -64,8 +63,10 @@ test('loopback restart creates no provider state and the fresh canonical login s
     assert.equal(response.status, 200, await response.clone().text());
     const result = await response.json();
     const authorization = new URL(result.authorizationUrl);
-    assert.equal(authorization.searchParams.get('redirect_uri'), `${base}/service/auth/google/callback`);
-    assert.ok(authorization.searchParams.get('state'));
+    assert.equal(authorization.origin, base);
+    assert.equal(authorization.pathname, '/service/auth/google/sign-in');
+    assert.equal(authorization.searchParams.get('transaction'), result.transaction);
+    assert.equal((await browser.fetch(authorization)).status, 200);
     assert.ok(response.headers.get('set-cookie')?.includes('up_google_'));
     // The convenience redirect does not relax the Google Origin/CSRF boundary.
     const wrongOrigin = await fetch(`${base}/service/auth/google/start`, { method: 'POST',
@@ -114,9 +115,9 @@ test('canonical selection requires ready Google configuration and exact loopback
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = 'https://workspace.example.test/service/auth/google/callback';
     assert.equal(await getCanonicalLoginOrigin(callback), null, 'never redirect a local browser to a public deployment');
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${base}/service/auth/google/callback`;
-    delete process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET;
+    delete process.env.USERPERSISTO_GOOGLE_CLIENT_ID;
     assert.equal(await getCanonicalLoginOrigin(callback), null, 'incomplete Google must not change other login methods');
-    process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
     await updateAuthPolicy({ enabledAuthMethods: ['emailCode'] });
     assert.equal(await getCanonicalLoginOrigin(callback), null, 'disabled Google must not canonicalize');
 }));

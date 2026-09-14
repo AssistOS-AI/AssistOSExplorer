@@ -18,7 +18,7 @@ test('Google policy distinguishes enabled from unavailable and shows only safe r
         enabledAuthMethods: ['password', 'google'], environmentOverrides: ['USERPERSISTO_AUTH_METHODS'],
     } : {
         enabled: true, available: false, configured: false,
-        missing: ['USERPERSISTO_GOOGLE_CLIENT_SECRET'], secretPresent: false,
+        missing: ['USERPERSISTO_SETTINGS_KEY'], secretRequired: false,
         clientId: 'test-client', redirectUri: 'http://127.0.0.1:8080/base-agent-additional-server/userPersistoAgent/7000/service/auth/google/callback',
         configurationSource: 'environment', reason: 'configuration_missing',
         clientSecret: 'must-never-display', tokens: ['must-never-retain'],
@@ -26,9 +26,9 @@ test('Google policy distinguishes enabled from unavailable and shows only safe r
     await panel.refreshAuthPolicy();
     assert.equal(panel.authMethodInputs.google.checked, true);
     assert.match(panel.googleStatusEl.textContent, /Google is unavailable/);
-    assert.match(panel.googleStatusEl.textContent, /USERPERSISTO_GOOGLE_CLIENT_SECRET/);
-    assert.match(panel.googleStatusEl.textContent, /Client secret: missing/);
-    assert.match(panel.googleStatusEl.textContent, /Exact callback: http/);
+    assert.match(panel.googleStatusEl.textContent, /USERPERSISTO_SETTINGS_KEY/);
+    assert.match(panel.googleStatusEl.textContent, /no client secret required/);
+    assert.match(panel.googleStatusEl.textContent, /Sign-in origin: http/);
     assert.match(panel.authPolicySourceEl.textContent, /USERPERSISTO_AUTH_METHODS/);
     assert.doesNotMatch(JSON.stringify(panel.state) + panel.googleStatusEl.textContent, /must-never/);
 });

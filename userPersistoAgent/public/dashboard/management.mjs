@@ -192,9 +192,9 @@ export class UserpersistoSettings {
             if (this.googleStatusEl) this.googleStatusEl.textContent = [
                 google.available ? "Google is ready." : google.enabled ? "Google is unavailable." : "Google is disabled.",
                 `Configuration: ${google.configured ? "complete" : "incomplete"}; source: ${google.configurationSource || "environment"}.`,
-                `Client secret: ${google.secretPresent === true ? "present" : "missing"}.`,
+                "Google Identity Services: public client ID; no client secret required.",
                 google.clientId ? `Client ID: ${google.clientId}` : "",
-                google.redirectUri ? `Exact callback: ${google.redirectUri}` : "",
+                google.redirectUri ? `Sign-in origin: ${new URL(google.redirectUri).origin}` : "",
                 google.missing?.length ? `Missing settings: ${google.missing.join(", ")}.` : "",
                 google.reason ? `Readiness: ${google.reason}.` : "",
             ].filter(Boolean).join("\n");

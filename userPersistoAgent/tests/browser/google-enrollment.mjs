@@ -15,9 +15,9 @@ import { updateAuthPolicy } from '../../lib/policy.mjs';
 import { getStore, resetStoreForTests } from '../../lib/store.mjs';
 import { generateToken } from '../../lib/auth/totp.mjs';
 
-// A small loopback Router fixture derives its session from the real Google SSO
-// callback and signs dashboard requests. No pre-injected identity, mail service,
-// browser storage grant, or real provider account is used.
+// A loopback Router derives its session from the real SSO handoff after a
+// controlled GIS SDK submits signed fixture credentials. Dashboard requests are
+// signed; no identity, mail service or browser storage grant is pre-injected.
 const runtimePath = process.env.GOOGLE_BROWSER_PLAYWRIGHT_MODULE || '';
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 const artifacts = resolve(process.env.GOOGLE_ENROLLMENT_ARTIFACT_DIR || join(repoRoot, '.ploinky', 'test-artifacts', 'google-enrollment', Date.now().toString()));
@@ -41,12 +41,10 @@ try {
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'google-enrollment-browser-settings';
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
-    process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
     for (const key of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[key];
     const sign = await createRouterSigner();
     await ensureSeedData();
     provider = await controlledGoogleProvider();
-    provider.state.coop = true;
     service = startService({ port: 0, host: '127.0.0.1' }, { google: { protocol: provider.protocol } });
     if (!service.listening) await once(service, 'listening');
     const upstream = `http://127.0.0.1:${service.address().port}`;
@@ -107,11 +105,12 @@ try {
     browser = await chromium.launch({ headless: true,
         ...(process.env.GOOGLE_BROWSER_EXECUTABLE ? { executablePath: process.env.GOOGLE_BROWSER_EXECUTABLE } : {}) });
     const context = await browser.newContext();
+    await provider.installBrowserSdk(context);
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
     const failures = [];
     page.on('pageerror', (error) => failures.push(error.message));
-    phase = 'Google-only initial administrator through the browser SSO callback';
+    phase = 'Google-only initial administrator through a controlled signed GIS credential';
     await page.goto(`${origin}/start`);
     await page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
     await page.getByRole('button', { name: 'Continue with test identity' }).click();
@@ -152,7 +151,7 @@ try {
     assert.ok(methods.some((method) => method.enabled && method.type === 'passkey'));
     assert.deepEqual(failures, []);
     await page.screenshot({ path: join(artifacts, 'google-enrolled-methods.png'), fullPage: true });
-    console.log(`PASS Chromium ${browser.version()}: Google-only real SSO callback, signed My Account requests, isolated Google popup, TOTP and passkey enrollment without mail; artifacts ${artifacts}`);
+    console.log(`PASS Chromium ${browser.version()}: controlled signed GIS credential, Google-only real SSO handoff, signed My Account requests, isolated Google popup, TOTP and passkey enrollment without mail; artifacts ${artifacts}`);
 } catch (error) {
     console.error(`FAIL during ${phase}: ${error.message}`);
     process.exitCode = 1;

@@ -1,6 +1,6 @@
 # Opt-in browser regressions
 
-The runners use real Chromium with the real UserPersisto service, OIDC engine and sign-in wizard, but only controlled providers: codes come from a construction-time delivery capture, Google from a local signed test provider. They do not use a Ploinky workspace, a real Google account, real email delivery or a deployed origin, so a pass is never real-provider or deployment acceptance.
+The runners use real Chromium with the real UserPersisto service, OIDC engine and sign-in wizard, but controlled identity inputs: codes come from a construction-time delivery capture, and an intercepted Google SDK submits signed test ID tokens through the production GIS verifier. They do not use a Ploinky workspace, a real Google account, real email delivery or a deployed origin, so a pass is never real-provider or deployment acceptance. Separate real-Google results are recorded in [the local GIS integration report](../../../docs/regression/google-gis-local-2026-09-14.md).
 
 Run with a supported Node LTS release, the installed UserPersisto dependencies, `PLOINKY_AGENTLIB_DIR` pointing at the shared AgentLib, and an existing Playwright package and Chromium installation. No global install or download occurs. Set the absolute path to that package's `index.mjs` explicitly. An existing browser executable can be selected with `*_EXECUTABLE`; set `*_HEADED=true` for a visible browser. The runners are intentionally separate from `npm test`.
 

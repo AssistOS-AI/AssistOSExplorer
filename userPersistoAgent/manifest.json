@@ -114,10 +114,6 @@
           "required": false,
           "default": ""
         },
-        "USERPERSISTO_GOOGLE_CLIENT_SECRET": {
-          "required": false,
-          "default": ""
-        },
         "USERPERSISTO_GOOGLE_REDIRECT_URI": {
           "required": false,
           "default": ""

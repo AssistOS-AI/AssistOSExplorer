@@ -20,7 +20,7 @@ import { setupStart as startTotpSetup, setupVerify as verifyTotpSetup, generateT
 // Opt-in browser regression for the shared sign-in wizard on both renderers:
 // the Router SSO page and an OIDC interaction in a popup opened by a cross-site
 // application. Codes come from a construction-time delivery capture, Google from
-// the controlled provider; nothing here is a real provider or a deployed origin.
+// a controlled GIS SDK returning signed JWTs; this is not real Google account verification.
 const runtimePath = process.env.WIZARD_BROWSER_PLAYWRIGHT_MODULE || process.env.GOOGLE_BROWSER_PLAYWRIGHT_MODULE || '';
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 const runId = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
@@ -63,7 +63,6 @@ async function verify() {
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'wizard-browser-fixture-settings-key';
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
-    process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
     for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[name];
     await ensureSeedData();
     google = await controlledGoogleProvider();
@@ -89,6 +88,7 @@ async function verify() {
     async function ssoPage() {
         const request = await createLoginRequest({ redirectUri: `${providerOrigin}/auth/callback` });
         const context = await browser.newContext();
+        await google.installBrowserSdk(context);
         const page = await context.newPage();
         page.setDefaultTimeout(15_000);
         page.on('pageerror', (error) => browserErrors.push(`sso: ${error.message}`));
@@ -201,13 +201,12 @@ async function verify() {
     await flow.page.getByRole('button', { name: 'Verify', exact: true }).click();
     assert.equal((await finishSso(flow)).user.id, owner.user.id);
 
-    phase = 'SSO: Google denial returns to the live wizard';
-    google.state.mode = 'denied';
+    phase = 'SSO: GIS cancellation returns to the live wizard';
     flow = await ssoPage();
     await flow.page.getByRole('button', { name: /Continue with Google/ }).click();
-    await flow.page.getByRole('button', { name: 'Continue with test identity' }).click();
-    await flow.page.getByText('Google did not complete sign-in.').waitFor();
-    await screenshot(flow.page, '06-sso-google-denied');
+    await flow.page.getByRole('button', { name: 'Back to sign-in', exact: true }).click();
+    await flow.page.getByText('Google sign-in was cancelled.').waitFor();
+    await screenshot(flow.page, '06-sso-google-cancelled');
     // Narrow phones keep the whole panel inside the viewport, and Tab reaches the controls in order.
     await flow.page.setViewportSize({ width: 360, height: 740 });
     assert.equal(await flow.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'No horizontal overflow at 360 px.');
@@ -216,7 +215,6 @@ async function verify() {
     await flow.page.keyboard.press('Tab');
     assert.equal(await flow.page.evaluate(() => document.activeElement?.textContent), 'Next', 'Tab moves from the email field to Next.');
     await flow.context.close();
-    google.state.mode = '';
 
     // ---- OIDC renderer in a popup opened by a cross-site application --------
     phase = 'OIDC: preparing the cross-site relying party';
@@ -264,6 +262,7 @@ async function verify() {
 
     async function popup() {
         const context = await browser.newContext();
+        await google.installBrowserSdk(context);
         const opener = await context.newPage();
         opener.on('pageerror', (error) => browserErrors.push(`application: ${error.message}`));
         await opener.goto(applicationOrigin);
@@ -342,7 +341,7 @@ async function verify() {
     assert.deepEqual(browserErrors, [], 'No page may raise an uncaught error.');
     const store = await getStore();
     assert.equal((await store.select('user')).totalCount, 2, 'Only the two completed sign-ups created accounts.');
-    output(`PASS Chromium ${browser.version()}: SSO first-run email signup, four transitions, canceled delayed verification, administrator email-code sign-in, Google denial notice; OIDC cross-site popup email code with SameSite=Strict browser binding, native failure re-render, TOTP failure Back to email, administrator email-code sign-in with separate consent. Screenshots: ${artifactRoot}`);
+    output(`PASS Chromium ${browser.version()}: SSO first-run email signup, four transitions, canceled delayed verification, administrator email-code sign-in, controlled GIS cancellation notice; OIDC cross-site popup email code with SameSite=Strict browser binding, native failure re-render, TOTP failure Back to email, administrator email-code sign-in with separate consent. Screenshots: ${artifactRoot}`);
 }
 
 try {

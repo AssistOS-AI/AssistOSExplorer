@@ -23,6 +23,8 @@ async function fixture(run) {
     process.env.USERPERSISTO_SETTINGS_KEY = 'readiness-fixture-key';
     for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_DEV_BOOTSTRAP',
         'USERPERSISTO_GOOGLE_CLIENT_ID', 'USERPERSISTO_GOOGLE_CLIENT_SECRET', 'USERPERSISTO_GOOGLE_REDIRECT_URI']) delete process.env[name];
+    // This fixture isolates email readiness from the distributed local Google client.
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'incomplete-email-fixture-google-client';
     setup.resetAuthLimitsForTests();
     const servers = [];
     try {

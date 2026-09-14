@@ -22,6 +22,8 @@ import { resetOidcProviderForTests } from '../../lib/oidc/provider.mjs';
 
 // Opt-in browser regression. Load an existing Playwright installation explicitly;
 // the default Node test suite does not launch browsers or install browser tools.
+// The controlled GIS SDK submits signed JWTs through the real browser flow;
+// this does not validate an actual Google account or Google Cloud registration.
 const runtimePath = process.env.GOOGLE_BROWSER_PLAYWRIGHT_MODULE || '';
 const environment = { ...process.env };
 const output = console.log.bind(console);
@@ -99,7 +101,6 @@ async function verify() {
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'browser-fixture-settings-key';
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
-    process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
     delete process.env.USERPERSISTO_AUTH_METHODS;
     delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
     delete process.env.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS;
@@ -193,6 +194,7 @@ async function verify() {
         ...(process.env.GOOGLE_BROWSER_EXECUTABLE ? { executablePath: process.env.GOOGLE_BROWSER_EXECUTABLE } : {}),
     });
     const context = await browser.newContext({ ignoreHTTPSErrors: httpsMode });
+    await google.installBrowserSdk(context);
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
     let passkeyCredentialKey;
@@ -276,7 +278,7 @@ async function verify() {
     }
     await page.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
     await page.unroute(wizardScriptPattern, holdWizardScript);
-    phase = 'completing controlled Google authorization into the collision page';
+    phase = 'completing a controlled signed GIS credential into the collision page';
     const googleStart = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/google'));
     await page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
     const proofHeader = (await (await googleStart).allHeaders())['set-cookie'];
@@ -292,7 +294,7 @@ async function verify() {
     assert.equal(proofCookie.domain, browserHost, 'Proof cookie must be bound to the configured host.');
     assert.equal(proofCookie.path, '/service/', 'Proof cookie must cover the configured service prefix.');
     assert.equal(proofCookie.httpOnly, true, 'Google proof must not be readable by page JavaScript.');
-    assert.equal(proofCookie.sameSite, 'Lax', 'Top-level Google callback requires SameSite=Lax.');
+    assert.equal(proofCookie.sameSite, 'Lax', 'Google sign-in and resume retain SameSite=Lax.');
     assert.equal(proofCookie.secure, httpsMode, 'HTTPS proof cookie must require Secure.');
     assert.equal(proofCookie.name.startsWith('__Secure-'), httpsMode, 'Secure prefix must follow configured HTTPS.');
     phase = `submitting native ${linkMethod} reauthentication with its browser-generated Origin`;
@@ -342,7 +344,7 @@ async function verify() {
     assert.equal(bindings.length, 1, 'Confirmation must create exactly one Google binding.');
     assert.equal(bindings[0].userId, owner.id, 'The binding must belong to the authenticated local user.');
     assert.equal((await context.cookies(`${serviceOrigin}/service/`)).filter((cookie) => /^(?:__Secure-)?up_google_/.test(cookie.name)).length, 0, 'Successful completion must clear the attempt proof cookie.');
-    output(`PASS Chromium ${browser.version()} ${httpsMode ? 'HTTPS' : 'HTTP'} ${browserHost} ${linkMethod}: passwordless wizard sign-in, no Google control before the wizard loads, native form Origin, explicit linking, consented callback CSP, local subject and roles, scoped host-only proof cookie.`);
+    output(`PASS Chromium ${browser.version()} ${httpsMode ? 'HTTPS' : 'HTTP'} ${browserHost} ${linkMethod}: controlled signed GIS credential, passwordless wizard sign-in, no Google control before the wizard loads, native form Origin, explicit linking, consented callback CSP, local subject and roles, scoped host-only proof cookie.`);
 }
 
 try {

@@ -44,14 +44,14 @@ test('Google status and policy source require current administrative capability 
     const secondAdmin = await createUser({ email: 'backup@example.test', roles: ['admin'], emailVerified: true });
     const user = await createUser({ email: 'user@example.test', roles: ['user'] });
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'test-client';
-    process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'private-secret-never-project';
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = 'http://127.0.0.1:8080/base-agent-additional-server/userPersistoAgent/7000/service/auth/google/callback';
     process.env.USERPERSISTO_AUTH_METHODS = 'emailCode';
     const status = await runTool('userpersisto_google_status', {}, { actorUserId: admin.id });
-    assert.equal(status.secretPresent, true);
+    assert.equal(Object.hasOwn(status, 'secretPresent'), false);
+    assert.equal(status.configured, true);
     assert.equal(status.enabled, false);
     assert.equal(status.available, false);
-    assert.doesNotMatch(JSON.stringify(status), /private-secret-never-project/);
+    assert.doesNotMatch(JSON.stringify(status), /clientSecret|SETTINGS_KEY|isolated-profile-settings-key/);
     const policy = await runTool('userpersisto_auth_policy_get', {}, { actorUserId: admin.id });
     assert.deepEqual(policy.environmentOverrides, ['USERPERSISTO_AUTH_METHODS']);
     assert.equal(policy.registrationRole, 'selfRegistered');

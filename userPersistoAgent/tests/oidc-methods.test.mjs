@@ -77,7 +77,6 @@ async function fixture(methods, fn) {
     try {
         await ensureSeedData();
         process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'methods-google-client';
-        process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'methods-google-secret';
         process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = 'http://127.0.0.1/service/auth/google/callback';
         const { user: owner } = await completeGoogleIdentity({ identity: { issuer: 'https://accounts.google.com', subject: 'methods-owner',
             email: 'methods-owner@gmail.com', emailVerified: true } });

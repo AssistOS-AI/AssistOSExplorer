@@ -1,77 +1,80 @@
-import http from 'node:http';
-import { once } from 'node:events';
-import { generateKeyPairSync, randomBytes, createHash, sign } from 'node:crypto';
-import * as oidc from 'openid-client';
+import assert from 'node:assert/strict';
+import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { createGoogleProtocol } from '../../lib/auth/google.mjs';
 
+// Controlled GIS credentials still pass the production JOSE signature and claim
+// verifier. Only Google's public-key source and browser SDK are substituted.
 export async function controlledGoogleProvider() {
     let keys = generateKeyPairSync('rsa', { modulusLength: 2048 });
     let kid = 'fixture-1';
-    let origin;
-    const state = { claims: {}, subject: 'controlled-user', email: 'controlled@gmail.com', exchanges: 0, mode: '', tokenGate: null, coop: false,
-        metadataStatus: 0, jwksStatus: 0, tokenStatus: 0 };
-    const codes = new Map();
-    const esc = (value) => String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
-    const server = http.createServer(async (req, res) => {
-        const url = new URL(req.url, origin);
-        const json = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
-        const forcedStatus = { '/.well-known/openid-configuration': state.metadataStatus, '/jwks': state.jwksStatus, '/token': state.tokenStatus }[url.pathname];
-        if (forcedStatus) return json(forcedStatus, { error: 'temporarily_unavailable' });
-        if (url.pathname === '/.well-known/openid-configuration') return json(200, { issuer: origin, authorization_endpoint: `${origin}/authorize`,
-            token_endpoint: `${origin}/token`, jwks_uri: `${origin}/jwks`, response_types_supported: ['code'], subject_types_supported: ['public'],
-            id_token_signing_alg_values_supported: ['RS256'], token_endpoint_auth_methods_supported: ['client_secret_post'], code_challenge_methods_supported: ['S256'], authorization_response_iss_parameter_supported: true });
-        if (url.pathname === '/jwks') return json(200, { keys: [{ ...keys.publicKey.export({ format: 'jwk' }), kid, use: 'sig', alg: 'RS256' }] });
-        if (url.pathname === '/authorize') {
-            if (state.coop) res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            return res.end(`<h1>Controlled identity provider</h1><form method="get" action="/approve">${[...url.searchParams].map(([key, value]) => `<input type="hidden" name="${esc(key)}" value="${esc(value)}">`).join('')}<button>Continue with test identity</button></form>`);
+    const state = { claims: {}, subject: 'controlled-user', email: 'controlled@gmail.com',
+        verifications: 0, mode: '', verificationGate: null, verificationTimeout: 2_000, jwksStatus: 0 };
+    const protocol = createGoogleProtocol({ jwks: async (header) => {
+        state.verifications += 1;
+        if (state.verificationGate) {
+            let timer;
+            try {
+                await Promise.race([state.verificationGate, new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error('Controlled key lookup timed out.')), state.verificationTimeout);
+                })]);
+            } finally { clearTimeout(timer); }
         }
-        if (url.pathname === '/approve') {
-            const target = new URL(url.searchParams.get('redirect_uri'));
-            target.searchParams.set('state', url.searchParams.get('state'));
-            target.searchParams.set('iss', origin);
-            if (state.mode === 'denied') target.searchParams.set('error', 'access_denied');
-            else {
-                const code = randomBytes(24).toString('base64url');
-                codes.set(code, { params: url.searchParams, subject: state.subject, email: state.email, claims: { ...state.claims }, mode: state.mode });
-                target.searchParams.set('code', code);
-            }
-            res.writeHead(303, { Location: target.href });
-            return res.end();
-        }
-        if (url.pathname === '/token') {
-            state.exchanges += 1;
-            const chunks = [];
-            for await (const chunk of req) chunks.push(chunk);
-            const params = new URLSearchParams(Buffer.concat(chunks).toString());
-            const record = codes.get(params.get('code'));
-            codes.delete(params.get('code'));
-            if (state.tokenGate) await state.tokenGate;
-            if (!record || params.get('client_id') !== 'controlled-google-client' || params.get('client_secret') !== 'controlled-google-secret'
-                || params.get('redirect_uri') !== record.params.get('redirect_uri') || params.get('grant_type') !== 'authorization_code'
-                || createHash('sha256').update(params.get('code_verifier') || '').digest('base64url') !== record.params.get('code_challenge')
-                || record.params.get('code_challenge_method') !== 'S256') return json(400, { error: 'invalid_grant' });
+        if (state.jwksStatus || header.kid !== kid) throw new Error('Controlled signing key unavailable.');
+        return keys.publicKey;
+    } });
+    const provider = {
+        state, protocol,
+        rotate() { keys = generateKeyPairSync('rsa', { modulusLength: 2048 }); kid = randomBytes(6).toString('hex'); },
+        sign(nonce, clientId = 'controlled-google-client') {
+            if (state.mode === 'no-id-token') return '';
             const now = Math.floor(Date.now() / 1000);
-            const claims = { iss: origin, sub: record.subject, aud: 'controlled-google-client', iat: now, exp: now + 300, nonce: record.params.get('nonce'),
-                email: record.email, email_verified: true, ...record.claims };
+            const claims = { iss: 'https://accounts.google.com', sub: state.subject, aud: clientId, iat: now, exp: now + 300,
+                nonce, email: state.email, email_verified: true, ...state.claims };
             const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid })).toString('base64url');
             const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
-            const signer = record.mode === 'bad-signature' ? generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey : keys.privateKey;
-            const signature = sign('RSA-SHA256', Buffer.from(`${header}.${payload}`), signer).toString('base64url');
-            return json(200, { access_token: 'unused-controlled-access-token', token_type: 'Bearer', expires_in: 300,
-                ...(record.mode === 'no-id-token' ? {} : { id_token: `${header}.${payload}.${signature}` }) });
-        }
-        res.writeHead(404); res.end();
-    });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    origin = `http://127.0.0.1:${server.address().port}`;
-    const protocol = createGoogleProtocol({ discover: (config) => oidc.discovery(new URL(origin), config.clientId,
-        { id_token_signed_response_alg: 'RS256', [oidc.clockTolerance]: 30 }, oidc.ClientSecretPost(config.clientSecret),
-        { timeout: 2, execute: [oidc.allowInsecureRequests, oidc.enableNonRepudiationChecks] }) });
-    return { origin, state, protocol, rotate() { keys = generateKeyPairSync('rsa', { modulusLength: 2048 }); kid = randomBytes(6).toString('hex'); },
-        async approve(authorizationUrl) { const url = new URL(authorizationUrl); url.pathname = '/approve'; const response = await fetch(url, { redirect: 'manual' }); return new URL(response.headers.get('location')); },
-        async close() { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); } };
+            const signer = state.mode === 'bad-signature' ? generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey : keys.privateKey;
+            return `${header}.${payload}.${sign('RSA-SHA256', Buffer.from(`${header}.${payload}`), signer).toString('base64url')}`;
+        },
+        async credential(authorizationUrl, browser) {
+            const response = await browser.fetch(authorizationUrl);
+            assert.equal(response.status, 200, 'A live browser-bound GIS page is required to obtain the nonce.');
+            const config = googleSignInConfig(await response.text());
+            return { url: new URL(config.credentialUrl, authorizationUrl).href,
+                body: { transaction: config.transaction, credential: provider.sign(config.nonce, config.clientId) }, config };
+        },
+        async submit(authorizationUrl, browser) {
+            const credential = await provider.credential(authorizationUrl, browser);
+            return browser.json(credential.url, credential.body);
+        },
+        async installBrowserSdk(context) {
+            await context.exposeBinding('controlledGoogleCredential', (_source, nonce, clientId) => provider.sign(nonce, clientId));
+            await context.route('https://accounts.google.com/gsi/client', route => route.fulfill({ status: 200,
+                contentType: 'application/javascript', body: `(() => {
+                    let configuration;
+                    window.google = { accounts: { id: {
+                        initialize(value) { configuration = value; },
+                        renderButton(container) {
+                            const button = document.createElement('button');
+                            button.type = 'button';
+                            button.textContent = 'Continue with test identity';
+                            button.addEventListener('click', async () => configuration.callback({
+                                credential: await window.controlledGoogleCredential(configuration.nonce, configuration.client_id),
+                            }));
+                            container.replaceChildren(button);
+                        },
+                        disableAutoSelect() {}, cancel() {},
+                    } } };
+                })();` }));
+        },
+        async close() {},
+    };
+    return provider;
+}
+
+export function googleSignInConfig(html) {
+    const match = html.match(/<script id="google-sign-in-config" type="application\/json">([^<]+)<\/script>/);
+    assert.ok(match, 'The sign-in page must provide its browser-bound GIS configuration.');
+    return JSON.parse(match[1]);
 }
 
 export class CookieBrowser {
