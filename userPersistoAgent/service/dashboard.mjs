@@ -150,7 +150,7 @@ function withEmailAvailability(profile, emailAvailable) {
 
 // Fresh re-authentication and contact verification for the signed-in actor.
 // These never run through the tool registry, so no MCP caller can relay
-// codes or the administrator password to obtain an operation grant.
+// credential proofs to obtain an operation grant.
 async function accountSecurity(path, body, { actorUserId, origin, deliverEmail }) {
     const common = { userId: actorUserId, operation: bodyText(body, 'operation', 64), method: bodyText(body, 'method', 32) };
     if (path === 'reauth/start') {
@@ -158,7 +158,7 @@ async function accountSecurity(path, body, { actorUserId, origin, deliverEmail }
     }
     if (path === 'reauth/verify') {
         return completeReauthentication({ ...common, origin, code: bodyText(body, 'code', 16), token: bodyText(body, 'token', 16),
-            challengeKey: bodyText(body, 'challengeKey', 128), assertion: body.assertion, password: bodyText(body, 'password', 4096) });
+            challengeKey: bodyText(body, 'challengeKey', 128), assertion: body.assertion });
     }
     if (path === 'reauth/cancel') {
         await cancelReauthentication({ userId: actorUserId });

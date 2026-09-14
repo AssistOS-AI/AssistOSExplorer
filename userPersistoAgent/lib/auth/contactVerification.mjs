@@ -7,9 +7,8 @@ import { attemptError } from './emailAttempts.mjs';
 import { checkAccountCode, readAccountChallenge, sendAccountCode } from './accountCodes.mjs';
 import { consumeOperationGrant } from './operationGrants.mjs';
 
-// The configured-password administrator starts without a sign-in mailbox; its
-// optional contact address is unverified and is never a sign-in, Google-link or
-// recovery authority. After fresh re-authentication the account proves an
+// An optional contact address is unverified and is never a sign-in, Google-link
+// or recovery authority. After fresh re-authentication the account proves an
 // address with a code, which then becomes its verified sign-in email. This never
 // replaces an existing verified mailbox (there is no general email change).
 function contactError(code, statusCode) {
@@ -27,6 +26,13 @@ function assertEligible(user, email) {
     if (user.email && user.email !== email) throw contactError('email_change_unsupported', 400);
 }
 
+// The account's own unverified address is not a collision: an account that
+// carries an email it never proved verifies exactly that address here.
+async function assertUnique(user, email) {
+    const owner = await getUserByEmail(email);
+    if (owner && owner.id !== user.id) throw contactError('email_taken', 409);
+}
+
 export async function startContactVerification({ userId, email, grant, resend = false, deliver = sendAuthCode }) {
     let normalized;
     try { normalized = normalizeEmail(email); } catch { throw attemptError('invalid_email'); }
@@ -34,7 +40,7 @@ export async function startContactVerification({ userId, email, grant, resend = 
     let user = await getUserById(userId);
     if (!user || user.status !== 'active') throw contactError('user_not_active', 403);
     assertEligible(user, normalized);
-    if (await getUserByEmail(normalized)) throw contactError('email_taken', 409);
+    await assertUnique(user, normalized);
     let generation;
     if (resend) {
         // A resend continues the proof started with a grant for the same address.
@@ -64,8 +70,10 @@ export function completeContactVerification({ userId, code }) {
             throw error;
         };
         if (checked.meta.generation !== authGenerationOf(user)) return discard(attemptError('attempt_invalid', 409));
-        try { assertEligible(user, email); } catch (error) { return discard(error); }
-        if (await getUserByEmail(email)) return discard(contactError('email_taken', 409));
+        try {
+            assertEligible(user, email);
+            await assertUnique(user, email);
+        } catch (error) { return discard(error); }
         const store = await getStore();
         const now = new Date().toISOString();
         await commitStagedPersistence(async () => {

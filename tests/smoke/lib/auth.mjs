@@ -82,25 +82,14 @@ async function currentEmailCode(email, run) {
   }
 }
 
-// Drives the UserPersisto sign-in wizard. The designated administrator uses the
-// secondary Administrator sign-in; every other account is passwordless and uses
-// an email code (registering after confirmation when it does not exist yet) or
-// its enrolled authenticator app.
+// Drives the same passwordless wizard for administrators and other accounts,
+// using an email code or an enrolled authenticator app.
 export async function signInThroughUserPersisto(page, account, { codeCommandRunner } = {}) {
   const content = page.locator('#auth_content');
   const timeout = smokeConfig.timeouts.navigation;
   await content.locator('h1').first().waitFor({ state: 'visible', timeout });
-  if (account.signInMethod === 'adminPassword') {
-    if (!smokeConfig.administratorPassword) {
-      throw new Error('BLOCKED: SMOKE_ADMIN_PASSWORD is not configured for UserPersisto administrator sign-in.');
-    }
-    await content.getByRole('button', { name: 'Administrator sign-in', exact: true }).click();
-    await content.locator('input[name="password"]').fill(smokeConfig.administratorPassword);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'load', timeout }),
-      content.getByRole('button', { name: 'Sign in', exact: true }).click(),
-    ]);
-    return;
+  if (!['emailCode', 'totp'].includes(account.signInMethod)) {
+    throw new Error('BLOCKED: automated UserPersisto sign-in requires emailCode or totp.');
   }
   // Wait for the rendered start screen, not the loading placeholder.
   const emailInput = content.locator('input[name="email"]');

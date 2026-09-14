@@ -9,7 +9,6 @@ import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, getUserById, getUserByEmail, getUserRoles, updateUser, setUserRoles, listUsers } from '../lib/users.mjs';
 import { getInstallationSetup } from '../lib/setup.mjs';
 import { completeGoogleIdentity, inspectGoogleIdentity, googleIdentityKey, mailboxVersion, GOOGLE_ISSUER } from '../lib/externalIdentities.mjs';
-import { verifyAdministratorPassword } from '../lib/auth/adminPassword.mjs';
 import * as setup from './helpers/setup.mjs';
 
 let folder;
@@ -23,8 +22,6 @@ async function proof(user, method = 'emailCode') {
     else if (method === 'passkey' || method === 'totp') {
         result.credentialKey = `${user.id}:${method}`;
         result.credentialVersion = credentialVersion(method, (await (await getStore()).getAuthMethodByKey(result.credentialKey)).credential);
-    } else if (method === 'adminPassword') {
-        result.credentialVersion = (await verifyAdministratorPassword({ password: process.env.USERPERSISTO_ADMIN_PASSWORD, rateSource: 'a'.repeat(64) })).credentialVersion;
     }
     return result;
 }
@@ -38,17 +35,14 @@ async function fixture({ claimed = true } = {}) {
     setup.resetAuthLimitsForTests();
     await ensureSeedData();
     if (claimed) {
-        const password = setup.configureAdministratorPassword();
-        return (await setup.claimAdministrator(password)).user;
+        return (await setup.registerWithEmailCode('fixture-owner@example.test')).user;
     }
-    setup.clearAdministratorPassword();
     return null;
 }
 
 afterEach(async () => {
     await resetStoreForTests().catch(() => {});
     if (folder) await rm(folder, { recursive: true, force: true });
-    setup.clearAdministratorPassword();
     for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']) delete process.env[name];
 });
 
@@ -117,7 +111,7 @@ test('the authoritative shortcut requires Gmail or a matching Workspace domain',
     assert.equal(linked.linked, true);
 });
 
-test('fresh email-code, passkey, TOTP and administrator-password proofs with confirmation preserve roles and credentials', async () => {
+test('fresh email-code, passkey and TOTP proofs with confirmation preserve roles and credentials', async () => {
     const owner = await fixture();
     const store = await getStore();
     for (const method of ['emailCode', 'passkey', 'totp']) {
@@ -130,13 +124,18 @@ test('fresh email-code, passkey, TOTP and administrator-password proofs with con
         assert.deepEqual(result.roles, ['admin', 'user']);
         assert.deepEqual(await getUserById(user.id), { ...original, updatedAt: (await getUserById(user.id)).updatedAt });
     }
-    // The administrator-password proof covers the designated administrator only.
+    // Retired password proofs can never link a Google identity.
     const member = await createUser({ email: 'member-admin-proof@gmail.com', roles: ['user'] });
     const memberIdentity = identity('member-admin-proof', member.email);
     assert.equal((await inspectGoogleIdentity(memberIdentity)).eligibleMethods.includes('adminPassword'), false);
-    await assert.rejects(completeGoogleIdentity({ identity: memberIdentity, transactionId, linkProof: { ...(await proof(owner, 'adminPassword')), userId: member.id, email: member.email } }),
+    await assert.rejects(completeGoogleIdentity({ identity: memberIdentity, transactionId, linkProof: await proof(member, 'adminPassword') }),
         { code: 'google_link_authentication_required' });
     assert.deepEqual(await getUserRoles(member.id), ['user']);
+    const ownerIdentity = identity('retired-owner-password-proof', owner.email);
+    assert.equal((await inspectGoogleIdentity(ownerIdentity)).eligibleMethods.includes('adminPassword'), false);
+    await assert.rejects(completeGoogleIdentity({ identity: ownerIdentity, transactionId, linkProof: await proof(owner, 'adminPassword') }),
+        { code: 'google_link_authentication_required' });
+    assert.deepEqual(await getUserRoles(owner.id), ['admin']);
 });
 
 test('collision proofs reject changed targets, disabled credentials, stale authentication and absent confirmation', async () => {

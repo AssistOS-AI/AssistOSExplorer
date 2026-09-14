@@ -3,8 +3,7 @@ import { serialize } from './serial.mjs';
 import { withPersistenceScope } from './persistence-scope.mjs';
 import { getEmailAuthCodeStatus } from './email-agent-client.mjs';
 
-// Ordinary accounts are passwordless. The deployment-configured administrator
-// password is a separate, single-account exception and never a policy method.
+// Every account, including administrators, uses passwordless authentication.
 const AUTH_METHODS = new Set(['emailCode', 'passkey', 'totp', 'google']);
 export const REGISTRATION_ROLE = 'selfRegistered';
 const POLICY_FIELDS = new Set(['enabledAuthMethods', 'selfRegistrationEnabled', 'allowedRedirectOrigins']);
@@ -14,6 +13,8 @@ const DEFAULT_POLICY = Object.freeze({
     allowedRedirectOrigins: [],
 });
 const warnedEnvironmentMethods = new Set();
+// Not a method name, so it cannot collide with one in the warned-once set.
+const EMPTY_OVERRIDE = Symbol('empty-auth-method-override');
 
 function policyError(code, message) {
     return Object.assign(new Error(message), { code, statusCode: 400 });
@@ -40,6 +41,16 @@ function environmentMethods() {
         if (warnedEnvironmentMethods.has(method)) continue;
         warnedEnvironmentMethods.add(method);
         console.warn(`[userPersisto] USERPERSISTO_AUTH_METHODS ignores unsupported method "${method.slice(0, 32).replace(/[^A-Za-z0-9_-]/g, '')}".`);
+    }
+    // An override that names only retired methods filters down to nothing, and
+    // an empty list would fail every policy read. Ignore it instead, so the
+    // override can never be the reason nobody can sign in.
+    if (!supported.length) {
+        if (!warnedEnvironmentMethods.has(EMPTY_OVERRIDE)) {
+            warnedEnvironmentMethods.add(EMPTY_OVERRIDE);
+            console.warn('[userPersisto] USERPERSISTO_AUTH_METHODS names no supported method and is ignored.');
+        }
+        return null;
     }
     return supported;
 }
@@ -186,20 +197,15 @@ async function hasCapability(store, userId, capability) {
 }
 
 // Sign-in methods an account can actually use under the effective policy and
-// configuration: the administrator password only for its designated account,
-// email code only with a verified mailbox, passkey/TOTP only when enrolled and
-// reachable through the account's sign-in email, Google only when configured
-// and bound. Read-only; safe inside the persistence scope.
-export async function usableSignInMethods(user, { store = null, policy = null, includeAdministratorPassword = true, emailAvailable = false } = {}) {
+// configuration: email code only with a verified mailbox, passkey/TOTP only
+// when enrolled and reachable through the account's sign-in email, Google only
+// when configured and bound. Read-only; safe inside the persistence scope.
+export async function usableSignInMethods(user, { store = null, policy = null, emailAvailable = false } = {}) {
     if (!user || user.status !== 'active') return [];
     const persisto = store || await getStore();
     const effective = policy || await getAuthPolicy();
     const enabled = effective.enabledAuthMethods;
     const methods = [];
-    if (includeAdministratorPassword) {
-        const { administratorPasswordUsableFor } = await import('./auth/adminPassword.mjs');
-        if (await administratorPasswordUsableFor(user.id)) methods.push('adminPassword');
-    }
     if (emailAvailable && enabled.includes('emailCode') && user.email && user.emailVerifiedAt) methods.push('emailCode');
     const credentials = await persisto.getAuthMethodsObjectsByUserId(user.id) || [];
     for (const type of ['passkey', 'totp']) {

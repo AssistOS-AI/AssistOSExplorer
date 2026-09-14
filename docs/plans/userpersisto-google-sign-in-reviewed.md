@@ -1,5 +1,7 @@
 # Google sign-in for UserPersisto: implementation plan
 
+> Historical design review: password authentication, password-based owner setup and restrictions on Google-first setup in this document have been superseded. The current implementation uses Google or verified-email first-user setup and no administrator password. See [DS012](../specs/DS012-user-persisto.md) and [DS013](../specs/DS013-oauth-oidc.md) for the active authentication and linking contracts.
+
 Status: proposed implementation, planning only. Reviewed on 11 September 2026 against `user-persisto-v2`. Task tags: planning, authentication, routing, bootstrap, browser-e2e.
 
 ## Intended outcome and scope

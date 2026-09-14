@@ -30,7 +30,7 @@ async function fixture(fn) {
         });
         await fn({ base, mail, post });
     } finally {
-        setup.clearAdministratorPassword();
+
         if (server?.listening) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
         await resetStoreForTests();
         await rm(folder, { recursive: true, force: true });
@@ -38,7 +38,7 @@ async function fixture(fn) {
 }
 
 test('retired password routes are gone and malformed bodies fail before any setup decision', () => fixture(async ({ base }) => {
-    for (const route of ['register', 'password/login', 'totp/setup']) {
+    for (const route of ['register', 'password/login', 'admin/login', 'totp/setup']) {
         const response = await fetch(`${base}/service/auth/${route}`, { method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ email: 'owner@example.test', password: 'long-enough-password' }) });
         assert.equal(response.status, 404, route);
@@ -64,7 +64,7 @@ test('HTTP email registration claims the first administrator through the browser
     const state = await attempt.json();
     assert.equal(state.setupComplete, false);
     assert.equal(state.registration, true);
-    assert.equal(state.adminPassword, false);
+    assert.equal(Object.hasOwn(state, 'adminPassword'), false);
     assert.ok(state.expiresAt > Date.now());
     const discovered = await (await post(browser, 'discover', { requestId: request.providerState, email: 'owner@example.test' })).json();
     assert.deepEqual([discovered.exists, discovered.methods], [false, { emailCode: false, passkey: false, totp: false }]);
@@ -120,28 +120,21 @@ test('dead, expired or cross-origin requests are client errors and create nothin
     assert.equal((await getInstallationSetup()).complete, false);
 }));
 
-test('administrator password sign-in uses the Router rate-source partition and hides when unconfigured', () => fixture(async ({ base, post }) => {
-    const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
-    const browser = new CookieBrowser();
-    const unavailable = await post(browser, 'admin/login', { requestId: request.providerState, password: 'not-configured-password' });
-    assert.equal(unavailable.status, 404);
-    assert.equal((await unavailable.json()).error, 'admin_password_unavailable');
-    const password = setup.configureAdministratorPassword();
-    assert.equal((await (await post(browser, 'attempt', { requestId: request.providerState })).json()).adminPassword, true);
-    const attacker = { 'x-ploinky-rate-source': 'e'.repeat(64) };
-    for (let index = 0; index < 5; index += 1) {
-        const response = await post(browser, 'admin/login', { requestId: request.providerState, password: `wrong-password-${index}` }, attacker);
-        assert.equal(response.status, 401);
+test('retired administrator password login cannot claim setup even with a live parent and configured legacy secret', () => fixture(async ({ base, post }) => {
+    const previous = process.env.USERPERSISTO_ADMIN_PASSWORD;
+    process.env.USERPERSISTO_ADMIN_PASSWORD = 'retired-test-secret';
+    try {
+        const request = await createLoginRequest({ redirectUri: base + '/auth/callback' });
+        const browser = new CookieBrowser();
+        const attempt = await (await post(browser, 'attempt', { requestId: request.providerState })).json();
+        assert.equal(Object.hasOwn(attempt, 'adminPassword'), false);
+        const refused = await post(browser, 'admin/login', { requestId: request.providerState, password: process.env.USERPERSISTO_ADMIN_PASSWORD });
+        assert.equal(refused.status, 404);
+        assert.equal((await refused.json()).error, 'not_found');
+        assert.equal((await getInstallationSetup()).complete, false);
+        assert.equal((await (await getStore()).select('ssoAuthCode')).objects.length, 0);
+    } finally {
+        if (previous === undefined) delete process.env.USERPERSISTO_ADMIN_PASSWORD;
+        else process.env.USERPERSISTO_ADMIN_PASSWORD = previous;
     }
-    const limited = await post(browser, 'admin/login', { requestId: request.providerState, password }, attacker);
-    assert.equal(limited.status, 429);
-    assert.ok(Number(limited.headers.get('retry-after')) > 0);
-    const owner = await post(browser, 'admin/login', { requestId: request.providerState, state: 'core', password, contactEmail: 'ops@example.test' }, { 'x-ploinky-rate-source': 'f'.repeat(64) });
-    assert.equal(owner.status, 200, await owner.clone().text());
-    const completion = await owner.json();
-    assert.equal(completion.initialAdministrator, true);
-    const consumed = await consumeAuthCode({ providerState: request.providerState, code: completion.code });
-    assert.equal(consumed.user.username, 'administrator');
-    assert.equal(consumed.user.email, '');
-    assert.deepEqual(consumed.roles, ['admin']);
 }));

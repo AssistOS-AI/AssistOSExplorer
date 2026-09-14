@@ -14,6 +14,7 @@ import { createOidcClient, updateOidcClient, rotateOidcClientSecret } from '../l
 import { resetOidcProviderForTests } from '../lib/oidc/provider.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
 import { updateAuthPolicy } from '../lib/policy.mjs';
+import { generateToken, setupStart, setupVerify } from '../lib/auth/totp.mjs';
 
 const redirect = 'https://client.example.test/callback';
 // Construction-time delivery capture: the real email transport is never used.
@@ -51,8 +52,9 @@ async function fixture(fn) {
     let server;
     try {
         await ensureSeedData();
-        setup.configureAdministratorPassword();
         const { user: owner } = await setup.registerWithEmailCode('owner@example.test');
+        const enrollment = await setupStart({ userId: owner.id });
+        await setupVerify({ userId: owner.id, token: generateToken(enrollment.secret), setupId: enrollment.setupId });
         const { user } = await setup.registerWithEmailCode('member@example.test');
         server = startService({ port: 0, host: '127.0.0.1' }, { deliverEmail: async (message) => { mail.push(message); return { delivered: true, providerMessageId: 'fixture' }; } });
         if (!server.listening) await once(server, 'listening');
@@ -69,7 +71,6 @@ async function fixture(fn) {
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         resetOidcProviderForTests();
         await resetStoreForTests();
-        setup.clearAdministratorPassword();
         delete process.env.USERPERSISTO_OIDC_ISSUER;
         await rm(folder, { recursive: true, force: true });
     }
@@ -110,15 +111,13 @@ async function emailSignIn(browser, location, html, email, purpose) {
 }
 
 test('credential rotation revokes a completed login before the browser resumes OIDC', async () => fixture(async ({ config, owner }) => {
-    const { syncAdministratorPasswordState } = await import('../lib/auth/adminPassword.mjs');
-    await syncAdministratorPasswordState();
     const flow = await begin(config);
     const page = await flow.browser.fetch(flow.location);
     const submitted = await emailSignIn(flow.browser, flow.location, await page.text(), owner.email, 'login');
     assert.equal(submitted.status, 303, await submitted.clone().text());
     const resume = submitted.headers.get('location');
-    setup.configureAdministratorPassword();
-    await syncAdministratorPasswordState();
+    const replacement = await setupStart({ userId: owner.id });
+    await setupVerify({ userId: owner.id, token: generateToken(replacement.secret), setupId: replacement.setupId });
     const replay = await flow.browser.fetch(resume);
     assert.ok(replay.status >= 400, `stale resume unexpectedly returned ${replay.status}: ${await replay.clone().text()}`);
     const revisit = await flow.browser.fetch(flow.location);

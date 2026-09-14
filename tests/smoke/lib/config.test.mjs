@@ -35,7 +35,7 @@ test('sign-in emails can differ from the expected authenticated usernames for bo
   assert.equal(emailOnly.secondaryUser.loginEmail, emailOnly.secondaryUser.username);
 });
 
-test('UserPersisto sign-in methods default to administrator password and email code with no secret defaults', async (t) => {
+test('UserPersisto sign-in methods default to email code for both accounts and ignore retired password configuration', async (t) => {
   const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'explorer-smoke-sign-in-config-'));
   const names = ['SMOKE_ARTIFACT_DIR', 'SMOKE_ADMIN_PASSWORD', 'SMOKE_EMAIL_CODE_COMMAND', 'SMOKE_SIGN_IN_METHOD',
     'SMOKE_SECONDARY_SIGN_IN_METHOD', 'SMOKE_TOTP_SECRET', 'SMOKE_SECONDARY_TOTP_SECRET', 'SMOKE_ACCOUNT_EMAIL_DOMAIN'];
@@ -50,15 +50,17 @@ test('UserPersisto sign-in methods default to administrator password and email c
     fs.rmSync(artifactRoot, { recursive: true, force: true });
   });
   const { smokeConfig } = await import(`./config.mjs?sign-in-defaults=${Date.now()}`);
-  assert.equal(smokeConfig.administratorPassword, '');
+  assert.equal(Object.hasOwn(smokeConfig, 'administratorPassword'), false);
   assert.equal(smokeConfig.emailCodeCommand, '');
-  assert.equal(smokeConfig.primaryUser.signInMethod, 'adminPassword');
+  assert.equal(smokeConfig.primaryUser.signInMethod, 'emailCode');
   assert.equal(smokeConfig.secondaryUser.signInMethod, 'emailCode');
   assert.equal(smokeConfig.accountEmailDomain, 'example.test');
 
+  process.env.SMOKE_ADMIN_PASSWORD = 'retired-must-be-ignored';
   Object.assign(process.env, { SMOKE_SIGN_IN_METHOD: 'totp', SMOKE_SECONDARY_SIGN_IN_METHOD: 'password', SMOKE_SECONDARY_TOTP_SECRET: 'JBSWY3DPEHPK3PXP' });
   const { smokeConfig: selected } = await import(`./config.mjs?sign-in-selected=${Date.now()}`);
   assert.equal(selected.primaryUser.signInMethod, 'totp');
+  assert.equal(Object.hasOwn(selected, 'administratorPassword'), false);
   assert.equal(selected.secondaryUser.signInMethod, 'emailCode', 'a retired password method is not a UserPersisto sign-in method');
   assert.equal(selected.secondaryUser.totpSecret, 'JBSWY3DPEHPK3PXP');
 });

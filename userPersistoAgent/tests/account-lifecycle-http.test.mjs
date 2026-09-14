@@ -7,10 +7,9 @@ import { once } from 'node:events';
 import { createRouterSigner } from './helpers/router-fixture.mjs';
 import * as setup from './helpers/setup.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
-import { getUserByEmail, getUserById } from '../lib/users.mjs';
+import { createUser, getUserByEmail, getUserById } from '../lib/users.mjs';
 import { resetStoreForTests } from '../lib/store.mjs';
-import { generateToken } from '../lib/auth/totp.mjs';
-import { syncAdministratorPasswordState } from '../lib/auth/adminPassword.mjs';
+import { generateToken, setupStart, setupVerify } from '../lib/auth/totp.mjs';
 import PersistoOidcAdapter, { writeOidcDocument } from '../lib/oidc/adapter.mjs';
 import { getOrCreateOidcKeys } from '../lib/oidc/secrets.mjs';
 import { startService } from '../service/index.mjs';
@@ -39,7 +38,7 @@ before(async () => {
 beforeEach(() => setup.resetAuthLimitsForTests());
 
 after(async () => {
-    setup.clearAdministratorPassword();
+
     if (server?.listening) await new Promise((resolve) => server.close(resolve));
     await resetStoreForTests();
     delete process.env.USERPERSISTO_RUNTIME_SECRET;
@@ -79,74 +78,59 @@ async function runtime(path, body) {
     return { status: response.status, data: await response.json() };
 }
 
-test('the email-less administrator proves a contact address before it can sign in by email or enroll', async () => {
-    const password = setup.configureAdministratorPassword();
-    const claimed = await setup.claimAdministrator(password, { contactEmail: 'ops@example.test' });
-    const admin = claimed.user;
-    assert.equal(claimed.initialAdministrator, true);
-    assert.equal(admin.email, '');
-    // The unverified contact address is no sign-in or discovery authority.
-    assert.equal(await getUserByEmail('ops@example.test'), null);
-    let profile = await profileOf(admin.id);
-    assert.deepEqual(profile.contact, { email: 'ops@example.test', verified: false, pending: false });
+test('an account with an unverified mailbox uses its enrolled authenticator before confirming that mailbox', async () => {
+    await setup.registerWithEmailCode('owner@example.test');
+    const account = await createUser({ email: 'ops@example.test', emailVerified: false, source: 'fixture' });
+    // This internal fixture represents an existing credential with an unverified
+    // mailbox. Public enrollment still requires a verified sign-in address.
+    const enrollment = await setupStart({ userId: account.id });
+    const token = generateToken(enrollment.secret);
+    assert.equal((await setupVerify({ userId: account.id, token, setupId: enrollment.setupId })).ok, true);
+    let profile = await profileOf(account.id);
     assert.equal(profile.emailVerified, false);
-    assert.deepEqual(profile.reauthenticationMethods, ['adminPassword']);
-    await assert.rejects(setup.signInWithEmailCode('ops@example.test', { purpose: 'login' }), { code: 'account_not_found' });
-
-    // Passkey and authenticator sign-in are reached through a sign-in email.
+    assert.deepEqual(profile.reauthenticationMethods, ['totp']);
     for (const operation of ['totp.enroll', 'passkey.register']) {
-        const refused = await request('/service/dashboard/api/reauth/start', { userId: admin.id, body: { operation, method: 'adminPassword' } });
+        const refused = await request('/service/dashboard/api/reauth/start', { userId: account.id, body: { operation, method: 'totp' } });
         assert.deepEqual([refused.status, refused.data.error], [409, 'verified_email_required'], operation);
     }
-    const noGrant = await request('/service/dashboard/api/contact/start', { userId: admin.id, body: { email: 'ops@example.test' } });
+    const noGrant = await request('/service/dashboard/api/contact/start', { userId: account.id, body: { email: account.email } });
     assert.deepEqual([noGrant.status, noGrant.data.error], [403, 'operation_grant_required']);
-    const wrong = await request('/service/dashboard/api/reauth/verify', { userId: admin.id,
-        body: { operation: 'contact.verify', method: 'adminPassword', password: 'not-the-configured-value' } });
-    assert.equal(wrong.status, 401);
-    const granted = await request('/service/dashboard/api/reauth/verify', { userId: admin.id,
-        body: { operation: 'contact.verify', method: 'adminPassword', password } });
+    const granted = await request('/service/dashboard/api/reauth/verify', { userId: account.id,
+        body: { operation: 'contact.verify', method: 'totp', token } });
     assert.equal(granted.status, 200, JSON.stringify(granted.data));
     const { grant } = granted.data;
-
-    // Predictable refusals do not spend the grant; an address in use is refused.
     const member = await setup.registerWithEmailCode('member@example.test');
     assert.deepEqual(member.roles, ['selfRegistered']);
-    const taken = await request('/service/dashboard/api/contact/start', { userId: admin.id, body: { email: 'member@example.test', grant } });
-    assert.deepEqual([taken.status, taken.data.error], [409, 'email_taken']);
-    const started = await request('/service/dashboard/api/contact/start', { userId: admin.id, body: { email: ' Ops@Example.test ', grant } });
+    const replacement = await request('/service/dashboard/api/contact/start', { userId: account.id, body: { email: member.user.email, grant } });
+    assert.deepEqual([replacement.status, replacement.data.error], [400, 'email_change_unsupported']);
+    const started = await request('/service/dashboard/api/contact/start', { userId: account.id, body: { email: ' Ops@Example.test ', grant } });
     assert.equal(started.status, 200, JSON.stringify(started.data));
     assert.equal(started.data.challenge.delivery, 'accepted');
-    assert.equal(mail.at(-1).to, 'ops@example.test');
-    assert.equal((await profileOf(admin.id)).contact.pending, true);
-    const reused = await request('/service/dashboard/api/contact/start', { userId: admin.id, body: { email: 'ops@example.test', grant } });
+    assert.equal(mail.at(-1).to, account.email);
+    assert.equal((await profileOf(account.id)).contact.pending, true);
+    const reused = await request('/service/dashboard/api/contact/start', { userId: account.id, body: { email: account.email, grant } });
     assert.equal(reused.status, 403, 'the grant is single use');
-    const early = await request('/service/dashboard/api/contact/start', { userId: admin.id, body: { email: 'ops@example.test', resend: true } });
+    const early = await request('/service/dashboard/api/contact/start', { userId: account.id, body: { email: account.email, resend: true } });
     assert.deepEqual([early.status, early.data.error], [429, 'resend_too_soon']);
-    const bad = await request('/service/dashboard/api/contact/verify', { userId: admin.id, body: { code: '000000' } });
+    const wrongCode = mail.at(-1).code === '000000' ? '000001' : '000000';
+    const bad = await request('/service/dashboard/api/contact/verify', { userId: account.id, body: { code: wrongCode } });
     assert.deepEqual([bad.status, bad.data.error, bad.data.attemptsRemaining], [400, 'code_invalid', 4]);
-    const verified = await request('/service/dashboard/api/contact/verify', { userId: admin.id, body: { code: mail.at(-1).code } });
-    assert.deepEqual(verified.data, { ok: true, email: 'ops@example.test' });
-
-    const updated = await getUserById(admin.id);
-    assert.equal(updated.email, 'ops@example.test');
+    const verified = await request('/service/dashboard/api/contact/verify', { userId: account.id, body: { code: mail.at(-1).code } });
+    assert.deepEqual(verified.data, { ok: true, email: account.email });
+    const updated = await getUserById(account.id);
     assert.ok(updated.emailVerifiedAt);
     assert.equal(updated.authGeneration, 0, 'adding a mailbox replaces nothing');
-    assert.equal((await getUserByEmail('ops@example.test')).id, admin.id);
-    profile = await profileOf(admin.id);
+    assert.equal((await getUserByEmail(account.email)).id, account.id);
+    profile = await profileOf(account.id);
     assert.equal(profile.emailVerified, true);
-    assert.deepEqual(profile.reauthenticationMethods, ['emailCode', 'adminPassword']);
-    assert.ok(profile.authMethods.some((method) => method.type === 'emailCode'));
-
-    // The verified mailbox now signs in, and a second verification cannot replace it.
-    const login = await setup.signInWithEmailCode('ops@example.test', { purpose: 'login' });
-    assert.equal(login.user.id, admin.id);
-    const noReplacement = await request('/service/dashboard/api/reauth/start', { userId: admin.id, body: { operation: 'contact.verify', method: 'emailCode' } });
-    assert.deepEqual([noReplacement.status, noReplacement.data.error], [409, 'sign_in_email_exists'], 'no grant is offered for an impossible operation');
-    const replace = await request('/service/dashboard/api/contact/start', { userId: admin.id, body: { email: 'other@example.test', grant: 'G'.repeat(43) } });
+    assert.deepEqual(profile.reauthenticationMethods, ['emailCode', 'totp']);
+    const login = await setup.signInWithEmailCode(account.email, { purpose: 'login' });
+    assert.equal(login.user.id, account.id);
+    const noReplacement = await request('/service/dashboard/api/reauth/start', { userId: account.id, body: { operation: 'contact.verify', method: 'emailCode' } });
+    assert.deepEqual([noReplacement.status, noReplacement.data.error], [409, 'sign_in_email_exists']);
+    const replace = await request('/service/dashboard/api/contact/start', { userId: account.id, body: { email: 'other@example.test', grant: 'G'.repeat(43) } });
     assert.deepEqual([replace.status, replace.data.error], [409, 'sign_in_email_exists']);
-
-    // Optional enrollment is now available after fresh re-authentication.
-    const totpStart = await request('/service/dashboard/api/auth/totp/start', { userId: admin.id, body: { grant: await emailGrant(admin.id, 'totp.enroll') } });
+    const totpStart = await request('/service/dashboard/api/auth/totp/start', { userId: account.id, body: { grant: await emailGrant(account.id, 'totp.enroll') } });
     assert.equal(totpStart.status, 200, JSON.stringify(totpStart.data));
 });
 
@@ -184,29 +168,35 @@ test('TOTP replacement keeps the old authenticator until proven, then revokes ol
     assert.deepEqual([stale.status, stale.data.error], [403, 'operation_grant_required']);
 });
 
-test('rotating the configured administrator password voids an administrator grant issued with the old value', async () => {
-    const password = setup.configureAdministratorPassword();
-    await syncAdministratorPasswordState();
-    const admin = await getUserByEmail('ops@example.test');
-    const granted = await request('/service/dashboard/api/reauth/verify', { userId: admin.id,
-        body: { operation: 'totp.enroll', method: 'adminPassword', password } });
-    assert.equal(granted.status, 200, JSON.stringify(granted.data));
-    const generation = (await getUserById(admin.id)).authGeneration;
-    setup.configureAdministratorPassword();
-    await syncAdministratorPasswordState();
-    assert.equal((await getUserById(admin.id)).authGeneration, generation + 1);
-    const refused = await request('/service/dashboard/api/auth/totp/start', { userId: admin.id, body: { grant: granted.data.grant } });
-    assert.deepEqual([refused.status, refused.data.error], [403, 'operation_grant_required']);
-    const oldValue = await request('/service/dashboard/api/reauth/verify', { userId: admin.id,
-        body: { operation: 'totp.enroll', method: 'adminPassword', password } });
-    assert.equal(oldValue.status, 401);
+test('retired password reauthentication is refused for administrators and ordinary accounts', async () => {
+    for (const email of ['owner@example.test', 'member@example.test']) {
+        const user = await getUserByEmail(email);
+        assert.equal((await profileOf(user.id)).reauthenticationMethods.includes('adminPassword'), false);
+        for (const method of ['adminPassword', 'password']) {
+            for (const action of ['start', 'verify']) {
+                const refused = await request('/service/dashboard/api/reauth/' + action, { userId: user.id,
+                    body: { operation: 'totp.enroll', method, password: 'retired-secret' } });
+                assert.deepEqual([refused.status, refused.data.error], [409, 'reauthentication_unavailable']);
+                assert.equal(refused.data.grant, undefined);
+            }
+        }
+    }
 });
 
-test('a non-designated account never re-authenticates with the administrator password', async () => {
-    const password = setup.configureAdministratorPassword();
-    const member = await getUserByEmail('member@example.test');
-    assert.deepEqual((await profileOf(member.id)).reauthenticationMethods, ['emailCode']);
-    const refused = await request('/service/dashboard/api/reauth/verify', { userId: member.id,
-        body: { operation: 'totp.enroll', method: 'adminPassword', password } });
-    assert.deepEqual([refused.status, refused.data.error], [409, 'reauthentication_unavailable']);
+test('an account may prove the unverified address it already carries, and any other address is an unsupported change', async () => {
+    // No public path creates this shape today; the internal helper does, and the
+    // refusal order is what decides whether such an account can ever recover.
+    const legacy = await createUser({ email: 'legacy@example.test', displayName: 'Legacy', emailVerified: false, source: 'fixture' });
+    assert.equal((await getUserById(legacy.id)).emailVerifiedAt, '');
+    assert.equal((await profileOf(legacy.id)).emailVerified, false);
+
+    // Its own address is not a collision, so the request reaches the grant check.
+    const own = await request('/service/dashboard/api/contact/start', { userId: legacy.id, body: { email: 'legacy@example.test' } });
+    assert.deepEqual([own.status, own.data.error], [403, 'operation_grant_required']);
+    // Any other address is a replacement, which this version does not support,
+    // and that refusal discloses nothing about whether the address is in use.
+    for (const email of ['member@example.test', 'elsewhere@example.test']) {
+        const other = await request('/service/dashboard/api/contact/start', { userId: legacy.id, body: { email } });
+        assert.deepEqual([other.status, other.data.error], [400, 'email_change_unsupported'], email);
+    }
 });

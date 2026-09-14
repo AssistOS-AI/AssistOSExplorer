@@ -12,19 +12,20 @@ import { startService } from '../service/index.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { getUserByEmail, getUserRoles, updateUser } from '../lib/users.mjs';
 import { getStore, flush, resetStoreForTests, setStoreFaultInjectorForTests } from '../lib/store.mjs';
-import { updateAuthPolicy } from '../lib/policy.mjs';
+import { updateAuthPolicy as updatePolicy } from '../lib/policy.mjs';
 import { createLoginRequest, consumeAuthCode } from '../lib/sso.mjs';
 import { createOidcClient } from '../lib/oidc/clients.mjs';
 import { resetOidcProviderForTests } from '../lib/oidc/provider.mjs';
 import { getGoogleStatus } from '../lib/auth/google.mjs';
 import { completeEmailSignIn } from '../lib/auth/signIn.mjs';
-import { syncAdministratorPasswordState } from '../lib/auth/adminPassword.mjs';
 import { getInstallationSetup } from '../lib/setup.mjs';
 import * as setup from './helpers/setup.mjs';
 import { setupStart, setupVerify, generateToken } from '../lib/auth/totp.mjs';
 import { loginVerify as verifyPasskey } from '../lib/auth/passkey.mjs';
 import { hashGoogleState } from '../lib/auth/googleTransactions.mjs';
 import { withPersistenceScope } from '../lib/persistence-scope.mjs';
+
+const updateAuthPolicy = (patch, context = {}) => updatePolicy(patch, { ...context, emailStatus: async () => ({ available: true }) });
 
 async function fixture(fn, { withOwner = true } = {}) {
     const provider = await controlledGoogleProvider();
@@ -41,9 +42,7 @@ async function fixture(fn, { withOwner = true } = {}) {
         delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
         setup.resetAuthLimitsForTests();
         await ensureSeedData();
-        // The installation owner registers through the real verified-email path
-        // and is the designated administrator for the configured password.
-        const adminPassword = setup.configureAdministratorPassword();
+        // The installation owner registers through the real verified-email path.
         const { user: owner = null, request: ownerRequest = null } = withOwner ? await setup.registerWithEmailCode('owner@example.test') : {};
         // Handoff codes issued by the owner's own registration are not Google handoffs.
         const googleHandoffs = async () => (await (await getStore()).select('ssoAuthCode')).objects.filter((code) => code.providerState !== ownerRequest?.providerState);
@@ -84,7 +83,7 @@ async function fixture(fn, { withOwner = true } = {}) {
             assert.equal(started.status, 200);
             return { browser, start: await started.json() };
         };
-        await fn({ provider, base, folder, owner, adminPassword, begin, beginOidc, callback, googleHandoffs, mail: () => mail });
+        await fn({ provider, base, folder, owner, begin, beginOidc, callback, googleHandoffs, mail: () => mail });
     } finally {
         setStoreFaultInjectorForTests();
         if (server?.listening) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
@@ -97,8 +96,8 @@ async function fixture(fn, { withOwner = true } = {}) {
     }
 }
 
-for (const method of ['adminPassword', 'totp', 'emailCode']) {
-    test(`replacing the ${method} credential after proof invalidates pending Google link confirmation`, () => fixture(async ({ owner, adminPassword, provider, begin, callback, mail }) => {
+for (const method of ['totp', 'emailCode']) {
+    test(`replacing the ${method} credential after proof invalidates pending Google link confirmation`, () => fixture(async ({ owner, provider, begin, callback, mail }) => {
         let token;
         if (method === 'totp') {
             await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google', 'totp'] });
@@ -117,14 +116,11 @@ for (const method of ['adminPassword', 'totp', 'emailCode']) {
             html = await (await flow.browser.post(`${returned.resume}/verify-link-code`, { csrf: csrf(html), code: mail().code })).text();
         } else {
             html = await (await flow.browser.post(`${returned.resume}/authenticate`, {
-                csrf: csrf(html), method, password: adminPassword, token,
+                csrf: csrf(html), method, token,
             })).text();
         }
         assert.match(html, /Link Google and continue/);
-        if (method === 'adminPassword') {
-            setup.configureAdministratorPassword();
-            await syncAdministratorPasswordState();
-        } else if (method === 'totp') {
+        if (method === 'totp') {
             const replacement = await setupStart({ userId: owner.id });
             assert.equal((await setupVerify({ userId: owner.id, token: generateToken(replacement.secret), setupId: replacement.setupId })).ok, true);
         } else {
@@ -305,17 +301,21 @@ test('an authoritative Google account links the matching verified mailbox with c
     assert.equal((await googleHandoffs()).filter((code) => code.providerState === flow.request.providerState).length, 1);
 }));
 
-test('the password administrator\'s unverified contact address is never a Google link target', () => fixture(async ({ begin, callback, provider, adminPassword }) => {
-    const claimed = await setup.claimAdministrator(adminPassword, { contactEmail: 'ops@gmail.com' });
-    assert.equal(claimed.initialAdministrator, true);
-    provider.state.subject = 'ops-google-subject';
-    provider.state.email = 'ops@gmail.com';
-    const signedIn = await completeGoogle(await begin(), callback);
-    assert.notEqual(signedIn.user.id, claimed.user.id);
-    assert.deepEqual(signedIn.roles, ['selfRegistered']);
-    assert.equal((await (await getStore()).getExternalIdentitiesObjectsByUserId(claimed.user.id) || []).length, 0);
-    assert.deepEqual(await getUserRoles(claimed.user.id), ['admin']);
-}, { withOwner: false }));
+test('retired administrator passwords cannot confirm a Google collision for an existing administrator', () => fixture(async ({ owner, provider, begin, callback }) => {
+    provider.state.email = owner.email;
+    const flow = await begin();
+    const returned = await callback(flow);
+    const html = await (await flow.browser.fetch(returned.resume)).text();
+    assert.match(html, /Link your existing account/);
+    assert.doesNotMatch(html, /adminPassword|Administrator password|type="password"/);
+    const refused = await flow.browser.post(returned.resume + '/authenticate', {
+        csrf: csrf(html), method: 'adminPassword', password: 'retired-test-secret',
+    });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.headers.get('location'), null);
+    assert.equal((await (await getStore()).getExternalIdentitiesObjectsByUserId(owner.id) || []).length, 0);
+    assert.deepEqual(await getUserRoles(owner.id), ['admin']);
+}));
 
 test('missing, copied, duplicate and mismatched callback proof cannot consume the valid attempt', () => fixture(async ({ begin, callback, provider }) => {
     const flow = await begin();
@@ -520,11 +520,7 @@ test('blocked collision and a disabled proven method cannot authorize confirmati
     assert.equal((await (await getStore()).select('externalIdentity')).objects.length, 0);
 }));
 
-test('policy cannot leave an unlinked administrator with only Google, counting the configured password for its owner only', () => fixture(async ({ base }) => {
-    // The designated owner keeps the configured administrator password.
-    await updateAuthPolicy({ enabledAuthMethods: ['google'] });
-    await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'google'] });
-    setup.clearAdministratorPassword();
+test('policy cannot leave an unlinked administrator with only Google', () => fixture(async ({ base }) => {
     await assert.rejects(updateAuthPolicy({ enabledAuthMethods: ['google'] }), { code: 'administrator_auth_method_required' });
     // Environment overrides are part of the effective policy that is checked.
     process.env.USERPERSISTO_AUTH_METHODS = 'google';

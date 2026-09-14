@@ -10,7 +10,8 @@ import { SNAPSHOT_FILE } from '../lib/durable-storage.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, getUserRoles } from '../lib/users.mjs';
 import { getInstallationSetup } from '../lib/setup.mjs';
-import { claimAdministrator, clearAdministratorPassword, configureAdministratorPassword, registerWithEmailCode, resetAuthLimitsForTests } from './helpers/setup.mjs';
+import { registerWithEmailCode, resetAuthLimitsForTests } from './helpers/setup.mjs';
+import { completeGoogleIdentity, GOOGLE_ISSUER } from '../lib/externalIdentities.mjs';
 import { grant, getBalance } from '../lib/credits.mjs';
 
 process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
@@ -109,16 +110,18 @@ test('concurrent flush cannot publish an initial user without its administrator 
 });
 
 test('a failure while staging the setup record leaves neither owner nor setup after restart', async () => {
-    for (const method of ['emailCode', 'adminPassword']) {
+    for (const method of ['emailCode', 'google']) {
         await fixture();
         await ensureSeedData();
         resetAuthLimitsForTests();
-        const password = configureAdministratorPassword();
+        const complete = () => method === 'emailCode' ? registerWithEmailCode('interrupted-owner@example.test') : completeGoogleIdentity({
+            identity: { issuer: GOOGLE_ISSUER, subject: 'interrupted-google-owner', email: 'interrupted-owner@gmail.com', emailVerified: true },
+            transactionId: 'interrupted-google-completion',
+        });
         setStoreFaultInjectorForTests(async (phase, name, args) => {
             if (phase === 'before' && name === 'createSystemSetting' && args[0]?.key === 'installation.setup') throw new Error('injected setup write failure');
         });
-        const attempt = method === 'emailCode' ? registerWithEmailCode('interrupted-owner@example.test') : claimAdministrator(password);
-        await assert.rejects(attempt);
+        await assert.rejects(complete());
         // The staged commit fails closed: nothing more is served from this process.
         await assert.rejects(getInstallationSetup(), { code: 'persistence_unavailable' });
         await resetStoreForTests().catch(() => {});
@@ -127,10 +130,9 @@ test('a failure while staging the setup record leaves neither owner nor setup af
         assert.equal((await store.select('user')).totalCount, 0, `${method}: no ambiguous owner exists`);
         // A later completion claims the installation normally.
         resetAuthLimitsForTests();
-        const retried = method === 'emailCode' ? await registerWithEmailCode('interrupted-owner@example.test') : await claimAdministrator(password);
+        const retried = await complete();
         assert.equal(retried.initialAdministrator, true);
         assert.equal((await getInstallationSetup()).initialAdministratorId, retried.user.id);
-        clearAdministratorPassword();
         await resetStoreForTests();
         await rm(folder, { recursive: true, force: true });
     }

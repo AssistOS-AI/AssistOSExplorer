@@ -15,6 +15,7 @@ const { getInstallationSetup } = await import('../lib/setup.mjs');
 const { getStore, resetStoreForTests } = await import('../lib/store.mjs');
 const { completeEmailSignIn, startEmailSignIn } = await import('../lib/auth/signIn.mjs');
 const { createLoginRequest, prepareSsoHandoff } = await import('../lib/sso.mjs');
+const { completeGoogleIdentity, GOOGLE_ISSUER } = await import('../lib/externalIdentities.mjs');
 const setup = await import('./helpers/setup.mjs');
 
 after(async () => {
@@ -30,7 +31,6 @@ async function freshStore() {
 
 beforeEach(async () => {
     await freshStore();
-    setup.clearAdministratorPassword();
     delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
 });
 
@@ -46,24 +46,24 @@ test('requesting a registration code creates no account and does not claim setup
 });
 
 test('concurrent mixed-method first completions create exactly one administrator and a durable setup record', async () => {
-    const password = setup.configureAdministratorPassword();
     const outcomes = await Promise.all([
         setup.registerWithEmailCode('owner-a@example.test'),
         setup.registerWithEmailCode('owner-b@example.test'),
-        setup.claimAdministrator(password),
+        completeGoogleIdentity({
+            identity: { issuer: GOOGLE_ISSUER, subject: 'first-google-owner', email: 'owner-c@gmail.com', emailVerified: true },
+            transactionId: 'first-google-completion',
+        }),
     ]);
     const initial = outcomes.filter((outcome) => outcome.initialAdministrator);
     assert.equal(initial.length, 1, 'exactly one completion claims setup');
     const record = await getInstallationSetup();
     assert.equal(record.complete, true);
     assert.equal(record.initialAdministratorId, initial[0].user.id);
-    const emailAccounts = outcomes.slice(0, 2).map((outcome) => outcome.user.id);
-    for (const id of emailAccounts) {
+    for (const { user: { id } } of outcomes) {
         const roles = await getUserRoles(id);
         assert.ok(roles.length === 1 && ['admin', 'selfRegistered'].includes(roles[0]));
     }
-    // The configured password always resolves the committed designated administrator.
-    assert.equal(outcomes[2].user.id, record.initialAdministratorId);
+    assert.equal(new Set(outcomes.map((outcome) => outcome.user.id)).size, 3);
     const administrators = [];
     for (const user of (await listUsers({ pageSize: 50 })).users) if (user.roles.includes('admin')) administrators.push(user.id);
     assert.deepEqual(administrators, [record.initialAdministratorId]);
@@ -153,12 +153,10 @@ test('direct sign-in email mutation is refused while other profile updates remai
     assert.ok((await getUserById(member.id)).emailVerifiedAt, 'verification is untouched');
 });
 
-test('account ids never resolve through the email index or the email-less administrator', async () => {
-    const password = setup.configureAdministratorPassword();
-    const admin = await setup.claimAdministrator(password);
-    assert.equal(admin.user.email, '');
+test('account ids never resolve through the email index or an empty value', async () => {
+    const admin = await setup.registerWithEmailCode('owner@example.test');
     assert.equal(await getUserById(''), null);
-    assert.equal(await getUserById('member@example.test'), null);
+    assert.equal(await getUserById(admin.user.email), null);
     assert.equal(await getUserByEmail(''), null);
     assert.equal((await getUserById(admin.user.id)).id, admin.user.id);
 });

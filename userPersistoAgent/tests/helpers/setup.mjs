@@ -1,32 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import { completeAdministratorPassword, resetAdministratorPasswordForTests } from '../../lib/auth/adminPassword.mjs';
 import { completeEmailSignIn, startEmailSignIn } from '../../lib/auth/signIn.mjs';
 import { resetEmailAttemptLimitsForTests } from '../../lib/auth/emailAttempts.mjs';
 import { createLoginRequest, prepareSsoHandoff } from '../../lib/sso.mjs';
 
-// A fresh deployment administrator password per process. Never a literal
-// committed to source; tests read it back from the environment they set.
-export function configureAdministratorPassword() {
-    const password = `fixture-${randomBytes(18).toString('base64url')}`;
-    process.env.USERPERSISTO_ADMIN_PASSWORD = password;
-    resetAdministratorPasswordForTests();
-    return password;
-}
-
-export function clearAdministratorPassword() {
-    delete process.env.USERPERSISTO_ADMIN_PASSWORD;
-    resetAdministratorPasswordForTests();
-}
-
 export function resetAuthLimitsForTests() {
-    resetAdministratorPasswordForTests();
     resetEmailAttemptLimitsForTests();
-}
-
-// Claims or signs into the installation through the real configured
-// administrator-password decision (no injected roles or sessions).
-export async function claimAdministrator(password = process.env.USERPERSISTO_ADMIN_PASSWORD, options = {}) {
-    return completeAdministratorPassword({ password, ...options });
 }
 
 export function newBrowserProof() {

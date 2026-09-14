@@ -15,7 +15,7 @@ const TOOL_PATHS = Object.freeze({
     contact_verify: 'contact/verify',
 });
 const METHOD_LABELS = {
-    emailCode: 'Email code', passkey: 'Passkey', totp: 'Authenticator app', google: 'Google', adminPassword: 'Administrator password',
+    emailCode: 'Email code', passkey: 'Passkey', totp: 'Authenticator app', google: 'Google',
 };
 
 export async function dashboardApi(path, payload) {
@@ -84,10 +84,9 @@ export function mountDashboard(document) {
         if (disposed || sessionExpired) return;
         if (!profile?.user) throw new Error('Profile unavailable');
         updateAccountNavigation(document, profile);
-        // The configured-password administrator may have no sign-in email yet.
         select('account-email').textContent = profile.user.email || profile.user.username || profile.user.id;
         select('account-role').textContent = (profile.roles || []).map((role) => role === 'selfRegistered' ? 'Member' : role).join(', ');
-        select('account-methods').textContent = [...new Set((profile.authMethods || []).map((method) => METHOD_LABELS[method.type] || method.name || method.type))].join(' · ') || 'No sign-in methods configured';
+        select('account-methods').textContent = [...new Set((profile.authMethods || []).filter((method) => Object.hasOwn(METHOD_LABELS, method.type)).map((method) => METHOD_LABELS[method.type]))].join(' · ') || 'No sign-in methods configured';
         if (updateFields) { username.value = profile.user.username || ''; displayName.value = profile.user.displayName || ''; }
         const hasExplorerAccess = profile.capabilities?.includes('explorer.access') === true;
         select('open-explorer').hidden = !hasExplorerAccess;

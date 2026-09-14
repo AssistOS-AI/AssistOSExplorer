@@ -25,8 +25,8 @@ const credentialId = randomBytes(24).toString('base64url');
 
 before(async () => {
     await ensureSeedData();
-    setup.configureAdministratorPassword();
-    await setup.claimAdministrator();
+    const owner = await setup.registerWithEmailCode('owner@example.test');
+    await consumeAuthCode({ providerState: owner.request.providerState, code: owner.handoff.code });
     const blocked = await createUser({ email: 'blocked@example.test', roles: ['user'], emailVerified: true });
     await updateUser(blocked.id, { status: 'blocked' });
     passkeyUser = await createUser({ email: 'passkey@example.test', roles: ['user'] });
@@ -40,7 +40,7 @@ before(async () => {
     await flush();
     await updateAuthPolicy({
         enabledAuthMethods: ['emailCode', 'passkey', 'totp'],
-    });
+    }, { emailStatus: async () => ({ available: true }) });
     server = startService(0);
     if (!server.listening) await once(server, 'listening');
     baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -107,7 +107,8 @@ test('malformed passkey assertions return neutral authentication failures for ac
     const store = await getStore();
     assert.ok(await store.getAuthChallengeByChallengeId(options.challengeKey), 'malformed client data cannot consume the valid challenge');
     assert.equal((await store.getAuthMethodByKey(`${passkeyUser.id}:passkey:${credentialId}`)).credential.counter, 0);
-    assert.equal((await store.select('ssoAuthCode')).objects.length, 0, 'malformed assertions never issue a sign-in code');
+    assert.equal((await store.select('ssoAuthCode')).objects.filter((code) => code.providerState === options.requestId).length, 0,
+        'malformed assertions never issue a sign-in code for the pending request');
 });
 
 test('passkey rejection keeps challenge, origin, relying party, presence and signature checks intact', async (t) => {
@@ -219,7 +220,6 @@ async function post(path, body) {
 test('public authentication failures do not reveal sensitive internal reasons', async () => {
     const requests = await Promise.all(Array.from({ length: 6 }, () => createLoginRequest({ redirectUri: `${baseUrl}/auth/callback` })));
     const failures = await Promise.all([
-        post('/service/auth/admin/login', { requestId: requests[0].providerState, password: 'wrong-administrator-password' }),
         post('/service/auth/passkey/options', { email: 'missing@example.test', requestId: requests[1].providerState }),
         post('/service/auth/passkey/options', { email: 'blocked@example.test', requestId: requests[2].providerState }),
         post('/service/auth/totp/verify', { email: 'missing@example.test', token: '000000', requestId: requests[3].providerState }),
@@ -230,7 +230,7 @@ test('public authentication failures do not reveal sensitive internal reasons', 
         assert.deepEqual(failure.body, { ok: false, error: 'authentication_failed' });
     }
     // Retired password endpoints no longer exist at all.
-    for (const path of ['/service/auth/password/login', '/service/auth/register']) {
+    for (const path of ['/service/auth/password/login', '/service/auth/admin/login', '/service/auth/register']) {
         assert.equal((await post(path, { email: 'blocked@example.test', password: 'guess-password', requestId: requests[5].providerState })).status, 404);
     }
 });

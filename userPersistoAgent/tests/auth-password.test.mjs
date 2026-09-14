@@ -1,166 +1,125 @@
-import test, { after, beforeEach } from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ensureSeedData } from '../lib/bootstrap.mjs';
+import { createUser, getUserById, getUserRoles, authGenerationOf } from '../lib/users.mjs';
+import { getInstallationSetup, prepareNewAccount } from '../lib/setup.mjs';
+import { getStore, flush, resetStoreForTests } from '../lib/store.mjs';
+import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
+import { getEnabledAuthMethods, getDefaultAuthMethod } from '../lib/auth/methods.mjs';
+import { getProfile } from '../lib/authorization.mjs';
+import { getAuthPolicy, updateAuthPolicy, usableSignInMethods } from '../lib/policy.mjs';
+import { startReauthentication, completeReauthentication, consumeOperationGrant } from '../lib/auth/operationGrants.mjs';
+import * as setup from './helpers/setup.mjs';
 
-process.env.PERSISTENCE_FOLDER = mkdtempSync(join(tmpdir(), 'userpersisto-admin-password-'));
-process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
-
-const { ensureSeedData } = await import('../lib/bootstrap.mjs');
-const { getUserById, getUserRoles, setUserRoles, updateUser, createUser } = await import('../lib/users.mjs');
-const { getInstallationSetup } = await import('../lib/setup.mjs');
-const { getStore, flush, resetStoreForTests } = await import('../lib/store.mjs');
-const admin = await import('../lib/auth/adminPassword.mjs');
-const { wizardConfiguration } = await import('../lib/auth/wizardConfig.mjs');
-const { getEnabledAuthMethods, getDefaultAuthMethod } = await import('../lib/auth/methods.mjs');
-const setup = await import('./helpers/setup.mjs');
-
-const SOURCE_A = 'a'.repeat(64);
-const SOURCE_B = 'b'.repeat(64);
-
-after(async () => {
-    await resetStoreForTests();
-});
+let folder;
+const password = randomBytes(32).toString('base64url');
 
 beforeEach(async () => {
-    await resetStoreForTests();
-    process.env.PERSISTENCE_FOLDER = mkdtempSync(join(tmpdir(), 'userpersisto-admin-password-'));
-    setup.clearAdministratorPassword();
+    folder = await mkdtemp(join(tmpdir(), 'userpersisto-retired-password-'));
+    process.env.PERSISTENCE_FOLDER = folder;
+    process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
+    // An obsolete deployment variable must have no effect, even when set.
+    process.env.USERPERSISTO_ADMIN_PASSWORD = password;
+    delete process.env.USERPERSISTO_AUTH_METHODS;
     setup.resetAuthLimitsForTests();
     await ensureSeedData();
 });
 
-function snapshotText(folder) {
-    let text = '';
-    const walk = (path) => {
-        for (const entry of readdirSync(path)) {
-            const full = join(path, entry);
-            if (statSync(full).isDirectory()) walk(full);
-            else text += readFileSync(full, 'utf8');
-        }
-    };
-    walk(folder);
-    return text;
-}
+afterEach(async () => {
+    await resetStoreForTests().catch(() => {});
+    await rm(folder, { recursive: true, force: true });
+    delete process.env.USERPERSISTO_ADMIN_PASSWORD;
+    delete process.env.USERPERSISTO_AUTH_METHODS;
+});
 
-test('passwordless methods are the default and an absent or short password leaves the action unavailable', async () => {
+test('a retired administrator password cannot advertise sign-in or claim installation setup', async () => {
     assert.deepEqual(await getEnabledAuthMethods(), ['emailCode', 'passkey', 'totp']);
     assert.equal(await getDefaultAuthMethod(), 'emailCode');
-    assert.equal((await wizardConfiguration()).adminPassword, false);
-    await assert.rejects(setup.claimAdministrator('anything-at-all-12'), { code: 'admin_password_unavailable' });
-    process.env.USERPERSISTO_ADMIN_PASSWORD = 'too-short';
-    admin.resetAdministratorPasswordForTests();
-    assert.equal((await wizardConfiguration()).adminPassword, false);
-    await assert.rejects(setup.claimAdministrator('too-short'), { code: 'admin_password_unavailable' });
+    const configuration = await wizardConfiguration({ emailAvailable: true });
+    assert.equal(Object.hasOwn(configuration, 'adminPassword'), false);
     assert.equal((await getInstallationSetup()).complete, false);
-});
-
-test('before setup the configured password creates only the dedicated email-less administrator', async () => {
-    const password = setup.configureAdministratorPassword();
-    assert.equal((await wizardConfiguration()).adminPassword, true);
-    await assert.rejects(setup.claimAdministrator(`${password}-wrong`), { code: 'authentication_failed' });
-    assert.equal((await getInstallationSetup()).complete, false);
-    await assert.rejects(setup.claimAdministrator(password, { contactEmail: 'not-an-email' }), { code: 'invalid_email' });
-    assert.equal((await getInstallationSetup()).complete, false);
-    const claimed = await setup.claimAdministrator(password, { contactEmail: 'Operator@Example.test' });
-    assert.equal(claimed.initialAdministrator, true);
-    assert.deepEqual(claimed.roles, ['admin']);
-    const user = await getUserById(claimed.user.id);
-    assert.equal(user.email, '', 'no fabricated deliverable email');
-    assert.equal(user.username, 'administrator');
-    assert.equal(user.contactEmail, 'operator@example.test');
-    assert.equal(user.emailVerifiedAt, '', 'contact information stays unverified');
-    const record = await getInstallationSetup();
-    assert.deepEqual([record.complete, record.initialAdministratorId, record.method], [true, user.id, 'adminPassword']);
-    const again = await setup.claimAdministrator(password, { contactEmail: 'other@example.test' });
-    assert.equal(again.user.id, user.id);
-    assert.equal(again.created, false);
-    assert.equal((await getUserById(user.id)).contactEmail, 'operator@example.test');
-    // The verifier is a scrypt hash; the configured value never reaches storage.
-    await flush();
-    const stored = snapshotText(process.env.PERSISTENCE_FOLDER);
-    assert.ok(!stored.includes(password));
-    assert.match(stored, /scrypt\$16384\$8\$1\$/);
-});
-
-test('after email setup the password signs into the designated administrator only', async () => {
+    assert.equal((await (await getStore()).select('user')).totalCount, 0);
+    assert.equal(await (await getStore()).getSystemSettingByKey('auth.adminPassword.state'), undefined);
+    await assert.rejects(prepareNewAccount({ email: '', method: 'adminPassword' }), { code: 'invalid_setup_method' });
+    await assert.rejects(createUser({ email: '', roles: ['admin'], allowEmptyEmail: true }), { code: 'invalid_email' });
     const owner = await setup.registerWithEmailCode('owner@example.test');
-    const member = await setup.registerWithEmailCode('member@example.test');
-    const password = setup.configureAdministratorPassword();
-    const signedIn = await setup.claimAdministrator(password, { contactEmail: 'member@example.test' });
-    assert.equal(signedIn.user.id, owner.user.id);
-    assert.deepEqual(await getUserRoles(member.user.id), ['selfRegistered']);
-    assert.equal(await admin.administratorPasswordUsableFor(owner.user.id), true);
-    assert.equal(await admin.administratorPasswordUsableFor(member.user.id), false);
-    // Another administrator never receives this path.
-    const second = await createUser({ email: 'second-admin@example.test', roles: ['admin'], emailVerified: true });
-    assert.equal(await admin.administratorPasswordUsableFor(second.id), false);
-    // Demotion, blocking and deletion of the designated administrator end it.
-    await setUserRoles(owner.user.id, ['user'], { actorId: second.id });
-    await assert.rejects(setup.claimAdministrator(password), { code: 'authentication_failed' });
-    await setUserRoles(owner.user.id, ['admin'], { actorId: second.id });
-    assert.equal((await setup.claimAdministrator(password)).user.id, owner.user.id);
-    await updateUser(owner.user.id, { status: 'blocked' }, { actorId: second.id });
-    await assert.rejects(setup.claimAdministrator(password), { code: 'authentication_failed' });
-    await (await getStore()).deleteUser(owner.user.id);
-    await assert.rejects(setup.claimAdministrator(password), { code: 'authentication_failed' });
-    assert.deepEqual(await getUserRoles(member.user.id), ['selfRegistered']);
-    assert.equal((await getInstallationSetup()).initialAdministratorId, owner.user.id);
+    assert.deepEqual(owner.roles, ['admin']);
+    assert.equal((await getInstallationSetup()).method, 'emailCode');
 });
 
-test('guessing limits hold per trusted source and globally, before any account exists and across restarts', async () => {
-    const password = setup.configureAdministratorPassword();
-    const wrong = () => `wrong-${randomBytes(9).toString('base64url')}`;
-    for (let index = 0; index < 5; index += 1) {
-        await assert.rejects(admin.verifyAdministratorPassword({ password: wrong(), rateSource: SOURCE_A }), { code: 'authentication_failed' });
-    }
-    await assert.rejects(admin.verifyAdministratorPassword({ password, rateSource: SOURCE_A }), (error) => error.code === 'rate_limited' && error.retryAfter > 0);
-    assert.ok((await admin.verifyAdministratorPassword({ password, rateSource: SOURCE_B })).credentialVersion);
-    // Shorter or oversized candidates are refused without hashing or spending budget.
-    await assert.rejects(admin.verifyAdministratorPassword({ password: 'short', rateSource: SOURCE_B }), { code: 'authentication_failed' });
-    await assert.rejects(admin.verifyAdministratorPassword({ password: 'x'.repeat(1025), rateSource: SOURCE_B }), { code: 'authentication_failed' });
-    // The durable global budget spans fresh sources and process restarts.
-    let spent = 5;
-    for (let source = 0; spent < 30; source += 1) {
-        const rateSource = source.toString(16).padStart(64, 'c');
-        for (let index = 0; index < 5 && spent < 30; index += 1, spent += 1) {
-            await assert.rejects(admin.verifyAdministratorPassword({ password: wrong(), rateSource }), { code: 'authentication_failed' });
-        }
-    }
-    await resetStoreForTests();
-    setup.resetAuthLimitsForTests();
-    await assert.rejects(admin.verifyAdministratorPassword({ password, rateSource: 'd'.repeat(64) }), { code: 'rate_limited' });
-    await assert.rejects(setup.claimAdministrator(password), { code: 'rate_limited' });
-    assert.equal((await getInstallationSetup()).complete, false);
-});
-
-test('requests without a trusted source share one bucket', async () => {
-    const password = setup.configureAdministratorPassword();
-    for (let index = 0; index < 5; index += 1) {
-        await assert.rejects(admin.verifyAdministratorPassword({ password: `untrusted-${index}-guess`, rateSource: 'forged-header' }), { code: 'authentication_failed' });
-    }
-    await assert.rejects(admin.verifyAdministratorPassword({ password }), { code: 'rate_limited' });
-    assert.ok((await admin.verifyAdministratorPassword({ password, rateSource: SOURCE_A })).credentialVersion);
-});
-
-test('rotating or removing the configured password invalidates retained proofs and advances the administrator generation', async () => {
-    const first = setup.configureAdministratorPassword();
-    const claimed = await setup.claimAdministrator(first);
+test('stored password setup claims stay closed without granting a later signup administrator access', async () => {
     const store = await getStore();
-    const proof = await admin.verifyAdministratorPassword({ password: first, rateSource: SOURCE_A });
-    assert.equal(await admin.assertAdministratorPasswordProof(store, { userId: claimed.user.id, credentialVersion: proof.credentialVersion }), true);
-    const generation = (await getUserById(claimed.user.id)).authGeneration;
-    const second = setup.configureAdministratorPassword();
-    await admin.syncAdministratorPasswordState();
-    assert.equal(await admin.assertAdministratorPasswordProof(store, { userId: claimed.user.id, credentialVersion: proof.credentialVersion }), false);
-    assert.equal((await getUserById(claimed.user.id)).authGeneration, generation + 1);
-    await assert.rejects(setup.claimAdministrator(first), { code: 'authentication_failed' });
-    assert.equal((await setup.claimAdministrator(second)).user.id, claimed.user.id);
-    setup.clearAdministratorPassword();
-    await admin.syncAdministratorPasswordState();
-    assert.equal((await getUserById(claimed.user.id)).authGeneration, generation + 2);
-    assert.equal(await admin.administratorPasswordUsableFor(claimed.user.id), false);
-    await assert.rejects(setup.claimAdministrator(second), { code: 'admin_password_unavailable' });
+    const record = await store.createSystemSetting({ key: 'installation.setup', value: {
+        complete: true, initialAdministratorId: 'USER.1', method: 'adminPassword', completedAt: new Date().toISOString(),
+    } });
+    await flush();
+    await resetStoreForTests();
+    assert.equal((await getInstallationSetup()).complete, true);
+    assert.equal((await getInstallationSetup()).method, '');
+    const member = await setup.registerWithEmailCode('later@example.test');
+    assert.equal(member.initialAdministrator, false);
+    assert.deepEqual(await getUserRoles(member.user.id), ['selfRegistered']);
+    await (await getStore()).updateSystemSetting(record.id, { value: { complete: false, method: 'unsupported' } });
+    await flush();
+    await resetStoreForTests();
+    assert.equal((await getInstallationSetup()).complete, true, 'malformed existing setup also fails closed');
+    const later = await setup.registerWithEmailCode('later-again@example.test');
+    assert.deepEqual(later.roles, ['selfRegistered']);
+});
+
+test('stored password state and credentials never count as a usable administrator sign-in method', async () => {
+    const { user } = await setup.registerWithEmailCode('owner@example.test');
+    const store = await getStore();
+    await store.createSystemSetting({ key: 'auth.adminPassword.state', value: { passwordHash: 'obsolete-verifier', version: 'old-version' } });
+    await store.createAuthMethod({ key: `${user.id}:adminPassword`, userId: user.id, type: 'adminPassword', enabled: true, credential: { verifier: 'obsolete' } });
+    await flush();
+    const profile = await getProfile(user.id);
+    assert.equal(profile.authMethods.some((method) => method.type === 'adminPassword'), false);
+    assert.equal(profile.reauthenticationMethods.includes('adminPassword'), false);
+    assert.deepEqual(await usableSignInMethods(user, { emailAvailable: false }), []);
+    await assert.rejects(updateAuthPolicy({ enabledAuthMethods: ['passkey'] }, {
+        actorId: user.id, emailStatus: async () => ({ available: false }),
+    }), { code: 'administrator_auth_method_required' });
+    await assert.rejects(updateAuthPolicy({ enabledAuthMethods: ['adminPassword'] }, {
+        actorId: user.id, emailStatus: async () => ({ available: true }),
+    }), { code: 'invalid_auth_method' });
+    assert.equal((await getAuthPolicy()).enabledAuthMethods.includes('emailCode'), true);
+    for (const action of [startReauthentication, completeReauthentication]) {
+        await assert.rejects(action({ userId: user.id, operation: 'passkey.register', method: 'adminPassword', password }),
+            { code: 'reauthentication_unavailable' });
+    }
+});
+
+test('a saved operation grant authenticated with the retired password cannot authorize enrollment', async () => {
+    const { user } = await setup.registerWithEmailCode('owner@example.test');
+    const store = await getStore();
+    const grant = randomBytes(32).toString('base64url');
+    const challengeId = `grant:${createHash('sha256').update(`userpersisto:operation-grant:${grant}`).digest('hex')}`;
+    await store.createAuthChallenge({
+        challengeId,
+        subject: user.id,
+        purpose: 'operation-grant',
+        codeHash: '',
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+        attempts: 0,
+        correlationId: JSON.stringify({ operation: 'passkey.register', method: 'adminPassword', generation: authGenerationOf(user) }),
+    });
+    await flush();
+    await resetStoreForTests();
+    await assert.rejects(consumeOperationGrant({ userId: user.id, operation: 'passkey.register', grant }), { code: 'operation_grant_required' });
+    await resetStoreForTests();
+    assert.equal(await (await getStore()).getAuthChallengeByChallengeId(challengeId), undefined);
+    assert.equal(authGenerationOf(await getUserById(user.id)), authGenerationOf(user));
+});
+
+test('a retired method environment override never restores password authentication', async () => {
+    process.env.USERPERSISTO_AUTH_METHODS = 'adminPassword,emailCode';
+    assert.deepEqual((await getAuthPolicy()).enabledAuthMethods, ['emailCode']);
+    process.env.USERPERSISTO_AUTH_METHODS = 'adminPassword';
+    assert.equal((await getAuthPolicy()).enabledAuthMethods.includes('adminPassword'), false);
+    assert.equal(Object.hasOwn(await wizardConfiguration(), 'adminPassword'), false);
 });

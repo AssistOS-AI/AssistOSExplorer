@@ -45,21 +45,17 @@ The sign-in helper requires existing UserPersisto test accounts; it does not see
 local browser credentials. UserPersisto accounts are passwordless. The three
 release gates require two distinct accounts:
 
-1. Configure the deployment's administrator password with
-   `ploinky var USERPERSISTO_ADMIN_PASSWORD '<value>'`, restart UserPersisto,
-   and complete **Administrator sign-in** on the fresh installation. The first
-   completed sign-in becomes the administrator, so do this before any other
-   account signs in. A password-created administrator's Router username is
-   `administrator`.
+1. Complete the first sign-in with Google or a verified email code to claim the
+   fresh installation as administrator before any other account signs in. For
+   automated gates, that account needs an available email-code method or an
+   enrolled authenticator app.
 2. Sign up the second account with an email code, then have the administrator
    grant it the `user` role. Later public sign-ups receive `selfRegistered`,
    which permits the account dashboard but not Explorer access.
 
-The primary account signs in through **Administrator sign-in** with
-`SMOKE_ADMIN_PASSWORD` (no default; a missing value fails the test as BLOCKED).
-Other accounts use an email code or an enrolled authenticator app:
+Both accounts use the same passwordless wizard.
 `SMOKE_SIGN_IN_METHOD` and `SMOKE_SECONDARY_SIGN_IN_METHOD` accept
-`adminPassword`, `emailCode` (the secondary default) or `totp`. Email codes come
+`emailCode` (the default for both accounts) or `totp`. Email codes come
 from `SMOKE_EMAIL_CODE_COMMAND`, a shell command that prints the newest code for
 the address in `$SMOKE_EMAIL` (for example a test-mailbox reader, or the agent
 log when `USERPERSISTO_DEV_BOOTSTRAP=true` makes an undelivered code visible as
@@ -78,16 +74,15 @@ independent account selectors and may differ from the stored usernames. Login
 emails otherwise default to the corresponding `SMOKE_USERNAME` value.
 
 ```bash
-SMOKE_USERNAME=administrator SMOKE_ADMIN_PASSWORD='<administrator-password>' \
+SMOKE_USERNAME=owner SMOKE_LOGIN_EMAIL=owner@example.test \
 SMOKE_SECONDARY_USERNAME=member SMOKE_SECONDARY_LOGIN_EMAIL=member@example.test \
 SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
 SMOKE_BASE_URL=http://127.0.0.1:8080 \
 npm test
 ```
 
-For UserPersisto, the helper drives the sign-in wizard: **Administrator sign-in**
-for the administrator, and Login mode with the account email followed by the
-email code or authenticator for other accounts. It then verifies the resulting
+For UserPersisto, the helper drives Login mode with the account email followed
+by the email code or authenticator for every role. It then verifies the resulting
 Router principal. A returned username matches only the configured username, and
 a returned email matches only the configured login email; either exact
 normalized field match identifies the configured account. The returned username
@@ -98,7 +93,7 @@ guests.
 Run the dedicated public QA acceptance gate in headless Chromium with:
 
 ```bash
-SMOKE_USERNAME=administrator SMOKE_ADMIN_PASSWORD='<qa-administrator-password>' \
+SMOKE_USERNAME=owner SMOKE_LOGIN_EMAIL=owner@example.test \
 SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
 npm run test:qa
 ```
@@ -505,7 +500,7 @@ SMOKE_BROWSER_B_NETWORK_ID=external-net-b \
 SMOKE_BROWSER_A_EXPECTED_EGRESS_IPV4=198.51.100.21 \
 SMOKE_BROWSER_B_EXPECTED_EGRESS_IPV4=198.51.100.22 \
 SMOKE_NETWORK_ECHO_URL=https://echo.test.example/ip \
-SMOKE_USERNAME='<account-a>' SMOKE_ADMIN_PASSWORD='<administrator-password>' \
+SMOKE_USERNAME='<account-a>' SMOKE_LOGIN_EMAIL='<account-a-email>' \
 SMOKE_SECONDARY_USERNAME='<account-b>' SMOKE_SECONDARY_LOGIN_EMAIL='<account-b-email>' \
 SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
 npm run test:webmeet-network-matrix

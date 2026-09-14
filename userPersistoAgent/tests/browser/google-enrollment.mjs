@@ -42,7 +42,7 @@ try {
     process.env.USERPERSISTO_SETTINGS_KEY = 'google-enrollment-browser-settings';
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
     process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
-    for (const key of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[key];
+    for (const key of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[key];
     const sign = await createRouterSigner();
     await ensureSeedData();
     provider = await controlledGoogleProvider();

@@ -7,7 +7,6 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as oidc from 'openid-client';
 import { controlledGoogleProvider } from '../helpers/googleProvider.mjs';
-import * as setup from '../helpers/setup.mjs';
 import { startService } from '../../service/index.mjs';
 import { ensureSeedData } from '../../lib/bootstrap.mjs';
 import { getUserByEmail } from '../../lib/users.mjs';
@@ -21,8 +20,7 @@ import { setupStart as startTotpSetup, setupVerify as verifyTotpSetup, generateT
 // Opt-in browser regression for the shared sign-in wizard on both renderers:
 // the Router SSO page and an OIDC interaction in a popup opened by a cross-site
 // application. Codes come from a construction-time delivery capture, Google from
-// the controlled provider, and the administrator password from a random fixture
-// value; nothing here is a real provider or a deployed origin.
+// the controlled provider; nothing here is a real provider or a deployed origin.
 const runtimePath = process.env.WIZARD_BROWSER_PLAYWRIGHT_MODULE || process.env.GOOGLE_BROWSER_PLAYWRIGHT_MODULE || '';
 const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
 const runId = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
@@ -50,7 +48,7 @@ function latestCode(address) {
 }
 
 async function screenshot(page, name) {
-    // Taken before any code or password is typed, so no secret is captured.
+    // Taken before any code is typed, so no secret is captured.
     await page.screenshot({ path: join(artifactRoot, `${name}.png`), fullPage: true });
 }
 
@@ -67,7 +65,6 @@ async function verify() {
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
     process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'controlled-google-secret';
     for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[name];
-    const adminPassword = setup.configureAdministratorPassword();
     await ensureSeedData();
     google = await controlledGoogleProvider();
     service = startService({ port: 0, host: '127.0.0.1' }, {
@@ -117,7 +114,8 @@ async function verify() {
     phase = 'SSO: first verified email signup claims the installation';
     let flow = await ssoPage();
     await flow.page.getByText('The first completed sign-in becomes its administrator').waitFor();
-    assert.equal(await flow.page.getByRole('button', { name: 'Administrator sign-in' }).isVisible(), true);
+    assert.equal(await flow.page.getByRole('button', { name: 'Administrator sign-in' }).count(), 0);
+    assert.equal(await flow.page.locator('input[type="password"]').count(), 0);
     await screenshot(flow.page, '01-sso-first-run');
     await flow.page.getByRole('textbox', { name: 'Email' }).fill('owner@example.test');
     await flow.page.getByRole('button', { name: 'Next', exact: true }).click();
@@ -192,12 +190,15 @@ async function verify() {
     await flow.page.getByRole('button', { name: 'Verify', exact: true }).click();
     assert.equal((await finishSso(flow)).user.id, member.user.id);
 
-    phase = 'SSO: the administrator password signs in only the designated administrator';
+    phase = 'SSO: the installation administrator uses the same email-code sign-in as other accounts';
     flow = await ssoPage();
-    await flow.page.getByRole('button', { name: 'Administrator sign-in', exact: true }).click();
-    await screenshot(flow.page, '05-sso-administrator');
-    await flow.page.getByLabel('Password', { exact: true }).fill(adminPassword);
-    await flow.page.locator('#auth_content').getByRole('button', { name: 'Sign in', exact: true }).click();
+    await flow.page.getByRole('textbox', { name: 'Email' }).fill('owner@example.test');
+    await flow.page.getByRole('button', { name: 'Next', exact: true }).click();
+    await flow.page.getByRole('button', { name: 'Email me a code', exact: true }).click();
+    await flow.page.getByRole('textbox', { name: 'Code' }).waitFor();
+    await screenshot(flow.page, '05-sso-administrator-email');
+    await flow.page.getByRole('textbox', { name: 'Code' }).fill(latestCode('owner@example.test'));
+    await flow.page.getByRole('button', { name: 'Verify', exact: true }).click();
     assert.equal((await finishSso(flow)).user.id, owner.user.id);
 
     phase = 'SSO: Google denial returns to the live wizard';
@@ -323,11 +324,14 @@ async function verify() {
     assert.equal(completions.at(-1).sub, member.user.id);
     await session.context.close();
 
-    phase = 'OIDC: administrator sign-in never approves scopes by itself';
+    phase = 'OIDC: administrator email-code sign-in never approves scopes by itself';
     session = await popup();
-    await session.page.getByRole('button', { name: 'Administrator sign-in', exact: true }).click();
-    await session.page.getByLabel('Password', { exact: true }).fill(adminPassword);
-    await session.page.locator('#auth_content').getByRole('button', { name: 'Sign in', exact: true }).click();
+    await session.page.getByRole('textbox', { name: 'Email' }).fill('owner@example.test');
+    await session.page.getByRole('button', { name: 'Next', exact: true }).click();
+    await session.page.getByRole('button', { name: 'Email me a code', exact: true }).click();
+    await session.page.getByRole('textbox', { name: 'Code' }).waitFor();
+    await session.page.getByRole('textbox', { name: 'Code' }).fill(latestCode('owner@example.test'));
+    await session.page.getByRole('button', { name: 'Verify', exact: true }).click();
     await session.page.getByRole('button', { name: 'Allow access', exact: true }).waitFor();
     await screenshot(session.page, '09-oidc-consent-after-administrator');
     await session.page.getByRole('button', { name: 'Allow access', exact: true }).click();
@@ -338,19 +342,18 @@ async function verify() {
     assert.deepEqual(browserErrors, [], 'No page may raise an uncaught error.');
     const store = await getStore();
     assert.equal((await store.select('user')).totalCount, 2, 'Only the two completed sign-ups created accounts.');
-    output(`PASS Chromium ${browser.version()}: SSO first-run email signup, four transitions, canceled delayed verification, administrator sign-in, Google denial notice; OIDC cross-site popup email code with SameSite=Strict browser binding, native failure re-render, TOTP failure Back to email, administrator sign-in with separate consent. Screenshots: ${artifactRoot}`);
+    output(`PASS Chromium ${browser.version()}: SSO first-run email signup, four transitions, canceled delayed verification, administrator email-code sign-in, Google denial notice; OIDC cross-site popup email code with SameSite=Strict browser binding, native failure re-render, TOTP failure Back to email, administrator email-code sign-in with separate consent. Screenshots: ${artifactRoot}`);
 }
 
 try {
     await verify();
 } catch (error) {
     // Browser diagnostics may contain callback queries or form bodies; keep
-    // this runner's output free of codes, cookies, passwords and tokens.
+    // this runner's output free of codes, cookies and tokens.
     console.error(`FAIL during ${phase}: ${error.code === 'ERR_ASSERTION' ? error.message.split('\n')[0] : error.name || 'browser or fixture operation failed'}`);
     process.exitCode = 1;
 } finally {
     await Promise.allSettled([browser?.close(), closeServer(application), closeServer(service), google?.close()]);
-    setup.clearAdministratorPassword();
     resetOidcProviderForTests();
     await resetStoreForTests();
     if (folder) await rm(folder, { recursive: true, force: true });

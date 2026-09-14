@@ -29,10 +29,8 @@ function resolveOptionalPath(value) {
   return text ? path.resolve(text) : '';
 }
 
-// UserPersisto accounts are passwordless. The designated administrator may use
-// the deployment-configured administrator password; other accounts use an
-// email code or an enrolled authenticator app.
-const SIGN_IN_METHODS = new Set(['adminPassword', 'emailCode', 'totp']);
+// Automated UserPersisto sign-in uses the same methods for every role.
+const SIGN_IN_METHODS = new Set(['emailCode', 'totp']);
 function readSignInMethod(name, fallback) {
   const value = String(process.env[name] || '').trim();
   return SIGN_IN_METHODS.has(value) ? value : fallback;
@@ -61,8 +59,6 @@ export const smokeConfig = Object.freeze({
   ),
   qaEdgeIP: String(process.env.SMOKE_QA_EDGE_IP || '').trim(),
   authAgent: process.env.SMOKE_AUTH_AGENT || 'explorer',
-  // Deployment-configured UserPersisto administrator password; never defaulted.
-  administratorPassword: String(process.env.SMOKE_ADMIN_PASSWORD || ''),
   // Shell command printing the latest UserPersisto code for $SMOKE_EMAIL.
   emailCodeCommand: String(process.env.SMOKE_EMAIL_CODE_COMMAND || '').trim(),
   accountEmailDomain: String(process.env.SMOKE_ACCOUNT_EMAIL_DOMAIN || 'example.test').trim(),
@@ -71,7 +67,7 @@ export const smokeConfig = Object.freeze({
     username: process.env.SMOKE_USERNAME || 'admin',
     loginEmail: process.env.SMOKE_LOGIN_EMAIL || process.env.SMOKE_USERNAME || 'admin',
     password: process.env.SMOKE_PASSWORD || 'admin',
-    signInMethod: readSignInMethod('SMOKE_SIGN_IN_METHOD', 'adminPassword'),
+    signInMethod: readSignInMethod('SMOKE_SIGN_IN_METHOD', 'emailCode'),
     totpSecret: String(process.env.SMOKE_TOTP_SECRET || ''),
   },
   secondaryUser: {

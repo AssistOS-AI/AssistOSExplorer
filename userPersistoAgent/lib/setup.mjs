@@ -4,7 +4,7 @@ import { assertRegistrationRoleAllowed, getAuthPolicy, REGISTRATION_ROLE } from 
 import { recordAudit } from './audit.mjs';
 
 export const SETUP_KEY = 'installation.setup';
-const SETUP_METHODS = new Set(['google', 'emailCode', 'adminPassword']);
+const SETUP_METHODS = new Set(['google', 'emailCode']);
 
 function setupError(code, message, statusCode = 403) {
     return Object.assign(new Error(message), { code, statusCode });
@@ -53,8 +53,7 @@ export async function prepareNewAccount({
         await assertRegistrationRoleAllowed(REGISTRATION_ROLE, store);
         roles = [REGISTRATION_ROLE];
     }
-    const allowEmptyEmail = method === 'adminPassword' && !setup.complete;
-    await assertNewUserAvailable({ email, username, roles, contactEmail, allowEmptyEmail });
+    await assertNewUserAvailable({ email, username, roles, contactEmail });
     const initialAdministrator = !setup.complete;
     return async () => {
         const actorId = initialAdministrator ? 'initial-setup' : 'self-registration';
@@ -67,7 +66,6 @@ export async function prepareNewAccount({
             roles,
             actorId,
             emailVerified,
-            allowEmptyEmail,
         });
         if (initialAdministrator) {
             const completedAt = new Date().toISOString();

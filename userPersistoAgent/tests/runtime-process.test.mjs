@@ -9,14 +9,13 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { CookieBrowser } from './helpers/googleProvider.mjs';
 
 const agentRoot = fileURLToPath(new URL('..', import.meta.url));
 const runtimeRoot = process.env.PLOINKY_AGENT_RUNTIME_ROOT
     || fileURLToPath(new URL('../../../ploinky/Agent', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
-// Generated per test process: the deployment administrator password is never a committed literal.
-const ADMIN_PASSWORD = `runtime-${randomBytes(18).toString('base64url')}`;
 
 async function freePort() {
     const server = net.createServer();
@@ -31,6 +30,32 @@ async function fixture(t) {
     const root = await mkdtemp(join(tmpdir(), 'userpersisto-runtime-'));
     t.after(() => rm(root, { recursive: true, force: true }));
     await mkdir(join(root, 'persisto'));
+    // The child runs the real service and EmailAgent client path. Only its
+    // transport is replaced, delivering codes into this private fixture.
+    await writeFile(join(root, 'emailTransport.mjs'), `
+import { writeFile } from 'node:fs/promises';
+export function createAgentClient(agent) {
+    if (agent !== 'emailAgent') throw new Error('Unexpected fixture agent');
+    return {
+        async callTool(name, payload) {
+            if (name === 'email_auth_code_status') return { available: true };
+            if (name !== 'email_send_auth_code') throw new Error('Unexpected fixture tool');
+            await writeFile(process.env.RUNTIME_TEST_MAIL, JSON.stringify(payload), { mode: 0o600 });
+            return { ok: true, providerMessageId: 'runtime-fixture-message' };
+        },
+        async close() {},
+    };
+}
+`);
+    await writeFile(join(root, 'emailLoader.mjs'), `
+import { registerHooks } from 'node:module';
+registerHooks({
+    resolve(specifier, context, nextResolve) {
+        if (specifier === '/Agent/client/AgentMcpClient.mjs') return { url: new URL('./emailTransport.mjs', import.meta.url).href, shortCircuit: true };
+        return nextResolve(specifier, context);
+    },
+});
+`);
     return root;
 }
 
@@ -46,7 +71,8 @@ async function startRuntime(t, root, options = {}) {
         USERPERSISTO_RUNTIME_SECRET: 'runtime-test-bridge-secret',
         USERPERSISTO_OIDC_ISSUER: '',
         USERPERSISTO_DEV_BOOTSTRAP: '',
-        USERPERSISTO_ADMIN_PASSWORD: ADMIN_PASSWORD,
+        RUNTIME_TEST_MAIL: join(root, 'delivered-mail.json'),
+        NODE_OPTIONS: [process.env.NODE_OPTIONS, '--import=' + JSON.stringify(pathToFileURL(join(root, 'emailLoader.mjs')).href)].filter(Boolean).join(' '),
         USERPERSISTO_AUTH_METHODS: '',
         USERPERSISTO_SERVICE_PORT: String(servicePort),
         PORT: String(mcpPort),
@@ -94,11 +120,13 @@ async function waitFor(check, runtime) {
     assert.fail(`Runtime did not reach the expected state:\n${runtime.output()}`);
 }
 
-async function post(runtime, path, body, { bridge = false } = {}) {
-    const response = await fetch(`http://127.0.0.1:${runtime.servicePort}${path}`, {
+async function post(runtime, path, body, { bridge = false, browser } = {}) {
+    const origin = `http://127.0.0.1:${runtime.servicePort}`;
+    const send = browser ? browser.fetch.bind(browser) : fetch;
+    const response = await send(`${origin}${path}`, {
         method: 'POST',
         headers: {
-            'content-type': 'application/json',
+            'content-type': 'application/json', origin,
             ...(bridge ? { 'x-userpersisto-runtime-secret': runtime.env.USERPERSISTO_RUNTIME_SECRET } : {}),
         },
         body: JSON.stringify(body),
@@ -111,10 +139,15 @@ async function registerOwner(runtime) {
         redirectUri: `http://127.0.0.1:${runtime.servicePort}/auth/callback`,
     }, { bridge: true });
     assert.equal(request.status, 200);
-    // The first owner claims setup through the configured administrator password.
-    const registered = await post(runtime, '/service/auth/admin/login', {
-        requestId: request.body.request.providerState, password: ADMIN_PASSWORD,
-    });
+    const browser = new CookieBrowser();
+    const requestId = request.body.request.providerState;
+    const started = await post(runtime, '/service/auth/email-code/start', {
+        requestId, email: 'runtime-owner@example.test', purpose: 'register',
+    }, { browser });
+    assert.equal(started.status, 200, JSON.stringify(started.body));
+    const message = JSON.parse(await readFile(runtime.env.RUNTIME_TEST_MAIL, 'utf8'));
+    assert.equal(message.to, 'runtime-owner@example.test');
+    const registered = await post(runtime, '/service/auth/email-code/verify', { requestId, code: message.code }, { browser });
     assert.equal(registered.status, 200, JSON.stringify(registered.body));
     assert.equal(registered.body.initialAdministrator, true);
     const consumed = await post(runtime, '/service/runtime/sso-consume-code', {
@@ -154,7 +187,7 @@ test('MCP starts after the durable service and drains before HTTP/store; normal 
     await waitFor(() => existsSync(env.RUNTIME_TEST_STATE), runtime);
     const started = JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8'));
     assert.equal(started.setup.setupComplete, false);
-    assert.equal(started.setup.adminPassword, true);
+    assert.equal(Object.hasOwn(started.setup, 'adminPassword'), false);
     await registerOwner(runtime);
     assert.equal((await post(runtime, '/internal/tool', { name: 'userpersisto_profile_get' })).status, 401);
     runtime.child.kill('SIGTERM');
@@ -296,9 +329,8 @@ test('the bundled AgentServer advertises every schema and forwards signed valida
     };
     const profile = await successful(profileTool.name, {});
     assert.equal(profile.user.id, userId);
-    assert.equal(profile.user.username, 'administrator');
-    assert.equal(profile.user.email, '');
-    assert.deepEqual(profile.authMethods, [{ type: 'adminPassword', name: 'Administrator password' }]);
+    assert.equal(profile.user.email, 'runtime-owner@example.test');
+    assert.deepEqual(profile.authMethods.map((method) => method.type), ['emailCode']);
     const updated = await successful('userpersisto_profile_update', { displayName: 'Runtime Owner' });
     assert.equal(updated.user.displayName, 'Runtime Owner');
     await successful('userpersisto_user_roles_update', { userId, roles: ['admin', 'user'] });

@@ -10,9 +10,7 @@ test('authentication visits only its final surface and preserves a separate serv
   const requests = [];
   const localAccount = { username: 'fixture-user', password: 'fixture-password' };
   const providerAccount = { username: 'fixture-user', loginEmail: 'fixture-user@example.test', signInMethod: 'emailCode' };
-  // A password-created administrator has no sign-in email.
-  const administratorAccount = { username: 'administrator', signInMethod: 'adminPassword' };
-  const administratorPassword = `fixture-admin-${process.pid}-${Date.now()}`;
+  const administratorAccount = { username: 'administrator', loginEmail: 'owner@example.test', signInMethod: 'emailCode' };
   const providerPath = '/base-agent-additional-server/userPersistoAgent/7000/service/auth/';
   const providerAssets = new Map(['index.html', 'main.js', 'wizard.js', 'sso-adapter.js', 'auth-api.js', 'auth.css', 'google-button.css'].map((name) => [
     name,
@@ -47,7 +45,7 @@ test('authentication visits only its final surface and preserves a separate serv
       const authenticated = incoming.headers.cookie?.includes('fixture-session=authenticated');
       return json(response, authenticated ? 200 : 401, authenticated
         ? { user: { id: 'USER.2', username: principalUsername || (String(account.username).includes('@') ? '' : account.username),
-          email: account.loginEmail || (String(account.username).includes('@') ? account.username : ''), roles: ['user'] } }
+          email: account.loginEmail || (String(account.username).includes('@') ? account.username : ''), roles: [account === administratorAccount ? 'admin' : 'user'] } }
         : { error: 'unauthenticated' });
     }
     if (url.pathname === '/auth/login' && incoming.method === 'GET' && sso) {
@@ -69,12 +67,12 @@ test('authentication visits only its final surface and preserves a separate serv
         if (payload.requestId !== 'fixture-state') return json(response, 400, { ok: false, error: 'login_request_invalid' });
         if (relativePath === 'attempt') {
           return json(response, 200, { ok: true, expiresAt: Date.now() + 300_000, setupComplete, registration: true,
-            methods: { emailCode: true, passkey: false, totp: false, google: false }, adminPassword: true,
+            methods: { emailCode: true, passkey: false, totp: false, google: false },
             attempt: { status: 'active', challenge: null, locked: false } });
         }
         if (relativePath === 'attempt/cancel') return json(response, 200, { ok: true, status: 'cancelled' });
         if (relativePath === 'discover') {
-          const exists = payload.email === providerAccount.loginEmail;
+          const exists = [providerAccount.loginEmail, administratorAccount.loginEmail].includes(payload.email);
           return json(response, 200, { ok: true, exists, methods: { emailCode: exists, passkey: false, totp: false } });
         }
         if (relativePath === 'email-code/start') {
@@ -83,8 +81,8 @@ test('authentication visits only its final surface and preserves a separate serv
           return json(response, 200, { ok: true, challenge: { email: payload.email, purpose: payload.purpose, expiresAt: Date.now() + 300_000,
             resendAt: Date.now() + 60_000, attemptsRemaining: 5, delivery: 'accepted', expired: false } });
         }
-        if (relativePath === 'email-code/verify' || relativePath === 'admin/login') {
-          const valid = relativePath === 'admin/login' ? payload.password === administratorPassword : payload.code === issuedCode;
+        if (relativePath === 'email-code/verify') {
+          const valid = payload.code === issuedCode;
           if (!valid) return json(response, 401, { ok: false, error: 'authentication_failed' });
           return json(response, 200, { ok: true, code: 'fixture-code', state: payload.state, redirectUri: '/auth/callback' });
         }
@@ -133,7 +131,6 @@ test('authentication visits only its final surface and preserves a separate serv
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   process.env.SMOKE_BASE_URL = baseURL;
-  process.env.SMOKE_ADMIN_PASSWORD = administratorPassword;
   process.env.SMOKE_EMAIL_CODE_COMMAND = `grep -F "for $SMOKE_EMAIL:" ${JSON.stringify(codeFile)} || true`;
   const { signIn } = await import('./auth.mjs');
   const providerPost = (name) => requests.filter((entry) => entry.method === 'POST' && entry.pathname === `${providerPath}${name}`).length;
@@ -165,12 +162,9 @@ test('authentication visits only its final surface and preserves a separate serv
           assert.equal(requests.filter((entry) => entry.pathname === '/service/').length, 1,
             'the target must not boot before login or be reloaded after login');
           assert.deepEqual(requests.filter((entry) => entry.pathname === '/auth/login').map((entry) => entry.method), useSso ? ['GET'] : ['GET', 'POST']);
-          if (mode === 'administrator SSO') {
-            assert.equal(providerPost('admin/login'), 1);
-            assert.equal(providerPost('email-code/start'), 0, 'administrator sign-in never sends an email code');
-          } else if (useSso) {
+          if (useSso) {
             assert.deepEqual([providerPost('email-code/start'), providerPost('email-code/verify'), providerPost('admin/login')], [1, 1, 0],
-              'passwordless sign-in sends one code, verifies it once and never uses the administrator path');
+              'every role signs in with one verified email code and never uses the retired password path');
           }
           assert.equal(requests.filter((entry) => entry.pathname === '/' || entry.pathname.startsWith('/explorer')).length, 0);
           assert.equal(await page.locator('input[name="username"]').inputValue(), '');
@@ -234,7 +228,6 @@ test('authentication visits only its final surface and preserves a separate serv
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(mailbox, { recursive: true, force: true });
-    delete process.env.SMOKE_ADMIN_PASSWORD;
     delete process.env.SMOKE_EMAIL_CODE_COMMAND;
   }
 });

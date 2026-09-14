@@ -59,6 +59,15 @@ test('Google status and policy source require current administrative capability 
     // A retired method named by the environment is ignored rather than re-enabled.
     process.env.USERPERSISTO_AUTH_METHODS = 'password,emailCode';
     assert.deepEqual((await runTool('userpersisto_auth_policy_get', {}, { actorUserId: admin.id })).enabledAuthMethods, ['emailCode']);
+    // An override naming only retired methods filters down to nothing. Ignoring
+    // the whole override keeps sign-in working; an empty list would fail every
+    // policy read and lock everyone out of a running installation.
+    process.env.USERPERSISTO_AUTH_METHODS = 'password';
+    const ignored = await runTool('userpersisto_auth_policy_get', {}, { actorUserId: admin.id });
+    assert.deepEqual(ignored.enabledAuthMethods, ['emailCode', 'passkey', 'totp', 'google']);
+    // The variable is still reported as set, so an operator can see the one
+    // that is being ignored rather than wondering why it had no effect.
+    assert.deepEqual(ignored.environmentOverrides, ['USERPERSISTO_AUTH_METHODS']);
     process.env.USERPERSISTO_AUTH_METHODS = 'emailCode';
     await assert.rejects(() => runTool('userpersisto_google_status', {}, { actorUserId: user.id, actorRoles: ['admin'] }), { code: 'admin_required' });
     await updateUser(admin.id, { status: 'blocked' }, { actorId: secondAdmin.id });

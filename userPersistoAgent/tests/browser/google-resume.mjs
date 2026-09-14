@@ -89,7 +89,7 @@ async function startHttpsProxy(port) {
 }
 
 async function verify() {
-    assert.ok(['emailCode', 'adminPassword', 'totp', 'passkey'].includes(linkMethod), 'GOOGLE_BROWSER_LINK_METHOD must be emailCode, adminPassword, totp or passkey.');
+    assert.ok(['emailCode', 'totp', 'passkey'].includes(linkMethod), 'GOOGLE_BROWSER_LINK_METHOD must be emailCode, totp or passkey.');
     assert.ok(['127.0.0.1', 'localhost'].includes(browserHost), 'GOOGLE_BROWSER_HOST must be 127.0.0.1 or localhost.');
     assert.ok(isAbsolute(runtimePath), 'GOOGLE_BROWSER_PLAYWRIGHT_MODULE must name an absolute existing module path.');
     const { chromium } = await import(pathToFileURL(runtimePath).href);
@@ -104,9 +104,7 @@ async function verify() {
     delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
     delete process.env.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS;
     await ensureSeedData();
-    // The installation owner claims setup through the real verified-email path;
-    // a random administrator password makes it the designated administrator too.
-    const adminPassword = setup.configureAdministratorPassword();
+    // The installation owner claims setup through the real verified-email path.
     const { user: owner } = await setup.registerWithEmailCode('browser-owner@example.test');
     const store = await getStore();
     let totpSecret;
@@ -127,7 +125,10 @@ async function verify() {
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${serviceOrigin}/service/auth/google/callback`;
     const issuer = `${serviceOrigin}/service/oidc`;
     process.env.USERPERSISTO_OIDC_ISSUER = issuer;
-    await updateAuthPolicy({ enabledAuthMethods: [...new Set(['emailCode', 'google', ...(linkMethod === 'adminPassword' ? [] : [linkMethod])])] });
+    await updateAuthPolicy({ enabledAuthMethods: [...new Set(['emailCode', 'google', linkMethod])] }, {
+        actorId: owner.id,
+        emailStatus: async () => ({ available: true }),
+    });
 
     let config;
     let callbackUri;
@@ -303,11 +304,10 @@ async function verify() {
         assert.ok(mail.at(-1).correlationId.startsWith('google-link-email:'), 'The link code must be bound to the Google transaction.');
         await page.getByRole('textbox', { name: 'Email code', exact: true }).fill(mail.at(-1).code);
     }
-    if (linkMethod === 'adminPassword') await page.getByLabel('Administrator password', { exact: true }).fill(adminPassword);
     if (linkMethod === 'totp') await page.getByRole('textbox', { name: 'Authenticator code', exact: true }).fill(totp.generateToken(totpSecret));
     const completionPath = linkMethod === 'emailCode' ? '/google-resume/verify-link-code' : '/google-resume/authenticate';
     const authenticationResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith(completionPath));
-    const button = { emailCode: 'Verify code', adminPassword: 'Confirm with administrator password', totp: 'Confirm with authenticator', passkey: 'Confirm with passkey' }[linkMethod];
+    const button = { emailCode: 'Verify code', totp: 'Confirm with authenticator', passkey: 'Confirm with passkey' }[linkMethod];
     await page.getByRole('button', { name: button, exact: true }).click();
     let authenticated;
     try { authenticated = await authenticationResponse; } catch (error) {
@@ -349,12 +349,11 @@ try {
     await verify();
 } catch (error) {
     // Browser diagnostics may contain callback queries or request bodies. Keep
-    // this opt-in runner's output free of codes, cookies, passwords and tokens.
+    // this opt-in runner's output free of codes, cookies and tokens.
     console.error(`FAIL during ${phase}: ${error.code === 'ERR_ASSERTION' ? error.message.split('\n')[0] : 'browser or fixture operation failed'}`);
     process.exitCode = 1;
 } finally {
     await Promise.allSettled([browser?.close(), closeServer(application), closeServer(proxy), closeServer(service), google?.close()]);
-    setup.clearAdministratorPassword();
     resetOidcProviderForTests();
     await resetStoreForTests();
     if (folder) await rm(folder, { recursive: true, force: true });

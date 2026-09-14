@@ -15,6 +15,7 @@ import { createOidcClient } from '../lib/oidc/clients.mjs';
 import { resetOidcProviderForTests } from '../lib/oidc/provider.mjs';
 import { getStore, flush, resetStoreForTests } from '../lib/store.mjs';
 import * as totp from '../lib/auth/totp.mjs';
+import { completeGoogleIdentity } from '../lib/externalIdentities.mjs';
 
 const redirectUri = 'https://methods-client.example.test/callback';
 const mailCapture = Symbol.for('userpersisto.oidc-methods.test-mail');
@@ -64,6 +65,7 @@ class Browser {
 }
 
 async function fixture(methods, fn) {
+    const previousEnvironment = { ...process.env };
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-oidc-methods-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'disposable-oidc-methods-settings-key';
@@ -74,12 +76,13 @@ async function fixture(methods, fn) {
     let server;
     try {
         await ensureSeedData();
-        // The configured administrator password keeps the owner signed-in-capable
-        // whatever sign-in methods a test disables.
-        setup.configureAdministratorPassword();
-        const { user: owner } = await setup.registerWithEmailCode('methods-owner@example.test');
+        process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'methods-google-client';
+        process.env.USERPERSISTO_GOOGLE_CLIENT_SECRET = 'methods-google-secret';
+        process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = 'http://127.0.0.1/service/auth/google/callback';
+        const { user: owner } = await completeGoogleIdentity({ identity: { issuer: 'https://accounts.google.com', subject: 'methods-owner',
+            email: 'methods-owner@gmail.com', emailVerified: true } });
         const { user } = await setup.registerWithEmailCode('methods-member@example.test');
-        await updateAuthPolicy({ enabledAuthMethods: methods.length ? methods : ['google'] }, { actorId: owner.id });
+        await updateAuthPolicy({ enabledAuthMethods: [...new Set([...methods, 'google'])] }, { actorId: owner.id });
         server = startService({ port: 0, host: '127.0.0.1' });
         if (!server.listening) await once(server, 'listening');
         const origin = `http://127.0.0.1:${server.address().port}`;
@@ -92,8 +95,8 @@ async function fixture(methods, fn) {
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         resetOidcProviderForTests();
         await resetStoreForTests();
-        setup.clearAdministratorPassword();
-        delete process.env.USERPERSISTO_OIDC_ISSUER;
+        for (const name of Object.keys(process.env)) if (!Object.hasOwn(previousEnvironment, name)) delete process.env[name];
+        Object.assign(process.env, previousEnvironment);
         await rm(folder, { recursive: true, force: true });
     }
 }
@@ -231,50 +234,13 @@ test('disabled methods reject direct interaction POSTs before challenge creation
     assert.equal((await (await getStore()).select('authChallenge')).objects.length, 0);
 }));
 
-test('administrator sign-in completes through the interaction and the email-less administrator has no email claim', async () => {
-    const folder = await mkdtemp(join(tmpdir(), 'userpersisto-oidc-admin-'));
-    process.env.PERSISTENCE_FOLDER = folder;
-    process.env.USERPERSISTO_SETTINGS_KEY = 'disposable-oidc-admin-settings-key';
-    delete process.env.USERPERSISTO_AUTH_METHODS;
-    setup.resetAuthLimitsForTests();
-    let server;
-    try {
-        await ensureSeedData();
-        const password = setup.configureAdministratorPassword();
-        const { user: administrator } = await setup.claimAdministrator(password);
-        assert.equal(administrator.email, '');
-        server = startService({ port: 0, host: '127.0.0.1' });
-        if (!server.listening) await once(server, 'listening');
-        const issuer = `http://127.0.0.1:${server.address().port}/service/oidc`;
-        process.env.USERPERSISTO_OIDC_ISSUER = issuer;
-        await createOidcClient({ client_id: 'methods-client', redirect_uris: [redirectUri], token_endpoint_auth_method: 'none', scope: 'openid email' }, { actorId: administrator.id });
-        const config = await oidcClient.discovery(new URL(issuer), 'methods-client', undefined, oidcClient.None(), { execute: [oidcClient.allowInsecureRequests, oidcClient.enableNonRepudiationChecks] });
-        const flow = await begin(config);
-        const wrong = await flow.browser.post(`${flow.location}/admin-login`, { csrf: flow.csrf, password: 'not-the-configured-value' });
-        assert.equal(wrong.status, 400);
-        assert.match(await wrong.text(), /data-server-failure/);
-        const submitted = await flow.browser.post(`${flow.location}/admin-login`, { csrf: flow.csrf, password });
-        assert.equal(submitted.status, 303, await submitted.clone().text());
-        let location = submitted.headers.get('location');
-        for (let step = 0; step < 8 && !location.startsWith(redirectUri); step += 1) {
-            const page = await flow.browser.fetch(location);
-            if ([302, 303].includes(page.status)) { location = page.headers.get('location'); continue; }
-            const html = await page.text();
-            assert.match(html, /Allow access\?/, 'administrator sign-in never approves application scopes');
-            location = (await flow.browser.post(`${location}/confirm`, { csrf: csrfFrom(html) })).headers.get('location');
-        }
-        const tokens = await oidcClient.authorizationCodeGrant(config, new URL(location), { expectedNonce: flow.nonce, expectedState: flow.state, pkceCodeVerifier: flow.verifier });
-        assert.equal(tokens.claims().sub, administrator.id);
-        assert.equal(Object.hasOwn(tokens.claims(), 'email'), false);
-        const info = await oidcClient.fetchUserInfo(config, tokens.access_token, administrator.id);
-        assert.equal(Object.hasOwn(info, 'email'), false, 'an empty sign-in email is not published as a claim');
-        assert.equal(Object.hasOwn(info, 'email_verified'), false);
-    } finally {
-        if (server?.listening) await new Promise((resolve) => server.close(resolve));
-        resetOidcProviderForTests();
-        await resetStoreForTests();
-        setup.clearAdministratorPassword();
-        delete process.env.USERPERSISTO_OIDC_ISSUER;
-        await rm(folder, { recursive: true, force: true });
-    }
-});
+test('administrator OIDC sign-in uses verified email and the retired password action is rejected', async () => fixture(['emailCode'], async ({ config, owner }) => {
+    const flow = await begin(config);
+    const refused = await flow.browser.post(flow.location + '/admin-login', { csrf: flow.csrf, password: 'retired-test-secret' });
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), { error: 'invalid_request' });
+    const sent = await flow.browser.post(flow.location + '/email-start', { csrf: flow.csrf, email: owner.email, purpose: 'login' });
+    assert.equal(sent.status, 200, await sent.clone().text());
+    const submitted = await flow.browser.post(flow.location + '/email-verify', { csrf: flow.csrf, code: globalThis[mailCapture].at(-1).code });
+    await finish(config, flow, submitted, owner);
+}));
