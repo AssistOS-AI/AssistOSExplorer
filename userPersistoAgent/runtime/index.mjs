@@ -89,10 +89,15 @@ export function resolveProviderConfig({ providerConfig = {}, readValue } = {}) {
 export function createProvider({ getConfig }) {
     return {
         name: 'AssistOSExplorer/userPersistoAgent',
-        async sso_begin_login({ redirectUri, returnTo }) {
+        async sso_begin_login({ redirectUri, returnTo, supportsCanonicalLoginOrigin = false }) {
             const config = await getConfig();
             const loginUrl = browserLoginUrl(config.loginPath, redirectUri);
-            const { request } = await postRuntime(config, 'sso-login-request', { redirectUri, clientId: 'explorer' });
+            const result = await postRuntime(config, 'sso-login-request', { redirectUri, clientId: 'explorer',
+                ...(supportsCanonicalLoginOrigin === true ? { supportsCanonicalLoginOrigin: true } : {}) });
+            if (supportsCanonicalLoginOrigin === true && Object.hasOwn(result, 'canonicalLoginOrigin')) {
+                return { canonicalLoginOrigin: result.canonicalLoginOrigin };
+            }
+            const { request } = result;
             loginUrl.searchParams.set('requestId', request.providerState);
             loginUrl.searchParams.set('state', request.providerState);
             // Informational only: the wizard's Start again link sends it back to the

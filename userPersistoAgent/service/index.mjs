@@ -13,6 +13,7 @@ import { handleOidc } from '../lib/oidc/http.mjs';
 import { handleDashboard } from './dashboard.mjs';
 import { createGoogleAuthHandlers } from './googleAuth.mjs';
 import { createSsoWizardHandlers } from './ssoWizard.mjs';
+import { getCanonicalLoginOrigin } from '../lib/auth/canonicalLoginOrigin.mjs';
 import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
 
@@ -153,6 +154,10 @@ async function handlePost(req, res, path, handlers) {
     if (await handlers.wizard.handle(req, res, path, body, sendJson)) return;
     if (path === '/service/runtime/sso-login-request') {
         assertRuntimeSecret(req);
+        if (body.supportsCanonicalLoginOrigin === true) {
+            const canonicalLoginOrigin = await getCanonicalLoginOrigin(body.redirectUri);
+            if (canonicalLoginOrigin) return sendJson(res, 200, { ok: true, canonicalLoginOrigin });
+        }
         const request = await createLoginRequest({ redirectUri: body.redirectUri, clientId: body.clientId });
         return sendJson(res, 200, { ok: true, request });
     }
