@@ -95,7 +95,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const priority = stored.codingAgents?.priority || BACKENDS;
         if (!Array.isArray(priority) || !priority.length || priority.some((name) => !BACKENDS.includes(name))
             || new Set(priority).size !== priority.length) throw new Error('Invalid workspace codingAgents.priority.');
-        const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'ask-for-approval';
+        const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'full-access';
         if (!['ask-for-approval', 'full-access'].includes(permissionMode)) throw new Error('Invalid native permission mode.');
         const api = await installed;
         const envSnapshot = nativeEnvironment(env, home);

@@ -28,7 +28,7 @@ test('independent setting changes preserve each other and remain workspace scope
     assert.equal(getCurrentSessionId(dir), 'conversation-a');
     assert.deepEqual(getDisabledSkills(dir), ['alpha', 'beta']);
     assert.equal(getSelectedModel(dir), 'legacy/model');
-    assert.equal(getPermissionMode(other), 'ask-for-approval');
+    assert.equal(getPermissionMode(other), 'full-access');
     await clearSelectedModel(dir);
     await setDisabledSkills(dir, []);
     assert.equal(getSelectedModel(dir), null);
@@ -65,6 +65,6 @@ test('malformed settings reads do not destroy persisted evidence', (t) => {
     fs.mkdirSync(join(dir, '.data', 'achilles-cli'), { recursive: true });
     fs.writeFileSync(file, '{invalid');
     assert.equal(getSelectedModel(dir), null);
-    assert.equal(getPermissionMode(dir), 'ask-for-approval');
+    assert.equal(getPermissionMode(dir), 'full-access');
     assert.equal(fs.readFileSync(file, 'utf8'), '{invalid');
 });

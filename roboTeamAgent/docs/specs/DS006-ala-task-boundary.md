@@ -9,6 +9,8 @@ ALA is the task executor started by RoboTeam; it is not responsible for creating
 
 ## Core Content
 
+Copilot WebChat and CLI conversations must default to full-access inside the ALA sandbox when no valid workspace permission selection exists. Explicit execution overrides and saved workspace selections remain authoritative, including ask-for-approval. Reading the default must not write settings or require per-folder setup. The engine fallback must also use full-access. This native execution policy does not change Router authorization or Bubblewrap filesystem isolation.
+
 WebChat task records preserve the executing `robotName` through observation, persistence and protocol publication. Runtime-state envelopes report the current robot for the chat header, including default launches without a robot query parameter. Inline task cards show identity, status and duration with always-visible detail/live-session links and no collapse control; logs and continuation remain on the task details page.
 
 RoboTeam must not initialize knowledge-unit storage, retrieve memory into prompts, persist provider results as memory or return cached provider responses. Every conversation turn executes through the native ALA session. Persisted UI messages and task receipts remain presentation and lifecycle records, not a prompt-memory system.

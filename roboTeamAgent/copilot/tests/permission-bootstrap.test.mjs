@@ -50,6 +50,7 @@ test('Ploinky WebChat launch metadata does not become a prompt or native session
         assert.equal(options.workingDir, workingDir);
         assert.equal(options.prompt, null);
         assert.equal(options.singleShot, false);
+        assert.equal(options.permissionMode, 'full-access');
         assert.equal(options.pageInstanceId, undefined);
         assert.equal(isWebchatRuntime(args, {}), true);
         assert.equal(isWebchatRuntime([...metadata, `--dir=${workingDir}`], { SSO_USER_ID: 'guest' }), true);
@@ -62,4 +63,11 @@ test('transport metadata remains bounded and does not disable unknown-option val
     }
     assert.throws(() => parseCliOptions(['--pageInstanceId=x', '--unknown']), /Unknown option/);
     assert.equal(parseCliOptions(['--', '--pageInstanceId=x']).prompt, '--pageInstanceId=x');
+});
+
+test('WebChat preserves an explicit workspace approval policy', async (t) => {
+    const workingDir = await workspace(t);
+    await setPermissionMode(workingDir, 'ask-for-approval');
+    const options = parseCliOptions(['--forward-envelope', '--dir', workingDir]);
+    assert.equal(options.permissionMode, 'ask-for-approval');
 });

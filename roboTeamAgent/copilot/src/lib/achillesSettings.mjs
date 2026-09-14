@@ -41,7 +41,7 @@ export function getSelectedModel(workingDir = process.cwd()) {
 
 export function getPermissionMode(workingDir = process.cwd()) {
     return normalizePermissionMode(readAchillesSettings(workingDir).permissions)
-        || PERMISSION_MODES.ASK;
+        || PERMISSION_MODES.FULL;
 }
 
 export function getCurrentSessionId(workingDir = process.cwd()) {
