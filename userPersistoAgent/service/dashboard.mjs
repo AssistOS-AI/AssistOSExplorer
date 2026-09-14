@@ -12,9 +12,11 @@ const ASSETS = new Set([
     'index.html', 'main.js', 'dashboard.css', 'enrollment.js', 'enrollment.css',
     'users.html', 'applications.html', 'authentication.html', 'admin.mjs', 'admin.css',
     'management.mjs', 'management.css', 'api.mjs',
+    'roles.html', 'roles.mjs', 'roles.css',
 ]);
 const PAGE_CAPABILITIES = new Map([
     ['users.html', 'admin.users.manage'],
+    ['roles.html', 'admin.users.manage'],
     ['applications.html', 'admin.agentSettings.manage'],
     ['authentication.html', 'admin.agentSettings.manage'],
 ]);
@@ -35,6 +37,10 @@ const ADMIN_OPERATIONS = new Map([
     ['users/update', { tool: 'userpersisto_user_update', fields: ['userId', 'username', 'displayName', 'status'] }],
     ['users/roles', { tool: 'userpersisto_user_roles_update', fields: ['userId', 'roles'] }],
     ['users/delete', { tool: 'userpersisto_user_update', fields: ['userId'], fixed: { status: 'blocked' } }],
+    ['roles/list', { tool: 'userpersisto_roles_list', fields: [] }],
+    ['roles/create', { tool: 'userpersisto_role_create', fields: ['name', 'description', 'capabilities'] }],
+    ['roles/update', { tool: 'userpersisto_role_update', fields: ['roleId', 'description', 'capabilities'] }],
+    ['roles/delete', { tool: 'userpersisto_role_delete', fields: ['roleId'] }],
     ['applications/list', { tool: 'userpersisto_oidc_clients_list', fields: ['start', 'pageSize'] }],
     ['applications/create', { tool: 'userpersisto_oidc_client_create', fields: CLIENT_FIELDS }],
     ['applications/update', { tool: 'userpersisto_oidc_client_update', fields: CLIENT_FIELDS }],
@@ -209,7 +215,7 @@ export async function handleDashboard(req, res, url, { sendJson, serveStatic, go
         const adminPath = path.startsWith('/api/admin/') ? path.slice(11) : '';
         const adminOperation = ADMIN_OPERATIONS.get(adminPath);
         if (adminOperation) {
-            const capability = adminPath.startsWith('users/') ? 'admin.users.manage' : 'admin.agentSettings.manage';
+            const capability = /^(users|roles)\//.test(adminPath) ? 'admin.users.manage' : 'admin.agentSettings.manage';
             await requireActiveActor(actorUserId, capability);
             const args = {};
             for (const field of adminOperation.fields) {

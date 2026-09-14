@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Roles · UserPersisto</title>
+        <link rel="stylesheet" href="dashboard.css">
+        <link rel="stylesheet" href="management.css">
+        <link rel="stylesheet" href="admin.css">
+        <link rel="stylesheet" href="roles.css">
+    </head>
+    <body>
+        <div class="account-shell management-shell">
+            <header class="account-header"><a class="account-brand" href="./">UserPersisto</a><a href="/auth/logout">Sign out</a></header>
+            <nav class="account-navigation" aria-label="UserPersisto pages">
+                <a href="./">My Account</a>
+                <a href="users.html" data-capability="admin.users.manage" hidden>Users</a>
+                <a href="roles.html" data-capability="admin.users.manage" aria-current="page" hidden>Roles</a>
+                <a href="applications.html" data-capability="admin.agentSettings.manage" hidden>Applications</a>
+                <a href="authentication.html" data-capability="admin.agentSettings.manage" hidden>Authentication policy</a>
+            </nav>
+            <main id="roles-root">
+                <div class="page-heading"><h1>Roles</h1><p>Create roles and choose the permissions they give to people in your workspace.</p></div>
+                <p id="roles-status" class="account-status" role="status" aria-live="polite">Loading…</p>
+                <a id="roles-login" class="button-link" href="/auth/login" hidden>Sign in again</a>
+                <fieldset id="roles-controls" class="management-controls" disabled hidden>
+                    <legend class="visually-hidden">Role administration</legend>
+                    <div class="roles-toolbar">
+                        <label class="form-item roles-search"><span class="form-label">Search roles</span><input id="roles-search" type="search" class="form-input" maxlength="200" placeholder="Name, description or permission"></label>
+                        <button type="button" class="gray-button" data-role-action="refresh">Refresh roles</button>
+                        <button type="button" class="general-button" data-role-action="new">New role</button>
+                    </div>
+                    <div class="roles-layout">
+                        <section aria-label="Role catalog">
+                            <div id="roles-list" class="roles-list" role="region" aria-label="Role results" tabindex="0"></div>
+                            <nav class="roles-pagination" aria-label="Role pages">
+                                <button id="roles-previous" type="button" class="gray-button" data-role-action="previous" disabled>Previous</button>
+                                <span id="roles-page" role="status" aria-live="polite"></span>
+                                <button id="roles-next" type="button" class="gray-button" data-role-action="next" disabled>Next</button>
+                            </nav>
+                        </section>
+                        <section id="role-editor" class="account-card role-editor" aria-labelledby="role-editor-title">
+                            <h2 id="role-editor-title">Create role</h2>
+                            <p id="role-editor-note" class="card-description">Create a role, then assign it to accounts on the Users page.</p>
+                            <form id="role-form">
+                                <label class="form-item"><span class="form-label">Role name</span><input id="role-name" class="form-input" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}" autocomplete="off" spellcheck="false" aria-describedby="role-name-help"></label>
+                                <p id="role-name-help" class="card-description">Start with a letter or number; use letters, numbers, periods, underscores, colons or hyphens. Names cannot be changed after creation.</p>
+                                <label class="form-item"><span class="form-label">Description</span><textarea id="role-description" class="form-input" rows="3" maxlength="1000"></textarea></label>
+                                <details id="role-permission-picker" class="role-permission-picker">
+                                    <summary id="role-permission-summary">Permissions: none selected</summary>
+                                    <div class="role-permission-menu">
+                                        <label class="form-item"><span class="form-label">Search permissions</span><input id="role-permission-search" class="form-input" type="search" autocomplete="off"></label>
+                                        <fieldset id="role-permissions" class="role-permissions"><legend class="visually-hidden">Select permissions</legend></fieldset>
+                                        <p id="role-permissions-empty" class="card-description" hidden>No matching permissions.</p>
+                                    </div>
+                                </details>
+                                <p class="card-description">Permissions add access for everyone assigned this role. A role can have no permissions. Its name alone does not grant access.</p>
+                                <button id="role-save" type="submit" class="general-button">Create role</button>
+                            </form>
+                            <div id="role-delete-section" class="role-delete-section" hidden>
+                                <p id="role-delete-note" class="card-description"></p>
+                                <button id="role-delete" type="button" class="gray-button" data-role-action="request-delete">Delete role</button>
+                                <div id="role-delete-confirmation" class="role-delete-confirmation" hidden>
+                                    <p id="role-delete-question"></p>
+                                    <div class="roles-toolbar"><button id="role-confirm-delete" type="button" class="gray-button" data-role-action="confirm-delete">Confirm delete</button><button type="button" class="gray-button" data-role-action="cancel-delete">Cancel</button></div>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+                </fieldset>
+            </main>
+            <footer>Roles apply to this workspace. Built-in roles are protected.</footer>
+        </div>
+        <script type="module" src="roles.mjs"></script>
+    </body>
+</html>

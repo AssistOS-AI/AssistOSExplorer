@@ -71,10 +71,14 @@
             <li><strong>Theme</strong> selects the global light or dark application theme.</li>
             <li><strong>Avatar</strong> stores the user's profile avatar in the browser, controls whether WebMeet adapts AxiFace automatically to the user's voice or uses a manually selected emotion, and exposes agent-avatar overrides only when the authenticated user can manage them.</li>
           </ul>
+          <p>On the Users page, open the <strong>Roles</strong> dropdown to select one or more roles from the stored catalog. Use <strong>Search roles</strong> to filter a long list; hidden selections are retained. Press Escape to close the dropdown, then use <strong>Save roles</strong> to apply the selection. Custom roles created on the Roles page appear after refreshing the user list.</p>
+          <p>Open <strong>Roles</strong> in UserPersisto navigation to create a custom role, edit its description and permissions, or delete an unused role. Select permissions from the registered capability catalog; leaving the selection empty creates a role that applications can recognize without granting workspace access. Creating a role does not assign it to anyone: open Users and save the desired assignments separately. Changing a role's permissions affects everyone assigned that role when access is checked again.</p>
+          <p>Role names are permanent, case-sensitive identifiers of 1–128 characters using letters, digits, dots, underscores, colons or hyphens, beginning with a letter or digit. Descriptions may contain up to 1000 characters. The built-in <code>admin</code>, <code>user</code> and <code>selfRegistered</code> roles are protected. Remove a custom role from its users before deleting it. Role administration does not define new capability types or provide application-specific or composite roles. The OAuth scope <code>roles</code> requests assigned role claims; individual role names are not OAuth scopes.</p>
           <p>The account pages share the route prefix <code>/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/</code>:</p>
           <table><thead><tr><th>Page</th><th>Relative URL</th><th>Required account access</th></tr></thead><tbody>
             <tr><td>My Account and sign-in security</td><td><code>./</code></td><td>Any active authenticated account, including one without Explorer access</td></tr>
             <tr><td>Users</td><td><code>users.html</code></td><td><code>admin.users.manage</code></td></tr>
+            <tr><td>Roles</td><td><code>roles.html</code></td><td><code>admin.users.manage</code></td></tr>
             <tr><td>Applications</td><td><code>applications.html</code></td><td><code>admin.agentSettings.manage</code></td></tr>
             <tr><td>Authentication policy</td><td><code>authentication.html</code></td><td><code>admin.agentSettings.manage</code></td></tr>
           </tbody></table>

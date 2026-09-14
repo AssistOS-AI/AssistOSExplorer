@@ -302,6 +302,14 @@ test('the bundled AgentServer advertises every schema and forwards signed valida
     const updated = await successful('userpersisto_profile_update', { displayName: 'Runtime Owner' });
     assert.equal(updated.user.displayName, 'Runtime Owner');
     await successful('userpersisto_user_roles_update', { userId, roles: ['admin', 'user'] });
+    const role = await successful('userpersisto_role_create', {
+        name: 'runtime-reviewer', description: 'Runtime role', capabilities: ['explorer.access'],
+    });
+    assert.equal(role.builtin, false);
+    assert.deepEqual(role.capabilities, ['explorer.access']);
+    assert.ok((await successful('userpersisto_roles_list', {})).roles.some((entry) => entry.id === role.id));
+    assert.deepEqual((await successful('userpersisto_role_update', { roleId: role.id, capabilities: [] })).capabilities, []);
+    assert.deepEqual(await successful('userpersisto_role_delete', { roleId: role.id }), { deleted: true, roleId: role.id });
     const grant = { userId, amount: 7, referenceId: 'runtime-grant-1' };
     await successful('userpersisto_credits_grant', grant);
     const retried = await successful('userpersisto_credits_grant', grant);
@@ -312,6 +320,11 @@ test('the bundled AgentServer advertises every schema and forwards signed valida
         ['userpersisto_profile_update', { displayName: 'invalid', extra: true }],
         ['userpersisto_user_roles_update', { userId }],
         ['userpersisto_user_roles_update', { userId, roles: [1] }],
+        ['userpersisto_role_create', { name: 'bad name' }],
+        ['userpersisto_role_create', { name: 'forged', actorId: userId }],
+        ['userpersisto_role_update', { roleId: role.id }],
+        ['userpersisto_role_update', { roleId: role.id, capabilities: [1] }],
+        ['userpersisto_role_delete', {}],
         ['userpersisto_credits_grant', { ...grant, amount: -1 }],
         ['userpersisto_credits_grant', { ...grant, amount: 1.5 }],
     ]) {

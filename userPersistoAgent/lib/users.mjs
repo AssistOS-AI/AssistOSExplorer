@@ -241,8 +241,16 @@ export async function listUsers({ start = 0, pageSize = 50, search = '', exclude
 
 export async function listRoles() {
     const store = await getStore();
-    const result = await store.select('role', {}, { sortBy: 'priority', start: 0, pageSize: 500 });
-    return result.objects.map((role) => ({
+    const roles = [];
+    const pageSize = 500;
+    while (true) {
+        const result = await store.select('role', {}, { sortBy: 'priority', start: roles.length, pageSize });
+        const objects = result.objects || [];
+        roles.push(...objects);
+        const count = Number(result.filteredCount ?? result.totalCount);
+        if (objects.length < pageSize || (Number.isFinite(count) && roles.length >= count)) break;
+    }
+    return roles.map((role) => ({
         id: role.id,
         name: role.name,
         description: role.description || '',

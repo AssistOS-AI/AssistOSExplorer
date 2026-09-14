@@ -22,6 +22,13 @@ button:disabled { opacity: .55; cursor: default; }
     .userpersisto-auth-methods-header { flex-wrap: wrap; }
 }
 
-.userpersisto-role-choices { display: flex; flex-wrap: wrap; gap: 16px; padding: 14px; border: 1px solid #dce3ec; border-radius: 7px; }
-.userpersisto-role-choices label { display: flex; align-items: center; gap: 8px; }
+.userpersisto-role-picker { position: relative; max-width: 520px; min-width: 0; }
+.userpersisto-role-picker summary { padding: 11px 14px; border: 1px solid #ccd5e1; border-radius: 7px; cursor: pointer; overflow-wrap: anywhere; }
+.userpersisto-role-picker summary:focus-visible { outline: 2px solid #264ec6; outline-offset: 2px; }
+.userpersisto-role-menu { position: absolute; z-index: 2; top: calc(100% + 4px); left: 0; right: 0; padding: 14px; background: white; border: 1px solid #ccd5e1; border-radius: 7px; box-shadow: 0 8px 24px #1c29381a; }
+.userpersisto-role-choices { display: grid; gap: 4px; max-height: 220px; overflow-y: auto; margin: 10px 0; padding: 0; border: 0; }
+.userpersisto-role-choices label { display: flex; align-items: center; gap: 8px; padding: 8px; min-width: 0; cursor: pointer; }
+.userpersisto-role-choices label:hover { background: #f6f8fb; }
+.userpersisto-role-choices label[hidden], .userpersisto-role-menu [hidden] { display: none; }
+.userpersisto-role-choices span { overflow-wrap: anywhere; }
 .userpersisto-role-choices input { width: auto; min-height: auto; }

@@ -55,6 +55,55 @@ test('role editing preserves custom and multiple selected roles and renders them
     assert.deepEqual(calls[0], { name: 'userpersisto_user_roles_update', args: { userId: 'member', roles } });
 });
 
+test('the role dropdown includes catalog roles not yet assigned to the displayed user', async () => {
+    const { panel } = fixture();
+    panel.callTool = async () => ({
+        users: [{ id: 'member', email: 'member@example.test', roles: ['user'] }],
+        totalCount: 1,
+        availableRoles: ['user', 'book-reviewer', 'book-reviewer', '<editor>'],
+    });
+    await panel.loadUsersPage();
+    assert.deepEqual(panel.state.availableRoles, ['user', 'book-reviewer', '<editor>']);
+    assert.match(panel.usersListEl.innerHTML, /<details[^>]+data-role-picker/);
+    assert.match(panel.usersListEl.innerHTML, /value="book-reviewer"/);
+    assert.match(panel.usersListEl.innerHTML, /value="&lt;editor&gt;"/);
+    assert.doesNotMatch(panel.usersListEl.innerHTML, /value="admin"|<editor>/);
+    panel.clearUsers();
+    assert.deepEqual(panel.state.availableRoles, []);
+});
+
+test('filtering many roles retains selections outside the visible results', () => {
+    const { panel } = fixture();
+    const options = ['user', 'ȘTEFAN-reviewer', ...Array.from({ length: 600 }, (_, index) => `role-${index}`)]
+        .map((value) => {
+            const label = { hidden: false };
+            return { value, checked: value === 'user', closest: () => label };
+        });
+    const search = { value: ' șTEFAN ' };
+    const empty = { hidden: true };
+    const picker = {
+        querySelector: (selector) => selector === '[data-role-search]' ? search : empty,
+        querySelectorAll: () => options,
+    };
+    panel.filterRoleChoices(picker);
+    assert.deepEqual(options.filter((input) => !input.closest().hidden).map((input) => input.value), ['ȘTEFAN-reviewer']);
+    assert.equal(options[0].checked, true, 'hiding a selected role never unchecks it');
+    search.value = 'absent role';
+    panel.filterRoleChoices(picker);
+    assert.equal(empty.hidden, false);
+    search.value = '';
+    panel.filterRoleChoices(picker);
+    assert.equal(empty.hidden, true);
+    assert.equal(options.filter((input) => !input.closest().hidden).length, 602);
+});
+
+test('saving an empty selection reports an error without sending a role update', async () => {
+    const { panel, row, calls } = fixture({ roles: [] });
+    await panel.updateUser(row, 'roles');
+    assert.equal(calls.length, 0);
+    assert.equal(panel.state.status, 'Select at least one role.');
+});
+
 test('the create-user form and password reset are no longer available from the dashboard', async () => {
     const { panel, row, calls } = fixture({ fields: { username: 'x' } });
     assert.equal(typeof panel.createUser, 'undefined', 'createUser() was removed with the create-user form');

@@ -1,5 +1,5 @@
 import { getProfile, authorizeCapability, requireActiveActor } from '../lib/authorization.mjs';
-import { updateUser, listUsers, setUserRoles } from '../lib/users.mjs';
+import { updateUser, listUsers, listRoles, setUserRoles } from '../lib/users.mjs';
 import * as passkey from '../lib/auth/passkey.mjs';
 import * as totp from '../lib/auth/totp.mjs';
 import { consumeOperationGrant } from '../lib/auth/operationGrants.mjs';
@@ -10,6 +10,7 @@ import { getStore } from '../lib/store.mjs';
 import { environmentPolicyOverrides, getAuthPolicy, isAuthMethodEnabled, updateAuthPolicy } from '../lib/policy.mjs';
 import * as oidcClients from '../lib/oidc/clients.mjs';
 import { getGoogleStatus } from '../lib/auth/google.mjs';
+import * as roles from '../lib/roles.mjs';
 
 async function requireAdmin(context, capability = 'admin.users.manage') {
     const actor = requireActor(context);
@@ -67,13 +68,14 @@ const HANDLERS = {
     }),
     userpersisto_user_list: async (args, context) => {
         await requireAdmin(context);
-        return listUsers({
+        const result = await listUsers({
             start: args.start ?? 0,
             pageSize: args.pageSize ?? 50,
             search: args.search ?? '',
             excludeOnlyRole: args.excludeOnlyRole ?? '',
             includeRoleCounts: args.includeRoleCounts ?? false,
         });
+        return { ...result, availableRoles: (await listRoles()).map((role) => role.name) };
     },
     userpersisto_user_update: async (args, context) => {
         const actorId = await requireAdmin(context);
@@ -88,6 +90,10 @@ const HANDLERS = {
         await requireAdmin(context);
         return setUserRoles(args.userId, args.roles, { actorId: context.actorUserId });
     },
+    userpersisto_roles_list: async (_args, context) => roles.listRoleCatalog({ actorId: requireActor(context) }),
+    userpersisto_role_create: async (args, context) => roles.createRole(args, { actorId: requireActor(context) }),
+    userpersisto_role_update: async (args, context) => roles.updateRole(args, { actorId: requireActor(context) }),
+    userpersisto_role_delete: async (args, context) => roles.deleteRole(args, { actorId: requireActor(context) }),
     // Enrollment starts only with a single-use grant from fresh My Account
     // re-authentication, bound to this actor, operation and account generation.
     userpersisto_passkey_registration_options: async (args, context) => {

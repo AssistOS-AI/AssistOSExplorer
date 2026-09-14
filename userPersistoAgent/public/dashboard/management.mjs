@@ -34,6 +34,7 @@ export class UserpersistoSettings {
             status: "",
             statusType: "",
             users: [],
+            availableRoles: [],
             usersStart: 0,
             usersPageSize: 100,
             usersTotal: 0,
@@ -231,6 +232,7 @@ export class UserpersistoSettings {
     clearUsers() {
         this.usersRequestId = (this.usersRequestId || 0) + 1;
         this.state.users = [];
+        this.state.availableRoles = [];
         this.state.usersTotal = 0;
         this.state.selfRegisteredCount = 0;
         this.state.usersLoading = false;
@@ -306,6 +308,9 @@ export class UserpersistoSettings {
                 includeRoleCounts: true,
             });
             if (requestId !== this.usersRequestId) return;
+            this.state.availableRoles = Array.isArray(payload.availableRoles)
+                ? [...new Set(payload.availableRoles.filter((role) => typeof role === "string" && role.trim()))]
+                : [];
             this.state.users = Array.isArray(payload.users)
                 ? payload.users
                 : Array.isArray(payload.objects)
@@ -364,7 +369,7 @@ export class UserpersistoSettings {
         }
         this.usersListEl.innerHTML = users.map((user) => {
             const roles = userRoles(user);
-            const choices = [...new Set(["admin", "user", "selfRegistered", ...roles])];
+            const choices = [...new Set([...this.state.availableRoles, ...roles])];
             const textField = (label, field, type = "text", extra = "") => `<label class="form-item"><span class="form-label">${label}</span><input class="form-input" data-user-field="${field}" type="${type}" value="${escapeHtml(user[field] || "")}" ${extra}></label>`;
             return `
                 <section class="userpersisto-row user-editor" data-user-id="${escapeHtml(user.id)}" aria-label="${escapeHtml(user.email || user.id)}">
@@ -379,7 +384,15 @@ export class UserpersistoSettings {
                         <label class="form-item"><span class="form-label">Status</span><select class="form-input" data-user-field="status">${["active", "blocked"].map((status) => `<option value="${status}" ${user.status === status ? "selected" : ""}>${status === "active" ? "Active" : "Blocked"}</option>`).join("")}</select></label>
                     </div>
                     <div><button type="button" class="general-button" data-user-action="details">Save details</button></div>
-                    <fieldset class="userpersisto-role-choices"><legend>Roles</legend>${choices.map((role) => `<label><input type="checkbox" data-user-role value="${escapeHtml(role)}" ${roles.includes(role) ? "checked" : ""}> ${escapeHtml(role)}</label>`).join("")}</fieldset>
+                    <details class="userpersisto-role-picker" data-role-picker>
+                        <summary>${escapeHtml(this.roleSummary(roles))}</summary>
+                        <div class="userpersisto-role-menu">
+                            <label class="form-item"><span class="form-label">Search roles</span><input class="form-input" data-role-search type="search" autocomplete="off" placeholder="Find a role"></label>
+                            <fieldset class="userpersisto-role-choices"><legend class="visually-hidden">Select roles</legend>${choices.map((role) => `<label><input type="checkbox" data-user-role value="${escapeHtml(role)}" ${roles.includes(role) ? "checked" : ""}> <span>${escapeHtml(role)}</span></label>`).join("")}</fieldset>
+                            <p class="userpersisto-card-description" data-role-empty hidden>No matching roles.</p>
+                            <p class="userpersisto-card-description">Select one or more roles, then save.</p>
+                        </div>
+                    </details>
                     <div><button type="button" class="gray-button" data-user-action="roles">Save roles</button></div>
                 </section>`;
         }).join("");
@@ -388,6 +401,36 @@ export class UserpersistoSettings {
                 void this.updateUser(button.closest("[data-user-id]"), button.dataset.userAction);
             });
         });
+        this.usersListEl.querySelectorAll("[data-role-picker]").forEach((picker) => {
+            picker.querySelector("[data-role-search]").addEventListener("input", () => this.filterRoleChoices(picker));
+            picker.addEventListener("change", () => {
+                const roles = [...picker.querySelectorAll("[data-user-role]:checked")].map((input) => input.value);
+                picker.querySelector("summary").textContent = this.roleSummary(roles);
+            });
+            picker.addEventListener("keydown", (event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                picker.open = false;
+                picker.querySelector("summary").focus();
+            });
+        });
+    }
+
+    roleSummary(roles) {
+        if (!roles.length) return "Roles: select at least one";
+        const names = roles.join(", ");
+        return `Roles: ${names.length <= 80 ? names : `${roles.length} selected`}`;
+    }
+
+    filterRoleChoices(picker) {
+        const search = picker.querySelector("[data-role-search]").value.trim().toLocaleLowerCase();
+        let matches = 0;
+        picker.querySelectorAll("[data-user-role]").forEach((input) => {
+            const matchesSearch = input.value.toLocaleLowerCase().includes(search);
+            input.closest("label").hidden = !matchesSearch;
+            if (matchesSearch) matches++;
+        });
+        picker.querySelector("[data-role-empty]").hidden = matches > 0;
     }
 
     async updateUser(row, action) {
@@ -405,6 +448,10 @@ export class UserpersistoSettings {
         } else if (action === "roles") {
             name = "userpersisto_user_roles_update";
             args = { userId, roles: [...row.querySelectorAll("[data-user-role]:checked")].map((input) => input.value) };
+            if (!args.roles.length) {
+                this.setStatus("Select at least one role.", "error");
+                return;
+            }
             success = "User roles saved.";
         } else return;
         this.state.userBusy = true;

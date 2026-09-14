@@ -116,6 +116,78 @@
             "env": { "TOOL_NAME": "userpersisto_user_roles_update" }
         },
         {
+            "name": "userpersisto_roles_list",
+            "title": "List roles and permissions",
+            "description": "Admin: list all roles, their permissions and assignment counts, and the registered permission catalog.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_roles_list" }
+        },
+        {
+            "name": "userpersisto_role_create",
+            "title": "Create custom role",
+            "description": "Admin: create a custom role with permissions from the registered capability catalog. Creating a role does not assign it to users.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+                    "description": { "type": "string", "maxLength": 1000 },
+                    "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_role_create" }
+        },
+        {
+            "name": "userpersisto_role_update",
+            "title": "Update custom role",
+            "description": "Admin: edit a custom role's description or replace its permissions. Built-in roles and role names are protected; permission changes affect every assigned user.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "roleId": { "type": "string", "minLength": 1 },
+                    "description": { "type": "string", "maxLength": 1000 },
+                    "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                },
+                "required": ["roleId"],
+                "minProperties": 2,
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_role_update" }
+        },
+        {
+            "name": "userpersisto_role_delete",
+            "title": "Delete unused custom role",
+            "description": "Admin: delete an unassigned custom role and its permission links. Assigned roles and built-in roles cannot be deleted.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": { "roleId": { "type": "string", "minLength": 1 } },
+                "required": ["roleId"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_role_delete" }
+        },
+        {
             "name": "userpersisto_passkey_registration_options",
             "title": "Passkey registration options",
             "description": "Start passkey registration for the authenticated user. Requires a single-use operation grant from fresh My Account re-authentication.",

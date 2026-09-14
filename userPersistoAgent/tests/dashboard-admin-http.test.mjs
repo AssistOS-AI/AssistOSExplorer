@@ -9,6 +9,7 @@ import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, getUserById, getUserRoles, updateUser, setUserRoles } from '../lib/users.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
 import { startService } from '../service/index.mjs';
+import { runTool } from '../tools/registry.mjs';
 
 const ORIGIN = 'https://account.example.test';
 const PREFIX = '/service/dashboard';
@@ -71,17 +72,19 @@ function adminRequest(endpoint, options) {
 }
 
 test('management documents and shared assets require a signed active user and persisted page capabilities', async () => {
-    for (const path of ['/users.html', '/applications.html', '/authentication.html', '/admin.mjs', '/api.mjs', '/management.mjs']) {
+    for (const path of ['/users.html', '/roles.html', '/applications.html', '/authentication.html', '/admin.mjs', '/api.mjs', '/management.mjs', '/roles.mjs', '/roles.css']) {
         assert.equal((await request(path, { method: 'GET', authenticated: false })).response.status, 401, path);
         assert.equal((await request(path, { method: 'GET', userId: blocked.id })).response.status, 401, path);
     }
-    for (const path of ['/users.html', '/applications.html', '/authentication.html']) {
+    for (const path of ['/users.html', '/roles.html', '/applications.html', '/authentication.html']) {
         const denied = await request(path, { method: 'GET', userId: member.id });
         assert.equal(denied.response.status, 403, path);
         assert.equal(denied.data.error, 'admin_required');
         assert.equal((await request(path, { method: 'GET' })).response.status, 200, path);
     }
     assert.equal((await request('/users.html', { method: 'GET', userId: settingsManager.id })).response.status, 403);
+    assert.equal((await request('/roles.html', { method: 'GET', userId: settingsManager.id })).response.status, 403);
+    assert.equal((await request('/roles.html', { method: 'GET', userId: usersManager.id })).response.status, 200);
     assert.equal((await request('/applications.html', { method: 'GET', userId: usersManager.id })).response.status, 403);
     assert.equal((await request('/authentication.html', { method: 'GET', userId: usersManager.id })).response.status, 403);
     assert.equal((await request('/', { method: 'GET', userId: member.id })).response.status, 200);
@@ -95,7 +98,7 @@ test('management documents and shared assets require a signed active user and pe
 });
 
 test('admin APIs reject absent or forged authentication, inactive accounts, and caller-claimed privileges', async () => {
-    for (const endpoint of ['users/list', 'applications/list', 'policy/get', 'google/status']) {
+    for (const endpoint of ['users/list', 'roles/list', 'roles/create', 'roles/update', 'roles/delete', 'applications/list', 'policy/get', 'google/status']) {
         const absent = await adminRequest(endpoint, { authenticated: false, headers: {
             origin: ORIGIN, 'x-forwarded-proto': 'https', 'x-forwarded-host': 'account.example.test', 'content-type': 'application/json',
         } });
@@ -153,6 +156,7 @@ test('user search hides selfRegistered-only accounts by default and allows findi
         assert.equal(found.data.result.totalCount, 1);
         assert.deepEqual(found.data.result.users.map((user) => user.id), [member.id]);
         assert.deepEqual(found.data.result.users[0].roles, ['selfRegistered']);
+        assert.deepEqual(new Set(found.data.result.availableRoles), new Set(['admin', 'user', 'selfRegistered', 'usersManager', 'settingsManager']));
         assert.doesNotMatch(JSON.stringify(found.data), /passwordHash|loginAttempts|lastLoginAttempt/);
     }
     const promoted = await adminRequest('users/roles', { body: { userId: member.id, roles: ['user'], actorUserId: member.id } });
@@ -288,4 +292,85 @@ test('policy and provider status use fixed whitelisted fields and preserve opera
     assert.equal(retired.data.error, 'invalid_auth_method');
     await adminRequest('policy/set', { body: { defaultRegistrationRole: 'admin', selfRegistrationEnabled: true } });
     assert.equal(JSON.stringify(await store.getSystemSettingByKey('auth.policy')).includes('defaultRegistrationRole'), false);
+});
+
+test('role administration changes effective access through signed CRUD and user assignment', async () => {
+    const actor = { actorUserId: usersManager.id };
+    const catalog = await adminRequest('roles/list', { userId: usersManager.id });
+    assert.equal(catalog.response.status, 200);
+    assert.equal(catalog.data.result.totalCount, catalog.data.result.roles.length);
+    assert.ok(catalog.data.result.permissions.some((permission) => permission.capability === 'explorer.access'));
+    const builtins = catalog.data.result.roles.filter((role) => role.builtin);
+    assert.deepEqual(builtins.map((role) => role.name).sort(), ['admin', 'selfRegistered', 'user']);
+    assert.equal((await adminRequest('roles/list', { userId: settingsManager.id })).response.status, 403);
+    const created = await adminRequest('roles/create', { userId: usersManager.id, body: {
+        name: 'book-reviewer', description: 'Review books', capabilities: ['explorer.access'],
+        actorId: member.id, actorUserId: admin.id, builtin: true, priority: 1,
+    } });
+    assert.equal(created.response.status, 200);
+    const role = created.data.result;
+    assert.equal(role.name, 'book-reviewer');
+    assert.equal(role.builtin, false);
+    assert.equal(role.userCount, 0);
+    assert.deepEqual(role.capabilities, ['explorer.access']);
+    assert.equal((await adminRequest('roles/create', { body: { name: role.name } })).response.status, 409);
+    const reviewer = await createUser({ email: 'role-reviewer@example.test', roles: ['selfRegistered'], emailVerified: true });
+    assert.equal((await adminRequest('users/roles', { body: { userId: reviewer.id, roles: ['selfRegistered', role.name] } })).response.status, 200);
+    const profile = (await request('/api/profile', { method: 'GET', userId: reviewer.id })).data.profile;
+    assert.deepEqual(profile.roles, ['book-reviewer', 'selfRegistered']);
+    assert.ok(profile.capabilities.includes('explorer.access'));
+    const inUse = await adminRequest('roles/delete', { body: { roleId: role.id } });
+    assert.equal(inUse.response.status, 409);
+    assert.equal(inUse.data.error, 'role_in_use');
+    const updated = await adminRequest('roles/update', { body: {
+        roleId: role.id, name: 'admin', description: 'Identity claim only', capabilities: [],
+    } });
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.data.result.name, role.name, 'HTTP cannot rename a role through extra fields');
+    assert.deepEqual(updated.data.result.capabilities, []);
+    assert.equal(updated.data.result.userCount, 1);
+    assert.equal((await request('/api/profile', { method: 'GET', userId: reviewer.id })).data.profile.capabilities.includes('explorer.access'), false);
+    assert.equal((await adminRequest('users/list', { body: { search: reviewer.email } })).data.result.availableRoles.includes(role.name), true);
+    for (const builtin of builtins) {
+        for (const endpoint of ['roles/update', 'roles/delete']) {
+            const denied = await adminRequest(endpoint, { body: { roleId: builtin.id, capabilities: [] } });
+            assert.equal(denied.response.status, 403);
+            assert.equal(denied.data.error, 'builtin_role_protected');
+        }
+    }
+    const store = await getStore();
+    const events = await store.select('auditEvent', { target: role.id }, { pageSize: 100 });
+    assert.ok(events.objects.some((event) => event.actorId === usersManager.id && event.action === 'role.create'));
+    await setUserRoles(reviewer.id, ['selfRegistered']);
+    const removed = await adminRequest('roles/delete', { body: { roleId: role.id } });
+    assert.equal(removed.response.status, 200);
+    assert.deepEqual(removed.data.result, { deleted: true, roleId: role.id });
+    assert.equal((await adminRequest('roles/list')).data.result.roles.some((entry) => entry.id === role.id), false);
+    assert.equal((await adminRequest('users/list')).data.result.availableRoles.includes(role.name), false);
+    assert.equal((await adminRequest('roles/update', { body: { roleId: role.id, description: 'stale update' } })).response.status, 404);
+    assert.equal((await adminRequest('roles/delete', { body: { roleId: role.id } })).response.status, 404);
+    const tools = ['userpersisto_roles_list', 'userpersisto_role_create', 'userpersisto_role_update', 'userpersisto_role_delete'];
+    for (const name of tools) {
+        await assert.rejects(runTool(name, { actorId: admin.id }), { code: 'authentication_required' });
+        await assert.rejects(runTool(name, { actorId: admin.id }, { actorUserId: reviewer.id }), { code: 'admin_required' });
+    }
+    assert.ok((await runTool('userpersisto_roles_list', {}, actor)).roles.length >= 3);
+    await setUserRoles(usersManager.id, ['user']);
+    assert.equal((await adminRequest('roles/create', { userId: usersManager.id, body: { name: 'stale-manager' } })).response.status, 403);
+    await setUserRoles(usersManager.id, ['usersManager']);
+});
+
+test('role mutations enforce JSON origin, signed body integrity and replay protection', async () => {
+    for (const endpoint of ['roles/list', 'roles/create', 'roles/update', 'roles/delete']) {
+        assert.equal((await adminRequest(endpoint, { headers: { origin: 'https://other.example.test' } })).response.status, 403);
+        assert.equal((await adminRequest(endpoint, { headers: { 'content-type': 'text/plain' } })).response.status, 415);
+        assert.equal((await adminRequest(endpoint, { rawBody: 'null' })).response.status, 400);
+        const tampered = await adminRequest(endpoint, { body: { name: 'tampered' }, headers:
+            sign({ method: 'POST', path: `${PREFIX}/api/admin/${endpoint}`, rawBody: '{}', userId: admin.id }),
+        });
+        assert.equal(tampered.response.status, 401);
+    }
+    const headers = sign({ method: 'POST', path: `${PREFIX}/api/admin/roles/list`, rawBody: '{}', userId: admin.id });
+    assert.equal((await adminRequest('roles/list', { headers })).response.status, 200);
+    assert.equal((await adminRequest('roles/list', { headers })).response.status, 401);
 });

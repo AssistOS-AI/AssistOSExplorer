@@ -1,0 +1,29 @@
+.roles-toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+.roles-search { flex: 1; min-width: 180px; }
+.roles-layout { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); align-items: start; gap: 24px; }
+.roles-list { display: grid; gap: 12px; max-height: 60vh; overflow: auto; padding: 3px; }
+.role-card { padding: 18px; border: 1px solid #dce3ec; background: white; border-radius: 10px; }
+.role-card h2 { font-size: 16px; overflow-wrap: anywhere; }
+.role-card .card-heading { align-items: start; flex-wrap: wrap; }
+.role-card p { overflow-wrap: anywhere; }
+.role-card[aria-current="true"] { border-color: #264ec6; }
+.roles-pagination { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 18px 0; font-size: 13px; }
+.role-editor { min-width: 0; }
+#role-form { display: grid; gap: 14px; }
+#role-form > .card-description { margin: 0; }
+#role-name:read-only { background: #f6f8fb; }
+#role-save { justify-self: start; }
+.role-permission-picker { min-width: 0; }
+.role-permission-picker summary { padding: 11px 14px; border: 1px solid #ccd5e1; border-radius: 7px; cursor: pointer; }
+.role-permission-menu { margin-top: 8px; padding: 12px; border: 1px solid #dce3ec; border-radius: 7px; }
+.role-permissions { display: grid; gap: 8px; max-height: 300px; overflow: auto; margin: 12px 0 0; padding: 0; border: 0; }
+.role-permissions label { display: flex; gap: 10px; align-items: start; padding: 8px; border-radius: 5px; cursor: pointer; }
+.role-permissions label:hover { background: #f6f8fb; }
+.role-permissions input { margin-top: 3px; flex: none; }
+.role-permissions strong, .role-permissions small { display: block; overflow-wrap: anywhere; }
+.role-permissions strong { font-size: 13px; font-weight: 550; }
+.role-permissions small { margin-top: 4px; color: #657185; line-height: 1.4; }
+.role-delete-section { border-top: 1px solid #e1e6ef; margin-top: 24px; padding-top: 12px; }
+.role-delete-confirmation { margin-top: 12px; padding: 12px; border: 1px solid #dce3ec; border-radius: 7px; overflow-wrap: anywhere; }
+.role-delete-confirmation .roles-toolbar { margin-bottom: 0; }
+@media (max-width: 800px) { .roles-layout { grid-template-columns: 1fr; } }

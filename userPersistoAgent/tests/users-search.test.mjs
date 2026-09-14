@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
-import { listUsers, setUserRoles } from '../lib/users.mjs';
+import { listUsers, listRoles, setUserRoles } from '../lib/users.mjs';
 
 test('user search filters before pagination, counts globally, and preserves private fields', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-search-'));
@@ -60,6 +60,27 @@ test('user search filters before pagination, counts globally, and preserves priv
         for (const filters of [{ search: null }, { search: 'x'.repeat(201) }, { excludeOnlyRole: 'x'.repeat(129) }, { includeRoleCounts: 'true' }]) {
             await assert.rejects(listUsers(filters), error => error.code === 'invalid_user_filter');
         }
+    } finally {
+        await resetStoreForTests();
+        await rm(folder, { recursive: true, force: true });
+    }
+});
+
+test('role listing includes custom roles beyond the first storage page', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'userpersisto-role-catalog-'));
+    process.env.PERSISTENCE_FOLDER = folder;
+    process.env.USERPERSISTO_SETTINGS_KEY = 'test-role-catalog-settings';
+    try {
+        const store = await getStore();
+        assert.deepEqual(await listRoles(), []);
+        await ensureSeedData();
+        for (let index = 0; index < 600; index++) {
+            await store.createRole({ name: `custom-${index}`, description: 'Custom role', priority: index + 10 });
+        }
+        const roles = await listRoles();
+        assert.equal(roles.length, 603);
+        assert.equal(new Set(roles.map((role) => role.name)).size, 603);
+        assert.equal(roles.at(-1).name, 'custom-599');
     } finally {
         await resetStoreForTests();
         await rm(folder, { recursive: true, force: true });
