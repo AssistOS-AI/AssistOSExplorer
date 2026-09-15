@@ -27,7 +27,7 @@ test('removed commands cannot execute or appear in public command surfaces', asy
 test('native model IDs remain opaque and default clears only the selected backend', async () => {
     const commands = handler({ loadModels: async () => ({ backend: 'opencode', models: ['provider/model-v2', 'vendor/MixedCase'] }) });
     assert.deepEqual(await commands.executeSlashCommand('model', 'provider/model-v2'), {
-        handled: true, backend: 'opencode', modelChange: 'provider/model-v2',
+        handled: true, backend: 'opencode', modelChange: 'provider/model-v2', effortChange: null,
     });
     assert.deepEqual(await commands.executeSlashCommand('model', 'default'), {
         handled: true, backend: 'opencode', modelChange: null,

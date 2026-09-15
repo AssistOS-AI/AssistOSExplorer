@@ -1,4 +1,4 @@
-import { getCodingAgentModels, setCodingAgentModel } from './achillesSettings.mjs';
+import { setCodingAgentModel } from './achillesSettings.mjs';
 
 export function createWebchatRuntimeStateEnvelope(model, { backend = null } = {}) {
     return {
@@ -16,9 +16,10 @@ export function emitWebchatRuntimeState(model, { backend = null, write = (value)
     return envelope;
 }
 
-export async function selectWebchatRuntimeModel({ workingDir, backend, model, slashState, emitRuntimeState = emitWebchatRuntimeState }) {
-    await setCodingAgentModel(workingDir, backend, model);
-    slashState.pinnedModel = getCodingAgentModels(workingDir)[backend] || null;
+export async function selectWebchatRuntimeModel({ workingDir, backend, model, effort = null, persist = null, slashState, emitRuntimeState = emitWebchatRuntimeState }) {
+    if (persist) await persist({ backend, model, effort });
+    else await setCodingAgentModel(workingDir, backend, model);
+    slashState.pinnedModel = model || null;
     emitRuntimeState(slashState.pinnedModel, { backend });
     return slashState.pinnedModel;
 }

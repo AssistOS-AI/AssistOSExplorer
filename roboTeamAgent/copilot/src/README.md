@@ -47,7 +47,7 @@ A prompt argument runs once:
 node src/cli.mjs --dir /absolute/path/to/project "Explain this project's entry points."
 ```
 
-`/model` uses the selected backend's native model catalog and stores a backend-specific override. Full-access remains inside ALA's sandbox. Codex and OpenCode support forwarded native approval requests; Pi supports full-access only and requires version 0.85.1 or a verified compatible RPC release. The UI does not cache approvals.
+`/model` lists native models and their supported efforts. `/model <id> [effort|default]` stores the model and effort in the robot home `.ala/config.json`. `/model default` clears both overrides for that backend. Full-access remains inside ALA's sandbox. Codex and OpenCode support forwarded native approval requests; Pi supports full-access only and requires version 0.85.1 or a verified compatible RPC release. The UI does not cache approvals.
 
 ## Product skills
 

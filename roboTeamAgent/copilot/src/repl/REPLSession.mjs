@@ -12,7 +12,7 @@ import { showHistory, searchHistory } from '../ui/HelpPrinter.mjs';
 import { UIContext } from '../ui/UIContext.mjs';
 import { buildTaskCompletions, formatWorkspaceTaskDetail, formatWorkspaceTaskSummary } from '../lib/workspaceTasks.mjs';
 import { createTaskControlCommands } from '../lib/taskControlCommands.mjs';
-import { getCodingAgentModels, setCodingAgentModel, getPermissionMode, setPermissionMode } from '../lib/achillesSettings.mjs';
+import { getPermissionMode, setPermissionMode } from '../lib/achillesSettings.mjs';
 import { createWorkspaceSkillsSnapshot, formatWorkspaceSkills, setWorkspaceDirectoryEnabled, setWorkspaceSkillEnabled } from '../lib/workspaceSkillsState.mjs';
 
 /** A connection owns its selected conversation; ALA owns each executing turn. */
@@ -71,7 +71,7 @@ export class REPLSession {
             commandList: this.commandList,
             getUserSkills: () => this.getUserSkills(),
             getAllSkills: () => this.skillCatalog.getSkills(),
-            getModelName: () => getCodingAgentModels(this.workingDir)[this.currentConversation?.engine?.backend] || null,
+            getModelName: () => this.selectedModel || null,
         });
         this.nlProcessor = new NaturalLanguageProcessor({
             processPrompt: (input, opts) => this.processPrompt(input, opts),
@@ -122,6 +122,7 @@ export class REPLSession {
 
     async _activateConversation(session) {
         this.currentConversation = session;
+        this.selectedModel = (await this.engine.getModel?.({ sessionId: session.sessionId }))?.model || null;
         this.skillCatalog = this.skillCatalogService.forSession?.(session.sessionId) || this.skillCatalogService;
         if (this.skillCatalog.command) await this.reloadSkills();
         return session;
@@ -197,8 +198,10 @@ export class REPLSession {
                 else if (result.searchHistory) searchHistory(this.historyManager, result.searchHistory);
                 else if (result.showModelPicker) text = await this._handleModelPicker(signal);
                 else if (Object.hasOwn(result, 'modelChange')) {
-                    await setCodingAgentModel(this.workingDir, result.backend, result.modelChange);
-                    text = `Native model (${result.backend}): ${result.modelChange || 'default'}`;
+                    await this.engine.setModel({ sessionId: this.currentConversation.sessionId,
+                        backend: result.backend, model: result.modelChange, effort: result.effortChange });
+                    this.selectedModel = result.modelChange;
+                    text = `Native model (${result.backend}): ${result.modelChange || 'default'}; effort: ${result.effortChange || 'default'}`;
                 } else if (result.toggleMarkdown) {
                     this.markdownEnabled = !this.markdownEnabled;
                     text = `Markdown rendering ${this.markdownEnabled ? 'enabled' : 'disabled'}.`;
@@ -251,8 +254,20 @@ export class REPLSession {
             ...models.map((model) => ({ name: (typeof model === 'string' ? model : model.id || model.name || model.key), description: model.label || model.description || model.name || '' })),
         ], { signal, theme: UIContext.getTheme() });
         if (!selected) return '';
-        await setCodingAgentModel(this.workingDir, backend, selected.name === 'default' ? null : selected.name);
-        return `Native model (${backend}): ${selected.name}`;
+        const model = models.find((entry) => entry.id === selected.name);
+        let effort = null;
+        if (model?.efforts?.length) {
+            const choice = await showCommandSelector([
+                { name: 'default', description: 'Use native default effort' },
+                ...model.efforts.map((name) => ({ name, description: 'Reasoning effort' })),
+            ], { prompt: 'Effort> ', signal, theme: UIContext.getTheme() });
+            if (!choice) return '';
+            effort = choice.name === 'default' ? null : choice.name;
+        }
+        await this.engine.setModel({ sessionId: this.currentConversation.sessionId,
+            backend, model: selected.name === 'default' ? null : selected.name, effort });
+        this.selectedModel = selected.name === 'default' ? null : selected.name;
+        return `Native model (${backend}): ${selected.name}; effort: ${effort || 'default'}`;
     }
 
     async _taskModel(id, model, options) {

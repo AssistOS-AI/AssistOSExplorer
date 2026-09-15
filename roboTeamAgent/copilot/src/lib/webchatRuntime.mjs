@@ -62,18 +62,19 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
         if (context.sourceTabId) send({ __webchatSession: 1, version: 1, event: 'error', sessionId, error: text }, context);
         else write(`${text}\n`);
     };
-    const publishModel = (backend, context) => send(createWebchatRuntimeStateEnvelope(
-        backend ? runtime.settings.getCodingAgentModels(runtime.workingDir)[backend] || null : null,
-        { backend: backend || null },
-    ), context);
+    const publishModel = async (session, context) => {
+        const selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: session.sessionId })
+            : { backend: session.engine?.backend, model: runtime.settings.getCodingAgentModels?.(runtime.workingDir)?.[session.engine?.backend] };
+        send(createWebchatRuntimeStateEnvelope(selection.model, { backend: selection.backend || null }), context);
+    };
     const connectionFor = (context) => {
         const key = context.sourceTabId || 'legacy';
         if (!connections.has(key)) {
             const connection = { sessionId: null, markdownEnabled: runtime.renderMarkdown !== false };
-            connection.chain = runtime.sessionStore.ensureCurrentSession().then((session) => {
+            connection.chain = runtime.sessionStore.ensureCurrentSession().then(async (session) => {
                 connection.sessionId = session.sessionId;
                 send(createCurrentSessionEnvelope(session), context);
-                publishModel(session.engine?.backend, context);
+                await publishModel(session, context);
             });
             connections.set(key, connection);
         }
@@ -99,13 +100,15 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
             } else if (engineStarted && ['coding-agent-message', 'agentlib-tool', 'coding-agent-selected'].includes(event.type)) {
                 update(runtime.sessionStore.loadSession(sessionId), context);
             }
-            if (event.type === 'coding-agent-selected' && connection.sessionId === sessionId) publishModel(event.agent, context);
+            if (event.type === 'coding-agent-selected' && connection.sessionId === sessionId) {
+                send(createWebchatRuntimeStateEnvelope(event.model, { backend: event.agent }), context);
+            }
             if (event.type === 'diagnostic' && (runtime.debug || runtime.verbose)) console.error(event.message);
         };
         const emit = (kind, payload) => {
             if (kind === 'selected') {
                 send(createSelectedSessionEnvelope(payload), context);
-                publishModel(payload.engine?.backend, context);
+                track(publishModel(payload, context).catch((error) => fail(error, context, payload.sessionId)));
             } else if (kind === 'list') send(createSessionListEnvelope(payload), context);
             else if (kind === 'runtime') send(createWebchatRuntimeStateEnvelope(payload.model, { backend: payload.backend }), context);
             else if (kind === 'skills') send(createWebchatSkillsEnvelope(payload.skillState, {
@@ -193,9 +196,10 @@ export async function runWebchatInteractive(runtime) {
         afterAnswer: () => workspaceFileIndex.refresh({ afterCurrent: true }),
     });
     emitSessionUpdate(runtime.initialSession, {}, { event: 'current' });
-    const backend = runtime.initialSession.engine?.backend || null;
+    const selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: runtime.initialSession.sessionId }) : null;
+    const backend = selection?.backend || runtime.initialSession.engine?.backend || null;
     process.stdout.write(`${JSON.stringify(createWebchatRuntimeStateEnvelope(
-        backend ? runtime.settings.getCodingAgentModels(runtime.workingDir)[backend] || null : null, { backend },
+        selection ? selection.model : backend ? runtime.settings.getCodingAgentModels(runtime.workingDir)[backend] || null : null, { backend },
     ))}\n`);
     const decoder = new StringDecoder('utf8');
     let partial = '';

@@ -17,12 +17,22 @@ test('model completions use the explicit conversation and surface native discove
     const catalog = { getSkills: () => [] };
     const engine = { async listModels({ sessionId }) {
         calls.push(sessionId);
-        return { backend: 'pi', models: ['native-model'] };
+        return { backend: 'pi', models: [
+            { id: 'native-model', efforts: ['low', 'high'] },
+            { id: 'provider/other-model', efforts: ['medium'] },
+            'legacy-model',
+            { name: 'no-effort-model', efforts: [] },
+        ] };
     } };
     const result = await loadAutocompleteCatalog({ dir: workingDir, sessionId: first.sessionId,
         skillCatalog: catalog, engine });
     assert.deepEqual(calls, [first.sessionId]);
-    assert.deepEqual(result.commands.find((c) => c.name === '/model').argCompletions.map((m) => m.value), ['default', 'native-model']);
+    const modelCommand = result.commands.find((c) => c.name === '/model');
+    assert.deepEqual(modelCommand.argCompletions, []);
+    assert.deepEqual(modelCommand.subCommands.map((m) => m.name),
+        ['default', 'native-model', 'provider/other-model', 'legacy-model', 'no-effort-model']);
+    assert.deepEqual(modelCommand.subCommands.map((m) => m.argCompletions.map((arg) => arg.value)),
+        [[], ['default', 'low', 'high'], ['default', 'medium'], [], []]);
     const preview = await loadAutocompleteCatalog({ dir: workingDir, freshSession: true, skillCatalog: catalog, engine });
     assert.notEqual(calls[1], second.sessionId);
     assert.equal(store.listSessions().sessions.length, 2);

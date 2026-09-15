@@ -79,7 +79,7 @@ export async function toAutocompleteCatalog(options = {}) {
     const commands = buildSlashCommandCatalog().map((command) => ({
         name: command.name, usage: command.usage, description: command.description,
         argMatchMode: command.argMatchMode, argSuggestionLimit: command.argSuggestionLimit,
-        subCommands: command.subCommands.map((sub) => ({
+        subCommands: command.name === '/model' ? options.modelSubCommands || [] : command.subCommands.map((sub) => ({
             name: sub.name, usage: sub.usage, description: sub.description,
             argCompletions: command.name === '/session' && sub.name === 'resume' ? options.sessionCompletions || []
                 : command.name === '/task' ? options.taskCompletions?.[sub.name] || []
@@ -87,8 +87,7 @@ export async function toAutocompleteCatalog(options = {}) {
                 : command.name === '/skill' ? allSkills
                 : sub.needsSkillArg ? allSkills : [],
         })),
-        argCompletions: command.name === '/model' ? options.modelCompletions || []
-            : command.name === '/permissions' ? permissionCompletions
+        argCompletions: command.name === '/permissions' ? permissionCompletions
             : command.needsSkillArg ? (command.name === '/exec' ? skills : allSkills) : [],
     }));
     return { type: 'achilles-slash-command-catalog', version: 1, commands };
@@ -102,24 +101,29 @@ export async function loadAutocompleteCatalog(options = {}) {
     const preview = options.freshSession && !options.sessionId
         ? { sessionId: randomUUID(), cwd: workingDir, messages: [] } : null;
     const sessionStore = preview ? { loadSession: () => preview } : storedSessions;
-    const modelCompletions = [{ value: 'default', label: 'default', description: 'Use the native backend default' }];
+    const modelSubCommands = [{ name: 'default', description: 'Use the native backend default', argCompletions: [] }];
     let modelError;
     const engine = options.engine || createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, installation });
     try {
         const current = options.sessionId ? storedSessions.loadSession(options.sessionId)
             : preview || await storedSessions.ensureCurrentSession();
         const { models } = await engine.listModels({ sessionId: current.sessionId, signal: options.signal });
-        modelCompletions.push(...models.map((model) => ({
-            value: typeof model === 'string' ? model : model.id || model.name || model.key,
-            label: typeof model === 'string' ? model : model.label || model.name || model.id || model.key,
+        modelSubCommands.push(...models.map((model) => ({
+            name: typeof model === 'string' ? model : model.id || model.name || model.key,
             description: model.description || '',
+            argCompletions: model.efforts?.length ? [
+                { value: 'default', label: 'default', description: 'Use the native default effort' },
+                ...model.efforts.filter((effort) => effort !== 'default').map((effort) => ({
+                    value: effort, label: effort, description: `Effort: ${effort}`,
+                })),
+            ] : [],
         })));
     } catch (error) {
         modelError = error.message;
     } finally {
         if (!options.engine) await engine.close();
     }
-    const result = await toAutocompleteCatalog({ ...options, dir: workingDir, skillCatalog, modelCompletions,
+    const result = await toAutocompleteCatalog({ ...options, dir: workingDir, skillCatalog, modelSubCommands,
         sessionCompletions: buildSessionCompletions(workingDir),
         taskCompletions: Object.fromEntries(['view', 'continue', 'stop', 'model', 'login'].map((action) =>
             [action, buildTaskActionCompletions(workingDir, action)])),

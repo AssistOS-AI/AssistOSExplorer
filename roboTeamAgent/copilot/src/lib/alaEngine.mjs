@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { resolveAlaInstallation } from './alaInstallation.mjs';
 import * as workspaceSettings from './achillesSettings.mjs';
-import { acquireExecutionLease } from './workspaceStateLock.mjs';
+import { acquireExecutionLease, withWorkspaceMutation } from './workspaceStateLock.mjs';
 import { ensureSafeAchillesPrivateDirectory, resolveAchillesWorkspaceRoot } from './privateDataRoot.mjs';
 import { createPloinkyTaskContext } from './ploinkyTaskContext.mjs';
 import { createSanitizer } from './skillRuntimePolicy.mjs';
@@ -13,6 +13,20 @@ import { createSanitizer } from './skillRuntimePolicy.mjs';
 const BACKENDS = ['codex', 'opencode', 'pi'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
 const MAX_OUTPUT = 16 * 1024 * 1024;
+
+async function modelConfigPath(home) {
+    const directory = path.join(home, '.ala');
+    const file = path.join(directory, 'config.json');
+    for (const [entryPath, kind] of [[directory, 'isDirectory'], [file, 'isFile']]) {
+        try {
+            const entry = await fs.lstat(entryPath);
+            if (entry.isSymbolicLink() || !entry[kind]()) throw new Error('Unsafe ALA model configuration path.');
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+    }
+    return file;
+}
 
 async function executionHome(workingDir, env) {
     const configured = String(env.ACHILLES_ALA_HOME || '').trim();
@@ -91,21 +105,35 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const home = await executionHome(cwd, env);
         const resumeBackend = await validateNativeSession(session, home, cwd);
         const stored = settings.readAchillesSettings?.(cwd) || {};
-        const models = { ...(settings.getCodingAgentModels?.(cwd) || stored.codingAgents?.models || {}) };
+        let models = { ...(settings.getCodingAgentModels?.(cwd) || stored.codingAgents?.models || {}) };
+        let efforts = { ...(stored.codingAgents?.efforts || {}) };
         const priority = stored.codingAgents?.priority || BACKENDS;
         if (!Array.isArray(priority) || !priority.length || priority.some((name) => !BACKENDS.includes(name))
             || new Set(priority).size !== priority.length) throw new Error('Invalid workspace codingAgents.priority.');
         const permissionMode = execution.permissions || settings.getPermissionMode?.(cwd) || stored.permissionMode || 'full-access';
         if (!['ask-for-approval', 'full-access'].includes(permissionMode)) throw new Error('Invalid native permission mode.');
         const api = await installed;
+        const configPath = await modelConfigPath(home);
+        const nativeConfigExists = await fs.stat(configPath).then(() => true, (error) => {
+            if (error.code === 'ENOENT') return false;
+            throw error;
+        });
+        if (nativeConfigExists && api.loadConfig) {
+            const nativeConfig = await api.loadConfig(configPath);
+            models = { ...nativeConfig.codingAgents.models };
+            efforts = { ...nativeConfig.codingAgents.efforts };
+        }
         const envSnapshot = nativeEnvironment(env, home);
         const agents = await api.discoverCodingAgents({ env: envSnapshot, priority });
         const backend = resumeBackend || session.engine?.backend || execution.backend || agents.find((entry) => entry.available)?.name;
-        if (execution.model) models[backend] = execution.model;
+        if (execution.model) {
+            if (execution.model !== models[backend]) delete efforts[backend];
+            models[backend] = execution.model;
+        }
         if (!backend || !agents.some((entry) => entry.name === backend && entry.available)) {
             throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN or PI_BIN and authenticate it in the dedicated ALA home.`);
         }
-        return { cwd, home, session, resume: Boolean(resumeBackend), backend, models, priority,
+        return { cwd, home, session, resume: Boolean(resumeBackend), backend, models, efforts, priority,
             permissionMode, api, agents, env: envSnapshot, websearch: stored.codingAgents?.websearch === true };
     }
 
@@ -167,7 +195,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             await Promise.all([
                 fs.writeFile(taskFile, sanitize(nativePrompt), { mode: 0o600, flag: 'wx' }),
                 fs.writeFile(configFile, JSON.stringify({ version: 1, taskRepositories: [],
-                    codingAgents: { priority: config.priority, models: config.models, websearch: config.websearch } }), { mode: 0o600, flag: 'wx' }),
+                    codingAgents: { priority: config.priority, models: config.models, efforts: config.efforts, websearch: config.websearch } }), { mode: 0o600, flag: 'wx' }),
             ]);
             controller.signal.throwIfAborted();
             await sessionStore.bindEngine(sessionId, { home, cwd, backend });
@@ -347,6 +375,31 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
 
     return Object.freeze({
         executeTurn,
+        async getModel({ sessionId } = {}) {
+            const config = await configuration(sessionId, { ...process.env });
+            return { backend: config.backend, model: config.models[config.backend] || null,
+                effort: config.efforts[config.backend] || null };
+        },
+        async setModel({ sessionId, backend, model, effort = null } = {}) {
+            const config = await configuration(sessionId, { ...process.env });
+            if (backend !== config.backend) throw new Error('The conversation backend changed; reload /model.');
+            await withWorkspaceMutation(config.cwd, async () => {
+                const configPath = await modelConfigPath(config.home);
+                const exists = await fs.stat(configPath).then(() => true, (error) => {
+                    if (error.code === 'ENOENT') return false;
+                    throw error;
+                });
+                const saved = await config.api.loadConfig(configPath);
+                const models = { ...(exists ? saved.codingAgents.models : config.models) };
+                const efforts = { ...(exists ? saved.codingAgents.efforts : config.efforts) };
+                if (model === null) delete models[backend];
+                else models[backend] = model;
+                if (model && effort) efforts[backend] = effort;
+                else delete efforts[backend];
+                await config.api.saveConfig(configPath, { ...saved,
+                    codingAgents: { ...saved.codingAgents, models, efforts } });
+            });
+        },
         async listModels({ sessionId, signal } = {}) {
             if (closed) throw new Error('ALA engine is closed.');
             const controller = new AbortController();
@@ -362,7 +415,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 controller.signal.throwIfAborted();
                 service = config.api.createCodingAgentService({ agents: config.agents, workspace: config.cwd,
                     cwd: config.cwd, home: config.home, env: config.env, models: config.models });
-                return { backend: config.backend, models: await service.listModels(config.backend, { signal: controller.signal }) };
+                return { backend: config.backend, models: await service.listModels(config.backend, { signal: controller.signal, details: true }),
+                    model: config.models[config.backend] || null, effort: config.efforts[config.backend] || null };
             } finally {
                 signal?.removeEventListener('abort', abort);
                 try { await service?.close(); } finally { active.delete(operation); finish(); }

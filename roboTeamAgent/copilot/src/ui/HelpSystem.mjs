@@ -19,7 +19,7 @@ const HELP_TOPICS = {
     },
     models: {
         title: 'Native model selection',
-        content: '/model lists the selected coding backend\'s native models. /model <id> saves a backend-specific workspace selection; /model default clears only that backend override. Running turns keep their configuration snapshot. Authenticate the backend in the dedicated ALA home before executing prompts.',
+        content: '/model lists the selected coding backend\'s native models. /model <id> [effort|default] saves a backend-specific model and supported effort in the robot home .ala/config.json; /model default clears both overrides. Running turns keep their configuration snapshot. Authenticate the backend in the dedicated ALA home before executing prompts.',
     },
     tasks: {
         title: 'Persistent delegated tasks',

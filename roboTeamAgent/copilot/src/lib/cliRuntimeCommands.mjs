@@ -85,15 +85,16 @@ export async function executeRuntimeCommand({ runtime, connection, input, contex
     if (result.searchHistory) return { output: formatHistory(historyManager.search(result.searchHistory)) };
     if (result.modelChange !== undefined) {
         await selectWebchatRuntimeModel({
-            workingDir, backend: result.backend, model: result.modelChange, slashState: connection,
+            workingDir, backend: result.backend, model: result.modelChange, effort: result.effortChange, slashState: connection,
+            persist: (selection) => engine.setModel({ ...selection, sessionId: connection.sessionId }),
             emitRuntimeState: (model, { backend }) => emit?.('runtime', { model, backend }),
         });
-        return { output: `Model selected: ${connection.pinnedModel || 'default'} (${result.backend})` };
+        return { output: `Model selected: ${connection.pinnedModel || 'default'} (${result.backend})${result.effortChange ? ` · effort: ${result.effortChange}` : ''}` };
     }
     if (result.showModelPicker) {
-        const { backend, models } = await loadModels();
-        emit?.('runtime', { backend, model: runtime.settings.getCodingAgentModels(workingDir)[backend] || null });
-        return { output: `Native models (${backend}):\n${models.map((model) => typeof model === 'string' ? model : model.id || model.name || model.key).join('\n')}\nUse /model <model> or /model default.` };
+        const { backend, models, model, effort } = await loadModels();
+        emit?.('runtime', { backend, model });
+        return { output: `Native models (${backend}):\n${models.map((model) => typeof model === 'string' ? model : `${model.id || model.name || model.key}${model.efforts?.length ? ` [effort: ${model.efforts.join(', ')}]` : ''}`).join('\n')}\nCurrent: ${model || 'default'}; effort: ${effort || 'default'}.\nUse /model <model> [effort|default] or /model default.` };
     }
     if (result.toggleMarkdown) {
         connection.markdownEnabled = !connection.markdownEnabled;

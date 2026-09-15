@@ -52,7 +52,7 @@ export const COMMAND_DEFINITIONS = {
         needsSkillArg: true,
     },
     'model': {
-        usage: '/model <model-name>',
+        usage: '/model <model-name> [effort|default]',
         description: 'Select the native coding-backend model',
         args: 'optional',
         needsSkillArg: false,
@@ -920,7 +920,8 @@ export class SlashCommandHandler {
         if (!args) {
             return { handled: true, showModelPicker: true };
         }
-        const requested = args.trim();
+        const [requested, effort = null, ...extra] = args.trim().split(/\s+/u);
+        if (extra.length) return { handled: true, error: 'Usage: /model <model-name> [effort|default]' };
         let catalog;
         try {
             catalog = await this.loadModels(options);
@@ -929,12 +930,16 @@ export class SlashCommandHandler {
         }
         const { backend, models } = catalog;
         this.availableModels = ['default', ...models.map((model) => (typeof model === 'string' ? model : model.id || model.name || model.key))];
+        if (requested === 'default' && effort) return { handled: true, error: 'Use /model default without an effort.' };
         if (requested === 'default') return { handled: true, modelChange: null, backend };
         const exactModel = models.find((model) => ((typeof model === 'string' ? model : model.id || model.name || model.key)) === requested);
         if (!exactModel) {
             return { handled: true, error: `Unknown model "${requested}". Use /model to select a native model.` };
         }
-        return { handled: true, modelChange: typeof exactModel === 'string' ? exactModel : exactModel.id || exactModel.name || exactModel.key, backend };
+        if (effort && effort !== 'default' && !exactModel.efforts?.includes(effort)) {
+            return { handled: true, error: `Unsupported effort "${effort}" for ${requested}. Available: ${(exactModel.efforts || []).join(', ') || 'none'}.` };
+        }
+        return { handled: true, effortChange: effort === 'default' ? null : effort, modelChange: typeof exactModel === 'string' ? exactModel : exactModel.id || exactModel.name || exactModel.key, backend };
     }
 
     /**

@@ -40,7 +40,7 @@ async function harness(t, interactions = {}) {
         settings: { readAchillesSettings: () => ({}), getCodingAgentModels: () => models, getPermissionMode: () => 'ask-for-approval' },
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
     t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); });
-    return { workingDir, engine, store, sessionId: session.sessionId,
+    return { workingDir, engine, store, installation, sessionId: session.sessionId,
         setRobotCatalog: next => { robotCatalog = next; },
         setSkills: (next) => { records = next; }, setModels: (next) => { models = next; } };
 }
@@ -182,4 +182,26 @@ test('explicit skill selection is an ALA argument, without a RoboTeam prompt wra
     assert.equal(output.skill, 'bash');
     await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId,
         prompt: 'Inspect', skillName: 'missing' }), /missing or disabled/);
+});
+
+test('model and effort persist in the native ALA config and survive continuation and reset', async (t) => {
+    const { resolveAlaInstallation } = await import('../src/lib/alaInstallation.mjs');
+    const api = await resolveAlaInstallation();
+    const h = await harness(t);
+    h.installation.loadConfig = api.loadConfig;
+    h.installation.saveConfig = api.saveConfig;
+    await h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: 'native-new', effort: 'high' });
+    const first = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First' });
+    const file = path.join(first.session.engine.home, '.ala/config.json');
+    assert.equal((await api.loadConfig(file)).codingAgents.efforts.codex, 'high');
+    const output = JSON.parse(first.outputText);
+    assert.equal(output.config.codingAgents.models.codex, 'native-new');
+    assert.equal(output.config.codingAgents.efforts.codex, 'high');
+    const next = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Second' })).outputText);
+    assert.equal(next.resumed, true);
+    assert.equal(next.config.codingAgents.efforts.codex, 'high');
+    await h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: null });
+    const reset = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Third' })).outputText);
+    assert.equal(reset.config.codingAgents.models.codex, undefined);
+    assert.equal(reset.config.codingAgents.efforts.codex, undefined);
 });
