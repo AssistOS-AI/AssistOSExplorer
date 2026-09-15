@@ -302,7 +302,7 @@
     },
     {
       "name": "search_files",
-      "description": "Search recursively for files and directories matching a pattern.",
+      "description": "Search recursively for files and directories matching a pattern. Returns path strings by default; includeKind returns {path, kind} for files and folders and omits unsupported entry types.",
       "command": "tools/explorer_tool.sh",
       "cwd": "workspace",
       "env": {
@@ -314,6 +314,10 @@
         },
         "pattern": {
           "type": "string"
+        },
+        "includeKind": {
+          "type": "boolean",
+          "optional": true
         },
         "excludePatterns": {
           "type": "array",

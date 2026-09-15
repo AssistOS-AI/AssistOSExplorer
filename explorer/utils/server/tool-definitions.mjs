@@ -134,7 +134,7 @@ export function buildToolDefinitions(zodToJsonSchema, schemas) {
     },
     {
       name: 'search_files',
-      description: 'Recursive search for files and directories matching a pattern.',
+      description: 'Recursive search for files and directories matching a pattern. Returns path strings by default; includeKind returns {path, kind} entries for files and folders, omitting unsupported entry types.',
       inputSchema: zodToJsonSchema(SearchFilesArgsSchema)
     },
     {

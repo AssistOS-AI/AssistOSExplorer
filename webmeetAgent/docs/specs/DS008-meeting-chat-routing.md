@@ -19,6 +19,8 @@ Text such as `@open-interpreter list primes` is persisted as ordinary meeting te
 
 The WebMeet composer may offer file and folder references from Explorer through the host's `search_files` tool. This autocomplete contains workspace references only; it does not present an Agents group or provider suggestions. Known `@file:` references may receive distinct presentation after the message is stored, while other tag-like text remains unchanged.
 
+Autocomplete requests `includeKind: true` and reads each result's path and file/folder kind from that single search response. It must not issue a separate metadata request for every suggestion: that burst can queue the browser mutation proof needed to send an ordinary message. Untyped or malformed entries are omitted without additional network calls.
+
 Ploinky-managed room agents may read authorized room context and call WebMeet tools through their documented lifecycle. Their participation does not change the routing meaning of ordinary participant chat.
 
 ## Conclusion

@@ -860,6 +860,7 @@ export function createToolHandlers({
     const validPath = await validatePath(data.path);
     const cacheKey = buildCacheKey('search_files', {
       path: validPath,
+      includeKind: data.includeKind,
       pattern: data.pattern,
       excludePatterns: data.excludePatterns,
       maxResults: data.maxResults,
