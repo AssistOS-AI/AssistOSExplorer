@@ -26,6 +26,7 @@ test.describe('GitHub token DPU ownership @external', () => {
       navigations.push({
         pathname: location.pathname,
         hash: location.hash,
+        ...(location.pathname === '/auth/login' ? { returnTo: location.searchParams.get('returnTo') } : {}),
       });
     });
 
@@ -34,7 +35,8 @@ test.describe('GitHub token DPU ownership @external', () => {
 
     expect(navigations).toContainEqual({
       pathname: '/auth/login',
-      hash: '#file-exp/Confidential/My%20Space',
+      hash: '',
+      returnTo: '/explorer/index.html#file-exp/Confidential/My%20Space',
     });
     expect(navigations.at(-1)).toEqual({
       pathname: '/explorer/index.html',
@@ -89,47 +91,60 @@ test.describe('GitHub token DPU ownership @external', () => {
     expect(permissionsAfter.permissions?.secrets?.[key]).toBeUndefined();
   });
 
-  test('a stale agent-owned record from the pre-delegation bug is self-repaired on store', async ({ page }) => {
+  test('a foreign agent-owned token record is denied without changing ownership or encrypted material', async ({ page }) => {
     await openExplorer(page);
     const principal = await readAuthenticatedPrincipal(page, smokeConfig.primaryUser);
     expect(principal.roles).toContain('admin');
     const { key, ownerId } = expectedGitTokenOwnership(principal);
+    const stateBefore = dpuData.readJson('state.json');
     const permissionsBefore = dpuData.readJson('permissions.manifest.json');
     const gitAgentPrincipal = findGitAgentPrincipal(permissionsBefore);
     expect(gitAgentPrincipal).toBeTruthy();
-
-    const state = dpuData.readJson('state.json');
+    expect(gitAgentPrincipal).not.toBe(ownerId);
+    const previousSecret = structuredClone(stateBefore.secrets?.[key]);
+    const previousPermission = structuredClone(permissionsBefore.permissions?.secrets?.[key]);
+    const encryptedBefore = dpuData.exists('secrets.json') ? dpuData.readBuffer('secrets.json') : null;
     const nowIso = new Date().toISOString();
-    state.secrets = state.secrets || {};
-    state.secrets[key] = {
-      id: 'smoke-stale-record',
-      key,
-      displayName: key,
-      ownerId: gitAgentPrincipal,
-      acl: {},
-      createdAt: nowIso,
-      updatedAt: nowIso,
+    const foreignSecret = {
+      id: `smoke-foreign-record-${smokeConfig.runId}`, key, displayName: key,
+      ownerId: gitAgentPrincipal, acl: {}, createdAt: nowIso, updatedAt: nowIso,
     };
-    dpuData.writeJson('state.json', state);
-    permissionsBefore.permissions = permissionsBefore.permissions || { secrets: {}, objects: {} };
-    permissionsBefore.permissions.secrets[key] = { acl: { [gitAgentPrincipal]: 'read' }, updatedAt: nowIso };
-    dpuData.writeJson('permissions.manifest.json', permissionsBefore);
+    const foreignPermission = { acl: { [gitAgentPrincipal]: 'read' }, updatedAt: nowIso };
 
-    const token = `ghp_upgrade_${smokeConfig.runId.replace(/[^A-Za-z0-9]/g, '')}`;
-    const result = await callAgentToolViaRouter(page, {
-      agent: 'gitAgent',
-      tool: 'git_auth_store_token',
-      args: { token },
-    });
-    expect(result?.ok).toBe(true);
+    try {
+      stateBefore.secrets = stateBefore.secrets || {};
+      stateBefore.secrets[key] = foreignSecret;
+      dpuData.writeJson('state.json', stateBefore);
+      permissionsBefore.permissions = permissionsBefore.permissions || {};
+      permissionsBefore.permissions.secrets = permissionsBefore.permissions.secrets || {};
+      permissionsBefore.permissions.secrets[key] = foreignPermission;
+      dpuData.writeJson('permissions.manifest.json', permissionsBefore);
 
-    const stateAfter = dpuData.readJson('state.json');
-    expect(stateAfter.secrets[key].ownerId).not.toBe(gitAgentPrincipal);
-    expect(stateAfter.secrets[key].ownerId, 'repair restores the independently verified Router owner').toBe(ownerId);
-    expect(stateAfter.secrets[key].ownerId).toMatch(/^(user:|[^:\s@]+@)/);
-    const permissionsAfter = dpuData.readJson('permissions.manifest.json');
-    expect(permissionsAfter.permissions?.secrets?.[key]?.acl?.[gitAgentPrincipal]).toBe('read');
-
-    await callAgentToolViaRouter(page, { agent: 'gitAgent', tool: 'git_auth_disconnect', args: {} });
+      const token = `ghp_denied_${smokeConfig.runId.replace(/[^A-Za-z0-9]/g, '')}`;
+      const result = await callAgentToolViaRouter(page, {
+        agent: 'gitAgent', tool: 'git_auth_store_token', args: { token },
+      });
+      expect(result).toEqual({ ok: false, error: `Access denied: missing write on secret ${key}` });
+      expect(dpuData.readJson('state.json').secrets?.[key]).toEqual(foreignSecret);
+      expect(dpuData.readJson('permissions.manifest.json').permissions?.secrets?.[key]).toEqual(foreignPermission);
+      expect(dpuData.exists('secrets.json')).toBe(encryptedBefore !== null);
+      if (encryptedBefore !== null) {
+        expect(dpuData.readBuffer('secrets.json').equals(encryptedBefore), 'denied store preserves the exact encrypted secret map').toBe(true);
+      }
+    } finally {
+      // Restore only this fixture's key using the latest files, preserving
+      // unrelated users, objects, secrets and permission changes from the run.
+      const state = dpuData.readJson('state.json');
+      state.secrets = state.secrets || {};
+      if (previousSecret === undefined) delete state.secrets[key];
+      else state.secrets[key] = previousSecret;
+      dpuData.writeJson('state.json', state);
+      const permissions = dpuData.readJson('permissions.manifest.json');
+      permissions.permissions = permissions.permissions || {};
+      permissions.permissions.secrets = permissions.permissions.secrets || {};
+      if (previousPermission === undefined) delete permissions.permissions.secrets[key];
+      else permissions.permissions.secrets[key] = previousPermission;
+      dpuData.writeJson('permissions.manifest.json', permissions);
+    }
   });
 });

@@ -27,6 +27,7 @@ import {
   collectWebttyRecoveryDirectoryState,
   crashExactRoutingServer,
   requireAgentEvidence,
+  resolveWebttyBoxEndpoint,
 } from '../lib/webtty-runtime-evidence.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -140,6 +141,10 @@ function requireLocalWorkspaceFixture() {
 }
 
 function requirePinnedRuntimeBinding() {
+  const boxEndpoint = resolveWebttyBoxEndpoint({
+    baseURL: smokeConfig.baseURL,
+    boxBaseURL: process.env.SMOKE_BOX_BASE_URL || smokeConfig.baseURL,
+  });
   const expectedContainerName = String(process.env.SMOKE_PLOINKY_BOX_CONTAINER || '').trim();
   const expectedImageId = String(process.env.SMOKE_EXPECT_BOX_IMAGE_ID || '').trim();
   const expectedImageRef = String(process.env.SMOKE_EXPECT_BOX_IMAGE_REF || '').trim();
@@ -152,6 +157,7 @@ function requirePinnedRuntimeBinding() {
   const ploinkyExecutable = fs.realpathSync(resolvePloinkyExecutable());
   const expectedPloinkySource = fs.realpathSync(path.resolve(path.dirname(ploinkyExecutable), '..'));
   return Object.freeze({
+    boxBaseURL: boxEndpoint.baseURL,
     expectedContainerName,
     expectedImageId,
     expectedImageRef,
@@ -605,8 +611,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
 
   test('local administrator controls the mounted workspace while an ordinary user is denied', async ({ page, browser }, testInfo) => {
     test.setTimeout(Math.max(smokeConfig.timeouts.test, 900_000));
-    const fixture = requireLocalWorkspaceFixture();
     const runtimeBinding = requirePinnedRuntimeBinding();
+    const fixture = requireLocalWorkspaceFixture();
     const terminals = [];
     let userContext = null;
     let foreignAdminContext = null;

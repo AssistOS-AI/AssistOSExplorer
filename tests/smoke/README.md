@@ -654,11 +654,10 @@ SMOKE_GITHUB=1 \
 npm test -- --grep "GitHub token DPU ownership"
 ```
 
-The same lane also fabricates a pre-delegation, agent-owned token record and
-asserts that a fresh store operation deletes the stale record through the
-agent-owned compatibility path, then rewrites it as a user-owned DPU secret with
-only the configured `gitAgent` read grant. Existing deployments should seed the
-matching DPU `agentPolicies` grant before relying on this upgrade path.
+The same lane also fabricates a foreign agent-owned token record and requires
+an exact missing-write denial. The owner, per-secret ACL and encrypted secret
+map must remain unchanged. Fixture cleanup restores only the selected key's
+prior state and permission records, preserving unrelated data.
 
 ## Useful Commands
 
