@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+
 const BOX_LABELS = Object.freeze({
   role: 'io.assistos.ploinky-box.role',
   pathHash: 'io.assistos.ploinky-box.path-hash',
@@ -72,8 +75,8 @@ function exactPathHash(value, name) {
 
 function exactAgentLibMode(value, name) {
   const text = exactString(value, name);
-  if (!['local', 'managed'].includes(text)) {
-    throw new Error(`${name} must be local or managed.`);
+  if (!['local', 'managed', 'image'].includes(text)) {
+    throw new Error(`${name} must be local, managed, or image.`);
   }
   return text;
 }
@@ -96,6 +99,7 @@ function exactAgentLibCommit(value, name) {
 
 function exactBoxLabels(labels, {
   expectedImageRef,
+  expectedImageId,
   selectedRouterHostPort,
   selectedMediaHostPort,
 } = {}) {
@@ -160,6 +164,23 @@ function exactBoxLabels(labels, {
     source[BOX_LABELS.agentLibCommit],
     'outer container Box AgentLib commit label',
   );
+  if (agentLibMode === 'image') {
+    if (source[BOX_LABELS.agentLibMode] !== 'image'
+      || source[BOX_LABELS.agentLibSourceIdHash] !== agentLibSourceIdHash
+      || source[BOX_LABELS.agentLibFingerprint] !== agentLibFingerprint) {
+      throw new Error('Image AgentLib labels require exact image mode and lowercase SHA-256 fingerprints.');
+    }
+    if (source[BOX_LABELS.agentLibSourceRelativePath] !== 'image' || !agentLibCommit) {
+      throw new Error('Image AgentLib evidence requires source-path image and a nonempty 40-hex commit.');
+    }
+    const imageId = exactImageId(expectedImageId, 'image AgentLib expected image ID');
+    const expectedSourceId = createHash('sha256')
+      .update(`image:${imageId}:${agentLibFingerprint}`)
+      .digest('hex');
+    if (agentLibSourceIdHash !== expectedSourceId) {
+      throw new Error('Image AgentLib source identity must bind the exact image ID and content fingerprint.');
+    }
+  }
   return Object.freeze({
     role: 'box',
     pathHash,
@@ -175,6 +196,22 @@ function exactBoxLabels(labels, {
     agentLibSourceRelativePath,
     agentLibCommit,
   });
+}
+
+function requireUnshadowedImageAgentLib(mounts) {
+    if (!Array.isArray(mounts)) throw new Error('Image AgentLib evidence requires the inspected container mount inventory.');
+    const stablePath = '/opt/ploinky-agentlib';
+    for (const mount of mounts) {
+        const destination = mount?.Destination;
+        if (typeof destination !== 'string' || !destination.startsWith('/') || destination.includes('\\') || destination.includes('\0')) {
+            throw new Error('Image AgentLib mount inventory contains an invalid destination.');
+        }
+        const normalized = path.posix.normalize(destination).replace(/\/+$/, '') || '/';
+        if (normalized === '/' || normalized === stablePath || normalized.startsWith(`${stablePath}/`)
+            || stablePath.startsWith(`${normalized}/`)) {
+            throw new Error('Image AgentLib source must not be shadowed by a container mount.');
+        }
+    }
 }
 
 function exactBoxSecurityOptions(options) {
@@ -317,9 +354,11 @@ export function buildBoxEvidence({
   const securityOptions = exactBoxSecurityOptions(container?.HostConfig?.SecurityOpt);
   const semanticLabels = exactBoxLabels(container?.Config?.Labels || {}, {
     expectedImageRef,
+    expectedImageId: requiredImageId,
     selectedRouterHostPort,
     selectedMediaHostPort,
   });
+  if (semanticLabels.agentLibMode === 'image') requireUnshadowedImageAgentLib(container.Mounts);
   return validateBoxEvidence({
     containerName,
     containerId,
@@ -374,7 +413,7 @@ export function validateBoxEvidence(input, {
       label,
       evidence.semanticLabels?.[name],
     ])),
-    { expectedImageRef, selectedRouterHostPort, selectedMediaHostPort },
+    { expectedImageRef, expectedImageId: requiredImageId, selectedRouterHostPort, selectedMediaHostPort },
   );
   return Object.freeze({
     containerName: evidence.containerName,
