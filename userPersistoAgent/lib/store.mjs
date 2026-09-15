@@ -55,9 +55,9 @@ async function initialise() {
     if (!folder) {
         throw new Error('PERSISTENCE_FOLDER is required; UserPersisto refuses to start without durable Persisto storage.');
     }
-    mkdirSync(folder, { recursive: true });
     ensurePersistoGlobals();
-    const { initialisePersisto } = require('../vendor/Persisto/src/persistence/Persisto.cjs');
+    const { initialisePersisto } = require('../external/Persisto/src/persistence/Persisto.cjs');
+    mkdirSync(folder, { recursive: true });
     const durable = await createDurableStorage(folder);
     activeDurable = durable;
     try {

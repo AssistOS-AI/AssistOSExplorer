@@ -1,5 +1,13 @@
 # Deployment helper dependencies
 
+## UserPersisto persistence runtime
+
+UserPersisto includes the eight required persistence/audit-constant source files from OpenDSU/Persisto commit `a711a67f6bdfdec15af91f9f79aa8a0d69397149` under `userPersistoAgent/external/Persisto`. The files are unchanged; `upstream.json` records exact SHA-256 digests, and the MIT license (Copyright 2025 OpenDSU) is retained in `LICENSE`. This is the same runtime revision previously fetched by the agent installation hook, not a new persistence engine.
+
+The bundled runtime is a required, portable source dependency. It permits read-only `/code` mounts and removes startup Git/network access. Native Node filesystem code cannot replace Persisto's model/index engine without a separate persistence migration. An npm Git dependency would run upstream's unrelated, unpinned `achillesUtils` postinstall clone; including only the exact already-used runtime avoids that extra dependency and lifecycle side effect. UserPersisto provides its own durable adapter/logger, so the omitted audit server/client and `achillesUtils` integration are not required. The included runtime uses Node built-ins and has no additional package dependencies.
+
+The upstream source and update location is [OpenDSU/Persisto](https://github.com/OpenDSU/Persisto/tree/a711a67f6bdfdec15af91f9f79aa8a0d69397149). To update, review an exact revision, copy the required source files unchanged, retain its license and update the digest inventory, then run the UserPersisto tests and initialization with `/code` mounted read-only. No global installation, npm lifecycle script or startup download is used. A missing bundle fails module loading before store creation; startup cannot open HTTP/MCP until persistence initializes. Removing this dependency requires replacing the model/index engine and validating durable data compatibility.
+
 The UserPersisto role dropdown uses native browser details, checkbox and search controls with the existing JavaScript module and stylesheet. It adds no package, browser library, build step or global tool.
 
 The Roles administration page and domain reuse the same native browser controls, Node.js runtime, Persisto store, signed dashboard transport and existing MCP dispatcher. Role CRUD, capability selection and their tests add no dependency or installation step.

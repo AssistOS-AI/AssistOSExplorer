@@ -271,7 +271,7 @@ test('a snapshot written before Google types existed initializes new indexes wit
     folder = await mkdtemp(join(tmpdir(), 'userpersisto-google-legacy-schema-'));
     process.env.PERSISTENCE_FOLDER = folder;
     const legacy = await createDurableStorage(folder);
-    const { initialisePersisto } = createRequire(import.meta.url)('../vendor/Persisto/src/persistence/Persisto.cjs');
+    const { initialisePersisto } = createRequire(import.meta.url)('../external/Persisto/src/persistence/Persisto.cjs');
     globalThis.$$ ||= {};
     globalThis.$$.throwError ||= async (error) => { throw error; };
     const legacyStore = await initialisePersisto(legacy.storage, { smartLog: async () => {} });

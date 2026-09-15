@@ -71,8 +71,11 @@ test('GIS rejects missing and malformed identity, audience, issuer, timing, nonc
     }
 });
 
-test('GIS account confirmation still requires signed recent auth_time', async () => {
+test('GIS account confirmation still requires signed recent auth_time', async (t) => {
     const now = Math.floor(Date.now() / 1000);
+    // Keep the +31-second rejection outside the +30-second tolerance even if
+    // signature verification crosses a wall-clock second boundary.
+    t.mock.method(Date, 'now', () => now * 1000);
     const reauth = { ...attempt, flow: 'reauth' };
     for (const authTime of [undefined, now - 301, now + 31, String(now), now - 0.5]) {
         await assert.rejects(protocol.verifyCredential(config, credential({ auth_time: authTime }), reauth), {

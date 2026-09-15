@@ -64,7 +64,6 @@
   ],
   "profiles": {
     "default": {
-      "install": "sh /code/scripts/installPersisto.sh",
       "env": {
         "PERSISTENCE_FOLDER": {
           "required": false,

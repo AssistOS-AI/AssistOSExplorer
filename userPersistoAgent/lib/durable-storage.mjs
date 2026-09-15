@@ -206,7 +206,7 @@ export async function createDurableStorage(folder) {
             }
         }
 
-        const strategy = require('../vendor/Persisto/src/persistence/strategies/SimpleFSStorageStrategy.cjs').getSimpleFSStorageStrategy();
+        const strategy = require('../external/Persisto/src/persistence/strategies/SimpleFSStorageStrategy.cjs').getSimpleFSStorageStrategy();
         let changed = !hasSnapshot;
         strategy.loadObjectFromDisk = async (id, allowMissing = false) => {
             check();
