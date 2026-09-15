@@ -109,13 +109,12 @@ export async function probeAgentRuntimeMcp(agentRef, sdk) {
 async function readAgentRouteGeneration(agentRef, { fetchImpl, origin }) {
     const normalizedAgentRef = normalizeAgentRef(agentRef);
     const agentName = normalizedAgentRef.split('/')[1];
-    const proofUrl = new URL('/auth/token', origin);
-    proofUrl.searchParams.set('mutationRoute', agentName);
+    const proofUrl = new URL(`/${agentName}/`, origin);
     const response = await fetchImpl(proofUrl.toString(), {
         method: 'GET',
         credentials: 'include',
         cache: 'no-store',
-        headers: { accept: 'application/json' }
+        headers: { accept: 'application/json', 'X-Ploinky-Agent-Startup-Probe': '1' }
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -124,17 +123,18 @@ async function readAgentRouteGeneration(agentRef, { fetchImpl, origin }) {
         if (![400, 401, 403, 422].includes(response.status)) error.code = 'agent_not_ready';
         throw error;
     }
-    const proof = payload?.browserMutation;
     if (
-        !proof?.generation
-        || proof.routeKey !== agentName
-        || proof.origin !== origin
+        response.status !== 200
+        || response.redirected
+        || payload?.state !== 'ready'
+        || typeof payload.generation !== 'string'
+        || !payload.generation
     ) {
         const error = new Error('The agent route generation is not ready.');
         error.code = 'agent_not_ready';
         throw error;
     }
-    return String(proof.generation);
+    return payload.generation;
 }
 
 export async function probeAgentRuntimeRouteStability(agentRef, {

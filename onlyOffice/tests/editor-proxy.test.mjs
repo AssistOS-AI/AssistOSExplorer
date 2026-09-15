@@ -163,6 +163,8 @@ test('editor transport exposes only the pinned asset and cache allowlist', async
     '/sdkjs/main.js',
     '/sdkjs-plugins/plugin.js',
     '/fonts/font.woff2',
+    '/dictionaries/en_US/en_US.dic',
+    '/9.3.1-8d9a2cf/dictionaries/en_US/en_US.aff',
     '/themes/theme.css',
     '/cache/files/report.docx',
   ];
@@ -187,6 +189,10 @@ test('editor transport rejects control, malformed host, method, and bare cache p
     { method: 'GET', url: '/healthcheck', headers: routerHeaders() },
     { method: 'GET', url: '/cache/files/', headers: routerHeaders() },
     { method: 'POST', url: '/web-apps/apps/api/documents/api.js', headers: routerHeaders() },
+    { method: 'POST', url: '/dictionaries/en_US/en_US.dic', headers: routerHeaders() },
+    { method: 'GET', url: '/dictionaries/', headers: routerHeaders() },
+    { method: 'GET', url: '/dictionaries/en_US/config.json', headers: routerHeaders() },
+    { method: 'GET', url: '/dictionaries/en_US/%2e%2e/private.dic', headers: routerHeaders() },
   ];
   for (const req of requests) {
     const res = createResponse();

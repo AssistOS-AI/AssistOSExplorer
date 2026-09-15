@@ -1,0 +1,14 @@
+{
+  "pluginCategory": "application",
+  "id": "userpersisto-settings",
+  "component": "userpersisto-settings",
+  "location": [],
+  "label": "My Account",
+  "tooltip": "Manage your profile and sign-in security.",
+  "presenter": "UserpersistoSettings",
+  "type": "global",
+  "autoPin": false,
+  "dependencies": [],
+  "settings": "userpersisto-settings",
+  "settingsUrl": "/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/"
+}

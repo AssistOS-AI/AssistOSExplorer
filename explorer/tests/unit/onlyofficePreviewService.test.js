@@ -127,6 +127,105 @@ test('an explicit no-version DPU reopen obtains a fresh session after the curren
     }
 });
 
+test('a matching file version cannot reuse a failed editor session within its former reuse window', async () => {
+    const originalFetch = globalThis.fetch;
+    const firstSession = createSession('session-1');
+    const secondSession = createSession('session-2');
+    let slotValue = {
+        path: '/dpu/report.docx',
+        session: firstSession,
+        versionHint: 'version-1|4',
+        fetchedAt: Date.now()
+    };
+    let fetchCalls = 0;
+    let invalidations = 0;
+    let refreshes = 0;
+    const previewStates = [];
+    const host = {
+        isConnected: true,
+        __onlyOfficeRuntime: {
+            editor: {},
+            containerId: 'onlyoffice-editor-1',
+            scriptUrl: 'http://office.test/web-apps/apps/api/documents/api.js',
+            configKey: buildConfigKey(firstSession.config),
+            renderGeneration: 1,
+            inactiveRenderGeneration: 1
+        },
+        querySelector(selector) {
+            return selector === 'iframe' ? { tagName: 'IFRAME' } : null;
+        }
+    };
+    const fileExp = {
+        normalizePath(path) {
+            return path;
+        },
+        caches: {
+            officeSession: {
+                get() {
+                    return slotValue;
+                },
+                set(value) {
+                    slotValue = value;
+                },
+                clear() {
+                    slotValue = null;
+                },
+                invalidateForPath() {}
+            }
+        },
+        previewDom: {
+            componentMount: host
+        },
+        getEntryByPath() {
+            return {
+                path: '/dpu/report.docx', modified: 'version-1', size: 4
+            };
+        },
+        setPreviewState(state) {
+            previewStates.push(state);
+        },
+        invalidate() {
+            invalidations += 1;
+        },
+        refreshPreviewUi() {
+            refreshes += 1;
+        }
+    };
+
+    try {
+        globalThis.fetch = async () => {
+            fetchCalls += 1;
+            return new Response(JSON.stringify(secondSession), {
+                status: 200,
+                headers: {
+                    'content-type': 'application/json'
+                }
+            });
+        };
+
+        assert.equal(fetchCalls, 0);
+        assert.equal(invalidations, 0);
+        assert.equal(refreshes, 0);
+
+        const loaded = await tryLoadOnlyOfficePreview(fileExp, '/dpu/report.docx');
+
+        assert.equal(loaded, true);
+        assert.equal(fetchCalls, 1);
+        assert.deepEqual(slotValue.session, secondSession);
+        assert.equal(slotValue.versionHint, 'version-1|4');
+        assert.equal(previewStates.length, 1);
+        assert.deepEqual(previewStates[0].onlyOfficeConfig, secondSession.config);
+        assert.equal(invalidations, 1);
+        assert.equal(refreshes, 0);
+    } finally {
+        if (originalFetch === undefined) {
+            delete globalThis.fetch;
+        } else {
+            globalThis.fetch = originalFetch;
+        }
+    }
+});
+
 test('OnlyOffice startup failures switch the preview to the shared runtime loader', async () => {
     const originalFetch = globalThis.fetch;
     const previewStates = [];

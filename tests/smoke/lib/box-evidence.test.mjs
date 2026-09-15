@@ -16,6 +16,8 @@ const STARTED_AT = '2026-07-16T10:00:00.000Z';
 const HOST_KEY_A = `SHA256:${'A'.repeat(43)}`;
 const HOST_KEY_B = `SHA256:${'B'.repeat(43)}`;
 const AGENTLIB_COMMIT = '1'.repeat(40);
+// Cross-checked against Ploinky imageSourceId + sourceIdHash for IMAGE_ID and 2*64.
+const IMAGE_AGENTLIB_SOURCE_ID = 'f1b3a1c480fffb60894cb1f24c0b137725c9180a2ef1148467c18d79a9985a85';
 
 function containerInspect(bindings = {
   '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '18080' }],
@@ -65,6 +67,86 @@ function imageInspect() {
     },
   }];
 }
+
+function imageAgentLibInspect() {
+    const inspected = containerInspect();
+    inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-mode'] = 'image';
+    inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-source-path'] = 'image';
+    inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-source-id'] = IMAGE_AGENTLIB_SOURCE_ID;
+    inspected[0].Mounts = [
+        { Type: 'bind', Source: '/verified/ploinky', Destination: '/opt/ploinky', RW: false },
+        { Type: 'bind', Source: '/verified/workspace', Destination: '/workspace', RW: true },
+    ];
+    return inspected;
+}
+
+test('image AgentLib evidence binds immutable image identity, content fingerprint, revision, and fixed source sentinel', () => {
+    const evidence = buildBoxEvidence({ containerInspect: imageAgentLibInspect(), imageInspect: imageInspect(), ...expected() });
+    assert.equal(evidence.semanticLabels.agentLibMode, 'image');
+    assert.equal(evidence.semanticLabels.agentLibSourceRelativePath, 'image');
+    assert.equal(evidence.semanticLabels.agentLibCommit, AGENTLIB_COMMIT);
+    assert.equal(evidence.semanticLabels.agentLibSourceIdHash, IMAGE_AGENTLIB_SOURCE_ID);
+    assert.equal(evidence.imageId, IMAGE_ID);
+    assert.deepEqual(validateBoxEvidence(JSON.parse(JSON.stringify(evidence)), expected()), evidence);
+    for (const [field, value] of [
+        ['agentLibSourceIdHash', 'b'.repeat(64)],
+        ['agentLibFingerprint', '3'.repeat(64)],
+        ['agentLibSourceRelativePath', 'achillesAgentLib'],
+        ['agentLibCommit', ''],
+    ]) {
+        const changed = structuredClone(evidence);
+        changed.semanticLabels[field] = value;
+        assert.throws(() => validateBoxEvidence(changed, expected()), /Image AgentLib/);
+    }
+});
+
+test('image AgentLib rejects substituted source identity, fingerprint, missing commit, and nonexact labels', () => {
+    for (const [label, value] of [
+        ['agentlib-source-id', '1'.repeat(64)], ['agentlib-fingerprint', '3'.repeat(64)],
+        ['agentlib-source-id', IMAGE_AGENTLIB_SOURCE_ID.toUpperCase()],
+        ['agentlib-fingerprint', ' 2'.repeat(64)], ['agentlib-mode', 'image '],
+        ['agentlib-source-path', ' image '], ['agentlib-source-path', 'achillesAgentLib'],
+        ['agentlib-commit', ''], ['agentlib-commit', null], ['agentlib-commit', 'short'],
+    ]) {
+        const inspected = imageAgentLibInspect();
+        inspected[0].Config.Labels[`io.assistos.ploinky-box.${label}`] = value;
+        assert.throws(() => buildBoxEvidence({ containerInspect: inspected, imageInspect: imageInspect(), ...expected() }), /AgentLib/);
+    }
+    const copied = imageAgentLibInspect();
+    copied[0].Image = 'b'.repeat(64);
+    const otherImage = imageInspect();
+    otherImage[0].Id = 'b'.repeat(64);
+    assert.throws(() => buildBoxEvidence({
+        containerInspect: copied, imageInspect: otherImage, ...expected(), expectedImageId: `sha256:${'b'.repeat(64)}`,
+    }), /source identity must bind the exact image ID/);
+    assert.throws(() => buildBoxEvidence({
+        containerInspect: imageAgentLibInspect(), imageInspect: imageInspect(), ...expected(), expectedImageId: `sha256:${'b'.repeat(64)}`,
+    }), /image ID/);
+});
+
+test('image AgentLib requires observed mounts and rejects sources shadowing any bundled path', () => {
+    for (const destination of ['/opt/ploinky-agentlib', '/opt/ploinky-agentlib/lib', '/opt', '/opt/', '/', '/opt/ploinky/../ploinky-agentlib']) {
+        const inspected = imageAgentLibInspect();
+        inspected[0].Mounts.push({ Type: 'bind', Source: '/unrelated/source', Destination: destination, RW: false });
+        assert.throws(() => buildBoxEvidence({ containerInspect: inspected, imageInspect: imageInspect(), ...expected() }), /must not be shadowed/);
+    }
+    for (const mounts of [undefined, null, {}, [{ Destination: 'relative' }], [{ Destination: '/opt\\ploinky-agentlib' }]]) {
+        const inspected = imageAgentLibInspect();
+        inspected[0].Mounts = mounts;
+        assert.throws(() => buildBoxEvidence({ containerInspect: inspected, imageInspect: imageInspect(), ...expected() }), /mount inventory/);
+    }
+});
+
+test('local and managed AgentLib evidence retains its existing source and optional revision contract', () => {
+    for (const mode of ['local', 'managed']) {
+        const inspected = containerInspect();
+        inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-mode'] = mode;
+        inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-commit'] = '';
+        const evidence = buildBoxEvidence({ containerInspect: inspected, imageInspect: imageInspect(), ...expected() });
+        assert.equal(evidence.semanticLabels.agentLibMode, mode);
+        assert.equal(evidence.semanticLabels.agentLibCommit, '');
+    }
+});
 
 function expected() {
   return {
@@ -257,7 +339,7 @@ test('box evidence rejects a third publication, wrong semantic ownership, and wr
   }), /absolute profile path/);
 
   for (const [label, value, message] of [
-    ['io.assistos.ploinky-box.agentlib-mode', 'default', /AgentLib mode label must be local or managed/],
+    ['io.assistos.ploinky-box.agentlib-mode', 'default', /AgentLib mode label must be local, managed, or image/],
     ['io.assistos.ploinky-box.agentlib-source-id', 'not-a-digest', /AgentLib source-id label must be a SHA-256 digest/],
     ['io.assistos.ploinky-box.agentlib-fingerprint', 'not-a-digest', /AgentLib fingerprint label must be a SHA-256 digest/],
     ['io.assistos.ploinky-box.agentlib-source-path', '../achillesAgentLib', /workspace-relative path without/],

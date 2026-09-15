@@ -60,7 +60,8 @@ async function requestForceSave(session, {
   if (origin.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname)) {
     throw new Error('OnlyOffice drain requires the process-loopback DocumentServer origin.');
   }
-  const remainingMs = Math.max(1, deadline - now());
+  const remainingMs = deadline - now();
+  if (remainingMs <= 0) throw new Error('OnlyOffice drain deadline expired before force-save.');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.min(remainingMs, Number(config.ioTimeoutMs || 15_000)));
   timer.unref?.();
@@ -99,6 +100,7 @@ export async function drainOnlyOfficeSessions({
   now = () => Date.now(),
   wait = sleep,
   pollIntervalMs = 100,
+  deadline = now() + Number(config?.drainTimeoutMs || 30_000),
 } = {}) {
   if (!config || !sessionStore || typeof sessionStore.listActiveSessions !== 'function') {
     throw new Error('OnlyOffice drain requires config and a persistent session store.');
@@ -106,9 +108,12 @@ export async function drainOnlyOfficeSessions({
   if (typeof fetchImpl !== 'function') {
     throw new Error('OnlyOffice drain requires fetch.');
   }
-  const deadline = now() + Number(config.drainTimeoutMs || 30_000);
+  if (!Number.isFinite(deadline) || deadline <= now()) {
+    throw new Error('OnlyOffice drain deadline has expired.');
+  }
   const activeSessions = sessionStore.listActiveSessions().filter((session) => (
-    session.canWrite && session.documentAccessedAt
+    session.canWrite && session.documentAccessedAt && !session.drainAcknowledgedAt
+    && ![2, 4].includes(session.callbackAcknowledgement?.status)
   ));
   const pending = new Map();
 

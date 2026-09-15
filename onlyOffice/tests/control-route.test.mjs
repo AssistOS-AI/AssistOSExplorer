@@ -6,6 +6,7 @@ import { Readable, Writable } from 'node:stream';
 import { signHmacJwt } from '../../../ploinky/Agent/lib/jwtSign.mjs';
 import { computeRchHttp } from '../../../ploinky/Agent/lib/requestHash.mjs';
 import { createControlRouteHandler } from '../src/routes/control.mjs';
+import { createDpuStore } from '../src/storage/dpu-store.mjs';
 
 const AGENT_ID = 'agent:AssistOSExplorer/onlyOffice';
 const AGENT_SECRET = crypto.randomBytes(32);
@@ -238,6 +239,7 @@ test('office session route builds signed config with loopback document and callb
   assert.deepEqual(payload.config.editorConfig.customization, {
     autosave: true,
     forcesave: true,
+    plugins: false,
   });
   assert.equal(countNamedFields(payload.config, 'token'), 1);
   assert.equal(typeof payload.config.token, 'string');
@@ -311,6 +313,7 @@ test('office session route resolves storage metadata before signing config', asy
 	  assert.deepEqual(payload.config.editorConfig.customization, {
 	    autosave: true,
 	    forcesave: false,
+	    plugins: false,
 	  });
 
 	  const signedPayload = verifySignedConfigToken(payload.config.token, 'onlyoffice-jwt-secret');
@@ -493,4 +496,53 @@ test('office session route does not return delegation tokens to the browser', as
   assert.equal(payload.delegations, undefined);
   assert.equal(payload.config.delegations, undefined);
   assert.equal(JSON.stringify(signedPayload).includes('delegation-token-value'), false);
+});
+
+for (const scenario of [
+  { name: 'missing Confidential path', expectedStatus: 404, expectedError: 'document_not_found', objectId: null },
+  { name: 'Confidential object without read access', expectedStatus: 403, expectedError: 'document_forbidden', objectId: 'private-id' },
+]) {
+  test(`office session route rejects ${scenario.name} without creating an editor`, async () => {
+    let closed = false;
+    const store = createDpuStore({
+      createAgentClient: async () => ({
+        async callTool(name) {
+          if (name === 'dpu_workspace_roots') return { roots: { mySpace: { id: 'my-root' } } };
+          if (name === 'dpu_confidential_list') return { items: scenario.objectId ? [{ id: scenario.objectId, name: 'secret.docx' }] : [] };
+          if (name === 'dpu_confidential_get') return { object: { id: scenario.objectId, contentVisible: false } };
+          assert.fail(`Unexpected tool: ${name}`);
+        },
+        async close() { closed = true; },
+      }),
+    });
+    const handler = createTestControlRouteHandler({
+      env: makeEnv(),
+      storageRouter: { forSession: (session) => ({ metadata: () => store.metadata(session) }) },
+      sessionStore: { createSession() { assert.fail('Denied document must not create a session.'); } },
+      resolveEditorService() { assert.fail('Denied document must not resolve an editor.'); },
+    });
+    const query = '?path=%2FConfidential%2FMy%20Space%2Fsecret.docx';
+    const req = makeRequest({
+      url: '/control/office/session' + query,
+      headers: mintAuthHeaders({ query, delegations: { dpuConfidential: { token: 'private-delegation', expiresAt: '2999-01-01T00:00:00.000Z' } } }),
+    });
+    const res = new MockWritableResponse();
+    assert.equal(await handler(req, res, new URL(req.url, 'http://localhost')), true);
+    await res.done;
+    assert.equal(res.statusCode, scenario.expectedStatus);
+    assert.deepEqual(JSON.parse(res.body), { ok: false, error: scenario.expectedError });
+    assert.equal(closed, true);
+  });
+}
+
+test('office session route preserves unexpected storage failures', async () => {
+  const failure = new Error('storage transport unavailable');
+  const handler = createTestControlRouteHandler({
+    env: makeEnv(),
+    resolveSessionDescriptor: async () => { throw failure; },
+  });
+  const req = makeRequest({ url: '/control/office/session?path=%2Fworkspace%2Freport.docx', headers: mintAuthHeaders() });
+  const res = new MockWritableResponse();
+  await assert.rejects(() => handler(req, res, new URL(req.url, 'http://localhost')), (error) => error === failure);
+  assert.equal(res.body, '');
 });

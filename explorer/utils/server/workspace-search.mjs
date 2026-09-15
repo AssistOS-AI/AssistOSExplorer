@@ -687,6 +687,7 @@ export function createWorkspaceSearch({
 
   async function searchFilesWithinWorkspace(rootPath, options) {
     const shouldExclude = makeShouldExclude(options.excludePatterns, false);
+    const includeKind = options.includeKind === true;
     const maxResults = options.maxResults || 5000;
     const pattern = String(options.pattern || '').trim();
     const results = [];
@@ -697,13 +698,17 @@ export function createWorkspaceSearch({
       throw new Error('Access denied: path is outside allowed directories.');
     }
 
-    const pushResult = (relativePath) => {
+    const pushResult = (relativePath, type) => {
+      const kind = type === 'directory' ? 'folder' : type === 'file' ? 'file' : null;
+      // Entry types already include resolved symlink targets. Do not issue
+      // another metadata lookup or guess a type for broken links/special files.
+      if (includeKind && !kind) return false;
       const normalized = relativePath ? `/${relativePath}` : '/';
       if (seen.has(normalized)) {
         return false;
       }
       seen.add(normalized);
-      results.push(normalized);
+      results.push(includeKind ? { path: normalized, kind } : normalized);
       if (results.length >= maxResults) {
         truncated = true;
         return true;
@@ -746,7 +751,7 @@ export function createWorkspaceSearch({
         const childRel = path.relative(workspaceRoot, childValid);
         if (shouldExclude(childRel || entry.name)) continue;
         if (matches(childRel, entry.name)) {
-          if (pushResult(childRel)) {
+          if (pushResult(childRel, entry.type)) {
             return { ok: true, stop: true };
           }
         }
@@ -784,7 +789,7 @@ export function createWorkspaceSearch({
         const childRel = path.relative(workspaceRoot, childValid);
         if (shouldExclude(childRel || entry.name)) continue;
         if (matches(childRel, entry.name)) {
-          if (pushResult(childRel)) {
+          if (pushResult(childRel, entry.type)) {
             return;
           }
         }

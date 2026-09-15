@@ -49,7 +49,8 @@ export function isTerminalAgentRuntimeState(status) {
 }
 
 export async function waitForAgentRuntimeAvailability(config = {}) {
-    const startedAt = Date.now();
+    const now = config.now || Date.now;
+    const startedAt = now();
     const pollIntervalMs = Math.max(250, Number(config.pollIntervalMs) || DEFAULT_POLL_INTERVAL_MS);
     const timeoutMs = Math.max(1000, Number(config.timeoutMs) || DEFAULT_TIMEOUT_MS);
     const readRuntime = config.readRuntime || readMarketplaceAgent;
@@ -69,6 +70,14 @@ export async function waitForAgentRuntimeAvailability(config = {}) {
             const detail = lastError ? describeError(lastError) : '';
             throw new Error(detail || `${config.label || 'Agent'} failed to start (${runtimeStatus}).`);
         }
+        if (config.cancelled?.()) return undefined;
+        if (runtime && runtime.running !== true) {
+            if (now() - startedAt >= timeoutMs) {
+                throw new Error(`${config.label || 'Agent'} did not become ready before the startup timeout.`);
+            }
+            await wait(pollIntervalMs);
+            continue;
+        }
         try {
             return await config.operation?.();
         } catch (error) {
@@ -77,7 +86,7 @@ export async function waitForAgentRuntimeAvailability(config = {}) {
             if (isPermanentRequestError(error) || (!runtimeStarting && !isAgentRuntimeStartupError(error))) {
                 throw error;
             }
-            if (Date.now() - startedAt >= timeoutMs) throw error;
+            if (now() - startedAt >= timeoutMs) throw error;
         }
         await wait(pollIntervalMs);
     }

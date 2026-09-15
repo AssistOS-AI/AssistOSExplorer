@@ -22,15 +22,19 @@ export class AdminSettingsPanel {
         this.props = props || {};
         this.agent = this.element.getAttribute('data-agent') || this.props.agent || getCurrentAgentName();
         this.apiBase = `/api/agents/${encodeURIComponent(this.agent)}/users`;
-        this.settingsApi = `/api/agents/${encodeURIComponent(this.agent)}/settings`;
         this.state = {
-            activeTab: this.element.getAttribute('data-active-tab') || 'users',
             loaded: false,
             loading: false,
             users: [],
+            usersStart: 0,
+            usersPageSize: 100,
+            usersTotal: 0,
+            usersHasMore: false,
+            usersSearch: '',
+            selfRegisteredCount: null,
             availableRoles: [],
-            loginBrandingName: 'Login'
         };
+        this.usersRequestId = 0;
         this.invalidate();
     }
 
@@ -39,7 +43,6 @@ export class AdminSettingsPanel {
     afterRender() {
         this.cacheElements();
         this.bindEvents();
-        this.updateTabUI();
         this.pushChildState();
         if (this.element.getAttribute('data-auto-load') !== 'false') {
             this.loadPage().catch((error) => this.setStatus(error.message, 'error'));
@@ -48,25 +51,22 @@ export class AdminSettingsPanel {
 
     cacheElements() {
         this.statusEl = this.element.querySelector('[data-role="status"]');
-        this.tabButtons = Array.from(this.element.querySelectorAll('.administration-tab'));
-        this.tabPanels = Array.from(this.element.querySelectorAll('.administration-tab-panel'));
         this.usersComponent = this.element.querySelector('admin-users-settings');
-        this.brandingComponent = this.element.querySelector('admin-branding-settings');
     }
 
     bindEvents() {
         if (this.element.dataset.boundAdminSettingsPanel) return;
-        this.element.addEventListener('admin-users-create', (event) => {
-            this.createUser(event.detail || {}).catch((error) => this.setStatus(error.message, 'error'));
-        });
         this.element.addEventListener('admin-users-save', (event) => {
             this.saveUser(event.detail?.userId, event.detail?.body || {}).catch((error) => this.setStatus(error.message, 'error'));
         });
         this.element.addEventListener('admin-users-delete', (event) => {
             this.deleteUser(event.detail?.userId).catch((error) => this.setStatus(error.message, 'error'));
         });
-        this.element.addEventListener('admin-branding-save', (event) => {
-            this.saveBranding(event.detail || {}).catch((error) => this.setStatus(error.message, 'error'));
+        this.element.addEventListener('admin-users-page', (event) => {
+            this.loadUsersPage(event.detail?.start).catch((error) => this.setStatus(error.message, 'error'));
+        });
+        this.element.addEventListener('admin-users-search', (event) => {
+            this.searchUsers(event.detail?.search).catch((error) => this.setStatus(error.message, 'error'));
         });
         this.element.addEventListener('admin-settings-error', (event) => {
             this.setStatus(event.detail?.message || 'Administration action failed.', 'error');
@@ -80,34 +80,89 @@ export class AdminSettingsPanel {
             this.pushChildState();
             return;
         }
+        return this.loadUsersPage(this.state.usersStart);
+    }
+
+    applyUsersPage(payload) {
+        this.state.users = Array.isArray(payload.users) ? payload.users : [];
+        this.state.availableRoles = parseRoles(payload.availableRoles);
+        this.state.usersStart = payload.start ?? this.state.usersStart;
+        this.state.usersTotal = payload.totalCount ?? null;
+        this.state.usersHasMore = payload.hasMore === true;
+        const selfRegisteredCount = payload.singleRoleCounts?.selfRegistered ?? 0;
+        this.state.selfRegisteredCount = payload.singleRoleCounts && Number.isSafeInteger(selfRegisteredCount)
+            ? selfRegisteredCount : null;
+    }
+
+    async fetchUsersPage(start, search = this.state.usersSearch) {
+        const requestPage = (offset) => {
+            const params = new URLSearchParams({
+                start: offset,
+                pageSize: this.state.usersPageSize,
+                search,
+                excludeOnlyRole: search ? '' : 'selfRegistered',
+                includeRoleCounts: 'true',
+            });
+            return this.request(`${this.apiBase}?${params}`);
+        };
+        const payload = await requestPage(start);
+        if (start > 0 && !payload.users?.length && Number.isSafeInteger(payload.totalCount) && start >= payload.totalCount) {
+            const lastPage = Math.max(0, Math.floor((payload.totalCount - 1) / this.state.usersPageSize) * this.state.usersPageSize);
+            return requestPage(lastPage);
+        }
+        return payload;
+    }
+
+    async searchUsers(value) {
+        const search = String(value || '').trim().slice(0, 200);
+        if (search === this.state.usersSearch && this.state.loaded) return;
+        this.state.usersSearch = search;
+        this.state.loaded = false;
+        this.state.users = [];
+        this.state.usersStart = 0;
+        this.state.usersTotal = 0;
+        this.state.usersHasMore = false;
+        return this.loadUsersPage(0, { replace: true });
+    }
+
+    async loadUsersPage(start, { replace = false } = {}) {
+        if ((this.state.loading && !replace) || !Number.isSafeInteger(start) || start < 0) return;
+        const requestId = ++this.usersRequestId;
         this.state.loading = true;
-        this.setStatus('Loading settings...');
+        this.pushChildState();
+        this.setStatus('Loading users...');
         try {
-            const [settingsPayload, usersPayload] = await Promise.all([
-                this.request(this.settingsApi),
-                this.request(this.apiBase)
-            ]);
-            this.state.loginBrandingName = settingsPayload.settings?.loginBrandingName || 'Login';
-            this.state.users = Array.isArray(usersPayload.users) ? usersPayload.users : [];
-            this.state.availableRoles = parseRoles(usersPayload.availableRoles);
+            const payload = await this.fetchUsersPage(start);
+            if (requestId !== this.usersRequestId) return;
+            this.applyUsersPage(payload);
             this.state.loaded = true;
-            this.pushChildState();
-            this.setStatus(`${this.state.users.length} user${this.state.users.length === 1 ? '' : 's'} loaded.`, 'ok');
+            this.setStatus('');
+        } catch (error) {
+            if (requestId === this.usersRequestId) throw error;
         } finally {
-            this.state.loading = false;
+            if (requestId === this.usersRequestId) {
+                this.state.loading = false;
+                this.pushChildState();
+            }
         }
     }
 
+    afterUnload() {
+        this.usersRequestId++;
+    }
+
     async pushChildState() {
-        await Promise.all([
-            this.setChildState(this.usersComponent, {
-                users: this.state.users,
-                availableRoles: this.state.availableRoles
-            }),
-            this.setChildState(this.brandingComponent, {
-                loginBrandingName: this.state.loginBrandingName
-            })
-        ]);
+        await this.setChildState(this.usersComponent, {
+            users: this.state.users,
+            availableRoles: this.state.availableRoles,
+            start: this.state.usersStart,
+            pageSize: this.state.usersPageSize,
+            totalCount: this.state.usersTotal,
+            hasMore: this.state.usersHasMore,
+            loading: this.state.loading,
+            search: this.state.usersSearch,
+            selfRegisteredCount: this.state.selfRegisteredCount,
+        });
     }
 
     async setChildState(component, state) {
@@ -116,20 +171,6 @@ export class AdminSettingsPanel {
             await component.presenterReadyPromise.catch(() => {});
         }
         component.webSkelPresenter?.setState?.(state);
-    }
-
-    async createUser(detail) {
-        this.setStatus('Creating user...');
-        await this.request(this.apiBase, {
-            method: 'POST',
-            body: JSON.stringify({
-                username: detail.username,
-                password: detail.password,
-                name: detail.name,
-                roles: parseRoles(detail.roles)
-            })
-        });
-        await this.reloadAfterMutation();
     }
 
     async saveUser(userId, body) {
@@ -149,42 +190,9 @@ export class AdminSettingsPanel {
         await this.reloadAfterMutation();
     }
 
-    async saveBranding(detail) {
-        this.setStatus('Saving login branding...');
-        const payload = await this.request(this.settingsApi, {
-            method: 'PATCH',
-            body: JSON.stringify({
-                loginBrandingName: detail.loginBrandingName
-            })
-        });
-        this.state.loginBrandingName = payload.settings?.loginBrandingName || 'Login';
-        await this.setChildState(this.brandingComponent, {
-            loginBrandingName: this.state.loginBrandingName
-        });
-        this.setStatus('Login branding saved.', 'ok');
-    }
-
     async reloadAfterMutation() {
         this.state.loaded = false;
-        await this.loadPage({ force: true });
-    }
-
-    switchAdministrationTab(_target, tab) {
-        this.state.activeTab = ['users', 'branding'].includes(tab) ? tab : 'users';
-        this.updateTabUI();
-    }
-
-    updateTabUI() {
-        this.tabButtons?.forEach((button) => {
-            const active = button.dataset.tab === this.state.activeTab;
-            button.classList.toggle('active', active);
-            button.setAttribute('aria-selected', active ? 'true' : 'false');
-        });
-        this.tabPanels?.forEach((panel) => {
-            const active = panel.dataset.panel === this.state.activeTab;
-            panel.classList.toggle('active', active);
-            panel.hidden = !active;
-        });
+        await this.loadUsersPage(this.state.usersStart, { replace: true });
     }
 
     setStatus(message, kind = '') {

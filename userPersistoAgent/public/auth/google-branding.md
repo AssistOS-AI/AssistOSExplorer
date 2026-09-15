@@ -1,0 +1,11 @@
+# Google sign-in assets
+
+The dedicated `/service/auth/google/sign-in` page uses Google's own rendered button through the current [Google Identity Services SDK](https://developers.google.com/identity/gsi/web/guides/get-google-api-clientid) at `https://accounts.google.com/gsi/client`. The supported SDK loads from Google so security and compatibility updates remain current; an offline or self-hosted copy is unsupported. The served SDK has no repository pin or local modification. Its use is governed by [Google APIs Terms of Service](https://developers.google.com/terms), applicable Identity terms and Google's branding rules, not the MIT license of server dependencies or the licenses attached to documentation samples.
+
+Only this dedicated page permits the SDK, its Google frames/styles and account images in its CSP, uses `same-origin-allow-popups`, and supplies the referrer policy required by the selected HTTPS or localhost deployment. Other authentication pages do not load the SDK. The browser callback sends the ID token directly to the same-origin verifier; credentials never enter URLs, browser storage or logs.
+
+The wizard's local entry button follows the [Google Identity branding guidelines](https://developers.google.com/identity/branding-guidelines), retrieved 2026-09-11 and rechecked 2026-09-14. It uses the approved “Continue with Google” wording, light theme, 20px gradient G, 12px outside padding and 10px text spacing. This button starts the local transaction; the dedicated page then presents Google's SDK-rendered sign-in button.
+
+`google-button-icon.png` is the unmodified Android + Web, light, square, icon-only PNG at 4x from Google's [pre-approved asset archive](https://developers.google.com/static/identity/images/signin-assets.zip). CSS displays the central G at its original proportions inside the complete labelled button; the source PNG is unchanged. Google brand features remain subject to Google's branding terms.
+
+`google-sans-medium.ttf` is the weight-500 Google Sans file served by the [Google Fonts CSS API](https://fonts.googleapis.com/css2?family=Google+Sans:wght@500&display=swap), stored locally so sign-in makes no third-party font request. The SIL Open Font License is included in `google-sans-OFL.txt` from the [Google Sans source repository](https://github.com/googlefonts/googlesans).

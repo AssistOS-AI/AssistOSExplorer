@@ -1,0 +1,263 @@
+{
+  "tools": [
+    {
+      "name": "email_auth_code_status",
+      "title": "Check authentication email availability",
+      "description": "Agent-to-agent: returns only whether authentication email is configured, without sending mail or exposing provider settings.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 5000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "tags": [
+        "internal"
+      ],
+      "env": {
+        "TOOL_NAME": "email_auth_code_status"
+      }
+    },
+    {
+      "name": "email_config_get",
+      "title": "Get email configuration",
+      "description": "Returns the masked EmailAgent Mailjet configuration.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "tags": [
+        "admin"
+      ],
+      "env": {
+        "TOOL_NAME": "email_config_get"
+      }
+    },
+    {
+      "name": "email_config_set",
+      "title": "Set email configuration",
+      "description": "Stores EmailAgent Mailjet configuration, keeping empty secret values unchanged.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "MAILJET_API_KEY": {
+            "type": "string"
+          },
+          "MAILJET_API_SECRET": {
+            "type": "string"
+          },
+          "MAILJET_FROM_EMAIL": {
+            "type": "string"
+          },
+          "MAILJET_FROM_NAME": {
+            "type": "string"
+          },
+          "EMAIL_AUTH_CODE_TEMPLATE_ID": {
+            "type": "string"
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "tags": [
+        "admin"
+      ],
+      "env": {
+        "TOOL_NAME": "email_config_set"
+      }
+    },
+    {
+      "name": "email_provider_status",
+      "title": "Get email provider status",
+      "description": "Returns whether the Mailjet provider has the required settings.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "tags": [
+        "admin"
+      ],
+      "env": {
+        "TOOL_NAME": "email_provider_status"
+      }
+    },
+    {
+      "name": "email_send_text",
+      "title": "Send text email",
+      "description": "Agent-to-agent: sends a text email through Mailjet.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "minLength": 3
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "html": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "internal"
+      ],
+      "env": {
+        "TOOL_NAME": "email_send_text"
+      }
+    },
+    {
+      "name": "email_send_template",
+      "title": "Send template email",
+      "description": "Agent-to-agent: sends a Mailjet template email.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "minLength": 3
+          },
+          "templateId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "variables": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "to",
+          "templateId"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "internal"
+      ],
+      "env": {
+        "TOOL_NAME": "email_send_template"
+      }
+    },
+    {
+      "name": "email_send_test",
+      "title": "Send test email",
+      "description": "Sends a test email through the configured Mailjet account.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "minLength": 3
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "admin"
+      ],
+      "env": {
+        "TOOL_NAME": "email_send_test"
+      }
+    },
+    {
+      "name": "email_send_auth_code",
+      "title": "Send authentication code",
+      "description": "Agent-to-agent: sends a six-digit authentication code without returning the code.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "minLength": 3
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$"
+          },
+          "correlationId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "internal"
+      ],
+      "env": {
+        "TOOL_NAME": "email_send_auth_code"
+      }
+    }
+  ]
+}

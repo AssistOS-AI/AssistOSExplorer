@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import { aggregateIdePlugins } from '../../utils/ide-plugins.mjs';
+import { filterRuntimePluginsByPolicy } from '../../utils/pluginUtils.core.js';
 
 async function writePluginConfig(rootDir, agentName, pluginName, config) {
     const pluginDir = path.join(rootDir, agentName, 'IDE-plugins', pluginName);
@@ -17,6 +19,107 @@ async function writeAgentManifest(rootDir, agentName, manifest) {
     await fs.mkdir(agentDir, { recursive: true });
     await fs.writeFile(path.join(agentDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
 }
+
+async function writeApplication(rootDir, agentName, id, { settings = false } = {}) {
+    await writeAgentManifest(rootDir, agentName, settings ? {
+        ideSettings: [{ key: id, label: id, pluginKey: `${agentName}/${id}`, settingsComponent: 'agent-settings' }],
+    } : {});
+    await writePluginConfig(rootDir, agentName, id, {
+        pluginCategory: 'application', id, component: id, location: settings ? [] : ['file-exp:toolbar'], type: 'global',
+    });
+}
+
+test('aggregateIdePlugins combines top-level repositories with managed repositories and preserves policy identities', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-mixed-plugin-repos-'));
+    try {
+        await writeApplication(path.join(workspaceRoot, 'AssistOSExplorer'), 'gitAgent', 'git');
+        await writeApplication(path.join(workspaceRoot, 'AssistOSExplorer'), 'userPersistoAgent', 'userpersisto-settings', { settings: true });
+        await writeApplication(path.join(workspaceRoot, '.ploinky', 'repos', 'AchillesCLI'), 'roboTeamAgent', 'roboteam');
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => plugin.id).sort(), ['git', 'roboteam']);
+        assert.equal(aggregated.application['file-exp:toolbar'].find(plugin => plugin.id === 'git').assetRootPath,
+            'AssistOSExplorer/gitAgent/IDE-plugins/git');
+        assert.equal(aggregated.application[''][0].agent, 'userPersistoAgent');
+        assert.equal(aggregated.agentSettings[0].pluginKey, 'userPersistoAgent/userpersisto-settings');
+        const filtered = filterRuntimePluginsByPolicy(aggregated, { 'gitAgent/git': false, 'roboTeamAgent/roboteam': true });
+        assert.deepEqual(filtered.application['file-exp:toolbar'].map(plugin => plugin.id), ['roboteam']);
+    } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('a top-level repository replaces its entire managed source, including removed plugins', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-override-'));
+    try {
+        await writeApplication(path.join(workspaceRoot, 'localRepo'), 'currentAgent', 'current');
+        await writeApplication(path.join(workspaceRoot, '.ploinky', 'repos', 'localRepo'), 'removedAgent', 'removed');
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => plugin.id), ['current']);
+    } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('registered managed aliases use the matching local Git source without resurrecting stale plugins', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-alias-'));
+    try {
+        const local = path.join(workspaceRoot, 'checkout-name');
+        const managed = path.join(workspaceRoot, '.ploinky', 'repos', 'registered-name');
+        await writeApplication(local, 'currentAgent', 'current');
+        await writeApplication(managed, 'staleAgent', 'stale');
+        for (const [directory, origin] of [[local, 'git@github.com:Example/Agents.git'], [managed, 'https://github.com/example/agents']]) {
+            execFileSync('git', ['init', '-q', directory]);
+            execFileSync('git', ['-C', directory, 'config', 'remote.origin.url', origin]);
+        }
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => plugin.id), ['current']);
+        assert.equal(aggregated.application['file-exp:toolbar'][0].agent, 'currentAgent');
+    } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('a local source with no plugins suppresses its stale managed source and parent fallback', async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-empty-local-source-'));
+    const workspaceRoot = path.join(parent, 'workspace');
+    try {
+        await writeAgentManifest(path.join(workspaceRoot, 'localRepo'), 'currentAgent', {});
+        await writeApplication(path.join(workspaceRoot, '.ploinky', 'repos', 'localRepo'), 'staleAgent', 'stale');
+        await writeApplication(parent, 'unrelatedAgent', 'unrelated');
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+        assert.deepEqual(Object.values(aggregated.application).flat(), []);
+    } finally { await fs.rm(parent, { recursive: true, force: true }); }
+});
+
+test('one physical repository exposed under multiple paths contributes plugins and settings once', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-duplicate-'));
+    try {
+        const local = path.join(workspaceRoot, 'local');
+        await writeApplication(local, 'settingsAgent', 'agent-settings', { settings: true });
+        await fs.symlink(local, path.join(workspaceRoot, 'local-alias'));
+        await fs.mkdir(path.join(workspaceRoot, '.ploinky', 'repos'), { recursive: true });
+        await fs.symlink(local, path.join(workspaceRoot, '.ploinky', 'repos', 'managed-alias'));
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+        assert.equal(aggregated.application[''].length, 1);
+        assert.equal(aggregated.agentSettings.length, 1);
+        assert.equal(aggregated.application[''][0].assetRootPath, 'local/settingsAgent/IDE-plugins/agent-settings');
+    } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('top-level repository discovery stays bounded and does not follow outside plugin sources', async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-bounds-'));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-plugin-outside-'));
+    try {
+        await writeApplication(path.join(workspaceRoot, 'valid'), 'validAgent', 'valid');
+        await writeApplication(path.join(workspaceRoot, 'group', 'nested'), 'nestedAgent', 'nested');
+        await writeApplication(path.join(workspaceRoot, '.private'), 'hiddenAgent', 'hidden');
+        await writeApplication(path.join(workspaceRoot, 'node_modules', 'package'), 'dependencyAgent', 'dependency');
+        await writeApplication(outside, 'externalAgent', 'external');
+        await fs.symlink(outside, path.join(workspaceRoot, 'outside-repo'));
+        await fs.symlink(path.join(outside, 'externalAgent'), path.join(workspaceRoot, 'valid', 'outside-agent'));
+        await writeAgentManifest(path.join(workspaceRoot, 'valid'), 'escapingAgent', {});
+        await fs.symlink(path.join(outside, 'externalAgent', 'IDE-plugins'), path.join(workspaceRoot, 'valid', 'escapingAgent', 'IDE-plugins'));
+        const aggregated = await aggregateIdePlugins(workspaceRoot);
+        assert.deepEqual(aggregated.application['file-exp:toolbar'].map(plugin => plugin.id), ['valid']);
+    } finally {
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+        await fs.rm(outside, { recursive: true, force: true });
+    }
+});
 
 test('aggregateIdePlugins accepts application plugins with global type and slot', async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-ide-plugins-'));
@@ -333,4 +436,34 @@ test('aggregateIdePlugins rejects absolute plugin settings URLs', async () => {
     } finally {
         await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
+});
+
+test('aggregateIdePlugins discovers UserPersisto and EmailAgent settings from repository manifests', async () => {
+    const repoRoot = path.resolve(import.meta.dirname, '../../..');
+    const aggregated = await aggregateIdePlugins(repoRoot);
+    const settingsByKey = new Map(aggregated.agentSettings.map((item) => [item.key, item]));
+
+    assert.deepEqual(
+        ['userpersisto-settings', 'email-agent-settings'].map((key) => settingsByKey.get(key)),
+        [
+            {
+                key: 'userpersisto-settings',
+                label: 'My Account',
+                ownerAgent: 'userPersistoAgent',
+                scope: 'workspace',
+                pluginKey: 'userPersistoAgent/userpersisto-settings',
+                settingsUrl: '/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/',
+                adminOnly: false
+            },
+            {
+                key: 'email-agent-settings',
+                label: 'Email Agent',
+                ownerAgent: 'emailAgent',
+                scope: 'workspace',
+                pluginKey: 'emailAgent/email-agent-settings',
+                settingsComponent: 'email-agent-settings',
+                adminOnly: true
+            }
+        ]
+    );
 });

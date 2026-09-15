@@ -4,7 +4,6 @@ import {
   assertDistinctAuthenticatedPrincipals,
   normalizePrincipalComponent,
   signIn,
-  trySignIn,
 } from '../lib/auth.mjs';
 import { stopAndAttachRedactedTrace } from '../lib/redacted-trace.mjs';
 import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.mjs';
@@ -23,6 +22,7 @@ import {
   expectAuthenticatedStandaloneWebMeet,
   expectBidirectionalAudioVideoRtp,
   expectWebMeetMediaState,
+  expectWebMeetReady,
   expectIncreasingRtpStats,
   expectJoinMaterialRefreshLifecycle,
   expectTwoDistinctWebMeetParticipants,
@@ -31,7 +31,14 @@ import {
   joinRoom,
   openWebMeet,
   sendWebMeetChat,
+  trySignInToWebMeet,
 } from '../lib/webmeet.mjs';
+
+function expectNoUnfilteredBrowserErrors(diagnostics, label) {
+  expect(diagnostics.events.filter((event) => (
+    event.kind === 'pageerror' || (event.kind === 'console' && event.type === 'error')
+  )), `${label} must have zero browser errors, including cleanup`).toEqual([]);
+}
 
 test.describe('WebMeet rooms', () => {
   test('standalone loader serves the authenticated dashboard and a guest invitation', async ({ page, browser }, testInfo) => {
@@ -105,6 +112,7 @@ test.describe('WebMeet rooms', () => {
     let ownerContext = null;
     let ownerPage = page;
     let ownerDiagnostics = null;
+    let seedDiagnostics = null;
     let seedTraceStarted = false;
     let ownerTraceStarted = false;
     let memberContext = null;
@@ -159,6 +167,7 @@ test.describe('WebMeet rooms', () => {
       }
 
       if (smokeConfig.flags.webmeetScreen || smokeConfig.flags.webmeetHeadless) {
+        seedDiagnostics = attachPageDiagnostics(page, testInfo, 'webmeet-primary-auth-seed');
         await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true });
         seedTraceStarted = true;
         const ownerPrincipal = await signIn(page, smokeConfig.primaryUser, explorerUrl(), {
@@ -198,15 +207,20 @@ test.describe('WebMeet rooms', () => {
           }
           throw error;
         } finally {
-          if (memberSeedDiagnostics) {
-            await failureCollector.required('secondary authentication diagnostics', () => memberSeedDiagnostics.flush());
-          }
           if (memberSeedTraceStarted) {
             await failureCollector.required('secondary authentication redacted trace', () => (
               stopAndAttachRedactedTrace(memberSeedContext, testInfo, 'webmeet-secondary-auth-seed')
             ));
           }
           await failureCollector.required('secondary authentication seed context close', () => memberSeedContext.close());
+          if (memberSeedDiagnostics) {
+            await failureCollector.required('secondary authentication diagnostics', () => memberSeedDiagnostics.flush());
+            if (smokeConfig.flags.webmeetHeadless) {
+              await failureCollector.required('secondary authentication zero browser errors', () => (
+                expectNoUnfilteredBrowserErrors(memberSeedDiagnostics, 'secondary authentication')
+              ));
+            }
+          }
           if (memberSeedVideo) {
             await failureCollector.required('secondary authentication seed video', async () => {
               const videoPath = await memberSeedVideo.path();
@@ -269,7 +283,7 @@ test.describe('WebMeet rooms', () => {
         await installRtcProbe(memberContext);
         memberPage = await memberContext.newPage();
         memberDiagnostics = attachPageDiagnostics(memberPage, testInfo, 'webmeet-secondary');
-        const secondaryLoginOk = await trySignIn(memberPage, smokeConfig.secondaryUser, explorerUrl());
+        const secondaryLoginOk = await trySignInToWebMeet(memberPage, smokeConfig.secondaryUser);
         if (smokeConfig.flags.webmeetRefresh) {
           expect(
             secondaryLoginOk,
@@ -278,9 +292,10 @@ test.describe('WebMeet rooms', () => {
         } else {
           test.skip(!secondaryLoginOk, `Secondary smoke account ${smokeConfig.secondaryUser.username} cannot log in.`);
         }
+        await expectWebMeetReady(memberPage, { expectCreateRoom: false });
+      } else {
+        await openWebMeet(memberPage, smokeConfig.secondaryUser, { expectCreateRoom: false });
       }
-
-      await openWebMeet(memberPage, smokeConfig.secondaryUser, { expectCreateRoom: false });
       await joinRoom(memberPage, roomTitle);
       identities = await expectTwoDistinctWebMeetParticipants(ownerPage, memberPage);
       if (smokeConfig.flags.webmeetScreen || smokeConfig.flags.webmeetHeadless) {
@@ -415,18 +430,6 @@ test.describe('WebMeet rooms', () => {
       } else if (ownerPage) {
         failureCollector.add('primary WebMeet final RTC evidence', new Error('primary page was already closed'));
       }
-      if (ownerDiagnostics) await failureCollector.required('primary WebMeet diagnostics', () => ownerDiagnostics.flush());
-      if (memberDiagnostics) await failureCollector.required('secondary WebMeet diagnostics', () => memberDiagnostics.flush());
-      if (seedTraceStarted) {
-        await failureCollector.required('WebMeet authentication seed redacted trace', () => (
-          stopAndAttachRedactedTrace(page.context(), testInfo, 'webmeet-auth-seed')
-        ));
-      }
-      if (ownerTraceStarted) {
-        await failureCollector.required('primary WebMeet redacted trace', () => (
-          stopAndAttachRedactedTrace(ownerContext, testInfo, 'webmeet-primary')
-        ));
-      }
       if (memberTraceStarted) {
         await failureCollector.required('secondary WebMeet redacted trace', () => (
           stopAndAttachRedactedTrace(memberContext, testInfo, 'webmeet-secondary')
@@ -440,6 +443,7 @@ test.describe('WebMeet rooms', () => {
         memberPage = null;
       }
       if (roomCreationAttempted) {
+        let roomDeleted = false;
         await failureCollector.required('WebMeet room deletion', async () => {
           let cleanupPage = ownerPage && !ownerPage.isClosed() ? ownerPage : null;
           if (!cleanupPage && page && !page.isClosed()) cleanupPage = page;
@@ -447,9 +451,36 @@ test.describe('WebMeet rooms', () => {
           if (!cleanupPage) throw new Error('no live primary-account browser page remains for room deletion');
           await openWebMeet(cleanupPage, smokeConfig.primaryUser);
           await deleteRoomIfPresent(cleanupPage, roomTitle);
+          roomDeleted = true;
         });
+        await failureCollector.required('WebMeet cleanup evidence', () => (
+          attachJsonEvidence(testInfo, 'webmeet-cleanup', { roomTitle, attempted: true, deleted: roomDeleted })
+        ));
+      }
+      if (seedTraceStarted) {
+        await failureCollector.required('WebMeet authentication seed redacted trace', () => (
+          stopAndAttachRedactedTrace(page.context(), testInfo, 'webmeet-auth-seed')
+        ));
+      }
+      if (ownerTraceStarted) {
+        await failureCollector.required('primary WebMeet redacted trace', () => (
+          stopAndAttachRedactedTrace(ownerContext, testInfo, 'webmeet-primary')
+        ));
       }
       if (ownerContext) await failureCollector.required('primary WebMeet context close', () => ownerContext.close());
+      for (const [label, diagnostics] of [
+        ['primary authentication', seedDiagnostics],
+        ['primary WebMeet', ownerDiagnostics],
+        ['secondary WebMeet', memberDiagnostics],
+      ]) {
+        if (!diagnostics) continue;
+        await failureCollector.required(`${label} final diagnostics`, () => diagnostics.flush());
+        if (smokeConfig.flags.webmeetHeadless) {
+          await failureCollector.required(`${label} zero browser errors`, () => (
+            expectNoUnfilteredBrowserErrors(diagnostics, label)
+          ));
+        }
+      }
     }
     failureCollector.throwIfAny({ primaryError, label: 'two-account WebMeet gate' });
   });

@@ -16,9 +16,8 @@ function deriveItems(results, leaf) {
     const seen = new Set();
     const items = [];
     for (const entry of safeResults) {
-        const raw = typeof entry === 'string'
-            ? entry
-            : (typeof entry?.path === 'string' ? entry.path : '');
+        if (!entry || typeof entry !== 'object' || !['folder', 'file'].includes(entry.kind)) continue;
+        const raw = typeof entry.path === 'string' ? entry.path : '';
         const trimmed = String(raw || '').replace(/^\/+/, '').trim();
         if (!trimmed || seen.has(trimmed)) continue;
         seen.add(trimmed);
@@ -27,10 +26,7 @@ function deriveItems(results, leaf) {
         if (leafLower && !trimmed.toLowerCase().includes(leafLower) && !name.toLowerCase().includes(leafLower)) {
             continue;
         }
-        const knownKind = typeof entry === 'object' && entry && entry.kind === 'folder'
-            ? 'folder'
-            : (typeof entry === 'object' && entry && entry.kind === 'file' ? 'file' : '');
-        items.push({ path: trimmed, label: name, displayPath: trimmed, kind: knownKind || 'unknown' });
+        items.push({ path: trimmed, label: name, displayPath: trimmed, kind: entry.kind });
     }
     return items;
 }
@@ -108,25 +104,6 @@ export function createExplorerSearchAdapter({ callExplorerTool, resolveWorkspace
         return '';
     }
 
-    async function classifyItems(items) {
-        return Promise.all(items.map(async (item) => {
-            if (item.kind === 'folder' || item.kind === 'file') {
-                return item;
-            }
-            try {
-                const infoResult = await callExplorerTool('get_file_info', {
-                    path: `/${item.path}`
-                }, { raw: true, withLoader: false });
-                const info = extractToolPayload(infoResult);
-                if (info?.isDirectory) return { ...item, kind: 'folder' };
-                if (info?.isFile) return { ...item, kind: 'file' };
-            } catch (_) {
-                // If metadata lookup fails, keep the suggestion usable as a file.
-            }
-            return { ...item, kind: 'file' };
-        }));
-    }
-
     async function searchPaths(query) {
         const { folder, leaf } = splitQuery(query);
         const root = await workspaceRoot();
@@ -137,11 +114,11 @@ export function createExplorerSearchAdapter({ callExplorerTool, resolveWorkspace
             path: searchRoot,
             pattern,
             excludePatterns: DEFAULT_EXCLUDES,
-            maxResults
+            maxResults,
+            includeKind: true
         }, { raw: true, withLoader: false });
         const payload = extractToolPayload(result);
-        const items = deriveItems(normalizeResultPaths(payload), leaf);
-        return classifyItems(items);
+        return deriveItems(normalizeResultPaths(payload), leaf);
     }
 
     return { searchPaths };

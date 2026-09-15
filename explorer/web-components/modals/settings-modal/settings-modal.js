@@ -21,9 +21,10 @@ import {
 import { avatarController, defaultAvatarConfig } from "./settings-avatar-controller.js";
 import { copilotController } from "./settings-copilot-controller.js";
 import { runtimeSettingsController } from "./settings-runtime-controller.js";
+import { accountController } from "./settings-account-controller.js";
 import { usersController } from "./settings-users-controller.js";
 
-const BASE_TABS = ['agents', 'plugins', 'copilot', 'keymap', 'editor', 'theme', 'avatar'];
+const BASE_TABS = ['account', 'agents', 'plugins', 'copilot', 'keymap', 'editor', 'theme', 'avatar'];
 
 export {
     applyAgentRuntimeStatuses,
@@ -88,7 +89,8 @@ export class SettingsModal {
             selectedAgentAvatarEnabled: true,
             canManageAgentAvatars: false,
             usersAccessChecked: false,
-            usersAccess: false
+            usersAccess: false,
+            accountSettingsAccess: false,
         };
         this.invalidate();
     }
@@ -126,9 +128,9 @@ export class SettingsModal {
         this.agentsSection = this.element.querySelector('[data-section="agents"]');
         this.copilotSection = this.element.querySelector('[data-section="copilot"]');
         this.avatarSection = this.element.querySelector('[data-section="avatar"]');
+        this.accountSection = this.element.querySelector('[data-section="account"]');
         this.usersSection = this.element.querySelector('[data-section="users"]');
         this.usersTab = this.element.querySelector('[data-admin-tab]');
-        this.adminSettingsPanel = this.element.querySelector('admin-settings-panel');
         this.listEl = this.element.querySelector("#keymapList");
         this.warningEl = this.element.querySelector("#keymapWarning");
         this.pluginSettingsListEl = this.element.querySelector("#pluginSettingsList");
@@ -241,13 +243,10 @@ export class SettingsModal {
                 this.renderAvatarSettings();
             });
         }
-        if (this.state.activeTab === "users") {
-            this.loadAdministrationPanel();
-        }
     }
 
     getAllowedTabs() {
-        return this.state.usersAccess ? [...BASE_TABS, 'users'] : BASE_TABS;
+        return this.state.usersAccess || this.state.accountSettingsAccess ? [...BASE_TABS, 'users'] : BASE_TABS;
     }
 
     updateTabUI() {
@@ -262,10 +261,11 @@ export class SettingsModal {
             tab.setAttribute("aria-selected", isActive ? "true" : "false");
         });
         if (this.usersTab) {
-            this.usersTab.hidden = !this.state.usersAccess;
+            this.usersTab.hidden = !this.state.usersAccess && !this.state.accountSettingsAccess;
         }
 
         const sections = [
+            { key: 'account', element: this.accountSection },
             { key: 'keymap', element: this.keymapSection },
             { key: 'editor', element: this.editorSection },
             { key: 'theme', element: this.themeSection },
@@ -286,10 +286,11 @@ export class SettingsModal {
         if (this.actionsEl) {
             this.actionsEl.hidden = this.state.activeTab === "users"
                 || this.state.activeTab === "avatar"
-                || this.state.activeTab === "agents";
+                || this.state.activeTab === "agents"
+                || this.state.activeTab === "account";
         }
         this.syncEditorSettingsUi();
-        this.loadAdministrationPanel();
+        this.updateAccountLinks();
     }
 
     renderRows() {
@@ -463,5 +464,6 @@ Object.assign(
     runtimeSettingsController,
     copilotController,
     avatarController,
+    accountController,
     usersController
 );

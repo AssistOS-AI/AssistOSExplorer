@@ -1,0 +1,908 @@
+{
+    "tools": [
+        {
+            "name": "userpersisto_profile_get",
+            "title": "Get current user profile",
+            "description": "Returns the calling user's profile, roles, capabilities, and current credit or subscription summary.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "env": { "TOOL_NAME": "userpersisto_profile_get" }
+        },
+        {
+            "name": "userpersisto_profile_update",
+            "title": "Update current user profile",
+            "description": "Update the authenticated user's optional username or display name.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "username": { "type": "string", "maxLength": 64 },
+                    "displayName": { "type": "string", "maxLength": 200 }
+                },
+                "minProperties": 1,
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_profile_update" }
+        },
+        {
+            "name": "userpersisto_authorize_capability",
+            "title": "Authorize capability",
+            "description": "Agent-to-agent authorization decision for a user capability on an optional resource.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "capability": { "type": "string", "minLength": 1 },
+                    "resource": { "type": "string" }
+                },
+                "required": ["userId", "capability"],
+                "additionalProperties": false
+            },
+            "tags": ["internal"],
+            "env": { "TOOL_NAME": "userpersisto_authorize_capability" }
+        },
+        {
+            "name": "userpersisto_user_list",
+            "title": "List users",
+            "description": "Admin: search all users before pagination, optionally exclude an exact sole role and return global sole-role counts.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "start": { "type": "integer", "minimum": 0 },
+                    "pageSize": { "type": "integer", "minimum": 1, "maximum": 500 },
+                    "search": { "type": "string", "maxLength": 200 },
+                    "excludeOnlyRole": { "type": "string", "maxLength": 128 },
+                    "includeRoleCounts": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_user_list" }
+        },
+        {
+            "name": "userpersisto_user_update",
+            "title": "Update user",
+            "description": "Admin: update a user's username, display name or status. Sign-in email addresses cannot be changed here.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "username": { "type": "string", "maxLength": 64 },
+                    "displayName": { "type": "string" },
+                    "status": { "type": "string", "enum": ["active", "blocked"] }
+                },
+                "required": ["userId"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_user_update" }
+        },
+        {
+            "name": "userpersisto_user_roles_update",
+            "title": "Update user roles",
+            "description": "Admin: replace a user's role assignments.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "roles": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["userId", "roles"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_user_roles_update" }
+        },
+        {
+            "name": "userpersisto_roles_list",
+            "title": "List roles and permissions",
+            "description": "Admin: list all roles, their permissions and assignment counts, and the registered permission catalog.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_roles_list" }
+        },
+        {
+            "name": "userpersisto_role_create",
+            "title": "Create custom role",
+            "description": "Admin: create a custom role with permissions from the registered capability catalog. Creating a role does not assign it to users.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+                    "description": { "type": "string", "maxLength": 1000 },
+                    "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                },
+                "required": ["name"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_role_create" }
+        },
+        {
+            "name": "userpersisto_role_update",
+            "title": "Update custom role",
+            "description": "Admin: edit a custom role's description or replace its permissions. Built-in roles and role names are protected; permission changes affect every assigned user.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "roleId": { "type": "string", "minLength": 1 },
+                    "description": { "type": "string", "maxLength": 1000 },
+                    "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                },
+                "required": ["roleId"],
+                "minProperties": 2,
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_role_update" }
+        },
+        {
+            "name": "userpersisto_role_delete",
+            "title": "Delete unused custom role",
+            "description": "Admin: delete an unassigned custom role and its permission links. Assigned roles and built-in roles cannot be deleted.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": { "roleId": { "type": "string", "minLength": 1 } },
+                "required": ["roleId"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_role_delete" }
+        },
+        {
+            "name": "userpersisto_passkey_registration_options",
+            "title": "Passkey registration options",
+            "description": "Start passkey registration for the authenticated user. Requires a single-use operation grant from fresh My Account re-authentication.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "origin": { "type": "string", "minLength": 1, "maxLength": 2048 },
+                    "rpId": { "type": "string", "minLength": 1, "maxLength": 253 },
+                    "grant": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+                },
+                "required": ["grant"],
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_passkey_registration_options" }
+        },
+        {
+            "name": "userpersisto_passkey_registration_verify",
+            "title": "Verify passkey registration",
+            "description": "Verify passkey registration for the authenticated user.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "attestation": { "type": "object", "additionalProperties": true },
+                    "challengeKey": { "type": "string", "minLength": 1 },
+                    "origin": { "type": "string", "minLength": 1, "maxLength": 2048 }
+                },
+                "required": ["attestation", "challengeKey"],
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_passkey_registration_verify" }
+        },
+        {
+            "name": "userpersisto_totp_setup_start",
+            "title": "Start TOTP setup",
+            "description": "Stage a new authenticator for the authenticated user; an existing authenticator keeps working until verification replaces it. Requires a single-use operation grant from fresh My Account re-authentication.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": { "grant": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" } },
+                "required": ["grant"],
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_totp_setup_start" }
+        },
+        {
+            "name": "userpersisto_totp_setup_verify",
+            "title": "Verify TOTP setup",
+            "description": "Verify the staged authenticator and enable it for the authenticated user. Replacing an existing authenticator signs out existing sessions.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "token": { "type": "string", "pattern": "^\\d{6}$" },
+                    "setupId": { "type": "string", "minLength": 1, "maxLength": 64 }
+                },
+                "required": ["token", "setupId"],
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_totp_setup_verify" }
+        },
+        {
+            "name": "userpersisto_credits_balance",
+            "title": "Get credit balance",
+            "description": "Return the authenticated user's credit balance, or a target user's balance for admins.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": { "userId": { "type": "string" } },
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_credits_balance" }
+        },
+        {
+            "name": "userpersisto_credits_ledger",
+            "title": "List credit ledger",
+            "description": "List credit ledger entries for the authenticated user, or a target user for admins.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string" },
+                    "start": { "type": "integer", "minimum": 0 },
+                    "pageSize": { "type": "integer", "minimum": 1 }
+                },
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_credits_ledger" }
+        },
+        {
+            "name": "userpersisto_credits_grant",
+            "title": "Grant credits",
+            "description": "Admin: grant credits to a user.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "amount": { "type": "integer", "minimum": 1 },
+                    "reason": { "type": "string" },
+                    "referenceId": { "type": "string", "minLength": 1, "maxLength": 256 }
+                },
+                "required": ["userId", "amount", "referenceId"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_credits_grant" }
+        },
+        {
+            "name": "userpersisto_credits_refund",
+            "title": "Refund credits",
+            "description": "Admin: refund credits to a user.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "amount": { "type": "integer", "minimum": 1 },
+                    "reason": { "type": "string" },
+                    "referenceId": { "type": "string", "minLength": 1, "maxLength": 256 }
+                },
+                "required": ["userId", "amount", "referenceId"],
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_credits_refund" }
+        },
+        {
+            "name": "userpersisto_credits_reserve",
+            "title": "Reserve credits",
+            "description": "Internal: reserve credits before a billable operation.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "amount": { "type": "integer", "minimum": 1 },
+                    "reason": { "type": "string" },
+                    "referenceId": { "type": "string", "minLength": 1, "maxLength": 256 }
+                },
+                "required": ["userId", "amount", "referenceId"],
+                "additionalProperties": false
+            },
+            "tags": ["internal"],
+            "env": { "TOOL_NAME": "userpersisto_credits_reserve" }
+        },
+        {
+            "name": "userpersisto_credits_commit",
+            "title": "Commit credit reservation",
+            "description": "Internal: commit a credit reservation.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "amount": { "type": "integer", "minimum": 1 },
+                    "referenceId": { "type": "string", "minLength": 1, "maxLength": 256 }
+                },
+                "required": ["userId", "amount", "referenceId"],
+                "additionalProperties": false
+            },
+            "tags": ["internal"],
+            "env": { "TOOL_NAME": "userpersisto_credits_commit" }
+        },
+        {
+            "name": "userpersisto_credits_release",
+            "title": "Release credit reservation",
+            "description": "Internal: release a credit reservation.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "userId": { "type": "string", "minLength": 1 },
+                    "amount": { "type": "integer", "minimum": 1 },
+                    "referenceId": { "type": "string", "minLength": 1, "maxLength": 256 }
+                },
+                "required": ["userId", "amount", "referenceId"],
+                "additionalProperties": false
+            },
+            "tags": ["internal"],
+            "env": { "TOOL_NAME": "userpersisto_credits_release" }
+        },
+        {
+            "name": "userpersisto_config_get",
+            "title": "Get UserPersisto configuration",
+            "description": "Admin: returns masked UserPersisto billing configuration.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_config_get" }
+        },
+        {
+            "name": "userpersisto_config_set",
+            "title": "Set UserPersisto configuration",
+            "description": "Admin: stores UserPersisto billing configuration, keeping empty secret values unchanged.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "STRIPE_SECRET_KEY": { "type": "string" },
+                    "STRIPE_WEBHOOK_SECRET": { "type": "string" },
+                    "STRIPE_PUBLISHABLE_KEY": { "type": "string" },
+                    "STRIPE_PRICE_CREDITS": { "type": "string" },
+                    "STRIPE_PRICE_SUBSCRIPTION": { "type": "string" },
+                    "USERPERSISTO_CREDITS_PER_UNIT": { "type": "string" },
+                    "USERPERSISTO_BILLING_SUCCESS_URL": { "type": "string" },
+                    "USERPERSISTO_BILLING_CANCEL_URL": { "type": "string" },
+                    "remove": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "STRIPE_SECRET_KEY",
+                                "STRIPE_WEBHOOK_SECRET",
+                                "STRIPE_PUBLISHABLE_KEY",
+                                "STRIPE_PRICE_CREDITS",
+                                "STRIPE_PRICE_SUBSCRIPTION",
+                                "USERPERSISTO_CREDITS_PER_UNIT",
+                                "USERPERSISTO_BILLING_SUCCESS_URL",
+                                "USERPERSISTO_BILLING_CANCEL_URL"
+                            ]
+                        }
+                    }
+                },
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_config_set" }
+        },
+        {
+            "name": "userpersisto_auth_policy_get",
+            "title": "Get authentication policy",
+            "description": "Admin: read enabled sign-in methods, self-registration, the fixed selfRegistered signup role, redirect origins and active environment overrides.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_auth_policy_get" }
+        },
+        {
+            "name": "userpersisto_auth_policy_set",
+            "title": "Set authentication policy",
+            "description": "Admin: configure enabled passwordless sign-in methods, self-registration and redirect origins. Public signup always receives selfRegistered.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "enabledAuthMethods": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": { "type": "string", "enum": ["emailCode", "passkey", "totp", "google"] }
+                    },
+                    "selfRegistrationEnabled": { "type": "boolean" },
+                    "allowedRedirectOrigins": { "type": "array", "items": { "type": "string", "format": "uri" } }
+                },
+                "minProperties": 1,
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_auth_policy_set" }
+        },
+        {
+            "name": "userpersisto_google_status",
+            "title": "Get Google sign-in readiness",
+            "description": "Admin: read Google policy and configuration readiness, exact callback, missing setting names and secret presence without retrieving secret values.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_google_status" }
+        },
+        {
+            "name": "userpersisto_billing_checkout_create",
+            "title": "Create billing checkout",
+            "description": "Create a Stripe Checkout session for the authenticated user.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["credits", "subscription"] },
+                    "quantity": { "type": "integer", "minimum": 1 },
+                    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 255 }
+                },
+                "required": ["kind"],
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_billing_checkout_create" }
+        },
+        {
+            "name": "userpersisto_billing_subscription_get",
+            "title": "Get billing subscription",
+            "description": "Return the authenticated user's subscription, or a target user's subscription for admins.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": { "userId": { "type": "string" } },
+                "additionalProperties": false
+            },
+            "env": { "TOOL_NAME": "userpersisto_billing_subscription_get" }
+        },
+        {
+            "name": "userpersisto_billing_stripe_webhook_process",
+            "title": "Process Stripe webhook",
+            "description": "Internal: process an incoming Stripe webhook.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "rawBody": { "type": "string" },
+                    "signatureHeader": { "type": "string" }
+                },
+                "required": ["rawBody", "signatureHeader"],
+                "additionalProperties": false
+            },
+            "tags": ["internal"],
+            "env": { "TOOL_NAME": "userpersisto_billing_stripe_webhook_process" }
+        },
+        {
+            "name": "userpersisto_billing_events_list",
+            "title": "List billing events",
+            "description": "Admin: list billing events.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "start": { "type": "integer", "minimum": 0 },
+                    "pageSize": { "type": "integer", "minimum": 1 }
+                },
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_billing_events_list" }
+        },
+        {
+            "name": "userpersisto_audit_events_list",
+            "title": "List audit events",
+            "description": "Admin: list audit events.",
+            "command": "sh",
+            "args": ["tools/userpersisto_tool.sh"],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "actorId": { "type": "string" },
+                    "start": { "type": "integer", "minimum": 0 },
+                    "pageSize": { "type": "integer", "minimum": 1 }
+                },
+                "additionalProperties": false
+            },
+            "tags": ["admin"],
+            "env": { "TOOL_NAME": "userpersisto_audit_events_list" }
+        },
+        {
+            "name": "userpersisto_oidc_clients_list",
+            "title": "List OAuth2/OIDC clients",
+            "description": "Admin: list registered OAuth2/OIDC clients without secrets.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "pageSize": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500
+                    }
+                },
+                "additionalProperties": false
+            },
+            "tags": [
+                "admin"
+            ],
+            "env": {
+                "TOOL_NAME": "userpersisto_oidc_clients_list"
+            }
+        },
+        {
+            "name": "userpersisto_oidc_client_create",
+            "title": "Register OAuth2/OIDC client",
+            "description": "Admin: register a browser or confidential service client. Confidential client secrets are generated and returned once.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "client_id": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{2,127}$"
+                    },
+                    "client_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                    },
+                    "redirect_uris": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                            "type": "string",
+                            "maxLength": 2048
+                        }
+                    },
+                    "post_logout_redirect_uris": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                            "type": "string",
+                            "maxLength": 2048
+                        }
+                    },
+                    "token_endpoint_auth_method": {
+                        "type": "string",
+                        "enum": [
+                            "none",
+                            "client_secret_basic",
+                            "client_secret_post"
+                        ]
+                    },
+                    "grant_types": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "authorization_code",
+                                "refresh_token",
+                                "client_credentials"
+                            ]
+                        }
+                    },
+                    "response_types": {
+                        "type": "array",
+                        "maxItems": 1,
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "code"
+                            ]
+                        }
+                    },
+                    "scope": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                    },
+                    "enabled": {
+                        "type": "boolean"
+                    }
+                },
+                "additionalProperties": false
+            },
+            "tags": [
+                "admin"
+            ],
+            "env": {
+                "TOOL_NAME": "userpersisto_oidc_client_create"
+            }
+        },
+        {
+            "name": "userpersisto_oidc_client_update",
+            "title": "Update OAuth2/OIDC client",
+            "description": "Admin: update client metadata or enablement, revoking existing grants and tokens.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "client_id": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{2,127}$"
+                    },
+                    "client_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                    },
+                    "redirect_uris": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                            "type": "string",
+                            "maxLength": 2048
+                        }
+                    },
+                    "post_logout_redirect_uris": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                            "type": "string",
+                            "maxLength": 2048
+                        }
+                    },
+                    "token_endpoint_auth_method": {
+                        "type": "string",
+                        "enum": [
+                            "none",
+                            "client_secret_basic",
+                            "client_secret_post"
+                        ]
+                    },
+                    "grant_types": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "authorization_code",
+                                "refresh_token",
+                                "client_credentials"
+                            ]
+                        }
+                    },
+                    "response_types": {
+                        "type": "array",
+                        "maxItems": 1,
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "code"
+                            ]
+                        }
+                    },
+                    "scope": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                    },
+                    "enabled": {
+                        "type": "boolean"
+                    }
+                },
+                "additionalProperties": false,
+                "required": [
+                    "client_id"
+                ]
+            },
+            "tags": [
+                "admin"
+            ],
+            "env": {
+                "TOOL_NAME": "userpersisto_oidc_client_update"
+            }
+        },
+        {
+            "name": "userpersisto_oidc_client_delete",
+            "title": "Delete OAuth2/OIDC client",
+            "description": "Admin: remove a client and revoke all its grants and tokens.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "client_id": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{2,127}$"
+                    }
+                },
+                "additionalProperties": false,
+                "required": [
+                    "client_id"
+                ]
+            },
+            "tags": [
+                "admin"
+            ],
+            "env": {
+                "TOOL_NAME": "userpersisto_oidc_client_delete"
+            }
+        },
+        {
+            "name": "userpersisto_oidc_client_rotate_secret",
+            "title": "Rotate OAuth2/OIDC client secret",
+            "description": "Admin: generate a new confidential client secret, return it once, and revoke existing grants and tokens.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "client_id": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 128,
+                        "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{2,127}$"
+                    }
+                },
+                "additionalProperties": false,
+                "required": [
+                    "client_id"
+                ]
+            },
+            "tags": [
+                "admin"
+            ],
+            "env": {
+                "TOOL_NAME": "userpersisto_oidc_client_rotate_secret"
+            }
+        },
+        {
+            "name": "userpersisto_oidc_status",
+            "title": "Get OAuth2/OIDC status",
+            "description": "Admin: get the configured issuer and discovery URL without secrets.",
+            "command": "sh",
+            "args": [
+                "tools/userpersisto_tool.sh"
+            ],
+            "cwd": "/code",
+            "timeoutMs": 30000,
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "tags": [
+                "admin"
+            ],
+            "env": {
+                "TOOL_NAME": "userpersisto_oidc_status"
+            }
+        }
+    ]
+}

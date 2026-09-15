@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import http from 'node:http';
+import net from 'node:net';
 import test from 'node:test';
 
 import { startDocumentServerProcess, startOnlyOfficeAgent } from '../src/index.mjs';
@@ -58,6 +60,7 @@ test('DocumentServer owns a process group that is signalled as one during shutdo
   assert.equal(calls[0].file, '/bin/bash');
   assert.deepEqual(calls[0].args, ['-lc', 'document-server-command']);
   assert.equal(calls[0].options.detached, true);
+  assert.equal(calls[0].options.env.PLUGINS_ENABLED, 'false');
   assert.deepEqual(calls[1], { pid: -4242, signal: 'SIGTERM' });
 });
 
@@ -195,6 +198,7 @@ test('failed drain keeps storage and DocumentServer alive and reports failure', 
     },
   });
 
+  runtime.sessionStore.acknowledgeDrainedEditors = () => { throw new Error('failed drain must not retire editor sessions'); };
   await assert.rejects(() => runtime.stop(), /callback acknowledgement missing/);
   assert.equal(serverFactory.records[0].closed, true, 'control listener stops admitting new sessions');
   assert.equal(serverFactory.records[2].closed, true, 'editor listener stops admitting new sessions');
@@ -207,13 +211,20 @@ test('active editor socket cannot block force-save drain before targeted restart
   const activeSocket = Object.assign(new EventEmitter(), {
     destroyed: false,
     destroy() {
+      throw new Error('raw socket destruction bypassed graceful shutdown');
+    },
+    closeGracefully() {
       this.destroyed = true;
       this.emit('close');
       records[2].finishClose?.();
     },
   });
   let drained = false;
+  let disconnected = false;
+  let nowMs = 1_000;
+  let drainDeadline;
   const runtime = await startOnlyOfficeAgent({
+    now: () => nowMs,
     env: {
       ONLYOFFICE_JWT_SECRET: 'jwt-secret',
       PLOINKY_WORKSPACE_ROOT: '/tmp/workspace',
@@ -250,20 +261,142 @@ test('active editor socket cannot block force-save drain before targeted restart
     createDpuStore: () => ({}),
     createStorageRouter: () => ({}),
     createEditorProxy: () => ({ handle() {}, handleUpgrade() {} }),
-    startDocumentServer: () => ({ async stop() {} }),
-    drainOnlyOfficeSessions: async () => {
+    startDocumentServer: () => ({ async stop() {
+      assert.equal(disconnected, true, 'DocumentServer stops only after the editor closes gracefully');
+    } }),
+    drainOnlyOfficeSessions: async ({ deadline }) => {
+      drainDeadline = deadline;
       assert.equal(records[0].closeStarted, true, 'control no longer accepts new work');
       assert.equal(records[2].closeStarted, true, 'editor no longer accepts new work');
       assert.equal(records[2].closeFinished, false, 'active WebSocket still delays close callback');
       assert.equal(activeSocket.destroyed, false, 'editor stays connected through force-save acknowledgement');
       drained = true;
+      nowMs += 1_200;
+    },
+    disconnectOnlyOfficeEditors: async ({ editorSockets, deadline, now }) => {
+      assert.equal(drained, true, 'native disconnect follows durable callback acknowledgement');
+      assert.equal(deadline, drainDeadline, 'disconnect shares the original application drain deadline');
+      assert.equal(deadline - now(), 28_800);
+      assert.equal(editorSockets.has(activeSocket), true);
+      assert.equal(records[1].closeStarted, false, 'callback storage remains live through graceful disconnect');
+      activeSocket.closeGracefully();
+      disconnected = true;
     },
   });
+  let acknowledged = false;
+  runtime.sessionStore.acknowledgeDrainedEditors = () => {
+    assert.equal(drained, true);
+    assert.equal(disconnected, true);
+    assert.equal(activeSocket.destroyed, true);
+    acknowledged = true;
+  };
   runtime.editorServer.emit('connection', activeSocket);
+  runtime.editorServer.emit('upgrade', {}, activeSocket, Buffer.alloc(0));
 
   await runtime.stop();
+  assert.equal(acknowledged, true);
 
   assert.equal(drained, true);
   assert.equal(activeSocket.destroyed, true);
   assert.equal(records[2].closeFinished, true);
+});
+
+test('failed graceful editor shutdown retains storage and DocumentServer and can retry without reclosing listeners', async () => {
+  const serverFactory = createServerFactory();
+  const activeSocket = Object.assign(new EventEmitter(), {
+    destroyed: false,
+    destroy() { throw new Error('raw socket destruction is forbidden'); },
+  });
+  let attempts = 0;
+  let documentServerStops = 0;
+  const runtime = await startOnlyOfficeAgent({
+    env: { ONLYOFFICE_JWT_SECRET: 'jwt-secret', PLOINKY_WORKSPACE_ROOT: '/tmp/workspace' },
+    assertImageContract() {},
+    createHttpServer: serverFactory.createHttpServer,
+    createControlRouteHandler: () => () => true,
+    createStorageRouteHandler: () => () => true,
+    createWorkspaceStore: () => ({}),
+    createDpuStore: () => ({}),
+    createStorageRouter: () => ({}),
+    createEditorProxy: () => ({ handle() {}, handleUpgrade() {} }),
+    startDocumentServer: () => ({ async stop() { documentServerStops += 1; } }),
+    drainOnlyOfficeSessions: async () => {},
+    disconnectOnlyOfficeEditors: async ({ editorSockets }) => {
+      attempts += 1;
+      assert.equal(editorSockets.has(activeSocket), true);
+      if (attempts === 1) throw new Error('native disconnect deadline expired');
+      activeSocket.emit('close');
+    },
+  });
+  runtime.editorServer.emit('connection', activeSocket);
+  runtime.editorServer.emit('upgrade', {}, activeSocket, Buffer.alloc(0));
+  let acknowledged = false;
+  runtime.sessionStore.acknowledgeDrainedEditors = () => { acknowledged = true; };
+  await assert.rejects(() => runtime.stop(), /native disconnect deadline expired/);
+  assert.equal(acknowledged, false);
+  assert.equal(documentServerStops, 0);
+  assert.equal(serverFactory.records[1].closed, false);
+  assert.equal(activeSocket.destroyed, false);
+  runtime.controlServer.close = () => { throw new Error('control listener was closed twice'); };
+  runtime.editorServer.close = () => { throw new Error('editor listener was closed twice'); };
+  await runtime.stop();
+  await runtime.stop();
+  assert.equal(acknowledged, true);
+  assert.equal(attempts, 2);
+  assert.equal(documentServerStops, 1);
+  assert.equal(serverFactory.records[1].closed, true);
+});
+
+test('partial editor HTTP requests close after graceful drain and before DocumentServer teardown', { timeout: 5_000 }, async () => {
+  let acceptedSocket;
+  let drained = false;
+  let documentServerStopped = false;
+  const runtime = await startOnlyOfficeAgent({
+    env: { ONLYOFFICE_JWT_SECRET: 'jwt-secret', PLOINKY_WORKSPACE_ROOT: '/tmp/workspace' },
+    assertImageContract() {},
+    createHttpServer(handler) {
+      const server = http.createServer(handler);
+      const bind = server.listen.bind(server);
+      server.listen = (_port, _host, callback) => bind(0, '127.0.0.1', callback);
+      return server;
+    },
+    createControlRouteHandler: () => () => true,
+    createStorageRouteHandler: () => () => true,
+    createWorkspaceStore: () => ({}),
+    createDpuStore: () => ({}),
+    createStorageRouter: () => ({}),
+    createEditorProxy: () => ({ handle() {}, handleUpgrade() {} }),
+    drainOnlyOfficeSessions: async () => {
+      assert.equal(acceptedSocket.destroyed, false, 'HTTP sockets survive until durable drain completes');
+      drained = true;
+    },
+    startDocumentServer: () => ({ async stop() {
+      assert.equal(drained, true);
+      assert.equal(acceptedSocket.destroyed, true, 'partial HTTP cannot block close after process termination');
+      documentServerStopped = true;
+    } }),
+  });
+  const accepted = once(runtime.editorServer, 'connection');
+  const client = net.connect(runtime.editorServer.address().port, '127.0.0.1');
+  let timer;
+  try {
+    [[acceptedSocket]] = await Promise.all([accepted, once(client, 'connect')]);
+    const receivedPartialRequest = once(acceptedSocket, 'data');
+    client.write('GET /unfinished HTTP/1.1\r\nHost: localhost\r\n');
+    await receivedPartialRequest;
+    await Promise.race([
+      runtime.stop(),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('partial HTTP blocked runtime shutdown')), 1_000); }),
+    ]);
+    assert.equal(documentServerStopped, true);
+    assert.equal(runtime.editorServer.listening, false);
+    assert.equal(runtime.storageServer.listening, false);
+  } finally {
+    clearTimeout(timer);
+    client.destroy();
+    for (const server of [runtime.editorServer, runtime.controlServer, runtime.storageServer]) {
+      server.closeAllConnections();
+      if (server.listening) await new Promise((resolve) => server.close(resolve));
+    }
+  }
 });

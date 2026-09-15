@@ -1,0 +1,44 @@
+.email-agent-settings-modal {
+    min-width: min(760px, calc(100vw - 32px));
+}
+
+.email-agent-settings-body {
+    display: grid;
+    gap: 16px;
+}
+
+.email-agent-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.email-agent-mask,
+.email-agent-status {
+    color: var(--secondary-text-color, #57606a);
+    font-size: 0.85rem;
+}
+
+.email-agent-status.error {
+    color: var(--danger-color, #cf222e);
+}
+
+.email-agent-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.email-agent-remove-secret {
+    width: max-content;
+}
+
+@media (max-width: 720px) {
+    .email-agent-settings-modal {
+        min-width: min(100vw - 16px, 760px);
+    }
+
+    .email-agent-grid {
+        grid-template-columns: 1fr;
+    }
+}

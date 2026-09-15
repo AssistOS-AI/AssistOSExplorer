@@ -7,6 +7,7 @@ import { buildSignedOnlyOfficeConfig } from '../onlyoffice-config.mjs';
 import { isConfidentialRequestPath as isConfidentialPath } from '../storage/dpu-paths.mjs';
 import { resolveOnlyOfficeEditorService } from '../edge-topology.mjs';
 import { resolveCanonicalEditorBrowserUrl } from '../public-editor-url.mjs';
+import { ConfidentialDocumentError } from '../storage/confidential-document-error.mjs';
 
 function sendJson(res, statusCode, payload) {
   const body = Buffer.from(JSON.stringify(payload));
@@ -139,12 +140,19 @@ export function createControlRouteHandler({
     const authUser = verified.authInfo?.user && typeof verified.authInfo.user === 'object'
       ? verified.authInfo.user
       : {};
-    const descriptor = await resolveSessionDescriptor({
-      requestedPath,
-      authInfo: verified.authInfo,
-      authUser,
-      delegations,
-    });
+    let descriptor;
+    try {
+      descriptor = await resolveSessionDescriptor({
+        requestedPath,
+        authInfo: verified.authInfo,
+        authUser,
+        delegations,
+      });
+    } catch (error) {
+      if (!(error instanceof ConfidentialDocumentError)) throw error;
+      sendJson(res, error.statusCode, { ok: false, error: error.code });
+      return true;
+    }
     const editorService = await resolveEditorService({ req });
     const {
       browserUrl: editorBrowserUrl,

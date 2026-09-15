@@ -1,0 +1,51 @@
+<div class="email-agent-settings-modal">
+    <div class="modal-header">
+        <div class="modal-title">EmailAgent Settings</div>
+        <div class="close" data-local-action="closeModal" aria-label="Close">
+            <img class="close-icon" src="./assets/icons/x-mark.svg" alt="close">
+        </div>
+    </div>
+
+    <div class="modal-body email-agent-settings-body">
+        <div class="email-agent-grid">
+            <label class="form-item">
+                <span class="form-label">Mailjet API key</span>
+                <input id="mailjetApiKey" class="form-input" type="password" placeholder="Leave unchanged" autocomplete="off" spellcheck="false">
+                <span class="email-agent-mask" data-mask-for="MAILJET_API_KEY"></span>
+                <button type="button" class="gray-button email-agent-remove-secret" data-local-action="removeSecret MAILJET_API_KEY">Remove secret</button>
+            </label>
+            <label class="form-item">
+                <span class="form-label">Mailjet API secret</span>
+                <input id="mailjetApiSecret" class="form-input" type="password" placeholder="Leave unchanged" autocomplete="off" spellcheck="false">
+                <span class="email-agent-mask" data-mask-for="MAILJET_API_SECRET"></span>
+                <button type="button" class="gray-button email-agent-remove-secret" data-local-action="removeSecret MAILJET_API_SECRET">Remove secret</button>
+            </label>
+            <label class="form-item">
+                <span class="form-label">From email</span>
+                <input id="mailjetFromEmail" class="form-input" type="email" autocomplete="off" spellcheck="false">
+                <span class="email-agent-mask" data-mask-for="MAILJET_FROM_EMAIL"></span>
+            </label>
+            <label class="form-item">
+                <span class="form-label">From name</span>
+                <input id="mailjetFromName" class="form-input" type="text" autocomplete="off" spellcheck="false">
+                <span class="email-agent-mask" data-mask-for="MAILJET_FROM_NAME"></span>
+            </label>
+            <label class="form-item">
+                <span class="form-label">Auth code template ID (optional)</span>
+                <input id="emailAuthCodeTemplateId" class="form-input" type="text" autocomplete="off" spellcheck="false">
+                <span class="email-agent-mask" data-mask-for="EMAIL_AUTH_CODE_TEMPLATE_ID"></span>
+            </label>
+            <label class="form-item">
+                <span class="form-label">Test recipient</span>
+                <input id="emailTestRecipient" class="form-input" type="email" autocomplete="off" spellcheck="false">
+            </label>
+        </div>
+
+        <div class="email-agent-actions">
+            <button type="button" class="general-button" data-local-action="saveSettings">Save email settings</button>
+            <button type="button" class="gray-button" data-local-action="testConfiguration">Test configuration</button>
+        </div>
+
+        <div id="emailAgentSettingsStatus" class="email-agent-status" role="status" aria-live="polite"></div>
+    </div>
+</div>

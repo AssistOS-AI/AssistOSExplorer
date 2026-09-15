@@ -1,6 +1,7 @@
 import {
     encodeOptions,
     escapeAttr,
+    escapeHtml,
     parseRoles
 } from '../admin-settings-panel/admin-settings-utils.js';
 
@@ -10,7 +11,14 @@ export class AdminUsersSettings {
         this.invalidate = invalidate;
         this.state = {
             users: [],
-            availableRoles: []
+            availableRoles: [],
+            start: 0,
+            pageSize: 100,
+            totalCount: 0,
+            hasMore: false,
+            loading: false,
+            search: '',
+            selfRegisteredCount: null,
         };
         this.invalidate();
     }
@@ -18,20 +26,44 @@ export class AdminUsersSettings {
     beforeRender() {}
 
     afterRender() {
-        this.createForm = this.element.querySelector('[data-role="createForm"]');
-        this.createRolesSelect = this.element.querySelector('[data-role="createRolesSelect"]');
         this.tableHost = this.element.querySelector('[data-role="tableHost"]');
+        this.pageLabel = this.element.querySelector('[data-role="pageLabel"]');
+        this.previousButton = this.element.querySelector('[data-role="previousPage"]');
+        this.nextButton = this.element.querySelector('[data-role="nextPage"]');
+        this.searchForm = this.element.querySelector('[data-role="searchForm"]');
+        this.searchInput = this.element.querySelector('[data-role="userSearch"]');
+        this.selfRegisteredCountEl = this.element.querySelector('[data-role="selfRegisteredCount"]');
+        if (this.searchInput) this.searchInput.value = this.state.search;
         this.bindEvents();
         this.render();
     }
 
     bindEvents() {
         if (this.element.dataset.boundAdminUsersSettings) return;
-        this.createForm?.addEventListener('submit', (event) => {
+        this.searchForm?.addEventListener('submit', (event) => {
             event.preventDefault();
-            this.submitCreateUser().catch((error) => this.emitError(error));
+            this.submitSearch();
+        });
+        this.searchInput?.addEventListener('input', () => {
+            clearTimeout(this.searchTimer);
+            this.searchTimer = setTimeout(() => this.submitSearch(), 250);
         });
         this.element.dataset.boundAdminUsersSettings = 'true';
+    }
+
+    submitSearch() {
+        clearTimeout(this.searchTimer);
+        this.dispatch('admin-users-search', { search: this.searchInput?.value || '' });
+    }
+
+    clearSearch() {
+        if (this.searchInput) this.searchInput.value = '';
+        this.submitSearch();
+        this.searchInput?.focus();
+    }
+
+    afterUnload() {
+        clearTimeout(this.searchTimer);
     }
 
     setState(next = {}) {
@@ -41,12 +73,41 @@ export class AdminUsersSettings {
         if (Array.isArray(next.availableRoles)) {
             this.state.availableRoles = next.availableRoles;
         }
+        for (const key of ['start', 'pageSize', 'totalCount', 'hasMore', 'loading', 'search', 'selfRegisteredCount']) {
+            if (Object.prototype.hasOwnProperty.call(next, key)) this.state[key] = next[key];
+        }
         this.render();
     }
 
     render() {
-        this.configureRoleSelect(this.createRolesSelect, []);
         this.renderUsers();
+        this.renderPagination();
+        if (this.selfRegisteredCountEl) {
+            this.selfRegisteredCountEl.textContent = this.state.selfRegisteredCount === null
+                ? this.state.loading ? 'Loading self-registered user count…' : 'Self-registered user count unavailable.'
+                : `Self-registered users: ${this.state.selfRegisteredCount}`;
+        }
+    }
+
+    renderPagination() {
+        const { start, users, totalCount, hasMore, loading } = this.state;
+        if (this.previousButton) this.previousButton.disabled = loading || start === 0;
+        if (this.nextButton) this.nextButton.disabled = loading || !hasMore;
+        if (this.pageLabel) this.pageLabel.textContent = loading
+            ? 'Loading users…'
+            : `${users.length ? start + 1 : 0}–${start + users.length}${totalCount === null ? '' : ` of ${totalCount}`} users`;
+    }
+
+    previousPage() {
+        if (!this.state.loading && this.state.start > 0) {
+            this.dispatch('admin-users-page', { start: Math.max(0, this.state.start - this.state.pageSize) });
+        }
+    }
+
+    nextPage() {
+        if (!this.state.loading && this.state.hasMore) {
+            this.dispatch('admin-users-page', { start: this.state.start + this.state.pageSize });
+        }
     }
 
     renderUsers() {
@@ -60,7 +121,8 @@ export class AdminUsersSettings {
         if (!this.state.users.length) {
             const empty = document.createElement('div');
             empty.className = 'empty';
-            empty.textContent = 'No users.';
+            empty.textContent = this.state.loading ? 'Loading users…'
+                : this.state.search ? 'No matching users.' : 'No users to display.';
             fragment.appendChild(empty);
             this.tableHost.replaceChildren(fragment);
             return;
@@ -71,9 +133,9 @@ export class AdminUsersSettings {
             <thead>
                 <tr>
                     <th>Username</th>
+                    <th>Email</th>
                     <th>Name</th>
                     <th>Roles</th>
-                    <th>Password Reset</th>
                     <th></th>
                 </tr>
             </thead>
@@ -102,17 +164,12 @@ export class AdminUsersSettings {
         tr.dataset.userId = user.id;
         const formId = escapeAttr(this.getUserFormId(user));
         tr.innerHTML = `
-            <td data-label="Username"><input class="form-input" form="${formId}" data-field="username" value="${escapeAttr(user.username)}"></td>
-            <td data-label="Name"><input class="form-input" form="${formId}" data-field="name" value="${escapeAttr(user.name || '')}"></td>
+            <td data-label="Username"><input class="form-input" form="${formId}" data-field="username" value="${escapeAttr(user.username || '')}" placeholder="Optional"></td>
+            <td data-label="Email">${escapeHtml(user.email || '')}</td>
+            <td data-label="Name"><input class="form-input" form="${formId}" data-field="name" value="${escapeAttr(user.name || user.displayName || '')}"></td>
             <td data-label="Roles">
                 <custom-select data-presenter="custom-select" data-field="roles"></custom-select>
             </td>
-            <td data-label="Password"><span class="password-field">
-                <input class="form-input" form="${formId}" data-field="password" type="password" autocomplete="new-password" placeholder="Leave unchanged">
-                <button type="button" class="password-toggle" data-local-action="togglePasswordVisibility" aria-label="Show password" title="Show password" aria-pressed="false">
-                    <img src="/explorer/assets/icons/eye.svg" alt="">
-                </button>
-            </span></td>
             <td data-label="Actions"><div class="actions">
                 <button type="button" class="general-button" data-local-action="saveUserRow">Save</button>
                 <button type="button" class="gray-button danger" data-local-action="deleteUserRow">Delete</button>
@@ -174,18 +231,6 @@ export class AdminUsersSettings {
         await this.submitUserRowAction(row, action);
     }
 
-    async submitCreateUser() {
-        if (!this.createForm) return;
-        const data = new FormData(this.createForm);
-        const roles = await this.getSelectedRoles(this.createRolesSelect);
-        this.dispatch('admin-users-create', {
-            username: data.get('username'),
-            password: data.get('password'),
-            name: data.get('name'),
-            roles
-        });
-    }
-
     async submitUserRowAction(row, action) {
         const userId = row.dataset.userId;
         if (!userId) return;
@@ -198,26 +243,11 @@ export class AdminUsersSettings {
         for (const input of row.querySelectorAll('input[data-field], custom-select[data-field]')) {
             if (input.dataset.field === 'roles') {
                 body.roles = await this.getSelectedRoles(input);
-            } else if (input.dataset.field === 'password') {
-                if (input.value) body.password = input.value;
             } else {
                 body[input.dataset.field] = input.value;
             }
         }
         this.dispatch('admin-users-save', { userId, body });
-    }
-
-    togglePasswordVisibility(button) {
-        const field = button.closest('.password-field');
-        const input = field?.querySelector('input');
-        if (!input) return;
-        const shouldShow = input.type === 'password';
-        input.type = shouldShow ? 'text' : 'password';
-        const label = shouldShow ? 'Hide password' : 'Show password';
-        button.setAttribute('aria-label', label);
-        button.setAttribute('aria-pressed', shouldShow ? 'true' : 'false');
-        button.title = label;
-        input.focus();
     }
 
     emitError(error) {

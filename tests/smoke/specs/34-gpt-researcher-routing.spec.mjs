@@ -39,16 +39,13 @@ test.describe('GPTResearcher Router publication @external', () => {
   test('real HTML, assets, API, redirect, and WebSocket stay under the configured base path', async ({ page }, testInfo) => {
     test.skip(!smokeConfig.flags.gptResearcher, 'SMOKE_GPT_RESEARCHER is off.');
     const routerOrigin = new URL(smokeConfig.baseURL).origin;
+    // This Router GET is static HTML and does not revoke the session. Complete
+    // provider sign-in and its principal check before observing service traffic.
+    await signIn(page, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true });
     const requests = [];
     const websocketEvents = [];
     const documentResponses = [];
-    let authenticating = true;
     page.on('request', (request) => {
-      const url = new URL(request.url());
-      // Router login and the helper's principal check are not service requests.
-      if (authenticating && url.origin === routerOrigin
-        && ((url.pathname === '/auth/login' && ['GET', 'POST'].includes(request.method()))
-          || (url.pathname === '/auth/token' && request.method() === 'GET'))) return;
       requests.push({
         url: request.url(),
         method: request.method(),
@@ -66,8 +63,7 @@ test.describe('GPTResearcher Router publication @external', () => {
       websocket.on('framereceived', () => { event.received += 1; });
     });
 
-    await signIn(page, smokeConfig.primaryUser, SERVICE_PREFIX);
-    authenticating = false;
+    await page.goto(SERVICE_PREFIX, { waitUntil: 'load' });
     const htmlResponse = documentResponses.at(-1);
     expect(htmlResponse, 'GPTResearcher navigation must produce its document response').toBeTruthy();
     expect(htmlResponse?.status(), 'GPTResearcher HTML through Router').toBe(200);

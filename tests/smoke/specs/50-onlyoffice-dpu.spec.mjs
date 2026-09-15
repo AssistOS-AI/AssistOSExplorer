@@ -1,6 +1,4 @@
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
@@ -8,9 +6,14 @@ import { getWithoutKeepAlive } from '../lib/api-probe.mjs';
 import { dpuData } from '../lib/dpu-data.mjs';
 import { dpuSnapshotPersistenceAdvanced } from '../lib/dpu-persistence.mjs';
 import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
+import {
+  attachOnlyOfficeDocumentScreenshot,
+  createOnlyOfficeGateDiagnostics,
+  finalizeOnlyOfficeGate,
+} from '../lib/onlyoffice-gate-diagnostics.mjs';
 import { resolvePloinkyExecutable } from '../lib/ploinky-executable.mjs';
-
-const execFileAsync = promisify(execFile);
+import { onlyOfficeGateTimeouts, restartOnlyOffice } from '../lib/onlyoffice-lifecycle.mjs';
+import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.mjs';
 
 function readDpuState() {
   if (!dpuData.exists('state.json')) {
@@ -183,17 +186,6 @@ async function forceSaveDocument(editorFrame) {
   await saveButton.click();
 }
 
-async function restartOnlyOffice(executable) {
-  if (!smokeConfig.workspaceRoot) {
-    throw new Error('SMOKE_WORKSPACE_ROOT is required for the targeted OnlyOffice restart.');
-  }
-  const { stdout, stderr } = await execFileAsync(executable, ['restart', 'onlyOffice'], {
-    cwd: smokeConfig.workspaceRoot,
-    env: { ...process.env, PLOINKY_CWD: smokeConfig.workspaceRoot }
-  });
-  return { stdout: String(stdout || ''), stderr: String(stderr || '') };
-}
-
 async function waitForOnlyOfficeSession(page, documentPath) {
   let lastPayload = null;
   await expect.poll(async () => {
@@ -253,29 +245,41 @@ test.describe('DPU and OnlyOffice @external', () => {
   test.skip(!smokeConfig.flags.onlyoffice, 'Set SMOKE_ONLYOFFICE=1 to run OnlyOffice/DPU smoke checks.');
 
   test('Explorer-created Confidential document saves through callback, drains, and reopens after targeted restart', async ({ browser }, testInfo) => {
-    // A targeted OnlyOffice replacement includes graceful shutdown, image
-    // recreation, and semantic readiness. On a cold Box that bounded lifecycle
-    // legitimately exceeds the generic two-minute UI smoke budget.
-    test.setTimeout(Math.max(smokeConfig.timeouts.test, 300_000));
+    const lifecycleTimeouts = onlyOfficeGateTimeouts({ uiTimeoutMs: smokeConfig.timeouts.test });
+    test.setTimeout(lifecycleTimeouts.testTimeoutMs);
     expect(
       dpuData.exists(),
       `DPU data root should exist at ${dpuData.describe()}. Set SMOKE_WORKSPACE_ROOT or SMOKE_DPU_DATA_ROOT for local deployments.`
     ).toBe(true);
     const ploinkyExecutable = resolvePloinkyExecutable();
+    const restartOptions = {
+      executable: ploinkyExecutable,
+      workspaceRoot: smokeConfig.workspaceRoot,
+      timeoutMs: lifecycleTimeouts.restartTimeoutMs,
+    };
 
     const fileName = `smoke-onlyoffice-${smokeConfig.runId}.docx`;
     const documentPath = `/Confidential/My Space/${fileName}`;
     const preExistingIds = new Set(listDpuFileObjects().map((object) => object.id));
     const context = await browser.newContext({ baseURL: smokeConfig.baseURL });
-    const page = await context.newPage();
+    const diagnostics = createOnlyOfficeGateDiagnostics(context);
+    const failureCollector = createReleaseGateFailureCollector();
+    let page = null;
+    let activeEditorFrame = null;
+    let traceStarted = false;
     let createdObjectId = null;
     let primaryError = null;
 
     try {
+      await context.tracing.start({ screenshots: false, snapshots: true, sources: true });
+      traceStarted = true;
+      page = await context.newPage();
+      diagnostics.setPhase('authentication');
       await openExplorer(page, { hash: 'file-exp/Confidential/My%20Space' });
       await assertExplorerDirectory(page, '/Confidential/My Space');
       await expect(page.locator('#toolbarMenuButton')).toBeEnabled();
 
+      diagnostics.setPhase('document-creation');
       let dialogMessage = '';
       page.once('dialog', async (dialog) => {
         dialogMessage = dialog.message();
@@ -328,7 +332,9 @@ test.describe('DPU and OnlyOffice @external', () => {
       expect(initialSnapshot).not.toBeNull();
 
       const marker = `OnlyOffice-release-${smokeConfig.runId}`;
+      diagnostics.setPhase('explicit-save');
       const editorFrame = await openDocumentFromExplorer(page, documentPath);
+      activeEditorFrame = editorFrame;
       await typeDocumentMarker(page, editorFrame, marker);
       await forceSaveDocument(editorFrame);
 
@@ -345,6 +351,7 @@ test.describe('DPU and OnlyOffice @external', () => {
       expect(callbackSnapshot?.updatedAt).not.toBe(initialSnapshot.updatedAt);
 
       const drainMarker = `OnlyOffice-drain-${smokeConfig.runId}`;
+      diagnostics.setPhase('outstanding-edit');
       await typeDocumentMarker(page, editorFrame, drainMarker);
       const preDrainSnapshot = readDpuObjectSnapshot(createdObjectId);
       expect(preDrainSnapshot?.id).toBe(initialSnapshot.id);
@@ -354,7 +361,8 @@ test.describe('DPU and OnlyOffice @external', () => {
       ).toBe(callbackSnapshot.blobSha256);
       expect(preDrainSnapshot?.updatedAt).toBe(callbackSnapshot.updatedAt);
 
-      const restartResult = await restartOnlyOffice(ploinkyExecutable);
+      diagnostics.setPhase('targeted-restart');
+      const restartResult = await restartOnlyOffice(restartOptions);
       expect(restartResult.stderr).not.toMatch(/failed to (?:restart|start)|managed restart failed/i);
       expect(restartResult.stdout).toMatch(/✓ Agent restarted(?: \([^)]+\))?\./);
 
@@ -366,10 +374,12 @@ test.describe('DPU and OnlyOffice @external', () => {
       ).not.toBe(callbackSnapshot.blobSha256);
       expect(drainSnapshot?.updatedAt).not.toBe(callbackSnapshot.updatedAt);
 
+      diagnostics.setPhase('reopen');
       await waitForOnlyOfficeSession(page, documentPath);
       await openExplorer(page, { hash: 'file-exp/Confidential/My%20Space' });
       await assertExplorerDirectory(page, '/Confidential/My Space');
       const reopenedFrame = await openDocumentFromExplorer(page, documentPath);
+      activeEditorFrame = reopenedFrame;
       let reopenedText = '';
       await expect.poll(async () => {
         reopenedText = await readOnlyOfficeDocumentText(reopenedFrame);
@@ -381,6 +391,30 @@ test.describe('DPU and OnlyOffice @external', () => {
 
       const reopenedSnapshot = readDpuObjectSnapshot(createdObjectId);
       expect(reopenedSnapshot?.blobSha256).toBe(drainSnapshot.blobSha256);
+      expect(await frameBodyText(reopenedFrame)).not.toMatch(/server backup copy|not saved to storage/i);
+      const continuationMarker = `OnlyOffice-continued-${smokeConfig.runId}`;
+      diagnostics.setPhase('continued-edit-after-restart');
+      await typeDocumentMarker(page, reopenedFrame, continuationMarker);
+      await forceSaveDocument(reopenedFrame);
+      let continuationSnapshot;
+      await expect.poll(() => {
+        continuationSnapshot = readDpuObjectSnapshot(createdObjectId);
+        return dpuSnapshotPersistenceAdvanced(drainSnapshot, continuationSnapshot);
+      }, {
+        timeout: smokeConfig.timeouts.navigation,
+        message: 'The reopened editor must save further edits to durable DPU storage.',
+      }).toBe(true);
+      await page.reload();
+      await assertExplorerDirectory(page, '/Confidential/My Space');
+      const continuedFrame = await openDocumentFromExplorer(page, documentPath);
+      activeEditorFrame = continuedFrame;
+      await expect.poll(() => readOnlyOfficeDocumentText(continuedFrame), {
+        timeout: smokeConfig.timeouts.navigation,
+      }).toContain(continuationMarker);
+      expect(await frameBodyText(continuedFrame)).not.toMatch(/server backup copy|not saved to storage/i);
+      await failureCollector.required('OnlyOffice success screenshot', () => (
+        attachOnlyOfficeDocumentScreenshot(continuedFrame, testInfo, 'onlyoffice-success')
+      ));
       await testInfo.attach('onlyoffice-release-evidence.json', {
         body: Buffer.from(JSON.stringify({
           documentPath,
@@ -412,8 +446,13 @@ test.describe('DPU and OnlyOffice @external', () => {
           targetedRestart: {
             status: restartResult.status,
             code: restartResult.code,
+            elapsedMs: restartResult.elapsedMs,
+            timeoutMs: restartResult.timeoutMs,
           },
+          lifecycleTimeouts,
           reopenedBlobSha256: reopenedSnapshot.blobSha256,
+          continuationBlobSha256: continuationSnapshot.blobSha256,
+          continuedEditSavedAndReopened: true,
           markersObservedAfterRestart: {
             explicitSaveMarker: reopenedText.includes(marker),
             outstandingMarker: reopenedText.includes(drainMarker),
@@ -422,21 +461,53 @@ test.describe('DPU and OnlyOffice @external', () => {
         contentType: 'application/json',
       });
     } catch (error) {
-      await page.screenshot({
-        path: testInfo.outputPath('onlyoffice-failure.png'),
-        fullPage: true,
-      }).catch(() => null);
       primaryError = error;
+      await failureCollector.required('OnlyOffice failure screenshot', async () => {
+        if (activeEditorFrame && !activeEditorFrame.isDetached()) {
+          await attachOnlyOfficeDocumentScreenshot(activeEditorFrame, testInfo, 'onlyoffice-failure');
+        } else {
+          // Before an editor exists, mask the page to keep login/account UI private.
+          const outputPath = testInfo.outputPath('onlyoffice-failure.png');
+          await page.screenshot({ path: outputPath, fullPage: true, mask: [page.locator('body')] });
+          await testInfo.attach('onlyoffice-failure', { path: outputPath, contentType: 'image/png' });
+        }
+      });
     } finally {
-      const cleanup = await deleteConfidentialDocument(page, documentPath, createdObjectId)
-        .catch((error) => ({ deleted: false, error: String(error?.message || error) }));
-      await context.close().catch(() => null);
-      if (primaryError) {
-        throw primaryError;
-      }
-      if (!cleanup.deleted) {
-        throw new Error(`Confidential document cleanup failed: ${cleanup.error || 'unknown error'}`);
-      }
+      await finalizeOnlyOfficeGate({
+        context,
+        testInfo,
+        diagnostics,
+        failureCollector,
+        traceStarted,
+        cleanupTarget: { documentPath },
+        cleanup: async () => {
+          createdObjectId ||= findDpuObjectByName(fileName, preExistingIds)?.id || null;
+          let finalDrain = null;
+          // Complete the native save/disconnect handshake before deleting the
+          // callback's storage target. This second restart also exercises drain
+          // after recovery, including retired keys from the first generation.
+          if (createdObjectId && activeEditorFrame && !activeEditorFrame.isDetached()) {
+            diagnostics.setPhase('cleanup-targeted-restart');
+            finalDrain = await restartOnlyOffice(restartOptions);
+            expect(finalDrain.stderr).not.toMatch(/failed to (?:restart|start)|managed restart failed/i);
+            expect(finalDrain.stdout).toMatch(/✓ Agent restarted(?: \([^)]+\))?\./);
+          }
+          diagnostics.setPhase('cleanup-document-deletion');
+          const result = await deleteConfidentialDocument(page, documentPath, createdObjectId);
+          return {
+            documentPath,
+            objectId: createdObjectId,
+            ...result,
+            finalDrain: finalDrain ? {
+              status: finalDrain.status,
+              code: finalDrain.code,
+              elapsedMs: finalDrain.elapsedMs,
+              timeoutMs: finalDrain.timeoutMs,
+            } : null,
+          };
+        },
+      });
     }
+    failureCollector.throwIfAny({ primaryError, label: 'OnlyOffice Confidential release gate' });
   });
 });

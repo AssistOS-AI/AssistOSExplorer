@@ -1,0 +1,163 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { once } from 'node:events';
+import { ensureSeedData } from '../lib/bootstrap.mjs';
+import { getAuthPolicy, updateAuthPolicy, usableSignInMethods } from '../lib/policy.mjs';
+import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
+import { getUserById, listUsers } from '../lib/users.mjs';
+import { consumeAuthCode, createLoginRequest } from '../lib/sso.mjs';
+import { resetStoreForTests } from '../lib/store.mjs';
+import { withPersistenceScope } from '../lib/persistence-scope.mjs';
+import { startService } from '../service/index.mjs';
+import { CookieBrowser } from './helpers/googleProvider.mjs';
+import { createRouterSigner } from './helpers/router-fixture.mjs';
+import * as setup from './helpers/setup.mjs';
+
+async function fixture(run) {
+    const environment = { ...process.env };
+    const folder = await mkdtemp(join(tmpdir(), 'userpersisto-email-readiness-'));
+    process.env.PERSISTENCE_FOLDER = folder;
+    process.env.USERPERSISTO_SETTINGS_KEY = 'readiness-fixture-key';
+    for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_DEV_BOOTSTRAP',
+        'USERPERSISTO_GOOGLE_CLIENT_ID', 'USERPERSISTO_GOOGLE_CLIENT_SECRET', 'USERPERSISTO_GOOGLE_REDIRECT_URI']) delete process.env[name];
+    // This fixture isolates email readiness from the distributed local Google client.
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'incomplete-email-fixture-google-client';
+    setup.resetAuthLimitsForTests();
+    const servers = [];
+    try {
+        await ensureSeedData();
+        const start = async (options) => {
+            const server = startService({ port: 0, host: '127.0.0.1' }, options);
+            servers.push(server);
+            if (!server.listening) await once(server, 'listening');
+            return `http://127.0.0.1:${server.address().port}`;
+        };
+        await run({ start });
+    } finally {
+        for (const server of servers) {
+            server.closeAllConnections();
+            await new Promise((resolve) => server.close(resolve));
+        }
+        await resetStoreForTests();
+        await rm(folder, { recursive: true, force: true });
+        for (const name of Object.keys(process.env)) if (!Object.hasOwn(environment, name)) delete process.env[name];
+        Object.assign(process.env, environment);
+    }
+}
+
+test('policy cannot strand an email-only administrator when EmailAgent is unavailable; its probe runs outside persistence', { timeout: 10_000 }, () => fixture(async () => {
+    const account = await setup.registerWithEmailCode('owner@example.test');
+    const user = await getUserById(account.user.id);
+    assert.deepEqual(await usableSignInMethods(user, { emailAvailable: false }), []);
+    assert.deepEqual(await usableSignInMethods(user, { emailAvailable: true }), ['emailCode']);
+    const original = await getAuthPolicy();
+    await assert.rejects(updateAuthPolicy({ selfRegistrationEnabled: false }, { emailStatus: async () => ({ available: false }) }),
+        { code: 'administrator_auth_method_required' });
+    assert.deepEqual(await getAuthPolicy(), original, 'a rejected guard cannot partially save the policy');
+    let probes = 0;
+    await updateAuthPolicy({ selfRegistrationEnabled: false }, { emailStatus: async () => {
+        probes += 1;
+        return withPersistenceScope(async () => ({ available: true }));
+    } });
+    assert.equal(probes, 1, 'one readiness probe per save, not one per administrator');
+    assert.equal((await getAuthPolicy()).selfRegistrationEnabled, false);
+}));
+
+test('public SSO and signed-in account surfaces hide unavailable email and reject sending without consuming a grant', () => fixture(async ({ start }) => {
+    const { user } = await setup.registerWithEmailCode('member@example.test');
+    const sign = await createRouterSigner();
+    let available = false;
+    let sends = 0;
+    const base = await start({ emailStatus: async () => ({ available }), deliverEmail: async () => { sends += 1; return { delivered: true, providerMessageId: 'fixture' }; } });
+    const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
+    const browser = new CookieBrowser();
+    const post = (path, body = {}) => browser.json(`${base}/service/auth/${path}`, { requestId: request.providerState, ...body });
+    const config = await (await post('attempt')).json();
+    assert.equal(config.methods.emailCode, false);
+    assert.equal(config.registration, false);
+    const discovered = await (await post('discover', { email: user.email })).json();
+    assert.deepEqual(discovered, { ok: true, exists: true, methods: { emailCode: false, passkey: false, totp: false } });
+    assert.equal((await post('email-code/start', { email: user.email, purpose: 'login' })).status, 404);
+    assert.equal((await (await fetch(`${base}/service/auth/methods`)).json()).methods.includes('emailCode'), false);
+    const profilePath = '/service/dashboard/api/profile';
+    const profile = await (await fetch(`${base}${profilePath}`, { headers: sign({ method: 'GET', path: profilePath, userId: user.id }) })).json();
+    assert.equal(profile.profile.reauthenticationMethods.includes('emailCode'), false);
+    assert.equal(profile.profile.authMethods.some((method) => method.type === 'emailCode'), false);
+    assert.equal(profile.profile.allowedAuthMethods.includes('emailCode'), false);
+    const startPath = '/service/dashboard/api/reauth/start';
+    const body = JSON.stringify({ method: 'emailCode', operation: 'totp.enroll' });
+    const denied = await fetch(`${base}${startPath}`, { method: 'POST', body, headers: sign({ method: 'POST', path: startPath, rawBody: body, userId: user.id }) });
+    assert.equal(denied.status, 409);
+    assert.equal(sends, 0, 'readiness and denials never send a probe email');
+
+    available = true;
+    assert.equal((await (await post('attempt')).json()).methods.emailCode, true);
+    assert.equal((await post('email-code/start', { email: user.email, purpose: 'login' })).status, 200);
+    assert.equal(sends, 1, 'a real requested code is sent when the provider is configured');
+}));
+
+test('default production status fails closed without an EmailAgent client, while explicit delivery fixtures remain usable', () => fixture(async ({ start }) => {
+    const production = await start();
+    const unavailable = await (await fetch(`${production}/service/auth/setup`)).json();
+    assert.equal(unavailable.methods.emailCode, false);
+    assert.equal(unavailable.registration, false);
+    assert.equal((await wizardConfiguration()).methods.emailCode, false, 'a caller without a readiness result cannot advertise email');
+    const controlled = await start({ deliverEmail: async () => ({ delivered: true, providerMessageId: 'fixture' }) });
+    const configured = await (await fetch(`${controlled}/service/auth/setup`)).json();
+    assert.equal(configured.methods.emailCode, true);
+    assert.equal(configured.registration, true);
+}));
+
+test('an unconfigured service completes first-owner signup through development log delivery only after explicit enablement', () => fixture(async ({ start }) => {
+    const base = await start();
+    const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
+    const browser = new CookieBrowser();
+    const post = (path, body = {}) => browser.json(`${base}/service/auth/${path}`, { requestId: request.providerState, ...body });
+    const email = 'development-owner@example.test';
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...parts) => { warnings.push(parts.join(' ')); };
+    try {
+        for (const value of [undefined, 'false', 'TRUE', '1']) {
+            if (value === undefined) delete process.env.USERPERSISTO_DEV_BOOTSTRAP;
+            else process.env.USERPERSISTO_DEV_BOOTSTRAP = value;
+            const configuration = await (await post('attempt')).json();
+            assert.equal(configuration.methods.emailCode, false);
+            assert.equal(configuration.registration, false);
+            assert.equal((await post('email-code/start', { email, purpose: 'register' })).status, 404);
+        }
+        assert.equal(warnings.length, 0);
+        assert.equal((await listUsers()).totalCount, 0, 'startup and rejected attempts seed no account');
+
+        process.env.USERPERSISTO_DEV_BOOTSTRAP = 'true';
+        await ensureSeedData();
+        assert.equal((await listUsers()).totalCount, 0, 'the development flag never seeds an administrator');
+        const configuration = await (await post('attempt')).json();
+        assert.equal(configuration.methods.emailCode, true);
+        assert.equal(configuration.registration, true);
+        const started = await post('email-code/start', { email, purpose: 'register' });
+        assert.equal(started.status, 200);
+        assert.equal((await started.json()).challenge.delivery, 'development-log');
+        assert.equal((await listUsers()).totalCount, 0, 'requesting a code does not claim setup');
+        const code = warnings.find((warning) => warning.startsWith(`[userPersisto] DEVELOPMENT email code for ${email}: `))?.match(/: (\d{6})$/)?.[1];
+        assert.equal(typeof code, 'string', 'a labelled code was captured without printing it');
+        const verified = await post('email-code/verify', { code });
+        assert.equal(verified.status, 200);
+        const completion = await verified.json();
+        assert.equal(completion.created, true);
+        assert.equal(completion.initialAdministrator, true);
+        const identity = await consumeAuthCode({ providerState: request.providerState, code: completion.code });
+        assert.equal(identity.user.email, email);
+        assert.deepEqual(identity.roles, ['admin']);
+        assert.equal((await listUsers()).totalCount, 1);
+
+        delete process.env.USERPERSISTO_DEV_BOOTSTRAP;
+        assert.equal((await (await fetch(`${base}/service/auth/setup`)).json()).methods.emailCode, false,
+            'disabling development delivery restores the production readiness check');
+    } finally {
+        console.warn = originalWarn;
+    }
+}));

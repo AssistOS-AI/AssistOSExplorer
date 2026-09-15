@@ -23,12 +23,19 @@ test('npm WebTTY core profile owns the exact Chromium release gate', () => {
     'utf8',
   );
   assert.match(webttySpec, new RegExp(`test\\(['\"]${expectedTitle}['\"]`));
-  assert.match(webttySpec, /canonical local:admin principal/);
-  assert.match(webttySpec, /canonical local:user principal/);
+  assert.match(webttySpec, /readAuthenticatedPrincipal\(page, smokeConfig\.primaryUser\)/);
+  assert.match(webttySpec, /expect\(admin\.roles\)\.toContain\('admin'\)/);
+  assert.match(webttySpec, /readAuthenticatedPrincipal\(userPage, smokeConfig\.secondaryUser\)/);
+  assert.match(webttySpec, /assertDistinctAuthenticatedPrincipals\(admin, ordinaryUser\)/);
+  assert.match(webttySpec, /expect\(ordinaryUser\.roles\)\.not\.toContain\('admin'\)/);
   assert.match(webttySpec, /assertExplorerDirectory\(page, fixture\.parentDirectoryPath\)/);
   assert.match(webttySpec, /openTerminalFromExplorer\(page, fixture\.nestedDirectoryPath\)/);
   assert.match(webttySpec, /normalCloseKeptWebttyAvailable: true/);
   assert.match(webttySpec, /collectWebttyRuntimeEvidence/);
+  assert.match(webttySpec, /resolveWebttyBoxEndpoint\(\{\s*baseURL: smokeConfig\.baseURL,\s*boxBaseURL: process\.env\.SMOKE_BOX_BASE_URL \|\| smokeConfig\.baseURL,/);
+  assert.match(webttySpec, /boxBaseURL: boxEndpoint\.baseURL/);
+  assert.equal([...webttySpec.matchAll(/collectWebttyRuntimeEvidence\(\{[\s\S]*?\.\.\.runtimeBinding,/g)].length, 3);
+  assert.match(webttySpec, /const canonicalOrigin = new URL\(smokeConfig\.baseURL\)\.origin/);
   assert.match(webttySpec, /SMOKE_PLOINKY_BOX_CONTAINER/);
   assert.match(webttySpec, /SMOKE_EXPECT_BOX_IMAGE_ID/);
   assert.match(webttySpec, /SMOKE_EXPECT_BOX_IMAGE_REF/);

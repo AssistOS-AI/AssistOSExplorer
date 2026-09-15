@@ -4,29 +4,16 @@
     "update": "",
     "cli": "/bin/bash",
     "about": "AssistOS Explorer agent",
-    "ploinky": "pwd enable",
-    "pwd": {
-        "users": [
-            {
-                "username": "admin",
-                "password": "admin",
-                "name": "Admin",
-                "roles": [
-                    "admin"
-                ]
-            },
-            {
-                "username": "user",
-                "password": "user",
-                "name": "User"
-            }
-        ]
+    "ploinky": "sso enable",
+    "sso": {
+        "providerAgent": "userPersistoAgent"
     },
     "enable": [
         {
             "agent": "gitAgent global",
             "profile": "embedded"
         },
+        "userPersistoAgent",
         "dpuAgent global",
         "soplangAgent global no-wait",
         "tasksAgent global",
@@ -54,6 +41,8 @@
         "soul-gateway": true
     },
     "routerAccess": {
+        "requiredCapability": "explorer.access",
+        "capabilityDeniedRedirect": "/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/",
         "httpRoutes": [
             {
                 "path": "/shared/*",

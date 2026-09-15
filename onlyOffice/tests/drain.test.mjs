@@ -151,6 +151,36 @@ test('drain ignores an issued control session that DocumentServer never accessed
   assert.deepEqual(requestedKeys, ['c'.repeat(32)]);
 });
 
+test('read-only editors do not force-save and an exhausted shared deadline cannot issue a command', async () => {
+  let calls = 0;
+  const options = {
+    config,
+    now: () => 1_000,
+    sessionStore: { listActiveSessions: () => [{ ...activeSession(), canWrite: false }] },
+    fetchImpl: async () => { calls += 1; return response({ error: 0 }); },
+  };
+  assert.deepEqual(await drainOnlyOfficeSessions({ ...options, deadline: 1_100 }), { drainedSessions: 0 });
+  await assert.rejects(() => drainOnlyOfficeSessions({ ...options, deadline: 1_000 }), /deadline has expired/);
+  assert.equal(calls, 0);
+});
+
+test('drain cannot renew the shared deadline between force-save commands', async () => {
+  let nowMs = 1_000;
+  let calls = 0;
+  await assert.rejects(() => drainOnlyOfficeSessions({
+    config,
+    now: () => nowMs,
+    deadline: 1_005,
+    sessionStore: { listActiveSessions: () => [activeSession(), activeSession(null, 'd'.repeat(32))] },
+    fetchImpl: async () => {
+      calls += 1;
+      nowMs += 5;
+      return response({ error: 4 });
+    },
+  }), /deadline expired before force-save/);
+  assert.equal(calls, 1);
+});
+
 test('drain treats DocumentServer no-changes as acknowledged without waiting', async () => {
   let waits = 0;
   const result = await drainOnlyOfficeSessions({
@@ -161,6 +191,35 @@ test('drain treats DocumentServer no-changes as acknowledged without waiting', a
   });
   assert.deepEqual(result, { drainedSessions: 1 });
   assert.equal(waits, 0);
+});
+
+test('drain excludes sessions with a durable final-save or signed no-change close acknowledgement', async () => {
+  const sessions = [2, 4].map((status, index) => activeSession({
+    status,
+    acknowledgedAt: '2026-07-15T12:00:00.000Z',
+    version: status === 2 ? 'saved-version' : '',
+  }, String(index + 1).repeat(32)));
+  sessions.push({ ...activeSession({ status: 6, version: 'partial', acknowledgedAt: '2026-07-15T12:00:00.000Z' }, '3'.repeat(32)), drainAcknowledgedAt: '2026-07-15T12:00:01.000Z' });
+  let calls = 0;
+  const result = await drainOnlyOfficeSessions({
+    config,
+    sessionStore: { listActiveSessions: () => sessions },
+    fetchImpl: async () => { calls += 1; return response({ error: 1 }); },
+  });
+  assert.deepEqual(result, { drainedSessions: 0 });
+  assert.equal(calls, 0);
+});
+
+test('a force-save acknowledgement alone cannot excuse a missing DocumentServer session', async () => {
+  await assert.rejects(() => drainOnlyOfficeSessions({
+    config,
+    sessionStore: { listActiveSessions: () => [activeSession({
+      status: 6,
+      acknowledgedAt: '2026-07-15T12:00:00.000Z',
+      version: 'partial-save',
+    })] },
+    fetchImpl: async () => response({ error: 1 }),
+  }), /command returned error 1/);
 });
 
 test('drain fails closed when the save callback is not acknowledged before the deadline', async () => {

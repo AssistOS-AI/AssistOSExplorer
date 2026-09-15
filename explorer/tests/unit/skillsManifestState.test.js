@@ -389,7 +389,7 @@ test('same-name exports from two repositories are rejected without a traversal-o
 });
 
 test('skillset controls batch symlink exports, prefer workspace sources and preserve local files', async () => {
-  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skillsets-'));
+  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skillsets-')));
   try {
     const repoDir = await createLocalSkillRepo(workspaceRoot);
     await writeFile(path.join(repoDir, 'skills', 'beta-skill', 'SKILL.md'), '---\nname: beta-skill\n---\n');

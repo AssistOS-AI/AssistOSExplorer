@@ -434,6 +434,9 @@ export function createStorageRouteHandler({
       sendJson(res, 400, { error: 1 });
       return;
     }
+    if ([1, 4].includes(Number(payload.status))) {
+      sessionStore.updateEditorStatus?.(callbackToken, Number(payload.status));
+    }
     if (!SAVE_STATUSES.has(Number(payload?.status))) {
       sendJson(res, 200, { error: 0 });
       return;

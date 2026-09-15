@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -679,4 +679,41 @@ test('session state hard cut rejects missing or mutated browser authority withou
       name,
     );
   }
+});
+
+
+test('verified close and native drain receipts survive reload and a new signed editing cycle clears them', async (t) => {
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), 'onlyoffice-close-')));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const stateFile = path.join(directory, 'sessions-v5.json');
+  let clock = at('2026-06-09T12:00:00.000Z');
+  const options = { now: () => clock, stateFile };
+  let store = createSessionStore(options);
+  const created = store.createSession({ path: '/docs/close.docx', storageKind: 'workspace', canWrite: true });
+  const unused = store.createSession({ path: '/docs/unused.docx', storageKind: 'workspace', canWrite: true });
+  store.getForStorageRequest(created.token, { markDocumentAccess: true });
+  store.acknowledgeCallback(created.token, { status: 6, version: 'partial' });
+  store.updateEditorStatus(created.token, 1);
+  assert.equal(store.getForStorageRequest(created.token).callbackAcknowledgement.status, 6);
+  store.acknowledgeDrainedEditors();
+  store = createSessionStore(options);
+  assert.equal(store.getForStorageRequest(created.token).drainAcknowledgedAt, clock.toISOString());
+  assert.equal(store.getForStorageRequest(unused.token).drainAcknowledgedAt, null);
+  store.updateEditorStatus(created.token, 1);
+  store = createSessionStore(options);
+  assert.equal(store.getForStorageRequest(created.token).drainAcknowledgedAt, null);
+  assert.equal(store.getForStorageRequest(created.token).callbackAcknowledgement, null);
+  for (const status of [2, 4]) {
+    if (status === 2) store.acknowledgeCallback(created.token, { status, version: 'final' });
+    else store.updateEditorStatus(created.token, status);
+    store = createSessionStore(options);
+    assert.equal(store.getForStorageRequest(created.token).callbackAcknowledgement.status, status);
+    store.updateEditorStatus(created.token, 1);
+    store = createSessionStore(options);
+    assert.equal(store.getForStorageRequest(created.token).callbackAcknowledgement, null);
+  }
+  assert.throws(() => store.updateEditorStatus('unknown', 4), /Unknown or expired/);
+  assert.throws(() => store.updateEditorStatus(created.token, 6), /Unsupported/);
+  clock = at('2026-06-10T12:00:00.000Z');
+  assert.throws(() => store.updateEditorStatus(created.token, 4), /Unknown or expired/);
 });

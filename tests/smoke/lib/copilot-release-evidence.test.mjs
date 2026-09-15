@@ -223,3 +223,73 @@ test('canonical runner consumes SMOKE_RELEASE_MANIFEST and passes bound evidence
   assert.match(spec, /const COMPLETION_FAILURE = \/\\\[input error\\\]\|/);
   assert.match(spec, /response\.status\(\) === 204 \? '' : response\.text\(\)/);
 });
+
+test('local snapshot mode is explicit, loopback-only, and binds source digests across the run', async () => {
+  const source = {
+    verificationMode: 'local-snapshot',
+    imageDigest: DIGEST,
+    repositories: {
+      ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE, treeSha256: '7'.repeat(64) },
+      achillesAgentLib: { commit: AGENTLIB_COMMIT, treeSha256: '8'.repeat(64) },
+      explorer: { commit: '1'.repeat(40), treeSha256: '9'.repeat(64) },
+    },
+  };
+  const options = {
+    manifestPath: '/candidate/snapshot.json',
+    verifierPath: '/candidate/verifyLocalSnapshotBundle.mjs',
+    verificationMode: 'local-snapshot',
+    baseURL: 'http://127.0.0.1:8080',
+    collectSnapshotBindings: ({ repositories }) => ({
+      explorer: { active: true, containerId: 'e'.repeat(64), treeSha256: repositories.explorer.treeSha256 },
+      ploinkyAgent: { source: '/candidate/ploinky/Agent', runtimeSource: '/Agent', treeSha256: 'a'.repeat(64) },
+      achillesCLI: { active: true, source: '/candidate/AchillesCLI/achilles-cli', runtimeSource: '/workspace/.ploinky/repos/AchillesCLI/achilles-cli', treeSha256: 'b'.repeat(64), containerId: 'c'.repeat(64), codeRoot: '/candidate/runtime/old' },
+    }),
+    loadVerifier: async () => ({ verifyManifestFile: () => structuredClone(source) }),
+    collectLiveBox: () => liveBox(),
+    realpathSync: value => value,
+  };
+  const before = await collectCopilotReleaseEvidence(options);
+  assert.equal(before.verificationMode, 'local-snapshot');
+  assert.equal(sameCopilotReleaseGeneration(before, structuredClone(before)), true);
+  const after = structuredClone(before);
+  after.repositories.explorer.treeSha256 = '0'.repeat(64);
+  assert.equal(sameCopilotReleaseGeneration(before, after), false);
+  const launchedCLI = structuredClone(before);
+  launchedCLI.sourceBindings.achillesCLI.containerId = 'f'.repeat(64);
+  launchedCLI.sourceBindings.achillesCLI.codeRoot = '/candidate/runtime/new';
+  assert.equal(sameCopilotReleaseGeneration(before, launchedCLI), true);
+  const initiallyInactive = structuredClone(before);
+  initiallyInactive.sourceBindings.achillesCLI.active = false;
+  delete initiallyInactive.sourceBindings.achillesCLI.containerId;
+  delete initiallyInactive.sourceBindings.achillesCLI.codeRoot;
+  assert.equal(sameCopilotReleaseGeneration(initiallyInactive, launchedCLI), true);
+  assert.equal(sameCopilotReleaseGeneration(before, initiallyInactive), false);
+  for (const key of ['source', 'runtimeSource', 'treeSha256']) {
+    const changed = structuredClone(launchedCLI);
+    changed.sourceBindings.achillesCLI[key] = 'changed';
+    assert.equal(sameCopilotReleaseGeneration(before, changed), false, key);
+  }
+  const replacedExplorer = structuredClone(before);
+  replacedExplorer.sourceBindings.explorer.containerId = 'f'.repeat(64);
+  assert.equal(sameCopilotReleaseGeneration(before, replacedExplorer), false);
+  const changedAgentRuntime = structuredClone(before);
+  changedAgentRuntime.sourceBindings.ploinkyAgent.treeSha256 = 'f'.repeat(64);
+  assert.equal(sameCopilotReleaseGeneration(before, changedAgentRuntime), false);
+  const lifecycleCalls = [];
+  for (const requireActiveAchillesCLI of [false, true]) {
+    await collectCopilotReleaseEvidence({
+      ...options,
+      requireActiveAchillesCLI,
+      collectSnapshotBindings: args => {
+        lifecycleCalls.push(args.requireActiveAchillesCLI);
+        return options.collectSnapshotBindings(args);
+      },
+    });
+  }
+  assert.deepEqual(lifecycleCalls, [false, true]);
+  await assert.rejects(() => collectCopilotReleaseEvidence({ ...options, baseURL: 'https://explorer-qa.axiologic.dev' }), /requires loopback|same origin/);
+  await assert.rejects(() => collectCopilotReleaseEvidence({ ...options, boxBaseURL: 'http://remote.example' }), /requires loopback|same origin/);
+  await assert.rejects(() => collectCopilotReleaseEvidence({ ...options, boxBaseURL: 'http://127.0.0.1:9090' }), /same origin/);
+  await assert.rejects(() => collectCopilotReleaseEvidence({ ...options, verificationMode: 'release' }), /does not match/);
+  await assert.rejects(() => collectCopilotReleaseEvidence({ ...options, verificationMode: 'skip' }), /must be release or local-snapshot/);
+});

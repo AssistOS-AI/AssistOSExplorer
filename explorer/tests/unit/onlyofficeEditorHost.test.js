@@ -32,6 +32,45 @@ function createHost() {
     };
 }
 
+test('native disconnect warnings retire only their current editor and preserve ordinary warnings', async () => {
+    const originalWindow = globalThis.window;
+    const originalDocument = globalThis.document;
+    const mounted = [];
+    const observed = [];
+    try {
+        globalThis.window = { DocsAPI: { DocEditor: class {
+            constructor(_id, config) { mounted.push(config); }
+            destroyEditor() {}
+        } } };
+        globalThis.document = { createElement: () => ({ className: '', id: '' }) };
+        for (const code of [-100, -101, -104, -120, -121, -122, -62, 500]) {
+            const host = createHost();
+            const config = {
+                document: { key: `session-${code}`, title: 'report.docx', fileType: 'docx' },
+                documentServerUrl: 'http://office.test',
+                events: { onWarning(event) { observed.push({ receiver: this, event }); } },
+            };
+            await renderOnlyOfficeEditor(host, config);
+            const oldMount = mounted.at(-1);
+            const receiver = { code };
+            const event = { data: { warningCode: code } };
+            oldMount.events.onWarning.call(receiver, event);
+            assert.deepEqual(observed.at(-1), { receiver, event });
+            const ordinary = [-62, 500].includes(code);
+            assert.equal(isOnlyOfficeEditorActive(host, config), ordinary, `warning ${code}`);
+            const next = { ...config, document: { ...config.document, key: `next-${code}` } };
+            await renderOnlyOfficeEditor(host, next);
+            oldMount.events.onWarning(event);
+            assert.equal(isOnlyOfficeEditorActive(host, next), true, 'old events cannot retire a new session');
+        }
+    } finally {
+        if (originalWindow === undefined) delete globalThis.window;
+        else globalThis.window = originalWindow;
+        if (originalDocument === undefined) delete globalThis.document;
+        else globalThis.document = originalDocument;
+    }
+});
+
 test('a superseded async OnlyOffice mount cannot instantiate a stale editor', async () => {
     const originalWindow = globalThis.window;
     const originalDocument = globalThis.document;
@@ -276,4 +315,33 @@ test('an error from a superseded editor generation cannot invalidate the newer e
             globalThis.document = originalDocument;
         }
     }
+});
+
+test('disconnect status asset is loaded from the mounted native version before completion', async () => {
+    const { preloadOnlyOfficeStatusAsset } = await import('../../services/onlyoffice/onlyoffice-editor-host.js');
+    const base = 'http://localhost:8080/base-agent-additional-server/onlyOffice/8080';
+    const image = {};
+    const host = { querySelector: () => ({ src: `${base}/9.3.1-build/web-apps/apps/documenteditor/main/index.html?token=unused` }) };
+    let completed = false;
+    const pending = preloadOnlyOfficeStatusAsset(host, base, { createImage: () => image }).then(() => { completed = true; });
+    await Promise.resolve();
+    assert.equal(completed, false);
+    assert.equal(image.src, `${base}/9.3.1-build/web-apps/apps/common/main/resources/img/controls/warnings_s.svg`);
+    image.onload();
+    await pending;
+    assert.equal(completed, true);
+});
+
+test('status preload rejects cross-route frames and propagates missing assets', async () => {
+    const { preloadOnlyOfficeStatusAsset } = await import('../../services/onlyoffice/onlyoffice-editor-host.js');
+    const base = 'http://localhost:8080/base-agent-additional-server/onlyOffice/8080';
+    for (const src of ['https://outside.example/web-apps/apps/documenteditor/main/index.html', 'http://localhost:8080/other/web-apps/apps/documenteditor/main/index.html']) {
+        await assert.rejects(() => preloadOnlyOfficeStatusAsset({ querySelector: () => ({ src }) }, base, {
+            createImage: () => assert.fail('must not request outside editor route'),
+        }), /outside its configured route/);
+    }
+    const image = {};
+    const pending = preloadOnlyOfficeStatusAsset({ querySelector: () => ({ src: `${base}/web-apps/apps/documenteditor/main/index.html` }) }, base, { createImage: () => image });
+    image.onerror();
+    await assert.rejects(() => pending, /could not load/);
 });

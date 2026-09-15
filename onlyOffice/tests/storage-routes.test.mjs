@@ -20,6 +20,41 @@ const DEFAULT_SESSION_IDENTITY = Object.freeze({
 });
 const DEFAULT_DOCUMENT_KEY = buildDocumentKey(DEFAULT_SESSION_IDENTITY);
 
+test('editor activity is recorded only after callback signature, envelope and document-key validation', async () => {
+  const events = [];
+  const handler = createStorageRouteHandler({
+    sessionStore: {
+      getForStorageRequest() { return DEFAULT_SESSION_IDENTITY; },
+      updateEditorStatus(...args) { events.push(args); },
+    },
+    storageRouter: { forSession: () => ({}) },
+    fetchImpl: async () => { throw new Error('Activity callbacks must not download or write a document.'); },
+  });
+  for (const status of [1, 4]) {
+    const res = createMockResponse();
+    await handler(createMockRequest({
+      method: 'POST', url: '/internal/callback/session-token',
+      headers: { 'content-type': 'application/json' },
+      body: signCallbackPayload({ status }),
+    }), res);
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(events.at(-1), ['session-token', status]);
+  }
+  for (const body of [
+    signCallbackPayload({ status: 4, key: 'b'.repeat(32) }),
+    signCallbackPayload({ status: 1 }, undefined, { mutateEnvelope: envelope => { envelope.status = 4; } }),
+    JSON.stringify({ key: DEFAULT_DOCUMENT_KEY, status: 4, token: 'invalid' }),
+  ]) {
+    const res = createMockResponse();
+    await handler(createMockRequest({
+      method: 'POST', url: '/internal/callback/session-token',
+      headers: { 'content-type': 'application/json' }, body,
+    }), res);
+    assert.equal(res.statusCode, 400);
+  }
+  assert.equal(events.length, 2);
+});
+
 function signCallbackPayload(
   payload,
   nowSeconds = Math.floor(Date.now() / 1000),

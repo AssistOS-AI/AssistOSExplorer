@@ -70,6 +70,7 @@ export function buildSignedOnlyOfficeConfig({
       customization: {
         autosave: true,
         forcesave: Boolean(session.canWrite),
+        plugins: false,
       },
       user: {
         id: String(authUser?.id || 'onlyoffice-user'),

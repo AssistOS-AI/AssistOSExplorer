@@ -1,5 +1,34 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const runFile = promisify(execFile);
+
+async function realPathWithin(directory, root) {
+    try {
+        const physical = await fs.realpath(directory);
+        const relative = path.relative(root, physical);
+        return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative) ? physical : null;
+    } catch { return null; }
+}
+
+async function repositoryOrigin(directory) {
+    try {
+        // A containing workspace's origin must never identify this repository.
+        await fs.lstat(path.join(directory, '.git'));
+        const { stdout } = await runFile('git', ['-C', directory, 'config', '--local', '--get', 'remote.origin.url'], {
+            timeout: 2000, maxBuffer: 16 * 1024,
+        });
+        const raw = stdout.trim().replace(/^git@([^:]+):/, 'ssh://git@$1/');
+        try {
+            const url = new URL(raw);
+            const pathname = url.pathname.replace(/\/+$/, '').replace(/\.git$/, '');
+            const hostname = url.hostname.toLowerCase();
+            return `${hostname}${url.port ? `:${url.port}` : ''}${hostname === 'github.com' ? pathname.toLowerCase() : pathname}`;
+        } catch { return raw.replace(/\/+$/, '').replace(/\.git$/, ''); }
+    } catch { return ''; }
+}
 
 export const SKIP_DIRECTORY_NAMES = new Set([
   '.git',
@@ -361,12 +390,13 @@ export async function aggregateIdePlugins(rootDir) {
     }
   }
 
-  const processAgentDirectory = async (agentName, agentDir) => {
+  const processAgentDirectory = async (agentName, agentDir, confinedRoot = null) => {
     if (!agentName || SKIP_DIRECTORY_NAMES.has(agentName)) {
       return;
     }
 
     const idePluginsDir = path.join(agentDir, 'IDE-plugins');
+    if (confinedRoot && (!(await realPathWithin(agentDir, confinedRoot)) || !(await realPathWithin(idePluginsDir, confinedRoot)))) return;
 
     let ideStat;
     try {
@@ -386,6 +416,7 @@ export async function aggregateIdePlugins(rootDir) {
 
     const manifestPath = path.join(agentDir, 'manifest.json');
     try {
+      if (confinedRoot && !(await realPathWithin(manifestPath, confinedRoot))) return;
       const rawManifest = await fs.readFile(manifestPath, 'utf8');
       const parsedManifest = JSON.parse(rawManifest);
       aggregated.agentSettings.push(...validateAndNormalizeAgentSettings(parsedManifest, agentName, manifestPath));
@@ -407,6 +438,7 @@ export async function aggregateIdePlugins(rootDir) {
       if (!(await isDirectoryEntry(idePluginsDir, pluginEntry))) continue;
       const pluginDir = path.join(idePluginsDir, pluginEntry.name);
       const configPath = path.join(pluginDir, 'config.json');
+      if (confinedRoot && !(await realPathWithin(configPath, confinedRoot))) continue;
 
       let rawConfig;
       try {
@@ -456,11 +488,12 @@ export async function aggregateIdePlugins(rootDir) {
     }
   };
 
-  const scanAgentDirectories = async (baseDir) => {
-    if (!baseDir || candidateDirsProcessed.has(baseDir)) {
-      return;
-    }
-    candidateDirsProcessed.add(baseDir);
+  const scanAgentDirectories = async (baseDir, confinedRoot = null) => {
+    if (!baseDir) return;
+    let physical;
+    try { physical = await fs.realpath(baseDir); } catch { return; }
+    if (candidateDirsProcessed.has(physical)) return;
+    candidateDirsProcessed.add(physical);
 
     let entries;
     try {
@@ -470,16 +503,47 @@ export async function aggregateIdePlugins(rootDir) {
       return;
     }
 
-    await processAgentDirectory(path.basename(baseDir), baseDir);
+    await processAgentDirectory(path.basename(baseDir), baseDir, confinedRoot);
 
     for (const entry of entries) {
       if (!(await isDirectoryEntry(baseDir, entry))) continue;
       if (SKIP_DIRECTORY_NAMES.has(entry.name)) continue;
-      await processAgentDirectory(entry.name, path.join(baseDir, entry.name));
+      await processAgentDirectory(entry.name, path.join(baseDir, entry.name), confinedRoot);
     }
   };
 
-  const addRepoCollections = async (baseDir) => {
+  const localRepositoryNames = new Set();
+  const localRepositoryOrigins = new Set();
+
+  const addWorkspaceRepositories = async () => {
+    let physicalRoot;
+    let entries;
+    try {
+      physicalRoot = await fs.realpath(rootDir);
+      entries = await fs.readdir(rootDir, { withFileTypes: true });
+    } catch { return; }
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || SKIP_DIRECTORY_NAMES.has(entry.name) || !(await isDirectoryEntry(rootDir, entry))) continue;
+      const directory = path.join(rootDir, entry.name);
+      if (!(await realPathWithin(directory, physicalRoot))) continue;
+      let children;
+      try { children = await fs.readdir(directory, { withFileTypes: true }); } catch { continue; }
+      // Match Ploinky's bounded repository shape: immediate agent directories
+      // declare manifests. Do not recurse through arbitrary workspace content.
+      let hasAgents = false;
+      for (const child of children) {
+        if (!child.isDirectory() || child.name.startsWith('.') || SKIP_DIRECTORY_NAMES.has(child.name)) continue;
+        if (await realPathWithin(path.join(directory, child.name, 'manifest.json'), physicalRoot)) { hasAgents = true; break; }
+      }
+      if (!hasAgents) continue;
+      localRepositoryNames.add(entry.name);
+      const origin = await repositoryOrigin(directory);
+      if (origin) localRepositoryOrigins.add(origin);
+      await scanAgentDirectories(directory, physicalRoot);
+    }
+  };
+
+  const addRepoCollections = async (baseDir, applyLocalOverrides = false) => {
     if (!baseDir) return;
 
     const repoRoot = path.join(baseDir, '.ploinky', 'repos');
@@ -497,14 +561,18 @@ export async function aggregateIdePlugins(rootDir) {
     for (const entry of repoEntries) {
       if (!(await isDirectoryEntry(repoRoot, entry))) continue;
       if (SKIP_DIRECTORY_NAMES.has(entry.name)) continue;
-      await scanAgentDirectories(path.join(repoRoot, entry.name));
+      const directory = path.join(repoRoot, entry.name);
+      if (applyLocalOverrides && (localRepositoryNames.has(entry.name)
+          || localRepositoryOrigins.has(await repositoryOrigin(directory)))) continue;
+      await scanAgentDirectories(directory);
     }
   };
 
   await scanAgentDirectories(rootDir);
-  await addRepoCollections(rootDir);
+  await addWorkspaceRepositories();
+  await addRepoCollections(rootDir, true);
 
-  if (pluginCount === 0) {
+  if (pluginCount === 0 && localRepositoryNames.size === 0) {
     const parentDir = path.dirname(rootDir);
     if (parentDir && parentDir !== rootDir) {
       await scanAgentDirectories(parentDir);

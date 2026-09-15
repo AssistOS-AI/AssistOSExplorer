@@ -1,5 +1,5 @@
 import { expect, setPageDiagnosticsExpectedOffline } from './fixtures.mjs';
-import { signIn } from './auth.mjs';
+import { signIn, trySignIn } from './auth.mjs';
 import { smokeConfig } from './config.mjs';
 import { requirePublicIpv4 } from './network.mjs';
 import { screenRuntimeEvidenceProvesUdpMux } from './screen-runtime-evidence.mjs';
@@ -15,18 +15,31 @@ function webMeetDashboardPath() {
   return `/explorer/index.html?${params.toString()}#webmeet-dashboard`;
 }
 
-export async function openWebMeet(page, account = smokeConfig.primaryUser, options = {}) {
-  const { expectCreateRoom = true, requireConfiguredPrincipal = false } = options;
+export async function expectWebMeetReady(page, { expectCreateRoom = true } = {}) {
+  await expect(page.locator('div.webmeet-dashboard')).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
+  if (expectCreateRoom) {
+    await expect(page.locator('#webmeetCreateRoomButton')).toBeVisible();
+  }
+}
+
+async function prepareWebMeetPage(page) {
   if (smokeConfig.flags.webmeetMedia) {
     await page.addInitScript(() => {
       globalThis.WEBMEET_MEDIA_DEBUG = true;
     });
   }
+}
+
+export async function trySignInToWebMeet(page, account = smokeConfig.primaryUser) {
+  await prepareWebMeetPage(page);
+  return trySignIn(page, account, webMeetDashboardPath());
+}
+
+export async function openWebMeet(page, account = smokeConfig.primaryUser, options = {}) {
+  const { expectCreateRoom = true, requireConfiguredPrincipal = false } = options;
+  await prepareWebMeetPage(page);
   const principal = await signIn(page, account, webMeetDashboardPath(), { requireConfiguredPrincipal });
-  await expect(page.locator('div.webmeet-dashboard')).toBeVisible({ timeout: smokeConfig.timeouts.navigation });
-  if (expectCreateRoom) {
-    await expect(page.locator('#webmeetCreateRoomButton')).toBeVisible();
-  }
+  await expectWebMeetReady(page, { expectCreateRoom });
   return principal;
 }
 

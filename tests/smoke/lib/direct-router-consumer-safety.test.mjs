@@ -22,6 +22,18 @@ const DISPOSITIONS = Object.freeze({
     signals: ['verified-router-client'],
     disposition: 'Loads the mounted Ploinky AgentMcpClient for DPU calls; it owns no Router socket.',
   },
+  'userPersistoAgent/lib/email-agent-client.mjs': {
+    signals: ['verified-router-client'],
+    disposition: 'Delegates authentication-email delivery to the mounted Ploinky AgentMcpClient for emailAgent MCP calls.',
+  },
+  'userPersistoAgent/manifest.json': {
+    signals: ['direct-router-env'],
+    disposition: 'Declares optional Router-port metadata for the SSO provider; the manifest opens no transport.',
+  },
+  'userPersistoAgent/runtime/index.mjs': {
+    signals: ['direct-router-env'],
+    disposition: 'Runs inside the Router generic SSO bridge and authenticates its provider-service calls with the shared runtime secret.',
+  },
   'webmeetAgent/lib/scripta/explorer-crdt-client.mjs': {
     signals: ['verified-router-client'],
     disposition: 'Loads the mounted Ploinky AgentMcpClient for Explorer MCP calls.',

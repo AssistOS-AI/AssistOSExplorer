@@ -1,5 +1,9 @@
 let nextEditorHostId = 0;
 
+// Native connection, recovery and session-expiry warnings retire an editor
+// just like onError. Ordinary document warnings do not end its editing cycle.
+const INACTIVE_EDITOR_WARNINGS = new Set([-100, -101, -104, -120, -121, -122]);
+
 function ensureRuntimeState(host) {
     if (!host.__onlyOfficeRuntime) {
         host.__onlyOfficeRuntime = {
@@ -8,7 +12,9 @@ function ensureRuntimeState(host) {
             scriptUrl: '',
             configKey: '',
             renderGeneration: 0,
-            inactiveRenderGeneration: 0
+            inactiveRenderGeneration: 0,
+            statusAssetPromise: null,
+            statusAssetError: null,
         };
     }
     if (!Number.isSafeInteger(host.__onlyOfficeRuntime.renderGeneration)
@@ -164,22 +170,63 @@ function ensureContainer(host, runtime) {
     return container;
 }
 
+export async function preloadOnlyOfficeStatusAsset(host, documentServerUrl, {
+    createImage = () => new window.Image(),
+    timeoutMs = 10000,
+} = {}) {
+    const frame = host.querySelector('iframe');
+    if (!frame?.src) return;
+    const base = new URL(documentServerUrl);
+    const frameUrl = new URL(frame.src, base);
+    const prefix = `${base.pathname.replace(/\/+$/, '')}/`;
+    const suffix = frameUrl.pathname.slice(prefix.length);
+    if (frameUrl.origin !== base.origin || !frameUrl.pathname.startsWith(prefix)
+        || !/^(?:\d+(?:\.\d+){1,3}-[A-Za-z0-9._-]+\/)?web-apps\/apps\//.test(suffix)) {
+        throw new Error('OnlyOffice editor frame is outside its configured route.');
+    }
+    const versionPrefix = suffix.slice(0, suffix.indexOf('web-apps/'));
+    const assetUrl = new URL(`${prefix}${versionPrefix}web-apps/apps/common/main/resources/img/controls/warnings_s.svg`, base.origin);
+    // The native disconnect dialog needs this image after its owner route has
+    // retired. Load the immutable versioned asset while the editor is active.
+    await new Promise((resolve, reject) => {
+        const image = createImage();
+        const finish = error => {
+            clearTimeout(timer);
+            image.onload = null;
+            image.onerror = null;
+            if (error) reject(error);
+            else resolve();
+        };
+        const timer = setTimeout(() => finish(new Error('OnlyOffice status image timed out.')), timeoutMs);
+        image.onload = () => finish();
+        image.onerror = () => finish(new Error('OnlyOffice status image could not load.'));
+        image.src = assetUrl.href;
+    });
+}
+
 export async function renderOnlyOfficeEditor(host, config) {
     if (!host) return;
+    // Presenter state can change while script loading yields. Keep the key,
+    // transport, and event handlers bound to one synchronous mount snapshot.
+    config = cloneConfigValue(config);
     const runtime = ensureRuntimeState(host);
     const nextConfigKey = buildConfigKey(config);
     if (isOnlyOfficeEditorActive(host, config)) {
+        await runtime.statusAssetPromise;
         return;
     }
     if (runtime.inactiveRenderGeneration === runtime.renderGeneration
         && runtime.configKey === nextConfigKey) {
         // A render pass with the same failed session is not an explicit retry.
         // Only a fresh session/config key may replace this inactive generation.
+        if (runtime.statusAssetError) throw runtime.statusAssetError;
         return;
     }
 
     const renderGeneration = ++runtime.renderGeneration;
     runtime.inactiveRenderGeneration = 0;
+    runtime.statusAssetError = null;
+    runtime.statusAssetPromise = null;
     destroyEditor(host);
     const { scriptUrl, DocsAPI } = await loadScript(config?.documentServerUrl || '');
     if (runtime.renderGeneration !== renderGeneration || host.isConnected === false) {
@@ -192,6 +239,9 @@ export async function renderOnlyOfficeEditor(host, config) {
     const callerOnError = typeof config?.events?.onError === 'function'
         ? config.events.onError
         : null;
+    const callerOnWarning = typeof config?.events?.onWarning === 'function'
+        ? config.events.onWarning
+        : null;
     const mountConfig = {
         ...cloneConfigValue(config),
         events: {
@@ -201,10 +251,28 @@ export async function renderOnlyOfficeEditor(host, config) {
                     runtime.inactiveRenderGeneration = renderGeneration;
                 }
                 return callerOnError?.apply(this, args);
+            },
+            onWarning(...args) {
+                if (runtime.renderGeneration === renderGeneration
+                    && INACTIVE_EDITOR_WARNINGS.has(args[0]?.data?.warningCode)) {
+                    runtime.inactiveRenderGeneration = renderGeneration;
+                }
+                return callerOnWarning?.apply(this, args);
             }
         }
     };
     runtime.editor = new DocsAPI.DocEditor(container.id, mountConfig);
+    runtime.statusAssetPromise = preloadOnlyOfficeStatusAsset(host, config.documentServerUrl)
+        .catch(error => {
+            if (runtime.renderGeneration !== renderGeneration || host.isConnected === false) return;
+            runtime.inactiveRenderGeneration = renderGeneration;
+            runtime.statusAssetError = error;
+            destroyEditor(host);
+            throw error;
+        }).finally(() => {
+            if (runtime.renderGeneration === renderGeneration) runtime.statusAssetPromise = null;
+        });
+    await runtime.statusAssetPromise;
 }
 
 export function clearOnlyOfficeEditor(host) {
@@ -215,4 +283,6 @@ export function clearOnlyOfficeEditor(host) {
     host.textContent = '';
     runtime.configKey = '';
     runtime.inactiveRenderGeneration = 0;
+    runtime.statusAssetError = null;
+    runtime.statusAssetPromise = null;
 }

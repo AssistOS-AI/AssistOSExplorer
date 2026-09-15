@@ -192,7 +192,7 @@ test('bounded DocumentServer shutdown helper uses an exact loopback request and 
   assert.match(helper, /--connect-timeout 1/);
   assert.match(helper, /--max-time 2/);
   assert.match(helper, /--request PUT/);
-  assert.match(helper, /http:\/\/127\.0\.0\.1:8000\/internal\/cluster\/inactive/);
+  assert.match(helper, /http:\/\/\[::1\]:8000\/internal\/cluster\/inactive/);
   assert.match(helper, /did not complete within its bounded shutdown window/);
   assert.match(helper, /exit 0/);
 });

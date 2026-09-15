@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/OpenDSU/Persisto.git",
+  "commit": "a711a67f6bdfdec15af91f9f79aa8a0d69397149",
+  "license": "MIT",
+  "files": {
+    "LICENSE": "8832dd6fa2bfda37f3b1e650da4f0d49f93c58262f5d3dc9a164314ee3940b67",
+    "src/persistence/AssetsMixin.cjs": "327fd248f8747c86a02edd46b6b4ecc72a96e50f5d9af842c145704107273824",
+    "src/persistence/ObjectsAutoSaver.cjs": "006667b87983db52d608d2bfe8aa44616fd2879c16313cb7ff7089aa7621edfa",
+    "src/persistence/Persisto.cjs": "e3fa5eb121ab2152c66a944a2c7cbe8d5834663bd42619fbf9f18f75ab3f1909",
+    "src/persistence/lockUtils.cjs": "a51df137e60ef407a8d828b9c384b5a68c3286d9ecfdd1d514d9126a0b6122b2",
+    "src/persistence/strategies/SimpleFSStorageStrategy.cjs": "b93367f9779a2c1db9813c3211e94ab4819ab48b75aa55dfd10d2f55fb896057",
+    "src/persistence/utils.cjs": "c7c40c9a198aaa72884cde1f6c465d6e89b55d67539f610244366689bed3e0f2",
+    "src/audit/AuditEvents.cjs": "097b5c7f0b35ca1998084a1847aee76582446d22aa0676115d7d6fbf1037bd21",
+    "src/audit/SyslogEvents.cjs": "a1edf77ce0c37a3cf6fa1b57786e441459a110d9b002590e9e8d52c28f1f3ad2"
+  }
+}

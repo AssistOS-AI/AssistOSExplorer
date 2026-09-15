@@ -25,63 +25,15 @@ admin-settings-panel[data-embedded="true"] .administration-panel {
     border-radius: 0;
 }
 
-admin-settings-panel .administration-tabs {
-    display: flex;
-    gap: 24px;
-    padding: 0 18px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    flex: 0 0 auto;
-}
-
-admin-settings-panel .administration-tab {
-    position: relative;
-    min-height: 0;
+admin-settings-panel .administration-heading {
     margin: 0;
-    padding: 14px 0 11px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-    color: var(--text-soft);
-    cursor: pointer;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
     font: inherit;
     font-size: 13px;
     font-weight: 750;
     line-height: 1.2;
-    transform: none;
-}
-
-admin-settings-panel .administration-tab::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: -1px;
-    height: 2px;
-    border-radius: 999px;
-    background: transparent;
-    transition: background 160ms ease, opacity 160ms ease;
-}
-
-admin-settings-panel .administration-tab:hover,
-admin-settings-panel .administration-tab:focus-visible {
-    background: transparent;
-    box-shadow: none;
-    color: var(--accent);
-    transform: none;
-}
-
-admin-settings-panel .administration-tab:hover::after {
-    background: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-admin-settings-panel .administration-tab.active {
-    color: var(--text);
-}
-
-admin-settings-panel .administration-tab.active::after {
-    background: var(--accent);
 }
 
 admin-settings-panel .administration-status {
@@ -102,16 +54,11 @@ admin-settings-panel .administration-status.error {
     color: var(--danger);
 }
 
-admin-settings-panel .administration-tab-panel {
-    display: none;
+admin-settings-panel .administration-users {
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
     background: var(--bg);
-}
-
-admin-settings-panel .administration-tab-panel.active {
-    display: block;
 }
 
 @media (max-width: 720px) {
@@ -119,8 +66,4 @@ admin-settings-panel .administration-tab-panel.active {
         border-radius: 0;
     }
 
-    admin-settings-panel .administration-tabs {
-        gap: 16px;
-        overflow-x: auto;
-    }
 }

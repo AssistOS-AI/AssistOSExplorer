@@ -235,6 +235,9 @@ function isDocumentCollaborationPath(pathname) {
 
 function isAllowedHttpPath(pathname) {
   const normalizedPathname = stripOnlyOfficeVersionPrefix(pathname);
+  if (/^\/dictionaries\/[A-Za-z][A-Za-z0-9_-]{0,63}\/[A-Za-z][A-Za-z0-9_-]{0,63}\.(?:dic|aff)$/.test(normalizedPathname)) {
+    return true;
+  }
   if (normalizedPathname === '/web-apps/apps/api/documents/api.js'
       || ALLOWED_HTTP_EXACT_PATHS.has(normalizedPathname)
       || isDocumentCollaborationPath(normalizedPathname)) {

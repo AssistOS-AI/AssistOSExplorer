@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from './config.mjs';
 import { drainOnlyOfficeSessions as defaultDrainOnlyOfficeSessions } from './drain.mjs';
+import { disconnectOnlyOfficeEditors as defaultDisconnectOnlyOfficeEditors } from './editor-shutdown.mjs';
 import { createEditorProxy as defaultCreateEditorProxy } from './proxy/editor-proxy.mjs';
 import { createControlRouteHandler as defaultCreateControlRouteHandler } from './routes/control.mjs';
 import { createStorageRouteHandler as defaultCreateStorageRouteHandler } from './routes/storage.mjs';
@@ -392,7 +393,7 @@ export function startDocumentServerProcess({
     : ['-lc', command];
   const child = spawnProcess('/bin/bash', args, {
     detached: true,
-    env,
+    env: { ...env, PLUGINS_ENABLED: 'false' },
     stdio: 'inherit',
   });
 
@@ -432,6 +433,8 @@ export async function startOnlyOfficeAgent({
   createEditorProxy = defaultCreateEditorProxy,
   startDocumentServer = startDocumentServerProcess,
   drainOnlyOfficeSessions = defaultDrainOnlyOfficeSessions,
+  disconnectOnlyOfficeEditors = defaultDisconnectOnlyOfficeEditors,
+  now = () => Date.now(),
   assertImageContract = assertOnlyOfficeImageContract,
 } = {}) {
   assertImageContract();
@@ -469,12 +472,15 @@ export async function startOnlyOfficeAgent({
   const controlServer = createHttpServer(createRequestListener(controlHandler, { parseUrl: true }));
   const storageServer = createHttpServer(createRequestListener(storageHandler));
   const editorServer = createHttpServer(createRequestListener(editorProxy.handle));
+  const editorConnections = new Set();
   const editorSockets = new Set();
   editorServer.on?.('connection', (socket) => {
-    editorSockets.add(socket);
-    socket.once?.('close', () => editorSockets.delete(socket));
+    editorConnections.add(socket);
+    socket.once?.('close', () => editorConnections.delete(socket));
   });
   editorServer.on?.('upgrade', (req, socket, head) => {
+    editorSockets.add(socket);
+    socket.once?.('close', () => editorSockets.delete(socket));
     Promise.resolve(editorProxy.handleUpgrade(req, socket, head))
       .catch(() => socket.destroy());
   });
@@ -499,6 +505,8 @@ export async function startOnlyOfficeAgent({
 
   let stopped = false;
   let stopping = false;
+  let editorClose;
+  let controlClose;
   return {
     config,
     sessionStore,
@@ -517,20 +525,26 @@ export async function startOnlyOfficeAgent({
         throw new Error('OnlyOffice drain is already in progress.');
       }
       stopping = true;
+      const deadline = now() + config.drainTimeoutMs;
       // Begin closing the routed listeners immediately so no new editor or
       // control request is admitted. Do not await Node's close callbacks yet:
       // upgraded editor sockets can keep them pending, while the force-save
       // and callback acknowledgement must run with those sessions alive.
-      const editorClose = closeServer(editorServer);
-      const controlClose = closeServer(controlServer);
+      editorClose ||= closeServer(editorServer);
+      controlClose ||= closeServer(controlServer);
       // A failed drain deliberately leaves the process alive; retain handlers
       // so a later close error cannot become an unhandled rejection.
       editorClose.catch(() => {});
       controlClose.catch(() => {});
       try {
-        await drainOnlyOfficeSessions({ config, sessionStore });
-        for (const socket of editorSockets) socket.destroy?.();
-        editorSockets.clear();
+        await drainOnlyOfficeSessions({ config, sessionStore, deadline, now });
+        await disconnectOnlyOfficeEditors({ editorSockets, deadline, now });
+        sessionStore.acknowledgeDrainedEditors();
+        // Graceful delivery has closed every upgraded editor. Retire residual
+        // HTTP connections so incomplete requests cannot block listener close.
+        for (const socket of editorConnections) {
+          if (!socket.destroyed) socket.destroy();
+        }
         await Promise.all([
           editorClose,
           controlClose,

@@ -7,6 +7,7 @@ import {
   normalizeDpuPath
 } from './dpu-paths.mjs';
 import { resolveDpuConfidentialNodeAtPath } from './dpu-path-resolver.mjs';
+import { ConfidentialDocumentError } from './confidential-document-error.mjs';
 
 function requireCreateAgentClient(createAgentClient) {
   if (typeof createAgentClient !== 'function') {
@@ -109,13 +110,13 @@ async function resolveObjectRecord(session, client) {
     ? { id: String(session.objectId) }
     : await resolveDpuNodeForPath(client, requestedPath);
   if (!node?.id) {
-    throw new Error(`Confidential file not found: ${requestedPath}`);
+    throw new ConfidentialDocumentError('document_not_found');
   }
 
   const parsed = await client.callTool('dpu_confidential_get', { id: node.id });
   const objectRecord = parsed?.object || {};
   if (!objectRecord.contentVisible) {
-    throw new Error('You do not have read access to this Confidential document.');
+    throw new ConfidentialDocumentError('document_forbidden');
   }
 
   return {

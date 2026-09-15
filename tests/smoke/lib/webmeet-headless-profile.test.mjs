@@ -68,9 +68,15 @@ test('headless WebMeet acceptance keeps synthetic media, strict accounts, and fo
   assert.doesNotMatch(roomSpec, /['"]\/dashboard['"]/, 'WebMeet auth seeding must use an admitted Explorer route');
   assert.equal(
     [...roomSpec.matchAll(/explorerUrl\(\)/g)].length,
-    3,
-    'both strict auth seeds and the fallback secondary login must use the admitted Explorer route',
+    2,
+    'only the strict storage-state auth seeds should use the admitted Explorer route',
   );
+  assert.match(
+    roomSpec,
+    /trySignInToWebMeet\(memberPage, smokeConfig\.secondaryUser\)/,
+    'the fallback member must authenticate directly into WebMeet instead of booting and abandoning Explorer',
+  );
+  assert.match(roomSpec, /await expectWebMeetReady\(memberPage, \{ expectCreateRoom: false \}\)/);
   assert.match(roomSpec, /requireConfiguredPrincipal:\s*true/);
   assert.match(roomSpec, /assertDistinctAuthenticatedPrincipals\(ownerPrincipal,\s*memberPrincipal\)/);
   assert.match(roomSpec, /expectBidirectionalAudioVideoRtp\(ownerPage/);
@@ -78,6 +84,11 @@ test('headless WebMeet acceptance keeps synthetic media, strict accounts, and fo
   assert.match(roomSpec, /expectWebMeetMediaState\(ownerPage/);
   assert.match(roomSpec, /expectWebMeetMediaState\(memberPage/);
   const webMeetHelpers = fs.readFileSync(new URL('./webmeet.mjs', import.meta.url), 'utf8');
+  assert.match(
+    webMeetHelpers,
+    /return trySignIn\(page, account, webMeetDashboardPath\(\)\)/,
+    'the optional-account path must use the same direct destination as strict WebMeet navigation',
+  );
   assert.match(
     webMeetHelpers,
     /'outbound-rtp:audio'[\s\S]*'outbound-rtp:video'[\s\S]*'inbound-rtp:audio'[\s\S]*'inbound-rtp:video'/,

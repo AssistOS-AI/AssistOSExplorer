@@ -41,10 +41,11 @@ test('runtime loader waits through stopped state and stops only for actual failu
 
 test('runtime availability waits through stopped state until the operation succeeds', async () => {
     let attempts = 0;
+    let reads = 0;
     const result = await waitForAgentRuntimeAvailability({
         agentRef: 'AchillesIDE/webmeetAgent',
         timeoutMs: Number.POSITIVE_INFINITY,
-        readRuntime: async () => ({ status: 'stopped', running: false }),
+        readRuntime: async () => (++reads === 1 ? { status: 'stopped', running: false } : { status: 'running', running: true }),
         wait: async () => {},
         operation: async () => {
             attempts += 1;
@@ -59,6 +60,7 @@ test('runtime availability waits through stopped state until the operation succe
 
     assert.equal(result, 'ready');
     assert.equal(attempts, 2);
+    assert.equal(reads, 3);
 });
 
 test('runtime availability surfaces a terminal runtime failure', async () => {
@@ -71,6 +73,18 @@ test('runtime availability surfaces a terminal runtime failure', async () => {
         }),
         /WebMeet failed to start \(failed\)/
     );
+});
+
+
+test('runtime availability never calls application operations while startup is pending', async () => {
+    let elapsed = 0;
+    await assert.rejects(() => waitForAgentRuntimeAvailability({
+        agentRef: 'AchillesCLI/achilles-cli', timeoutMs: 1000, pollIntervalMs: 250,
+        now: () => elapsed,
+        readRuntime: async () => ({ status: 'starting', running: false }),
+        wait: async ms => { elapsed += ms; },
+        operation: async () => assert.fail('MCP must not initialize before runtime readiness'),
+    }), /startup timeout/);
 });
 
 test('disabled runtime stops immediately without probing or polling, then works after Marketplace enablement', async () => {
@@ -98,9 +112,11 @@ test('disabled runtime stops immediately without probing or polling, then works 
 
 test('missing runtime evidence does not falsely declare an agent disabled', async () => {
     for (const runtime of [null, {}, { active: true, running: false, status: 'starting' }]) {
+        let reads = 0;
         assert.equal(await waitForAgentRuntimeAvailability({
             agentRef: 'AchillesIDE/onlyOffice',
-            readRuntime: async () => runtime,
+            readRuntime: async () => ++reads === 1 ? runtime : { active: true, running: true, status: 'running' },
+            wait: async () => {},
             operation: async () => 'ready'
         }), 'ready');
     }

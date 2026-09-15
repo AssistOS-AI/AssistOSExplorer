@@ -38,6 +38,7 @@ export function createSchemas(z) {
   const SearchFilesArgsSchema = z.object({
     path: z.string(),
     pattern: z.string(),
+    includeKind: z.boolean().optional().default(false).describe('Return {path, kind} entries for files and folders instead of path strings.'),
     excludePatterns: z.array(z.string()).optional().default([]),
     maxResults: z.number().int().positive().max(20000).optional().default(5000),
     workspaceVersion: z.number().int().nonnegative().optional().default(0)

@@ -23,3 +23,17 @@ test('explorer exposes shared assets through the whitelisted shared route', () =
 
     assert.equal(sharedRoute?.access, 'public');
 });
+
+test('explorer requires UserPersisto SSO without local-role compatibility', () => {
+    const manifest = readManifest();
+
+    assert.equal(manifest.ploinky, 'sso enable');
+    assert.equal(manifest.sso?.providerAgent, 'userPersistoAgent');
+    assert.ok(manifest.enable.includes('userPersistoAgent'));
+    assert.equal(manifest.routerAccess?.requiredCapability, 'explorer.access');
+    assert.equal(Object.hasOwn(manifest.routerAccess, 'localAuthRoles'), false);
+    assert.equal(
+        manifest.routerAccess.capabilityDeniedRedirect,
+        '/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/',
+    );
+});

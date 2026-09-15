@@ -123,7 +123,58 @@ test('collaboration open initializes plain Markdown with the authenticated viewe
     }
 });
 
-test('SCRIPTA mutations use the Explorer Automerge authority and persist the winning variant', async () => {
+test('Markdown proposals sharing a base merge independently and retries remain no-ops after restart', async (t) => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-scripta-proposal-retry-'));
+    t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
+    const validatePath = async (input) => {
+        const candidate = String(input || '');
+        const target = candidate.startsWith(`${workspaceRoot}${path.sep}`)
+            ? path.resolve(candidate)
+            : path.resolve(workspaceRoot, candidate.replace(/^\/+/, ''));
+        if (target !== workspaceRoot && !target.startsWith(`${workspaceRoot}${path.sep}`)) {
+            throw new Error('Path outside workspace.');
+        }
+        return target;
+    };
+    const openService = () => createScriptaCrdtService({
+        fs, path, workspaceRoot, validatePath,
+        markdownCrdtStore: createMarkdownCrdtStore({
+            fs, path, workspaceRoot, validatePath,
+            writeFileContent: (target, content) => fs.writeFile(target, content, 'utf8'),
+            invalidateCachesForPath() {},
+        }),
+    });
+    const participant = { id: 'user-1', hash: 'participant-user-1', label: 'User' };
+    const args = { path: '/notes.md', participant, viewerHash: participant.hash, resourceId: 'notes' };
+    const service = openService();
+    await service.create({ ...args, title: 'Notes', template: 'general', createdBy: participant.hash });
+    const base = await service.collaborationOpen(args);
+    const firstRequest = {
+        ...args, baseStateBase64: base.stateBase64,
+        markdown: '# Notes\n\n## Chapter 1\n\nShared notes\n\n## First addition\n\nFirst proposal details',
+    };
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    const first = await service.collaborationMergeMarkdown(firstRequest);
+    assert.equal(first.changed, true);
+    assert.match(first.markdown, /First proposal details/);
+    t.mock.timers.tick(2000);
+    const second = await service.collaborationMergeMarkdown({
+        ...firstRequest,
+        markdown: '# Notes\n\n## Chapter 1\n\nShared notes\n\n## Second addition\n\nSecond proposal details',
+    });
+    assert.equal(second.changed, true);
+    assert.match(second.markdown, /First proposal details/);
+    assert.match(second.markdown, /Second proposal details/);
+    const committed = await fs.readFile(path.join(workspaceRoot, 'notes.md'), 'utf8');
+    const restarted = openService();
+    t.mock.timers.tick(2000);
+    const retry = await restarted.collaborationMergeMarkdown(firstRequest);
+    assert.equal(retry.changed, false);
+    assert.equal(retry.markdown, second.markdown);
+    assert.equal(await fs.readFile(path.join(workspaceRoot, 'notes.md'), 'utf8'), committed);
+});
+
+test('SCRIPTA mutations use the Explorer Automerge authority and persist the winning variant', async (t) => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-scripta-crdt-'));
     const validatePath = async (input) => {
         const candidate = String(input || '');
@@ -395,6 +446,7 @@ test('SCRIPTA mutations use the Explorer Automerge authority and persist the win
             viewerHash: participant.hash,
             view: { mode: 'document' },
         });
+        t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
         const meetingNotesMerged = await service.collaborationMergeMarkdown({
             path: '/WebMeet/room-1234/draft.md',
             resourceId: 'resource-1',
@@ -412,6 +464,7 @@ test('SCRIPTA mutations use the Explorer Automerge authority and persist the win
         assert.match(savedMeetingNotes, /achilles-ide-document/);
         assert.match(savedMeetingNotes, /Agent cumulative notes/);
         assert.match(savedMeetingNotes, /Manual note added while the agent was working/);
+        t.mock.timers.tick(2000);
         const repeatedMeetingNotesMerge = await service.collaborationMergeMarkdown({
             path: '/WebMeet/room-1234/draft.md',
             resourceId: 'resource-1',
@@ -423,6 +476,7 @@ test('SCRIPTA mutations use the Explorer Automerge authority and persist the win
         });
         assert.equal(repeatedMeetingNotesMerge.changed, false);
         assert.equal(repeatedMeetingNotesMerge.markdown, meetingNotesMerged.markdown);
+        t.mock.timers.reset();
         assert.equal(
             await fs.readFile(path.join(workspaceRoot, 'WebMeet/room-1234/draft.md'), 'utf8'),
             savedMeetingNotes,

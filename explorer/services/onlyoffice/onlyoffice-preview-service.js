@@ -2,12 +2,6 @@ import { isOnlyOfficeFile } from './onlyoffice-file-types.js';
 import { isOnlyOfficeEditorActive } from './onlyoffice-editor-host.js';
 import { isAgentRuntimeStartupError, readMarketplaceAgent } from '../../shared/ui/agent-runtime-loader/agent-runtime-loader.js';
 
-// Reusing a cached session re-points the editor at a documentUrl/callbackUrl
-// that embed the server-side session token (idle TTL is 30 minutes server
-// side). Keep the client reuse window comfortably below that so a remount
-// never hands OnlyOffice an expired download URL.
-const SESSION_REUSE_MAX_AGE_MS = 5 * 60 * 1000;
-
 function buildSessionUrl(filePath) {
     const params = new URLSearchParams({ path: String(filePath || '') });
     return `/base-agent-additional-server/onlyOffice/7000/control/office/session?${params.toString()}`;
@@ -68,32 +62,21 @@ function buildSessionVersionHint(fileExp, normalizedPath) {
     const modified = entry.modified || entry.updatedAt || '';
     const size = Number.isFinite(entry.size) ? String(entry.size) : '';
     if (!modified && !size) {
-        // No real version signal (typical for some DPU entries): report no
-        // hint so canReuseSession refuses time-window reuse and only the
-        // live-editor case keeps the session.
+        // Some DPU entries have no version metadata. Cache identity still
+        // depends on the mounted editor, never on a fabricated version.
         return '';
     }
     return `${modified}|${size}`;
 }
 
-function canReuseSession(fileExp, entry, versionHint) {
+function canReuseSession(fileExp, entry) {
     if (!entry?.session) {
         return false;
     }
-    // The mounted editor already consumed this exact config; reusing it costs
-    // nothing and keeps the iframe alive, so age does not matter here.
-    if (isOnlyOfficeEditorActive(getEditorHost(fileExp), entry.session.config)) {
-        return true;
-    }
-    if (versionHint && entry.versionHint && versionHint !== entry.versionHint) {
-        return false;
-    }
-    if (!versionHint || !entry.versionHint) {
-        // No version information to compare; only the live-editor case above
-        // is safe to reuse indefinitely.
-        return false;
-    }
-    return Number.isFinite(entry.fetchedAt) && (Date.now() - entry.fetchedAt) < SESSION_REUSE_MAX_AGE_MS;
+    // A closed or disconnected document key can already be finalized in
+    // DocumentServer even when the file version and JWT lifetime are unchanged.
+    // Only an existing live editor may retain its session.
+    return isOnlyOfficeEditorActive(getEditorHost(fileExp), entry.session.config);
 }
 
 export function invalidateOnlyOfficeSession(fileExp, filePath = null) {
@@ -120,7 +103,7 @@ async function resolveOnlyOfficeSession(fileExp, normalizedPath) {
         if (current.promise) {
             return await current.promise;
         }
-        if (canReuseSession(fileExp, current, versionHint)) {
+        if (canReuseSession(fileExp, current)) {
             return current.session;
         }
     }

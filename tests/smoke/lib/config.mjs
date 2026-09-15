@@ -29,6 +29,13 @@ function resolveOptionalPath(value) {
   return text ? path.resolve(text) : '';
 }
 
+// Automated UserPersisto sign-in uses the same methods for every role.
+const SIGN_IN_METHODS = new Set(['emailCode', 'totp']);
+function readSignInMethod(name, fallback) {
+  const value = String(process.env[name] || '').trim();
+  return SIGN_IN_METHODS.has(value) ? value : fallback;
+}
+
 const runId = String(process.env.SMOKE_RUN_ID || defaultRunId()).replace(/[^A-Za-z0-9_-]/g, '-');
 const qaAcceptance = readBool('SMOKE_QA_ACCEPTANCE', false);
 const workspaceRoot = resolveOptionalPath(process.env.SMOKE_WORKSPACE_ROOT);
@@ -52,13 +59,23 @@ export const smokeConfig = Object.freeze({
   ),
   qaEdgeIP: String(process.env.SMOKE_QA_EDGE_IP || '').trim(),
   authAgent: process.env.SMOKE_AUTH_AGENT || 'explorer',
+  // Shell command printing the latest UserPersisto code for $SMOKE_EMAIL.
+  emailCodeCommand: String(process.env.SMOKE_EMAIL_CODE_COMMAND || '').trim(),
+  accountEmailDomain: String(process.env.SMOKE_ACCOUNT_EMAIL_DOMAIN || 'example.test').trim(),
+  // `password` applies only to Ploinky's local /auth/login form.
   primaryUser: {
     username: process.env.SMOKE_USERNAME || 'admin',
+    loginEmail: process.env.SMOKE_LOGIN_EMAIL || process.env.SMOKE_USERNAME || 'admin',
     password: process.env.SMOKE_PASSWORD || 'admin',
+    signInMethod: readSignInMethod('SMOKE_SIGN_IN_METHOD', 'emailCode'),
+    totpSecret: String(process.env.SMOKE_TOTP_SECRET || ''),
   },
   secondaryUser: {
     username: process.env.SMOKE_SECONDARY_USERNAME || 'user',
+    loginEmail: process.env.SMOKE_SECONDARY_LOGIN_EMAIL || process.env.SMOKE_SECONDARY_USERNAME || 'user',
     password: process.env.SMOKE_SECONDARY_PASSWORD || 'user',
+    signInMethod: readSignInMethod('SMOKE_SECONDARY_SIGN_IN_METHOD', 'emailCode'),
+    totpSecret: String(process.env.SMOKE_SECONDARY_TOTP_SECRET || ''),
   },
   webchatAgent: process.env.SMOKE_WEBCHAT_AGENT || 'roboTeamAgent',
   webAssistSiteId: process.env.SMOKE_WEBASSIST_SITE_ID || 'demo-site',

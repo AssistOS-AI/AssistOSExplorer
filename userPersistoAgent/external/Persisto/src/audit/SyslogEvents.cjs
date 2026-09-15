@@ -1,0 +1,9 @@
+module.exports = {
+    CREATE: "CREATE",
+    UPDATE: "UPDATE",
+    DELETE: "DELETE",
+    REWARD: "REWARD",
+    LOGIN: "LOGIN",
+    INVITE_SENT: "INVITE_SENT",
+    CREATE_OBJECT: "CREATE_OBJECT"
+}

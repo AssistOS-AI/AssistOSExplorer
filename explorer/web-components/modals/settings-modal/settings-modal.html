@@ -6,6 +6,7 @@
 </div>
 <div class="modal-body settings-modal-body">
     <div class="settings-tabs" role="tablist" aria-label="Settings tabs">
+        <button type="button" class="settings-tab" data-local-action="switchTab account" data-tab="account" role="tab" aria-selected="false">My Account</button>
         <button type="button" class="settings-tab" data-local-action="switchTab agents" data-tab="agents" role="tab" aria-selected="true">Agents</button>
         <button type="button" class="settings-tab" data-local-action="switchTab plugins" data-tab="plugins" role="tab" aria-selected="false">Plugins</button>
         <button type="button" class="settings-tab" data-local-action="switchTab copilot" data-tab="copilot" role="tab" aria-selected="false">Copilot</button>
@@ -18,6 +19,14 @@
     </div>
 
     <div class="settings-content">
+        <section class="settings-section hidden" data-section="account" aria-label="My Account">
+            <p class="plugin-settings-description">Manage your account in UserPersisto. Each link opens a separate tab.</p>
+            <nav class="settings-page-links" aria-label="Account pages">
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/" target="_blank" rel="noopener noreferrer">My Account<span>Manage your profile and account details.</span></a>
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/#security-heading" target="_blank" rel="noopener noreferrer">Sign-in &amp; security<span>Manage your passkeys and authenticator app.</span></a>
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/authentication.html" target="_blank" rel="noopener noreferrer" data-account-capability="admin.agentSettings.manage" hidden>Authentication policy<span>Configure workspace sign-in methods and registration.</span></a>
+            </nav>
+        </section>
         <section class="settings-section hidden" data-section="keymap">
             <p class="keymap-description">Focus a field and press a new shortcut. Use Backspace to clear.</p>
             <div class="keymap-list" id="keymapList"></div>
@@ -111,8 +120,12 @@
             </div>
         </section>
 
-        <section class="settings-section hidden" data-section="users">
-            <admin-settings-panel data-presenter="admin-settings-panel" data-embedded="true" data-auto-load="false"></admin-settings-panel>
+        <section class="settings-section hidden" data-section="users" aria-label="Administration">
+            <p class="plugin-settings-description">Manage users and applications in UserPersisto. Each link opens a separate tab.</p>
+            <nav class="settings-page-links" aria-label="Administration pages">
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/users.html" target="_blank" rel="noopener noreferrer" data-account-capability="admin.users.manage" hidden>Users<span>Search accounts and manage their roles.</span></a>
+                <a class="settings-page-link" href="/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/applications.html" target="_blank" rel="noopener noreferrer" data-account-capability="admin.agentSettings.manage" hidden>Applications<span>Manage OAuth and OpenID Connect applications.</span></a>
+            </nav>
         </section>
     </div>
 

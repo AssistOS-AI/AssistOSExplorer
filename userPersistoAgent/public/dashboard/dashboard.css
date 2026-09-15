@@ -1,0 +1,40 @@
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 280px; background: #f5f7fb; color: #1c2938; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+[hidden] { display: none !important; }
+a { color: #264ec6; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.account-shell { width: min(1000px, calc(100% - 48px)); margin: 0 auto; }
+.account-header { min-height: 100px; display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
+.account-brand { display: flex; gap: 10px; align-items: center; color: #1c2938; font-size: 17px; font-weight: 650; letter-spacing: -.4px; }
+.page-heading { padding: 36px 0 16px; }
+.page-heading p { color: #657185; font-size: 15px; line-height: 1.6; }
+.page-heading .eyebrow { font-size: 11px; font-weight: 650; letter-spacing: 1.8px; color: #536381; }
+.account-grid { display: grid; grid-template-columns: minmax(270px, .9fr) minmax(0, 1.3fr); gap: 24px; }
+.account-card { background: white; border: 1px solid #e1e6ef; border-radius: 14px; padding: 28px; box-shadow: 0 3px 10px #1c293805; }
+.card-heading { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.3px; }
+.pill { border: 1px solid #dae3f4; background: #f2f6ff; padding: 4px 8px; border-radius: 20px; color: #456197; font-size: 11px; overflow-wrap: anywhere; }
+.account-email { color: #657185; font-size: 14px; overflow-wrap: anywhere; margin: 10px 0 26px; }
+.card-description { color: #657185; font-size: 13px; line-height: 1.6; margin: 12px 0 8px; }
+#profile-form { display: grid; gap: 8px; }
+#profile-form label { font-size: 13px; font-weight: 550; }
+.optional { color: #657185; font-weight: 400; }
+#profile-form input { width: 100%; min-height: 42px; border: 1px solid #ccd5e1; border-radius: 7px; padding: 10px 12px; font: inherit; font-size: 14px; color: #1c2938; margin-bottom: 12px; background: white; }
+#profile-form button, .button-link { display: inline-flex; gap: 16px; align-items: center; justify-content: center; min-height: 40px; padding: 10px 16px; border-radius: 7px; background: #264ec6; border: 0; color: white; font-size: 13px; font-weight: 550; cursor: pointer; }
+#profile-form button { width: fit-content; font: 550 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+#profile-form button:disabled { opacity: .55; cursor: default; }
+.account-details { border-top: 1px solid #e6eaf1; margin-top: 26px; padding-top: 20px; color: #657185; font-size: 13px; }
+.detail-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .7px; }
+.account-details p { line-height: 1.6; margin-bottom: 0; }
+.account-access { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 28px; background: #eaf0fc; border: 1px solid #dbe4f6; border-radius: 12px; }
+.account-access h2 { font-size: 15px; }
+.account-access p { color: #536381; font-size: 13px; line-height: 1.6; margin: 8px 0 0; }
+.button-link { flex-shrink: 0; font-size: 13px; font-weight: 550; }
+.account-status { font-size: 13px; min-height: 20px; color: #1c6d4b; margin: 0 0 16px; }
+.account-status.error { color: #b42318; }
+footer { padding: 28px 0 40px; font-size: 12px; color: #778396; }
+:focus-visible { outline: 3px solid #a0b6f8; outline-offset: 3px; }
+@media (max-width: 740px) { .account-grid { grid-template-columns: 1fr; } .account-shell { width: min(560px, calc(100% - 32px)); } .account-header { min-height: 76px; } .page-heading { padding-top: 18px; } .account-card { padding: 22px; } .account-access { align-items: flex-start; flex-direction: column; padding: 22px; } }
+
+.account-navigation { display: flex; flex-wrap: wrap; gap: 10px 24px; padding: 0 0 20px; border-bottom: 1px solid #dce3ec; }
+.account-navigation a { font-size: 14px; }

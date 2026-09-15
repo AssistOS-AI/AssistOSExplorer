@@ -17,6 +17,7 @@
   DocumentServer -->|signed callback| Storage[Internal callback storage]
   Storage --> Workspace[Workspace files]
   Storage --> DPU[DPU Confidential objects]</pre><figcaption><em>OnlyOffice separates authenticated control and public editor transport, then returns saved content through the selected storage owner.</em></figcaption></figure></section>
+      <section><h2>Editor Assets</h2><p>Spellcheck uses the narrowly allowed language dictionary files. Third-party editor plugins and their background updater are disabled. Explorer preloads the native versioned status image before editor readiness, keeping disconnect messages complete during a targeted restart.</p></section>
       <section><h2>Development Contract</h2><p>The design specifications define Runtime-v5, editor, callback, storage, and restart contracts. <a href="specsLoader.html?spec=DS001-coding-style.md"><code>DS001-coding-style.md</code></a> is the canonical coding and test-organization reference. Focused Node.js regression tests live under <code>tests/</code> and run with <code>node --test tests/*.test.mjs</code>. The <a href="wiki.html">OnlyOffice wiki</a> is the canonical source for local terminology.</p></section>
     </div>
   </div></main>

@@ -53,6 +53,19 @@ const baseURL = process.env.SMOKE_BASE_URL
   || process.env.PLAYWRIGHT_BASE_URL
   || (qaAcceptanceGate ? 'https://explorer-qa.axiologic.dev' : 'http://127.0.0.1:8080');
 const boxBaseURL = String(process.env.SMOKE_BOX_BASE_URL || baseURL).trim();
+const verificationMode = String(process.env.SMOKE_SOURCE_VERIFICATION || 'release');
+if (!['release', 'local-snapshot'].includes(verificationMode)) {
+  throw new Error('SMOKE_SOURCE_VERIFICATION must be release or local-snapshot.');
+}
+if (qaAcceptanceGate && verificationMode !== 'release') {
+  throw new Error('QA acceptance requires release source verification.');
+}
+const sourceManifestPath = String(verificationMode === 'local-snapshot'
+  ? process.env.SMOKE_LOCAL_SNAPSHOT_MANIFEST || ''
+  : process.env.SMOKE_RELEASE_MANIFEST || '').trim();
+const sourceVerifierPath = path.resolve(smokeRoot, verificationMode === 'local-snapshot'
+  ? '../../../ploinky/tests/release/verifyLocalSnapshotBundle.mjs'
+  : '../../../ploinky/tests/release/verifyCopilot421Bundle.mjs');
 
 validateHeadlessWebMeetProfile({
   enabled: headlessWebMeetGate,
@@ -137,13 +150,11 @@ for (const name of Object.keys(childEnv)) {
 let screenRuntimeEvidence = null;
 let copilotReleaseEvidence = null;
 if (ordinaryCopilotGate) {
-  const verifierPath = path.resolve(
-    smokeRoot,
-    '../../../ploinky/tests/release/verifyCopilot421Bundle.mjs',
-  );
   copilotReleaseEvidence = await collectCopilotReleaseEvidence({
-    manifestPath: String(process.env.SMOKE_RELEASE_MANIFEST || '').trim(),
-    verifierPath,
+    manifestPath: sourceManifestPath,
+    verifierPath: sourceVerifierPath,
+    verificationMode,
+    requireActiveAchillesCLI: false,
     baseURL,
     boxBaseURL,
     expectedContainerName: String(process.env.SMOKE_PLOINKY_BOX_CONTAINER || '').trim(),
@@ -152,6 +163,7 @@ if (ordinaryCopilotGate) {
     imageMaxAgeMs: process.env.SMOKE_BOX_MAX_IMAGE_AGE_MS,
   });
   childEnv.SMOKE_COPILOT_RELEASE_EVIDENCE = JSON.stringify(copilotReleaseEvidence);
+  console.log(`Copilot source verification: ${verificationMode}${verificationMode === 'local-snapshot' ? ' (development evidence; not release acceptance)' : ''}`);
 }
 if (screenGate) {
   const baseURL = process.env.SMOKE_BASE_URL || process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:8080';
@@ -230,11 +242,10 @@ if (screenRuntimeEvidence) {
 if (copilotReleaseEvidence) {
   try {
     const postRunEvidence = await collectCopilotReleaseEvidence({
-      manifestPath: String(process.env.SMOKE_RELEASE_MANIFEST || '').trim(),
-      verifierPath: path.resolve(
-        smokeRoot,
-        '../../../ploinky/tests/release/verifyCopilot421Bundle.mjs',
-      ),
+      manifestPath: sourceManifestPath,
+      verifierPath: sourceVerifierPath,
+      verificationMode,
+      requireActiveAchillesCLI: true,
       baseURL,
       boxBaseURL,
       expectedContainerName: copilotReleaseEvidence.liveBox.box.containerName,

@@ -5,7 +5,7 @@ import { redactTraceText } from './redacted-trace.mjs';
 // be copied wholesale: they contain authentication headers and form bodies.
 export async function beginAuthNavigationDiagnostics(page, account) {
     const redact = createRedactor();
-    const privateValues = [account?.username, account?.password, ...collectSecrets().map(({ value }) => value)]
+    const privateValues = [account?.username, account?.loginEmail, account?.password, ...collectSecrets().map(({ value }) => value)]
         .filter((value) => typeof value === 'string' && value)
         .flatMap((value) => [value, encodeURIComponent(value)])
         .sort((left, right) => right.length - left.length);

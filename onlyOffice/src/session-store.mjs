@@ -135,6 +135,7 @@ function sanitizeStoredSession(record) {
     delegations: cloneDelegations(record.delegations),
     createdAt: record.createdAt,
     documentAccessedAt: record.documentAccessedAt,
+    drainAcknowledgedAt: record.drainAcknowledgedAt || null,
     idleExpiresAt: record.idleExpiresAt,
     absoluteExpiresAt: record.absoluteExpiresAt,
     callbackAcknowledgement: record.callbackAcknowledgement || null,
@@ -173,6 +174,7 @@ function publicSummaryFromRecord(record, token = '') {
     authUser: cloneAuthUser(record.authUser),
     createdAt: record.createdAt,
     documentAccessedAt: record.documentAccessedAt,
+    drainAcknowledgedAt: record.drainAcknowledgedAt || null,
     idleExpiresAt: record.idleExpiresAt,
     absoluteExpiresAt: record.absoluteExpiresAt,
     callbackAcknowledgement: record.callbackAcknowledgement || null,
@@ -194,6 +196,7 @@ function publicSummaryFromRecord(record, token = '') {
         authUser: cloneAuthUser(record.authUser),
         createdAt: record.createdAt,
         documentAccessedAt: record.documentAccessedAt,
+        drainAcknowledgedAt: record.drainAcknowledgedAt || null,
         idleExpiresAt: record.idleExpiresAt,
         absoluteExpiresAt: record.absoluteExpiresAt,
         callbackAcknowledgement: record.callbackAcknowledgement || null,
@@ -312,6 +315,10 @@ function validateStoredRecord(record) {
   const documentAccessedAt = record.documentAccessedAt === null
     ? null
     : parseIsoDate(record.documentAccessedAt, 'document access timestamp');
+  if (record.drainAcknowledgedAt != null) {
+    const drainedAt = parseIsoDate(record.drainAcknowledgedAt, 'drain acknowledgement timestamp');
+    if (!documentAccessedAt || drainedAt < documentAccessedAt) throw stateError('OnlyOffice v5 drain acknowledgement is corrupt.');
+  }
   const idleExpiresAt = parseIsoDate(record.idleExpiresAt, 'idleExpiresAt');
   const absoluteExpiresAt = parseIsoDate(record.absoluteExpiresAt, 'absoluteExpiresAt');
   if (createdAt > idleExpiresAt || idleExpiresAt > absoluteExpiresAt) {
@@ -503,6 +510,7 @@ export function createSessionStore({
         delegations: cloneDelegations(input.delegations),
         createdAt: createdAt.toISOString(),
         documentAccessedAt: null,
+        drainAcknowledgedAt: null,
         idleExpiresAt: idleExpiresAt.toISOString(),
         absoluteExpiresAt: absoluteExpiresAt.toISOString(),
         callbackAcknowledgement: null,
@@ -616,6 +624,42 @@ export function createSessionStore({
       sessions.set(record.tokenHash, record);
       persist();
       return sanitizeStoredSession(record);
+    },
+
+    acknowledgeDrainedEditors() {
+      // Called only after durable force-save and native socket closure both
+      // succeed. Keep callback authorization available for late final saves,
+      // but never force-save these retired DocumentServer keys on a later drain.
+      const acknowledgedAt = toIso(now());
+      let changed = false;
+      for (const record of sessions.values()) {
+        if (record.documentAccessedAt && !record.requiresReauthorization && !record.drainAcknowledgedAt) {
+          record.drainAcknowledgedAt = acknowledgedAt;
+          changed = true;
+        }
+      }
+      if (changed) persist();
+    },
+
+    updateEditorStatus(token, status) {
+      if (![1, 4].includes(status)) throw new Error('Unsupported OnlyOffice editor status.');
+      const record = readRecordByToken(token);
+      assertActive(record);
+      if (status === 4) {
+        record.callbackAcknowledgement = {
+          status,
+          version: record.documentKey,
+          acknowledgedAt: toIso(now()),
+        };
+      } else if (record.drainAcknowledgedAt || [2, 4].includes(record.callbackAcknowledgement?.status)) {
+        // A verified new editing cycle cannot inherit a previous close receipt.
+        record.callbackAcknowledgement = null;
+        record.drainAcknowledgedAt = null;
+      } else {
+        return;
+      }
+      sessions.set(record.tokenHash, record);
+      persist();
     },
 
     acknowledgeCallback(token, acknowledgement = {}) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import tls from 'node:tls';
 import test from 'node:test';
+
+import { editorUrl as buildEditorUrl, probeUpgrade } from '../helpers/public-editor-probe.mjs';
 
 const e2eEnabled = process.env.ONLYOFFICE_E2E === '1';
 const skipMessage = 'Requires ONLYOFFICE_E2E=1 with a live Ploinky runtime profile (router + explorer + onlyOffice + dpuAgent + OnlyOffice Document Server).';
@@ -23,13 +23,7 @@ function requiredEnv(name) {
 }
 
 function editorUrl(path) {
-  const baseUrl = new URL(requiredEnv('ONLYOFFICE_E2E_EDITOR_BASE_URL'));
-  const prefix = baseUrl.pathname.replace(/\/+$/, '');
-  const suffix = String(path || '').startsWith('/') ? String(path) : `/${path}`;
-  baseUrl.pathname = `${prefix}${suffix}`;
-  baseUrl.search = '';
-  baseUrl.hash = '';
-  return baseUrl.toString();
+  return buildEditorUrl(requiredEnv('ONLYOFFICE_E2E_EDITOR_BASE_URL'), path);
 }
 
 function routerServiceUrl(path) {
@@ -39,58 +33,19 @@ function routerServiceUrl(path) {
 }
 
 async function fetchText(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(10000), ...options });
   const text = await response.text();
   return { response, text };
 }
 
-function openSocket(url) {
-  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-  if (url.protocol === 'https:') {
-    return tls.connect({ host: url.hostname, port, servername: url.hostname });
-  }
-  return net.connect({ host: url.hostname, port });
-}
-
-async function probeUpgrade(baseUrl, path) {
-  const url = new URL(editorUrl(path));
-  const origin = new URL(baseUrl).origin;
-  return new Promise((resolve, reject) => {
-    const socket = openSocket(url);
-    let data = '';
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      reject(new Error(`Timed out waiting for upgrade response from ${url}`));
-    }, 5000);
-
-    socket.on('connect', () => {
-      socket.write([
-        `GET ${url.pathname}${url.search} HTTP/1.1`,
-        `Host: ${url.host}`,
-        `Origin: ${origin}`,
-        'Connection: Upgrade',
-        'Upgrade: websocket',
-        'Sec-WebSocket-Version: 13',
-        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
-        '',
-        '',
-      ].join('\r\n'));
-    });
-    socket.on('data', (chunk) => {
-      data += chunk.toString('utf8');
-      if (data.includes('\r\n')) {
-        clearTimeout(timeout);
-        socket.destroy();
-        const status = Number(data.match(/^HTTP\/1\.[01]\s+(\d+)/)?.[1] || 0);
-        resolve(status);
-      }
-    });
-    socket.on('error', (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    socket.on('close', () => clearTimeout(timeout));
-  });
+function authHeaders() {
+  const cookie = String(process.env.ONLYOFFICE_E2E_AUTH_COOKIE || '').trim();
+  const bearer = String(process.env.ONLYOFFICE_E2E_AUTH_BEARER || '').trim();
+  if (!cookie && !bearer) throw new Error('Authenticated control-route probe requires a cookie or bearer.');
+  return {
+    ...(cookie ? { cookie } : {}),
+    ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+  };
 }
 
 runtimeTest('internet cannot reach internal document route through office host', async () => {
@@ -100,7 +55,7 @@ runtimeTest('internet cannot reach internal document route through office host',
 });
 
 runtimeTest('router service prefix does not re-expose internal document route', async () => {
-  const { response, text } = await fetchText(routerServiceUrl('/internal/document/not-a-real-token'));
+  const { response, text } = await fetchText(routerServiceUrl('/internal/document/not-a-real-token'), { headers: authHeaders() });
 
   assert.ok([401, 403, 404].includes(response.status), `expected internal route to be blocked, got ${response.status}: ${text}`);
 });
@@ -115,7 +70,7 @@ runtimeTest('public editor host serves api js and websocket path while blocking 
     assert.ok([403, 404].includes(blocked.response.status), `${path} returned ${blocked.response.status}: ${blocked.text}`);
   }
 
-  const websocketPath = String(process.env.ONLYOFFICE_E2E_WEBSOCKET_PATH || '/doc/e2e/c/?shardkey=e2e');
+  const websocketPath = String(process.env.ONLYOFFICE_E2E_WEBSOCKET_PATH || '/doc/e2e/c/?shardkey=e2e&EIO=4&transport=websocket');
   const upgradeStatus = await probeUpgrade(requiredEnv('ONLYOFFICE_E2E_EDITOR_BASE_URL'), websocketPath);
   assert.equal(upgradeStatus, 101, `websocket path did not complete a real upgrade: ${upgradeStatus}`);
 });

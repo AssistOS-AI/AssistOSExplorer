@@ -1,13 +1,7 @@
 <section class="administration-panel">
-    <div class="administration-tabs" role="tablist" aria-label="Administration settings">
-        <button type="button" class="administration-tab active" data-local-action="switchAdministrationTab users" data-tab="users" role="tab" aria-selected="true">Users</button>
-        <button type="button" class="administration-tab" data-local-action="switchAdministrationTab branding" data-tab="branding" role="tab" aria-selected="false">Branding</button>
-    </div>
+    <h3 class="administration-heading">Users</h3>
     <div class="administration-status" data-role="status" role="status" aria-live="polite"></div>
-    <section class="administration-tab-panel active" data-panel="users" role="tabpanel">
+    <section class="administration-users" aria-label="User administration">
         <admin-users-settings data-presenter="admin-users-settings"></admin-users-settings>
-    </section>
-    <section class="administration-tab-panel" data-panel="branding" role="tabpanel" hidden>
-        <admin-branding-settings data-presenter="admin-branding-settings"></admin-branding-settings>
     </section>
 </section>

@@ -1,0 +1,13 @@
+{
+  "pluginCategory": "application",
+  "id": "email-agent-settings",
+  "component": "email-agent-settings",
+  "location": [],
+  "label": "EmailAgent",
+  "tooltip": "Configure Mailjet email delivery.",
+  "presenter": "EmailAgentSettings",
+  "type": "global",
+  "autoPin": false,
+  "dependencies": [],
+  "settings": "email-agent-settings"
+}

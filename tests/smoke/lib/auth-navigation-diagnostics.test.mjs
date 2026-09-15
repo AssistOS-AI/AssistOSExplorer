@@ -16,7 +16,7 @@ test('failure snapshots retain request terminals and initiators without credenti
     page.mainFrame = () => frame;
     page.url = () => unsafeUrl;
     const diagnostics = attachPageDiagnostics(page, {}, 'unit');
-    const recorder = await beginAuthNavigationDiagnostics(page, { username: 'short', password: 'pw' });
+    const recorder = await beginAuthNavigationDiagnostics(page, { username: 'short', loginEmail: 'private-login@example.test', password: 'pw' });
     const request = (suffix) => ({
         url: () => `https://fixture.invalid/${suffix}?opaque=unknown-secret`, method: () => 'GET',
         resourceType: () => 'script', isNavigationRequest: () => false,
@@ -41,7 +41,7 @@ test('failure snapshots retain request terminals and initiators without credenti
         requestId: '1', response: { status: 200, protocol: 'h3', headers: { 'set-cookie': 'private-response-cookie' } },
     });
     session.emit('Network.loadingFailed', { requestId: '1', errorText: 'net::ERR_FAILED' });
-    const error = new Error(`navigation to ${unsafeUrl} failed for short pw`);
+    const error = new Error(`navigation to ${unsafeUrl} failed for short pw private-login@example.test private-login%40example.test`);
     const snapshot = recorder.failure(error, 'login-submit-navigation');
     recordPageNavigationFailure(page, snapshot);
     assert.equal(error.navigationDiagnostics, snapshot);
@@ -53,7 +53,7 @@ test('failure snapshots retain request terminals and initiators without credenti
     assert.equal(diagnostics.actionableEvents().length, 1, 'navigation metadata does not acknowledge the real failed request');
     const captured = JSON.stringify({ snapshot, message: error.message, stack: error.stack });
     for (const value of ['url-user', 'url-password', 'unknown-secret', 'private-fragment', 'private-cookie', 'private-form-body',
-        'private-function-sentinel', 'private-response-cookie', 'short', 'pw']) {
+        'private-function-sentinel', 'private-response-cookie', 'short', 'pw', 'private-login@example.test', 'private-login%40example.test']) {
         assert.equal(captured.includes(value), false, value);
     }
     page.emit('requestfinished', pending);

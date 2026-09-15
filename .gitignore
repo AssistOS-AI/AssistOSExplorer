@@ -1,5 +1,6 @@
 /explorer/document-multimedia/
 /explorer/node_modules/
+/userPersistoAgent/node_modules/
 /explorer/web-components/modals/test.txt
 /package-lock.json
 /node_modules/.package-lock.json

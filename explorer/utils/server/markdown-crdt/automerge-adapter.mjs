@@ -46,6 +46,11 @@ export function documentHasHeads(document, heads = []) {
   return Automerge.hasHeads(document, heads);
 }
 
+export function documentHasActorChanges(document, actor) {
+  const actorDocument = Automerge.clone(document, { actor });
+  return Boolean(Automerge.getLastLocalChange(actorDocument));
+}
+
 export function mergeDocuments(local, remote) {
   return Automerge.merge(local, remote);
 }

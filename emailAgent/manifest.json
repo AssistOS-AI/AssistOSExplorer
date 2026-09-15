@@ -1,0 +1,34 @@
+{
+  "name": "emailAgent",
+  "description": "Transactional email via Mailjet. Sends auth codes for UserPersisto and text/template emails for other agents. Never logs raw auth codes.",
+  "container": "docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669",
+  "readiness": {
+    "protocol": "mcp"
+  },
+  "volumes": {
+    ".data/emailAgent": "/data"
+  },
+  "ideSettings": [
+    {
+      "key": "email-agent-settings",
+      "label": "Email Agent",
+      "scope": "workspace",
+      "pluginKey": "emailAgent/email-agent-settings",
+      "settingsComponent": "email-agent-settings",
+      "adminOnly": true
+    }
+  ],
+  "profiles": {
+    "default": {
+      "env": {
+        "EMAILAGENT_SETTINGS_KEY": {
+          "generatedSecret": true
+        },
+        "EMAILAGENT_SETTINGS_FILE": {
+          "required": false,
+          "default": "/data/settings.enc.json"
+        }
+      }
+    }
+  }
+}

@@ -33,14 +33,22 @@ h1 {
     font-weight: 760;
 }
 
-.agent-label {
-    color: var(--text-soft);
-    font-size: 13px;
-    margin-top: 4px;
+.account-page-links {
+    display: grid;
+    gap: 12px;
 }
 
-admin-settings-panel {
-    flex: 1 1 auto;
+.account-page-links a {
+    display: block;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--text);
+}
+
+.account-page-links a[hidden] {
+    display: none;
 }
 
 @media (max-width: 720px) {

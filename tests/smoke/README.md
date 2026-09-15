@@ -41,24 +41,81 @@ npm run test:onlyoffice-confidential
 uses the exact Ploinky checkout mounted read-only at `/opt/ploinky`. A different
 checkout is rejected even when it happens to name the same commit.
 
-The default local credentials are `admin` / `admin` and `user` / `user`. Override them with:
+The sign-in helper requires existing UserPersisto test accounts; it does not seed
+local browser credentials. UserPersisto accounts are passwordless. The three
+release gates require two distinct accounts:
+
+1. Complete the first sign-in with Google or a verified email code to claim the
+   fresh installation as administrator before any other account signs in. For
+   automated gates, that account needs an available email-code method or an
+   enrolled authenticator app.
+2. Sign up the second account with an email code, then have the administrator
+   grant it the `user` role. Later public sign-ups receive `selfRegistered`,
+   which permits the account dashboard but not Explorer access.
+
+Both accounts use the same passwordless wizard.
+`SMOKE_SIGN_IN_METHOD` and `SMOKE_SECONDARY_SIGN_IN_METHOD` accept
+`emailCode` (the default for both accounts) or `totp`. Email codes come
+from `SMOKE_EMAIL_CODE_COMMAND`, a shell command that prints the newest code for
+the address in `$SMOKE_EMAIL` (for example a test-mailbox reader, or the agent
+log when `USERPERSISTO_DEV_BOOTSTRAP=true` makes an undelivered code visible as
+`DEVELOPMENT email code`); the helper only accepts a code different from the one
+visible before the send. `SMOKE_TOTP_SECRET` and `SMOKE_SECONDARY_TOTP_SECRET`
+supply an enrolled authenticator's base32 secret instead. Treat all of these as
+secrets. `SMOKE_PASSWORD` and `SMOKE_SECONDARY_PASSWORD` apply only to Ploinky's
+local `/auth/login` form, never to UserPersisto. The helper refuses passwordless
+sign-in while the installation is unclaimed so a test member cannot become its
+administrator.
+
+For sustained suites, enroll an authenticator through My Account after proving
+the account with its existing sign-in method. Email-code delivery is rate-limited
+and is unsuitable for repeated fresh-context logins. Every TOTP login waits for
+the next 30-second counter plus a 250 ms boundary margin before generating and
+submitting the code through the wizard. This avoids reusing a counter consumed
+by enrollment or a preceding test, including after a worker restart. The wait
+is bounded by the navigation timeout and canceled when the page closes or
+crashes. Allow up to 31 seconds per TOTP login in test budgets, keep the host and
+server clocks synchronized, and run suites sharing an account serially.
+
+`SMOKE_USERNAME` and `SMOKE_SECONDARY_USERNAME` identify the expected Router
+usernames when known. Set `SMOKE_LOGIN_EMAIL` and
+`SMOKE_SECONDARY_LOGIN_EMAIL` to the UserPersisto sign-in emails; these are
+independent account selectors and may differ from the stored usernames. Login
+emails otherwise default to the corresponding `SMOKE_USERNAME` value.
 
 ```bash
-SMOKE_USERNAME=admin SMOKE_PASSWORD=admin \
-SMOKE_SECONDARY_USERNAME=user SMOKE_SECONDARY_PASSWORD=user \
-SMOKE_BASE_URL=https://skills.axiologic.dev \
+SMOKE_USERNAME=owner SMOKE_LOGIN_EMAIL=owner@example.test \
+SMOKE_SECONDARY_USERNAME=member SMOKE_SECONDARY_LOGIN_EMAIL=member@example.test \
+SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
+SMOKE_BASE_URL=http://127.0.0.1:8080 \
 npm test
 ```
+
+For UserPersisto, the helper drives Login mode with the account email followed
+by the email code or authenticator for every role. It then verifies the resulting
+Router principal. A returned username matches only the configured username, and
+a returned email matches only the configured login email; either exact
+normalized field match identifies the configured account. The returned username
+remains the canonical principal label when it is present. Both accounts must
+have distinct immutable user ids and canonical principal labels and must not be
+guests.
+The verified result also exposes the signed `id` unchanged and the normalized
+signed `email` (empty when absent), so storage assertions can derive ownership
+from the authenticated principal without substituting configured account data.
 
 Run the dedicated public QA acceptance gate in headless Chromium with:
 
 ```bash
-SMOKE_USERNAME=admin SMOKE_PASSWORD='<qa-admin-password>' npm run test:qa
+SMOKE_USERNAME=owner SMOKE_LOGIN_EMAIL=owner@example.test \
+SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
+npm run test:qa
 ```
 
-`test:qa` is pinned to `https://explorer-qa.axiologic.dev`. It creates two
-run-scoped Explorer users through the Administration UI, runs exactly two
-browser tests, and removes the generated users afterward. The first test
+`test:qa` is pinned to `https://explorer-qa.axiologic.dev`. Its two run-scoped
+Explorer users sign up with email codes under `SMOKE_ACCOUNT_EMAIL_DOMAIN`
+(default `example.test`); the administrator then assigns their roles through the
+Administration UI. It runs exactly two
+browser tests, and blocks the generated users afterward. The first test
 creates a `.docx` under `/Confidential/My Space`, proves the active
 editor is writable OnlyOffice with autosave enabled, makes a browser edit
 without clicking Save, and reopens the document to prove persistence. The
@@ -456,8 +513,9 @@ SMOKE_BROWSER_B_NETWORK_ID=external-net-b \
 SMOKE_BROWSER_A_EXPECTED_EGRESS_IPV4=198.51.100.21 \
 SMOKE_BROWSER_B_EXPECTED_EGRESS_IPV4=198.51.100.22 \
 SMOKE_NETWORK_ECHO_URL=https://echo.test.example/ip \
-SMOKE_USERNAME='<account-a>' SMOKE_PASSWORD='<account-a-password>' \
-SMOKE_SECONDARY_USERNAME='<account-b>' SMOKE_SECONDARY_PASSWORD='<account-b-password>' \
+SMOKE_USERNAME='<account-a>' SMOKE_LOGIN_EMAIL='<account-a-email>' \
+SMOKE_SECONDARY_USERNAME='<account-b>' SMOKE_SECONDARY_LOGIN_EMAIL='<account-b-email>' \
+SMOKE_EMAIL_CODE_COMMAND='<command printing the newest code for $SMOKE_EMAIL>' \
 npm run test:webmeet-network-matrix
 ```
 
@@ -596,11 +654,10 @@ SMOKE_GITHUB=1 \
 npm test -- --grep "GitHub token DPU ownership"
 ```
 
-The same lane also fabricates a pre-delegation, agent-owned token record and
-asserts that a fresh store operation deletes the stale record through the
-agent-owned compatibility path, then rewrites it as a user-owned DPU secret with
-only the configured `gitAgent` read grant. Existing deployments should seed the
-matching DPU `agentPolicies` grant before relying on this upgrade path.
+The same lane also fabricates a foreign agent-owned token record and requires
+an exact missing-write denial. The owner, per-secret ACL and encrypted secret
+map must remain unchanged. Fixture cleanup restores only the selected key's
+prior state and permission records, preserving unrelated data.
 
 ## Useful Commands
 

@@ -41,7 +41,8 @@ test('npm Confidential OnlyOffice profile owns the exact single-test selector', 
   // The created Confidential document must not survive the run, and cleanup
   // must never replace the original failure.
   assert.match(onlyOfficeSpec, /deleteConfidentialDocument\(page, documentPath, createdObjectId\)/);
-  assert.match(onlyOfficeSpec, /\.catch\(\(error\) => \(\{ deleted: false, error: String\(error\?\.message \|\| error\) \}\)\)/);
+  assert.match(onlyOfficeSpec, /\} finally \{\s+await finalizeOnlyOfficeGate\(\{/);
+  assert.match(onlyOfficeSpec, /failureCollector\.throwIfAny\(\{ primaryError, label: 'OnlyOffice Confidential release gate' \}\)/);
 });
 
 test('Confidential OnlyOffice selector collects exactly one Playwright test', { timeout: 30_000 }, () => {

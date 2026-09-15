@@ -15,6 +15,7 @@ import {
   independentlyTranslateMount,
   inspectNestedContainer,
   requireAgentEvidence,
+  resolveWebttyBoxEndpoint,
   workspaceHash,
 } from './webtty-runtime-evidence.mjs';
 
@@ -26,6 +27,40 @@ const AGENT = Object.freeze({
   containerName: 'ploinky-agent-git',
   instanceId: 'instance-git',
   enableGeneration: 'enable-git',
+});
+
+test('WebTTY browser localhost and Box IPv4 origins select the same exact loopback port', () => {
+    assert.deepEqual(resolveWebttyBoxEndpoint({
+        baseURL: 'http://localhost:8080', boxBaseURL: 'http://127.0.0.1:8080',
+    }), { baseURL: 'http://127.0.0.1:8080', port: '8080' });
+    assert.deepEqual(resolveWebttyBoxEndpoint({
+        baseURL: 'http://127.0.0.1:18080/',
+    }), { baseURL: 'http://127.0.0.1:18080', port: '18080' });
+    assert.deepEqual(resolveWebttyBoxEndpoint({
+        baseURL: 'http://localhost', boxBaseURL: 'http://127.0.0.1:80/',
+    }), { baseURL: 'http://127.0.0.1:80', port: '80' });
+    assert.throws(() => resolveWebttyBoxEndpoint({
+        baseURL: 'http://localhost:8080', boxBaseURL: 'http://127.0.0.1:18080',
+    }), /same loopback Router host port/);
+    assert.throws(() => resolveWebttyBoxEndpoint({ baseURL: 'http://localhost:8080' }), /SMOKE_BOX_BASE_URL/);
+});
+
+test('WebTTY endpoint binding rejects remote, ambiguous, credential-bearing, and non-origin URLs', () => {
+    const invalid = [
+        'https://127.0.0.1:8080', 'http://0.0.0.0:8080', 'http://remote.example:8080',
+        'http://127.1:8080', 'http://2130706433:8080', 'http://127.0.0.1:8080/..',
+        'http://127.0.0.1:8080/path', 'http://user@127.0.0.1:8080',
+        'http://127.0.0.1:8080?x=1', 'http://127.0.0.1:8080#fragment',
+        'http://127.0.0.1:0', 'http://127.0.0.1:65536', 'http://127.0.0.1:08080',
+    ];
+    for (const value of invalid) {
+        assert.throws(() => resolveWebttyBoxEndpoint({
+            baseURL: value, boxBaseURL: 'http://127.0.0.1:8080',
+        }), /WebTTY/);
+        assert.throws(() => resolveWebttyBoxEndpoint({
+            baseURL: 'http://localhost:8080', boxBaseURL: value,
+        }), /WebTTY/);
+    }
 });
 
 function fixture(t) {
@@ -96,7 +131,8 @@ test('runtime evidence binds an immutable prebuilt Box to explicit identity, ima
   const expectedPloinkySource = fs.realpathSync(root);
   let received = null;
   const evidence = collectWebttyRuntimeEvidence({
-    baseURL: 'http://127.0.0.1:8080',
+    baseURL: 'http://localhost:8080',
+    boxBaseURL: 'http://127.0.0.1:8080',
     workspaceRoot: root,
     selectedDirectory: selected,
     expectedContainerName: 'ploinky-box-release-audit',
@@ -134,6 +170,15 @@ test('runtime evidence binds an immutable prebuilt Box to explicit identity, ima
   assert.equal(typeof received.command, 'function');
   assert.equal(evidence.workspaceHash, workspaceHash('/workspace'));
   assert.notEqual(evidence.workspaceHash, workspaceHash(expectedPloinkySource));
+});
+
+test('runtime proof refuses a different Box port before filesystem or container inspection', () => {
+    assert.throws(() => collectWebttyRuntimeEvidence({
+        baseURL: 'http://localhost:8080',
+        boxBaseURL: 'http://127.0.0.1:18080',
+        workspaceRoot: '/nonexistent-webtty-workspace',
+        collectLiveBox() { assert.fail('foreign Box must not be inspected'); },
+    }), /same loopback Router host port/);
 });
 
 test('collected agent evidence preserves the exact runtime identity required by Router crash recovery', (t) => {

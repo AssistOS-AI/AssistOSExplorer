@@ -82,11 +82,6 @@
       "presenterClassName": "AdminUsersSettings"
     },
     {
-      "name": "admin-branding-settings",
-      "type": "components",
-      "presenterClassName": "AdminBrandingSettings"
-    },
-    {
       "name": "table-editor",
       "type": "components",
       "presenterClassName": "TableEditor"

@@ -68,9 +68,9 @@ async function waitForInitialAgentRuntime(route) {
                 label: route.label,
                 timeoutMs: Number.POSITIVE_INFINITY,
                 operation: async () => {
+                    await probeAgentRuntimeRouteStability(route.agentRef);
                     await probeAgentRuntimeTarget(route.targetUrl);
                     await probeAgentRuntimeMcp(route.agentRef, assistosSDK);
-                    await probeAgentRuntimeRouteStability(route.agentRef);
                     return route.targetUrl;
                 }
             });
