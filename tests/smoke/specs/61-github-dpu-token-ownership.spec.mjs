@@ -10,6 +10,15 @@ function findGitAgentPrincipal(permissions) {
   return Object.keys(permissions.agentPolicies || {}).find((principal) => /\/gitAgent$/.test(principal));
 }
 
+async function assertDirectDpuOwner(page, principal, ownerId) {
+  const whoami = await callAgentToolViaRouter(page, { agent: 'dpuAgent', tool: 'dpu_whoami' });
+  expect(whoami).toMatchObject({
+    ok: true, authenticated: true,
+    actor: { id: principal.id, principalId: ownerId, email: '' },
+  });
+  expect(whoami.actor.roles).toContain('admin');
+}
+
 test.describe('GitHub token DPU ownership @external', () => {
   test.skip(!smokeConfig.flags.github, 'Set SMOKE_GITHUB=1 to run GitHub DPU token ownership checks.');
 
@@ -50,6 +59,7 @@ test.describe('GitHub token DPU ownership @external', () => {
     const principal = await readAuthenticatedPrincipal(page, smokeConfig.primaryUser);
     expect(principal.roles).toContain('admin');
     const { key, ownerId } = expectedGitTokenOwnership(principal);
+    await assertDirectDpuOwner(page, principal, ownerId);
 
     const result = await callAgentToolViaRouter(page, {
       agent: 'gitAgent',
@@ -96,6 +106,7 @@ test.describe('GitHub token DPU ownership @external', () => {
     const principal = await readAuthenticatedPrincipal(page, smokeConfig.primaryUser);
     expect(principal.roles).toContain('admin');
     const { key, ownerId } = expectedGitTokenOwnership(principal);
+    await assertDirectDpuOwner(page, principal, ownerId);
     const stateBefore = dpuData.readJson('state.json');
     const permissionsBefore = dpuData.readJson('permissions.manifest.json');
     const gitAgentPrincipal = findGitAgentPrincipal(permissionsBefore);

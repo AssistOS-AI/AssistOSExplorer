@@ -7,13 +7,16 @@ test.describe('GitHub Git plugin @external', () => {
 
   test('Git modal exposes GitHub authentication controls without leaking tokens', async ({ page }) => {
     await openExplorer(page);
-    const gitButton = page.locator('#gitButton');
+    const gitButton = page.getByRole('button', { name: 'Git', exact: true });
     await expect(gitButton).toBeVisible();
     await gitButton.click();
-    await expect(page.locator('#gitSettingsButton')).toBeVisible();
-    await page.locator('#gitSettingsButton').click();
-    await expect(page.locator('#gitCredentials')).toBeVisible();
-    await expect(page.locator('#gitCredentialsAuthMethodGithub')).toBeVisible();
+    const dialog = page.getByRole('dialog', { name: 'Git commit and push', exact: true });
+    await expect(dialog).toBeVisible();
+    const settings = dialog.getByRole('button', { name: 'Git settings', exact: true });
+    await expect(settings).toBeVisible();
+    await settings.click();
+    await expect(dialog.getByRole('tablist', { name: 'Git credentials sections', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('radio', { name: 'GitHub', exact: true })).toBeVisible();
     await expect(page.locator('body')).not.toContainText(/ghp_|github_pat_|x-access-token/i);
   });
 });

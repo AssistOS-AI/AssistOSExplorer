@@ -12,7 +12,8 @@ import {
   expect,
   test,
 } from '../lib/fixtures.mjs';
-import { assertDistinctAuthenticatedPrincipals, readAuthenticatedPrincipal } from '../lib/auth.mjs';
+import { assertDistinctAuthenticatedPrincipals, readAuthenticatedPrincipal, signIn } from '../lib/auth.mjs';
+import { captureRouterRecoveryAuthentication, expectedRouterRecoveryDiagnostics, recoveryConsoleText } from '../lib/webtty-router-recovery.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
 import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
@@ -207,33 +208,6 @@ function expectedHttpFailureDiagnostics(pathname, { method = 'POST', status } = 
 function expectedDiscoveryCancellationDiagnostics(discoveryId) {
   const pathname = `/webtty/target-discoveries/${encodeURIComponent(discoveryId)}`;
   return expectedHttpFailureDiagnostics(pathname, { method: 'DELETE', status: 404 });
-}
-
-function expectedRouterRecoveryDiagnostics(sessionId) {
-  const pathname = `/webtty/sessions/${encodeURIComponent(sessionId)}/stream`;
-  const url = new URL(pathname, smokeConfig.baseURL).toString();
-  return [
-    diagnosticEventSignature({
-      kind: 'requestfailed',
-      type: 'error',
-      url,
-      method: 'GET',
-      failure: 'net::ERR_INCOMPLETE_CHUNKED_ENCODING',
-    }),
-    diagnosticEventSignature({
-      kind: 'console',
-      type: 'error',
-      text: 'Failed to load resource: net::ERR_INCOMPLETE_CHUNKED_ENCODING',
-      location: { url },
-    }),
-    diagnosticEventSignature({ kind: 'response', type: 'error', status: 404, url, method: 'GET' }),
-    diagnosticEventSignature({
-      kind: 'console',
-      type: 'error',
-      text: 'Failed to load resource: the server responded with a status of 404 (Not Found)',
-      location: { url },
-    }),
-  ];
 }
 
 function waitForExact404Console(page, pathname) {
@@ -1331,6 +1305,12 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(restartSleepInput).toMatchObject({ status: 200, payload: { ok: true } });
       const restartSleepPattern = new RegExp(`(?:^|\\s)sleep ${restartSleepSeconds}(?:$|\\s)`);
       await waitForAgentProcess(replacementRuntime, replacementGitAgent, restartSleepPattern, true);
+      const recoveryAuthentication = captureRouterRecoveryAuthentication({
+        baseURL: smokeConfig.baseURL,
+        cookies: await page.context().cookies(smokeConfig.baseURL),
+        principal: await readAuthenticatedPrincipal(page, smokeConfig.primaryUser),
+        timeoutMs: smokeConfig.timeouts.action,
+      });
       await waitForExplorerPluginRender(page);
       assertPageDiagnosticsClean(page, 'Explorer must be error-free before Router fault injection');
       // Only the recovery terminal is the outage target. Stop unrelated Explorer
@@ -1342,10 +1322,13 @@ test.describe('Ploinky core WebTTY release gate', () => {
       const explorerQuiescedAt = new Date().toISOString();
       expect(recoveryDiagnostics.actionableEvents(), 'the recovery terminal must remain error-free before Router crash').toEqual([]);
       const recoveryCheckpoint = recoveryDiagnostics.checkpoint('exact prior-epoch Router stream invalidation');
-      const recovery404Console = waitForExact404Console(
-        restartRecoveryTerminal.terminalPage,
-        `/webtty/sessions/${encodeURIComponent(restartRecoveryTerminal.session.id)}/stream`,
-      );
+      const recoveryStreamPath = `/webtty/sessions/${encodeURIComponent(restartRecoveryTerminal.session.id)}/stream`;
+      const recoveryConsole = restartRecoveryTerminal.terminalPage.waitForEvent('console', {
+        predicate: (message) => message.type() === 'error'
+          && message.text() === recoveryConsoleText(recoveryAuthentication.mode)
+          && message.location().url === new URL(recoveryStreamPath, smokeConfig.baseURL).toString(),
+        timeout: smokeConfig.timeouts.relay,
+      });
       const crashedRouter = crashExactRoutingServer(replacementRuntime, replacementGitAgent);
       let recoveredRouter = null;
       let routerRecoveryFailure = '';
@@ -1354,15 +1337,11 @@ test.describe('Ploinky core WebTTY release gate', () => {
           const candidate = collectExactRoutingServerIdentity(replacementRuntime);
           if (candidate.watchdogPid !== crashedRouter.watchdogPid
             || candidate.watchdogStartTime !== crashedRouter.watchdogStartTime
-            || (candidate.routerPid === crashedRouter.routerPid
-              && candidate.routerStartTime === crashedRouter.routerStartTime)) {
+            || candidate.routerPid === crashedRouter.routerPid
+            || candidate.routerStartTime === crashedRouter.routerStartTime) {
             return false;
           }
-          const response = await page.context().request.get(
-            new URL('/auth/token', smokeConfig.baseURL).toString(),
-            { failOnStatusCode: false, timeout: smokeConfig.timeouts.action },
-          );
-          if (response.status() !== 200) return false;
+          await recoveryAuthentication.proveRestartedAuthentication();
           recoveredRouter = candidate;
           routerRecoveryFailure = '';
           return true;
@@ -1378,28 +1357,37 @@ test.describe('Ploinky core WebTTY release gate', () => {
       expect(routerRecoveryFailure).toBe('');
       expect(recoveredRouter).toBeTruthy();
       const routerRecoveredAt = new Date().toISOString();
-      await waitForAgentExecDelta(
-        replacementRuntime,
-        replacementGitAgent,
-        replacementGitAgent.execIds,
-        0,
-      );
-      await waitForAgentProcess(replacementRuntime, replacementGitAgent, restartSleepPattern, false);
-      await waitForAgentMarker(replacementRuntime, replacementGitAgent, recoveryTerminalMarker, false);
-      expect(collectWebttyRecoveryDirectoryState(replacementRuntime)).toEqual({
-        recordCount: 0,
-        temporaryCount: 0,
-        otherCount: 0,
+      const recoveredAuthentication = await recoveryAuthentication.recoverAfterCleanup({
+        streamPath: recoveryStreamPath,
+        verifyCleanup: async () => {
+          await waitForAgentExecDelta(
+            replacementRuntime,
+            replacementGitAgent,
+            replacementGitAgent.execIds,
+            0,
+          );
+          await waitForAgentProcess(replacementRuntime, replacementGitAgent, restartSleepPattern, false);
+          await waitForAgentMarker(replacementRuntime, replacementGitAgent, recoveryTerminalMarker, false);
+          expect(collectWebttyRecoveryDirectoryState(replacementRuntime)).toEqual({
+            recordCount: 0,
+            temporaryCount: 0,
+            otherCount: 0,
+          });
+        },
+        closeTerminal: async () => {
+          await expect(restartRecoveryTerminal.terminalPage.locator('#status')).not.toHaveText('Connected');
+          await recoveryConsole;
+          recoveryDiagnostics.acknowledgeExact(
+            recoveryCheckpoint,
+            expectedRouterRecoveryDiagnostics(smokeConfig.baseURL, restartRecoveryTerminal.session.id, recoveryAuthentication.mode),
+          );
+          expect(recoveryDiagnostics.actionableEvents(), 'Router recovery diagnostics must match the exact prior-epoch stream').toEqual([]);
+          await restartRecoveryTerminal.terminalPage.close();
+          await recoveryDiagnostics.flush();
+        },
+        signIn: () => signIn(page, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true }),
+        readCookies: () => page.context().cookies(smokeConfig.baseURL),
       });
-      await expect(restartRecoveryTerminal.terminalPage.locator('#status')).not.toHaveText('Connected');
-      await recovery404Console;
-      recoveryDiagnostics.acknowledgeExact(
-        recoveryCheckpoint,
-        expectedRouterRecoveryDiagnostics(restartRecoveryTerminal.session.id),
-      );
-      expect(recoveryDiagnostics.actionableEvents(), 'Router recovery diagnostics must match the exact prior-epoch stream').toEqual([]);
-      await restartRecoveryTerminal.terminalPage.close().catch(() => {});
-      await recoveryDiagnostics.flush();
 
       await openExplorer(page, {
         account: smokeConfig.primaryUser,
@@ -1507,7 +1495,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
           origin: firstUrl.origin,
           relativeDirectory: fixture.relativeDirectory,
           chooserAccessibleName: 'Open terminal in',
-          routerFaultIsolation: {explorerQuiescedAt, routerRecoveredAt, explorerReopenedAt},
+          routerFaultIsolation: {explorerQuiescedAt, routerRecoveredAt, explorerReopenedAt, authentication: recoveredAuthentication},
           discoveryTargetCount: first.discovery.targets.length,
           serverDerivedRowsMatched: true,
           boxWasFirst: true,
