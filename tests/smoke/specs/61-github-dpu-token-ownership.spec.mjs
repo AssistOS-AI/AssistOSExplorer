@@ -135,7 +135,7 @@ test.describe('GitHub token DPU ownership @external', () => {
       const result = await callAgentToolViaRouter(page, {
         agent: 'gitAgent', tool: 'git_auth_store_token', args: { token },
       });
-      expect(result).toEqual({ ok: false, error: `Access denied: missing write on secret ${key}` });
+      expect(result).toEqual({ ok: false, error: `MCP error -32603: dpu_tool_failed: Access denied: missing write on secret ${key}` });
       expect(dpuData.readJson('state.json').secrets?.[key]).toEqual(foreignSecret);
       expect(dpuData.readJson('permissions.manifest.json').permissions?.secrets?.[key]).toEqual(foreignPermission);
       expect(dpuData.exists('secrets.json')).toBe(encryptedBefore !== null);
