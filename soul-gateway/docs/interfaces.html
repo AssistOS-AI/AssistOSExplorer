@@ -45,6 +45,11 @@
     </ul>
     <p>The Explorer integration exposes the admin-only <code>soul-gateway-settings</code> entry and opens the same Router-protected dashboard. It does not create an independent settings store or authentication flow.</p>
 
+    <h2>Connect a SuperGrok subscription</h2>
+    <p>Administrators can connect an eligible SuperGrok subscription from <code>Providers → Add Provider</code> by choosing <code>xAI SuperGrok</code> and creating the provider. Open <code>Manage → Add Account</code>, follow the verification link, and enter the displayed code if requested. Sign in using the account that owns the subscription, including Google sign-in when applicable, and approve access. The browser can run on another computer; no localhost callback or port forwarding is needed.</p>
+    <p>The dashboard waits for approval, then lists the connected account. The gateway saves encrypted OAuth tokens, refreshes them before expiry, and synchronizes the available models. Use the provider's model synchronization action if a later catalog refresh is needed. Available models and usage limits depend on the subscription. An expired or denied authorization displays an error; use <code>Add Account</code> to try again.</p>
+    <p>The <code>xAI SuperGrok</code> template uses the OpenAI-compatible <a href="wiki.html#definition-provider-backend">provider backend</a> at <code>https://api.x.ai/v1</code>. The <code>xAI (Grok)</code> template uses an API key. See <a href="https://x.ai/news/grok-opencode">xAI's subscription integration announcement</a> for the supported account authorization workflow.</p>
+
     <h2>Health and CLI</h2>
     <p><code>GET /healthz</code> and <code>GET /healthz/</code> return gateway liveness, SQLite reachability, runtime snapshot generation, and uptime. The Ploinky manifest publishes health without login. <code>cli.sh</code> exposes <code>status</code>, <code>health</code>, <code>keys</code>, <code>models</code>, and <code>logs [n]</code>; management commands forward <code>PLOINKY_AUTH_COOKIE</code> to the Router.</p>
   </main></div>

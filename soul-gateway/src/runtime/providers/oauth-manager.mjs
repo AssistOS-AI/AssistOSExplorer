@@ -309,6 +309,7 @@ export class OAuthManager {
             return { status: 'complete', result };
         } catch (err) {
             const pending =
+                err.code === 'slow_down' ||
                 err.code === 'authorization_pending' ||
                 err.error === 'authorization_pending' ||
                 /authorization pending/i.test(err.message) ||
@@ -318,6 +319,7 @@ export class OAuthManager {
                 return { status: 'pending', flowId };
             }
 
+            if (err.terminalOAuthFlow) this._activeFlows.delete(flowId);
             throw err;
         }
     }

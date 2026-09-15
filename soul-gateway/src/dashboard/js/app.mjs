@@ -1214,7 +1214,12 @@ function providersPage() {
                         };
                         break;
                     }
-                } catch {
+                } catch (err) {
+                    this.authPolling = false;
+                    this.authFlow = {
+                        ...this.authFlow,
+                        error: err.message || 'Authorization failed; add the account again',
+                    };
                     break;
                 }
             }

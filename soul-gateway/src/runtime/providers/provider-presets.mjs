@@ -141,6 +141,15 @@ export const PROVIDER_PRESETS = Object.freeze([
         ...OPENAI_COMPAT_DEFAULTS,
     }),
     Object.freeze({
+        key: 'xai-supergrok',
+        display_name: 'xAI SuperGrok',
+        base_url: 'https://api.x.ai/v1',
+        ...OPENAI_COMPAT_DEFAULTS,
+        auth_strategy: 'oauth',
+        auth_type: 'managed',
+        oauth_adapter_key: 'xai-supergrok',
+    }),
+    Object.freeze({
         key: 'cohere',
         display_name: 'Cohere',
         base_url: 'https://api.cohere.com/compatibility/v1',

@@ -29,6 +29,10 @@ An administrator may request a user key only for the verified Ploinky user ident
 
 Provider management may list backend templates, create provider configuration, test connectivity, discover models, synchronize the model catalog, start or poll OAuth flows, delete accounts, and reset quota state. Test and discovery operations must use the backend catalog's lifecycle functions and must not call the public completion path.
 
+### SuperGrok account setup
+
+The provider template list must include <code>xAI SuperGrok</code> with OAuth authentication and no API-key requirement. After creation, administrators use <code>Manage</code> and <code>Add Account</code> to obtain a verification URL and user code. Successful authorization persists the account and triggers the existing model synchronization workflow. Terminal polling errors must stop the dashboard's waiting indicator and display the failure so the administrator can start a new authorization.
+
 ### Observability surfaces
 
 Administrators must be able to list and inspect audit logs, sessions, and agent groupings; query cost, usage, error, activity, token, and system metrics; and export logs as JSON or CSV. SSE and WebSocket endpoints must support all-log and soul-specific subscriptions and must apply the same administrator verification before the subscription begins.

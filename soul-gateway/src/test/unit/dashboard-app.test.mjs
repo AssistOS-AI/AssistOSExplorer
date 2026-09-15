@@ -588,6 +588,28 @@ describe('dashboard providers page', () => {
         }
     });
 
+    it('stops device polling and displays a terminal authorization error', async (t) => {
+        const globals = installDashboardGlobals(async () => {
+            throw new Error('SuperGrok authorization expired');
+        });
+        t.mock.method(globalThis, 'setTimeout', (callback) => {
+            callback();
+            return 0;
+        });
+        try {
+            await import(`../../dashboard/js/app.mjs?test=${Date.now()}${Math.random()}`);
+            const page = globalThis.window.providersPage();
+            page.authProvider = { id: 'supergrok-1' };
+            page.authFlow = { flowId: 'flow-1', type: 'device-flow' };
+            page.authPolling = true;
+            await page.pollDeviceFlow();
+            assert.equal(page.authPolling, false);
+            assert.match(page.authFlow.error, /SuperGrok authorization expired/);
+        } finally {
+            globals.restore();
+        }
+    });
+
     it('notifies mounted model tables to refresh after provider model sync', async () => {
         const requests = [];
         const globals = installDashboardGlobals(async (url, options = {}) => {

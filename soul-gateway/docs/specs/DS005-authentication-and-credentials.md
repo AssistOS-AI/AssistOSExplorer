@@ -35,6 +35,12 @@ Enabled OAuth adapters may implement authorization start, callback, pending stat
 
 Connectivity tests and model discovery may use leased provider credentials and direct vendor metadata requests. They must remain lifecycle operations and must not return completion or generation content to a public caller.
 
+### SuperGrok subscription authentication
+
+The <code>xai-supergrok</code> OAuth adapter must authorize an eligible SuperGrok account through the xAI device-code grant. Administrators open the verification URL on a browser device and approve access using the account that owns the subscription. The gateway must retain the device credential privately, enforce its expiry and polling interval, increase the interval after <code>slow_down</code>, and terminate denied or failed flows without exposing provider response bodies. The existing encrypted credential store must persist access and refresh tokens, including rotated refresh tokens. The access-token deadline must use the earlier of the token response expiry and the JWT expiry when available; JWT claims are display and refresh hints, not verified identity for gateway authorization.
+
+The <code>xai-supergrok</code> preset must use the <code>openai-api</code> backend at <code>https://api.x.ai/v1</code> with OAuth bearer credentials. Model discovery and inference remain subject to the account's upstream model access and subscription quota. The existing <code>xai</code> API-key preset remains a separate configuration choice.
+
 ### Encryption-key boundary
 
 The generated <code>DATA_DIR/encryption.key</code>, SQLite database, and encrypted OAuth files form one recovery set. The key file must use restrictive permissions. A replacement key must not be treated as capable of decrypting existing secret material, and startup or provider operations must report decryption failure rather than silently discarding protected credentials.

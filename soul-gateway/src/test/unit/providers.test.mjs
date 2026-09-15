@@ -1930,7 +1930,7 @@ describe('BackendCatalog', () => {
         });
 
         it('total dropdown count: hidden dispatchers contribute zero, presets surface in full', () => {
-            // 2 dispatcher backends (both hidden) + 16 vendor presets = 16 entries.
+            // Hidden dispatchers contribute only their vendor presets.
             catalog.load([
                 openaiApiPlugin,
                 anthropicApiPlugin,
@@ -1950,6 +1950,7 @@ describe('BackendCatalog', () => {
                 'mistral',
                 'codestral',
                 'xai',
+                'xai-supergrok',
                 'cohere',
                 'opencode-zen',
                 'opencode-go',
