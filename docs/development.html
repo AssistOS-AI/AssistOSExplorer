@@ -64,6 +64,7 @@
 
             <div class="doc-section" id="verification">
                 <h2>Verification</h2>
+                <p>Browser identifiers must work on both loopback and direct HTTP LAN origins. Explorer uses WebSkel's <code>createSecureUuid</code> export for loader, document, variant, image, and browser idempotency IDs. It uses cryptographic browser randomness and fails explicitly when none is available. Maintain this helper and loader behavior in the <a href="https://github.com/AssistOS-AI/WebSkel">WebSkel source repository</a>, run its source and build tests, then copy the generated ESM/UMD files and MIT license into <code>explorer/shared/libs/webskel</code>. Do not patch the generated bundles or install a global browser API shim. Run the browser UUID compatibility tests and a real HTTP LAN browser check after refreshing the dependency.</p>
                 <p>The fastest useful checks confirm Explorer's runtime contracts. Repo-scoped static documentation paths must resolve through the router, and frontend edits must continue to use the documented component registry and preview routes. Typical checks are:</p>
 <pre><code># Unit tests
 cd explorer

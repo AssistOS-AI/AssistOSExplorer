@@ -1,3 +1,5 @@
+import { createSecureUuid } from '../libs/webskel/webskel.mjs';
+
 export const SCRIPTA_KEY = "scripta";
 export const SCRIPTA_REACTION_LIKE = "like";
 export const SCRIPTA_REACTION_DISLIKE = "dislike";
@@ -7,17 +9,11 @@ export function cloneJson(value) {
 }
 
 export function createScriptaVariantId() {
-    const cryptoApi = globalThis.crypto;
-    if (cryptoApi?.randomUUID) {
-        return `variant-${cryptoApi.randomUUID()}`;
-    }
-    return `variant-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return `variant-${createSecureUuid()}`;
 }
 
 export function createScriptaVariantImageId() {
-    const cryptoApi = globalThis.crypto;
-    if (cryptoApi?.randomUUID) return `variant-image-${cryptoApi.randomUUID()}`;
-    return `variant-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return `variant-image-${createSecureUuid()}`;
 }
 
 export function normalizeScriptaVariantImageLayout(value = {}) {

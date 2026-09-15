@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { ResourceManager, WebSkel } from '../../shared/libs/webskel/webskel.mjs';
 
 test('runtime component registry cache-busts presenter module imports', async () => {
     const source = await fs.readFile(
@@ -16,13 +17,40 @@ test('runtime component registry cache-busts presenter module imports', async ()
     assert.match(source, /import\(\/\* webpackIgnore: true \*\/ moduleUrl\)/);
 });
 
-test('WebSkel remains an unmodified consumer of preloaded component assets', async () => {
-    const source = await fs.readFile(
-        path.resolve(import.meta.dirname, '../../shared/libs/webskel/webskel.mjs'),
-        'utf8'
-    );
+test('WebSkel consumes preloaded component assets and presenters without fetching them', async (t) => {
+    const instanceDescriptor = Object.getOwnPropertyDescriptor(WebSkel, 'instance');
+    WebSkel.instance = { configs: { rootDir: '/explorer/web-components' } };
+    t.after(() => {
+        if (instanceDescriptor) Object.defineProperty(WebSkel, 'instance', instanceDescriptor);
+        else delete WebSkel.instance;
+    });
+    const fetchMock = t.mock.method(globalThis, 'fetch', async () => {
+        assert.fail('Preloaded component assets must not be fetched again.');
+    });
+    const manager = new ResourceManager();
+    const stylesheetCalls = [];
+    t.mock.method(manager, 'loadStyleSheets', async (stylesheets, name) => {
+        stylesheetCalls.push({ stylesheets, name });
+    });
+    class RuntimePresenter {}
+    const component = {
+        name: 'runtime-widget',
+        type: 'components',
+        loadedTemplate: '<section>Preloaded widget</section>',
+        loadedCSSs: ['section { display: block; }'],
+        presenterClassName: 'RuntimePresenter',
+        presenterModule: { RuntimePresenter },
+    };
 
-    assert.doesNotMatch(source, /Failed to load component asset/);
-    assert.match(source, /e\.loadedTemplate \|\| await \(await fetch\(n\)\)\.text\(\)/);
-    assert.match(source, /e\.loadedCSSs \|\| \[await \(await fetch\(o\)\)\.text\(\)\]/);
+    const loaded = await manager.loadComponent(component);
+    const cached = await manager.loadComponent(component);
+
+    assert.deepEqual(loaded, { html: component.loadedTemplate, css: component.loadedCSSs });
+    assert.deepEqual(cached, loaded);
+    assert.equal(manager.components[component.name].presenter, RuntimePresenter);
+    assert.deepEqual(stylesheetCalls, [
+        { stylesheets: component.loadedCSSs, name: component.name },
+        { stylesheets: component.loadedCSSs, name: component.name },
+    ]);
+    assert.equal(fetchMock.mock.callCount(), 0);
 });

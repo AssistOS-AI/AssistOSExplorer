@@ -39,6 +39,7 @@ import {
     executeFileExpMenuItem
 } from "./file-exp-menu-contributions.js";
 import { withGlobalLoader } from "../../../utils/globalLoader.js";
+import { createSecureUuid } from "../../../shared/libs/webskel/webskel.mjs";
 import { createFileExpCaches } from "./file-exp-caches.js";
 import { createDirectoryFilterController } from "./file-exp-directory-filter.js";
 import { openFile as openFileImpl, tryLoadMediaPreview as tryLoadMediaPreviewImpl, attachPreviewAnchorHandler as attachPreviewAnchorHandlerImpl, detachPreviewAnchorHandler as detachPreviewAnchorHandlerImpl, handlePreviewAnchorClick as handlePreviewAnchorClickImpl } from "./file-exp-preview.js";
@@ -1481,7 +1482,7 @@ export class FileExp {
         }
         this.showStatus(initialLabel === 'Request Access' ? 'Requesting DPU resource access…' : 'Starting DPU resource acquisition…');
         try {
-            const idempotencyKey = this.state.dpuResearchIdempotencyKey || `explorer:${id}:${crypto.randomUUID()}`;
+            const idempotencyKey = this.state.dpuResearchIdempotencyKey || `explorer:${id}:${createSecureUuid()}`;
             this.state.dpuResearchIdempotencyKey = idempotencyKey;
             const result = await callDpuTool('dpu_resource_acquire', { id, idempotencyKey });
             if (result.proposal) {
@@ -1581,7 +1582,7 @@ export class FileExp {
                 backendId, templateId, participantResourceIds, modelId, modelRevision, strategy, rounds,
                 privacy: { secureAggregation: true, differentialPrivacy: { enabled: true } },
                 evaluation: { leakageTests: ['membership', 'reconstruction'] },
-                idempotencyKey: `explorer:federated:${crypto.randomUUID()}`
+                idempotencyKey: `explorer:federated:${createSecureUuid()}`
             });
             await this.confirmDpuActionProposal(result.proposal);
             this.showStatus(`Federated job ${result.job?.id || ''} was proposed.`);
@@ -1599,7 +1600,7 @@ export class FileExp {
         try {
             const result = await callDpuTool('dpu_secure_execution_propose', {
                 backendId, workloadId, resourceIds: [selectedId], parameters: {}, outputPolicy: {},
-                idempotencyKey: `explorer:secure:${crypto.randomUUID()}`
+                idempotencyKey: `explorer:secure:${createSecureUuid()}`
             });
             await this.confirmDpuActionProposal(result.proposal);
         } catch (error) {

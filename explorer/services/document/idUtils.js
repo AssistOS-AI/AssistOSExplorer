@@ -1,11 +1,7 @@
-export const generateId = (prefix = 'id') => {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-        return `${prefix}-${crypto.randomUUID()}`;
-    }
+import { createSecureUuid } from '../../shared/libs/webskel/webskel.mjs';
 
-    const random = Math.random().toString(36).slice(2, 10);
-    const timestamp = Date.now().toString(36);
-    return `${prefix}-${timestamp}-${random}`;
+export const generateId = (prefix = 'id') => {
+    return `${prefix}-${createSecureUuid()}`;
 };
 
 export default {

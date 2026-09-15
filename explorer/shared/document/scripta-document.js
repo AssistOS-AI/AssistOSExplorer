@@ -12,13 +12,14 @@ import {
     updateScriptaActiveVariant,
     normalizeScriptaVariantImageLayout,
 } from './scripta-state.js';
+import { createSecureUuid } from '../libs/webskel/webskel.mjs';
 
 function clone(value) {
     return JSON.parse(JSON.stringify(value ?? null));
 }
 
 function newId(prefix) {
-    return `${prefix}-${globalThis.crypto.randomUUID()}`;
+    return `${prefix}-${createSecureUuid()}`;
 }
 
 function nowIso() {
