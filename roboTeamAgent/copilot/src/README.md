@@ -16,16 +16,8 @@ Run this command from `achilles-cli/`. The dedicated native home defaults to `<p
 ## Commands
 
 ```text
-/list skills
-/read bash
+/list robots
 /exec bash /usr/bin/pwd
-/skills
-/skill disable launch-gpt-researcher
-/skill enable launch-gpt-researcher
-/list repos
-/add repo <git-url>
-/update repos
-/remove repo <name>
 /model
 /model default
 /permissions ask-for-approval
@@ -39,7 +31,7 @@ Run this command from `achilles-cli/`. The dedicated native home defaults to `<p
 /help
 ```
 
-`--dir` selects the project, `--skill-root` adds an approved root, and `--permissions ask-for-approval|full-access` overrides the saved mode for that process. Existing rendering/debug flags remain available through `--help`. `/tier`, `--fast`, `--deep` and the legacy authoring/generation/refinement/test commands are not supported.
+`--dir` selects the project and `--permissions ask-for-approval|full-access` overrides the saved mode for that process. Existing rendering/debug flags remain available through `--help`. `/tier`, `--fast`, `--deep` and the legacy authoring/generation/refinement/test commands are not supported.
 
 A prompt argument runs once:
 

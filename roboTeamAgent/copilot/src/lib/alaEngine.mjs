@@ -286,6 +286,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (event.type === 'coding-agent-selected') {
                 if (event.agent !== config.backend || event.permissionMode !== config.permissionMode) throw new Error('ALA selected an unexpected backend or permission policy.');
                 selected = true;
+                event = { ...event, effort: config.efforts[config.backend] || null };
                 await sessionStore.bindEngine(sessionId, { home: config.home, cwd: config.cwd, backend: event.agent });
             } else if (event.type === 'coding-agent-final') {
                 if (remainingFinals <= 0 || event.agent !== config.backend || typeof event.message !== 'string') throw new Error('Malformed or duplicate ALA final event.');

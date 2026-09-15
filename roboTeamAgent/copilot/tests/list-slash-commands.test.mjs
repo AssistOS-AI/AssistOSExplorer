@@ -67,8 +67,11 @@ test('MCP respects external overrides, descriptor descriptions and persisted dis
     const exec = catalog.commands.find((command) => command.name === '/exec');
     assert.equal(exec.argCompletions.some((entry) => entry.value === 'bash'), false);
     assert.equal(exec.argCompletions.find((entry) => entry.value === 'research').description, 'Research the workspace.');
-    const enable = catalog.commands.find((command) => command.name === '/skill').subCommands.find((sub) => sub.name === 'enable');
-    assert.equal(enable.argCompletions.find((entry) => entry.value === 'bash').description, 'Use custom Bash rules.');
+    const list = catalog.commands.find((command) => command.name === '/list');
+    assert.deepEqual(list.subCommands.map((sub) => sub.name), ['robots']);
+    for (const name of ['/raw', '/read', '/reload', '/remove', '/skill', '/skills', '/update', '/add']) {
+        assert.equal(catalog.commands.some((command) => command.name === name), false);
+    }
     assert.equal(catalog.commands.some((command) => ['/tier', '/build', '/write', '/test'].includes(command.name)), false);
 });
 

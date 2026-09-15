@@ -4,7 +4,7 @@ import { normalizePermissionMode, PERMISSION_MODES } from '../permissions/protoc
 
 export function parseCliOptions(args, { env = process.env, cwd = process.cwd() } = {}) {
     const options = {
-        workingDir: cwd, skillRoots: [], prompt: null, singleShot: false,
+        workingDir: cwd, prompt: null, singleShot: false,
         verbose: false, debug: false, renderMarkdown: true,
         uiStyle: env.ACHILLES_CLI_UI || 'claude-code', requestedPermissionMode: null,
         help: false, version: false,
@@ -20,11 +20,7 @@ export function parseCliOptions(args, { env = process.env, cwd = process.cwd() }
         else if (arg === '--version') options.version = true;
         else if (arg === '--dir' || arg === '-d') options.workingDir = path.resolve(cwd, valueAfter(index++, arg));
         else if (arg.startsWith('--dir=')) options.workingDir = path.resolve(cwd, arg.slice(6) || '.');
-        else if (arg === '--skill-root' || arg === '-r') options.skillRoots.push(path.resolve(cwd, valueAfter(index++, arg)));
-        else if (arg.startsWith('--skill-root=')) {
-            if (!arg.slice(13)) throw new Error('--skill-root requires a value.');
-            options.skillRoots.push(path.resolve(cwd, arg.slice(13)));
-        } else if (arg === '--verbose' || arg === '-v') options.verbose = true;
+        else if (arg === '--verbose' || arg === '-v') options.verbose = true;
         else if (arg === '--debug') options.debug = true;
         else if (arg === '--raw' || arg === '--no-markdown') options.renderMarkdown = false;
         else if (arg === '--ui-minimal') options.uiStyle = 'minimal';

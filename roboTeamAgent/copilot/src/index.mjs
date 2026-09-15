@@ -48,7 +48,7 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
     const refresh = async () => {
         catalog = await createAnthropicSkillCatalog({
             workingDir,
-            roots: resolveSkillCatalogRoots(workingDir, { skillRoots: options.skillRoots }),
+            roots: resolveSkillCatalogRoots(workingDir),
             discoverTaskSkills: installation.discoverTaskSkills,
         });
         return { skills: catalog.getSkills(), taskRepositories: catalog.getEnabledSkillDirectories() };
@@ -57,7 +57,7 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
         (session) => { session.skillSelection = options.skillSelection; });
     if (robotCatalog) await robotCatalog.refresh(initialSession.sessionId);
     else await refresh();
-    // Keep the host reference stable while newly cloned roots are discovered on refresh.
+    // Keep the host reference stable while configured skill files are refreshed.
     const skillCatalog = robotCatalog || Object.freeze({
         refresh,
         getSkills: () => catalog.getSkills(),
@@ -83,6 +83,10 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
         return {
             ...options, installation, skillCatalog, sessionStore, initialSession, engine,
             historyManager, settings, interactions, webchatController, backgroundTasks,
+            listRobots: async () => {
+                if (!robotContext) throw new Error('Robot discovery requires the RoboTeam runtime.');
+                return (await robotContext.store.list()).map(({ name, specialization }) => ({ name, specialization }));
+            },
             getPermissions: () => settings.getPermissionMode(workingDir),
             setPermissions: (mode) => settings.setPermissionMode(workingDir, mode),
             async close() {
@@ -161,9 +165,9 @@ USAGE: ploinky cli roboTeamAgent --robot <name> [options] [prompt or /command]
   --version                Show version
 
 Run without a prompt for the terminal REPL. WebChat is selected by the
-Ploinky SSO runtime. /help lists retained commands; /list skills lists the
-selected Anthropic catalog; /session manages robot conversations.
-/skills lists allowed sets; /skills use copilot,set/skill selects session skills.
+Ploinky SSO runtime. /help lists retained commands; /list robots lists the
+workspace robots; /session manages robot conversations.
+Manage repositories and skill selection in RoboTeam or Explorer, not this CLI.
 /model selects a native backend model; /permissions controls native policy.
 
 RoboTeam supplies the ALA entrypoint, robot home and cached coding agents.

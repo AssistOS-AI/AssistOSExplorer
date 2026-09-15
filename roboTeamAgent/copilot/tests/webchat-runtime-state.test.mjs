@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { clearWebchatRuntimeModel, selectWebchatRuntimeModel } from '../src/lib/webchatRuntimeState.mjs';
+import { createWebchatRuntimeStateEnvelope, clearWebchatRuntimeModel, selectWebchatRuntimeModel } from '../src/lib/webchatRuntimeState.mjs';
 import { getCodingAgentModels, getSelectedModel, setCodingAgentModel, setSelectedModel } from '../src/lib/achillesSettings.mjs';
 
 test('native model selection and reset preserve other backends and legacy stored data', async (t) => {
@@ -22,4 +22,25 @@ test('native model selection and reset preserve other backends and legacy stored
     await clearWebchatRuntimeModel({ workingDir, backend: 'codex', slashState: state, emitRuntimeState: publish });
     assert.deepEqual(emissions[1], { backend: 'codex', model: null, persisted: { pi: 'provider/pi-model' } });
     assert.equal(getSelectedModel(workingDir), 'legacy-gateway-model');
+});
+
+test('runtime state publishes effort after persistence and clears it on model reset', async () => {
+    const state = {};
+    const emitted = [];
+    const saved = [];
+    const options = { backend: 'codex', slashState: state,
+        persist: async (selection) => saved.push(selection),
+        emitRuntimeState: (model, metadata) => {
+            assert.equal(saved.length, emitted.length + 1);
+            emitted.push(createWebchatRuntimeStateEnvelope(model, metadata));
+        },
+    };
+    await selectWebchatRuntimeModel({ ...options, model: 'native-model', effort: 'high' });
+    assert.equal(emitted[0].model, 'native-model');
+    assert.equal(emitted[0].effort, 'high');
+    await clearWebchatRuntimeModel({ ...options, effort: 'high' });
+    assert.equal(emitted[1].model, null);
+    assert.equal(emitted[1].effort, null);
+    assert.equal(saved[1].effort, null);
+    assert.equal(createWebchatRuntimeStateEnvelope('native-model').effort, null);
 });

@@ -7,7 +7,7 @@ function handler(options = {}) {
     return new SlashCommandHandler({ getSkills: () => [], getUserSkills: () => [], ...options });
 }
 
-const removed = ['write', 'delete', 'validate', 'template', 'generate', 'build', 'test', 'run-tests', 'refine', 'specs', 'specs-write', 'write-tests', 'scaffold', 'tier'];
+const removed = ['write', 'delete', 'validate', 'template', 'generate', 'build', 'test', 'run-tests', 'refine', 'specs', 'specs-write', 'write-tests', 'scaffold', 'tier', 'raw', 'read', 'reload', 'remove', 'skill', 'skills', 'update', 'add'];
 
 test('removed commands cannot execute or appear in public command surfaces', async () => {
     const commands = handler({ executeSkill: () => assert.fail('removed commands must not execute skills') });
@@ -70,15 +70,16 @@ test('hierarchical continuation preserves multiline prompt and exact originating
 
 test('deterministic catalog commands never use the execution engine', async () => {
     const commands = handler({
-        getSkills: () => [{ name: 'bash', builtIn: true, enabled: true }, { name: 'external', enabled: false }],
+        listRobots: async () => [{ name: 'default', specialization: 'Workspace copilot' }, { name: 'analyst' }],
         executeSkill: () => assert.fail('catalog operations cannot execute the model'),
-        readSkill: async (name) => { assert.equal(name, 'external'); return '# External descriptor'; },
-        removeSkill: async (name) => { if (name === 'bash') throw new Error('Packaged skills cannot be removed'); },
     });
-    assert.match((await commands.executeSlashCommand('list', 'skills')).result, /external.*disabled/);
-    assert.equal((await commands.executeSlashCommand('read', 'external')).result, '# External descriptor');
-    assert.match((await commands.executeSlashCommand('remove', 'skill bash')).error, /cannot be removed/);
-    assert.equal((await commands.executeSlashCommand('remove', 'skill external')).error, undefined);
+    assert.equal((await commands.executeSlashCommand('list', 'robots')).result, 'default · Workspace copilot\nanalyst');
+    for (const args of ['skills', 'repos', 'robots extra', '']) {
+        assert.match((await commands.executeSlashCommand('list', args)).error, /Usage: \/list robots/);
+    }
+    assert.deepEqual(commands.getCompletions('/list ')[0], ['/list robots']);
+    assert.match((await handler().executeSlashCommand('list', 'robots')).error, /requires the RoboTeam runtime/);
+    assert.match((await handler({ listRobots: async () => [] }).executeSlashCommand('list', 'robots')).result, /No robots/);
 });
 
 test('permission failure is surfaced rather than reported as applied', async () => {

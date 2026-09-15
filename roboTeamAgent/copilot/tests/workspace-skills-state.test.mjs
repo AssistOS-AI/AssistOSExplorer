@@ -75,7 +75,7 @@ test('reload applies persisted enable and disable transitions without mutating e
     assert.deepEqual(getDisabledSkills(workingDir), ['bash']);
 });
 
-test('slash commands await persisted skill controls and preserve WebChat envelopes', async (t) => {
+test('retired slash commands cannot mutate skills while internal snapshots remain available', async (t) => {
     const { catalog, workingDir } = await createFixture(t);
     const handler = new SlashCommandHandler({
         getUserSkills: () => catalog.getSkills(),
@@ -84,15 +84,13 @@ test('slash commands await persisted skill controls and preserve WebChat envelop
         setSkillEnabled: (name, enabled) => setWorkspaceSkillEnabled(catalog, workingDir, name, enabled),
         setSkillsDirectoryEnabled: (directory, enabled) => setWorkspaceDirectoryEnabled(catalog, workingDir, directory, enabled),
     });
-    const one = await handler.executeSlashCommand('skill', 'disable bash');
-    assert.equal(one.skillStateEvent, 'changed');
-    assert.equal(catalog.getSkill('bash').enabled, false);
-    const folder = await handler.executeSlashCommand('skills', 'disable packages');
-    assert.equal(folder.skillOperation.scope, 'directory');
-    assert.equal(catalog.getSkill('beta').enabled, false);
-    const list = await handler.executeSlashCommand('skills', '');
-    const envelope = createWebchatSkillsEnvelope(list.skillState);
+    const before = createWorkspaceSkillsSnapshot(catalog, workingDir);
+    for (const [command, args] of [['skill', 'disable bash'], ['skills', 'disable packages'], ['skills', '']]) {
+        assert.equal((await handler.executeSlashCommand(command, args)).handled, false);
+    }
+    assert.deepEqual(createWorkspaceSkillsSnapshot(catalog, workingDir), before);
+    const envelope = createWebchatSkillsEnvelope(before);
     assert.equal(envelope.__webchatSkills, 1);
     assert.equal(envelope.version, 1);
-    assert.deepEqual(envelope.skills.filter((skill) => !skill.enabled).map((skill) => skill.name), ['bash', 'beta']);
+    assert.deepEqual(envelope.skills, before);
 });

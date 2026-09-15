@@ -3,7 +3,6 @@ import { SlashCommandHandler } from '../repl/SlashCommandHandler.mjs';
 import { getQuickReference } from '../ui/HelpSystem.mjs';
 import { createTaskControlCommands } from './taskControlCommands.mjs';
 import { buildTaskCompletions, formatWorkspaceTaskDetail, formatWorkspaceTaskSummary } from './workspaceTasks.mjs';
-import { createWorkspaceSkillsSnapshot, setWorkspaceDirectoryEnabled, setWorkspaceSkillEnabled } from './workspaceSkillsState.mjs';
 import { selectWebchatRuntimeModel } from './webchatRuntimeState.mjs';
 
 function formatHistory(entries = []) {
@@ -13,13 +12,7 @@ function formatHistory(entries = []) {
 export async function executeRuntimeCommand({ runtime, connection, input, context = {}, signal, onEvent, emit = null }) {
     const { workingDir, engine, sessionStore, historyManager, backgroundTasks } = runtime;
     const skillCatalog = runtime.skillCatalog.forSession?.(connection.sessionId) || runtime.skillCatalog;
-    if (/^\/skills(?:\s|$)/.test(input) && skillCatalog.command) {
-        return skillCatalog.command(connection.sessionId, input.slice(7));
-    }
-    if (skillCatalog.command && /^\/skill\s+(?:enable|disable)\b/.test(input)) {
-        throw new Error('Use /skills use <skillsets or set/skill> to change this session\'s selection.');
-    }
-    if (skillCatalog.command) await skillCatalog.refresh(connection.sessionId);
+    if (skillCatalog.forSession) await skillCatalog.refresh(connection.sessionId);
     const taskControls = () => createTaskControlCommands({
         workingDir,
         interactions: runtime.webchatController || createTerminalTaskInteractions(),
@@ -33,7 +26,7 @@ export async function executeRuntimeCommand({ runtime, connection, input, contex
     };
     const selectSession = async (session) => {
         connection.sessionId = session.sessionId;
-        if (skillCatalog.command) await skillCatalog.refresh(session.sessionId);
+        if (skillCatalog.forSession) await skillCatalog.refresh(session.sessionId);
         emit?.('selected', session);
         return session;
     };
@@ -45,17 +38,12 @@ export async function executeRuntimeCommand({ runtime, connection, input, contex
         })).outputText,
         getSkills: () => skillCatalog.getSkills(),
         getUserSkills: () => skillCatalog.getSkills().filter((skill) => !skill.isInternal),
-        readSkill: (name) => skillCatalog.readSkill(name),
-        removeSkill: (name) => skillCatalog.removeSkill(name),
-        historyManager, loadModels,
+        historyManager, loadModels, listRobots: runtime.listRobots,
         getPermissions: runtime.getPermissions,
         setPermissions: runtime.setPermissions,
         getSessions: () => sessionStore.listSessions(connection.sessionId),
         createSession: async () => selectSession(await sessionStore.createSession()),
         resumeSession: async (id) => selectSession(await sessionStore.resumeSession(id)),
-        getSkillState: () => createWorkspaceSkillsSnapshot(skillCatalog, workingDir),
-        setSkillEnabled: (name, enabled) => setWorkspaceSkillEnabled(skillCatalog, workingDir, name, enabled),
-        setSkillsDirectoryEnabled: (directory, enabled) => setWorkspaceDirectoryEnabled(skillCatalog, workingDir, directory, enabled),
         getTaskSummary: async (args) => { await backgroundTasks?.listTasks(); return formatWorkspaceTaskSummary(workingDir, args); },
         viewTask: async (id) => { await backgroundTasks?.viewTask(id); return formatWorkspaceTaskDetail(workingDir, id); },
         continueTask: (id, prompt) => taskAction('continue', id, () => backgroundTasks.continueTask(id, prompt, context)),
@@ -74,11 +62,8 @@ export async function executeRuntimeCommand({ runtime, connection, input, contex
     const result = await handler.executeSlashCommand(parsed.command, args, { context, signal });
     if (result?.executionError) throw result.executionError;
     if (!result?.handled) return { output: result?.error || `Unknown command: ${input}` };
+    if (result.error) return { output: result.error };
     await historyManager.add(input);
-    if (result.reloadSkills) {
-        await skillCatalog.refresh(connection.sessionId);
-        return { output: `Indexed ${skillCatalog.getSkills().length} skill(s).` };
-    }
     if (result.exitRepl) return { exit: true, output: 'Close the tab to end the WebChat session.' };
     if (result.showHistory) return { output: formatHistory(historyManager.getRecent(10)) };
     if (result.showHistoryCount) return { output: formatHistory(historyManager.getRecent(result.showHistoryCount)) };
@@ -87,24 +72,16 @@ export async function executeRuntimeCommand({ runtime, connection, input, contex
         await selectWebchatRuntimeModel({
             workingDir, backend: result.backend, model: result.modelChange, effort: result.effortChange, slashState: connection,
             persist: (selection) => engine.setModel({ ...selection, sessionId: connection.sessionId }),
-            emitRuntimeState: (model, { backend }) => emit?.('runtime', { model, backend }),
+            emitRuntimeState: (model, { backend, effort }) => emit?.('runtime', { model, backend, effort }),
         });
         return { output: `Model selected: ${connection.pinnedModel || 'default'} (${result.backend})${result.effortChange ? ` · effort: ${result.effortChange}` : ''}` };
     }
     if (result.showModelPicker) {
         const { backend, models, model, effort } = await loadModels();
-        emit?.('runtime', { backend, model });
+        emit?.('runtime', { backend, model, effort });
         return { output: `Native models (${backend}):\n${models.map((model) => typeof model === 'string' ? model : `${model.id || model.name || model.key}${model.efforts?.length ? ` [effort: ${model.efforts.join(', ')}]` : ''}`).join('\n')}\nCurrent: ${model || 'default'}; effort: ${effort || 'default'}.\nUse /model <model> [effort|default] or /model default.` };
     }
-    if (result.toggleMarkdown) {
-        connection.markdownEnabled = !connection.markdownEnabled;
-        return { output: `Markdown rendering ${connection.markdownEnabled ? 'enabled' : 'disabled'}.` };
-    }
     if (result.showHelpPicker) return { output: getQuickReference() };
-    if (result.skillState) {
-        if (emit) { emit('skills', result); return { output: '' }; }
-        return { output: result.skillState.map((skill) => `${skill.enabled ? 'enabled' : 'disabled'} ${skill.name}`).join('\n') };
-    }
     if (result.sessionList) {
         if (emit) { emit('list', result.sessionList); return { output: '' }; }
         return { output: result.sessionList.sessions.map((session) => `${session.sessionId === connection.sessionId ? '*' : ' '} ${session.sessionId} ${session.title || ''}`).join('\n') };

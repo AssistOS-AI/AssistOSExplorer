@@ -2,7 +2,7 @@
  * SlashCommandHandler - Manages slash command definitions and execution.
  *
  * All commands start with /. Commands with subOptions show a sub-menu
- * when selected (e.g., /list → skills, repos). Commands without
+ * when selected (e.g., /list → robots). Commands without
  * subOptions complete directly.
  */
 
@@ -19,31 +19,11 @@ import { showHelp } from '../ui/HelpSystem.mjs';
 export const COMMAND_DEFINITIONS = {
     // Hierarchical commands with sub-options
     'list': {
-        subOptions: ['skills', 'repos'],
-        description: 'List items',
-    },
-    'add': {
-        subOptions: ['repo'],
-        description: 'Add items',
-    },
-    'remove': {
-        subOptions: ['repo', 'skill'],
-        description: 'Remove items',
+        subOptions: ['robots'],
+        description: 'List workspace robots',
     },
 
     // Direct skill commands
-    'read': {
-        skill: null,
-        usage: '/read <skill-name>',
-        description: 'Read a skill definition file',
-        args: 'required',
-        needsSkillArg: true,
-    },
-    'update': {
-        subOptions: ['repos'],
-        usage: '/update repos',
-        description: 'Update cloned repositories',
-    },
     'exec': {
         skill: null,
         usage: '/exec <skill-name> [input]',
@@ -64,21 +44,9 @@ export const COMMAND_DEFINITIONS = {
         args: 'optional',
         needsSkillArg: false,
     },
-    'raw': {
-        usage: '/raw',
-        description: 'Toggle markdown rendering',
-        args: 'optional',
-        needsSkillArg: false,
-    },
     'help': {
         usage: '/help [topic]',
         description: 'Show help',
-        args: 'optional',
-        needsSkillArg: false,
-    },
-    'reload': {
-        usage: '/reload',
-        description: 'Refresh skills from disk',
         args: 'optional',
         needsSkillArg: false,
     },
@@ -93,20 +61,6 @@ export const COMMAND_DEFINITIONS = {
         description: 'Show background task status and bounded final log tails',
         args: 'optional',
         needsSkillArg: false,
-    },
-    'skills': {
-        usage: '/skills [enable|disable <relative-directory>]',
-        description: 'List workspace skills or toggle every skill under a directory',
-        args: 'optional',
-        needsSkillArg: false,
-        subOptions: ['enable', 'disable'],
-    },
-    'skill': {
-        usage: '/skill <enable|disable> <skill-name>',
-        description: 'Enable or disable one registered workspace skill',
-        args: 'required',
-        needsSkillArg: false,
-        subOptions: ['enable', 'disable'],
     },
     'task': {
         usage: '/task <view|continue|stop|model|login> <task-id> [arguments]',
@@ -141,38 +95,6 @@ export const COMMAND_DEFINITIONS = {
  * Each sub-option maps to a handler or skill execution.
  */
 export const SUB_OPTIONS = {
-    'skills': {
-        'enable': {
-            skill: null,
-            usage: '/skills enable <relative-directory>',
-            description: 'Enable every registered skill under a workspace directory',
-            args: 'required',
-            needsSkillArg: false,
-        },
-        'disable': {
-            skill: null,
-            usage: '/skills disable <relative-directory>',
-            description: 'Disable every registered skill under a workspace directory',
-            args: 'required',
-            needsSkillArg: false,
-        },
-    },
-    'skill': {
-        'enable': {
-            skill: null,
-            usage: '/skill enable <skill-name>',
-            description: 'Enable one registered workspace skill',
-            args: 'required',
-            needsSkillArg: true,
-        },
-        'disable': {
-            skill: null,
-            usage: '/skill disable <skill-name>',
-            description: 'Disable one registered workspace skill',
-            args: 'required',
-            needsSkillArg: true,
-        },
-    },
     'task': {
         'view': {
             skill: null,
@@ -211,51 +133,9 @@ export const SUB_OPTIONS = {
         },
     },
     'list': {
-        'skills': {
-            skill: null,
-            usage: '/list skills [all]',
-            description: 'List skills',
-            args: 'optional',
-            needsSkillArg: false,
-        },
-        'repos': {
-            skill: null,
-            usage: '/list repos',
-            description: 'List cloned repositories',
-            args: 'optional',
-            needsSkillArg: false,
-        },
-    },
-    'add': {
-        'repo': {
-            skill: null,
-            usage: '/add repo <URL> [name]',
-            description: 'Clone a repository',
-            args: 'required',
-            needsSkillArg: false,
-        },
-    },
-    'remove': {
-        'repo': {
-            skill: null,
-            usage: '/remove repo <name>',
-            description: 'Remove a cloned repository',
-            args: 'required',
-            needsSkillArg: false,
-        },
-        'skill': {
-            skill: null,
-            usage: '/remove skill <skill-name>',
-            description: 'Delete a skill directory',
-            args: 'required',
-            needsSkillArg: true,
-        },
-    },
-    'update': {
-        'repos': {
-            skill: null,
-            usage: '/update repos',
-            description: 'Pull all cloned repositories',
+        'robots': {
+            usage: '/list robots',
+            description: 'List available workspace robots',
             args: 'optional',
             needsSkillArg: false,
         },
@@ -360,11 +240,10 @@ export class SlashCommandHandler {
     constructor({
         workingDir = process.cwd(),
         executeSkill,
-        readSkill,
-        removeSkill,
         getUserSkills,
         getSkills,
         historyManager,
+        listRobots,
         getTaskSummary,
         loadModels,
         getPermissions,
@@ -378,17 +257,13 @@ export class SlashCommandHandler {
         modelTask,
         loginTask,
         getTaskCompletions,
-        getSkillState,
-        setSkillEnabled,
-        setSkillsDirectoryEnabled,
     }) {
         this.workingDir = workingDir;
         this.executeSkill = executeSkill;
-        this.readSkill = readSkill;
-        this.removeSkill = removeSkill;
         this.getUserSkills = getUserSkills;
         this.getSkills = getSkills;
         this.historyManager = historyManager;
+        this.listRobots = listRobots;
         this.getTaskSummary = getTaskSummary;
         this.loadModels = loadModels;
         this.getPermissions = getPermissions;
@@ -402,9 +277,6 @@ export class SlashCommandHandler {
         this.modelTask = modelTask;
         this.loginTask = loginTask;
         this.getTaskCompletions = getTaskCompletions;
-        this.getSkillState = getSkillState;
-        this.setSkillEnabled = setSkillEnabled;
-        this.setSkillsDirectoryEnabled = setSkillsDirectoryEnabled;
         this.availableModels = [];
     }
 
@@ -421,7 +293,7 @@ export class SlashCommandHandler {
      * Parse a slash command into parts.
      * Returns { command, subOption, args, rawArgs }
      * - command: the top-level command (e.g., 'list')
-     * - subOption: the sub-option if any (e.g., 'skills')
+     * - subOption: the sub-option if any (e.g., 'robots')
      * - args: remaining arguments after command and sub-option
      * - rawArgs: everything after the command name
      * @param {string} input - User input starting with /
@@ -536,9 +408,6 @@ export class SlashCommandHandler {
             return { handled: true, result: showHelp(args) };
         }
 
-        if (command === 'raw') {
-            return { handled: true, toggleMarkdown: true };
-        }
 
         if (command === 'model') {
             return this._handleModelCommand(args, options);
@@ -567,9 +436,6 @@ export class SlashCommandHandler {
             return { handled: true, exitRepl: true };
         }
 
-        if (command === 'reload') {
-            return this._handleReload();
-        }
 
         if (command === 'history') {
             return this._handleHistory(args);
@@ -586,14 +452,6 @@ export class SlashCommandHandler {
             }
         }
 
-        if (command === 'skills') {
-            if (args) return { handled: true, error: 'Usage: /skills [enable|disable <relative-directory>]' };
-            if (typeof this.getSkillState !== 'function') {
-                return { handled: true, error: 'Workspace skill controls are unavailable.' };
-            }
-            return { handled: true, skillState: this.getSkillState(), skillStateEvent: 'list' };
-        }
-
         if (command === 'session') {
             if (args) return { handled: true, error: 'Usage: /session [new|resume <session-id>]' };
             if (typeof this.getSessions !== 'function') {
@@ -605,6 +463,8 @@ export class SlashCommandHandler {
                 sessionList: this.getSessions(),
             };
         }
+
+        if (command === 'list') return { handled: true, error: 'Usage: /list robots' };
 
         // Handle direct skill commands
         const cmdDef = COMMAND_DEFINITIONS[command];
@@ -636,20 +496,13 @@ export class SlashCommandHandler {
             }
         }
 
-        if (command === 'read') {
-            try {
-                return { handled: true, result: await this.readSkill(args.trim()) };
-            } catch (error) {
-                return { handled: true, error: error.message };
-            }
-        }
 
         return { handled: false, error: `Unknown command: /${command}` };
     }
 
 
     /**
-     * Execute a sub-option command (e.g., /list repos, /add repo).
+     * Execute a sub-option command (e.g., /list robots).
      * @private
      */
     async _executeSubOption(command, subOption, args, options) {
@@ -666,64 +519,15 @@ export class SlashCommandHandler {
             };
         }
 
-        if (command === 'list' && subOption === 'skills') {
-            if (args && args !== 'all') return { handled: true, error: 'Usage: /list skills [all]' };
-            const skills = this.getSkills();
-            return { handled: true, result: skills.map((skill) =>
-                `${skill.name} [anthropic]${skill.enabled === false ? ' (disabled)' : ''}${skill.builtIn ? ' (built-in)' : ''} — ${skill.description || ''}`
-            ).join('\n') || 'No skills found.' };
-        }
-        if (command === 'remove' && subOption === 'skill') {
+        if (command === 'list' && subOption === 'robots') {
+            if (args) return { handled: true, error: 'Usage: /list robots' };
+            if (typeof this.listRobots !== 'function') return { handled: true, error: 'Robot discovery requires the RoboTeam runtime.' };
             try {
-                await this.removeSkill(args.trim());
-                return { handled: true, result: `Skill '${args.trim()}' removed.` };
-            } catch (error) {
-                return { handled: true, error: error.message };
-            }
-        }
-
-        if (command === 'skill' && (subOption === 'enable' || subOption === 'disable')) {
-            if (typeof this.setSkillEnabled !== 'function' || typeof this.getSkillState !== 'function') {
-                return { handled: true, error: 'Workspace skill controls are unavailable.' };
-            }
-            try {
-                return {
-                    handled: true,
-                    skillState: await this.setSkillEnabled(args.trim(), subOption === 'enable'),
-                    skillStateEvent: 'changed',
-                    skillOperation: { scope: 'skill', action: subOption, target: args.trim() },
-                };
-            } catch (error) {
-                return {
-                    handled: true,
-                    error: error.message,
-                    skillState: this.getSkillState(),
-                    skillStateEvent: 'error',
-                    skillOperation: { scope: 'skill', action: subOption, target: args.trim() },
-                };
-            }
-        }
-
-        if (command === 'skills' && (subOption === 'enable' || subOption === 'disable')) {
-            if (typeof this.setSkillsDirectoryEnabled !== 'function' || typeof this.getSkillState !== 'function') {
-                return { handled: true, error: 'Workspace skill controls are unavailable.' };
-            }
-            try {
-                return {
-                    handled: true,
-                    skillState: await this.setSkillsDirectoryEnabled(args.trim(), subOption === 'enable'),
-                    skillStateEvent: 'changed',
-                    skillOperation: { scope: 'directory', action: subOption, target: args.trim() },
-                };
-            } catch (error) {
-                return {
-                    handled: true,
-                    error: error.message,
-                    skillState: this.getSkillState(),
-                    skillStateEvent: 'error',
-                    skillOperation: { scope: 'directory', action: subOption, target: args.trim() },
-                };
-            }
+                const robots = await this.listRobots();
+                return { handled: true, result: robots.length
+                    ? robots.map((robot) => [robot.name, robot.specialization || robot.description].filter(Boolean).join(' · ')).join('\n')
+                    : 'No robots are available in this workspace.' };
+            } catch (error) { return { handled: true, error: error.message }; }
         }
 
         if (command === 'session' && subOption === 'new') {
@@ -791,89 +595,7 @@ export class SlashCommandHandler {
             } catch (error) { return { handled: true, error: error.message }; }
         }
 
-        // /update repos
-        if (command === 'update' && subOption === 'repos') {
-            const { updateRepos } = await import('../lib/repoManager.mjs');
-            try {
-                const result = updateRepos(this.workingDir);
-                if (result.updated.length === 0) {
-                    return { handled: true, result: 'No repositories in .data/achilles-cli/repos/.' };
-                }
-                const lines = [`Updated repositories (${result.updated.length}):`];
-                for (const repo of result.updated) {
-                    lines.push(`  ${repo.name}`);
-                }
-                return { handled: true, result: lines.join('\n') };
-            } catch (error) {
-                return { handled: true, error: error.message };
-            }
-        }
-
-        // /list repos
-        if (command === 'list' && subOption === 'repos') {
-            const { listRepos } = await import('../lib/repoManager.mjs');
-            try {
-                const repos = listRepos(this.workingDir);
-                if (repos.length === 0) {
-                    return { handled: true, result: 'No repositories in .data/achilles-cli/repos/.' };
-                }
-                const lines = [`Repositories (${repos.length}):`, ''];
-                for (const repo of repos) {
-                    const url = repo.url || '(no remote)';
-                    lines.push(`  ${repo.name}`);
-                    lines.push(`    URL: ${url}`);
-                    lines.push(`    Path: ${repo.path}`);
-                    lines.push('');
-                }
-                return { handled: true, result: lines.join('\n') };
-            } catch (error) {
-                return { handled: true, error: error.message };
-            }
-        }
-
-        // /add repo
-        if (command === 'add' && subOption === 'repo') {
-            const { addRepo } = await import('../lib/repoManager.mjs');
-            const parts = args.split(/\s+/);
-            const url = parts[0];
-            const name = parts[1];
-            if (!url) {
-                return { handled: true, error: `Usage: /add repo <URL> [name]\n  Clone a repository into .data/achilles-cli/repos/` };
-            }
-            try {
-                const result = addRepo(url, name, this.workingDir);
-                return { handled: true, result: `Repository '${result.name}' ${result.status}.\n  Path: ${result.path}` };
-            } catch (error) {
-                return { handled: true, error: error.message };
-            }
-        }
-
-        // /remove repo
-        if (command === 'remove' && subOption === 'repo') {
-            const { removeRepo } = await import('../lib/repoManager.mjs');
-            const name = args.trim();
-            if (!name) {
-                return { handled: true, error: `Usage: /remove repo <name>\n  Remove a cloned repository from .data/achilles-cli/repos/` };
-            }
-            try {
-                removeRepo(name, this.workingDir);
-                return { handled: true, result: `Repository '${name}' removed.` };
-            } catch (error) {
-                return { handled: true, error: error.message };
-            }
-        }
-
-
         return { handled: false, error: `Unhandled sub-command: /${command} ${subOption}` };
-    }
-
-    /**
-     * Handle /reload command.
-     * @private
-     */
-    _handleReload() {
-        // Reload is handled by REPLSession
-        return { handled: true, reloadSkills: true };
     }
 
     /**
@@ -1005,34 +727,6 @@ export class SlashCommandHandler {
                     .map((session) => `/${command} ${subOption} ${session.value}`);
                 return [matching, line];
             }
-            if (command === 'list' && subOption === 'skills') {
-                return ['all'.startsWith(args.toLowerCase()) ? ['/list skills all'] : [], line];
-            }
-            if (command === 'skill') {
-                return [this.getSkills()
-                    .map((skill) => skill.name)
-                    .filter((name) => name.toLowerCase().startsWith(args.toLowerCase()))
-                    .map((name) => `/${command} ${subOption} ${name}`), line];
-            }
-            if (command === 'skills' && this.getSkillState) {
-                const directories = new Set();
-                for (const skill of this.getSkillState()) {
-                    const parts = String(skill.relativePath || '').split('/');
-                    if (parts[0] === '..') continue;
-                    for (let count = 1; count <= parts.length; count += 1) directories.add(parts.slice(0, count).join('/'));
-                }
-                return [[...directories].filter((directory) => directory.startsWith(args))
-                    .map((directory) => `/${command} ${subOption} ${directory}`), line];
-            }
-            // /remove skill - suggest skill names
-            if (command === 'remove' && subOption === 'skill') {
-                const skills = this.getUserSkills();
-                const matching = skills
-                    .map(s => s.shortName || s.name)
-                    .filter(name => name.toLowerCase().startsWith(args.toLowerCase()))
-                    .map(name => `/${command} ${subOption} ${name}`);
-                return [matching, line];
-            }
         }
 
         // Direct command completions
@@ -1040,14 +734,6 @@ export class SlashCommandHandler {
         if (cmdDef) {
             const argPrefix = (args || '').toLowerCase();
 
-            if (command === 'read') {
-                const skills = this.getSkills();
-                const matching = skills
-                    .map(s => s.shortName || s.name)
-                    .filter(name => name.toLowerCase().startsWith(argPrefix))
-                    .map(name => `/${command} ${name}`);
-                return [matching, line];
-            }
 
 
             if (command === 'exec') {

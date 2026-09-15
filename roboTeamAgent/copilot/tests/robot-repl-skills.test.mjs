@@ -69,87 +69,44 @@ async function fixture(t) {
         writeSkill, nativeCalls, history, repl, output, errors, policy };
 }
 
-test('terminal /skills use, pin and live update the authoritative policy and preserve command history', async (t) => {
-    const f = await fixture(t);
-    await f.repl._handleSlashCommand('/skills use none');
-    assert.deepEqual((await f.policy()).selectors.skillSets, []);
-    assert.deepEqual((await f.policy(f.second)).selectors.skillSets, ['workspace']);
-    assert.equal(f.repl.skillCatalog.getSkill('local'), undefined);
-    await f.repl._handleSlashCommand('/skills use workspace');
-    assert.equal(f.repl.skillCatalog.getSkill('local').enabled, true);
-    await f.repl._handleSlashCommand('/exec local inspect');
-    assert.equal(f.nativeCalls.length, 1);
-    assert.equal(f.nativeCalls[0].sessionId, f.first.sessionId);
-    assert.equal(f.nativeCalls[0].prompt, 'inspect');
-    const revision = f.sessionStore.loadSession(f.first.sessionId).skillExecution.revision;
-    await f.repl._handleSlashCommand('/skills pin');
-    assert.equal((await f.policy()).mode, 'pinned');
-    assert.equal((await f.policy()).pinnedCatalog.revision, revision);
-    await f.writeSkill('changed');
-    await f.repl._handleSlashCommand('/read local');
-    assert.match(f.output.at(-1), /original/);
-    await f.repl._handleSlashCommand('/skills live');
-    assert.equal((await f.policy()).mode, 'live');
-    await f.repl._handleSlashCommand('/read local');
-    assert.match(f.output.at(-1), /changed/);
-    assert.deepEqual(f.errors, []);
-    assert.deepEqual(f.history, ['/skills use none', '/skills use workspace', '/exec local inspect', '/skills pin', '/read local', '/skills live', '/read local']);
-    const session = f.sessionStore.loadSession(f.first.sessionId);
-    assert.deepEqual(buildConversationInitialHistory(session), [
-        { role: 'user', message: '/exec local inspect' }, { role: 'assistant', message: 'Native result' },
-    ]);
-    assert.equal(session.messages.filter((message) => message.role === 'user').length, f.history.length);
-    assert.equal(f.sessionStore.loadSession(f.second.sessionId).messages.length, 0);
-});
-
-test('terminal session resume and new bind listing, reads, reload, completion and native execution to the selected conversation', async (t) => {
-    const f = await fixture(t);
-    await f.repl._handleSlashCommand('/skills use none');
-    const firstCatalog = f.repl.skillCatalog;
-    await f.repl._handleSlashCommand(`/session resume ${f.second.sessionId}`);
-    assert.equal(f.repl.currentConversation.sessionId, f.second.sessionId);
-    assert.equal(f.repl.skillCatalog.getSkill('local').enabled, true);
-    assert.equal(f.repl.quickCommands.getAllSkills().find((skill) => skill.name === 'local').enabled, true);
-    assert.equal(f.repl.inputPrompt.getAllSkills().find((skill) => skill.name === 'local').enabled, true);
-    await f.writeSkill('after-switch');
-    await f.repl._handleSlashCommand('/reload');
-    assert.match(f.repl.skillCatalog.getSkill('local').description, /after-switch/);
-    assert.match(firstCatalog.getSkills().find((skill) => skill.name === 'local').description, /original/);
-    await f.repl._handleSlashCommand('/list skills');
-    assert.match(f.output.at(-1), /local \[anthropic\] — Local after-switch/);
-    await f.repl._handleSlashCommand('/read local');
-    assert.match(f.output.at(-1), /after-switch/);
-    await f.repl._handleSlashCommand('/exec local second');
-    assert.equal(f.nativeCalls[0].sessionId, f.second.sessionId);
-    await f.repl._handleSlashCommand(`/session resume ${f.first.sessionId}`);
-    assert.equal(f.repl.skillCatalog.getSkill('local'), undefined);
-    await f.repl._handleSlashCommand('/read local');
-    assert.match(f.output.at(-1), /missing, disabled or ambiguous/);
-    assert.deepEqual((await f.policy()).selectors.skillSets, []);
-    await f.repl._handleSlashCommand('/session new');
-    const third = f.repl.currentConversation;
-    assert.notEqual(third.sessionId, f.first.sessionId);
-    assert.notEqual(third.sessionId, f.second.sessionId);
-    assert.equal(f.repl.skillCatalog.getSkill('local'), undefined);
-    await f.repl._handleSlashCommand('/skills use workspace');
-    assert.deepEqual((await f.policy(third)).selectors.skillSets, ['workspace']);
-    assert.deepEqual((await f.policy()).selectors.skillSets, []);
-});
-
-test('terminal rejects old skill and directory toggles without changing selection or shared disabled names', async (t) => {
+test('removed terminal commands do not change configured skills or execute a model', async (t) => {
     const f = await fixture(t);
     const before = await f.policy();
-    for (const command of ['/skill disable local', '/skill enable local', '/skills disable .agents', '/skills enable .agents']) {
+    for (const command of ['/skills use none', '/skills pin', '/skill disable local', '/read local', '/list skills', '/list repos', '/reload', '/raw', '/add repo https://example.test/repo', '/remove skill local', '/update repos']) {
         await f.repl._handleSlashCommand(command);
     }
     assert.deepEqual(await f.policy(), before);
-    assert.equal(f.repl.skillCatalog.getSkill('local').enabled, true);
+    assert.deepEqual(f.nativeCalls, []);
     assert.deepEqual(f.history, []);
-    assert.equal(f.errors.length, 4);
-    assert.match(f.errors[0], /Use \/skills use/);
-    const settings = JSON.parse(await fs.readFile(path.join(f.privateRoot, 'settings.json'), 'utf8'));
-    assert.deepEqual(settings.disabledSkills || [], []);
-    const session = f.sessionStore.loadSession(f.first.sessionId);
-    assert.equal(session.messages.filter((message) => message.role === 'assistant' && message.status === 'failed').length, 4);
-    assert.deepEqual(buildConversationInitialHistory(session), []);
+    assert.equal(f.repl.markdownEnabled, false);
+    assert.equal(f.repl.skillCatalog.getSkill('local').enabled, true);
+    assert.equal(await fs.readFile(f.descriptor, 'utf8').then((text) => text.includes('original')), true);
+    for (const alias of ['reload', 'list', 'ls', 'list all', 'ls -a']) {
+        assert.equal(f.repl.quickCommands.isQuickCommand(alias), false);
+        assert.deepEqual(f.repl.quickCommands.execute(alias), { handled: false });
+    }
+});
+
+test('terminal session selection still refreshes configured skills and supports explicit execution', async (t) => {
+    const f = await fixture(t);
+    await f.repl._handleSlashCommand('/session resume ' + f.second.sessionId);
+    assert.equal(f.repl.currentConversation.sessionId, f.second.sessionId);
+    await f.writeSkill('after-switch');
+    await f.repl._handleSlashCommand('/exec local inspect');
+    assert.equal(f.nativeCalls[0].sessionId, f.second.sessionId);
+    assert.equal(f.nativeCalls[0].prompt, 'inspect');
+    assert.match(f.repl.skillCatalog.getSkill('local').description, /after-switch/);
+    assert.deepEqual(buildConversationInitialHistory(f.sessionStore.loadSession(f.second.sessionId)), [
+        { role: 'user', message: '/exec local inspect' }, { role: 'assistant', message: 'Native result' },
+    ]);
+    assert.deepEqual(f.errors, []);
+});
+
+test('terminal list robots uses the supplied workspace catalog without ALA', async (t) => {
+    const f = await fixture(t);
+    f.repl.slashHandler.listRobots = async () => [{ name: 'default', specialization: 'Copilot' }];
+    await f.repl._handleSlashCommand('/list robots');
+    assert.match(f.output.at(-1), /default · Copilot/);
+    assert.deepEqual(f.nativeCalls, []);
+    assert.deepEqual(f.errors, []);
 });

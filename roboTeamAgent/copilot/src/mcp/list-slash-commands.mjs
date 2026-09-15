@@ -2,7 +2,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
 import { buildSlashCommandCatalog } from '../repl/SlashCommandHandler.mjs';
 import { createAnthropicSkillCatalog } from '../lib/anthropicSkillCatalog.mjs';
 import { resolveAlaInstallation } from '../lib/alaInstallation.mjs';
@@ -40,23 +40,6 @@ export async function buildSkillCompletions(dir, options = {}) {
     })).sort((left, right) => left.label.localeCompare(right.label));
 }
 
-export async function buildSkillDirectoryCompletions(dir, options = {}) {
-    const root = resolve(dir || process.env.WORKSPACE_PATH || process.cwd());
-    const catalog = await discoverCatalog(root, options);
-    const directories = new Set();
-    for (const skill of catalog.getSkills()) {
-        let current = relative(root, skill.skillDir);
-        while (current && current !== '..' && !current.startsWith(`..${sep}`)) {
-            directories.add(current.split(sep).join('/'));
-            const parent = dirname(current);
-            if (!parent || parent === '.' || parent === current) break;
-            current = parent;
-        }
-    }
-    return [...directories].sort().map((directory) => ({ value: directory, label: directory,
-        description: 'Toggle registered skills below this directory' }));
-}
-
 export function buildSessionCompletions(dir) {
     if (!dir) return [];
     const payload = new ConversationSessionStore({ workingDir: dir }).listSessions();
@@ -71,11 +54,7 @@ export function buildTaskActionCompletions(dir, action) {
 export async function toAutocompleteCatalog(options = {}) {
     const skillCatalog = await discoverCatalog(options.dir, options);
     const catalogOptions = { ...options, skillCatalog };
-    const [skills, allSkills, directories] = await Promise.all([
-        buildSkillCompletions(options.dir, catalogOptions),
-        buildSkillCompletions(options.dir, { ...catalogOptions, includeDisabled: true }),
-        options.skillDirectoryCompletions || buildSkillDirectoryCompletions(options.dir, catalogOptions),
-    ]);
+    const skills = await buildSkillCompletions(options.dir, catalogOptions);
     const commands = buildSlashCommandCatalog().map((command) => ({
         name: command.name, usage: command.usage, description: command.description,
         argMatchMode: command.argMatchMode, argSuggestionLimit: command.argSuggestionLimit,
@@ -83,12 +62,10 @@ export async function toAutocompleteCatalog(options = {}) {
             name: sub.name, usage: sub.usage, description: sub.description,
             argCompletions: command.name === '/session' && sub.name === 'resume' ? options.sessionCompletions || []
                 : command.name === '/task' ? options.taskCompletions?.[sub.name] || []
-                : command.name === '/skills' ? directories
-                : command.name === '/skill' ? allSkills
-                : sub.needsSkillArg ? allSkills : [],
+                : sub.needsSkillArg ? skills : [],
         })),
         argCompletions: command.name === '/permissions' ? permissionCompletions
-            : command.needsSkillArg ? (command.name === '/exec' ? skills : allSkills) : [],
+            : command.needsSkillArg ? skills : [],
     }));
     return { type: 'achilles-slash-command-catalog', version: 1, commands };
 }

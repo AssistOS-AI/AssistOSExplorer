@@ -65,7 +65,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
     const publishModel = async (session, context) => {
         const selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: session.sessionId })
             : { backend: session.engine?.backend, model: runtime.settings.getCodingAgentModels?.(runtime.workingDir)?.[session.engine?.backend] };
-        send(createWebchatRuntimeStateEnvelope(selection.model, { backend: selection.backend || null }), context);
+        send(createWebchatRuntimeStateEnvelope(selection.model, { backend: selection.backend || null, effort: selection.effort }), context);
     };
     const connectionFor = (context) => {
         const key = context.sourceTabId || 'legacy';
@@ -101,7 +101,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 update(runtime.sessionStore.loadSession(sessionId), context);
             }
             if (event.type === 'coding-agent-selected' && connection.sessionId === sessionId) {
-                send(createWebchatRuntimeStateEnvelope(event.model, { backend: event.agent }), context);
+                send(createWebchatRuntimeStateEnvelope(event.model, { backend: event.agent, effort: event.effort }), context);
             }
             if (event.type === 'diagnostic' && (runtime.debug || runtime.verbose)) console.error(event.message);
         };
@@ -110,7 +110,7 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
                 send(createSelectedSessionEnvelope(payload), context);
                 track(publishModel(payload, context).catch((error) => fail(error, context, payload.sessionId)));
             } else if (kind === 'list') send(createSessionListEnvelope(payload), context);
-            else if (kind === 'runtime') send(createWebchatRuntimeStateEnvelope(payload.model, { backend: payload.backend }), context);
+            else if (kind === 'runtime') send(createWebchatRuntimeStateEnvelope(payload.model, { backend: payload.backend, effort: payload.effort }), context);
             else if (kind === 'skills') send(createWebchatSkillsEnvelope(payload.skillState, {
                 event: payload.skillStateEvent || 'list', operation: payload.skillOperation || null, error: payload.error || '',
             }), context);
@@ -199,7 +199,7 @@ export async function runWebchatInteractive(runtime) {
     const selection = runtime.engine.getModel ? await runtime.engine.getModel({ sessionId: runtime.initialSession.sessionId }) : null;
     const backend = selection?.backend || runtime.initialSession.engine?.backend || null;
     process.stdout.write(`${JSON.stringify(createWebchatRuntimeStateEnvelope(
-        selection ? selection.model : backend ? runtime.settings.getCodingAgentModels(runtime.workingDir)[backend] || null : null, { backend },
+        selection ? selection.model : backend ? runtime.settings.getCodingAgentModels(runtime.workingDir)[backend] || null : null, { backend, effort: selection?.effort },
     ))}\n`);
     const decoder = new StringDecoder('utf8');
     let partial = '';

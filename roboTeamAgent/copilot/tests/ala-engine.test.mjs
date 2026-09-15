@@ -191,7 +191,9 @@ test('model and effort persist in the native ALA config and survive continuation
     h.installation.loadConfig = api.loadConfig;
     h.installation.saveConfig = api.saveConfig;
     await h.engine.setModel({ sessionId: h.sessionId, backend: 'codex', model: 'native-new', effort: 'high' });
-    const first = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First' });
+    const events = [];
+    const first = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'First', onEvent: (event) => events.push(event) });
+    assert.equal(events.find((event) => event.type === 'coding-agent-selected').effort, 'high');
     const file = path.join(first.session.engine.home, '.ala/config.json');
     assert.equal((await api.loadConfig(file)).codingAgents.efforts.codex, 'high');
     const output = JSON.parse(first.outputText);

@@ -7,7 +7,7 @@ const HELP_TOPICS = {
     },
     skills: {
         title: 'Anthropic skills',
-        content: 'Skills use SKILL.md and directly executable scripts. The three built-ins are bash, launch-gpt-researcher, launch-robot. /list skills lists the catalog; /read reads a descriptor; /exec runs an enabled skill through ALA. Disable packaged skills rather than removing them. External repository roots may override earlier roots. /reload refreshes the catalog.',
+        content: 'Skills use SKILL.md and directly executable scripts. The three built-ins are bash, launch-gpt-researcher, launch-robot. /exec runs an enabled skill through ALA. Manage repositories and skill selection in RoboTeam or Explorer. The CLI loads configured skills automatically and does not manage them.',
     },
     sessions: {
         title: 'Workspace conversations',
@@ -27,7 +27,7 @@ const HELP_TOPICS = {
     },
     keyboard: {
         title: 'Keyboard controls',
-        content: 'Tab completes commands and arguments. Up/Down navigate input history and selectors. Enter submits; Escape cancels a selector or the current execution. /raw toggles Markdown rendering. help, reload, list, ls, list all, ls -a, history and hist are deterministic quick commands; quit, exit and q leave the terminal.',
+        content: 'Tab completes commands and arguments. Up/Down navigate input history and selectors. Enter submits; Escape cancels a selector or the current execution. /list robots lists workspace robots. help, history and hist are deterministic quick commands; quit, exit and q leave the terminal.',
     },
 };
 

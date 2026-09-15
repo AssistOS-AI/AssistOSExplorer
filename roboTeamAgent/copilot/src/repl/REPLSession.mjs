@@ -13,7 +13,6 @@ import { UIContext } from '../ui/UIContext.mjs';
 import { buildTaskCompletions, formatWorkspaceTaskDetail, formatWorkspaceTaskSummary } from '../lib/workspaceTasks.mjs';
 import { createTaskControlCommands } from '../lib/taskControlCommands.mjs';
 import { getPermissionMode, setPermissionMode } from '../lib/achillesSettings.mjs';
-import { createWorkspaceSkillsSnapshot, formatWorkspaceSkills, setWorkspaceDirectoryEnabled, setWorkspaceSkillEnabled } from '../lib/workspaceSkillsState.mjs';
 
 /** A connection owns its selected conversation; ALA owns each executing turn. */
 export class REPLSession {
@@ -39,11 +38,10 @@ export class REPLSession {
         this.slashHandler = new SlashCommandHandler({
             workingDir: this.workingDir,
             executeSkill: (name, input, opts) => this.processPrompt(input, { ...opts, skillName: name }),
-            readSkill: (name) => this.skillCatalog.readSkill(name),
-            removeSkill: (name) => this.skillCatalog.removeSkill(name),
             getUserSkills: () => this.getUserSkills(),
             getSkills: () => this.skillCatalog.getSkills(),
             historyManager: this.historyManager,
+            listRobots: options.listRobots,
             loadModels: ({ signal } = {}) => this.engine.listModels({ sessionId: this.currentConversation.sessionId, signal }),
             getPermissions: options.getPermissions || (() => getPermissionMode(this.workingDir)),
             setPermissions: options.setPermissions || ((mode) => setPermissionMode(this.workingDir, mode)),
@@ -60,9 +58,6 @@ export class REPLSession {
             modelTask: (id, model, opts) => { this._requireTaskManager(); return this._taskModel(id, model, opts); },
             loginTask: (id, provider, method, opts) => { this._requireTaskManager(); return this.taskControls.login(id, provider, method, opts); },
             getTaskCompletions: (action) => buildTaskCompletions(this.workingDir, action),
-            getSkillState: () => createWorkspaceSkillsSnapshot(this.skillCatalog, this.workingDir),
-            setSkillEnabled: (name, enabled) => setWorkspaceSkillEnabled(this.skillCatalog, this.workingDir, name, enabled),
-            setSkillsDirectoryEnabled: (directory, enabled) => setWorkspaceDirectoryEnabled(this.skillCatalog, this.workingDir, directory, enabled),
         });
         this.commandList = buildCommandList(SlashCommandHandler.COMMANDS);
         this.inputPrompt = new InteractivePrompt({
@@ -79,13 +74,7 @@ export class REPLSession {
             isMarkdownEnabled: () => this.markdownEnabled,
             interactions: this.interactions,
         });
-        this.quickCommands = new QuickCommands({
-            getUserSkills: () => this.getUserSkills(),
-            getAllSkills: () => this.skillCatalog.getSkills(),
-            reloadSkills: () => this.reloadSkills(),
-            historyManager: this.historyManager,
-            builtInSkillsDir: options.builtInSkillsDir,
-        });
+        this.quickCommands = new QuickCommands({ historyManager: this.historyManager });
     }
 
     getUserSkills() {
@@ -124,7 +113,7 @@ export class REPLSession {
         this.currentConversation = session;
         this.selectedModel = (await this.engine.getModel?.({ sessionId: session.sessionId }))?.model || null;
         this.skillCatalog = this.skillCatalogService.forSession?.(session.sessionId) || this.skillCatalogService;
-        if (this.skillCatalog.command) await this.reloadSkills();
+        if (this.skillCatalog.forSession) await this.reloadSkills();
         return session;
     }
 
@@ -175,25 +164,15 @@ export class REPLSession {
                         assistantMessageId: commandTurn.assistantMessageId, turnId,
                     });
                 }
-                let result;
-                if (this.skillCatalog.command && parsed.command === 'skills') {
-                    const response = await this.skillCatalog.command(this.currentConversation.sessionId, parsed.rawArgs);
-                    result = { handled: true, result: response.output };
-                } else {
-                    if (this.skillCatalog.command && parsed.command === 'skill' && /^(?:enable|disable)\b/i.test(parsed.rawArgs)) {
-                        throw new Error('Use /skills use <skillsets or set/skill> to change this session\'s selection.');
-                    }
-                    if (this.skillCatalog.command) await this.reloadSkills();
-                    result = await this.slashHandler.executeSlashCommand(parsed.command, parsed.rawArgs, {
-                        signal, onEvent, context: { ...commandOrigin, workingDir: this.workingDir, rawText: input },
-                    });
-                }
+                if (this.skillCatalog.forSession) await this.reloadSkills();
+                const result = await this.slashHandler.executeSlashCommand(parsed.command, parsed.rawArgs, {
+                    signal, onEvent, context: { ...commandOrigin, workingDir: this.workingDir, rawText: input },
+                });
                 spinner.stop();
                 controls.suspendInput();
                 if (result.exitRepl) return true;
                 let text = result.error || result.result || '';
-                if (result.reloadSkills) text = `Indexed ${await this.reloadSkills()} skill(s).`;
-                else if (result.showHistory) showHistory(this.historyManager);
+                if (result.showHistory) showHistory(this.historyManager);
                 else if (result.showHistoryCount) showHistory(this.historyManager, result.showHistoryCount);
                 else if (result.searchHistory) searchHistory(this.historyManager, result.searchHistory);
                 else if (result.showModelPicker) text = await this._handleModelPicker(signal);
@@ -202,11 +181,7 @@ export class REPLSession {
                         backend: result.backend, model: result.modelChange, effort: result.effortChange });
                     this.selectedModel = result.modelChange;
                     text = `Native model (${result.backend}): ${result.modelChange || 'default'}; effort: ${result.effortChange || 'default'}`;
-                } else if (result.toggleMarkdown) {
-                    this.markdownEnabled = !this.markdownEnabled;
-                    text = `Markdown rendering ${this.markdownEnabled ? 'enabled' : 'disabled'}.`;
                 } else if (result.showHelpPicker) text = await this._handleHelpPicker(signal);
-                else if (result.skillState) text = [result.error, formatWorkspaceSkills(result.skillState)].filter(Boolean).join('\n');
                 else if (result.showSessionPicker) {
                     const session = await this._handleSessionPicker(signal);
                     if (session) this._printConversation(session);

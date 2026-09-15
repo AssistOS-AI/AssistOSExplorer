@@ -35,7 +35,9 @@ test('removed tier flags and invalid explicit permission modes fail rather than 
     assert.throws(() => parseCliOptions(['--fast']), /Unknown option/);
     assert.throws(() => parseCliOptions(['--deep']), /Unknown option/);
     assert.throws(() => parseCliOptions(['--permissions=automatic']), /ask-for-approval/);
-    assert.throws(() => parseCliOptions(['--skill-root']), /requires a value/);
+    for (const args of [['--skill-root'], ['--skill-root', '/tmp/skills'], ['--skill-root=/tmp/skills'], ['-r', '/tmp/skills']]) {
+        assert.throws(() => parseCliOptions(args), /Unknown option/);
+    }
 });
 
 test('Ploinky WebChat launch metadata does not become a prompt or native session', async (t) => {
