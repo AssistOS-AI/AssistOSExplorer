@@ -114,7 +114,8 @@ test('fallback links hide unauthorized pages and ignore permission replies after
     assert.deepEqual(links.map((link) => link.hidden), [true, true]);
     const html = await fs.readFile(new URL('userpersisto-settings.html', pluginRoot), 'utf8');
     assert.doesNotMatch(html, /<(?:input|textarea|select|form)\b/);
-    assert.equal([...html.matchAll(/target="_blank" rel="noopener noreferrer"/g)].length, 5);
+    assert.equal([...html.matchAll(/target="_blank" rel="noopener noreferrer"/g)].length, 6);
+    assert.ok(html.includes(`${dashboard}roles.html`));
 });
 
 test('legacy administration route checks permissions and links to UserPersisto', async () => {

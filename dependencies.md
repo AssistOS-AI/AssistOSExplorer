@@ -10,6 +10,8 @@ The upstream source and update location is [OpenDSU/Persisto](https://github.com
 
 The UserPersisto role dropdown uses native browser details, checkbox and search controls with the existing JavaScript module and stylesheet. It adds no package, browser library, build step or global tool.
 
+Explorer's plugin catalog reuses the existing Git executable to read each selected repository's local origin with a bounded, read-only `git config --local` call. This identifies renamed top-level checkouts and prevents a stale managed copy from supplying duplicate plugins. Git is already required by the deployment and agent runtime; no package or executable is installed by catalog discovery. If no origin is readable, exact directory-name precedence still applies. All new top-level traversal stays inside the physical workspace.
+
 The Roles administration page and domain reuse the same native browser controls, Node.js runtime, Persisto store, signed dashboard transport and existing MCP dispatcher. Role CRUD, capability selection and their tests add no dependency or installation step.
 
 The QA shutdown, recovery and Soul settings helpers add no npm packages. They use Node.js built-ins and the exact deployed Ploinky checkout. The ordinary helpers require the Node runtime already supplied by the deployment host and Box. Soul snapshot reconciliation additionally requires `node:sqlite` with `DatabaseSync` and `backup`; it fails with `SOUL_SQLITE_UNAVAILABLE` before opening a database or creating output if those APIs are absent. Use a compatible reviewed Node runtime for that optional operation. Do not install packages during recovery startup.
