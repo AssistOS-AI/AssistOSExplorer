@@ -12,7 +12,7 @@ import {
   expect,
   test,
 } from '../lib/fixtures.mjs';
-import { readAuthenticatedPrincipal } from '../lib/auth.mjs';
+import { assertDistinctAuthenticatedPrincipals, readAuthenticatedPrincipal } from '../lib/auth.mjs';
 import { smokeConfig } from '../lib/config.mjs';
 import { diagnosticEventSignature } from '../lib/diagnostic-ledger.mjs';
 import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
@@ -615,7 +615,8 @@ test.describe('Ploinky core WebTTY release gate', () => {
       await openExplorer(page, { hash: fixture.explorerHash });
       await assertExplorerDirectory(page, fixture.parentDirectoryPath);
       const admin = await readAuthenticatedPrincipal(page, smokeConfig.primaryUser);
-      expect(admin.canonicalId, 'the gate must exercise the canonical local:admin principal').toBe('local:admin');
+      // The Router session is checked against the configured account independently
+      // of the WebTTY responses; UserPersisto assigns opaque account IDs.
       expect(admin.roles).toContain('admin');
 
       let initialRuntime = null;
@@ -1469,7 +1470,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       });
       await assertExplorerDirectory(userPage, fixture.parentDirectoryPath);
       const ordinaryUser = await readAuthenticatedPrincipal(userPage, smokeConfig.secondaryUser);
-      expect(ordinaryUser.canonicalId, 'the gate must exercise the canonical local:user principal').toBe('local:user');
+      assertDistinctAuthenticatedPrincipals(admin, ordinaryUser);
       expect(ordinaryUser.roles).not.toContain('admin');
       const userRow = userPage.locator(`tr[data-entry-path="${fixture.nestedDirectoryPath}"]`);
       await expect(userRow).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });

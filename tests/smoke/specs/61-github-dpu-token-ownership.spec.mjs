@@ -1,15 +1,10 @@
-import crypto from 'node:crypto';
-
 import { test, expect } from '../lib/fixtures.mjs';
 import { smokeConfig } from '../lib/config.mjs';
+import { readAuthenticatedPrincipal } from '../lib/auth.mjs';
+import { expectedGitTokenOwnership } from '../lib/github-token-owner.mjs';
 import { dpuData } from '../lib/dpu-data.mjs';
 import { assertExplorerDirectory, openExplorer } from '../lib/explorer.mjs';
 import { callAgentToolViaRouter } from '../lib/mcp.mjs';
-
-function tokenKeyForUser(userId) {
-  const suffix = crypto.createHash('sha256').update(`user:${userId}`).digest('hex').slice(0, 16).toUpperCase();
-  return `GIT_GITHUB_TOKEN_${suffix}`;
-}
 
 function findGitAgentPrincipal(permissions) {
   return Object.keys(permissions.agentPolicies || {}).find((principal) => /\/gitAgent$/.test(principal));
@@ -50,7 +45,9 @@ test.describe('GitHub token DPU ownership @external', () => {
   test('manual token is stored user-owned, visible in Explorer, and removed on disconnect', async ({ page }) => {
     await openExplorer(page);
     const token = `ghp_smoke_${smokeConfig.runId.replace(/[^A-Za-z0-9]/g, '')}`;
-    const key = tokenKeyForUser('local:admin');
+    const principal = await readAuthenticatedPrincipal(page, smokeConfig.primaryUser);
+    expect(principal.roles).toContain('admin');
+    const { key, ownerId } = expectedGitTokenOwnership(principal);
 
     const result = await callAgentToolViaRouter(page, {
       agent: 'gitAgent',
@@ -65,6 +62,7 @@ test.describe('GitHub token DPU ownership @external', () => {
     expect(state.secrets?.[key]).toBeTruthy();
     expect(state.secrets[key].ownerId).toMatch(/^(user:|[^:\s@]+@)/);
     expect(state.secrets[key].ownerId).not.toMatch(/^agent:/);
+    expect(state.secrets[key].ownerId, 'stored token belongs to the independently verified Router user').toBe(ownerId);
 
     const gitAgentPrincipal = findGitAgentPrincipal(permissions);
     expect(gitAgentPrincipal).toBeTruthy();
@@ -93,7 +91,9 @@ test.describe('GitHub token DPU ownership @external', () => {
 
   test('a stale agent-owned record from the pre-delegation bug is self-repaired on store', async ({ page }) => {
     await openExplorer(page);
-    const key = tokenKeyForUser('local:admin');
+    const principal = await readAuthenticatedPrincipal(page, smokeConfig.primaryUser);
+    expect(principal.roles).toContain('admin');
+    const { key, ownerId } = expectedGitTokenOwnership(principal);
     const permissionsBefore = dpuData.readJson('permissions.manifest.json');
     const gitAgentPrincipal = findGitAgentPrincipal(permissionsBefore);
     expect(gitAgentPrincipal).toBeTruthy();
@@ -125,6 +125,7 @@ test.describe('GitHub token DPU ownership @external', () => {
 
     const stateAfter = dpuData.readJson('state.json');
     expect(stateAfter.secrets[key].ownerId).not.toBe(gitAgentPrincipal);
+    expect(stateAfter.secrets[key].ownerId, 'repair restores the independently verified Router owner').toBe(ownerId);
     expect(stateAfter.secrets[key].ownerId).toMatch(/^(user:|[^:\s@]+@)/);
     const permissionsAfter = dpuData.readJson('permissions.manifest.json');
     expect(permissionsAfter.permissions?.secrets?.[key]?.acl?.[gitAgentPrincipal]).toBe('read');

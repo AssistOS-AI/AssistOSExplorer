@@ -23,8 +23,11 @@ test('npm WebTTY core profile owns the exact Chromium release gate', () => {
     'utf8',
   );
   assert.match(webttySpec, new RegExp(`test\\(['\"]${expectedTitle}['\"]`));
-  assert.match(webttySpec, /canonical local:admin principal/);
-  assert.match(webttySpec, /canonical local:user principal/);
+  assert.match(webttySpec, /readAuthenticatedPrincipal\(page, smokeConfig\.primaryUser\)/);
+  assert.match(webttySpec, /expect\(admin\.roles\)\.toContain\('admin'\)/);
+  assert.match(webttySpec, /readAuthenticatedPrincipal\(userPage, smokeConfig\.secondaryUser\)/);
+  assert.match(webttySpec, /assertDistinctAuthenticatedPrincipals\(admin, ordinaryUser\)/);
+  assert.match(webttySpec, /expect\(ordinaryUser\.roles\)\.not\.toContain\('admin'\)/);
   assert.match(webttySpec, /assertExplorerDirectory\(page, fixture\.parentDirectoryPath\)/);
   assert.match(webttySpec, /openTerminalFromExplorer\(page, fixture\.nestedDirectoryPath\)/);
   assert.match(webttySpec, /normalCloseKeptWebttyAvailable: true/);

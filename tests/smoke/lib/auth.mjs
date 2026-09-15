@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { expect, recordPageNavigationFailure } from './fixtures.mjs';
 import { beginAuthNavigationDiagnostics } from './auth-navigation-diagnostics.mjs';
@@ -8,6 +9,8 @@ import { getWithoutKeepAlive } from './api-probe.mjs';
 
 const USERPERSISTO_LOGIN_PATH = '/base-agent-additional-server/userPersistoAgent/7000/service/auth/';
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const TOTP_PERIOD_MS = 30_000;
+const TOTP_BOUNDARY_MARGIN_MS = 250;
 
 // RFC 6238 code for an enrolled authenticator secret (base32, SHA-1, 30 s, 6 digits).
 export function totpToken(secret, time = Date.now()) {
@@ -32,6 +35,59 @@ export function totpToken(secret, time = Date.now()) {
   const offset = hmac[hmac.length - 1] & 0xf;
   const code = ((hmac[offset] & 0x7f) << 24 | hmac[offset + 1] << 16 | hmac[offset + 2] << 8 | hmac[offset + 3]) % 1_000_000;
   return String(code).padStart(6, '0');
+}
+
+// Every accepted counter is single-use, including the enrollment counter.
+// Always cross a boundary rather than remembering a worker-local last code:
+// a new worker or a later suite can otherwise replay the preceding login.
+export async function freshTotpToken(secret, {
+    now = Date.now,
+    wait = (durationMs, signal) => delay(durationMs, undefined, { signal }),
+    signal,
+    timeoutMs = smokeConfig.timeouts.navigation,
+} = {}) {
+    signal?.throwIfAborted();
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+        throw new Error('The authenticator wait timeout must be a positive integer.');
+    }
+    const startedAt = now();
+    totpToken(secret, startedAt);
+    const nextBoundary = (Math.floor(startedAt / TOTP_PERIOD_MS) + 1) * TOTP_PERIOD_MS + TOTP_BOUNDARY_MARGIN_MS;
+    const deadline = startedAt + timeoutMs;
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const waitSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+    const timeoutError = () => new Error('Timed out waiting for a fresh authenticator code.');
+    try {
+        while (true) {
+            waitSignal.throwIfAborted();
+            const time = now();
+            const remainingMs = deadline - time;
+            if (remainingMs <= 0) throw timeoutError();
+            const waitMs = nextBoundary - time;
+            if (waitMs <= 0) return totpToken(secret, time);
+            if (waitMs >= remainingMs) throw timeoutError();
+            await wait(waitMs, waitSignal);
+        }
+    } catch (error) {
+        if (timeoutSignal.aborted && !signal?.aborted) throw timeoutError();
+        throw error;
+    }
+}
+
+async function fillFreshTotpToken(page, input, secret, timeout) {
+    const controller = new AbortController();
+    const abort = () => controller.abort(new Error('Authenticator sign-in stopped because its page closed or crashed.'));
+    page.on('close', abort);
+    page.on('crash', abort);
+    try {
+        if (page.isClosed()) abort();
+        await input.waitFor({ state: 'visible', timeout });
+        const token = await freshTotpToken(secret, { signal: controller.signal, timeoutMs: timeout });
+        await input.fill(token);
+    } finally {
+        page.off('close', abort);
+        page.off('crash', abort);
+    }
 }
 
 function runCodeCommand(command, email) {
@@ -119,7 +175,7 @@ export async function signInThroughUserPersisto(page, account, { codeCommandRunn
   if (await createAccount.isVisible()) await createAccount.click();
   if (account.signInMethod === 'totp') {
     await chooseTotp.click();
-    await content.locator('input[name="token"]').fill(totpToken(account.totpSecret));
+    await fillFreshTotpToken(page, content.locator('input[name="token"]'), account.totpSecret, timeout);
   } else {
     if (!await codeInput.isVisible()) {
       await chooseEmail.or(codeInput).first().waitFor({ state: 'visible', timeout });
@@ -225,9 +281,16 @@ export async function readAuthenticatedPrincipal(page, account) {
   if (!result?.ok) {
     throw new Error(`Authenticated identity verification failed with HTTP ${Number(result?.status || 0) || 'unknown'}.`);
   }
-  return validateAuthenticatedPrincipal(result.user, {
+  const principal = validateAuthenticatedPrincipal(result.user, {
     expectedUsername: account?.username,
     expectedEmail: account?.loginEmail,
+  });
+  return Object.freeze({
+    ...principal,
+    id: String(result.user.id),
+    email: String(result.user.email || '').trim()
+      ? normalizePrincipalComponent(result.user.email, 'authenticated principal email')
+      : '',
   });
 }
 

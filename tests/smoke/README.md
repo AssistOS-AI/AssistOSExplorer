@@ -67,6 +67,16 @@ local `/auth/login` form, never to UserPersisto. The helper refuses passwordless
 sign-in while the installation is unclaimed so a test member cannot become its
 administrator.
 
+For sustained suites, enroll an authenticator through My Account after proving
+the account with its existing sign-in method. Email-code delivery is rate-limited
+and is unsuitable for repeated fresh-context logins. Every TOTP login waits for
+the next 30-second counter plus a 250 ms boundary margin before generating and
+submitting the code through the wizard. This avoids reusing a counter consumed
+by enrollment or a preceding test, including after a worker restart. The wait
+is bounded by the navigation timeout and canceled when the page closes or
+crashes. Allow up to 31 seconds per TOTP login in test budgets, keep the host and
+server clocks synchronized, and run suites sharing an account serially.
+
 `SMOKE_USERNAME` and `SMOKE_SECONDARY_USERNAME` identify the expected Router
 usernames when known. Set `SMOKE_LOGIN_EMAIL` and
 `SMOKE_SECONDARY_LOGIN_EMAIL` to the UserPersisto sign-in emails; these are
@@ -89,6 +99,9 @@ normalized field match identifies the configured account. The returned username
 remains the canonical principal label when it is present. Both accounts must
 have distinct immutable user ids and canonical principal labels and must not be
 guests.
+The verified result also exposes the signed `id` unchanged and the normalized
+signed `email` (empty when absent), so storage assertions can derive ownership
+from the authenticated principal without substituting configured account data.
 
 Run the dedicated public QA acceptance gate in headless Chromium with:
 

@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   assertDistinctAuthenticatedPrincipals,
+  freshTotpToken,
   hasAuthenticatedSession,
   normalizePrincipalComponent,
+  readAuthenticatedPrincipal,
   readEmailCode,
   totpToken,
   validateAuthenticatedPrincipal,
@@ -17,6 +19,86 @@ test('authenticator codes follow RFC 6238 for a base32 secret', () => {
   assert.equal(totpToken('gezd gnbv gy3t qojq gezd gnbv gy3t qojq', 59_000), '287082');
   assert.throws(() => totpToken('not base32!'), /base32/);
   assert.throws(() => totpToken(''), /empty/);
+});
+
+test('each authenticator login waits for a new counter without worker-local history', async () => {
+    const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+    let time = 59_800;
+    const waits = [];
+    const clock = {
+        now: () => time,
+        wait: async (durationMs) => {
+            waits.push(durationMs);
+            time += durationMs;
+        },
+    };
+    const alreadyUsed = totpToken(secret, time);
+    const first = await freshTotpToken(secret, clock);
+    assert.deepEqual(waits, [450]);
+    assert.equal(first, totpToken(secret, 60_250));
+    assert.notEqual(first, alreadyUsed);
+    const second = await freshTotpToken(secret, { ...clock });
+    assert.deepEqual(waits, [450, 30_000]);
+    assert.equal(second, totpToken(secret, 90_250));
+    assert.notEqual(second, first);
+});
+
+test('a boundary-start login waits a full counter and an early timer cannot return an old code', async () => {
+    const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+    let time = 60_000;
+    const waits = [];
+    const token = await freshTotpToken(secret, {
+        now: () => time,
+        wait: async (durationMs) => {
+            waits.push(durationMs);
+            time += durationMs - (waits.length === 1 ? 100 : 0);
+        },
+    });
+    assert.deepEqual(waits, [30_250, 100]);
+    assert.equal(token, totpToken(secret, 90_250));
+});
+
+test('authenticator pacing rejects invalid secrets and insufficient or elapsed timeout budgets', async () => {
+    const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+    const neverWait = async () => assert.fail('no timer should start');
+    await assert.rejects(freshTotpToken('', { wait: neverWait }), /empty/);
+    await assert.rejects(freshTotpToken('invalid!', { wait: neverWait }), /base32/);
+    for (const timeoutMs of [0, -1, NaN, Infinity]) {
+        await assert.rejects(freshTotpToken(secret, { timeoutMs, wait: neverWait }), /positive integer/);
+    }
+    await assert.rejects(freshTotpToken(secret, {
+        now: () => 60_000, timeoutMs: 30_250, wait: neverWait,
+    }), /Timed out waiting/);
+    let time = 60_000;
+    await assert.rejects(freshTotpToken(secret, {
+        now: () => time,
+        timeoutMs: 31_000,
+        wait: async (durationMs) => { time += durationMs + 1_000; },
+    }), /Timed out waiting/);
+});
+
+test('authenticator pacing honors cancellation before and during its timer', async () => {
+    const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+    const stopped = new AbortController();
+    stopped.abort(new Error('test stopped'));
+    await assert.rejects(freshTotpToken(secret, {
+        signal: stopped.signal,
+        wait: async () => assert.fail('canceled login must not wait'),
+    }), /test stopped/);
+    const controller = new AbortController();
+    const pending = freshTotpToken(secret, { now: () => 60_000, signal: controller.signal });
+    setImmediate(() => controller.abort());
+    await assert.rejects(pending, { name: 'AbortError' });
+    const afterWake = new AbortController();
+    let time = 60_000;
+    await assert.rejects(freshTotpToken(secret, {
+        now: () => time,
+        signal: afterWake.signal,
+        wait: async (durationMs) => {
+            time += durationMs;
+            afterWake.abort(new Error('page closed'));
+        },
+    }), /page closed/);
 });
 
 test('email codes come only from the configured command and must be newer than the baseline', async () => {
@@ -111,6 +193,46 @@ test('UserPersisto login email proves the configured account without replacing i
     expectedUsername: 'configured-account-label',
     expectedEmail: 'member@example.test',
   }), /does not match/, 'the configured login email must match the returned email field');
+});
+
+test('verified Router identity exposes its exact signed id and normalized signed email', async () => {
+    const page = {
+        async evaluate() {
+            return { ok: true, user: {
+                id: 'USER.MixedCase-ID', username: 'Profile-Name',
+                email: 'Member@Example.Test', roles: ['USER'],
+            } };
+        },
+    };
+    const principal = await readAuthenticatedPrincipal(page, {
+        username: 'configured-label', loginEmail: 'member@example.test',
+    });
+    assert.deepEqual(principal, {
+        canonicalId: 'user.mixedcase-id', canonicalUsername: 'profile-name', roles: ['user'],
+        id: 'USER.MixedCase-ID', email: 'member@example.test',
+    });
+    assert.equal(Object.isFrozen(principal), true);
+    await assert.rejects(readAuthenticatedPrincipal(page, {
+        username: 'other-profile', loginEmail: 'other@example.test',
+    }), /does not match/);
+});
+
+test('signed identity projection never substitutes configured email or accepts a guest', async () => {
+    const page = {
+        async evaluate() {
+            return { ok: true, user: { id: 'USER.3', username: 'actual-profile', roles: ['user'] } };
+        },
+    };
+    const principal = await readAuthenticatedPrincipal(page, {
+        username: 'actual-profile', loginEmail: 'configured@example.test',
+    });
+    assert.equal(principal.email, '');
+    assert.equal(principal.id, 'USER.3');
+    await assert.rejects(readAuthenticatedPrincipal({
+        async evaluate() {
+            return { ok: true, user: { id: 'guest:USER.3', username: 'actual-profile', roles: ['guest'] } };
+        },
+    }, { username: 'actual-profile' }), /guest principal/);
 });
 
 test('authenticated principal verification fails closed on missing, guest, or mismatched identity', () => {

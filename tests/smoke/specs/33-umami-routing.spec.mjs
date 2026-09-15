@@ -52,6 +52,9 @@ test.describe('Umami Router publication @external', () => {
     const umamiUsername = required('SMOKE_UMAMI_USERNAME');
     const umamiPassword = required('SMOKE_UMAMI_PASSWORD');
     const routerOrigin = new URL(smokeConfig.baseURL).origin;
+    // This Router GET is static HTML and does not revoke the session. Complete
+    // provider sign-in and its principal check before observing service traffic.
+    await signIn(page, smokeConfig.primaryUser, '/auth/logged-out', { requireConfiguredPrincipal: true });
     const loginUrl = new URL(`${DASHBOARD_PREFIX}api/auth/login`, routerOrigin).href;
     const verifyUrl = new URL(`${DASHBOARD_PREFIX}api/auth/verify`, routerOrigin).href;
     const rscDiagnostics = await installUmamiRscDiagnostics(page, {
@@ -65,13 +68,8 @@ test.describe('Umami Router publication @external', () => {
     const dashboardDocuments = [];
     let loginSucceeded = false;
     let dashboardNavigationStarted = false;
-    let authenticating = true;
     page.on('request', (request) => {
       const url = new URL(request.url());
-      // Router login and the helper's principal check are not Umami requests.
-      if (authenticating && url.origin === routerOrigin
-        && ((url.pathname === '/auth/login' && ['GET', 'POST'].includes(request.method()))
-          || (url.pathname === '/auth/token' && request.method() === 'GET'))) return;
       requests.push({
         url: request.url(),
         method: request.method(),
@@ -96,8 +94,7 @@ test.describe('Umami Router publication @external', () => {
       verifyUrl,
       timeout: smokeConfig.timeouts.navigation,
     });
-    await signIn(page, smokeConfig.primaryUser, `${DASHBOARD_PREFIX}login`);
-    authenticating = false;
+    await page.goto(`${DASHBOARD_PREFIX}login`, { waitUntil: 'load' });
     const response = documentResponses.at(-1);
     expect(response, 'Umami navigation must produce its document response').toBeTruthy();
     expect(response?.status(), 'Umami dashboard HTML response').toBeLessThan(400);
