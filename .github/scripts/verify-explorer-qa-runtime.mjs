@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
 
 const expected = JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -65,8 +66,11 @@ try {
         assert.equal(selector.state, 'active');
         console.log(JSON.stringify({agents, generation:selector.generation, activationId:selector.activationId}));
     `]));
-    const health = await fetch('http://127.0.0.1:8097/health', { redirect: 'error', signal: AbortSignal.timeout(15_000) });
-    assert.equal(health.status, 200);
+    // The public health surface requires authentication. Reuse the runtime's
+    // probe, which recognizes its login redirect or AUTH_REQUIRED response
+    // and rejects inactive generations.
+    const { checkBoxHealth } = await import(pathToFileURL(path.join(QA_SCOPE.workspace, '.runtime/ploinky/ploinky-box/supervisor.mjs')).href);
+    await checkBoxHealth(8097, { timeoutMs: 5000, readinessTimeoutMs: 0 });
     const final = adapters.boxes();
     assert.equal(final.length, 1);
     assert.equal(final[0].box.id, current.box.id);
@@ -74,6 +78,6 @@ try {
     assert.equal(final[0].box.running, true);
     console.log(JSON.stringify({ result: 'passed', checkedAt: new Date().toISOString(), verifierRevision,
         boxId: current.box.id, imageId: current.box.image, imageReference: current.box.imageReference,
-        ports: current.box.ports, agentLib, sources, noWait, runtime, loopbackHealth: health.status,
+        ports: current.box.ports, agentLib, sources, noWait, runtime, loopbackHealth: 'canonical-probe-passed',
     }, null, 2));
 } finally { lock.release(); }
