@@ -304,6 +304,7 @@ jobs:
 
       - name: Reconcile and start Explorer QA Box
         env:
+          QA_USERPERSISTO_GOOGLE_CLIENT_ID: ${{ vars.EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ZONE_ID: ${{ vars.EXPLORER_QA_CLOUDFLARE_ZONE_ID }}
@@ -542,6 +543,7 @@ jobs:
             write_shell_var CLOUDFLARE_ZONE_ID
             write_shell_var MEDIA_PUBLIC_IPV4
             write_shell_var PLOINKY_MASTER_KEY
+            write_shell_var QA_USERPERSISTO_GOOGLE_CLIENT_ID
             write_shell_var SOUL_GATEWAY_WORKSPACE
             write_shell_var SOUL_GATEWAY_ROUTER_PORT
             write_shell_var QA_QUIESCE_SOURCE
@@ -1768,6 +1770,77 @@ jobs:
             exit "$CREDENTIAL_STATUS"
           fi
 
+          "$BOX_ENGINE" container exec -i --user podman --workdir /workspace \
+            --env "QA_USERPERSISTO_GOOGLE_CLIENT_ID=$QA_USERPERSISTO_GOOGLE_CLIENT_ID" \
+            --env PLOINKY_WORKSPACE_ROOT=/workspace "$BOX_INSTANCE" node --input-type=module - "$PUBLIC_URL" <<'NODE'
+          import assert from 'node:assert/strict';
+          import crypto from 'node:crypto';
+          import fs from 'node:fs';
+          import { collectManifestEnv } from '/opt/ploinky/cli/utils/security/secretVars.js';
+          import { handleVarCommand } from '/opt/ploinky/cli/commands/envVarCommands.js';
+
+          // BEGIN QA UserPersisto configuration
+          const publicUrl = process.argv[2];
+          assert.equal(publicUrl, 'https://explorer-qa.axiologic.dev');
+          const googleClientId = String(process.env.QA_USERPERSISTO_GOOGLE_CLIENT_ID || '').trim();
+          assert(!googleClientId || (googleClientId.length <= 512 && /^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/.test(googleClientId)),
+              'EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID must be a Google Web application client ID');
+          // Use the same secret/alias, process, .env and default precedence as
+          // the agent launch. Generic getSecret has a different precedence.
+          const { resolved } = collectManifestEnv({ env: {
+              USERPERSISTO_ALLOWED_REDIRECT_ORIGINS: { default: '' },
+              PERSISTENCE_FOLDER: { default: '/data/persisto' },
+          } });
+          const values = Object.fromEntries(resolved.map(entry => [entry.insideName, entry.value]));
+          let origins = String(values.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);
+          if (!origins.length) {
+              assert.equal(values.PERSISTENCE_FOLDER, '/data/persisto', 'Review the noncanonical UserPersisto persistence folder before configuring QA origins');
+              // The service is stopped. Read its preserved snapshot without
+              // opening/migrating the store or touching users and setup state.
+              const folder = '/workspace/.data/userPersistoAgent/persisto';
+              let objects = {};
+              try {
+                  const snapshot = JSON.parse(fs.readFileSync(`${folder}/.userpersisto.snapshot.json`, 'utf8'));
+                  assert.equal(snapshot.version, 1);
+                  assert.equal(typeof snapshot.payload, 'string');
+                  assert.equal(crypto.createHash('sha256').update(snapshot.payload).digest('hex'), snapshot.sha256,
+                      'Preserved UserPersisto snapshot checksum mismatch');
+                  objects = JSON.parse(snapshot.payload);
+                  assert(Number.isSafeInteger(objects?.system?.currentIDNumber), 'Invalid UserPersisto snapshot system record');
+              } catch (error) {
+                  if (error.code !== 'ENOENT') throw error;
+                  let entries = [];
+                  try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch (readError) {
+                      if (readError.code !== 'ENOENT') throw readError;
+                  }
+                  for (const entry of entries) {
+                      if (entry.name.startsWith('.') || !/^[a-zA-Z0-9_.]+$/.test(entry.name)) continue;
+                      assert(entry.isFile(), 'Unsupported legacy UserPersisto entry');
+                      objects[entry.name] = JSON.parse(fs.readFileSync(`${folder}/${entry.name}`, 'utf8'));
+                  }
+                  assert(!Object.keys(objects).length || objects.system, 'Invalid legacy UserPersisto store');
+              }
+              const policies = Object.values(objects).filter(value => value?.key === 'auth.policy');
+              assert(policies.length <= 1, 'Ambiguous preserved UserPersisto authentication policy');
+              origins = policies[0]?.value?.allowedRedirectOrigins || [];
+              assert(Array.isArray(origins), 'Invalid preserved UserPersisto redirect origins');
+          }
+          const allowed = [...new Set([...origins, publicUrl].map(value => {
+              assert.equal(typeof value, 'string');
+              const url = new URL(value.trim());
+              assert(['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
+                  && url.pathname === '/' && !url.search && !url.hash, 'Invalid preserved UserPersisto redirect origin');
+              return url.origin;
+          }))].sort();
+          handleVarCommand(['USERPERSISTO_OIDC_ISSUER', `${publicUrl}/base-agent-additional-server/userPersistoAgent/7000/service/oidc`]);
+          handleVarCommand(['USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', allowed.join(',')]);
+          // A public callback disables the distributed localhost-only Google
+          // fallback. Without a supplied or preserved client, Google stays off.
+          handleVarCommand(['USERPERSISTO_GOOGLE_REDIRECT_URI', `${publicUrl}/base-agent-additional-server/userPersistoAgent/7000/service/auth/google/callback`]);
+          if (googleClientId) handleVarCommand(['USERPERSISTO_GOOGLE_CLIENT_ID', googleClientId]);
+          // END QA UserPersisto configuration
+          NODE
+
           echo "[deploy-qa] Starting Explorer from each managed repository's configured default branch..."
           export PLOINKY_NO_WAIT_SEQUENCE_TERMINAL_GRACE_MS='300000'
           QA_DEPLOY_STARTED_AT_MS="$(node -p 'Date.now()')"
@@ -1809,8 +1882,8 @@ jobs:
                 ;;
             esac
             if [[ "$BOX_STATUS" == *"Ploinky Box: running-initialized"* ]] &&
-              [[ "$BOX_STATUS" == *"Tracked agents: 14"* ]] &&
-              [[ "$BOX_STATUS" == *"Running agents: 14"* ]] &&
+              [[ "$BOX_STATUS" == *"Tracked agents: 16"* ]] &&
+              [[ "$BOX_STATUS" == *"Running agents: 16"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare mode: cloudflare"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare management: api-managed"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare publication: ready"* ]] &&
@@ -1833,7 +1906,7 @@ jobs:
             exit 1
           fi
           if [ "$QA_READY" != "1" ]; then
-            echo "[deploy-qa] ERROR: timed out waiting for stable 14/14 process admission and 10/10 semantic readiness."
+            echo "[deploy-qa] ERROR: timed out waiting for stable 16/16 process admission and 10/10 semantic readiness."
             exit 1
           fi
           case "$BOX_STATUS" in
@@ -1844,8 +1917,8 @@ jobs:
               ;;
           esac
           for expected_status in \
-            'Tracked agents: 14' \
-            'Running agents: 14' \
+            'Tracked agents: 16' \
+            'Running agents: 16' \
             'Cloudflare mode: cloudflare' \
             'Cloudflare management: api-managed' \
             'Cloudflare publication: ready' \
@@ -2038,17 +2111,51 @@ jobs:
           const headers = fs.readFileSync(process.argv[3], 'utf8').toLowerCase();
           const mismatchBody = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
           const mismatchHeaders = fs.readFileSync(process.argv[5], 'utf8').toLowerCase();
+          // BEGIN QA public passwordless verification
+          const publicUrl = 'https://explorer-qa.axiologic.dev';
           if (/EDGE_GENERATION_INACTIVE|cloudflare tunnel error|error code: 1033/i.test(body)) process.exit(1);
-          if (!/data-auth-login-form/.test(body)
-            || !/<input[^>]+id=["']username["'][^>]+name=["']username["']/i.test(body)
-            || !/<input[^>]+id=["']password["'][^>]+name=["']password["']/i.test(body)
-            || !/action=["']\/auth\/login["']/i.test(body)
-            || /<input[^>]+name=["']agent["']/i.test(body)) process.exit(1);
+          const redirect = body.match(/window\.location\.replace\(("(?:[^"\\]|\\.)*")\)/);
+          if (!/Continue with Single Sign-On/.test(body) || !redirect
+            || /<input[^>]+type=["']password["']/i.test(body)) process.exit(1);
+          const login = new URL(JSON.parse(redirect[1]));
+          const service = '/base-agent-additional-server/userPersistoAgent/7000/service';
+          if (login.origin !== publicUrl || login.username || login.password || login.hash
+            || login.pathname !== `${service}/auth/` || !login.searchParams.get('requestId')
+            || !login.searchParams.get('state')) process.exit(1);
           if (mismatchBody?.ok !== false || mismatchBody?.error !== 'auth_route_context_mismatch') process.exit(1);
           if (!/^cf-ray:/mi.test(headers) || !/^cf-ray:/mi.test(mismatchHeaders)) process.exit(1);
+          const get = async url => {
+            try {
+              const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(15000) });
+              if (!response.ok || !response.headers.get('cf-ray')) throw new Error();
+              return response;
+            } catch {
+              throw new Error('QA identity endpoint is not ready through the public edge');
+            }
+          };
+          const wizard = await (await get(login.href)).text();
+          if (!/id=["']auth_content["']/.test(wizard) || !/<script[^>]+src=["']main\.js["']/.test(wizard)
+            || /<input[^>]+type=["']password["']/i.test(wizard)) process.exit(1);
+          const setup = await (await get(`${publicUrl}${service}/auth/setup`)).json();
+          if (setup.ok !== true || typeof setup.setupComplete !== 'boolean' || typeof setup.registration !== 'boolean'
+            || typeof setup.methods !== 'object' || setup.methods === null) process.exit(1);
+          const issuer = `${publicUrl}${service}/oidc`;
+          const discovery = await (await get(`${issuer}/.well-known/openid-configuration`)).json();
+          if (discovery.issuer !== issuer || !discovery.code_challenge_methods_supported?.includes('S256')) process.exit(1);
+          for (const key of ['authorization_endpoint', 'token_endpoint', 'jwks_uri', 'userinfo_endpoint']) {
+            const endpoint = new URL(discovery[key]);
+            if (endpoint.origin !== publicUrl || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
+              || !endpoint.pathname.startsWith(`${service}/oidc/`)) process.exit(1);
+          }
+          console.log('[deploy-qa] UserPersisto readiness:', JSON.stringify({
+            setupComplete: setup.setupComplete,
+            registration: setup.registration,
+            methods: Object.fromEntries(['emailCode', 'passkey', 'totp', 'google'].map(name => [name, setup.methods[name] === true])),
+          }));
+          // END QA public passwordless verification
           NODE
             then
-              echo "[deploy-qa] Public edge returned the host-bound Explorer login and rejected a WebAssist selector switch."
+              echo "[deploy-qa] Public edge verified the host-bound SSO login, passwordless wizard, OIDC issuer, and rejected a WebAssist selector switch."
               break
             fi
             if [ "$attempt" = "60" ]; then

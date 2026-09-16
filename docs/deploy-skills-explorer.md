@@ -22,7 +22,7 @@ It then reads the canonical achillesAgentLib URL and immutable commit from the
 selected Ploinky dependency lock, requires that commit to equal the AgentLib
 remote default-branch head, and leaves AgentLib on that exact locked commit
 without applying one global branch to the differently named application
-branches. Once all 14 agents are running, the workflow validates every managed
+branches. Once all 16 agents are running, the workflow validates every managed
 repository revision and the outer Box's locked AgentLib identity. The paired
 destroy workflow requires only its explicit destructive confirmation and
 preserves the deployed runtime as the authority for teardown.
@@ -35,11 +35,11 @@ Each backup contains reviewed recovery helpers and an authority record written b
 
 Older runtimes that overwrite saved accounts during graph registration cannot be used for exact-code rollback. The workflow rejects them before shutdown. They require a separately reviewed forward migration using fixed source revisions and the authoritative saved data. Low disk capacity likewise requires a scoped operator recovery plan. A complete quiesced GNU tar archive can be streamed over SSH to protected local storage with checksum verification and numeric ownership, ACLs and xattrs retained. Record that off-host archive dependency before clearing any proven generated QA cache. Never prune unrelated host resources. Retain backups and image references until data preservation and browser acceptance pass; retained predecessor Boxes require explicit review before a later automated deployment.
 
-QA also clones `AdvancedLanguageAgent` into the fresh workspace root from its remote default branch and records its exact commit. Before starting Explorer, the workflow links ALA's package dependency to the prepared Box's `/opt/ploinky-agentlib`, exercises the real loader, and checks the CLI options required by RoboTeam. It rejects a second AgentLib copy, a shadowing checkout, incompatible CLI options, or a dirty or moved ALA revision. No separate `npm install` is used for ALA, and this prerequisite does not change the fourteen-agent readiness gate.
+QA also clones `AdvancedLanguageAgent` into the fresh workspace root from its remote default branch and records its exact commit. Before starting Explorer, the workflow links ALA's package dependency to the prepared Box's `/opt/ploinky-agentlib`, exercises the real loader, and checks the CLI options required by RoboTeam. It rejects a second AgentLib copy, a shadowing checkout, incompatible CLI options, or a dirty or moved ALA revision. No separate `npm install` is used for ALA, and this prerequisite does not change the sixteen-agent readiness gate.
 
-Copilot runs through RoboTeam’s ordinary `default` robot; the retired `AchillesCLI/achilles-cli` agent is not a dependency. The default graph excludes `onlyOffice`, `webmeetScribeAgent`, and `webmeetStt`; readiness requires fourteen runtimes and ten no-wait completions. After that baseline is ready, QA restores prior optional agent selections through the supported CLI and verifies their aliases, authentication modes, profiles and readiness. Administrators can also enable optional agents through Explorer Marketplace. Meeting Secretary uses final browser SpeechRecognition transcripts and does not depend on the separate STT service.
+Copilot runs through RoboTeam’s ordinary `default` robot; the retired `AchillesCLI/achilles-cli` agent is not a dependency. The default graph excludes `onlyOffice`, `webmeetScribeAgent`, and `webmeetStt`; readiness requires sixteen runtimes and ten no-wait completions. After that baseline is ready, QA restores prior optional agent selections through the supported CLI and verifies their aliases, authentication modes, profiles and readiness. Administrators can also enable optional agents through Explorer Marketplace. Meeting Secretary uses final browser SpeechRecognition transcripts and does not depend on the separate STT service.
 
-The same AchillesIDE checkout supplies `AchillesIDE/liveKitServerAgent` alongside WebMeet. Deployment repository lists must not install a separate media-runtime repository or `basic`. LiveKit keeps its immutable image, readiness contract, `.data/liveKitServerAgent/` storage, Router signaling/private Twirp paths, and single UDP `7882` media mux. Its relocation does not change the fourteen-runtime or ten-no-wait gate. The image publication workflow in `container-image-builds` must select the `liveKitServerAgent/` build context from AssistOSExplorer. Integrate that source selection and the matching Ploinky listener profile before retiring the previous runtime source.
+The same AchillesIDE checkout supplies `AchillesIDE/liveKitServerAgent` alongside WebMeet. Deployment repository lists must not install a separate media-runtime repository or `basic`. LiveKit keeps its immutable image, readiness contract, `.data/liveKitServerAgent/` storage, Router signaling/private Twirp paths, and single UDP `7882` media mux. Its relocation does not change the sixteen-runtime or ten-no-wait gate. The image publication workflow in `container-image-builds` must select the `liveKitServerAgent/` build context from AssistOSExplorer. Integrate that source selection and the matching Ploinky listener profile before retiring the previous runtime source.
 
 The Skills Explorer workflow migrates an existing media repository before installing, synchronizing, or updating application sources. It records every exact retiring runtime key in `.ploinky/livekit-repository-migration.json`, disables currently registered owners through Ploinky, and disables the old repository. Before uninstalling its checkout, a read-only Ploinky supervisor inspection validates the canonical workspace and owning Box. A bounded command checks the captured runtimes in that Box's nested Podman, requires an exact acknowledgement of their absence, and revalidates the Box identity. Host-engine absence is not sufficient. The workflow then uninstalls through Ploinky and verifies that no old runtime, enabled-repository entry, or checkout remains. Ploinky may retain inactive source-catalog metadata; that does not install or enable the repository.
 
@@ -52,6 +52,27 @@ for QA or local deployment never authorizes production or unrelated workloads.
 Never expose secret values in commands, logs, reports, or artifacts.
 
 ## Required sequence
+
+The QA workflow configures UserPersisto's public OIDC issuer and Google callback
+for `explorer-qa.axiologic.dev` before graph startup, using Ploinky's encrypted
+variable API. It adds the QA origin to the existing effective redirect list,
+including a saved UserPersisto policy when no environment override applies.
+The preserved `.data/userPersistoAgent/persisto` snapshot retains accounts,
+installation ownership, and OIDC clients and keys together with the original
+workspace encryption identity. Authentication methods and self-registration
+policy are not changed. An optional repository variable,
+`EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID`, can select the QA Google Web client;
+otherwise an existing client is retained. Without one, Google is unavailable
+instead of using the distributed localhost client.
+
+Public deployment checks follow the Router's same-origin SSO handoff to the
+passwordless wizard and verify OIDC discovery and its exact public issuer.
+They report only ownership-complete, registration, and method-availability
+booleans and never submit a registration or claim the first administrator.
+On an unclaimed installation, the first verified Google or email-code signup
+through either the Router SSO or OIDC wizard claims that role; complete the
+selected owner's setup before inviting restricted users. Subsequent public
+signups receive `selfRegistered` and do not gain Explorer access automatically.
 
 1. Preserve a consistent backup of application data and its encryption keys.
    Ordinary QA redeployment must retain accounts, documents, local skills,

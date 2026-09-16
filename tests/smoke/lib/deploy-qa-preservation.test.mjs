@@ -52,6 +52,7 @@ test('ordinary QA redeploy retains documents, local skills, databases and the ke
     const durable = ['.data/dpu-data/blobs/one', '.data/umamiAgent/postgres/PG_VERSION',
         '.data/umamiAgent/postgres/pg_wal/one', '.data/soul-gateway/data.sqlite-wal',
         '.data/roboTeamAgent/robots/default/copilot/sessions/one.json',
+        '.data/userPersistoAgent/persisto/.userpersisto.snapshot.json',
         'project/notes.txt', 'project/.agents/skills/local/SKILL.md', '.agents/skills/root/SKILL.md',
         '.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc',
         '.ploinky/ploinky_subject_identity_ed25519_v1.enc', '.ploinky/profile', '.ploinky/code/local.mjs',
