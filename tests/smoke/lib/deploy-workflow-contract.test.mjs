@@ -73,9 +73,9 @@ const WORKFLOWS = [
       "addressMode: 'direct'",
       'RUNTIME_DIR/ploinky-box/dependencies.lock.json',
       'Ploinky AgentLib lock must select the canonical remote and one exact commit',
-      'io.assistos.ploinky-box.agentlib-fingerprint',
-      'io.assistos.ploinky-box.agentlib-source-id',
-      'outer Box identity at $EXPECTED_AGENTLIB_COMMIT',
+      'BEGIN QA locked AgentLib verification',
+      'await adapters.verifyAgentLib(boxes[0], expectedCommit)',
+      'immutable source ${selection.sourceId}',
       "agent: 'AchillesIDE/explorer'",
       "'browser-auth'",
       "'agent-mcp'",
@@ -418,17 +418,15 @@ test('Explorer QA validates Ploinky AgentLib selection against the outer Box ide
   );
 
   for (const required of [
-    'io.assistos.ploinky-box.agentlib-mode',
-    'io.assistos.ploinky-box.agentlib-source-id',
-    'io.assistos.ploinky-box.agentlib-fingerprint',
-    'io.assistos.ploinky-box.agentlib-commit',
-    '[ "$AGENTLIB_MODE" != "managed" ]',
-    '[ "$AGENTLIB_COMMIT" != "$EXPECTED_AGENTLIB_COMMIT" ]',
-    'outer Box AgentLib labels do not match the locked managed selection',
-    'outer Box identity at $EXPECTED_AGENTLIB_COMMIT',
+    'BEGIN QA locked AgentLib verification',
+    '"$BOX_INSTANCE" "$EXPECTED_AGENTLIB_COMMIT"',
+    'const adapters = productionAdapters();',
+    'await adapters.verifyAgentLib(boxes[0], expectedCommit)',
+    'immutable source ${selection.sourceId}',
   ]) {
     assert.equal(source.includes(required), true, `missing AgentLib outer Box identity contract: ${required}`);
   }
+  assert.doesNotMatch(source, /\[ "\$AGENTLIB_MODE" != "managed" \]/, 'image bundles must not be rejected as missing managed checkouts');
   assert.doesNotMatch(
     source,
     /agentlib-attest\.mjs|EXPECTED_AGENTLIB_COUNT|dependency cache did not select|no AgentLib dependency cache|require\.resolve\("achillesAgentLib/,

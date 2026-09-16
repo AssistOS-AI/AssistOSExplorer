@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const QA_SCOPE = Object.freeze({
     workspace: '/home/admin/explorerQaWorkspace',
@@ -19,6 +19,8 @@ export const QUIESCE_EXEC_TIMEOUT_MS = 900_000;
 const FULL_ID = /^[a-f0-9]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const LABEL = 'io.assistos.ploinky-box.';
+const AGENTLIB_IMAGE_PROBE = '/usr/local/share/ploinky/agentlib/image-bundle.mjs';
+const AGENTLIB_IMAGE_PATH = '/opt/ploinky-agentlib';
 const AUTH_FILES = ['.env', '.ploinky/master-key', '.ploinky/.secrets', '.ploinky/passwords.enc',
     '.ploinky/ploinky_subject_identity_ed25519_v1.enc'];
 const GENERATED_STATE = new Set(['agents.json', 'routing.json', 'running', 'run', 'logs', 'box', 'deps',
@@ -138,7 +140,7 @@ function selectedAgents(root) {
 }
 
 function sourceDirectories(root) {
-    const selected = ['.runtime/ploinky', 'AdvancedLanguageAgent'];
+    const selected = ['.runtime/ploinky', 'AdvancedLanguageAgent', 'achillesAgentLib'];
     for (const relative of ['.ploinky/repos', '.ploinky/agentlib/generations']) {
         const container = path.join(root, relative);
         if (present(container)) {
@@ -160,10 +162,51 @@ function durableEntries(root) {
     return entries;
 }
 
-export function sanitizeBox(item, scope = QA_SCOPE, imageProof = null) {
+function assertImageAgentLibMounts(mounts) {
+    requireProof(Array.isArray(mounts), 'QA_AGENTLIB_IMAGE_SHADOWED');
+    const protectedPaths = [AGENTLIB_IMAGE_PATH, path.posix.dirname(AGENTLIB_IMAGE_PROBE), '/usr/local/bin/node'];
+    requireProof(mounts.every(mount => {
+        const destination = mount.Destination;
+        if (typeof destination !== 'string' || !destination.startsWith('/') || destination.includes('\\')) return false;
+        const normalized = path.posix.normalize(destination);
+        return protectedPaths.every(protectedPath => normalized !== '/' && normalized !== protectedPath
+            && !normalized.startsWith(protectedPath + '/') && !protectedPath.startsWith(normalized.replace(/\/$/, '') + '/'));
+    }), 'QA_AGENTLIB_IMAGE_SHADOWED');
+}
+
+/** Image metadata is accepted only after the independent sealed verifier runs. */
+function assertAgentLibImageIdentity(image, imageProof) {
+    requireProof(imageProof && String(imageProof.Id).replace(/^sha256:/, '') === image
+        && imageProof.Os === 'linux' && imageProof.Architecture === 'amd64'
+        && imageProof.Config?.User === 'podman', 'QA_AGENTLIB_IMAGE_IDENTITY_INVALID');
+}
+
+function imageAgentLib(item, mounts, imageProof, imageReference) {
+    const labels = item.Config.Labels;
+    const image = String(item.Image || '').replace(/^sha256:/, '');
+    const commit = labels[LABEL + 'agentlib-commit'];
+    const fingerprint = labels[LABEL + 'agentlib-fingerprint'];
+    const sourceId = labels[LABEL + 'agentlib-source-id'];
+    assertAgentLibImageIdentity(image, imageProof);
+    requireProof(imageProof.verifiedImageReference === imageReference
+        && String(imageProof.referenceImageId || '').replace(/^sha256:/, '') === image, 'QA_AGENTLIB_IMAGE_REFERENCE_CHANGED');
+    requireProof(/^[a-f0-9]{40}$/.test(commit || '') && FULL_ID.test(fingerprint || '')
+        && labels[LABEL + 'agentlib-source-path'] === 'image'
+        && sourceId === digest(`image:sha256:${image}:${fingerprint}`), 'QA_AGENTLIB_IMAGE_LABELS_INVALID');
+    assertImageAgentLibMounts(mounts);
+    const expected = { schemaVersion: 1, commit, fingerprint };
+    const matches = proof => proof && proof.schemaVersion === expected.schemaVersion
+        && proof.commit === commit && proof.fingerprint === fingerprint;
+    requireProof(matches(imageProof.agentLibBundle), 'QA_AGENTLIB_IMAGE_BUNDLE_INVALID');
+    requireProof(!item.State.Running || matches(imageProof.runtimeAgentLibBundle), 'QA_AGENTLIB_RUNTIME_BUNDLE_INVALID');
+    return { mode: 'image', imageId: `sha256:${image}`, commit, fingerprint, sourceId, sourceRelativePath: 'image' };
+}
+
+function inspectBoxIdentity(item, scope) {
     const labels = item?.Config?.Labels || {};
     const image = String(item?.Image || '').replace(/^sha256:/, '');
-    const mounts = (item?.Mounts || []).map(({ Source, Destination, RW, Type }) => ({ Source, Destination, RW, Type }));
+    requireProof(Array.isArray(item?.Mounts), 'QA_BOX_SOURCE_INVALID');
+    const mounts = item.Mounts.map(({ Source, Destination, RW, Type }) => ({ Source, Destination, RW, Type }));
     requireProof(FULL_ID.test(item?.Id) && FULL_ID.test(image)
         && labels[LABEL + 'path-hash'] === scope.hash && labels[LABEL + 'role'] === 'box'
         && item.Config.User === 'podman' && item.HostConfig?.Privileged === false
@@ -180,11 +223,19 @@ export function sanitizeBox(item, scope = QA_SCOPE, imageProof = null) {
     }, 'QA_BOX_PORTS_INVALID');
     requireProof(mounts.some(mount => mount.Source === scope.workspace && mount.Destination === '/workspace'
         && mount.RW === true && mount.Type === 'bind'), 'QA_BOX_WORKSPACE_INVALID');
-    for (const destination of ['/opt/ploinky', '/opt/ploinky-agentlib']) {
+    const agentLibMode = String(labels[LABEL + 'agentlib-mode'] || '');
+    requireProof(['', 'local', 'managed', 'image'].includes(agentLibMode), 'QA_AGENTLIB_MODE_INVALID');
+    for (const destination of ['/opt/ploinky', ...(agentLibMode === 'image' ? [] : [AGENTLIB_IMAGE_PATH])]) {
         const found = mounts.filter(mount => mount.Destination === destination);
         requireProof(found.length === 1 && found[0].RW === false && found[0].Type === 'bind'
             && found[0].Source.startsWith(scope.workspace + '/'), 'QA_BOX_SOURCE_INVALID');
     }
+    if (agentLibMode === 'image') assertImageAgentLibMounts(mounts);
+    return { labels, image, mounts, agentLibMode };
+}
+
+export function sanitizeBox(item, scope = QA_SCOPE, imageProof = null) {
+    const { labels, image, mounts, agentLibMode } = inspectBoxIdentity(item, scope);
     let imageReference = labels[LABEL + 'image-ref'] || item.ImageName;
     if (!/^[^\s]+@sha256:[a-f0-9]{64}$/.test(imageReference)) {
         // Older Boxes recorded the tag used at creation. Their exact local image
@@ -196,8 +247,14 @@ export function sanitizeBox(item, scope = QA_SCOPE, imageProof = null) {
         requireProof(references.length > 0, 'QA_IMAGE_NOT_PINNED');
         imageReference = references[0];
     }
+    const agentLib = agentLibMode === 'image' ? imageAgentLib(item, mounts, imageProof, imageReference) : agentLibMode ? {
+        mode: agentLibMode, commit: labels[LABEL + 'agentlib-commit'],
+        fingerprint: labels[LABEL + 'agentlib-fingerprint'], sourceId: labels[LABEL + 'agentlib-source-id'],
+        sourceRelativePath: labels[LABEL + 'agentlib-source-path'],
+    } : null;
     return { id: item.Id, name: item.Name.replace(/^\//, ''), image, imageReference,
         running: item.State.Running, mounts, ports: item.HostConfig.PortBindings,
+        ...(agentLib ? { agentLib } : {}),
         contract: digest(JSON.stringify({ image, config: item.Config, hostConfig: item.HostConfig, mounts })) };
 }
 
@@ -231,9 +288,14 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
         const sources = stat ? pins(scope.workspace) : [];
         if (predecessor) requireProof(sources.some(source => source.relative === '.runtime/ploinky')
             && sources.some(source => source.relative === '.ploinky/repos/AchillesIDE'), 'QA_SOURCES_INCOMPLETE');
-        if (predecessor) for (const destination of ['/opt/ploinky', '/opt/ploinky-agentlib']) {
+        if (predecessor) for (const destination of ['/opt/ploinky', ...(predecessor.box.agentLib?.mode === 'image' ? [] : [AGENTLIB_IMAGE_PATH])]) {
             const mount = predecessor.box.mounts.find(item => item.Destination === destination);
             requireProof(sources.some(source => path.join(scope.workspace, source.relative) === mount.Source), 'QA_MOUNTED_SOURCE_NOT_CAPTURED');
+        }
+        if (predecessor?.box.agentLib?.mode === 'image') {
+            const lock = readJson(path.join(scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json'));
+            requireProof(lock.repositories?.achillesAgentLib?.url === 'https://github.com/AssistOS-AI/AchillesAgentLib.git'
+                && lock.repositories.achillesAgentLib.commit === predecessor.box.agentLib.commit, 'QA_AGENTLIB_LOCK_MISMATCH');
         }
         const authority = { version: 1, workspace: scope.workspace, backup, machineId: adapters.machineId(),
             createdAt: new Date().toISOString(), workspaceIdentity: stat ? identity(stat) : null,
@@ -363,6 +425,9 @@ export function createRollbackService(adapters, scope = QA_SCOPE) {
             requireProof(FULL_ID.test(fresh.box.id) && ![receipt.predecessorId, receipt.failedId].includes(fresh.box.id)
                 && fresh.box.name === scope.box && fresh.box.image === authority.predecessor.box.image
                 && fresh.box.running, 'QA_RECOVERY_BOX_INVALID');
+            if (authority.predecessor.box.agentLib?.mode === 'image') {
+                matches(fresh.box.agentLib, authority.predecessor.box.agentLib, 'QA_RECOVERY_AGENTLIB_CHANGED');
+            }
             receipt.recoveryBoxId = fresh.box.id;
             checkpoint('initializing-fresh-routing');
             await adapters.initialize(fresh);
@@ -407,14 +472,44 @@ export function productionAdapters(scope = QA_SCOPE) {
             '--env', 'PLOINKY_MEDIA_HOST_PORT=7882', item.box.id, 'node', '--input-type=module', '-', ...args],
         { input: source, timeout, env });
     const sanitize = (engine, item) => {
+        // Establish workspace ownership, confinement and mount admission before
+        // executing any read-only verifier inside the alleged Box.
+        inspectBoxIdentity(item, scope);
         const reference = item.Config?.Labels?.[LABEL + 'image-ref'] || item.ImageName;
+        const bundled = item.Config?.Labels?.[LABEL + 'agentlib-mode'] === 'image';
         let proof = null;
-        if (!/^[^\s]+@sha256:[a-f0-9]{64}$/.test(reference)) {
+        if (bundled || !/^[^\s]+@sha256:[a-f0-9]{64}$/.test(reference)) {
             const id = String(item.Image || '').replace(/^sha256:/, '');
             requireProof(FULL_ID.test(id), 'QA_IMAGE_NOT_PINNED');
             const images = JSON.parse(command(engine, ['image', 'inspect', id], { env }));
             requireProof(images.length === 1, 'QA_IMAGE_NOT_PINNED');
             proof = images[0];
+        }
+        if (bundled) {
+            const id = String(item.Image || '').replace(/^sha256:/, '');
+            const commit = String(item.Config.Labels[LABEL + 'agentlib-commit'] || '');
+            requireProof(/^[a-f0-9]{40}$/.test(commit), 'QA_AGENTLIB_IMAGE_LABELS_INVALID');
+            assertImageAgentLibMounts(item.Mounts);
+            assertAgentLibImageIdentity(id, proof);
+            const pinned = /^[^\s]+@sha256:[a-f0-9]{64}$/.test(reference) ? reference
+                : (proof.RepoDigests || []).filter(value => /^docker\.io\/assistos\/ploinky-box@sha256:[a-f0-9]{64}$/.test(value)).sort()[0];
+            requireProof(pinned, 'QA_IMAGE_NOT_PINNED');
+            const referenceImages = JSON.parse(command(engine, ['image', 'inspect', pinned], { env }));
+            requireProof(referenceImages.length === 1 && String(referenceImages[0].Id).replace(/^sha256:/, '') === id,
+                'QA_AGENTLIB_IMAGE_REFERENCE_CHANGED');
+            proof.verifiedImageReference = pinned;
+            proof.referenceImageId = referenceImages[0].Id;
+            // No workspace mounts or network are available to this immutable-image
+            // probe. Its verifier checks the sealed metadata, actual bytes and
+            // root ownership independently of the mutable Ploinky checkout.
+            proof.agentLibBundle = JSON.parse(command(engine, ['run', '--rm', '--network=none', '--pull=never',
+                '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--user=podman',
+                '--entrypoint=/usr/local/bin/node', id, AGENTLIB_IMAGE_PROBE, 'verify', '--expected-commit', commit],
+            { env, timeout: 60_000 }));
+            if (item.State?.Running === true) {
+                proof.runtimeAgentLibBundle = JSON.parse(command(engine, ['container', 'exec', '--user', 'podman', item.Id,
+                    '/usr/local/bin/node', AGENTLIB_IMAGE_PROBE, 'verify', '--expected-commit', commit], { env, timeout: 60_000 }));
+            }
         }
         return { engine, box: sanitizeBox(item, scope, proof) };
     };
@@ -472,6 +567,27 @@ export function productionAdapters(scope = QA_SCOPE) {
                 }
             }
             return result;
+        },
+        async verifyAgentLib(item, expectedCommit) {
+            requireProof(/^[a-f0-9]{40}$/.test(expectedCommit || ''), 'QA_AGENTLIB_LOCK_MISMATCH');
+            const current = inspect(item.engine, item.box.id);
+            requireProof(current.box.contract === item.box.contract && current.box.running, 'QA_BOX_CHANGED_DURING_VERIFICATION');
+            const selection = current.box.agentLib;
+            requireProof(selection && ['image', 'managed', 'local'].includes(selection.mode)
+                && selection.commit === expectedCommit, 'QA_AGENTLIB_LOCK_MISMATCH');
+            if (selection.mode !== 'image') {
+                const source = current.box.mounts.find(mount => mount.Destination === AGENTLIB_IMAGE_PATH).Source;
+                const core = current.box.mounts.find(mount => mount.Destination === '/opt/ploinky').Source;
+                requireProof(adapters.sourcePin(source).commit === expectedCommit, 'QA_AGENTLIB_LOCK_MISMATCH');
+                adapters.sourcePin(core);
+                const { fingerprintSource, sourceIdHash } = await import(pathToFileURL(path.join(core, 'agentlib/fingerprint.mjs')).href);
+                const actual = fingerprintSource(source);
+                requireProof(actual.fingerprint === selection.fingerprint && sourceIdHash(actual.sourceId) === selection.sourceId
+                    && path.relative(scope.workspace, source) === selection.sourceRelativePath, 'QA_AGENTLIB_SOURCE_CHANGED');
+            }
+            const final = inspect(item.engine, item.box.id);
+            requireProof(final.box.contract === current.box.contract && final.box.running, 'QA_BOX_CHANGED_DURING_VERIFICATION');
+            return selection;
         },
         imageId: (engine, reference) => JSON.parse(command(engine, ['image', 'inspect', reference], { env }))[0].Id.replace(/^sha256:/, ''),
         checkPrerequisites(previous) {

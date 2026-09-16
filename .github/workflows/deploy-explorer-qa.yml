@@ -2177,30 +2177,19 @@ jobs:
             echo "[deploy-qa] Verified $repository_name/$expected_branch at $deployed_commit."
           done
           verify_ala_checkout
-          AGENTLIB_MODE="$(
-            "$BOX_ENGINE" container inspect "$BOX_INSTANCE" \
-              --format '{{index .Config.Labels "io.assistos.ploinky-box.agentlib-mode"}}'
-          )"
-          AGENTLIB_SOURCE_ID="$(
-            "$BOX_ENGINE" container inspect "$BOX_INSTANCE" \
-              --format '{{index .Config.Labels "io.assistos.ploinky-box.agentlib-source-id"}}'
-          )"
-          AGENTLIB_FINGERPRINT="$(
-            "$BOX_ENGINE" container inspect "$BOX_INSTANCE" \
-              --format '{{index .Config.Labels "io.assistos.ploinky-box.agentlib-fingerprint"}}'
-          )"
-          AGENTLIB_COMMIT="$(
-            "$BOX_ENGINE" container inspect "$BOX_INSTANCE" \
-              --format '{{index .Config.Labels "io.assistos.ploinky-box.agentlib-commit"}}'
-          )"
-          if [ "$AGENTLIB_MODE" != "managed" ] ||
-            [ "$AGENTLIB_COMMIT" != "$EXPECTED_AGENTLIB_COMMIT" ] ||
-            [[ ! "$AGENTLIB_SOURCE_ID" =~ ^[a-f0-9]{64}$ ]] ||
-            [[ ! "$AGENTLIB_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]]; then
-            echo "[deploy-qa] ERROR: outer Box AgentLib labels do not match the locked managed selection."
-            exit 1
-          fi
-          echo "[deploy-qa] Verified locked achillesAgentLib/$EXPECTED_AGENTLIB_BRANCH outer Box identity at $EXPECTED_AGENTLIB_COMMIT."
+          node --input-type=module - "$QA_HELPER_DIR/rollback-explorer-qa.mjs" "$BOX_INSTANCE" "$EXPECTED_AGENTLIB_COMMIT" <<'NODE'
+          import assert from 'node:assert/strict';
+          // BEGIN QA locked AgentLib verification
+          const [helper, instance, expectedCommit] = process.argv.slice(2);
+          assert.equal(instance, 'ploinky-box-explorerqaworkspace-7a31ab7775eb');
+          const { productionAdapters } = await import(helper);
+          const adapters = productionAdapters();
+          const boxes = adapters.boxes().filter(item => item.box.name === instance);
+          assert.equal(boxes.length, 1, 'Current QA Box is ambiguous');
+          const selection = await adapters.verifyAgentLib(boxes[0], expectedCommit);
+          console.log(`[deploy-qa] Verified locked achillesAgentLib ${selection.mode} source at ${selection.commit}; immutable source ${selection.sourceId}.`);
+          // END QA locked AgentLib verification
+          NODE
 
           echo "[deploy-qa] Verifying the loopback Router publication..."
           ROUTER_OK=0

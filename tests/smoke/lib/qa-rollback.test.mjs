@@ -116,6 +116,156 @@ function fixture(t, { predecessor = true, supported = true } = {}) {
     return { root, scope, backup, service, adapters, boxes, events, raw, candidate };
 }
 
+function imageFixture(t) {
+    const f = fixture(t);
+    const commit = 'e'.repeat(40), fingerprint = 'f'.repeat(64);
+    const sourceId = crypto.createHash('sha256').update(`image:sha256:${IMAGE}:${fingerprint}`).digest('hex');
+    const proof = { Id: `sha256:${IMAGE}`, Os: 'linux', Architecture: 'amd64', Config: { User: 'podman' },
+        verifiedImageReference: `example.test/box@sha256:${IMAGE}`, referenceImageId: `sha256:${IMAGE}`,
+        agentLibBundle: { schemaVersion: 1, commit, fingerprint }, runtimeAgentLibBundle: { schemaVersion: 1, commit, fingerprint } };
+    const raw = id => {
+        const value = f.raw(id);
+        value.Mounts = value.Mounts.filter(mount => mount.Destination !== '/opt/ploinky-agentlib');
+        Object.assign(value.Config.Labels, Object.fromEntries(Object.entries({ mode: 'image', commit, fingerprint,
+            'source-id': sourceId, 'source-path': 'image' }).map(([key, data]) => [`io.assistos.ploinky-box.agentlib-${key}`, data])));
+        return value;
+    };
+    fs.rmSync(path.join(f.scope.workspace, librarySource), { recursive: true });
+    write(path.join(f.scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json'), {
+        repositories: { achillesAgentLib: { url: 'https://github.com/AssistOS-AI/AchillesAgentLib.git', commit } },
+    });
+    f.boxes[0] = { engine: 'podman', box: sanitizeBox(raw(OLD), f.scope, proof) };
+    const prepare = f.adapters.prepare;
+    f.adapters.prepare = async (...args) => {
+        await prepare(...args);
+        const fresh = { engine: 'podman', box: sanitizeBox(raw(FRESH), f.scope, proof) };
+        f.boxes[f.boxes.findIndex(item => item.box.id === FRESH)] = fresh;
+        return structuredClone(fresh);
+    };
+    return { ...f, rawImage: raw, proof, commit, fingerprint, sourceId };
+}
+
+test('sealed image AgentLib admission binds immutable image, architecture, labels and both actual copies', t => {
+    const f = imageFixture(t), raw = f.rawImage(OLD);
+    const admitted = sanitizeBox(raw, f.scope, f.proof);
+    assert.deepEqual(admitted.agentLib, { mode: 'image', imageId: `sha256:${IMAGE}`, commit: f.commit,
+        fingerprint: f.fingerprint, sourceId: f.sourceId, sourceRelativePath: 'image' });
+    assert.equal(admitted.mounts.some(mount => mount.Destination === '/opt/ploinky-agentlib'), false);
+    assert.throws(() => sanitizeBox(raw, f.scope), { code: 'QA_AGENTLIB_IMAGE_IDENTITY_INVALID' });
+    for (const mutate of [
+        proof => { proof.Id = 'a'.repeat(64); },
+        proof => { proof.Architecture = 'arm64'; },
+        proof => { proof.Os = 'windows'; },
+        proof => { proof.Config.User = 'root'; },
+        proof => { proof.referenceImageId = 'a'.repeat(64); },
+        proof => { proof.verifiedImageReference = `example.test/box@sha256:${'a'.repeat(64)}`; },
+        proof => { delete proof.agentLibBundle; },
+        proof => { proof.agentLibBundle.commit = 'a'.repeat(40); },
+        proof => { proof.agentLibBundle.fingerprint = 'a'.repeat(64); },
+        proof => { proof.agentLibBundle.schemaVersion = 2; },
+        proof => { delete proof.runtimeAgentLibBundle; },
+        proof => { proof.runtimeAgentLibBundle.fingerprint = 'a'.repeat(64); },
+    ]) {
+        const changed = structuredClone(f.proof); mutate(changed);
+        assert.throws(() => sanitizeBox(raw, f.scope, changed));
+    }
+    for (const [key, value] of [['source-id', 'a'.repeat(64)], ['source-path', '.ploinky/agentlib/generations/fake'],
+        ['commit', 'a'.repeat(40)], ['fingerprint', 'a'.repeat(64)]]) {
+        const changed = structuredClone(raw);
+        changed.Config.Labels[`io.assistos.ploinky-box.agentlib-${key}`] = value;
+        assert.throws(() => sanitizeBox(changed, f.scope, f.proof));
+    }
+    const stopped = structuredClone(raw); stopped.State.Running = false;
+    const stoppedProof = structuredClone(f.proof); delete stoppedProof.runtimeAgentLibBundle;
+    assert.deepEqual(sanitizeBox(stopped, f.scope, stoppedProof).agentLib, admitted.agentLib,
+        'a stopped predecessor retains authority from its separately verified immutable image');
+});
+
+test('image AgentLib rejects mounts shadowing bundle bytes, sealed verifier or its interpreter', t => {
+    const f = imageFixture(t);
+    for (const destination of ['/opt/ploinky-agentlib', '/opt/ploinky-agentlib/lib', '/opt', '/',
+        '/usr/local/share/ploinky/agentlib', '/usr/local/share/ploinky/agentlib/runtime-contract.json',
+        '/usr/local/share', '/usr/local/bin/node', '/usr/local/bin', '/opt/ploinky/../ploinky-agentlib',
+        'relative', '/opt\\ploinky-agentlib']) {
+        const raw = f.rawImage(OLD);
+        raw.Mounts.push({ Source: '/foreign', Destination: destination, Type: 'bind', RW: false });
+        assert.throws(() => sanitizeBox(raw, f.scope, f.proof), { code: 'QA_AGENTLIB_IMAGE_SHADOWED' }, destination);
+    }
+});
+
+test('capture and recovery retain image source authority without inventing an AgentLib host checkout', async t => {
+    const f = imageFixture(t);
+    f.service.capture(f.backup);
+    const authority = JSON.parse(fs.readFileSync(path.join(f.backup, 'rollback-authority.json'), 'utf8'));
+    assert.deepEqual(authority.predecessor.box.agentLib, f.boxes[0].box.agentLib);
+    assert.equal(authority.sources.some(source => source.relative === librarySource), false);
+    f.candidate();
+    const receipt = await f.service.execute(f.backup, FAILED);
+    assert.equal(receipt.result, 'recovered');
+    assert.deepEqual(f.boxes.find(item => item.box.id === FRESH).box.agentLib, authority.predecessor.box.agentLib);
+});
+
+test('image capture requires the captured Ploinky dependency lock and recovery rejects a different bundle', async t => {
+    const mismatch = imageFixture(t);
+    write(path.join(mismatch.scope.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json'), {
+        repositories: { achillesAgentLib: { url: 'https://github.com/AssistOS-AI/AchillesAgentLib.git', commit: 'a'.repeat(40) } },
+    });
+    assert.throws(() => mismatch.service.capture(mismatch.backup), { code: 'QA_AGENTLIB_LOCK_MISMATCH' });
+    const f = imageFixture(t);
+    f.service.capture(f.backup); f.candidate();
+    const prepare = f.adapters.prepare;
+    f.adapters.prepare = async (...args) => {
+        const fresh = await prepare(...args);
+        fresh.box.agentLib.fingerprint = 'a'.repeat(64);
+        return fresh;
+    };
+    await assert.rejects(f.service.execute(f.backup, FAILED), { code: 'QA_RECOVERY_AGENTLIB_CHANGED' });
+    assert.equal(f.events.includes('initialize'), false, 'changed bundle must fail before graph initialization');
+});
+
+test('production image verification probes immutable image bytes offline and checks the running copy', async t => {
+    const f = imageFixture(t), records = path.join(f.root, 'commands.jsonl'), input = path.join(f.root, 'inspection.json');
+    const setInput = raw => write(input, { raw, image: { Id: f.proof.Id, Os: 'linux', Architecture: 'amd64', Config: { User: 'podman' } },
+        bundle: f.proof.agentLibBundle });
+    setInput(f.rawImage(OLD));
+    fs.writeFileSync(path.join(f.root, 'podman'), `#!${process.execPath}\nimport fs from 'node:fs';
+const args=process.argv.slice(2), data=JSON.parse(fs.readFileSync(${JSON.stringify(input)},'utf8'));
+fs.appendFileSync(${JSON.stringify(records)},JSON.stringify(args)+'\\n');
+if(args[0]==='container'&&args[1]==='ls') console.log(data.raw.Id);
+else if(args[0]==='container'&&args[1]==='inspect') console.log(JSON.stringify([data.raw]));
+else if(args[0]==='image'&&args[1]==='inspect') console.log(JSON.stringify([data.image]));
+else if(args[0]==='run'||(args[0]==='container'&&args[1]==='exec')) console.log(JSON.stringify(data.bundle));
+else process.exit(19);
+`, { mode: 0o700 });
+    fs.writeFileSync(path.join(f.root, 'docker'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${f.root}:/usr/bin:/bin`;
+    t.after(() => { if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath; });
+    const adapters = productionAdapters(f.scope);
+    const boxes = adapters.boxes();
+    assert.equal(boxes.length, 1);
+    assert.deepEqual(await adapters.verifyAgentLib(boxes[0], f.commit), boxes[0].box.agentLib);
+    await assert.rejects(adapters.verifyAgentLib(boxes[0], 'a'.repeat(40)), { code: 'QA_AGENTLIB_LOCK_MISMATCH' });
+    const calls = fs.readFileSync(records, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const probes = calls.filter(args => args[0] === 'run');
+    assert.ok(probes.length > 0);
+    for (const args of probes) {
+        for (const flag of ['--rm', '--network=none', '--pull=never', '--read-only', '--cap-drop=ALL',
+            '--security-opt=no-new-privileges', '--user=podman', '--entrypoint=/usr/local/bin/node']) assert.ok(args.includes(flag), flag);
+        assert.deepEqual(args.slice(-5), [IMAGE, '/usr/local/share/ploinky/agentlib/image-bundle.mjs', 'verify', '--expected-commit', f.commit]);
+        assert.equal(args.some(value => value.startsWith('--volume') || value.startsWith('--mount')), false);
+    }
+    assert.ok(calls.some(args => args[0] === 'container' && args[1] === 'exec' && args.includes(OLD)
+        && args.includes('/usr/local/share/ploinky/agentlib/image-bundle.mjs')));
+    const shadowed = f.rawImage(OLD);
+    shadowed.Mounts.push({ Source: '/foreign', Destination: '/usr/local/bin/node', Type: 'bind', RW: false });
+    setInput(shadowed); fs.writeFileSync(records, '');
+    assert.throws(() => adapters.boxes(), { code: 'QA_AGENTLIB_IMAGE_SHADOWED' });
+    const rejectedCalls = fs.readFileSync(records, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(rejectedCalls.some(args => args[0] === 'run' || (args[0] === 'container' && args[1] === 'exec')), false,
+        'mount shadowing must reject before executing the alleged verifier');
+});
+
 test('account capability compares every reviewed file and fails closed for missing code', t => {
     const f = fixture(t);
     assert.equal(fixtureCapability(f.scope.workspace), true);

@@ -27,6 +27,18 @@ repository revision and the outer Box's locked AgentLib identity. The paired
 destroy workflow requires only its explicit destructive confirmation and
 preserves the deployed runtime as the authority for teardown.
 
+The QA verifier accepts the current image-bundled AgentLib source without
+inventing a host checkout or mount. It requires an exact Linux/amd64 image ID,
+the locked commit, matching bundle fingerprint and derived image source ID,
+and no mount covering the bundled library, sealed verifier, or Node interpreter.
+An offline, read-only, unprivileged temporary container verifies the immutable
+image's sealed metadata, root ownership and actual content. The running QA Box
+must independently return the same proof. Mounted managed/local selections
+retain clean Git-source, content fingerprint and physical source checks.
+Rollback records retain image-backed source authority alongside the exact base
+image; only actual host sources become checkout pins. Recovery rejects a
+different bundle before initializing its fresh graph.
+
 An ordinary QA redeployment preserves workspace data. Before shutdown, the workflow rejects modified managed sources, unreviewed volumes or routing intent, unsupported recovery code, and insufficient disk space. It captures the exact predecessor, source revisions, image and agent selections in a new protected backup directory. A host lock serializes deployment and recovery operations. The workflow also holds Ploinky’s workspace mutation lock from capture through shutdown, preservation and source staging, so an ordinary CLI restart cannot interrupt the backup. It releases that lock before fresh Box preparation.
 
 The shutdown helper pins every registered container and its mounts. It drains OnlyOffice while DPU and Router remain available, stops consumers before providers, and requires PostgreSQL to report a clean shutdown. Router and its watchdog exit last. Failed or uncertain shutdown leaves the workspace in place. After shutdown, the workflow retains the stopped Box and its base image, moves the complete workspace under `/home/admin/.qa-deployment-backups/`, and copies durable files back with byte, ownership and permission comparisons. Operator files, local skills, database files and symlink targets remain intact. The master key, encrypted accounts and secrets, and subject-signing identity stay together. Fresh routing initialization precedes restoration of access policy, session revocations and audit history. Runtime registries, leases and compiled generations are regenerated.

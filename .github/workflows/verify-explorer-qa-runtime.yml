@@ -1,0 +1,100 @@
+name: Verify the deployed Explorer QA runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected:
+        description: Exact deployed image, Box, source revisions and start time
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-explorer-qa
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify the exact deployed source and immutable runtime
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+          EXPECTED: ${{ inputs.expected }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$(mktemp)"
+          known="$(mktemp)"
+          expected="$(mktemp)"
+          remote=''
+          cleanup() {
+            if [[ "$remote" =~ ^/tmp/explorer-qa-verify\.[A-Za-z0-9]{8}$ ]]; then
+              ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+                admin@45.136.70.141 "rm -f '$remote/verify-explorer-qa-runtime.mjs' '$remote/rollback-explorer-qa.mjs' '$remote/expected.json'; rmdir '$remote'" || true
+            fi
+            rm -f "$key" "$known" "$expected"
+          }
+          trap cleanup EXIT
+          test -n "$SSH_KEY"
+          printf '%s\n' "$SSH_KEY" > "$key"
+          printf '%s' "$EXPECTED" > "$expected"
+          ssh-keyscan -T 10 -t ed25519 45.136.70.141 > "$known"
+          test "$(ssh-keygen -lf "$known" -E sha256 | awk '{print $2}' | sort -u)" = 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
+          remote="$(ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+            admin@45.136.70.141 'umask 077; mktemp -d /tmp/explorer-qa-verify.XXXXXXXX')"
+          [[ "$remote" =~ ^/tmp/explorer-qa-verify\.[A-Za-z0-9]{8}$ ]]
+          for file in verify-explorer-qa-runtime.mjs rollback-explorer-qa.mjs; do
+            scp -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+              ".github/scripts/$file" "admin@45.136.70.141:$remote/$file"
+          done
+          scp -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+            "$expected" "admin@45.136.70.141:$remote/expected.json"
+          ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=5 admin@45.136.70.141 \
+            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock /home/admin/.qa-deployment-tools/node-v24.19.0-linux-x64/bin/node '$remote/verify-explorer-qa-runtime.mjs' '$GITHUB_SHA' < '$remote/expected.json'"
+      - name: Verify public sign-in and OIDC metadata
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          const origin = 'https://explorer-qa.axiologic.dev';
+          const base = `${origin}/base-agent-additional-server/userPersistoAgent/7000/service`;
+          const get = async url => {
+            const response = await fetch(url, {redirect:'error', signal:AbortSignal.timeout(20000)});
+            assert.equal(response.status, 200);
+            assert.ok(response.headers.get('cf-ray'));
+            return response;
+          };
+          const login = await (await get(`${origin}/auth/login?agent=explorer`)).text();
+          assert.ok(/Continue with Single Sign-On/.test(login), 'QA SSO login is unavailable');
+          const match = login.match(/window\.location\.replace\(("(?:[^"\\]|\\.)*")\)/);
+          assert.ok(match);
+          const wizardUrl = new URL(JSON.parse(match[1]));
+          assert.equal(wizardUrl.origin, origin);
+          assert.equal(wizardUrl.pathname, new URL(`${base}/auth/`).pathname);
+          const wizard = await (await get(wizardUrl.href)).text();
+          assert.ok(/id="auth_content"/.test(wizard), 'QA sign-in wizard is unavailable');
+          const mismatch = await fetch(`${origin}/auth/login?agent=webAssist`, {redirect:'error',signal:AbortSignal.timeout(20000)});
+          assert.equal(mismatch.status, 400);
+          assert.equal((await mismatch.json()).error, 'auth_route_context_mismatch');
+          const setup = await (await get(`${base}/auth/setup`)).json();
+          assert.equal(setup.ok, true);
+          assert.equal(typeof setup.setupComplete, 'boolean');
+          assert.equal(setup.registration, true);
+          assert.equal(setup.methods.google, true);
+          const discovery = await (await get(`${base}/oidc/.well-known/openid-configuration`)).json();
+          assert.equal(discovery.issuer, `${base}/oidc`);
+          assert.ok(discovery.code_challenge_methods_supported.includes('S256'));
+          for (const field of ['authorization_endpoint','token_endpoint','jwks_uri','userinfo_endpoint']) {
+            const url = new URL(discovery[field]);
+            assert.equal(url.origin, origin);
+            assert.ok(!url.username && !url.password && !url.search && !url.hash);
+            assert.ok(url.pathname.startsWith(new URL(`${base}/oidc/`).pathname));
+          }
+          console.log(JSON.stringify({result:'passed',issuer:discovery.issuer,setupComplete:setup.setupComplete,registration:setup.registration,googleAvailable:setup.googleAvailable}));
+          NODE
