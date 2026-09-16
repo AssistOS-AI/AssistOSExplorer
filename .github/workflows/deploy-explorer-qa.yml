@@ -826,7 +826,7 @@ jobs:
                   "$nested_engine" container ls -a --format "[deploy-qa] Rollback nested container: id={{.ID}} name={{.Names}} image={{.Image}} status={{.Status}} labels={{.Labels}}"
                   "$nested_engine" volume ls --format "[deploy-qa] Rollback nested volume: name={{.Name}} labels={{.Labels}}"
                   echo "[deploy-qa] QA nested storage usage ($nested_engine):"
-                  timeout 30 "$nested_engine" system df --format json || echo '[deploy-qa] QA nested storage usage is unavailable.'
+                  timeout 30 "$nested_engine" system df --format json || echo "[deploy-qa] QA nested storage usage is unavailable."
                 done
               '
             done < <(

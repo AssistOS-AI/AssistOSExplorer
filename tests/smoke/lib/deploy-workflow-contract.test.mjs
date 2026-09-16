@@ -7,6 +7,28 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+
+test('QA nested inventory reaches the container as one complete shell program', () => {
+    const workflow = fs.readFileSync(path.join(ROOT, '.github/workflows/deploy-explorer-qa.yml'), 'utf8');
+    const start = workflow.indexOf('"$engine" container exec "$container_id" sh -lc \'');
+    assert(start >= 0);
+    const end = workflow.indexOf("\n              '\n", start);
+    assert(end > start);
+    const invocation = workflow.slice(start, end + "\n              '".length);
+    const checked = spawnSync('bash', ['-c', `set -euo pipefail
+inspect_engine() {
+    [ "$#" -eq 6 ]
+    [ "$1" = container ] && [ "$2" = exec ] && [ "$3" = "$container_id" ]
+    [ "$4" = sh ] && [ "$5" = -lc ]
+    printf '%s' "$6" | sh -n
+}
+engine=inspect_engine
+container_id='exact-owned-container'
+${invocation}
+`], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(checked.status, 0, checked.stderr);
+});
+
 const WORKFLOWS = [
   {
     file: '.github/workflows/deploy-explorer-qa.yml',
