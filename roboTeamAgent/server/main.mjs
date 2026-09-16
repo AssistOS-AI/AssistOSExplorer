@@ -26,6 +26,7 @@ const runtimeManager = new RuntimeManager({
 runtimeManager.skillsets = new RobotSkillsets({ robotStore,
     workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT || '/workspace', alaCommand: runtimeManager.alaCommand });
 await runtimeManager.initialize();
+for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id);
 
 const server = createRoboTeamServer({
     robotStore,

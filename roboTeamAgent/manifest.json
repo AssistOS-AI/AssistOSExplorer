@@ -44,5 +44,8 @@
       ],
       "install": "sh /code/scripts/install.sh"
     }
-  }
+  },
+  "link-install": [
+    "https://github.com/AssistOS-AI/AdvancedLanguageAgent.git"
+  ]
 }

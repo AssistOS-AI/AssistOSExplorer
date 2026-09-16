@@ -27,4 +27,16 @@ The current nested runtime cannot mount a private procfs inside the additional u
 
 Current npm and GitHub releases are external supply-chain inputs. RoboTeam must stage and probe candidates before activation, record exact resolved versions, verify computer-use-linux bytes against the available upstream digest, mount generations read-only, and fall back only to a stamped valid generation. Cache metadata and logs must not contain robot credentials.
 
+### Local Soul Gateway access
+
+The RoboTeam service owns one UNIX socket per robot under that robot's `.config/opencode` directory. Startup prepares existing robots; creation, terminal and task/container preparation provision new robot connections. The socket is mode 0600, its parent directories must be validated without following symlinks, and an existing live listener or non-socket file must never be replaced. Robot deletion and service shutdown close the owned listeners and cancel pending requests. No new public TCP port or Router route is exposed.
+
+The service must validate the generated-local Router descriptor before reading its credential and must use AgentLib's certified Router transport for both model discovery and chat. The generated credential must stay in RoboTeam. The private socket accepts only `GET /v1/models` and `POST /v1/chat/completions`, with a 2 MiB chat request limit. Socket access follows existing robot-home filesystem access; robots are workspace-controlled identities, not a new tenant security boundary.
+
+The native OpenCode plugin must connect through the mounted robot-home socket. It must create a process-local loopback chat endpoint protected by a random ephemeral capability, forwarding only the chat completion route to the socket. The capability must never authorize MCP, filesystem or lifecycle operations. Plugin disposal closes the local endpoint, and client disconnects cancel upstream requests. Neither persistent provider configuration nor a Ploinky credential is written to the home. Plugin and helper files are installed atomically without overwriting unrelated settings.
+
+The certified local Router transport advertises buffered chat only. The service must request `stream: false` upstream and translate a completed response into SSE when OpenCode requests streaming, preserving content, tool calls, finish reason and usage. This is completion delivery, not token-by-token streaming. Errors must preserve useful HTTP status without forwarding credential-bearing upstream error text.
+
+### Local skill scope
+
 Trusted local-skill launch scope is carried from Ploinky as a canonical path inside the existing workspace grant and persisted per conversation. It is discovery metadata, not a new filesystem grant. Saved scope cannot be widened by resolving a retargeted alias; selected source trees are validated and mounted through ALA's existing read-only catalog delivery. Multiple bounded CLI scopes may share one already-authorized Box.

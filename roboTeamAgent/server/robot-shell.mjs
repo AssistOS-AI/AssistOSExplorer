@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { installSoulGatewayPlugin } from './soul-gateway-service.mjs';
 
 const ENVIRONMENT = `# Ploinky loader options do not apply to interactive coding-agent CLIs.
 unset NODE_OPTIONS
@@ -19,7 +20,7 @@ const SOURCE = '\n# RoboTeam shared coding-agent environment\n. "$HOME/.roboteam
 export async function prepareRobotShell(home) {
     const stat = await fs.lstat(home);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe robot home');
-    for (const directory of ['.codex', '.config', '.cache', '.local/share', '.local/state', '.pi/agent']) {
+    for (const directory of ['.codex', '.config/opencode/plugins', '.cache', '.local/share', '.local/state', '.pi/agent']) {
         let current = home;
         for (const segment of directory.split('/')) {
             current = path.join(current, segment);
@@ -28,6 +29,7 @@ export async function prepareRobotShell(home) {
             if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('Unsafe robot configuration directory');
         }
     }
+    await installSoulGatewayPlugin(home);
     for (const name of ['.roboteam-env.sh', '.bashrc', '.profile', '.bash_profile']) {
         const handle = await fs.open(path.join(home, name), fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
         try {

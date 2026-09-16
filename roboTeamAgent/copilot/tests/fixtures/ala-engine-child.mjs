@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
+import { pathToFileURL } from 'node:url';
 
 const args = process.argv.slice(2);
 const value = (flag) => args[args.indexOf(flag) + 1];
@@ -18,7 +19,8 @@ const nativeRoot = path.join(home, '.ala', 'sessions');
 const nativeFile = path.join(nativeRoot, `${id}.json`);
 await fs.mkdir(nativeRoot, { recursive: true, mode: 0o700 });
 const native = args.includes('--resume-session') ? JSON.parse(await fs.readFile(nativeFile, 'utf8'))
-    : { version: 1, id, home, workspace: cwd, agent: backend, continuation: { threadId: 'fixture-thread' } };
+    : { version: 1, id, home, workspace: cwd, agent: backend,
+        continuation: backend === 'opencode' ? { sessionId: 'fixture-opencode' } : { threadId: 'fixture-thread' } };
 await fs.writeFile(nativeFile, JSON.stringify(native), { mode: 0o600 });
 const emit = (event) => {
     const line = `@@ALA_EVENT@@${JSON.stringify(event)}\n`;
@@ -48,7 +50,18 @@ if (prompt.includes('MALFORMED')) {
             break;
         }
     }
+    let openCodeModels = [];
+    if (backend === 'opencode') {
+        const { SoulGateway } = await import(pathToFileURL(path.join(home, '.config/opencode/plugins/soul-gateway.js')));
+        const plugin = await SoulGateway();
+        const providerConfig = {};
+        try {
+            await plugin.config(providerConfig);
+            openCodeModels = Object.keys(providerConfig.provider['soul-gateway'].models);
+        } finally { await plugin.dispose(); }
+    }
     const output = JSON.stringify({ prompt, skill: args.includes('--skill') ? value('--skill') : null, choice, resumed: args.includes('--resume-session'), config,
+        openCodeModels,
         repositories: process.env.ALA_TASK_REPOSITORIES, model: args.includes('--model') ? value('--model') : null,
         credential: process.env.PLOINKY_AGENT_SECRET || process.env.SSO_ACCESS_TOKEN || null,
         privatePrompt: !args.some((arg) => arg.includes('PRIVATE_USER_PROMPT')) });

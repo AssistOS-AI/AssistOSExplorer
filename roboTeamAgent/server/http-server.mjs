@@ -214,6 +214,7 @@ export function createRoboTeamServer(options) {
                 if (!await robotStore.get(terminalRobotId)) return sendError(res, 404, 'robot not found');
                 const directory = await robotTerminalDirectory(robotStore, terminalRobotId, runtimeManager.workspaceRoot);
                 await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'));
+                await runtimeManager.prepareOpenCode?.(terminalRobotId);
                 await runtimeManager.toolCache.prepareShellTools();
                 return sendJson(res, 200, { ok: true, directory });
             }
@@ -226,6 +227,7 @@ export function createRoboTeamServer(options) {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
                 const robot = await robotStore.create({ name: body.name, specialization: body.specialization });
+                await runtimeManager.prepareOpenCode?.(robot.id);
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
             }
             const skillsetsId = matchRobotPath(pathname, '/skillsets');

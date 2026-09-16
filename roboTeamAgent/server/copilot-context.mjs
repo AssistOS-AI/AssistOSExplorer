@@ -4,6 +4,7 @@ import { RobotStore } from './robot-store.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
+import { prepareRobotShell } from './robot-shell.mjs';
 import { DATA_DIR } from './constants.mjs';
 
 // One CLI process owns one robot context; browser input cannot change its home.
@@ -28,7 +29,11 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
         process.env.ROBOTEAM_COPILOT_ROBOT_ID = robot.id;
         process.env.ROBOTEAM_COPILOT_ROBOT_NAME = robot.name;
         process.env.ACHILLES_ALA_HOME = await fs.realpath(home);
+        await prepareRobotShell(home);
         process.env.ACHILLES_ALA_COMMAND = resolveAlaCommand(alaCommand);
+        if (process.env.PLOINKY_AGENTLIB_DIR) {
+            process.env.ACHILLES_AGENT_LIB_PATH = process.env.PLOINKY_AGENTLIB_DIR;
+        }
         delete process.env.ROBOTEAM_INTERNAL_TOKEN;
         if (prepareTools) {
             // CLI output is consumed as conversation content. Routine cache diagnostics

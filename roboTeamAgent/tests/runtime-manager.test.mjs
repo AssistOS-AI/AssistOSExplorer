@@ -203,6 +203,9 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
         return child;
     };
     const manager = new RuntimeManager({ dataDir, workspaceRoot: workspace, spawnImpl, toolCache: preparedToolCache });
+    let execution;
+    const runTask = manager._runTask.bind(manager);
+    t.mock.method(manager, '_runTask', (...args) => { execution = runTask(...args); return execution; });
     manager.startTask(robot, 'simple', { cwd: workspace, task: 'secret prompt' });
     while (manager.taskStatus(robot.id).state === 'queued') await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal('task' in manager.taskStatus(robot.id), false);
@@ -210,6 +213,8 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
     manager.stopTask(robot, 'simple');
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(manager.taskStatus(robot.id).state, 'stopped');
+    await execution; // Finish asynchronous preparation before removing its home.
+    await manager.stopAll();
 });
 
 test('can stop one parallel CLI task without interrupting another', async (t) => {

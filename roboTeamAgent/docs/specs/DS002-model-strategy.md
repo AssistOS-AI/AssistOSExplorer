@@ -17,7 +17,17 @@ ALA currently supports `codex`, `opencode`, `pi`, and `auto`. The `auto` choice 
 
 The current ALA `--MCPServers` adapter injects task-local URL configuration into Codex. Desktop and Browser automation must therefore select Codex. OpenCode and Pi may execute Simple tasks, but RoboTeam must not claim that they control the GUI until their adapters implement the same MCP injection contract.
 
-RoboTeam does not hard-code providers, pricing, or tiers. It starts ALA with the selected `--ca` backend and may forward an optional `--model` override. The robot's persistent `--home` owns authentication and backend configuration; RoboTeam injects only task-local MCP URL overrides.
+RoboTeam starts ALA with the selected `--ca` backend and may forward an optional `--model` override. The robot's persistent `--home` owns personal authentication and backend configuration. RoboTeam injects task-local MCP URL overrides and the local Soul Gateway provider for OpenCode. Model names, tiers and prices must come from the gateway catalog rather than a vendor-specific list in RoboTeam.
+
+### Soul Gateway model catalog
+
+RoboTeam must install the same repository-owned JavaScript plugin in each robot's global OpenCode plugin directory. OpenCode's asynchronous `config` hook must fetch the local Soul Gateway `/v1/models` catalog and populate `provider.soul-gateway.models` in memory. No generated `opencode.json` or wrapper-supplied `OPENCODE_CONFIG_CONTENT` is required for the gateway. Existing unrelated provider and permission settings must remain intact.
+
+Discovery occurs when native OpenCode initializes its provider configuration, including a new model-list process or execution. There must be no periodic polling or 60-second catalog cache. Existing native instances retain their initialized model list until reinitialization; a new OpenCode process reads the current catalog. Discovery failures must produce an explicit service-unavailable error rather than silently selecting another provider.
+
+Exact gateway model IDs, available context/output limits and token prices must map to OpenCode metadata. Absent limits and reasoning-effort choices must not be invented. Manual terminal launches, Desktop launches, WebChat autocomplete and ALA execution must use the same installed plugin from the robot home. The selector presents `soul-gateway/<gateway-model-id>`; inference forwards the exact gateway ID. Reading the currently selected model must not fetch the catalog. This integration must not switch the coding backend or add gateway entries to a Codex or Pi catalog.
+
+### Model and effort selection
 
 The robot chat `/model <model-id> [effort|default]` command validates effort against ALA native model metadata before saving. `/model` lists models and their supported efforts; WebChat autocomplete first offers models as subcommands, then the selected model's supported efforts and `default` as argument completions, and the terminal picker asks for effort when supported. The selection is persisted atomically in the dedicated robot home `.ala/config.json` under `codingAgents.models` and `codingAgents.efforts`. An absent native config falls back to legacy workspace selections without deleting them; once the native config exists, its model and effort maps are authoritative. `/model default` clears both overrides for the current backend. Selecting a model without effort clears its old effort. Every execution snapshots this configuration; a running turn keeps its captured selection.
 

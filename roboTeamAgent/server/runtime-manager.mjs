@@ -10,6 +10,7 @@ import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE } from './constants.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
+import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -206,6 +207,14 @@ export class RuntimeManager {
         this.messageWaiters = new Map();
         this.deletedRobots = new Set();
         this.skillsets = options.skillsets || null;
+        this.soulGateway = options.soulGateway || createSoulGatewayService();
+    }
+
+    async prepareOpenCode(robotId) {
+        if (!/^[a-z0-9][a-z0-9-]{2,63}$/u.test(robotId)) throw new Error('Invalid robot ID.');
+        const home = path.join(this.dataDir, 'robots', robotId, 'home');
+        await prepareRobotShell(home);
+        await this.soulGateway.prepare(home);
     }
 
     async _podman(args, timeout = 120000) {
@@ -266,7 +275,7 @@ export class RuntimeManager {
                 : path.join(this.dataDir, 'robots', robot.id, 'workspace');
             const robotHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             await this._prepareRobotAgentState(robotHome);
-            await prepareRobotShell(robotHome);
+            await this.prepareOpenCode(robot.id);
             const existing = this.sessions.get(robot.id);
             if (existing) {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
@@ -429,6 +438,7 @@ export class RuntimeManager {
             const robotHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             const runtimeDir = path.join(this.dataDir, 'robots', robot.id, 'runtime');
             await this._prepareRobotAgentState(robotHome);
+            await this.prepareOpenCode(robot.id);
             await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
             await this._saveTask(task);
             const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
@@ -678,6 +688,7 @@ export class RuntimeManager {
         this.deletedRobots.add(robotId);
         try { await remove(); }
         catch (error) { this.deletedRobots.delete(robotId); throw error; }
+        await this.soulGateway.remove(path.join(this.dataDir, 'robots', robotId, 'home'));
         this.manualControl.delete(robotId);
         this.taskQueues.delete(robotId);
         this.latestTask.delete(robotId);
@@ -694,6 +705,7 @@ export class RuntimeManager {
             task.child?.kill('SIGTERM');
         }
         await Promise.allSettled(Array.from(this.sessions.values()).map((session) => this.stopContainer(session.robotId, session.mode)));
+        await this.soulGateway.close();
     }
 }
 
