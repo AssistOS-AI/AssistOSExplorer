@@ -959,14 +959,170 @@ jobs:
           assert.equal(target, '/home/admin/explorerQaWorkspace');
           const available = fs.statfsSync(path.dirname(target), { bigint: true });
           const freeBytes = available.bavail * available.bsize;
-          const priorBytes = fs.existsSync(target)
-              ? BigInt(execFileSync('du', ['-s', '-B1', '--', target], { encoding: 'utf8', stdio: 'pipe' }).trim().split(/\s+/)[0]) : 0n;
+          const allocated = (location, required = false) => {
+              let stat;
+              try { stat = fs.lstatSync(location); } catch (error) {
+                  if (error.code === 'ENOENT') return { status: 'absent', bytes: '0' };
+                  if (required) throw new Error('Unable to inspect the QA workspace for capacity admission');
+                  return { status: 'unavailable', bytes: null };
+              }
+              try {
+                  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('unsupported path');
+                  const output = execFileSync('du', ['-s', '-B1', '--', location], {
+                      encoding: 'utf8', stdio: 'pipe', timeout: required ? 30000 : 10000,
+                      killSignal: 'SIGKILL', maxBuffer: 65536,
+                  }).trim().split(/\s+/)[0];
+                  assert(/^\d+$/.test(output), 'Invalid allocated size');
+                  return { status: 'measured', bytes: BigInt(output).toString() };
+              } catch (error) {
+                  if (required) throw new Error('Unable to measure QA workspace allocation within the bounded capacity probe');
+                  // No stderr or file names from du: only fixed category names
+                  // and safe status/size metadata may enter deployment logs.
+                  return { status: 'unavailable', bytes: null };
+              }
+          };
+          const workspaceAllocation = allocated(target, true);
+          const priorBytes = BigInt(workspaceAllocation.bytes);
           const minimum = 25n * 1024n ** 3n;
           const required = priorBytes + 4n * 1024n ** 3n > minimum ? priorBytes + 4n * 1024n ** 3n : minimum;
+          const components = {
+              workspace: workspaceAllocation,
+              durableData: allocated(path.join(target, '.data')),
+              runtimeSources: allocated(path.join(target, '.runtime')),
+              managedRepositories: allocated(path.join(target, '.ploinky/repos')),
+              agentLibCache: allocated(path.join(target, '.ploinky/agentlib')),
+              dependencyCache: allocated(path.join(target, '.ploinky/box/dependencies')),
+              imageCache: allocated(path.join(target, '.ploinky/box/images')),
+              retainedQaBackups: allocated(path.join(path.dirname(target), '.qa-deployment-backups')),
+          };
+          const backupInventory = () => {
+              const root = path.join(path.dirname(target), '.qa-deployment-backups');
+              try {
+                  const owner = fs.statSync(path.dirname(target)).uid;
+                  const rootStat = fs.lstatSync(root);
+                  assert(rootStat.isDirectory() && !rootStat.isSymbolicLink() && rootStat.uid === owner);
+                  const candidates = fs.readdirSync(root, { withFileTypes: true }).filter(entry => (
+                      /^redeploy-[A-Za-z0-9]{8}$/.test(entry.name) && entry.isDirectory() && !entry.isSymbolicLink()
+                      && fs.lstatSync(path.join(root, entry.name)).uid === owner
+                  )).sort((left, right) => left.name.localeCompare(right.name));
+                  const present = file => {
+                      try { const stat = fs.lstatSync(file); return stat.isFile() && !stat.isSymbolicLink() && stat.uid === owner; }
+                      catch { return false; }
+                  };
+                  return { status: 'inspected', omitted: Math.max(0, candidates.length - 20), entries: candidates.slice(0, 20).map(entry => {
+                      const directory = path.join(root, entry.name);
+                      return { name: entry.name, ...allocated(directory),
+                          hasRollbackAuthority: present(path.join(directory, 'rollback-authority.json')),
+                          hasPreservationReceipt: present(path.join(directory, 'preservation.json')) };
+                  }) };
+              } catch (error) {
+                  return { status: error.code === 'ENOENT' ? 'absent' : 'unavailable', entries: [] };
+              }
+          };
+          console.log('[deploy-qa] Capacity diagnostics:', JSON.stringify({
+              version: 1,
+              nodeVersion: process.version,
+              nodeExecutable: process.execPath,
+              availableBytes: freeBytes.toString(),
+              requiredFreeBytes: required.toString(),
+              shortfallBytes: (required > freeBytes ? required - freeBytes : 0n).toString(),
+              minimumFreeBytes: minimum.toString(),
+              freshRuntimeMarginBytes: (4n * 1024n ** 3n).toString(),
+              filesystemTotalBytes: typeof available.blocks === 'bigint' ? (available.blocks * available.bsize).toString() : null,
+              filesystemFreeBytes: typeof available.bfree === 'bigint' ? (available.bfree * available.bsize).toString() : null,
+              componentsOverlap: true,
+              components,
+              retainedQaBackupInventory: backupInventory(),
+          }));
           assert(freeBytes >= required, 'Insufficient QA capacity for retained backup and fresh runtime; review a scoped archive/recovery operation before stopping services');
           console.log('[deploy-qa] Capacity admission passed before stopping the previous runtime.');
           // END QA capacity admission
           NODE
+
+          # BEGIN QA isolated Node runtime
+          install_qa_node() (
+            set -euo pipefail
+            umask 077
+            case "$(uname -m)" in
+              x86_64)
+                QA_NODE_ARCH=x64
+                QA_NODE_SHA=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
+                ;;
+              aarch64|arm64)
+                QA_NODE_ARCH=arm64
+                QA_NODE_SHA=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
+                ;;
+              *) echo '[deploy-qa] Unsupported QA Node architecture.' >&2; exit 1 ;;
+            esac
+            QA_TOOLS_ROOT=/home/admin/.qa-deployment-tools
+            QA_NODE_DIST="node-v24.19.0-linux-$QA_NODE_ARCH"
+            QA_NODE_TARGET="$QA_TOOLS_ROOT/$QA_NODE_DIST"
+            QA_NODE_ARCHIVE="$QA_TOOLS_ROOT/$QA_NODE_DIST.tar.xz"
+            node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_DIST" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, distribution] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert(/^node-v24\.19\.0-linux-(x64|arm64)$/.test(distribution));
+          if (!fs.existsSync(root)) fs.mkdirSync(root, { mode: 0o700 });
+          for (const [file, directory, privateMode] of [
+              [root, true, true],
+              [path.join(root, `${distribution}.tar.xz`), false, true],
+              [path.join(root, distribution), true, false],
+              [path.join(root, distribution, 'bin/node'), false, false],
+          ]) {
+              let stat;
+              try { stat = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+              assert(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()), 'Unsafe QA Node path');
+              assert.equal(fs.realpathSync(file), file, 'QA Node path traverses a symlink');
+              assert.equal(stat.uid, process.getuid(), 'QA Node path has a different owner');
+              assert.equal(stat.mode & (privateMode ? 0o077 : 0o022), 0, 'Unsafe QA Node permissions');
+              if (!directory) assert.equal(stat.nlink, 1, 'QA Node file has multiple links');
+          }
+          NODE
+            QA_NODE_STAGE="$(mktemp -d "$QA_TOOLS_ROOT/.node-install-XXXXXXXX")"
+            cleanup_qa_node_stage() {
+              node --input-type=module - "$QA_TOOLS_ROOT" "$QA_NODE_STAGE" <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [root, stage] = process.argv.slice(2);
+          assert.equal(root, '/home/admin/.qa-deployment-tools');
+          assert.equal(path.dirname(stage), root);
+          assert(/^\.node-install-[A-Za-z0-9]{8}$/.test(path.basename(stage)));
+          const stat = fs.lstatSync(stage);
+          assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid());
+          assert.equal(fs.realpathSync(stage), stage);
+          fs.rmSync(stage, { recursive: true });
+          NODE
+            }
+            trap cleanup_qa_node_stage EXIT
+            if [ ! -f "$QA_NODE_ARCHIVE" ]; then
+              curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 \
+                --max-filesize 104857600 \
+                "https://nodejs.org/dist/v24.19.0/$QA_NODE_DIST.tar.xz" -o "$QA_NODE_STAGE/archive.tar.xz"
+              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | sha256sum -c - >/dev/null
+              mv -T "$QA_NODE_STAGE/archive.tar.xz" "$QA_NODE_ARCHIVE"
+            fi
+            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | sha256sum -c - >/dev/null
+            if [ ! -e "$QA_NODE_TARGET" ]; then
+              timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" -C "$QA_NODE_STAGE"
+              mv -T "$QA_NODE_STAGE/$QA_NODE_DIST" "$QA_NODE_TARGET"
+            fi
+            # Validate an existing binary against the pinned archive too; a
+            # version string or cached marker alone is not integrity evidence.
+            timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" \
+              -C "$QA_NODE_STAGE" "$QA_NODE_DIST/bin/node"
+            cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
+            [ "$(timeout 10 "$QA_NODE_TARGET/bin/node" --version)" = 'v24.19.0' ]
+            printf '%s\n' "$QA_NODE_TARGET"
+          )
+          QA_NODE_HOME="$(install_qa_node)"
+          export PATH="$QA_NODE_HOME/bin:$PATH"
+          echo '[deploy-qa] Verified QA-scoped Node v24.19.0; the shared host Node installation is unchanged.'
+          # END QA isolated Node runtime
+
           resolve_default_branch() {
             local repository_url="$1"
             local symref_record default_ref default_branch
@@ -996,6 +1152,7 @@ jobs:
           export QA_BACKUP_DIR
           QA_HELPER_DIR="${QA_BACKUP_DIR}-helpers"
           mkdir -m 700 "$QA_HELPER_DIR"
+          printf '%s\n' "$QA_NODE_HOME" > "$QA_HELPER_DIR/node-runtime-path"
           printf '%s' "$QA_ROLLBACK_SOURCE" > "$QA_HELPER_DIR/rollback-explorer-qa.mjs"
           printf '%s' "$QA_QUIESCE_SOURCE" > "$QA_HELPER_DIR/quiesce-explorer-qa.mjs"
           # BEGIN QA outer archive lock acquisition

@@ -168,7 +168,8 @@ test('QA workflow quiesces before backup, retains the old runtime, and restores 
     assert.ok(workflow.indexOf('"$engine" container stop --time 30') < workflow.indexOf('// BEGIN QA durable workspace preservation'));
     assert.ok(workflow.indexOf('// END QA durable workspace preservation') < workflow.indexOf('"$engine" container rename "$container_id"'));
     assert.ok(workflow.indexOf('// END QA policy restoration') < workflow.indexOf('"$PLOINKY" start explorer "${BRANCH_ARGS[@]}"'));
-    assert.ok(workflow.indexOf('timed out waiting for stable 14/14') < workflow.indexOf('// BEGIN QA prior selection restoration'));
+    const readinessFailure = workflow.indexOf('timed out waiting for stable 16/16');
+    assert.ok(readinessFailure > 0 && readinessFailure < workflow.indexOf('// BEGIN QA prior selection restoration'));
     assert.doesNotMatch(workflow, /fs\.rmSync\(target, \{ recursive: true/);
     assert.doesNotMatch(workflow, /-X POST|CLOUDFLARE_TUNNEL_CREATED='true'/);
 });
@@ -186,6 +187,104 @@ test('capacity admission refuses a full QA disk before any workspace move', t =>
     f.write('operator-file', 'retained');
     assert.throws(() => run(26n * 1024n ** 3n), /Insufficient QA capacity/);
     assert.equal(f.read('operator-file'), 'retained');
+});
+
+test('capacity rejection reports bounded QA allocation metadata before failing without disclosing file names', t => {
+    const f = fixture(t);
+    const gib = 1024n ** 3n;
+    for (const relative of ['.data/persisted', '.runtime/source', '.ploinky/repos/source', '.ploinky/agentlib/source',
+        '.ploinky/box/dependencies/cache', '.ploinky/box/images/cache']) f.write(relative, 'retained');
+    fs.mkdirSync(path.join(path.dirname(f.target), '.qa-deployment-backups'));
+    const logs = [];
+    const calls = [];
+    const source = block('capacity admission').replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(f.target));
+    const run = new Function('assert', 'fs', 'path', 'execFileSync', 'process', 'console', source);
+    assert.throws(() => run(
+        assert,
+        { ...fs, statfsSync: () => ({ bavail: 20n * gib, bfree: 21n * gib, blocks: 100n * gib, bsize: 1n }) },
+        path,
+        (command, args, options) => {
+            calls.push({ command, args, options });
+            return `${args.at(-1) === f.target ? 30n * gib : 5n * gib}\tprivate-filename-canary\n`;
+        },
+        { argv: ['node', '-', f.target], version: 'v20.20.0', execPath: '/usr/bin/node' },
+        { log: (...parts) => logs.push(parts.join(' ')) },
+    ), /Insufficient QA capacity/);
+    const report = JSON.parse(logs[0].slice('[deploy-qa] Capacity diagnostics: '.length));
+    assert.equal(report.availableBytes, String(20n * gib));
+    assert.equal(report.requiredFreeBytes, String(34n * gib));
+    assert.equal(report.shortfallBytes, String(14n * gib));
+    assert.equal(report.minimumFreeBytes, String(25n * gib));
+    assert.equal(report.freshRuntimeMarginBytes, String(4n * gib));
+    assert.equal(report.nodeVersion, 'v20.20.0');
+    assert.equal(report.components.workspace.bytes, String(30n * gib));
+    assert.equal(report.components.imageCache.bytes, String(5n * gib));
+    assert.equal(report.components.retainedQaBackups.bytes, String(5n * gib));
+    assert.equal(report.componentsOverlap, true);
+    assert.equal(logs.length, 1);
+    assert.doesNotMatch(logs.join('\n'), /private-filename-canary/);
+    assert.equal(calls.length, 8);
+    for (const call of calls) {
+        assert.equal(call.command, 'du');
+        assert.deepEqual(call.args.slice(0, 3), ['-s', '-B1', '--']);
+        assert.equal(call.options.timeout, call.args.at(-1) === f.target ? 30000 : 10000);
+        assert.equal(call.options.killSignal, 'SIGKILL');
+        assert.equal(call.options.maxBuffer, 65536);
+    }
+    assert.equal(f.read('.data/persisted'), 'retained');
+});
+
+test('unavailable diagnostic categories neither leak errors nor relax authoritative workspace sizing', t => {
+    const f = fixture(t);
+    f.write('.ploinky/box/images/cache', 'retained');
+    const logs = [];
+    let failWorkspace = false;
+    const source = block('capacity admission').replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(f.target));
+    const run = () => new Function('assert', 'fs', 'path', 'execFileSync', 'process', 'console', source)(
+        assert, { ...fs, statfsSync: () => ({ bavail: 50n * 1024n ** 3n, bsize: 1n }) }, path,
+        (_command, args) => {
+            if (failWorkspace || args.at(-1).endsWith('/images')) {
+                throw Object.assign(new Error('private-path-and-error-canary'), { code: 'ENOENT' });
+            }
+            return '1000 workspace';
+        },
+        { argv: ['node', '-', f.target] }, { log: (...parts) => logs.push(parts.join(' ')) },
+    );
+    assert.doesNotThrow(run);
+    const report = JSON.parse(logs[0].slice('[deploy-qa] Capacity diagnostics: '.length));
+    assert.deepEqual(report.components.imageCache, { status: 'unavailable', bytes: null });
+    assert.equal(report.requiredFreeBytes, String(25n * 1024n ** 3n));
+    assert.doesNotMatch(logs.join('\n'), /private-path-and-error-canary/);
+    failWorkspace = true;
+    assert.throws(run, /Unable to measure QA workspace allocation/);
+});
+
+test('QA capacity inventory lists at most twenty owned backup names and receipt presence without reading content', t => {
+    const f = fixture(t);
+    const backups = path.join(path.dirname(f.target), '.qa-deployment-backups');
+    fs.mkdirSync(backups);
+    for (let i = 0; i < 22; i += 1) {
+        const backup = path.join(backups, `redeploy-${String(i).padStart(8, '0')}`);
+        fs.mkdirSync(backup);
+        fs.writeFileSync(path.join(backup, 'rollback-authority.json'), 'private-authority-canary');
+        if (i === 0) fs.writeFileSync(path.join(backup, 'preservation.json'), 'private-receipt-canary');
+    }
+    fs.mkdirSync(path.join(backups, 'unrelated-name-canary'));
+    fs.symlinkSync(path.dirname(f.target), path.join(backups, 'redeploy-Symlink1'));
+    const logs = [];
+    new Function('assert', 'fs', 'path', 'execFileSync', 'process', 'console',
+        block('capacity admission').replace("'/home/admin/explorerQaWorkspace'", JSON.stringify(f.target)))(
+        assert, { ...fs, statfsSync: () => ({ bavail: 30n * 1024n ** 3n, bsize: 1n }) }, path,
+        () => '1000 workspace', { argv: ['node', '-', f.target] }, { log: (...parts) => logs.push(parts.join(' ')) },
+    );
+    const report = JSON.parse(logs[0].slice('[deploy-qa] Capacity diagnostics: '.length));
+    assert.equal(report.retainedQaBackupInventory.entries.length, 20);
+    assert.equal(report.retainedQaBackupInventory.omitted, 2);
+    assert.deepEqual(report.retainedQaBackupInventory.entries[0], {
+        name: 'redeploy-00000000', status: 'measured', bytes: '1000', hasRollbackAuthority: true, hasPreservationReceipt: true,
+    });
+    assert.equal(report.retainedQaBackupInventory.entries[1].hasPreservationReceipt, false);
+    assert.doesNotMatch(logs.join('\n'), /canary|Symlink1/);
 });
 
 test('selected QA tunnel must exist with its exact identity before token retrieval', t => {

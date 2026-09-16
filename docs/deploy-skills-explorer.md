@@ -53,6 +53,23 @@ Never expose secret values in commands, logs, reports, or artifacts.
 
 ## Required sequence
 
+QA capacity admission prints byte counts for available and required space,
+the shortfall, retained QA backups, durable data, and source/dependency/image
+caches before stopping any service. The categories overlap and must not be
+added together. Admission still requires free space of at least the larger of
+25 GiB and the current QA workspace allocation plus 4 GiB. The diagnostics do
+not authorize deleting caches, backups, or other host resources.
+
+After capacity admission, the QA workflow installs the SHA-256-pinned official
+Node.js 24.19.0 archive under `/home/admin/.qa-deployment-tools/` and prepends
+its `bin` directory only for that workflow. Existing installs are compared
+against the verified archive before execution. The shared host Node installation
+is unchanged. The toolchain survives workspace archival; each new backup records
+its directory in `helpers/node-runtime-path`. For recovery, read that path into
+`QA_NODE_HOME`, prepend `$QA_NODE_HOME/bin` to `PATH`, and invoke the retained
+rollback helper with `$QA_NODE_HOME/bin/node`. Older backups without that record
+need an independently verified Node.js 22-or-newer runtime before recovery.
+
 The QA workflow configures UserPersisto's public OIDC issuer and Google callback
 for `explorer-qa.axiologic.dev` before graph startup, using Ploinky's encrypted
 variable API. It adds the QA origin to the existing effective redirect list,
