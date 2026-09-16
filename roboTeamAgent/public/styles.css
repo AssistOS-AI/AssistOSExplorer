@@ -282,6 +282,9 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .state-starting { color: var(--warning); }
 .state-stopping { color: var(--danger); }
 .robot-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.robot-open { position: relative; }
+.open-options { position: absolute; z-index: 10; top: calc(100% + 6px); left: 0; min-width: 160px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-xl); }
+.open-options .button { display: flex; justify-content: flex-start; width: 100%; background: transparent; border-color: transparent; }
 .robot-session { display: flex; grid-column: 1 / -1; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; margin: 0; color: var(--text-soft); font-size: var(--font-sm); }
 .session-url { min-width: 0; color: var(--accent); overflow-wrap: anywhere; }
 .robot-log-controls { display: flex; grid-column: 1 / -1; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 10px; }
@@ -344,3 +347,13 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .skillset-item > strong { grid-column: 1; grid-row: 1; }
 .skillset-item > .button { grid-column: 2; grid-row: 1; justify-self: end; }
 .skillset-item > p, .skillset-item > .skill-members { grid-column: 1 / -1; }
+
+.coding-agents { display: flex; flex-wrap: wrap; gap: 12px; border: 0; margin: 0; padding: 0; }
+.coding-agents legend { margin-bottom: 8px; font-weight: 600; }
+.coding-agents label { display: inline-flex; align-items: center; gap: 6px; }
+.coding-agents input[type="radio"] { width: auto; margin: 0; accent-color: var(--accent); }
+.coding-agent-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 16px; }
+.coding-agent-status { flex-basis: 100%; margin: 0; font-size: 0.875rem; }
+.coding-agents-dialog { width: 480px; height: fit-content; }
+.coding-agents-dialog .message { flex-basis: 100%; }
+.active-coding-agent { margin: 8px 0 0; font-size: 0.875rem; color: var(--text-soft); }

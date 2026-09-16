@@ -6,10 +6,11 @@ import { ToolCache } from './tool-cache.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { DATA_DIR } from './constants.mjs';
+import { robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
 
 // One CLI process owns one robot context; browser input cannot change its home.
 export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, holdUsage = false,
-    dataDir = DATA_DIR, alaCommand } = {}) {
+    dataDir = DATA_DIR, alaCommand, toolCache } = {}) {
     const store = new RobotStore({ dataDir });
     await store.initialize();
     const robot = await store.getByName(robotName);
@@ -38,13 +39,14 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
         if (prepareTools) {
             // CLI output is consumed as conversation content. Routine cache diagnostics
             // must not enter that channel; preparation failures still propagate below.
-            const cache = new ToolCache({ dataDir: store.dataDir,
+            const cache = toolCache || new ToolCache({ dataDir: store.dataDir,
                 log: () => {} });
-            const agents = await cache.prepareCodingAgents();
-            for (const name of ['codex', 'opencode', 'pi']) {
-                process.env[`${name.toUpperCase()}_BIN`] = path.join(agents[name].binPath, name);
-            }
-            process.env.PATH = [...Object.values(agents).map((agent) => agent.binPath), process.env.PATH || ''].join(path.delimiter);
+            const codingAgents = robotCodingAgents(robot);
+            const tools = await cache.prepareShellTools(codingAgents);
+            const environment = codingAgentEnvironment(tools.agents, process.env, cache.root);
+            for (const name of ['CODEX_BIN', 'OPENCODE_BIN', 'PI_BIN']) delete process.env[name];
+            Object.assign(process.env, environment);
+            await prepareRobotShell(home, { codingAgents, binPath: tools.binPath, cacheRoot: cache.root });
         }
         const skillsets = new RobotSkillsets({ robotStore: store,
             workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT || '/workspace', alaCommand: process.env.ACHILLES_ALA_COMMAND });

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DATA_DIR } from './constants.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
+import { normalizeCodingAgents } from './coding-agents.mjs';
 
 const ROBOT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 
@@ -149,7 +150,7 @@ export class RobotStore {
         await fs.rename(tempPath, metadataPath);
     }
 
-    async _ensureLayout(robotRoot) {
+    async _ensureLayout(robotRoot, codingAgents) {
         for (const directory of ['home', 'workspace', 'downloads', 'logs', 'runtime']) {
             const target = path.join(robotRoot, directory);
             await fs.mkdir(target, { recursive: true, mode: 0o700 });
@@ -158,7 +159,7 @@ export class RobotStore {
         const codexHome = path.join(robotRoot, 'home', '.codex');
         await fs.mkdir(codexHome, { recursive: true, mode: 0o700 });
         await fs.chmod(codexHome, 0o700);
-        await prepareRobotShell(path.join(robotRoot, 'home'));
+        await prepareRobotShell(path.join(robotRoot, 'home'), { codingAgents });
     }
 
     async _readMetadata(robotId) {
@@ -227,12 +228,13 @@ export class RobotStore {
         });
     }
 
-    async create({ name, specialization = '' }) {
+    async create({ name, specialization = '', codingAgents }) {
         await this.initialize();
-        return withRegistryMutation(this.robotsDir, () => this._create({ name, specialization }));
+        return withRegistryMutation(this.robotsDir, () => this._create({ name, specialization, codingAgents }));
     }
 
-    async _create({ name, specialization = '' }) {
+    async _create({ name, specialization = '', codingAgents }) {
+        const selectedAgents = normalizeCodingAgents(codingAgents);
         const normalizedName = normalizeName(name);
         const normalizedSpecialization = normalizeSpecialization(specialization);
         await this.initialize();
@@ -253,18 +255,27 @@ export class RobotStore {
             }
         }
         if (!robotRoot) throw new Error('could not allocate robot id');
-        await this._ensureLayout(robotRoot);
+        await this._ensureLayout(robotRoot, selectedAgents);
         const now = new Date().toISOString();
         const metadata = {
             schema: 'roboteam-robot-v1',
             id: robotId,
             name: normalizedName,
             specialization: normalizedSpecialization,
+            codingAgents: selectedAgents,
             createdAt: now,
             updatedAt: now,
         };
         await this._writeMetadata(robotRoot, metadata);
         return metadata;
+    }
+
+    async setCodingAgents(robotId, codingAgents) {
+        const selected = normalizeCodingAgents(codingAgents);
+        return this.withRobot(robotId, async (robot, save) => {
+            await save({ ...robot, codingAgents: selected });
+            return { ...robot, codingAgents: selected };
+        });
     }
 
     async delete(robotId) {

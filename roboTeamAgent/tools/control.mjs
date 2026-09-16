@@ -179,7 +179,7 @@ async function main() {
     const user = invocationUser(payload);
     let result;
 
-    if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, specialization: input.specialization || '' }, user });
+    if (operation === 'robot-create') result = await request('/api/robots', { method: 'POST', body: { name: input.robotName, specialization: input.specialization || '', codingAgents: input.codingAgents }, user });
     else if (operation === 'robot-list') {
         result = await request('/api/robots', { user });
         // Repository management includes disabled combinations; discovery must omit them.

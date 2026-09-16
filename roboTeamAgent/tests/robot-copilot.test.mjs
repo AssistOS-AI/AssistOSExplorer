@@ -29,10 +29,11 @@ test('copilot cache preparation is silent but preparation failures remain visibl
     const output = [];
     for (const method of ['log', 'warn', 'error']) t.mock.method(console, method, (...args) => output.push(args));
     let fail = false;
-    t.mock.method(ToolCache.prototype, 'prepareCodingAgents', async function () {
+    t.mock.method(ToolCache.prototype, 'prepareShellTools', async function (names) {
         for (const name of ['codex', 'pi', 'opencode']) this.log(`[tool-cache] using ${name} cache generation example`);
         if (fail) throw new Error('cache preparation failed');
-        return Object.fromEntries(['codex', 'pi', 'opencode'].map((name) => [name, { binPath: '/cached/bin' }]));
+        assert.deepEqual(names, ['codex']);
+        return { binPath: '/cached/bin', agents: { codex: { binPath: '/cached/bin' } } };
     });
     await prepareCopilotContext('default', { dataDir: root });
     assert.deepEqual(output, []);
@@ -81,7 +82,7 @@ test('task runner uses robot home, persists a conversation, and resumes its nati
     await fs.writeFile(path.join(fake, 'package.json'), '{"name":"advanced-language-agent","type":"module"}');
     const entry = path.join(fake, 'ala.mjs');
     await fs.copyFile(new URL('../copilot/tests/fixtures/ala-engine-child.mjs', import.meta.url), entry);
-    for (const module of ['repositories.mjs', 'anthropic-skills.mjs', 'coding-agents/service.mjs']) {
+    for (const module of ['config.mjs', 'repositories.mjs', 'anthropic-skills.mjs', 'coding-agents/service.mjs']) {
         await fs.writeFile(path.join(fake, 'src', module), `export * from ${JSON.stringify(pathToFileURL(path.join(real.packageRoot, 'src', module)).href)};`);
     }
     await fs.writeFile(path.join(fake, 'src/coding-agents/discovery.mjs'),

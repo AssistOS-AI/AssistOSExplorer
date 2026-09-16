@@ -9,6 +9,8 @@ RoboTeam stores credential-bearing GUI state and operates a nested engine, so pu
 
 ## Core Content
 
+Coding-agent configuration is administrator-only through robot creation and `PATCH /api/robots/<id>/coding-agents`, behind the existing authenticated Router route and browser mutation proof. It configures available managed tools, not a security sandbox or a single-agent server restriction.
+
 Only authenticated administrators may add or remove a robot's skill repositories through POST or DELETE `/api/robots/<id>/skillsets`. Internal agents and non-admin users must be denied; existing Router identity and browser mutation proof remain required. Imports accept credential-free HTTPS Git URLs or canonical directories inside the workspace, excluding robot private data. Repository imports must reject symbolic links, special files, excessive size and malformed SKILL.md descriptors; they must never run repository setup scripts. Imported code remains a trusted administrator-selected supply-chain input, not validated safe code.
 
 Robot deletion from the dashboard must require confirmation and the same administrator authorization as `robot_delete`. It must refuse queued or active work, pending container transitions, and retained containers. The runtime must prevent late starts from recreating a deleted robot. Deletion removes that robot's home, runtime records, skillset imports and task catalogs, without deleting source repositories or the shared tool cache.

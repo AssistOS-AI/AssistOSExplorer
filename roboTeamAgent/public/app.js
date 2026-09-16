@@ -1,4 +1,4 @@
-import { openSkillsDialog } from './skills-dialog.js';
+import { openSkillsDialog, codingAgentLabel, openCodingAgentsDialog } from './skills-dialog.js';
 import { openRobotTerminal } from './terminal.js';
 
 const config = globalThis.ROBOTEAM_CONFIG || {};
@@ -11,6 +11,49 @@ const createForm = document.querySelector('#createForm');
 const formMessage = document.querySelector('#formMessage');
 const refreshButton = document.querySelector('#refreshButton');
 const logPollers = new Set();
+
+function closeOpenMenus(except) {
+    for (const menu of document.querySelectorAll('.robot-open')) {
+        if (menu === except) continue;
+        menu.querySelector('.open-toggle').setAttribute('aria-expanded', 'false');
+        menu.querySelector('.open-options').hidden = true;
+    }
+}
+
+document.addEventListener('click', event => closeOpenMenus(event.target.closest('.robot-open')));
+document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    const toggle = document.querySelector('.open-toggle[aria-expanded="true"]');
+    if (toggle) { closeOpenMenus(); toggle.focus(); }
+});
+
+function prepareOpenMenu(card, robot) {
+    const menu = card.querySelector('.robot-open');
+    const toggle = menu.querySelector('.open-toggle');
+    const options = menu.querySelector('.open-options');
+    options.id = `open-options-${robot.id}`;
+    toggle.setAttribute('aria-controls', options.id);
+    toggle.addEventListener('click', () => {
+        const opening = options.hidden;
+        closeOpenMenus();
+        options.hidden = !opening;
+        toggle.setAttribute('aria-expanded', String(opening));
+    });
+    toggle.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        closeOpenMenus();
+        options.hidden = false;
+        toggle.setAttribute('aria-expanded', 'true');
+        options.querySelector('button:not([hidden]):not(:disabled)')?.focus();
+    });
+    options.addEventListener('click', event => {
+        if (event.target.closest('button')) { closeOpenMenus(); toggle.focus(); }
+    });
+    menu.addEventListener('focusout', event => {
+        if (!menu.contains(event.relatedTarget)) closeOpenMenus();
+    });
+}
 
 function endpoint(relativePath) {
     return new URL(relativePath.replace(/^\/+/, ''), new URL(basePath, location.origin)).toString();
@@ -124,6 +167,7 @@ function renderRobots(robots, canAdmin = false) {
     }
     for (const robot of robots) {
         const card = robotTemplate.content.firstElementChild.cloneNode(true);
+        prepareOpenMenu(card, robot);
         const terminalButton = card.querySelector('.open-terminal');
         terminalButton.hidden = !canAdmin;
         terminalButton.addEventListener('click', async () => {
@@ -154,6 +198,11 @@ function renderRobots(robots, canAdmin = false) {
         card.querySelector('h3').textContent = robot.name;
         card.querySelector('.specialization').textContent = robot.specialization || 'General-purpose robot';
         card.querySelector('.robot-id').textContent = robot.id;
+        const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi'];
+        card.querySelector('.active-coding-agent').textContent = `Coding agent: ${codingAgentLabel(codingAgents)}`;
+        const codingButton = card.querySelector('.configure-coding-agent');
+        codingButton.hidden = !canAdmin;
+        codingButton.addEventListener('click', () => openCodingAgentsDialog(robot, { api, onChanged: loadRobots }));
         const state = card.querySelector('.run-state');
         state.textContent = robot.run.mode ? `${robot.run.state} · ${robot.run.mode}` : robot.run.state;
         state.classList.add(`state-${robot.run.state}`);
@@ -163,12 +212,13 @@ function renderRobots(robots, canAdmin = false) {
         const desktopButton = card.querySelector('.open-desktop');
         const browserRunning = running && robot.run.mode === 'browser';
         const desktopRunning = running && robot.run.mode === 'desktop';
-        browserButton.textContent = browserRunning ? 'Stop Browser' : 'Start Browser';
-        desktopButton.textContent = desktopRunning ? 'Stop Desktop' : 'Start Desktop';
-        if (browserRunning) browserButton.className = 'button danger open-browser';
-        if (desktopRunning) desktopButton.className = 'button danger open-desktop';
         browserButton.disabled = running && !(ready && robot.run.mode === 'browser');
         desktopButton.disabled = running && !(ready && robot.run.mode === 'desktop');
+        const stopButton = card.querySelector('.stop-workstation');
+        stopButton.hidden = !running;
+        stopButton.disabled = !ready;
+        stopButton.textContent = desktopRunning ? 'Stop Desktop' : 'Stop Browser';
+        stopButton.addEventListener('click', event => stopRobot(robot, event.currentTarget));
         const session = card.querySelector('.robot-session');
         if (ready) {
             const url = sessionUrl(robot.run);
@@ -180,11 +230,11 @@ function renderRobots(robots, canAdmin = false) {
             session.hidden = false;
         }
         browserButton.addEventListener('click', (event) => {
-            if (ready && robot.run.mode === 'browser') stopRobot(robot, event.currentTarget);
+            if (ready && browserRunning) navigateToSession(openPendingSession(robot, 'browser'), robot.run);
             else startRobot(robot, 'browser', event.currentTarget);
         });
         desktopButton.addEventListener('click', (event) => {
-            if (ready && robot.run.mode === 'desktop') stopRobot(robot, event.currentTarget);
+            if (ready && desktopRunning) navigateToSession(openPendingSession(robot, 'desktop'), robot.run);
             else startRobot(robot, 'desktop', event.currentTarget);
         });
         const logsButton = card.querySelector('.view-logs');

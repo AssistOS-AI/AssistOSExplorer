@@ -54,7 +54,7 @@ test('starts a desktop robot and publishes its link and returns it to the model'
                 robotName: 'Analyst',
                 cwd: '/workspace/project',
                 task: 'inspect the application',
-                ca: 'codex',
+                ca: 'auto',
             },
             options: undefined,
         },
@@ -111,7 +111,7 @@ test('normalizes the compact launch syntax deterministically', () => {
     assert.deepEqual(
         launchRobotInternals.normalizeRequest('browser Research Robot: compare the two pages'),
         {
-            mode: 'browser', robotName: 'Research Robot', task: 'compare the two pages', ca: 'codex',
+            mode: 'browser', robotName: 'Research Robot', task: 'compare the two pages', ca: 'auto',
         },
     );
 });

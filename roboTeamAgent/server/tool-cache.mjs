@@ -88,9 +88,11 @@ export class ToolCache {
         return results;
     }
 
-    prepareShellTools() {
-        return this._once('shell', async () => {
-            const agents = await this.prepareCodingAgents();
+    prepareShellTools(names = Object.keys(CODING_AGENT_PACKAGES)) {
+        const selected = [...new Set(names)].sort();
+        const shellName = selected.length === Object.keys(CODING_AGENT_PACKAGES).length ? 'shell' : `shell-${selected.join('-')}`;
+        return this._once(shellName, async () => {
+            const agents = await this.prepareCodingAgents(selected);
             const generation = generationName(Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, value.path])));
             const directory = path.join(this.root, 'shell-generations', generation);
             await fs.mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
@@ -115,9 +117,19 @@ export class ToolCache {
                 const candidate = path.join(this.root, `.shell-${crypto.randomUUID()}`);
                 try {
                     await fs.symlink(path.relative(this.root, directory), candidate);
-                    await fs.rename(candidate, path.join(this.root, 'shell'));
+                    await fs.rename(candidate, path.join(this.root, shellName));
                 } finally { await fs.unlink(candidate).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
-                return { root: this.root, binPath: path.join(this.root, 'shell', 'bin'), agents };
+                // Keep the same directory depth as shell-generations/<generation> so
+                // relative package links also resolve when this view is bind-mounted.
+                const selections = path.join(this.root, 'shell-selections');
+                await fs.mkdir(selections, { recursive: true, mode: 0o700 });
+                const selection = path.join(selections, shellName);
+                const stagedSelection = path.join(selections, `.shell-${crypto.randomUUID()}`);
+                try {
+                    await fs.symlink(path.relative(selections, directory), stagedSelection);
+                    await fs.rename(stagedSelection, selection);
+                } finally { await fs.unlink(stagedSelection).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
+                return { root: this.root, path: directory, binPath: path.join(selection, 'bin'), agents };
             } finally { await fs.rm(staging, { recursive: true, force: true }); }
         });
     }

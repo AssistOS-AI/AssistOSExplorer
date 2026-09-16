@@ -28,7 +28,7 @@ Example: `desktop analyst: inspect the application and prepare a usability repor
 
 ## Execution
 
-Run `node scripts/run.mjs --input 'desktop: inspect the application'` or `node scripts/run.mjs --input '{"mode":"browser","task":"compare the two pages"}'` from this skill directory. The default coding agent is `codex`; `ca` also accepts `auto`, `opencode`, and `pi`. The launcher never creates a robot. RoboTeam startup creates the ordinary `default` robot only when absent; launching while it is absent reports the normal unknown-robot error.
+Run `node scripts/run.mjs --input 'desktop: inspect the application'` or `node scripts/run.mjs --input '{"mode":"browser","task":"compare the two pages"}'` from this skill directory. The default coding-agent selection is `auto`, which lets ALA select from the target robot's configured agents. New robots enable only Codex. An explicit `ca` also accepts `codex`, `opencode`, or `pi` when enabled on that robot. The launcher never creates a robot. RoboTeam startup creates the ordinary `default` robot only when absent; launching while it is absent reports the normal unknown-robot error.
 
 For discovery, run `node scripts/list.mjs --input ''`. This helper lists workspace robot names, specializations, and mode/state through `robot_list`. It is part of this folder, not another registered skill.
 

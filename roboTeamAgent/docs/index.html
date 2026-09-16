@@ -16,7 +16,8 @@
   <nav class="breadcrumbs" aria-label="Breadcrumb">Documentation / Overview</nav>
   <h1>RoboTeam Documentation</h1>
 
-  <h2>Product vision</h2>
+  <p>New robots enable only Codex. Administrators can select OpenCode or Pi instead, using the same setting for conversations, delegated tasks and manual workstation tools. See <a href="operations.html#coding-agents">coding-agent configuration</a>.</p>
+<h2>Product vision</h2>
   <p class="lede">A robot is a durable virtual employee with a visible workstation. Its desktop or browser can be replaced without losing its home, account configuration, or work files.</p>
   <p>RoboTeam gives each workspace a shared catalog of named robots. Administrators create and delete ordinary records, and workspace agents assign work to them. At startup, RoboTeam creates the ordinary robot named exactly <code>default</code> only if it is missing; an existing one keeps its identity and home. A graphical task runs in a disposable Desktop or Browser container. The same Selkies session shows both automated actions and the final state, so a person can watch the work and open the workstation afterward.</p>
   <p>Robot identity and state survive container replacement. RoboTeam keeps the robot home, selected working directory, downloads, logs, and coding-agent configuration outside the graphical container. At service startup, runtime tools are prepared in a shared versioned cache in the background. Robots reuse the prepared tools; an immediate request waits for any preparation it needs.</p>
@@ -30,7 +31,7 @@
 
   <h2>Robot conversations and the default copilot</h2>
   <p>Opening or refreshing a robot chat prepares its coding-agent tools without printing routine cache messages into the conversation. Preparation failures are still reported.</p>
-  <p>Explorer's Open Copilot here opens <code>roboTeamAgent</code> with <code>robot=default</code> and the selected cwd. Every robot card has Open Chat. The former AchillesCLI wrapper now lives in <code>copilot/</code> inside RoboTeam; there is no separate AchillesCLI agent or image. Existing AchillesCLI data is neither copied nor deleted.</p>
+  <p>Explorer's Open Copilot here opens <code>roboTeamAgent</code> with <code>robot=default</code> and the selected cwd. Every robot card has Open → Chat. The former AchillesCLI wrapper now lives in <code>copilot/</code> inside RoboTeam; there is no separate AchillesCLI agent or image. Existing AchillesCLI data is neither copied nor deleted.</p>
   <p>A robot owns its home and configured accounts. A conversation owns its cwd, ALA session, transcript and selected skill catalog. Each message executes another turn in that conversation. Independent CLI conversations and Simple tasks run concurrently, including while a GUI task runs. Desktop and Browser still share one container and one graphical task queue.</p>
   <p>Use <code>/session</code>, <code>/session new</code>, <code>/session resume &lt;id&gt;</code>, <code>/tasks</code>, <code>/model</code> and <code>/permissions</code>. Codex and OpenCode support native approvals; Pi rejects ask-for-approval. The bundled <code>copilot</code> skillset is available only to default and initially selected with its local workspace skills. Manage repositories in RoboTeam and conversation skill selection in Explorer. Each external continuation captures current configured source files. Use <code>/list robots</code> to list workspace robots; the CLI does not administer repositories or skills.</p>
   <h2>Execution modes</h2>

@@ -179,3 +179,61 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         .finally(() => { loadingRecommendations = false; if (dialog.isConnected) render(); });
     return dialog;
 }
+
+const CODING_AGENT_LABELS = { codex: 'Codex', opencode: 'OpenCode', pi: 'Pi' };
+
+export function codingAgentLabel(names) {
+    return names.map(name => CODING_AGENT_LABELS[name] || name).join(', ');
+}
+
+export function openCodingAgentsDialog(robot, { api, onChanged }) {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'skills-dialog coding-agents-dialog';
+    dialog.setAttribute('aria-labelledby', 'coding-agents-dialog-title');
+    dialog.innerHTML = `<header class="skills-dialog-heading"><h2 id="coding-agents-dialog-title"></h2><button type="button" class="button secondary close-dialog">Close</button></header>
+        <form class="coding-agent-form">
+            <fieldset class="coding-agents"><legend>Coding agent</legend>
+                <label><input type="radio" name="codingAgent" value="codex" required> Codex</label>
+                <label><input type="radio" name="codingAgent" value="opencode"> OpenCode</label>
+                <label><input type="radio" name="codingAgent" value="pi"> Pi</label>
+            </fieldset>
+            <p class="coding-agent-status"></p>
+            <p class="message" role="status" aria-live="polite"></p>
+            <button class="button primary" type="submit">Save</button>
+        </form>`;
+    dialog.querySelector('h2').textContent = `Coding agent · ${robot.name}`;
+    const form = dialog.querySelector('form');
+    const close = () => { dialog.close(); dialog.remove(); };
+    const names = robot.codingAgents || ['codex', 'opencode', 'pi'];
+    const busy = robot.run.state !== 'stopped' || ['queued', 'starting', 'running', 'stopping'].includes(robot.run.task?.state);
+    for (const field of form.elements) {
+        field.disabled = busy;
+        if (field.type === 'radio') field.checked = names.length === 1 && field.value === names[0];
+    }
+    dialog.querySelector('.coding-agent-status').textContent = busy
+        ? 'Stop the workstation and tasks before changing the coding agent.'
+        : 'Changes apply to new chats and terminals. Existing conversations keep their backend.';
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const selected = new FormData(form).get('codingAgent');
+        if (!selected || busy) return;
+        for (const field of form.elements) field.disabled = true;
+        const message = dialog.querySelector('.message');
+        message.textContent = '';
+        try {
+            await api(`api/robots/${robot.id}/coding-agents`, { method: 'PATCH', body: { codingAgents: [selected] } });
+            close();
+            await onChanged();
+        } catch (error) {
+            message.textContent = error.message;
+            message.className = 'message error';
+            for (const field of form.elements) field.disabled = false;
+        }
+    });
+    dialog.querySelector('.close-dialog').addEventListener('click', close);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+    return dialog;
+}

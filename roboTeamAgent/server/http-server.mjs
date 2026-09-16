@@ -8,6 +8,7 @@ import { isAdminActor, requestActor } from './request-identity.mjs';
 import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRepositories } from './robot-skillsets.mjs';
 import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
+import { robotCodingAgents } from './coding-agents.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -146,6 +147,7 @@ function publicRobot(robot, run) {
         id: robot.id,
         name: robot.name,
         specialization: robot.specialization,
+        codingAgents: robotCodingAgents(robot),
         description: robot.specialization,
         skillsets: publicSkillsets(robot),
         skillRepositories: individualSkillRepositories(robot),
@@ -211,11 +213,15 @@ export function createRoboTeamServer(options) {
             const terminalRobotId = matchRobotPath(pathname, '/terminal');
             if (terminalRobotId && req.method === 'POST') {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
-                if (!await robotStore.get(terminalRobotId)) return sendError(res, 404, 'robot not found');
+                const robot = await robotStore.get(terminalRobotId);
+                if (!robot) return sendError(res, 404, 'robot not found');
                 const directory = await robotTerminalDirectory(robotStore, terminalRobotId, runtimeManager.workspaceRoot);
-                await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'));
+                const codingAgents = robotCodingAgents(robot);
+                const tools = await runtimeManager.toolCache.prepareShellTools(codingAgents);
+                await prepareRobotShell(path.join(robotStore.robotPath(terminalRobotId), 'home'), {
+                    codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
+                });
                 await runtimeManager.prepareOpenCode?.(terminalRobotId);
-                await runtimeManager.toolCache.prepareShellTools();
                 return sendJson(res, 200, { ok: true, directory });
             }
 
@@ -226,9 +232,21 @@ export function createRoboTeamServer(options) {
             if (pathname === '/api/robots' && req.method === 'POST') {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
-                const robot = await robotStore.create({ name: body.name, specialization: body.specialization });
+                const robot = await robotStore.create({ name: body.name, specialization: body.specialization, codingAgents: body.codingAgents });
                 await runtimeManager.prepareOpenCode?.(robot.id);
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
+            }
+            const codingAgentsId = matchRobotPath(pathname, '/coding-agents');
+            if (codingAgentsId && req.method === 'PATCH') {
+                if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
+                if (!await robotStore.get(codingAgentsId)) return sendError(res, 404, 'robot not found');
+                if (runtimeManager.status(codingAgentsId).state !== 'stopped' || runtimeManager.hasUnfinishedTasks?.(codingAgentsId)) {
+                    return sendError(res, 409, 'stop the robot workstation and tasks before changing coding agents');
+                }
+                const body = await readJsonBody(req);
+                if (!Object.hasOwn(body, 'codingAgents')) return sendError(res, 400, 'codingAgents is required');
+                const robot = await robotStore.setCodingAgents(codingAgentsId, body.codingAgents);
+                return sendJson(res, 200, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
             }
             const skillsetsId = matchRobotPath(pathname, '/skillsets');
             if (skillsetsId && ['POST', 'DELETE', 'PATCH'].includes(req.method)) {
@@ -264,7 +282,7 @@ export function createRoboTeamServer(options) {
                 if (startTypes[operation]) {
                     const task = await skillsets.start(robot, body, (current, skillSelection) => runtimeManager.startTask(current, startTypes[operation], {
                         cwd: body.cwd, task: String(body.task || ''), skillPolicyRef: skillSelection.policyId, alaSessionId: skillSelection.policyId,
-                        model: body.model || null, ca: body.ca || 'codex',
+                        model: body.model || null, ca: body.ca || 'auto',
                     }));
                     return sendJson(res, 202, {
                         ok: true,

@@ -98,14 +98,15 @@ test('opens the Explorer runtime loader for the RoboTeam dashboard and follows h
     }
 });
 
-test('opens a pending robot session before awaiting startup and toggles the active mode to stop', async () => {
+test('opens a pending robot session before awaiting startup and offers session reopening and a separate stop action', async () => {
     const source = await readFile(join(testDirectory, '..', 'public', 'app.js'), 'utf8');
     const html = await readFile(join(testDirectory, '..', 'public', 'index.html'), 'utf8');
     const startFunction = source.slice(source.indexOf('async function startRobot'), source.indexOf('function renderRobots'));
     assert.ok(startFunction.indexOf('openPendingSession(robot, mode)') < startFunction.indexOf('await api('));
     assert.match(source, /robot\.run\.state === 'running' && robot\.run\.sessionUrl/);
-    assert.match(source, /browserRunning \? 'Stop Browser' : 'Start Browser'/);
-    assert.match(source, /desktopRunning \? 'Stop Desktop' : 'Start Desktop'/);
+    assert.match(source, /desktopRunning \? 'Stop Desktop' : 'Stop Browser'/);
+    assert.match(html, /class="open-options" hidden/);
+    assert.match(html, /class="button danger stop-workstation"/);
     assert.match(source, /stopRobot\(robot, event\.currentTarget\)/);
     assert.match(source, /window\.location\.assign\(url\)/);
     assert.match(source, /link\.textContent = url/);

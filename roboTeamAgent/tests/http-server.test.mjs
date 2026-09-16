@@ -59,6 +59,25 @@ test('terminal home endpoint requires administrator access', async () => {
     } finally { await fixture.close(); }
 });
 
+test('coding-agent settings require an administrator and accept multiple agents through the API', async t => {
+    const fixture = await startFixture();
+    t.after(fixture.close);
+    const robot = await fixture.robotStore.create({ name: 'configured' });
+    const url = `${fixture.baseUrl}/api/robots/${robot.id}/coding-agents`;
+    const update = (roles, codingAgents) => fetch(url, { method: 'PATCH',
+        headers: { 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('actor', roles) },
+        body: JSON.stringify({ codingAgents }) });
+    assert.equal((await update(['user'], ['pi'])).status, 403);
+    const single = await update(['admin'], ['opencode']);
+    assert.equal(single.status, 200);
+    assert.deepEqual((await single.json()).robot.codingAgents, ['opencode']);
+    const multiple = await update(['admin'], ['codex', 'opencode', 'pi']);
+    assert.equal(multiple.status, 200);
+    assert.deepEqual((await multiple.json()).robot.codingAgents, ['codex', 'opencode', 'pi']);
+    await fixture.runtimeManager.start(robot, 'desktop');
+    assert.equal((await update(['admin'], ['pi'])).status, 409);
+});
+
 test('robot API shares workspace robots and restricts creation to administrators', async () => {
     const fixture = await startFixture();
     try {
@@ -195,7 +214,9 @@ test('serves the skills dialog, shared theme and local font through the authenti
         headers: { 'x-ploinky-auth-info': authHeader('admin', ['admin']) },
     });
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /export function openSkillsDialog/);
+    const dialogs = await response.text();
+    assert.match(dialogs, /export function openSkillsDialog/);
+    assert.match(dialogs, /export function openCodingAgentsDialog/);
     const theme = await fetch(`${fixture.baseUrl}/`, {
         headers: { 'x-ploinky-auth-info': authHeader('admin', ['admin']) },
     });

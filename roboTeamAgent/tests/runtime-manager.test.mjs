@@ -9,7 +9,9 @@ import test from 'node:test';
 import { buildRobotRunArgs, RuntimeManager, runtimeManagerInternals } from '../server/runtime-manager.mjs';
 
 const preparedToolCache = {
-    prepareShellTools: async () => ({ root: '/cache', binPath: '/cache/shell/bin' }),
+    root: '/cache',
+    prepareShellTools: async (names = ['codex', 'opencode', 'pi']) => ({ root: '/cache', path: '/cache/shell-generations/test',
+        binPath: '/cache/shell-generations/test/bin', agents: Object.fromEntries(names.map(name => [name, { path: `/cache/${name}`, binPath: `/cache/${name}/bin` }])) }),
     prepareMode: async (mode) => ({ path: `/cache/${mode}`, versions: {} }),
     prepareCodex: async () => ({ path: '/cache/codex', binPath: '/cache/codex/bin', versions: {} }),
     prepareCodingAgents: async (names = ['codex', 'opencode', 'pi']) => Object.fromEntries(names.map((name) => [name, {
@@ -50,11 +52,14 @@ test('builds browser and desktop containers around the persistent robot director
         timezone: 'Europe/Bucharest',
         cwd: '/workspace/project',
         toolsPath: '/cache/desktop',
-        shellTools: { root: '/cache' },
+        shellTools: { root: '/cache', path: '/cache/shell-generations/test', binPath: '/cache/shell-generations/test/bin',
+            agents: { codex: { path: '/cache/codex' } } },
     });
-    assert.ok(desktop.args.includes('/cache:/data/tool-cache:ro'));
+    assert.ok(desktop.args.includes('/cache/codex:/cache/codex:ro'));
+    assert.ok(desktop.args.includes('/cache/shell-generations/test:/cache/shell-generations/test:ro'));
+    assert.equal(desktop.args.includes('/cache:/data/tool-cache:ro'), false);
     assert.ok(desktop.args.includes('CODEX_HOME=/config/.codex'));
-    assert.ok(desktop.args.includes('PATH=/data/tool-cache/shell/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
+    assert.ok(desktop.args.includes('PATH=/cache/shell-generations/test/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
     assert.deepEqual(desktop.args.slice(2, 4), ['--log-driver', 'k8s-file']);
 });
 
@@ -180,6 +185,38 @@ test('extracts visible coding-agent messages from the ALA event stream', () => {
     assert.equal(output, 'ala diagnostic\nfirst message\n');
 });
 
+test('automatic MCP tasks expose only the robot selection and cannot prepare a disabled backend', async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-selected-task-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const robot = { id: 'selected-abc123', name: 'Selected', codingAgents: ['opencode'] };
+    const invocations = [];
+    const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root,
+        toolCache: preparedToolCache,
+        spawnImpl: (_command, args, options) => {
+            invocations.push({ args, env: options.env });
+            const child = new EventEmitter();
+            child.stdout = new PassThrough(); child.stderr = new PassThrough();
+            setImmediate(() => child.emit('close', 0, null));
+            return child;
+        },
+    });
+    t.after(() => manager.stopAll());
+    const task = manager._newTask(robot, 'simple', { cwd: root, task: 'Read the project' });
+    await manager._runTask(robot, task);
+    assert.equal(task.state, 'completed', task.error);
+    assert.equal(invocations.length, 1);
+    const { args, env } = invocations[0];
+    assert.equal(args[args.indexOf('--ca') + 1], 'auto');
+    assert.equal(env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
+    assert.equal(env.CODEX_BIN, undefined);
+    assert.equal(env.PI_BIN, undefined);
+    const disabled = manager._newTask(robot, 'simple', { cwd: root, task: 'Read the project', ca: 'codex' });
+    await manager._runTask(robot, disabled);
+    assert.equal(disabled.state, 'failed');
+    assert.match(disabled.error, /not enabled/);
+    assert.equal(invocations.length, 1);
+});
+
 test('reports the bounded ALA diagnostic when the process exits unsuccessfully', () => {
     const message = runtimeManagerInternals.alaFailureMessage(1, '\u001b[31mala: Codex is unavailable\u001b[0m\n');
     assert.equal(message, 'ALA exited with 1: ala: Codex is unavailable');
@@ -199,7 +236,7 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
     ]);
     const spawnImpl = () => {
         const child = new EventEmitter();
-        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+        child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => { queueMicrotask(() => child.emit('close', null, 'SIGTERM')); return true; };
         return child;
     };
     const manager = new RuntimeManager({ dataDir, workspaceRoot: workspace, spawnImpl, toolCache: preparedToolCache });

@@ -12,6 +12,7 @@ import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE
 import { prepareRobotShell } from './robot-shell.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
+import { robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
@@ -20,7 +21,6 @@ const ALA_FAILURE_DETAIL_LIMIT = 4096;
 const TASK_LOG_TAIL_LIMIT = 1024 * 1024;
 const TASK_RESULT_LIMIT = 1024 * 1024;
 const ALA_EVENT_PREFIX = '@@ALA_EVENT@@';
-const CODING_AGENT_NAMES = Object.freeze(['codex', 'opencode', 'pi']);
 const ROBOT_AGENT_STATE_DIRECTORIES = Object.freeze([
     '.codex',
     '.config/opencode',
@@ -156,7 +156,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
             ...(mode === 'browser' ? ['-e', 'CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility'] : []),
             ...(shellTools ? [
-                '-e', 'PATH=/data/tool-cache/shell/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                '-e', `PATH=${shellTools.binPath}:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
                 '-e', 'CODEX_HOME=/config/.codex',
                 '-e', 'HOME=/config',
                 '-e', 'XDG_CONFIG_HOME=/config/.config', '-e', 'XDG_CACHE_HOME=/config/.cache',
@@ -166,7 +166,10 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '-v', `${path.join(robotRoot, 'home')}:/config`,
             '-v', `${cwd}:/workspace`,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
-            ...(shellTools ? ['-v', `${shellTools.root}:/data/tool-cache:ro`] : []),
+            ...(shellTools ? [
+                '-v', `${shellTools.path}:${path.dirname(shellTools.binPath)}:ro`,
+                ...Object.values(shellTools.agents).flatMap(agent => ['-v', `${agent.path}:${agent.path}:ro`]),
+            ] : []),
             images[mode],
         ],
     };
@@ -277,9 +280,11 @@ export class RuntimeManager {
             await this._prepareRobotAgentState(robotHome);
             await this.prepareOpenCode(robot.id);
             const existing = this.sessions.get(robot.id);
+            const codingAgents = robotCodingAgents(robot);
+            const codingAgentsKey = codingAgents.join(',');
             if (existing) {
                 if (existing.mode !== mode && !options.taskId) throw new Error(`robot slot is occupied by its ${existing.mode} container`);
-                if (existing.mode === mode && existing.cwd === cwd) return existing;
+                if (existing.mode === mode && existing.cwd === cwd && existing.codingAgentsKey === codingAgentsKey) return existing;
                 const activeTask = this.activeTaskStatus(robot.id);
                 const activeStates = ['queued', 'starting', 'running', 'stopping'];
                 if (activeTask && activeTask.taskId !== options.taskId && activeStates.includes(activeTask.state)) {
@@ -292,10 +297,11 @@ export class RuntimeManager {
             if (this.sessions.size >= this.maxActive) throw new Error(`active robot limit reached (${this.maxActive})`);
             const [tools, shellTools] = await Promise.all([
                 this.toolCache.prepareMode(mode),
-                mode === 'desktop' ? this.toolCache.prepareShellTools() : Promise.resolve(null),
+                this.toolCache.prepareShellTools(codingAgents),
             ]);
+            await prepareRobotShell(robotHome, { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
             const plan = buildRobotRunArgs({ robot, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools });
-            const session = { robotId: robot.id, mode, cwd, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
+            const session = { robotId: robot.id, mode, cwd, codingAgentsKey, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
             this.sessions.set(robot.id, session);
             try {
                 await this._podman(plan.args, 10 * 60 * 1000);
@@ -420,10 +426,12 @@ export class RuntimeManager {
             task.startedAt = new Date().toISOString();
             const cwd = await this.resolveCwd(task.request.cwd);
             if (task.cancelRequested) throw new Error('task was stopped');
-            const codingAgent = task.request.ca || 'codex';
-            const codingAgentsPromise = codingAgent === 'auto'
-                ? this.toolCache.prepareCodingAgents()
-                : this.toolCache.prepareCodingAgents([codingAgent]);
+            const codingAgent = task.request.ca || 'auto';
+            const selectedAgents = robotCodingAgents(robot);
+            if (codingAgent !== 'auto' && !selectedAgents.includes(codingAgent)) {
+                throw new Error(`Coding agent ${codingAgent} is not enabled for this robot`);
+            }
+            const codingAgentsPromise = this.toolCache.prepareCodingAgents(codingAgent === 'auto' ? selectedAgents : [codingAgent]);
             let mcpAddress = null;
             if (GUI_MODES.has(task.type)) {
                 const [, session] = await Promise.all([
@@ -460,14 +468,9 @@ export class RuntimeManager {
             if (mcpAddress) args.push('--MCPServers', mcpAddress);
             task.state = 'running';
             const codingAgents = await codingAgentsPromise;
-            const codingAgentPath = CODING_AGENT_NAMES
-                .map((name) => codingAgents[name]?.binPath)
-                .filter(Boolean)
-                .join(':');
             const childEnv = {
-                ...process.env,
+                ...codingAgentEnvironment(codingAgents, process.env, this.toolCache.root),
                 ALA_EVENT_STREAM: '1',
-                ...(codingAgentPath ? { PATH: `${codingAgentPath}:${process.env.PATH || ''}` } : {}),
             };
             delete childEnv.ROBOTEAM_INTERNAL_TOKEN;
             delete childEnv.ROBOTEAM_TASK_SKILL_SELECTION;

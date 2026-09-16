@@ -73,7 +73,7 @@ test('startup reuses an ordinary default robot unchanged and ordinary deletion p
         assert.equal(recreated.name, 'default');
         assert.equal(recreated.specialization, '');
         assert.deepEqual(Object.keys(recreated).sort(),
-            ['createdAt', 'id', 'name', 'schema', 'specialization', 'updatedAt']);
+            ['codingAgents', 'createdAt', 'id', 'name', 'schema', 'specialization', 'updatedAt']);
         assert.equal((await store.list()).length, 1);
     });
 });

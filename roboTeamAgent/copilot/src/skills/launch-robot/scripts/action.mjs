@@ -36,7 +36,7 @@ function normalizeRequest(promptText) {
     if (!MODES.has(mode)) throw new Error('mode must be desktop, browser, or cli');
     if (!robotName) throw new Error('robotName must be a nonblank string when supplied');
     if (!task) throw new Error('task is required');
-    const ca = trim(input.ca) || 'codex';
+    const ca = trim(input.ca) || 'auto';
     if (!['auto', 'codex', 'opencode', 'pi'].includes(ca)) throw new Error('ca must be auto, codex, opencode, or pi');
     return {
         mode,
