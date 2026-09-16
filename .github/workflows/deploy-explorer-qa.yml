@@ -825,6 +825,8 @@ jobs:
                   command -v "$nested_engine" >/dev/null 2>&1 || continue
                   "$nested_engine" container ls -a --format "[deploy-qa] Rollback nested container: id={{.ID}} name={{.Names}} image={{.Image}} status={{.Status}} labels={{.Labels}}"
                   "$nested_engine" volume ls --format "[deploy-qa] Rollback nested volume: name={{.Name}} labels={{.Labels}}"
+                  echo "[deploy-qa] QA nested storage usage ($nested_engine):"
+                  timeout 30 "$nested_engine" system df --format json || echo '[deploy-qa] QA nested storage usage is unavailable.'
                 done
               '
             done < <(
@@ -1102,10 +1104,10 @@ jobs:
               curl -fsS --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 \
                 --max-filesize 104857600 \
                 "https://nodejs.org/dist/v24.19.0/$QA_NODE_DIST.tar.xz" -o "$QA_NODE_STAGE/archive.tar.xz"
-              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | sha256sum -c - >/dev/null
+              printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_STAGE/archive.tar.xz" | timeout 30 sha256sum -c - >/dev/null
               mv -T "$QA_NODE_STAGE/archive.tar.xz" "$QA_NODE_ARCHIVE"
             fi
-            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | sha256sum -c - >/dev/null
+            printf '%s  %s\n' "$QA_NODE_SHA" "$QA_NODE_ARCHIVE" | timeout 30 sha256sum -c - >/dev/null
             if [ ! -e "$QA_NODE_TARGET" ]; then
               timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" -C "$QA_NODE_STAGE"
               mv -T "$QA_NODE_STAGE/$QA_NODE_DIST" "$QA_NODE_TARGET"
@@ -1114,7 +1116,7 @@ jobs:
             # version string or cached marker alone is not integrity evidence.
             timeout 60 tar --no-same-owner --no-same-permissions -xJf "$QA_NODE_ARCHIVE" \
               -C "$QA_NODE_STAGE" "$QA_NODE_DIST/bin/node"
-            cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
+            timeout 30 cmp -s "$QA_NODE_STAGE/$QA_NODE_DIST/bin/node" "$QA_NODE_TARGET/bin/node"
             [ "$(timeout 10 "$QA_NODE_TARGET/bin/node" --version)" = 'v24.19.0' ]
             printf '%s\n' "$QA_NODE_TARGET"
           )
