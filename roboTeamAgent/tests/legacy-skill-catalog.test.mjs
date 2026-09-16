@@ -49,7 +49,12 @@ test('explicit pin recovers a saved path manifest without rewriting its sources 
     const catalog = createRobotSkillCatalog({ context: { robot: f.robot, store: f.store, skillsets: f.service }, sessionStore, workingDir: f.source });
     const initial = await catalog.refresh(id);
     assert.ok(initial.diagnostics.some(entry => /unavailable|cannot be proven/.test(entry.message)));
-    await catalog.command(id, 'pin');
+    assert.equal(catalog.command, undefined);
+    const existing = await f.service.policies.read(f.robot.id, id);
+    const recovered = await recoverPathCatalog(f.service, f.robot.id, existing.legacyRecovery);
+    await f.service.policies.update(f.robot.id, id, existing.policyVersion, next => {
+        next.mode = 'pinned'; next.pinnedCatalog = recovered; return next;
+    });
     const policy = await f.service.policies.read(f.robot.id, id);
     assert.equal(policy.mode, 'pinned');
     const directory = await f.service.catalogPath(f.robot.id, policy.pinnedCatalog);

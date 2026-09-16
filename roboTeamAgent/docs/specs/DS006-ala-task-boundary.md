@@ -87,6 +87,8 @@ Response: Independent Simple/CLI conversations run concurrently. Desktop and Bro
 
 Response: No. The default robot starts with its own state. Existing robot homes are retained, and old AchillesCLI files are left untouched.
 
+RoboTeam must not implement conversation commands for skill selection, live updates or pinning. ALA owns the single initial instruction about mounted .agents/skills; continued turns must not repeat that instruction.
+
 ## Conclusion
 
 RoboTeam owns robot and GUI lifecycle; the shared conversational wrapper preserves session and task state, and ALA owns native coding-agent execution.

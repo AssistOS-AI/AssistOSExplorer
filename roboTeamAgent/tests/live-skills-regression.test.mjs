@@ -11,6 +11,14 @@ import { skillCatalogRequest } from '../server/skill-catalog-api.mjs';
 import { createRobotSkillCatalog } from '../copilot/src/lib/robotSkillCatalog.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
+
+async function updatePolicy(f, id, change) {
+    const policy = await f.service.policies.read(f.robot.id, id);
+    change(policy);
+    const next = await f.service.policies.rememberNameExclusions(await f.store.get(f.robot.id), policy, f.scopeRoot);
+    await f.service.policies.update(f.robot.id, id, policy.policyVersion, () => next);
+}
+
 const names = (catalog) => catalog.entries.map((entry) => entry.name).sort();
 async function write(file, value) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, value); }
 async function skill(root, relative, name = path.basename(relative), body = 'Instruction original') {
@@ -291,10 +299,10 @@ test('a logical name exclusion suppresses a missing qualified imported identity 
     const dir = await skill(f.scopeRoot, 'import-only/folder-name', 'native-name');
     await f.service.add(f.robot.id, { name: 'documents', source: path.dirname(dir) });
     const id = await f.policy({ skillSets: [], skills: ['documents/native-name'] });
-    await conversation(f, id).command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     await fs.rm(dir, { recursive: true });
     assert.deepEqual(names(await f.capture(id)), []);
-    await conversation(f, id).command(id, 'allow-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames = policy.excludedNames.filter(name => name !== 'native-name'); });
     await assert.rejects(f.capture(id), /explicitly selected skill is unavailable/);
 });
 
@@ -306,7 +314,7 @@ for (const change of ['deleted', 'malformed']) {
         const dir = await skill(f.scopeRoot, relative, 'native-name');
         const id = await f.policy({ skills: [identity] });
         const catalog = conversation(f, id);
-        await catalog.command(id, 'deny-name native-name');
+        await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
         const saved = await f.service.policies.read(f.robot.id, id);
         assert.deepEqual(saved.excludedNameIdentities, { [identity]: 'native-name' });
         if (change === 'deleted') await fs.rm(dir, { recursive: true });
@@ -314,7 +322,7 @@ for (const change of ['deleted', 'malformed']) {
         assert.ok((await f.inventory(id)).skills.every(entry => !entry.enabled));
         assert.deepEqual(names(await f.capture(id)), []);
         assert.deepEqual(await f.service.policies.read(f.robot.id, id), saved, 'Inventory and capture must not mutate exclusion provenance.');
-        await catalog.command(id, 'allow-name native-name');
+        await updatePolicy(f, id, policy => { policy.excludedNames = policy.excludedNames.filter(name => name !== 'native-name'); });
         assert.equal((await f.service.policies.read(f.robot.id, id)).excludedNameIdentities, undefined);
         await assert.rejects(f.capture(id), /explicitly selected skill/);
         await skill(f.scopeRoot, relative, 'native-name');
@@ -329,10 +337,10 @@ test('a valid workspace descriptor rename outranks historical excluded-name prov
     await skill(f.scopeRoot, relative, 'native-name');
     const id = await f.policy({ skills: [identity] });
     const catalog = conversation(f, id);
-    await catalog.command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     await skill(f.scopeRoot, relative, 'replacement-name');
     assert.deepEqual(names(await f.capture(id)), ['replacement-name']);
-    await catalog.command(id, `use ${identity}`);
+    await updatePolicy(f, id, policy => { policy.selectors = { skillSets: [], skills: [identity] }; });
     assert.equal((await f.service.policies.read(f.robot.id, id)).excludedNameIdentities, undefined,
         'A mutation that observes the valid new name must discard the old association.');
     await fs.writeFile(path.join(f.scopeRoot, relative, 'SKILL.md'), 'malformed');
@@ -344,7 +352,7 @@ test('Settings toggles discard a workspace name exclusion after observing a vali
     const relative = '.agents/skills/folder-name', identity = `workspace:${relative}`;
     const dir = await skill(f.scopeRoot, relative, 'native-name');
     const id = await f.policy({ skillSets: [], skills: [identity] });
-    await conversation(f, id).command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     await skill(f.scopeRoot, relative, 'replacement-name');
     let policy = await f.service.policies.read(f.robot.id, id);
     const disabled = await f.service.setEnabled(f.robot, id, policy.policyVersion, identity, false, f.scopeRoot);
@@ -391,10 +399,10 @@ test('registered imported names remain provable when a descriptor is already mal
     await f.service.add(f.robot.id, { name: 'documents', source: path.dirname(dir) });
     const id = await f.policy({ skillSets: ['documents'] });
     await fs.writeFile(path.join(dir, 'SKILL.md'), 'malformed');
-    await conversation(f, id).command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     assert.equal((await f.inventory(id)).skills.find(entry => entry.identity === 'documents/native-name').state, 'disabled');
     assert.deepEqual(names(await f.capture(id)), []);
-    await conversation(f, id).command(id, 'allow-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames = policy.excludedNames.filter(name => name !== 'native-name'); });
     await assert.rejects(f.capture(id), /selected skill documents\/native-name/);
 });
 
@@ -404,7 +412,7 @@ test('an explicitly observed imported rename supersedes registration and old exc
     const dir = await skill(f.scopeRoot, relative, 'native-name');
     await f.service.add(f.robot.id, { name: 'documents', source: path.dirname(dir) });
     const id = await f.policy({ skillSets: ['documents'] });
-    await conversation(f, id).command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     await skill(f.scopeRoot, relative, 'replacement-name');
     assert.deepEqual(names(await f.capture(id)), ['replacement-name']);
     const current = await f.service.policies.read(f.robot.id, id);
@@ -420,14 +428,16 @@ test('replacing /skills selection preserves imported live-name evidence through 
     const dir = await skill(f.scopeRoot, 'import-only/folder-name', 'native-name');
     await f.service.add(f.robot.id, { name: 'documents', source: path.dirname(dir) });
     const id = await f.policy({ skillSets: ['documents'] });
-    await conversation(f, id).command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     await skill(f.scopeRoot, 'import-only/folder-name', 'replacement-name');
-    await conversation(f, id).command(id, 'use documents/replacement-name');
+    await updatePolicy(f, id, policy => { policy.selectors = { skillSets: [], skills: ['documents/replacement-name'] }; });
     const proof = (await f.service.policies.read(f.robot.id, id)).importedSkillNames;
     await fs.writeFile(path.join(dir, 'SKILL.md'), 'malformed');
-    await conversation(f, id).command(id, 'use none');
+    await updatePolicy(f, id, policy => { policy.selectors = { skillSets: [], skills: [] }; });
     assert.deepEqual((await f.service.policies.read(f.robot.id, id)).importedSkillNames, proof);
-    await assert.rejects(conversation(f, id).command(id, 'use documents/replacement-name'), /explicitly selected skill/);
+    const selectedPolicy = await f.service.policies.read(f.robot.id, id);
+    selectedPolicy.selectors = { skillSets: [], skills: ['documents/replacement-name'] };
+    await assert.rejects(f.service.live.resolve(await f.store.get(f.robot.id), selectedPolicy, f.scopeRoot), /explicitly selected skill/);
     assert.deepEqual(names(await f.capture(id)), []);
 });
 
@@ -452,7 +462,7 @@ test('unproven malformed imported folders cannot inherit exclusions from a match
     await fs.rm(dir, { recursive: true });
     await write(path.join(f.scopeRoot, 'import-only/native-name/SKILL.md'), 'malformed');
     await assert.rejects(f.capture(id), /selected skill documents\/native-name/);
-    await conversation(f, id).command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     await assert.rejects(f.capture(id), /selected skill documents\/native-name/);
 });
 
@@ -461,7 +471,7 @@ test('imported name evidence is tied to the exact registered source generation a
     const dir = await skill(f.scopeRoot, 'import-only/folder-name', 'native-name');
     await f.service.add(f.robot.id, { name: 'documents', source: path.dirname(dir) });
     const id = await f.policy({ skillSets: ['documents'] });
-    await conversation(f, id).command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     const policy = await f.service.policies.read(f.robot.id, id);
     await f.service.remove(f.robot.id, 'documents');
     const replacement = await skill(f.scopeRoot, 'other-source/folder-name', 'replacement-name');
@@ -503,13 +513,13 @@ test('explicit workspace selection learns an existing name exclusion from a newl
     const f = await fixture(t);
     const id = await f.policy({ skillSets: [], skills: [] });
     const catalog = conversation(f, id);
-    await catalog.command(id, 'deny-name native-name');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('native-name'); });
     const relative = '.agents/skills/folder-name';
     const identity = `workspace:${relative}`;
     const dir = await skill(f.scopeRoot, relative, 'native-name');
-    await catalog.command(id, `use ${identity}`);
+    await updatePolicy(f, id, policy => { policy.selectors = { skillSets: [], skills: [identity] }; });
     assert.deepEqual((await f.service.policies.read(f.robot.id, id)).excludedNameIdentities, { [identity]: 'native-name' });
-    await catalog.command(id, 'use none');
+    await updatePolicy(f, id, policy => { policy.selectors = { skillSets: [], skills: [] }; });
     await fs.rm(dir, { recursive: true });
     assert.deepEqual(names(await f.capture(id)), []);
     assert.deepEqual((await f.service.policies.read(f.robot.id, id)).excludedNameIdentities, { [identity]: 'native-name' },
@@ -570,13 +580,13 @@ test('logical name exclusions cover future identities while a single identity ex
     await skill(f.scopeRoot, 'new-repo/.agents/skills/shared');
     assert.ok((await f.inventory(id)).skills.filter((entry) => entry.name === 'shared').every((entry) => !entry.enabled));
     const catalog = conversation(f, id);
-    await catalog.command(id, 'allow-name shared');
+    await updatePolicy(f, id, policy => { policy.excludedNames = policy.excludedNames.filter(name => name !== 'shared'); });
     let inventory = await f.inventory(id);
     assert.equal(inventory.skills.find((entry) => entry.enabled).identity, 'workspace:.agents/skills/shared');
     await f.service.setEnabled(await f.store.get(f.robot.id), id, inventory.policyVersion, 'workspace:.agents/skills/shared', false, f.scopeRoot);
     inventory = await f.inventory(id);
     assert.equal(inventory.skills.find((entry) => entry.enabled).identity, 'workspace:new-repo/.agents/skills/shared');
-    await catalog.command(id, 'deny-name shared');
+    await updatePolicy(f, id, policy => { policy.excludedNames.push('shared'); });
     assert.deepEqual(names(await f.capture(id)), []);
 });
 
@@ -593,7 +603,7 @@ test('declared local replacement remains a tombstone after deletion and cannot s
     const id = await f.policy({ skillSets: ['distribution'] });
     assert.equal((await f.capture(id)).entries[0].identity, 'distribution/shared');
     const catalog = conversation(f, id);
-    await catalog.command(id, 'override distribution workspace:.agents/skills');
+    await updatePolicy(f, id, policy => { policy.overrides.distribution = 'workspace:.agents/skills'; policy.selectors.skillSets.push('workspace:.agents/skills'); });
     const replaced = await f.capture(id);
     assert.equal(replaced.entries[0].identity, 'workspace:.agents/skills/shared');
     await fs.rm(local, { recursive: true });
@@ -643,7 +653,7 @@ test('an explicit empty catalog can be pinned and later returned to live selecti
     const empty = await catalog.refresh(id, { execution: true });
     f.releases.push(empty.release);
     await empty.release();
-    await catalog.command(id, 'pin');
+    await updatePolicy(f, id, policy => { policy.mode = 'pinned'; policy.pinnedCatalog = empty; });
     await skill(f.scopeRoot, '.agents/skills/new-local');
     assert.deepEqual((await catalog.refresh(id)).skills, []);
     const pinned = await catalog.refresh(id, { execution: true });
@@ -651,8 +661,8 @@ test('an explicit empty catalog can be pinned and later returned to live selecti
     assert.deepEqual(names(pinned), []);
     assert.equal(pinned.catalogPath, empty.catalogPath);
     await pinned.release();
-    await catalog.command(id, 'live');
-    await catalog.command(id, 'use workspace');
+    await updatePolicy(f, id, policy => { policy.mode = 'live'; policy.pinnedCatalog = null; });
+    await updatePolicy(f, id, policy => { policy.selectors = { skillSets: ['workspace'], skills: [] }; });
     const live = await catalog.refresh(id, { execution: true });
     f.releases.push(live.release);
     assert.deepEqual(names(live), ['new-local']);

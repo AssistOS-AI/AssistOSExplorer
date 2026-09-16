@@ -1,7 +1,5 @@
 import { publicSkillsets, individualSkillRepositories } from '../../../server/robot-skillsets.mjs';
 import { readSkillTree } from '../../../server/skill-files.mjs';
-import { acquireExecutionLease } from './workspaceStateLock.mjs';
-import { recoverPathCatalog } from '../../../server/legacy-skill-catalog.mjs';
 
 export function createRobotSkillCatalog({ context, sessionStore, workingDir, initialSessionId }) {
     const catalogs = new Map();
@@ -57,70 +55,6 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
                     }
                 } };
         },
-        async command(sessionId, args) {
-            const input = args.trim();
-            if (input && input !== 'list') {
-                const release = await acquireExecutionLease(workingDir, `session:${sessionId}`);
-                try {
-                    const { robot, policyId, policy, cwd } = await policyFor(sessionId);
-                    if (input.startsWith('use ')) {
-                        const values = input.slice(4).split(/[\s,]+/).filter(Boolean);
-                        if (values.includes('none') && values.length !== 1) throw new Error('Use none alone.');
-                        let next = await context.skillsets.policies.make(robot, {
-                            skillSets: values.filter((name) => name !== 'none' && (!name.includes('/') || name.startsWith('workspace:'))),
-                            skills: values.filter((name) => !name.startsWith('workspace:') && name.includes('/')),
-                        });
-                        // workspace:<path> matching a skill is individual; a catalog path is a source selector.
-                        const inventory = await context.skillsets.inventory(robot, { policy: { ...next, scopeRoot: policy.scopeRoot, selectors: { skillSets: ['workspace', 'copilot'], skills: [] } }, cwd });
-                        for (const value of values.filter((name) => name.startsWith('workspace:'))) {
-                            if (inventory.skills.some((entry) => entry.identity === value)) {
-                                next.selectors.skillSets = next.selectors.skillSets.filter((name) => name !== value);
-                                next.selectors.skills.push(value);
-                            }
-                        }
-                        Object.assign(next, { scopeRoot: policy.scopeRoot, excludedNames: policy.excludedNames, excludedSkills: policy.excludedSkills, excludedSources: policy.excludedSources, overrides: policy.overrides, excludedNameIdentities: policy.excludedNameIdentities, importedSkillNames: policy.importedSkillNames, ...(policy.legacyRecovery ? { legacyRecovery: policy.legacyRecovery } : {}) });
-                        next = await context.skillsets.policies.rememberNameExclusions(robot, next, cwd, inventory.skills);
-                        await context.skillsets.live.resolve(robot, next, cwd);
-                        await context.skillsets.policies.update(robot.id, policyId, policy.policyVersion, () => next);
-                    } else if (input === 'pin' || input === 'live') {
-                        let previous = sessionStore.loadSession(sessionId).skillExecution || policy.legacyRecovery;
-                        if (input === 'pin' && !previous) throw new Error('Execute a catalog before pinning it.');
-                        if (input === 'pin' && previous.paths && previous.digest === undefined) previous = await recoverPathCatalog(context.skillsets, robot.id, previous);
-                        if (input === 'pin') await context.skillsets.catalogPath(robot.id, previous);
-                        await context.skillsets.policies.update(robot.id, policyId, policy.policyVersion, (next) => {
-                            next.mode = input === 'pin' ? 'pinned' : 'live';
-                            next.pinnedCatalog = input === 'pin' ? previous : null;
-                            return next;
-                        });
-                    } else if (input.startsWith('allow-name ') || input.startsWith('deny-name ')) {
-                        const name = input.slice(input.indexOf(' ') + 1).trim();
-                        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) throw new Error('Use a native skill name.');
-                        let next = structuredClone(policy);
-                        next.excludedNames = next.excludedNames.filter((value) => value !== name);
-                        if (input.startsWith('deny-name ')) next.excludedNames.push(name);
-                        next = await context.skillsets.policies.rememberNameExclusions(robot, next, cwd);
-                        await context.skillsets.policies.update(robot.id, policyId, policy.policyVersion, () => next);
-                    } else if (input.startsWith('override ')) {
-                        const [source, local] = input.slice(9).split(/\s+/);
-                        if (!robot.skillsets?.some((set) => set.name === source && set.source.startsWith('https://')) || !local?.startsWith('workspace:')) {
-                            throw new Error('Usage: /skills override <remote-set> <workspace:catalog-path>');
-                        }
-                        const inventory = await context.skillsets.live.resolve(robot, { ...policy, selectors: { skillSets: ['workspace'], skills: [] } }, cwd);
-                        if (!inventory.entries.some((entry) => entry.sourceId === local && entry.state !== 'invalid')) throw new Error('Local override catalog is unavailable or invalid.');
-                        await context.skillsets.policies.update(robot.id, policyId, policy.policyVersion, (next) => {
-                            next.overrides[source] = local;
-                            if (!next.selectors.skillSets.includes(local)) next.selectors.skillSets.push(local);
-                            next.mode = 'live'; next.pinnedCatalog = null;
-                            return next;
-                        });
-                    } else throw new Error('Usage: /skills [list | use workspace,copilot,set/skill | use none | pin | live | allow-name <name> | deny-name <name> | override <remote-set> <workspace:catalog>]');
-                } finally { await release(); }
-            }
-            const snapshot = await api.refresh(sessionId);
-            return { output: `Next execution (${snapshot.policy.mode}, policy ${snapshot.policyVersion}):\n`
-                + snapshot.skills.map((skill) => `${skill.state} ${skill.identity}: ${skill.description || skill.error || ''}`).join('\n')
-                + '\n' + snapshot.diagnostics.map((item) => `${item.state}: ${item.message}`).join('\n') };
-        },
         forSession: (sessionId) => ({ ...api,
             refresh: (id = sessionId, options) => api.refresh(id, options),
             resolveSelectedSkill: (name) => api.resolveSelectedSkill(name, sessionId),
@@ -138,7 +72,6 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
             if (!descriptor) throw new Error('Skill descriptor is unavailable.');
             return descriptor.data.toString('utf8');
         },
-        removeSkill: () => { throw new Error('Use /skills use to select this conversation\'s skills.'); },
     };
     return api;
 }
