@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import {
+  assertRouterBindAddressLabel,
+  DEFAULT_ROUTER_BIND_ADDRESS,
+  ROUTER_BIND_ADDRESS_LABEL,
+  validateRouterBindAddress,
+} from './router-bind-address.mjs';
 
 const BOX_LABELS = Object.freeze({
   role: 'io.assistos.ploinky-box.role',
@@ -102,11 +108,16 @@ function exactBoxLabels(labels, {
   expectedImageId,
   selectedRouterHostPort,
   selectedMediaHostPort,
+  expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
 } = {}) {
   const source = record(labels, 'outer container Config.Labels');
+  const routerBindAddress = assertRouterBindAddressLabel(source, expectedRouterBindAddress);
   const semanticEntries = Object.entries(source)
     .sort(([left], [right]) => left.localeCompare(right));
-  const expectedNames = Object.values(BOX_LABELS).sort();
+  const expectedNames = [
+    ...Object.values(BOX_LABELS),
+    ...(routerBindAddress === DEFAULT_ROUTER_BIND_ADDRESS ? [] : [ROUTER_BIND_ADDRESS_LABEL]),
+  ].sort();
   if (JSON.stringify(semanticEntries.map(([name]) => name)) !== JSON.stringify(expectedNames)) {
     throw new Error(`Outer container Box labels must be exactly ${JSON.stringify(expectedNames)}.`);
   }
@@ -186,6 +197,7 @@ function exactBoxLabels(labels, {
     pathHash,
     imageRef,
     routerHostPort,
+    ...(routerBindAddress === DEFAULT_ROUTER_BIND_ADDRESS ? {} : { routerBindAddress }),
     mediaHostPort,
     seccompFingerprint,
     dependenciesFingerprint,
@@ -280,14 +292,14 @@ export function normalizeOuterPortBindings(bindings) {
   return sortedObject(normalized);
 }
 
-function expectedBindings(selectedRouterHostPort, selectedMediaHostPort) {
+function expectedBindings(selectedRouterHostPort, selectedMediaHostPort, expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS) {
   return normalizeOuterPortBindings({
-    [ROUTER_TARGET]: [{ HostIp: '127.0.0.1', HostPort: selectedRouterHostPort }],
+    [ROUTER_TARGET]: [{ HostIp: validateRouterBindAddress(expectedRouterBindAddress), HostPort: selectedRouterHostPort }],
     [MEDIA_TARGET]: [{ HostIp: '0.0.0.0', HostPort: selectedMediaHostPort }],
   });
 }
 
-function assertExactBindings(bindings) {
+function assertExactBindings(bindings, expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS) {
   const normalized = normalizeOuterPortBindings(bindings);
   const router = normalized[ROUTER_TARGET];
   if (!router || router.length !== 1) {
@@ -299,7 +311,7 @@ function assertExactBindings(bindings) {
   }
   const selectedRouterHostPort = router[0].HostPort;
   const selectedMediaHostPort = media[0].HostPort;
-  const expected = expectedBindings(selectedRouterHostPort, selectedMediaHostPort);
+  const expected = expectedBindings(selectedRouterHostPort, selectedMediaHostPort, expectedRouterBindAddress);
   if (JSON.stringify(normalized) !== JSON.stringify(expected)) {
     throw new Error(`Box normalized PortBindings must equal ${JSON.stringify(expected)}; got ${JSON.stringify(normalized)}.`);
   }
@@ -321,6 +333,7 @@ export function buildBoxEvidence({
   expectedImageRef,
   baseURL,
   publicIPv4,
+  expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
 }) {
   const container = oneInspectRecord(containerInspect, 'outer container inspection');
   const image = oneInspectRecord(imageInspect, 'outer image inspection');
@@ -350,13 +363,14 @@ export function buildBoxEvidence({
   if (JSON.stringify(imageConfig.Entrypoint || []) !== JSON.stringify(['/usr/local/bin/ploinky-box-entrypoint'])) {
     throw new Error('Box image entrypoint is invalid.');
   }
-  const { normalized, selectedRouterHostPort, selectedMediaHostPort } = assertExactBindings(container?.HostConfig?.PortBindings);
+  const { normalized, selectedRouterHostPort, selectedMediaHostPort } = assertExactBindings(container?.HostConfig?.PortBindings, expectedRouterBindAddress);
   const securityOptions = exactBoxSecurityOptions(container?.HostConfig?.SecurityOpt);
   const semanticLabels = exactBoxLabels(container?.Config?.Labels || {}, {
     expectedImageRef,
     expectedImageId: requiredImageId,
     selectedRouterHostPort,
     selectedMediaHostPort,
+    expectedRouterBindAddress,
   });
   if (semanticLabels.agentLibMode === 'image') requireUnshadowedImageAgentLib(container.Mounts);
   return validateBoxEvidence({
@@ -378,6 +392,7 @@ export function buildBoxEvidence({
     expectedImageRef,
     baseURL,
     publicIPv4,
+    expectedRouterBindAddress,
   });
 }
 
@@ -387,6 +402,7 @@ export function validateBoxEvidence(input, {
   expectedImageRef,
   baseURL,
   publicIPv4,
+  expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
 } = {}) {
   const evidence = record(input, 'Box evidence');
   if (evidence.containerName !== expectedContainerName) throw new Error('Box evidence container name mismatch.');
@@ -403,17 +419,18 @@ export function validateBoxEvidence(input, {
   if (evidence.publicIPv4 !== publicIPv4) throw new Error('Box evidence public IPv4 mismatch.');
   const startedAt = isoTime(evidence.startedAt, 'Box evidence startedAt');
   const selectedRouterHostPort = exactPort(evidence.selectedRouterHostPort, 'Box evidence selectedRouterHostPort');
-  const { normalized, selectedMediaHostPort } = assertExactBindings(evidence.normalizedPortBindings);
-  if (JSON.stringify(normalized) !== JSON.stringify(expectedBindings(selectedRouterHostPort, selectedMediaHostPort))) {
+  const { normalized, selectedMediaHostPort } = assertExactBindings(evidence.normalizedPortBindings, expectedRouterBindAddress);
+  if (JSON.stringify(normalized) !== JSON.stringify(expectedBindings(selectedRouterHostPort, selectedMediaHostPort, expectedRouterBindAddress))) {
     throw new Error('Box evidence normalized PortBindings are not the exact two-publication boundary.');
   }
   const securityOptions = exactBoxSecurityOptions(evidence.securityOptions);
   const semanticLabels = exactBoxLabels(
-    Object.fromEntries(Object.entries(BOX_LABELS).map(([name, label]) => [
-      label,
-      evidence.semanticLabels?.[name],
-    ])),
-    { expectedImageRef, expectedImageId: requiredImageId, selectedRouterHostPort, selectedMediaHostPort },
+    Object.fromEntries([
+      ...Object.entries(BOX_LABELS).map(([name, label]) => [label, evidence.semanticLabels?.[name]]),
+      ...(Object.hasOwn(evidence.semanticLabels || {}, 'routerBindAddress')
+        ? [[ROUTER_BIND_ADDRESS_LABEL, evidence.semanticLabels.routerBindAddress]] : []),
+    ]),
+    { expectedImageRef, expectedImageId: requiredImageId, selectedRouterHostPort, selectedMediaHostPort, expectedRouterBindAddress },
   );
   return Object.freeze({
     containerName: evidence.containerName,

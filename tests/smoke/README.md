@@ -473,6 +473,17 @@ publications fail. This does not change the fixed UDP `7882` scanner and ICE
 requirements of the screen-share and external-network gates below; those gates
 reject an alternate media host port.
 
+For a local fixture explicitly exposed with `ploinky bind`, set
+`SMOKE_BOX_ROUTER_BIND_ADDRESS=0.0.0.0` for a wildcard publication, or its exact
+assigned host IPv4 address for a specific binding. The default remains
+`127.0.0.1`. Shared Box evidence and OnlyOffice DPU discovery require that exact
+address in both the Router publication and the Box binding label; they never
+infer the expectation from the running container. Additional mappings and the
+private Router port remain forbidden. Keep `SMOKE_BOX_BASE_URL` on loopback;
+use the wildcard publication when testing LAN login and loopback WebMeet media
+on the same Box. The separate screen-share and external-network gates retain
+their existing loopback-publication requirements.
+
 For the screen-share gate in Box mode, exactly one outer container must publish
 `127.0.0.1:<SMOKE_BASE_URL port>:8080/tcp` and
 `0.0.0.0:7882:7882/udp`, carry the exact semantic Box ownership labels, and use a freshly built

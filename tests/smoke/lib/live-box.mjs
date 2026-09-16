@@ -8,6 +8,12 @@ import {
   normalizeOuterPortBindings,
   validateBoxEvidence,
 } from './box-evidence.mjs';
+import {
+  assertRouterBindAddressLabel,
+  DEFAULT_ROUTER_BIND_ADDRESS,
+  readExpectedRouterBindAddress,
+  validateRouterBindAddress,
+} from './router-bind-address.mjs';
 
 const BOX_ROLE_LABEL = 'io.assistos.ploinky-box.role';
 const BOX_IMAGE_REF_LABEL = 'io.assistos.ploinky-box.image-ref';
@@ -306,14 +312,15 @@ export function parseLocalScreenBaseUrl(baseURL) {
   return Object.freeze({ baseURL: `http://127.0.0.1:${port}`, port });
 }
 
-function exactScreenBindings(port, mediaPort) {
+function exactScreenBindings(port, mediaPort, expectedRouterBindAddress) {
   return normalizeOuterPortBindings({
-    '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: port }],
+    '8080/tcp': [{ HostIp: expectedRouterBindAddress, HostPort: port }],
     '7882/udp': [{ HostIp: '0.0.0.0', HostPort: mediaPort }],
   });
 }
 
-export function selectLocalScreenContainer(containerInspects, port) {
+export function selectLocalScreenContainer(containerInspects, port, { expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS } = {}) {
+  const bindAddress = validateRouterBindAddress(expectedRouterBindAddress);
   if (!Array.isArray(containerInspects)) throw new Error('Running outer container inspection must be an array.');
   const candidates = containerInspects.filter((container) => {
     if (container?.State?.Running !== true) return false;
@@ -321,20 +328,22 @@ export function selectLocalScreenContainer(containerInspects, port) {
     if (labels?.[BOX_ROLE_LABEL] !== 'box') return false;
     if (labels[BOX_ROUTER_HOST_PORT_LABEL] !== String(port)) return false;
     try {
-      const expected = JSON.stringify(exactScreenBindings(port, labels[BOX_MEDIA_HOST_PORT_LABEL]));
+      assertRouterBindAddressLabel(labels, bindAddress);
+      const expected = JSON.stringify(exactScreenBindings(port, labels[BOX_MEDIA_HOST_PORT_LABEL], bindAddress));
       return JSON.stringify(normalizeOuterPortBindings(container?.HostConfig?.PortBindings)) === expected;
     } catch (_) {
       return false;
     }
   });
   if (candidates.length !== 1) {
-    throw new Error(`SMOKE_WEBMEET_SCREEN requires exactly one running Box outer container with the exact 127.0.0.1:${port}:8080/tcp and 0.0.0.0:<media-host-port label>:7882/udp publications; found ${candidates.length}.`);
+    throw new Error(`Smoke evidence requires exactly one running Box outer container with the exact ${bindAddress}:${port}:8080/tcp and 0.0.0.0:<media-host-port label>:7882/udp publications; found ${candidates.length}.`);
   }
   return candidates[0];
 }
 
 export function validateLiveBoxEvidence(input, {
   baseURL,
+  expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
   nowMs = Date.now(),
   generationMaxAgeMs,
   imageMaxAgeMs,
@@ -350,6 +359,7 @@ export function validateLiveBoxEvidence(input, {
     expectedImageRef: input.box?.imageRef,
     baseURL: local.baseURL,
     publicIPv4: String(input.box?.publicIPv4 || ''),
+    expectedRouterBindAddress,
   });
   if (box.selectedRouterHostPort !== local.port) {
     throw new Error('Live Box Router publication does not match SMOKE_BASE_URL.');
@@ -370,6 +380,7 @@ export function validateLiveBoxEvidence(input, {
 
 export function collectLiveBoxEvidence({
   baseURL,
+  expectedRouterBindAddress = readExpectedRouterBindAddress(),
   expectedContainerName = '',
   expectedImageId = '',
   expectedImageRef = '',
@@ -389,7 +400,7 @@ export function collectLiveBoxEvidence({
   ]) || '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
   if (!ids.length) throw new Error('SMOKE_WEBMEET_SCREEN found no running Podman containers.');
   const containers = command('podman', ['container', 'inspect', ...ids], { json: true });
-  const selected = selectLocalScreenContainer(containers, local.port);
+  const selected = selectLocalScreenContainer(containers, local.port, { expectedRouterBindAddress });
   const containerName = String(selected.Name || '').replace(/^\//, '');
   const labels = selected?.Config?.Labels || {};
   const imageRef = String(labels[BOX_IMAGE_REF_LABEL] || '').trim();
@@ -410,6 +421,7 @@ export function collectLiveBoxEvidence({
     expectedImageRef: requiredImageRef,
     baseURL: local.baseURL,
     publicIPv4: String(publicIPv4 || ''),
+    expectedRouterBindAddress,
   });
   const validated = validateLiveBoxEvidence({
     capturedAt: new Date(nowMs).toISOString(),
@@ -420,7 +432,7 @@ export function collectLiveBoxEvidence({
       : null,
     requireFreshImage,
     box,
-  }, { baseURL: local.baseURL, nowMs });
+  }, { baseURL: local.baseURL, nowMs, expectedRouterBindAddress });
   if (!expectedPloinkySource && !expectedWorkspaceSource) return validated;
   const ploinkySourceMount = expectedPloinkySource
     ? validateReadOnlyPloinkySourceMount(

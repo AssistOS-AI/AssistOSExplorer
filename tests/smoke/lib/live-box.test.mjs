@@ -122,6 +122,23 @@ test('live Box discovery isolates coexisting Boxes by their selected Router and 
   ], '28080'), /found 2/);
 });
 
+test('explicit bound-container selection requires the configured address and matching binding label', () => {
+  const bindings = exactBindings('28080', '27882');
+  bindings['8080/tcp'][0].HostIp = '0.0.0.0';
+  const bound = container(bindings);
+  const bindingLabel = 'io.assistos.ploinky-box.router-bind-address';
+  bound.Config.Labels[bindingLabel] = '0.0.0.0';
+  const options = { expectedRouterBindAddress: '0.0.0.0' };
+  assert.equal(selectLocalScreenContainer([bound], '28080', options), bound);
+  assert.throws(() => selectLocalScreenContainer([bound], '28080'), /found 0/);
+  assert.throws(() => selectLocalScreenContainer([container(exactBindings('28080', '27882'))], '28080', options), /found 0/);
+  assert.throws(() => selectLocalScreenContainer([bound], '28080', { expectedRouterBindAddress: '::' }), /canonical IPv4/);
+  delete bound.Config.Labels[bindingLabel];
+  assert.throws(() => selectLocalScreenContainer([bound], '28080', options), /found 0/);
+  bound.Config.Labels[bindingLabel] = '192.168.1.50';
+  assert.throws(() => selectLocalScreenContainer([bound], '28080', options), /found 0/);
+});
+
 test('live Box discovery rejects missing, malformed, or mismatched port labels', () => {
   for (const label of ['router-host-port', 'media-host-port']) {
     for (const value of [undefined, '', '0', '-1', '65536', '27882.5', '027882', ' 27882 ', '1e4', 'wrong', '7881']) {

@@ -8,6 +8,7 @@ import {
   parseLocalScreenBaseUrl,
   selectLocalScreenContainer,
 } from './live-box.mjs';
+import { readExpectedRouterBindAddress } from './router-bind-address.mjs';
 
 export const BOX_DPU_DATA_ROOT = '/workspace/.data/dpu-data';
 const BOX_WORKSPACE_ROOT = '/workspace';
@@ -113,7 +114,9 @@ function inspectExplicitOuterContainer(expectedName) {
     throw new Error(`Explicit Box outer container inspection returned invalid JSON: ${error.message}`);
   }
   const local = resolveDpuBoxEndpoint();
-  const selected = selectLocalScreenContainer(records, local.port);
+  const selected = selectLocalScreenContainer(records, local.port, {
+    expectedRouterBindAddress: readExpectedRouterBindAddress(),
+  });
   const actualName = String(selected.Name || '').replace(/^\//, '');
   if (actualName !== expectedName) {
     throw new Error(`Explicit Box outer container resolved to ${actualName || '<unknown>'}, expected ${expectedName}.`);

@@ -7,6 +7,8 @@ import {
   validateExternalTcpNegativeEvidence,
   validateBoxEvidence,
 } from './box-evidence.mjs';
+import { collectLiveBoxEvidence } from './live-box.mjs';
+import { ROUTER_BIND_ADDRESS_LABEL } from './router-bind-address.mjs';
 
 const IMAGE_ID = `sha256:${'a'.repeat(64)}`;
 const CONTAINER_ID = 'c'.repeat(64);
@@ -157,6 +159,64 @@ function expected() {
     publicIPv4: '8.8.8.8',
   };
 }
+
+test('explicit bound Box evidence requires matching publication and binding label without widening other ports', () => {
+  for (const address of ['0.0.0.0', '192.168.1.50']) {
+    const inspection = containerInspect();
+    inspection[0].HostConfig.PortBindings['8080/tcp'][0].HostIp = address;
+    inspection[0].Config.Labels[ROUTER_BIND_ADDRESS_LABEL] = address;
+    const options = { ...expected(), expectedRouterBindAddress: address };
+    const build = (value = inspection, overrides = {}) => buildBoxEvidence({
+      containerInspect: value, imageInspect: imageInspect(), ...options, ...overrides,
+    });
+    const verified = build();
+    assert.equal(verified.semanticLabels.routerBindAddress, address);
+    assert.equal(verified.normalizedPortBindings['8080/tcp'][0].HostIp, address);
+    assert.deepEqual(validateBoxEvidence(verified, options), verified);
+    assert.throws(() => build(inspection, { expectedRouterBindAddress: '127.0.0.1' }), /must equal/);
+    assert.throws(() => validateBoxEvidence(verified, expected()), /must equal/);
+
+    for (const mutate of [
+      (value) => { delete value.Config.Labels[ROUTER_BIND_ADDRESS_LABEL]; },
+      (value) => { value.Config.Labels[ROUTER_BIND_ADDRESS_LABEL] = '192.168.1.51'; },
+      (value) => { value.HostConfig.PortBindings['8080/tcp'][0].HostIp = '127.0.0.1'; },
+      (value) => { value.HostConfig.PortBindings['8081/tcp'] = [{ HostIp: '0.0.0.0', HostPort: '8081' }]; },
+      (value) => { value.HostConfig.PortBindings['8080/tcp'].push({ HostIp: address, HostPort: '18081' }); },
+      (value) => { value.HostConfig.PortBindings['7882/udp'][0].HostIp = '127.0.0.1'; },
+      (value) => { value.Config.Labels['unexpected-label'] = 'unexpected'; },
+    ]) {
+      const altered = structuredClone(inspection);
+      mutate(altered[0]);
+      assert.throws(() => build(altered), /must equal|must contain exactly one|router-bind-address label|labels must be exactly/);
+    }
+  }
+});
+
+test('live collection carries an explicit wildcard expectation through discovery and evidence validation', () => {
+  const prior = process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS;
+  process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS = '0.0.0.0';
+  try {
+    const inspection = containerInspect();
+    inspection[0].Config.Labels[ROUTER_BIND_ADDRESS_LABEL] = '0.0.0.0';
+    inspection[0].HostConfig.PortBindings['8080/tcp'][0].HostIp = '0.0.0.0';
+    const image = imageInspect();
+    image[0].Created = STARTED_AT;
+    const command = (_executable, args) => {
+      if (args[0] === 'container' && args[1] === 'ls') return CONTAINER_ID;
+      if (args[0] === 'container' && args[1] === 'inspect') return inspection;
+      if (args[0] === 'image' && args[1] === 'inspect') return image;
+      throw new Error('Unexpected inspection command');
+    };
+    const options = { baseURL: 'http://127.0.0.1:18080', nowMs: Date.parse(STARTED_AT) + 1000, command };
+    const live = collectLiveBoxEvidence(options);
+    assert.equal(live.box.normalizedPortBindings['8080/tcp'][0].HostIp, '0.0.0.0');
+    assert.equal(live.box.semanticLabels.routerBindAddress, '0.0.0.0');
+    assert.throws(() => collectLiveBoxEvidence({ ...options, expectedRouterBindAddress: '127.0.0.1' }), /found 0/);
+  } finally {
+    if (prior === undefined) delete process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS;
+    else process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS = prior;
+  }
+});
 
 function isolatedContainerInspect(mediaPort = '27882') {
   const inspection = containerInspect({
