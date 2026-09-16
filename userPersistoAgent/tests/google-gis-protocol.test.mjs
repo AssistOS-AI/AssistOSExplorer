@@ -156,21 +156,27 @@ test('Google defaults are secret-free and local; partial/invalid configuration f
         assert.equal(fresh.redirectUri, GOOGLE_LOCAL_REDIRECT_URI);
         assert.deepEqual(fresh.missing, []);
         assert.doesNotMatch(JSON.stringify(fresh), /installation-private-settings-key|clientSecret/);
+        const localFingerprint = (await requireGoogleConfiguration()).fingerprint;
         delete process.env.USERPERSISTO_SETTINGS_KEY;
         assert.deepEqual((await getGoogleStatus()).missing, ['USERPERSISTO_SETTINGS_KEY']);
         await assert.rejects(requireGoogleConfiguration(), { code: 'google_unavailable' });
 
         for (const values of [
             { USERPERSISTO_GOOGLE_CLIENT_ID: 'custom-client' },
+            { USERPERSISTO_GOOGLE_CLIENT_ID: GOOGLE_LOCAL_CLIENT_ID },
             { USERPERSISTO_GOOGLE_REDIRECT_URI: GOOGLE_LOCAL_REDIRECT_URI },
-            ...['https://public.example', 'http://[::1]:8080', 'http://localhost:8081', 'http://localhost:8080.evil.test'].map((origin) => ({
+            { USERPERSISTO_GOOGLE_REDIRECT_URI: 'https://public.example/service/auth/google/callback' },
+            ...['http://[::1]:8080', 'http://localhost:8081', 'http://localhost:8080.evil.test'].map((origin) => ({
                 USERPERSISTO_GOOGLE_CLIENT_ID: GOOGLE_LOCAL_CLIENT_ID,
                 USERPERSISTO_GOOGLE_REDIRECT_URI: `${origin}/service/auth/google/callback`,
             })),
-            ...['http://public.example', 'https://user:pass@public.example', 'https://public.example/service/auth/google/callback?x=1', 'https://public.example//foreign.example'].map((origin) => ({
-                USERPERSISTO_GOOGLE_CLIENT_ID: 'custom-client',
-                USERPERSISTO_GOOGLE_REDIRECT_URI: origin.includes('?') ? origin : `${origin}/service/auth/google/callback`,
-            })),
+            ...['custom-client', GOOGLE_LOCAL_CLIENT_ID].flatMap((clientId) => (
+                ['http://public.example', 'https://user:pass@public.example', 'https://public.example/service/auth/google/callback?x=1', 'https://public.example//foreign.example']
+                    .map((origin) => ({
+                        USERPERSISTO_GOOGLE_CLIENT_ID: clientId,
+                        USERPERSISTO_GOOGLE_REDIRECT_URI: origin.includes('?') ? origin : `${origin}/service/auth/google/callback`,
+                    }))
+            )),
         ]) {
             reset();
             Object.assign(process.env, values);
@@ -182,6 +188,20 @@ test('Google defaults are secret-free and local; partial/invalid configuration f
         process.env.USERPERSISTO_GOOGLE_CLIENT_ID = GOOGLE_LOCAL_CLIENT_ID;
         process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = GOOGLE_LOCAL_REDIRECT_URI.replace('localhost', '127.0.0.1');
         assert.equal((await getGoogleStatus()).available, true);
+        process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = 'https://public.example/base-agent-additional-server/userPersistoAgent/7000/service/auth/google/callback';
+        const explicitSharedStatus = await getGoogleStatus();
+        assert.equal(explicitSharedStatus.available, true);
+        assert.equal(explicitSharedStatus.configurationSource, 'environment');
+        assert.equal(explicitSharedStatus.clientId, GOOGLE_LOCAL_CLIENT_ID);
+        const explicitShared = await requireGoogleConfiguration();
+        assert.equal(explicitShared.redirect.origin, 'https://public.example');
+        assert.notEqual(explicitShared.fingerprint, localFingerprint, 'moving to HTTPS invalidates pending local transactions');
+        assert.equal((await protocol.verifyCredential(explicitShared, credential(), attempt)).subject, 'GoogleCaseSensitiveSubject');
+        await assert.rejects(protocol.verifyCredential(explicitShared, credential({ nonce: 'wrong-nonce' }), attempt), { code: 'google_authentication_failed' });
+        await assert.rejects(protocol.verifyCredential(explicitShared, credential({ aud: 'another-client' }), attempt), { code: 'google_authentication_failed' });
+        reset();
+        assert.equal((await getGoogleStatus()).redirectUri, GOOGLE_LOCAL_REDIRECT_URI, 'removing overrides restores only localhost');
+        assert.equal((await requireGoogleConfiguration()).fingerprint, localFingerprint);
         reset();
         process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'deployment-client';
         process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = 'https://public.example/service/auth/google/callback';

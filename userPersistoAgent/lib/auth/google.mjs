@@ -34,9 +34,12 @@ function configuration() {
             || !redirect.pathname.endsWith(GOOGLE_CALLBACK_PATH)
             || (redirect.protocol !== 'https:' && !(redirect.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(redirect.hostname)))) redirect = null;
     } catch { redirect = null; }
-    // The distributed public client belongs only to this registered local
-    // origin. Public deployments must explicitly supply their own client.
-    const originAllowed = clientId !== GOOGLE_LOCAL_CLIENT_ID || ['http://localhost:8080', 'http://127.0.0.1:8080'].includes(redirect?.origin);
+    // Defaults remain local. An operator may explicitly pair the distributed
+    // public client with an HTTPS deployment whose origin its owner registered
+    // with Google; this never infers an origin or relaxes shared HTTP origins.
+    const explicitHttps = !localDefault && !!clientId && !!redirectUri && redirect?.protocol === 'https:';
+    const originAllowed = clientId !== GOOGLE_LOCAL_CLIENT_ID || explicitHttps
+        || ['http://localhost:8080', 'http://127.0.0.1:8080'].includes(redirect?.origin);
     const valid = !missing.length && !!redirect && originAllowed && clientId.length <= 512 && !/\s/.test(clientId);
     return { mode: 'gis', clientId, redirectUri, redirect, missing, valid, configurationSource: localDefault ? 'local-default' : 'environment',
         fingerprint: createHash('sha256').update(JSON.stringify([GOOGLE_ISSUER, 'gis', clientId, redirectUri, settingsKey])).digest('base64url') };
