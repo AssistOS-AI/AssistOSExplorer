@@ -40,6 +40,9 @@ function inventoryEngine(command, prefix = []) {
         const images = imageIds.length ? JSON.parse(execute(['image', 'inspect', ...imageIds])).map(image => ({
             id: image.Id, tags: image.RepoTags || [], digests: image.RepoDigests || [],
             created: image.Created, bytes: image.Size,
+            architecture: image.Architecture, os: image.Os,
+            labels: Object.fromEntries(Object.entries(image.Config?.Labels || image.Labels || {})
+                .filter(([key]) => key.startsWith('io.assistos.ploinky'))),
             referencedByContainer: used.has(image.Id.replace(/^sha256:/, '')),
         })) : [];
         let usage;
