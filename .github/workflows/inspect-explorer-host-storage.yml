@@ -1,0 +1,37 @@
+name: Inspect Explorer host storage
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-explorer-qa
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Inspect the pinned host without changing resources
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="$(mktemp)"
+          known="$(mktemp)"
+          trap 'rm -f "$key" "$known"' EXIT
+          test -n "$SSH_KEY"
+          printf '%s\n' "$SSH_KEY" > "$key"
+          ssh-keyscan -T 10 -t ed25519 45.136.70.141 > "$known"
+          test "$(ssh-keygen -lf "$known" -E sha256 | awk '{print $2}' | sort -u)" = 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
+          ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=$known" -o ServerAliveInterval=30 -o ServerAliveCountMax=5 \
+            admin@45.136.70.141 \
+            'flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock node --input-type=module' \
+            < .github/scripts/inspect-explorer-host-storage.mjs
