@@ -79,6 +79,8 @@ export class UserpersistoSettings {
         this.selfRegistrationInput = this.element.querySelector("#selfRegistrationEnabled");
         this.allowedRedirectOriginsInput = this.element.querySelector("#allowedRedirectOrigins");
         this.authPolicySourceEl = this.element.querySelector("#authPolicySource");
+        this.managedOriginStatusEl = this.element.querySelector("#managedOriginStatus");
+        this.managedOriginsEl = this.element.querySelector("#managedRedirectOrigins");
         this.googleStatusEl = this.element.querySelector("#googleProviderStatus");
         this.applicationsListEl = this.element.querySelector("#applicationsList");
         this.applicationsPageLabel = this.element.querySelector("#applicationsPageLabel");
@@ -189,6 +191,7 @@ export class UserpersistoSettings {
             if (this.authPolicySourceEl) this.authPolicySourceEl.textContent = policy.environmentOverrides?.length
                 ? `Effective environment overrides: ${policy.environmentOverrides.join(", ")}. Saved policy does not replace these operator settings.`
                 : "Effective policy uses the saved workspace settings or defaults.";
+            this.renderManagedOrigins(policy);
             if (this.googleStatusEl) this.googleStatusEl.textContent = [
                 google.available ? "Google is ready." : google.enabled ? "Google is unavailable." : "Google is disabled.",
                 `Configuration: ${google.configured ? "complete" : "incomplete"}; source: ${google.configurationSource || "environment"}.`,
@@ -208,12 +211,39 @@ export class UserpersistoSettings {
         }
     }
 
+    // Managed Router origins are displayed only. They never populate the
+    // editable origins field, so saving the policy cannot persist them.
+    renderManagedOrigins(policy = {}) {
+        const origins = Array.isArray(policy.managedRedirectOrigins) ? policy.managedRedirectOrigins.map(String) : [];
+        const generation = String(policy.managedOriginGeneration || "");
+        const verified = origins.length
+            ? `Trusted automatically from the active workspace Router binding${generation ? ` (generation ${generation.slice(0, 19)}…)` : ""}.`
+            : "The workspace Router publishes no network addresses; loopback and additional origins still apply.";
+        const messages = {
+            verified,
+            disabled: "Automatic trust is disabled (USERPERSISTO_TRUST_ROUTER_ORIGINS=false).",
+            standalone: "Not running under a managed workspace Router.",
+            unsupported: "This workspace runtime does not publish Router addresses.",
+            unavailable: "Workspace Router addresses are temporarily unavailable.",
+            invalid: "Workspace Router address metadata is invalid.",
+            "invalid-setting": "USERPERSISTO_TRUST_ROUTER_ORIGINS must be true or false.",
+        };
+        if (this.managedOriginStatusEl) {
+            this.managedOriginStatusEl.textContent = Object.hasOwn(messages, policy.managedOriginStatus)
+                ? messages[policy.managedOriginStatus]
+                : "Workspace Router address status is unknown.";
+        }
+        if (this.managedOriginsEl) this.managedOriginsEl.textContent = origins.join("\n");
+    }
+
     clearAuthPolicy() {
         this.policyRequestId = (this.policyRequestId || 0) + 1;
         this.state.policyLoaded = false;
         if (this.policySaveButton) this.policySaveButton.disabled = true;
         if (this.googleStatusEl) this.googleStatusEl.textContent = "Google readiness is unavailable.";
         if (this.authPolicySourceEl) this.authPolicySourceEl.textContent = "";
+        if (this.managedOriginStatusEl) this.managedOriginStatusEl.textContent = "";
+        if (this.managedOriginsEl) this.managedOriginsEl.textContent = "";
         for (const input of Object.values(this.authMethodInputs || {})) {
             if (input) input.checked = false;
         }

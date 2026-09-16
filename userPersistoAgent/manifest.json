@@ -91,6 +91,10 @@
           "required": false,
           "default": ""
         },
+        "USERPERSISTO_TRUST_ROUTER_ORIGINS": {
+          "required": false,
+          "default": "true"
+        },
         "USERPERSISTO_SELF_REGISTRATION_ENABLED": {
           "required": false
         },

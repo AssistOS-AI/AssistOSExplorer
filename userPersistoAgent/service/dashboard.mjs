@@ -5,7 +5,7 @@ import { runTool } from '../tools/registry.mjs';
 import { cancelReauthentication, completeReauthentication, startReauthentication } from '../lib/auth/operationGrants.mjs';
 import { completeContactVerification, startContactVerification } from '../lib/auth/contactVerification.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
-import { updateAuthPolicy } from '../lib/policy.mjs';
+import { assertWritablePolicyFields, updateAuthPolicy } from '../lib/policy.mjs';
 
 const PREFIX = '/service/dashboard';
 const ASSETS = new Set([
@@ -217,6 +217,9 @@ export async function handleDashboard(req, res, url, { sendJson, serveStatic, go
         if (adminOperation) {
             const capability = /^(users|roles)\//.test(adminPath) ? 'admin.users.manage' : 'admin.agentSettings.manage';
             await requireActiveActor(actorUserId, capability);
+            // Unrelated fields are ignored, but echoing read-only policy
+            // metadata back is refused rather than silently dropped.
+            if (adminPath === 'policy/set') assertWritablePolicyFields(body);
             const args = {};
             for (const field of adminOperation.fields) {
                 if (Object.hasOwn(body, field)) args[field] = body[field];

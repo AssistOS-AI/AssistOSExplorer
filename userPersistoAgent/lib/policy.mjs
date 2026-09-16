@@ -2,11 +2,24 @@ import { getStore, flush } from './store.mjs';
 import { serialize } from './serial.mjs';
 import { withPersistenceScope } from './persistence-scope.mjs';
 import { getEmailAuthCodeStatus } from './email-agent-client.mjs';
+import { describeManagedRouterOrigins, resolveManagedRouterOrigins } from './auth/managedRouterOrigins.mjs';
 
 // Every account, including administrators, uses passwordless authentication.
 const AUTH_METHODS = new Set(['emailCode', 'passkey', 'totp', 'google']);
 export const REGISTRATION_ROLE = 'selfRegistered';
 const POLICY_FIELDS = new Set(['enabledAuthMethods', 'selfRegistrationEnabled', 'allowedRedirectOrigins']);
+// Returned with the policy for administrators; generated or derived, never saved.
+const READ_ONLY_POLICY_FIELDS = new Set([
+    'registrationRole',
+    'environmentOverrides',
+    'allowedRedirectOriginsSource',
+    'loopbackOriginsAllowed',
+    'managedOriginTrustEnabled',
+    'managedOriginStatus',
+    'managedOriginGeneration',
+    'managedRedirectOrigins',
+    'effectiveRedirectOrigins',
+]);
 const DEFAULT_POLICY = Object.freeze({
     enabledAuthMethods: ['emailCode', 'passkey', 'totp', 'google'],
     selfRegistrationEnabled: true,
@@ -16,8 +29,8 @@ const warnedEnvironmentMethods = new Set();
 // Not a method name, so it cannot collide with one in the warned-once set.
 const EMPTY_OVERRIDE = Symbol('empty-auth-method-override');
 
-function policyError(code, message) {
-    return Object.assign(new Error(message), { code, statusCode: 400 });
+function policyError(code, message, statusCode = 400) {
+    return Object.assign(new Error(message), { code, statusCode });
 }
 
 function uniqueStrings(value) {
@@ -139,8 +152,16 @@ export async function getAuthPolicy() {
     return normalizePolicy(applyEnvironment({ ...DEFAULT_POLICY, ...storedFields(stored) }));
 }
 
+// Administrative metadata such as managed Router origins must never become
+// stored policy through a read-modify-save round trip.
+export function assertWritablePolicyFields(patch = {}) {
+    const readOnly = Object.keys(patch || {}).find((key) => READ_ONLY_POLICY_FIELDS.has(key));
+    if (readOnly) throw policyError('read_only_policy_field', `Policy field is read-only: ${readOnly}`);
+}
+
 export async function updateAuthPolicy(patch = {}, { actorId = 'system', emailStatus = getEmailAuthCodeStatus } = {}) {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw policyError('invalid_policy', 'Policy must be an object.');
+    assertWritablePolicyFields(patch);
     const unknown = Object.keys(patch).find((key) => !POLICY_FIELDS.has(key));
     if (unknown) throw policyError('invalid_policy_field', `Unsupported policy field: ${unknown.slice(0, 64)}`);
     // Resolve provider readiness once, outside the durable-write scope. Do not
@@ -232,7 +253,31 @@ export function isLoopbackOrigin(origin) {
     }
 }
 
-export async function assertBrowserOriginAllowed(origin) {
+/**
+ * One authentication decision. Its validation steps may share a single fresh
+ * managed-origin read; a new decision always reads again.
+ */
+export function createOriginDecision() {
+    let managed = null;
+    return Object.freeze({
+        managedRouterOrigins() {
+            managed ||= resolveManagedRouterOrigins();
+            return managed;
+        },
+    });
+}
+
+// Effective membership shared by redirect and browser-origin checks:
+// implicit loopback, then the configured explicit list, then (only when
+// needed) the freshly verified managed Router origins.
+async function isAuthenticationOriginAllowed(origin, decision) {
+    if (isLoopbackOrigin(origin)) return true;
+    if ((await getAuthPolicy()).allowedRedirectOrigins.includes(origin)) return true;
+    const managed = await (decision || createOriginDecision()).managedRouterOrigins();
+    return managed.state === 'verified' && managed.origins.includes(origin);
+}
+
+export async function assertBrowserOriginAllowed(origin, { decision } = {}) {
     let url;
     try {
         url = new URL(String(origin || ''));
@@ -242,28 +287,48 @@ export async function assertBrowserOriginAllowed(origin) {
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
         throw policyError('invalid_browser_origin', 'Browser origin must be a bare http(s) origin without credentials.');
     }
-    const policy = await getAuthPolicy();
-    if (!isLoopbackOrigin(url.origin) && !policy.allowedRedirectOrigins.includes(url.origin)) {
-        throw policyError('browser_origin_not_allowed', 'Browser origin is not allowed.');
+    if (!(await isAuthenticationOriginAllowed(url.origin, decision))) {
+        throw policyError('browser_origin_not_allowed', 'This address is not enabled for authentication.', 403);
     }
     return url.origin;
 }
 
-export async function assertRedirectUriAllowed(redirectUri) {
+export async function assertRedirectUriAllowed(redirectUri, { decision } = {}) {
     let url;
     try {
         url = new URL(String(redirectUri || ''));
     } catch {
-        throw new Error('redirectUri must be an absolute http(s) URL');
+        throw policyError('invalid_redirect_uri', 'The sign-in callback address is invalid.');
     }
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-        throw new Error('redirectUri must be an absolute http(s) URL without credentials');
+        throw policyError('invalid_redirect_uri', 'The sign-in callback address is invalid.');
     }
-    const policy = await getAuthPolicy();
-    if (!isLoopbackOrigin(url.origin) && !policy.allowedRedirectOrigins.includes(url.origin)) {
-        throw new Error('redirectUri origin is not allowed');
+    if (!(await isAuthenticationOriginAllowed(url.origin, decision))) {
+        throw policyError(
+            'redirect_origin_not_allowed',
+            'Sign-in is not enabled for this address. Use a configured workspace address or contact the workspace administrator.',
+            403,
+        );
     }
     return url.toString();
+}
+
+/**
+ * Read-only origin provenance for administrators. Managed origins come from a
+ * fresh read and are reported beside, never inside, the writable explicit list.
+ */
+export async function describeOriginPolicy(policy = null) {
+    const effective = policy || await getAuthPolicy();
+    const managed = await describeManagedRouterOrigins();
+    return {
+        allowedRedirectOriginsSource: envList('USERPERSISTO_ALLOWED_REDIRECT_ORIGINS') ? 'environment' : 'policy',
+        loopbackOriginsAllowed: true,
+        managedOriginTrustEnabled: managed.enabled,
+        managedOriginStatus: managed.status,
+        managedOriginGeneration: managed.generation,
+        managedRedirectOrigins: managed.origins,
+        effectiveRedirectOrigins: [...new Set([...effective.allowedRedirectOrigins, ...managed.origins])].sort(),
+    };
 }
 
 export { DEFAULT_POLICY };

@@ -8,7 +8,7 @@ import { createLoginRequest, consumeAuthCode, getSsoUser } from '../lib/sso.mjs'
 import { runTool } from '../tools/registry.mjs';
 import { listUsers, listRoles, updateUser, setUserRoles, deactivateUser, getUserRoles, getUserById, sanitizeUser, authGenerationOf } from '../lib/users.mjs';
 import { requireActiveActor } from '../lib/authorization.mjs';
-import { getAuthPolicy, updateAuthPolicy } from '../lib/policy.mjs';
+import { createOriginDecision, getAuthPolicy, updateAuthPolicy } from '../lib/policy.mjs';
 import { handleOidc } from '../lib/oidc/http.mjs';
 import { handleDashboard } from './dashboard.mjs';
 import { createGoogleAuthHandlers } from './googleAuth.mjs';
@@ -154,11 +154,14 @@ async function handlePost(req, res, path, handlers) {
     if (await handlers.wizard.handle(req, res, path, body, sendJson)) return;
     if (path === '/service/runtime/sso-login-request') {
         assertRuntimeSecret(req);
+        // Both checks belong to one login start and share one fresh origin read.
+        // Origin rejections keep their typed 400/403/503 code for the Router.
+        const decision = createOriginDecision();
         if (body.supportsCanonicalLoginOrigin === true) {
-            const canonicalLoginOrigin = await getCanonicalLoginOrigin(body.redirectUri);
+            const canonicalLoginOrigin = await getCanonicalLoginOrigin(body.redirectUri, { decision });
             if (canonicalLoginOrigin) return sendJson(res, 200, { ok: true, canonicalLoginOrigin });
         }
-        const request = await createLoginRequest({ redirectUri: body.redirectUri, clientId: body.clientId });
+        const request = await createLoginRequest({ redirectUri: body.redirectUri, clientId: body.clientId, decision });
         return sendJson(res, 200, { ok: true, request });
     }
     if (path === '/service/runtime/sso-consume-code') {

@@ -82,6 +82,11 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         access_denied: 'This sign-in method is not available.',
         authentication_failed: 'Unable to sign in. Check your details and try again.',
         attempt_invalid: 'This sign-in attempt is no longer available. Start over.',
+        invalid_redirect_uri: 'The sign-in callback address is invalid.',
+        redirect_origin_not_allowed: 'Sign-in is not enabled for this address. Use a configured workspace address or contact the workspace administrator.',
+        browser_origin_not_allowed: 'This address is not enabled for authentication.',
+        auth_origin_topology_unavailable: 'The workspace authentication addresses are temporarily unavailable. Try again after the workspace is ready.',
+        auth_origin_topology_invalid: 'The workspace authentication configuration is invalid. Contact the workspace administrator.',
     };
     function errorMessage(error) {
         const code = (error && error.code) || '';

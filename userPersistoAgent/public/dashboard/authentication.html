@@ -36,11 +36,17 @@
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="google"> Google</span></label>
                                     <label class="form-item"><span class="form-label"><input id="selfRegistrationEnabled" type="checkbox"> Self-registration enabled</span></label>
                                     <label class="form-item">
-                                        <span class="form-label">Allowed redirect origins (one per line)</span>
+                                        <span class="form-label">Additional allowed redirect origins (one per line)</span>
                                         <textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea>
                                     </label>
                                 </div>
                                 <div id="authPolicySource" class="userpersisto-card-description" role="status"></div>
+                                <div class="userpersisto-auth-methods-card" role="group" aria-labelledby="managedOriginsTitle">
+                                    <div id="managedOriginsTitle" class="userpersisto-card-title">Workspace Router addresses</div>
+                                    <div class="userpersisto-card-description">Read-only. Addresses published by the workspace Router binding are trusted automatically unless USERPERSISTO_TRUST_ROUTER_ORIGINS is false. They follow rebinding and port changes and are never saved in the additional origins above. Loopback addresses (localhost, 127.0.0.1 and [::1]) are always allowed.</div>
+                                    <div id="managedOriginStatus" class="userpersisto-provider-status" role="status">Loading workspace Router addresses…</div>
+                                    <div id="managedRedirectOrigins" class="userpersisto-provider-status" aria-label="Trusted workspace Router addresses"></div>
+                                </div>
                                 <div class="userpersisto-auth-methods-card">
                                     <div class="userpersisto-card-title">Google sign-in</div>
                                     <div id="googleProviderStatus" class="userpersisto-provider-status" role="status">Loading Google readiness…</div>

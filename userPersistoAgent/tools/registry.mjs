@@ -7,7 +7,7 @@ import * as credits from '../lib/credits.mjs';
 import * as billing from '../lib/billing.mjs';
 import { getSettings as getAgentSettings, saveSettings as saveAgentSettings } from '../lib/settings.mjs';
 import { getStore } from '../lib/store.mjs';
-import { environmentPolicyOverrides, getAuthPolicy, isAuthMethodEnabled, updateAuthPolicy } from '../lib/policy.mjs';
+import { describeOriginPolicy, environmentPolicyOverrides, getAuthPolicy, isAuthMethodEnabled, updateAuthPolicy } from '../lib/policy.mjs';
 import * as oidcClients from '../lib/oidc/clients.mjs';
 import { getGoogleStatus } from '../lib/auth/google.mjs';
 import * as roles from '../lib/roles.mjs';
@@ -216,10 +216,14 @@ const HANDLERS = {
     },
     userpersisto_auth_policy_get: async (_args, context) => {
         await requireAdmin(context, 'admin.agentSettings.manage');
+        const policy = await getAuthPolicy();
+        // `allowedRedirectOrigins` stays the writable explicit list; managed and
+        // effective origins are separate read-only provenance.
         return {
-            ...await getAuthPolicy(),
+            ...policy,
             registrationRole: 'selfRegistered',
             environmentOverrides: environmentPolicyOverrides(),
+            ...await describeOriginPolicy(policy),
         };
     },
     userpersisto_auth_policy_set: async (args, context) => {

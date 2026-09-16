@@ -16,8 +16,8 @@ function ssoError(code, message, statusCode = 400) {
     return Object.assign(new Error(message), { code, statusCode });
 }
 
-export async function createLoginRequest({ redirectUri, clientId = 'explorer' }) {
-    const allowedRedirectUri = await assertRedirectUriAllowed(redirectUri);
+export async function createLoginRequest({ redirectUri, clientId = 'explorer', decision }) {
+    const allowedRedirectUri = await assertRedirectUriAllowed(redirectUri, { decision });
     const store = await getStore();
     const providerState = randomUUID();
     const expiresAt = new Date(Date.now() + REQUEST_TTL_MS).toISOString();
