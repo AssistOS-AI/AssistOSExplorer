@@ -56,6 +56,17 @@ for (const engine of ['podman', 'docker']) {
         container.nested = inventoryEngine(engine, ['container', 'exec', '--user', 'podman', container.id, 'podman']);
     }
 }
+for (const engine of ['docker', 'podman']) {
+    engines[`${engine}Root`] = inventoryEngine('sudo', ['-n', engine]);
+}
+const hostDirectoryUsage = {};
+for (const directory of ['/home/admin', '/root', '/opt', '/var/lib/docker', '/var/lib/containers', '/tmp', '/var/tmp']) {
+    try {
+        hostDirectoryUsage[directory] = run('sudo', ['-n', '/usr/bin/node', '--input-type=module', '-e',
+            'import { execFileSync } from "node:child_process"; process.stdout.write(execFileSync("du", ["-x", "-B1", "-d1", "--", process.argv[1]], {encoding:"utf8", timeout:90000, killSignal:"SIGKILL", stdio:["ignore","pipe","pipe"]}));',
+            directory], 100_000);
+    } catch { hostDirectoryUsage[directory] = 'unavailable'; }
+}
 const candidates = new Set();
 const omitted = new Set(['.ssh', '.config', '.cache', '.local', '.npm', '.git', 'node_modules', '.data']);
 function walk(directory, depth) {
@@ -67,7 +78,8 @@ function walk(directory, depth) {
         if (entry.isSymbolicLink()) continue;
         if (entry.name === '.ploinky') { candidates.add(file); continue; }
         if (omitted.has(entry.name)) continue;
-        if (/(backup|artifact|test|explorer|ploinky|soul)/i.test(entry.name)) candidates.add(file);
+        if (/(backup|artifact|test|explorer|ploinky|soul)/i.test(entry.name)
+            || /^\.qa-(?:e2e|reset)/.test(entry.name)) candidates.add(file);
         if (entry.isDirectory()) walk(file, depth + 1);
     }
 }
@@ -85,5 +97,5 @@ const disk = fs.statfsSync('/home/admin', { bigint: true });
 console.log(JSON.stringify({ version: 1, host: os.hostname(), user: os.userInfo().username,
     inspectedAt: new Date().toISOString(), node: process.version,
     totalBytes: String(disk.blocks * disk.bsize), availableBytes: String(disk.bavail * disk.bsize),
-    engines, paths: [...candidates].sort().map(item),
+    engines, hostDirectoryUsage, paths: [...candidates].sort().map(item),
 }, null, 2));
