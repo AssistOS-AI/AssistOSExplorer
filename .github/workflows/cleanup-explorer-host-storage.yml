@@ -1,0 +1,67 @@
+name: Clean explicitly selected Explorer host storage
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_reset:
+        description: Delete the selected QA data, Podman containers, and container images
+        required: true
+        type: boolean
+        default: false
+      plan:
+        description: Reviewed inventory plan with exact resource identities
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-explorer-qa
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Remove the explicitly authorized resources on the pinned host
+        env:
+          SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
+          CONFIRM_RESET: ${{ inputs.confirm_reset }}
+          CLEANUP_PLAN: ${{ inputs.plan }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$CONFIRM_RESET" = true
+          test -n "$SSH_KEY"
+          key="$(mktemp)"
+          known="$(mktemp)"
+          plan="$(mktemp)"
+          remote=''
+          cleanup() {
+            if [[ "$remote" =~ ^/tmp/explorer-qa-cleanup\.[A-Za-z0-9]{8}$ ]]; then
+              ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+                admin@45.136.70.141 "rm -f '$remote/cleanup.mjs' '$remote/plan.json'; rmdir '$remote'" || true
+            fi
+            rm -f "$key" "$known" "$plan"
+          }
+          trap cleanup EXIT
+          printf '%s\n' "$SSH_KEY" > "$key"
+          printf '%s' "$CLEANUP_PLAN" > "$plan"
+          ssh-keyscan -T 10 -t ed25519 45.136.70.141 > "$known"
+          test "$(ssh-keygen -lf "$known" -E sha256 | awk '{print $2}' | sort -u)" = 'SHA256:pcVG+7QFbfi3Ojn3LeveNutqCWaTOIlgek1o3GKD/KA'
+          remote="$(ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+            admin@45.136.70.141 'umask 077; mktemp -d /tmp/explorer-qa-cleanup.XXXXXXXX')"
+          [[ "$remote" =~ ^/tmp/explorer-qa-cleanup\.[A-Za-z0-9]{8}$ ]]
+          scp -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+            .github/scripts/cleanup-explorer-host.mjs "admin@45.136.70.141:$remote/cleanup.mjs"
+          scp -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+            "$plan" "admin@45.136.70.141:$remote/plan.json"
+          script_sha="$(sha256sum .github/scripts/cleanup-explorer-host.mjs | awk '{print $1}')"
+          plan_sha="$(sha256sum "$plan" | awk '{print $1}')"
+          ssh -i "$key" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=10 admin@45.136.70.141 \
+            "printf '%s  %s\n' '$script_sha' '$remote/cleanup.mjs' '$plan_sha' '$remote/plan.json' | sha256sum -c - >/dev/null && flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock /usr/bin/node '$remote/cleanup.mjs' < '$remote/plan.json' && df -B1 /home/admin"

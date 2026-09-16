@@ -53,6 +53,16 @@ Never expose secret values in commands, logs, reports, or artifacts.
 
 ## Required sequence
 
+For an explicitly requested QA reset, first run
+`inspect-explorer-host-storage.yml` and review its container, image and filesystem
+identities. `cleanup-explorer-host-storage.yml` requires `confirm_reset=true`
+and that exact JSON plan. It removes the selected Podman containers, unreferenced
+images and the four supported QA workspace/test-artifact roots under both the
+deployment and workspace locks. It checks identities again before deletion and
+retains the dedicated Cloudflare tunnel and DNS for the next deployment. This
+operation permanently removes the selected QA data; use it only when that reset
+has been explicitly authorized.
+
 QA capacity admission prints byte counts for available and required space,
 the shortfall, retained QA backups, durable data, and source/dependency/image
 caches before stopping any service. The categories overlap and must not be
