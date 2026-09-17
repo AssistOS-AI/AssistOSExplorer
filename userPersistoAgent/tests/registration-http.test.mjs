@@ -38,7 +38,7 @@ async function fixture(fn) {
 }
 
 test('retired password routes are gone and malformed bodies fail before any setup decision', () => fixture(async ({ base }) => {
-    for (const route of ['register', 'password/login', 'admin/login', 'totp/setup']) {
+    for (const route of ['register', 'password/login', 'totp/setup']) {
         const response = await fetch(`${base}/service/auth/${route}`, { method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ email: 'owner@example.test', password: 'long-enough-password' }) });
         assert.equal(response.status, 404, route);
@@ -64,7 +64,7 @@ test('HTTP email registration claims the first administrator through the browser
     const state = await attempt.json();
     assert.equal(state.setupComplete, false);
     assert.equal(state.registration, true);
-    assert.equal(Object.hasOwn(state, 'adminPassword'), false);
+    assert.equal(state.adminPassword, true);
     assert.ok(state.expiresAt > Date.now());
     const discovered = await (await post(browser, 'discover', { requestId: request.providerState, email: 'owner@example.test' })).json();
     assert.deepEqual([discovered.exists, discovered.methods], [false, { emailCode: false, passkey: false, totp: false }]);
@@ -120,17 +120,17 @@ test('dead, expired or cross-origin requests are client errors and create nothin
     assert.equal((await getInstallationSetup()).complete, false);
 }));
 
-test('retired administrator password login cannot claim setup even with a live parent and configured legacy secret', () => fixture(async ({ base, post }) => {
+test('an explicit empty administrator password disables first-run password login', () => fixture(async ({ base, post }) => {
     const previous = process.env.USERPERSISTO_ADMIN_PASSWORD;
-    process.env.USERPERSISTO_ADMIN_PASSWORD = 'retired-test-secret';
+    process.env.USERPERSISTO_ADMIN_PASSWORD = '';
     try {
         const request = await createLoginRequest({ redirectUri: base + '/auth/callback' });
         const browser = new CookieBrowser();
         const attempt = await (await post(browser, 'attempt', { requestId: request.providerState })).json();
-        assert.equal(Object.hasOwn(attempt, 'adminPassword'), false);
-        const refused = await post(browser, 'admin/login', { requestId: request.providerState, password: process.env.USERPERSISTO_ADMIN_PASSWORD });
+        assert.equal(attempt.adminPassword, false);
+        const refused = await post(browser, 'admin/login', { requestId: request.providerState, password: 'admin' });
         assert.equal(refused.status, 404);
-        assert.equal((await refused.json()).error, 'not_found');
+        assert.equal((await refused.json()).error, 'admin_password_unavailable');
         assert.equal((await getInstallationSetup()).complete, false);
         assert.equal((await (await getStore()).select('ssoAuthCode')).objects.length, 0);
     } finally {

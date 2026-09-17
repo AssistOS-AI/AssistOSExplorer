@@ -1,6 +1,7 @@
 import { getAuthPolicy } from '../policy.mjs';
 import { getInstallationSetup } from '../setup.mjs';
 import { getGoogleStatus } from './google.mjs';
+import { isAdministratorPasswordConfigured } from './adminPassword.mjs';
 
 // Public, secret-free presentation state shared by both protocol adapters.
 export async function wizardConfiguration({ emailAvailable = false } = {}) {
@@ -18,5 +19,6 @@ export async function wizardConfiguration({ emailAvailable = false } = {}) {
             totp: enabled.includes('totp'),
             google,
         },
+        adminPassword: await isAdministratorPasswordConfigured(),
     };
 }

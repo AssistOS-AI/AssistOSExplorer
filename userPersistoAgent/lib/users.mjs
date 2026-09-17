@@ -28,7 +28,7 @@ export function normalizeEmail(email) {
 }
 
 // Only a non-empty, verified mailbox is a sign-in credential. An unverified
-// contact address or an empty email never is.
+// contact address, or the email-less configured administrator, never is.
 export function hasVerifiedMailbox(user) {
     return Boolean(user && typeof user.email === 'string' && user.email && user.emailVerifiedAt);
 }
@@ -80,12 +80,13 @@ function normalizeRoleNames(roles) {
 
 // Runs every predictable account-creation check without mutating, so staged
 // callers can validate before entering the fail-closed persistence boundary.
-export async function assertNewUserAvailable({ email, username = '', roles = [], contactEmail = '' }) {
+// The only email-less account is the configured-password administrator.
+export async function assertNewUserAvailable({ email, username = '', roles = [], contactEmail = '', allowEmptyEmail = false }) {
     const store = await getStore();
-    const normalizedEmail = normalizeEmail(email);
+    const normalizedEmail = allowEmptyEmail && email === '' ? '' : normalizeEmail(email);
     const normalizedUsername = normalizeUsername(username);
     const normalizedContact = contactEmail ? normalizeEmail(contactEmail) : '';
-    if (await getUserByEmail(normalizedEmail)) {
+    if (normalizedEmail ? await getUserByEmail(normalizedEmail) : await store.hasUser('')) {
         throw userError('email_taken', 'Email is already in use.');
     }
     if (normalizedUsername && await findUserByUsername(store, normalizedUsername)) {
@@ -108,9 +109,10 @@ async function createUserInternal({
     actorId = 'system',
     emailVerified = false,
     contactEmail = '',
+    allowEmptyEmail = false,
 }, { save = true } = {}) {
     const store = await getStore();
-    const normalized = await assertNewUserAvailable({ email, username, roles, contactEmail });
+    const normalized = await assertNewUserAvailable({ email, username, roles, contactEmail, allowEmptyEmail });
     const timestamp = new Date().toISOString();
     const user = await store.createUser({
         email: normalized.email,

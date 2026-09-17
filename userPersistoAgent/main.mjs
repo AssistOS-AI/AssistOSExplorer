@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { join } from 'node:path';
 import { getStore } from './lib/store.mjs';
 import { ensureSeedData } from './lib/bootstrap.mjs';
+import { syncAdministratorPasswordState } from './lib/auth/adminPassword.mjs';
 import { startService } from './service/index.mjs';
 import { getOidcProvider } from './lib/oidc/provider.mjs';
 
@@ -78,6 +79,9 @@ for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
 const startup = (async () => {
     store = await getStore();
     await ensureSeedData();
+    // A replaced or removed administrator password revokes stale proofs and the
+    // designated administrator's sessions at startup, before any sign-in.
+    await syncAdministratorPasswordState();
     await getOidcProvider();
     if (stopping) return;
     service = startService(servicePort);

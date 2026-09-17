@@ -124,7 +124,7 @@ test('fresh email-code, passkey and TOTP proofs with confirmation preserve roles
         assert.deepEqual(result.roles, ['admin', 'user']);
         assert.deepEqual(await getUserById(user.id), { ...original, updatedAt: (await getUserById(user.id)).updatedAt });
     }
-    // Retired password proofs can never link a Google identity.
+    // Password proofs require a configured designated administrator.
     const member = await createUser({ email: 'member-admin-proof@gmail.com', roles: ['user'] });
     const memberIdentity = identity('member-admin-proof', member.email);
     assert.equal((await inspectGoogleIdentity(memberIdentity)).eligibleMethods.includes('adminPassword'), false);

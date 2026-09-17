@@ -2,6 +2,7 @@ import { getStore } from './store.mjs';
 import { getUserById, getUserRoles, hasVerifiedMailbox } from './users.mjs';
 import { getEnabledAuthMethods } from './auth/methods.mjs';
 import { GOOGLE_ISSUER } from './externalIdentities.mjs';
+import { administratorPasswordUsableFor } from './auth/adminPassword.mjs';
 
 export async function getUserCapabilities(userId) {
     const store = await getStore();
@@ -83,6 +84,7 @@ export async function getProfile(userId) {
     if (externalIdentities.some((identity) => identity.issuer === GOOGLE_ISSUER)) {
         authMethods.push({ type: 'google', name: 'Google' });
     }
+    if (await administratorPasswordUsableFor(userId)) authMethods.push({ type: 'adminPassword', name: 'Administrator password' });
     const { passwordHash, loginAttempts, lastLoginAttempt, ...safeUser } = user;
     const { reauthenticationMethods } = await import('./auth/operationGrants.mjs');
     const contactChallenge = await store.getAuthChallengeByChallengeId(`contact-verify:${userId}`);

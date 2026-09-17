@@ -6,6 +6,7 @@ import { assertRegistrationRoleAllowed, getAuthPolicy, REGISTRATION_ROLE } from 
 import { readInstallationSetup, prepareNewAccount } from './setup.mjs';
 import { recordAudit } from './audit.mjs';
 import { credentialVersion } from './auth/credentialVersion.mjs';
+import { administratorPasswordUsableFor, assertAdministratorPasswordProof } from './auth/adminPassword.mjs';
 
 export const GOOGLE_ISSUER = 'https://accounts.google.com';
 export const GOOGLE_LOCAL_PROOF_TTL_MS = 2 * 60 * 1000;
@@ -13,7 +14,7 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // `googleAuthoritative` is the narrow shortcut: explicit consent after Google
 // verified an address it is authoritative for, matching the current verified,
 // enabled local mailbox. Every other method proves the existing account afresh.
-const LINK_METHODS = new Set(['emailCode', 'passkey', 'totp', 'googleAuthoritative']);
+const LINK_METHODS = new Set(['emailCode', 'passkey', 'totp', 'adminPassword', 'googleAuthoritative']);
 
 function identityError(code, statusCode = 403) {
     return Object.assign(new Error('Google sign-in cannot continue. Use an existing sign-in method or start again.'), { code, statusCode });
@@ -67,6 +68,7 @@ async function eligibleMethods(store, user, policy, identity) {
     for (const type of ['passkey', 'totp']) {
         if (policy.enabledAuthMethods.includes(type) && enrolled.some((method) => method.type === type && method.enabled === true)) methods.push(type);
     }
+    if (await administratorPasswordUsableFor(user.id)) methods.push('adminPassword');
     return methods;
 }
 
@@ -157,6 +159,8 @@ async function assertLinkProof(store, resolved, proof, transactionId, identity) 
     if (proof.method === 'emailCode' || proof.method === 'googleAuthoritative') {
         valid = hasVerifiedMailbox(user) && user.email === resolved.email && proof.credentialVersion === mailboxVersion(user)
             && (proof.method === 'emailCode' || googleIsAuthoritativeFor(identity, user.email));
+    } else if (proof.method === 'adminPassword') {
+        valid = await assertAdministratorPasswordProof(store, { userId: resolved.userId, credentialVersion: proof.credentialVersion });
     } else if (typeof proof.credentialKey === 'string' && proof.credentialKey) {
         const credential = await store.getAuthMethodByKey(proof.credentialKey);
         valid = !!credential && credential.userId === resolved.userId && credential.type === proof.method && credential.enabled === true

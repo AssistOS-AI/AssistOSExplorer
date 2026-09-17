@@ -7,6 +7,7 @@ import { authGenerationOf, getUserById, hasVerifiedMailbox } from '../users.mjs'
 import { sendAuthCode } from '../email-agent-client.mjs';
 import { attemptError } from './emailAttempts.mjs';
 import { cancelAccountCode, checkAccountCode, sendAccountCode } from './accountCodes.mjs';
+import { administratorPasswordUsableFor, assertAdministratorPasswordProof, verifyAdministratorPassword } from './adminPassword.mjs';
 import * as passkey from './passkey.mjs';
 import * as totp from './totp.mjs';
 import { getGoogleStatus, GOOGLE_ISSUER } from './google.mjs';
@@ -17,7 +18,7 @@ import { googleIdentityKey } from '../externalIdentities.mjs';
 // operation it authorizes and the account generation, valid for five minutes.
 // An old session alone, or a grant for another operation, cannot enroll.
 export const GRANT_OPERATIONS = new Set(['passkey.register', 'totp.enroll', 'contact.verify']);
-const REAUTH_METHODS = ['emailCode', 'passkey', 'totp'];
+const REAUTH_METHODS = ['emailCode', 'passkey', 'totp', 'adminPassword'];
 const GRANT_METHODS = new Set([...REAUTH_METHODS, 'google']);
 const GRANT_TTL_MS = 5 * 60 * 1000;
 const GRANT_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -72,6 +73,7 @@ export async function reauthenticationMethods(user) {
         const bindings = await (await getStore()).getExternalIdentitiesObjectsByUserId(user.id) || [];
         if (bindings.some((binding) => binding.issuer === GOOGLE_ISSUER && binding.subject)) methods.push('google');
     }
+    if (await administratorPasswordUsableFor(user.id)) methods.push('adminPassword');
     return methods;
 }
 
@@ -115,8 +117,8 @@ async function assertMethod(user, method) {
 }
 
 // Starts re-authentication. Email codes go to the verified sign-in mailbox;
-// passkeys receive a challenge scoped to this account and operation. TOTP
-// needs no start step.
+// passkeys receive a challenge scoped to this account and operation. TOTP and
+// the administrator password need no start step.
 export async function startReauthentication({ userId, operation, method, origin = '', rpId = '', resend = false, deliver = sendAuthCode }) {
     assertOperation(operation);
     const user = await activeUser(userId);
@@ -173,12 +175,15 @@ async function issueGrant(user, operation, method, extraStage = null) {
 
 // Verifies the fresh proof and issues the grant. Every method rechecks that it
 // is still available for this account at verification time.
-export async function completeReauthentication({ userId, operation, method, code, token, assertion, challengeKey, origin = '' }) {
+export async function completeReauthentication({ userId, operation, method, code, token, assertion, challengeKey, origin = '', password, rateSource = '' }) {
     assertOperation(operation);
     const user = await activeUser(userId);
     assertOperationAllowed(user, operation);
     await assertMethod(user, method);
-    if (method === 'totp') {
+    let passwordProof = null;
+    if (method === 'adminPassword') {
+        passwordProof = await verifyAdministratorPassword({ password, rateSource });
+    } else if (method === 'totp') {
         const result = await totp.reauthenticationVerify({ userId: user.id, token });
         if (!result.ok) {
             throw result.reason === 'account_locked'
@@ -192,6 +197,9 @@ export async function completeReauthentication({ userId, operation, method, code
     return serializePersisted('users', async () => {
         const current = await activeUser(userId);
         if (authGenerationOf(current) !== authGenerationOf(user) || !(await reauthenticationMethods(current)).includes(method)) {
+            throw grantError('authentication_failed', 401);
+        }
+        if (passwordProof && !(await assertAdministratorPasswordProof(await getStore(), { userId: current.id, credentialVersion: passwordProof.credentialVersion }))) {
             throw grantError('authentication_failed', 401);
         }
         if (method !== 'emailCode') return issueGrant(current, operation, method);

@@ -18,7 +18,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     let screen = 'loading';
     let mode = 'login';
     let email = '';
-    let config = { setupComplete: true, registration: false, methods: {} };
+    let config = { setupComplete: true, registration: false, methods: {}, adminPassword: false };
     let expiresAt = 0;
     let discovery = null;
     let challenge = null;
@@ -81,6 +81,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         auth_method_disabled: 'This sign-in method is not available.',
         access_denied: 'This sign-in method is not available.',
         authentication_failed: 'Unable to sign in. Check your details and try again.',
+        admin_password_unavailable: 'Administrator sign-in is not available.',
         attempt_invalid: 'This sign-in attempt is no longer available. Start over.',
         invalid_redirect_uri: 'The sign-in callback address is invalid.',
         redirect_origin_not_allowed: 'Sign-in is not enabled for this address. Use a configured workspace address or contact the workspace administrator.',
@@ -88,8 +89,9 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         auth_origin_topology_unavailable: 'The workspace authentication addresses are temporarily unavailable. Try again after the workspace is ready.',
         auth_origin_topology_invalid: 'The workspace authentication configuration is invalid. Contact the workspace administrator.',
     };
-    function errorMessage(error) {
+    function errorMessage(error, { onAdminScreen = false } = {}) {
         const code = (error && error.code) || '';
+        if (code === 'authentication_failed' && onAdminScreen) return 'Unable to sign in with that administrator password.';
         if (code === 'code_invalid') {
             const base = 'That code is not correct.';
             return Number.isSafeInteger(error.attemptsRemaining) ? `${base} ${error.attemptsRemaining} attempts left.` : base;
@@ -221,6 +223,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
                 ? h('p', { className: 'auth-switch' }, [h('span', { text: 'New here? ' }), h('button', { type: 'button', className: 'auth-link', text: 'Create an account', onClick: () => { mode = 'register'; email = emailInput.value.trim(); persist(); showStart(); } })])
                 : h('p', { className: 'auth-switch' }, [h('span', { text: 'Already have an account? ' }), h('button', { type: 'button', className: 'auth-link', text: 'Sign in', onClick: () => { mode = 'login'; email = emailInput.value.trim(); persist(); showStart(); } })]));
         }
+        if (config.adminPassword) children.push(h('button', { type: 'button', className: 'auth-link auth-admin-switch', text: 'Administrator sign-in', onClick: () => showAdmin() }));
         if (typeof adapter.abort === 'function') children.push(h('button', { type: 'button', className: 'auth-link', text: 'Cancel', onClick: () => { showCompleting(); adapter.abort(); } }));
         form.append(...children);
         form.addEventListener('submit', (event) => {
@@ -527,6 +530,49 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         }
     }
 
+    // ---- administrator ------------------------------------------------------
+    function showAdmin(initialError = '') {
+        const form = h('form', { className: 'auth-panel admin-panel' });
+        const errorNode = status(initialError, { error: true });
+        const passwordInput = h('input', { id: 'auth-admin-password', name: 'password', type: 'password', autocomplete: 'current-password', maxlength: '1024', required: true });
+        const contactInput = !config.setupComplete ? h('input', { id: 'auth-admin-contact', name: 'contactEmail', type: 'email', autocomplete: 'email' }) : null;
+        const verifyButton = h('button', { type: 'submit', text: 'Sign in' });
+        form.append(
+            heading('Administrator sign-in'),
+            h('p', { className: 'auth-copy', text: 'Enter the administrator password for this workspace.' }),
+            h('label', { for: 'auth-admin-password', text: 'Password' }),
+            passwordInput,
+        );
+        if (contactInput) {
+            form.append(h('label', { for: 'auth-admin-contact', text: 'Contact email (optional)' }), contactInput,
+                h('p', { className: 'auth-copy', text: 'You can verify this email later in My Account.' }));
+        }
+        form.append(verifyButton, errorNode, backButton(() => showStart()));
+        form.addEventListener('submit', (event) => {
+            event.preventDefault();
+            void submitAdmin(passwordInput, contactInput, verifyButton, errorNode);
+        });
+        commit('admin', form);
+    }
+
+    async function submitAdmin(passwordInput, contactInput, verifyButton, errorNode) {
+        const capturedEpoch = epoch;
+        const password = passwordInput.value;
+        const contactEmail = contactInput ? contactInput.value.trim() : '';
+        verifyButton.disabled = true;
+        try {
+            const result = await adapter.adminLogin({ password, contactEmail });
+            finish(capturedEpoch, result);
+        } catch (error) {
+            if (stale(capturedEpoch)) return;
+            passwordInput.value = '';
+            if (handleGlobalError(error)) return;
+            verifyButton.disabled = false;
+            errorNode.textContent = errorMessage(error, { onAdminScreen: true });
+            errorNode.setAttribute('role', 'alert');
+        }
+    }
+
     // ---- collision / registration-disabled / expiry -------------------------
     function showCollision() {
         const form = h('form', { className: 'auth-panel confirm-panel' }, [
@@ -621,6 +667,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
                 return showStart(message);
             }
         }
+        if (failure.action === 'admin-login') return showAdmin(errorMessage(failure, { onAdminScreen: true }));
         mode = defaultMode();
         return showStart(errorMessage(failure));
     }
@@ -641,7 +688,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         }
         if (stale(capturedEpoch)) return;
         if (result.completed) { finish(capturedEpoch, result.handoff); return; }
-        config = { setupComplete: result.setupComplete, registration: result.registration, methods: result.methods || {} };
+        config = { setupComplete: result.setupComplete, registration: result.registration, methods: result.methods || {}, adminPassword: result.adminPassword };
         expiresAt = result.expiresAt;
         startTicking();
         if (adapter.initialFailure) { await handleInitialFailure(adapter.initialFailure, adapter.initialEmail, result); return; }

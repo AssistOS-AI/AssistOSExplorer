@@ -30,7 +30,7 @@ async function fixture(fn) {
         const base = `http://127.0.0.1:${server.address().port}`;
         await fn({ base, mail });
     } finally {
-
+        setup.clearAdministratorPassword();
         setup.resetAuthLimitsForTests();
         if (server?.listening) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
         await resetStoreForTests();
@@ -222,16 +222,26 @@ test('register + existing email confirms into sign-in through the chooser and co
     }
 }));
 
-test('an unclaimed installation offers supported sign-in methods without administrator password controls', () => fixture(async ({ base }) => {
-    const request = await createLoginRequest({ redirectUri: base + '/auth/callback' });
-    const wizard = mount(new CookieBrowser(), base, request.providerState);
+test('administrator sign-in on an unclaimed installation creates the email-less administrator', () => fixture(async ({ base }) => {
+    const password = setup.configureAdministratorPassword();
+    const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
+    const browser = new CookieBrowser();
+    const wizard = mount(browser, base, request.providerState);
     try {
-        await waitForHeading(wizard.root, /Create an account/);
+        await waitForHeading(wizard.root, /Create an account/); // still unclaimed
         assert.match(wizard.root.textContent, /This workspace is not set up yet\. The first completed sign-in becomes its administrator\./);
-        assert.equal(findButton(wizard.root, 'Administrator sign-in'), undefined);
-        assert.equal(wizard.root.querySelector('[name="password"]'), null);
-        assert.equal(wizard.root.querySelector('[name="contactEmail"]'), null);
-        assert.equal(wizard.navigated.length, 0);
+        findButton(wizard.root, 'Administrator sign-in').fire('click');
+        await waitForHeading(wizard.root, /Administrator sign-in/);
+        assert.ok(wizard.root.querySelector('[name="contactEmail"]'), 'contact email is offered before setup is complete');
+        wizard.root.querySelector('[name="password"]').value = password;
+        wizard.root.querySelector('[name="contactEmail"]').value = 'ops@example.test';
+        wizard.root.querySelector('form.admin-panel').fire('submit');
+        await waitFor(() => wizard.navigated.length === 1);
+        const authCode = callbackFromNavigation(wizard.navigated, base, request.providerState);
+        const consumed = await consumeAuthCode({ providerState: request.providerState, code: authCode });
+        assert.equal(consumed.user.username, 'administrator');
+        assert.equal(consumed.user.email, '');
+        assert.deepEqual(consumed.roles, ['admin']);
     } finally {
         wizard.dispose();
     }

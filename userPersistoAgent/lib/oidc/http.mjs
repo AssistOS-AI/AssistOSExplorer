@@ -13,6 +13,7 @@ import { loginVerify as verifyTotp } from '../auth/totp.mjs';
 import { loginOptions as passkeyOptions, loginVerify as verifyPasskey } from '../auth/passkey.mjs';
 import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, startEmailSignIn } from '../auth/signIn.mjs';
 import { readAttempt } from '../auth/emailAttempts.mjs';
+import { completeAdministratorPassword } from '../auth/adminPassword.mjs';
 import { wizardConfiguration } from '../auth/wizardConfig.mjs';
 import { ensureBrowserProof, rateSourceOf, readBrowserProof } from '../auth/browserBinding.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../email-agent-client.mjs';
@@ -22,7 +23,7 @@ import { cancelGoogleTransactionForParent } from '../../service/googleAuth.mjs';
 // credential completion is a native form POST that ends in the engine's
 // interactionFinished redirect, so the browser keeps the cookie-bound flow.
 const JSON_ACTIONS = new Set(['attempt', 'attempt-cancel', 'discover', 'email-start', 'passkey-options']);
-const NATIVE_ACTIONS = new Set(['email-verify', 'totp', 'passkey-verify']);
+const NATIVE_ACTIONS = new Set(['email-verify', 'totp', 'passkey-verify', 'admin-login']);
 const METHOD_FOR_ACTION = {
     'email-start': 'emailCode', 'email-verify': 'emailCode', totp: 'totp', 'passkey-options': 'passkey', 'passkey-verify': 'passkey',
 };
@@ -35,6 +36,7 @@ const FAILURE_MESSAGES = {
     too_many_attempts: 'Unable to sign in. Too many incorrect codes; start again.',
     rate_limited: 'Unable to sign in. Too many attempts; wait and try again.',
     attempt_invalid: 'Unable to sign in. Start again.',
+    admin_password_unavailable: 'Administrator sign-in is not available.',
 };
 
 function json(res, status, data) {
@@ -323,6 +325,12 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
                         origin: issuer.origin, purpose: `oidc-login:${uid}` });
                 }
                 amr = ['passkey'];
+            }
+            if (action === 'admin-login') {
+                const result = await completeAdministratorPassword({ password: field(body, 'password', 4096), rateSource,
+                    contactEmail: field(body, 'contactEmail', 320), validateParent });
+                authenticated = { ok: true, user: result.user };
+                amr = ['pwd'];
             }
         } catch (error) {
             if (!(Number(error.statusCode) >= 400 && Number(error.statusCode) < 500) || error.code === 'persistence_unavailable') throw error;

@@ -168,7 +168,7 @@ test('TOTP replacement keeps the old authenticator until proven, then revokes ol
     assert.deepEqual([stale.status, stale.data.error], [403, 'operation_grant_required']);
 });
 
-test('retired password reauthentication is refused for administrators and ordinary accounts', async () => {
+test('password reauthentication is unavailable to email-created administrators without an explicit override and ordinary accounts', async () => {
     for (const email of ['owner@example.test', 'member@example.test']) {
         const user = await getUserByEmail(email);
         assert.equal((await profileOf(user.id)).reauthenticationMethods.includes('adminPassword'), false);

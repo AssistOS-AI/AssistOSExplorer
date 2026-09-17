@@ -187,7 +187,7 @@ test('MCP starts after the durable service and drains before HTTP/store; normal 
     await waitFor(() => existsSync(env.RUNTIME_TEST_STATE), runtime);
     const started = JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8'));
     assert.equal(started.setup.setupComplete, false);
-    assert.equal(Object.hasOwn(started.setup, 'adminPassword'), false);
+    assert.equal(started.setup.adminPassword, true);
     await registerOwner(runtime);
     assert.equal((await post(runtime, '/internal/tool', { name: 'userpersisto_profile_get' })).status, 401);
     runtime.child.kill('SIGTERM');

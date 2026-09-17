@@ -298,7 +298,7 @@ test('an authoritative Google account links the matching verified mailbox with c
     assert.equal((await googleHandoffs()).filter((code) => code.providerState === flow.request.providerState).length, 1);
 }));
 
-test('retired administrator passwords cannot confirm a Google collision for an existing administrator', () => fixture(async ({ owner, provider, begin, callback }) => {
+test('an email-created administrator without a password override cannot use password proof for Google linking', () => fixture(async ({ owner, provider, begin, callback }) => {
     provider.state.email = owner.email;
     const flow = await begin();
     const returned = await callback(flow);

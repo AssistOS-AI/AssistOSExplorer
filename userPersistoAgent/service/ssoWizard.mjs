@@ -4,6 +4,7 @@ import { cancelGoogleTransactionForParent } from './googleAuth.mjs';
 import { getLoginRequest, issueAuthCodeLocked, isAuthCodeLive, prepareSsoHandoff } from '../lib/sso.mjs';
 import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, startEmailSignIn } from '../lib/auth/signIn.mjs';
 import { readCompletion } from '../lib/auth/emailAttempts.mjs';
+import { completeAdministratorPassword } from '../lib/auth/adminPassword.mjs';
 import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
 import * as passkey from '../lib/auth/passkey.mjs';
 import * as totp from '../lib/auth/totp.mjs';
@@ -30,6 +31,7 @@ const ROUTES = new Set([
     '/service/auth/passkey/options',
     '/service/auth/passkey/verify',
     '/service/auth/totp/verify',
+    '/service/auth/admin/login',
 ]);
 
 function fail(code, statusCode, extra = {}) {
@@ -139,6 +141,12 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
                 const result = await totp.loginVerify({ email: text(body, 'email', 320), token: text(body, 'token', 16) });
                 if (!result.ok) throw result.reason === 'account_locked' ? fail('rate_limited', 429, { retryAfter: 300 }) : fail('authentication_failed', 401);
                 return sendJson(res, 200, callbackPayload(await issueAuthCodeLocked({ providerState: requestId, userId: result.user.id, generation: authGenerationOf(result.user) }), state));
+            }
+            if (path === '/service/auth/admin/login') {
+                const result = await completeAdministratorPassword({ password: text(body, 'password', 4096), rateSource,
+                    contactEmail: text(body, 'contactEmail', 320), validateParent });
+                return sendJson(res, 200, { ...callbackPayload(await issueAuthCodeLocked({ providerState: requestId, userId: result.user.id, generation: authGenerationOf(result.user) }), state),
+                    initialAdministrator: result.initialAdministrator });
             }
             return sendJson(res, 404, { ok: false, error: 'not_found' });
         });

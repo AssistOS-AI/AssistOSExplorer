@@ -4,7 +4,8 @@ import { withPersistenceScope } from './persistence-scope.mjs';
 import { getEmailAuthCodeStatus } from './email-agent-client.mjs';
 import { describeManagedRouterOrigins, resolveManagedRouterOrigins } from './auth/managedRouterOrigins.mjs';
 
-// Every account, including administrators, uses passwordless authentication.
+// Ordinary accounts are passwordless. The installation administrator password
+// is a separate, single-account exception and never a policy method.
 const AUTH_METHODS = new Set(['emailCode', 'passkey', 'totp', 'google']);
 export const REGISTRATION_ROLE = 'selfRegistered';
 const POLICY_FIELDS = new Set(['enabledAuthMethods', 'selfRegistrationEnabled', 'allowedRedirectOrigins']);
@@ -218,15 +219,20 @@ async function hasCapability(store, userId, capability) {
 }
 
 // Sign-in methods an account can actually use under the effective policy and
-// configuration: email code only with a verified mailbox, passkey/TOTP only
-// when enrolled and reachable through the account's sign-in email, Google only
-// when configured and bound. Read-only; safe inside the persistence scope.
-export async function usableSignInMethods(user, { store = null, policy = null, emailAvailable = false } = {}) {
+// configuration: administrator password only for its designated account, email
+// code only with a verified mailbox, passkey/TOTP when enrolled and reachable
+// through that mailbox, Google when configured and bound. Read-only; safe inside
+// the persistence scope.
+export async function usableSignInMethods(user, { store = null, policy = null, includeAdministratorPassword = true, emailAvailable = false } = {}) {
     if (!user || user.status !== 'active') return [];
     const persisto = store || await getStore();
     const effective = policy || await getAuthPolicy();
     const enabled = effective.enabledAuthMethods;
     const methods = [];
+    if (includeAdministratorPassword) {
+        const { administratorPasswordUsableFor } = await import('./auth/adminPassword.mjs');
+        if (await administratorPasswordUsableFor(user.id)) methods.push('adminPassword');
+    }
     if (emailAvailable && enabled.includes('emailCode') && user.email && user.emailVerifiedAt) methods.push('emailCode');
     const credentials = await persisto.getAuthMethodsObjectsByUserId(user.id) || [];
     for (const type of ['passkey', 'totp']) {

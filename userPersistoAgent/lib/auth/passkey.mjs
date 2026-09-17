@@ -398,6 +398,7 @@ export async function registrationOptions({ userId, origin = '', rpId = '', rpNa
             rp,
             user: {
                 id: base64urlEncode(Buffer.from(user.id)),
+                // The configured-password administrator has no sign-in email.
                 name: user.email || user.username || user.id,
                 displayName: user.displayName || user.email || user.username || user.id
             },

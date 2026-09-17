@@ -6,6 +6,7 @@ import { cancelReauthentication, completeReauthentication, startReauthentication
 import { completeContactVerification, startContactVerification } from '../lib/auth/contactVerification.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
 import { assertWritablePolicyFields, updateAuthPolicy } from '../lib/policy.mjs';
+import { rateSourceOf } from '../lib/auth/browserBinding.mjs';
 
 const PREFIX = '/service/dashboard';
 const ASSETS = new Set([
@@ -150,15 +151,15 @@ function withEmailAvailability(profile, emailAvailable) {
 
 // Fresh re-authentication and contact verification for the signed-in actor.
 // These never run through the tool registry, so no MCP caller can relay
-// credential proofs to obtain an operation grant.
-async function accountSecurity(path, body, { actorUserId, origin, deliverEmail }) {
+// codes or the administrator password to obtain an operation grant.
+async function accountSecurity(path, body, { actorUserId, origin, deliverEmail, rateSource }) {
     const common = { userId: actorUserId, operation: bodyText(body, 'operation', 64), method: bodyText(body, 'method', 32) };
     if (path === 'reauth/start') {
         return startReauthentication({ ...common, origin, rpId: new URL(origin).hostname, resend: body.resend === true, deliver: deliverEmail });
     }
     if (path === 'reauth/verify') {
         return completeReauthentication({ ...common, origin, code: bodyText(body, 'code', 16), token: bodyText(body, 'token', 16),
-            challengeKey: bodyText(body, 'challengeKey', 128), assertion: body.assertion });
+            challengeKey: bodyText(body, 'challengeKey', 128), assertion: body.assertion, password: bodyText(body, 'password', 4096), rateSource });
     }
     if (path === 'reauth/cancel') {
         await cancelReauthentication({ userId: actorUserId });
@@ -244,7 +245,7 @@ export async function handleDashboard(req, res, url, { sendJson, serveStatic, go
                 return google.completeReauthentication(req, res, { userId: actorUserId, operation: bodyText(body, 'operation', 64),
                     handle: bodyText(body, 'transaction', 64), cancel: path === '/api/reauth/cancel' });
             }
-            const result = await accountSecurity(path.slice(5), body, { actorUserId, origin, deliverEmail });
+            const result = await accountSecurity(path.slice(5), body, { actorUserId, origin, deliverEmail, rateSource: rateSourceOf(req) });
             if (result) return sendJson(res, 200, result);
         }
         const operation = path.startsWith('/api/') ? OPERATIONS.get(path.slice(5)) : null;

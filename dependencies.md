@@ -16,6 +16,11 @@ the bundled ESM/UMD artifacts and running Explorer's tests.
 
 ## UserPersisto persistence runtime
 
+Administrator password authentication uses the existing Node.js runtime's
+`node:crypto` scrypt, random-byte and constant-time comparison primitives,
+plus the existing Persisto storage and browser wizard. Restoring it adds no
+package, build step, global tool or runtime download.
+
 UserPersisto includes the eight required persistence/audit-constant source files from OpenDSU/Persisto commit `a711a67f6bdfdec15af91f9f79aa8a0d69397149` under `userPersistoAgent/external/Persisto`. The files are unchanged; `upstream.json` records exact SHA-256 digests, and the MIT license (Copyright 2025 OpenDSU) is retained in `LICENSE`. This is the same runtime revision previously fetched by the agent installation hook, not a new persistence engine.
 
 The bundled runtime is a required, portable source dependency. It permits read-only `/code` mounts and removes startup Git/network access. Native Node filesystem code cannot replace Persisto's model/index engine without a separate persistence migration. An npm Git dependency would run upstream's unrelated, unpinned `achillesUtils` postinstall clone; including only the exact already-used runtime avoids that extra dependency and lifecycle side effect. UserPersisto provides its own durable adapter/logger, so the omitted audit server/client and `achillesUtils` integration are not required. The included runtime uses Node built-ins and has no additional package dependencies.

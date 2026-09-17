@@ -9,7 +9,7 @@ import * as oidc from 'openid-client';
 import { controlledGoogleProvider } from '../helpers/googleProvider.mjs';
 import { startService } from '../../service/index.mjs';
 import { ensureSeedData } from '../../lib/bootstrap.mjs';
-import { getUserByEmail } from '../../lib/users.mjs';
+import { getUserByEmail, getUserById } from '../../lib/users.mjs';
 import { createLoginRequest, consumeAuthCode } from '../../lib/sso.mjs';
 import { getInstallationSetup } from '../../lib/setup.mjs';
 import { getStore, resetStoreForTests } from '../../lib/store.mjs';
@@ -48,8 +48,70 @@ function latestCode(address) {
 }
 
 async function screenshot(page, name) {
-    // Taken before any code is typed, so no secret is captured.
+    // Taken before any code or password is typed, so no secret is captured.
     await page.screenshot({ path: join(artifactRoot, `${name}.png`), fullPage: true });
+}
+
+async function verifyDefaultAdministrator(browserErrors) {
+    const previousEnvironment = { ...process.env };
+    const persistence = await mkdtemp(join(tmpdir(), 'userpersisto-first-admin-browser-'));
+    let server;
+    let context;
+    try {
+        process.env.PERSISTENCE_FOLDER = persistence;
+        process.env.USERPERSISTO_SETTINGS_KEY = 'first-admin-browser-fixture-settings-key';
+        for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS']) delete process.env[name];
+        await ensureSeedData();
+        server = startService({ port: 0, host: '127.0.0.1' });
+        if (!server.listening) await once(server, 'listening');
+        const origin = `http://127.0.0.1:${server.address().port}`;
+        let administratorId;
+        for (const firstRun of [true, false]) {
+            phase = firstRun ? 'SSO: fresh installation uses the default administrator password and optional email' : 'SSO: default administrator signs back in';
+            const request = await createLoginRequest({ redirectUri: `${origin}/auth/callback` });
+            context = await browser.newContext();
+            const page = await context.newPage();
+            page.setDefaultTimeout(15_000);
+            page.on('pageerror', (error) => browserErrors.push(`administrator: ${error.message}`));
+            let callback;
+            await page.route('**/auth/callback?**', async (route) => {
+                callback = new URL(route.request().url());
+                await route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Router callback</h1>' });
+            });
+            await page.goto(`${origin}/service/auth/?requestId=${encodeURIComponent(request.providerState)}`);
+            await page.getByRole('button', { name: 'Administrator sign-in', exact: true }).click();
+            assert.equal(await page.locator('[name="contactEmail"]').count(), firstRun ? 1 : 0);
+            if (firstRun) {
+                await screenshot(page, '00-first-run-administrator');
+                await page.locator('[name="contactEmail"]').fill('operator@example.test');
+                await page.getByLabel('Password', { exact: true }).fill('incorrect');
+                await page.locator('form.admin-panel').getByRole('button', { name: 'Sign in', exact: true }).click();
+                await page.getByText('Unable to sign in with that administrator password.', { exact: true }).waitFor();
+                assert.equal((await getInstallationSetup()).complete, false);
+            }
+            await page.getByLabel('Password', { exact: true }).fill('admin');
+            await page.locator('form.admin-panel').getByRole('button', { name: 'Sign in', exact: true }).click();
+            await page.getByRole('heading', { name: 'Router callback' }).waitFor();
+            const signedIn = await consumeAuthCode({ providerState: request.providerState, code: callback.searchParams.get('code') });
+            assert.deepEqual(signedIn.roles, ['admin']);
+            if (firstRun) administratorId = signedIn.user.id;
+            else assert.equal(signedIn.user.id, administratorId);
+            const user = await getUserById(signedIn.user.id);
+            assert.equal(user.username, 'administrator');
+            assert.equal(user.email, '');
+            assert.equal(user.contactEmail, 'operator@example.test');
+            assert.equal(user.emailVerifiedAt, '');
+            await context.close();
+            context = null;
+        }
+    } finally {
+        await context?.close();
+        await closeServer(server);
+        await resetStoreForTests();
+        await rm(persistence, { recursive: true, force: true });
+        for (const name of Object.keys(process.env)) if (!Object.hasOwn(previousEnvironment, name)) delete process.env[name];
+        Object.assign(process.env, previousEnvironment);
+    }
 }
 
 async function verify() {
@@ -58,12 +120,20 @@ async function verify() {
     assert.ok(chromium?.launch, 'The selected module must export Playwright chromium.');
     await mkdir(artifactRoot, { recursive: true });
 
+    phase = 'launching Chromium';
+    browser = await chromium.launch({
+        headless: process.env.WIZARD_BROWSER_HEADED !== 'true',
+        ...(process.env.WIZARD_BROWSER_EXECUTABLE ? { executablePath: process.env.WIZARD_BROWSER_EXECUTABLE } : {}),
+    });
+    const browserErrors = [];
+    await verifyDefaultAdministrator(browserErrors);
+
     phase = 'initializing isolated provider and persistence';
     folder = await mkdtemp(join(tmpdir(), 'userpersisto-wizard-browser-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'wizard-browser-fixture-settings-key';
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
-    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[name];
+    for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[name];
     await ensureSeedData();
     google = await controlledGoogleProvider();
     service = startService({ port: 0, host: '127.0.0.1' }, {
@@ -76,13 +146,6 @@ async function verify() {
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${providerOrigin}/service/auth/google/callback`;
     const issuer = `${providerOrigin}/service/oidc`;
     process.env.USERPERSISTO_OIDC_ISSUER = issuer;
-
-    phase = 'launching Chromium';
-    browser = await chromium.launch({
-        headless: process.env.WIZARD_BROWSER_HEADED !== 'true',
-        ...(process.env.WIZARD_BROWSER_EXECUTABLE ? { executablePath: process.env.WIZARD_BROWSER_EXECUTABLE } : {}),
-    });
-    const browserErrors = [];
 
     // ---- Router SSO renderer -------------------------------------------------
     async function ssoPage() {
@@ -114,7 +177,7 @@ async function verify() {
     phase = 'SSO: first verified email signup claims the installation';
     let flow = await ssoPage();
     await flow.page.getByText('The first completed sign-in becomes its administrator').waitFor();
-    assert.equal(await flow.page.getByRole('button', { name: 'Administrator sign-in' }).count(), 0);
+    assert.equal(await flow.page.getByRole('button', { name: 'Administrator sign-in' }).isVisible(), true);
     assert.equal(await flow.page.locator('input[type="password"]').count(), 0);
     await screenshot(flow.page, '01-sso-first-run');
     await flow.page.getByRole('textbox', { name: 'Email' }).fill('owner@example.test');
@@ -131,6 +194,7 @@ async function verify() {
 
     phase = 'SSO: Login with an unknown email asks before registering';
     flow = await ssoPage();
+    assert.equal(await flow.page.getByRole('button', { name: 'Administrator sign-in' }).count(), 0, 'email-first accounts do not gain the default administrator password');
     await flow.page.getByRole('textbox', { name: 'Email' }).fill('member@example.test');
     await flow.page.getByRole('button', { name: 'Next', exact: true }).click();
     await flow.page.getByRole('button', { name: 'Create account', exact: true }).waitFor();
@@ -341,7 +405,7 @@ async function verify() {
     assert.deepEqual(browserErrors, [], 'No page may raise an uncaught error.');
     const store = await getStore();
     assert.equal((await store.select('user')).totalCount, 2, 'Only the two completed sign-ups created accounts.');
-    output(`PASS Chromium ${browser.version()}: SSO first-run email signup, four transitions, canceled delayed verification, administrator email-code sign-in, controlled GIS cancellation notice; OIDC cross-site popup email code with SameSite=Strict browser binding, native failure re-render, TOTP failure Back to email, administrator email-code sign-in with separate consent. Screenshots: ${artifactRoot}`);
+    output(`PASS Chromium ${browser.version()}: SSO fresh default-administrator signup with optional contact email, wrong-password rejection and returning sign-in; separate email-first signup without default-password activation, four transitions, canceled delayed verification, administrator email-code sign-in, controlled GIS cancellation notice; OIDC cross-site popup email code with SameSite=Strict browser binding, native failure re-render, TOTP failure Back to email, administrator email-code sign-in with separate consent. Screenshots: ${artifactRoot}`);
 }
 
 try {

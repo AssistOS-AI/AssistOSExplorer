@@ -84,6 +84,9 @@ export function createOidcAdapter({ config, document, fetch, navigate, closeWind
             // uid; only the assertion travels with the completion.
             return { action: 'passkey-verify', fields: { assertion: JSON.stringify(assertionCredentialToServer(assertion)) } };
         },
+        adminLogin({ password, contactEmail }) {
+            return { action: 'admin-login', fields: { password, ...(contactEmail ? { contactEmail } : {}) } };
+        },
         startGoogle() {
             return postJson('google');
         },

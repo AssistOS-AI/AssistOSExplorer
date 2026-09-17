@@ -77,6 +77,9 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         passkeyOptions(email) {
             return post('passkey/options', { requestId, email });
         },
+        adminLogin({ password, contactEmail }) {
+            return post('admin/login', { requestId, state, password, ...(contactEmail ? { contactEmail } : {}) });
+        },
         startGoogle() {
             return post('google/start', { requestId, state });
         },

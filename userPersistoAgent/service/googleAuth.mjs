@@ -9,8 +9,10 @@ import { authGenerationOf, getUserById } from '../lib/users.mjs';
 import { completeGoogleReauthentication, googleReauthenticationAccount } from '../lib/auth/operationGrants.mjs';
 import { loginVerify as verifyTotp } from '../lib/auth/totp.mjs';
 import { loginOptions, loginVerify } from '../lib/auth/passkey.mjs';
+import { verifyAdministratorPassword } from '../lib/auth/adminPassword.mjs';
 import { hashCode, codeHashMatches } from '../lib/auth/email-code.mjs';
 import { assertEmailVerifyBudget, deliverCode, developmentLogFallback, recordEmailVerifyFailure } from '../lib/auth/emailAttempts.mjs';
+import { rateSourceOf } from '../lib/auth/browserBinding.mjs';
 import { sendAuthCode } from '../lib/email-agent-client.mjs';
 import { page, escapeHtml as esc } from '../lib/oidc/views.mjs';
 import { readOidcDocument } from '../lib/oidc/adapter.mjs';
@@ -21,7 +23,7 @@ const HANDLE = /^[a-f0-9]{64}$/;
 const CODE_COOLDOWN_MS = 60_000;
 const MAX_CODE_FAILURES = 5;
 const MAX_CODE_SENDS = 5;
-const METHOD_LABELS = { emailCode: 'an email code', passkey: 'a passkey', totp: 'an authenticator code' };
+const METHOD_LABELS = { emailCode: 'an email code', passkey: 'a passkey', totp: 'an authenticator code', adminPassword: 'the administrator password' };
 const same = (a, b) => {
     const left = Buffer.from(String(a || ''));
     const right = Buffer.from(String(b || ''));
@@ -316,6 +318,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                         }
                         if (methods.includes('totp')) content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="totp">${input('token', 'Authenticator code', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6"')}<button>Confirm with authenticator</button>`);
                         if (methods.includes('passkey')) content += form(base, 'challenge', payload.csrf, '<button data-google-passkey>Confirm with passkey</button>');
+                        if (methods.includes('adminPassword')) content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="adminPassword">${input('password', 'Administrator password', 'type="password" autocomplete="current-password" maxlength="1024"')}<button>Confirm with administrator password</button>`);
                         if (!methods.length) content += '<p>This account has no sign-in method that can confirm linking. Sign in with your existing method, or contact an administrator.</p>';
                     }
                 } else content += `<p>Verify your current mailbox before creating an account.</p>${form(base, 'send-email-proof', payload.csrf, '<button>Send verification code</button>')}${form(base, 'verify-email-proof', payload.csrf, `${input('code', 'Email verification code', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6"')}<button>Verify and continue</button>`)}`;
@@ -363,7 +366,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
             };
             if (['authenticate', 'challenge'].includes(action)) {
                 const method = action === 'challenge' ? 'passkey' : body.method;
-                if (resolution.kind !== 'collision' || !['passkey', 'totp'].includes(method) || !resolution.eligibleMethods.includes(method)) throw googleError();
+                if (resolution.kind !== 'collision' || !['passkey', 'totp', 'adminPassword'].includes(method) || !resolution.eligibleMethods.includes(method)) throw googleError();
                 let result;
                 if (action === 'challenge') {
                     result = await loginOptions({ email: resolution.email, origin: retained.origin, purpose: `google-link:${handle}` });
@@ -372,6 +375,17 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                     return json(res, 200, result);
                 }
                 if (method === 'totp') result = await verifyTotp({ email: resolution.email, token: body.token }, { includeCredentialProof: true });
+                if (method === 'adminPassword') {
+                    // Only the designated administrator and current verifier can
+                    // authorize a link; the later commit rechecks this proof.
+                    try {
+                        const verified = await verifyAdministratorPassword({ password: body.password, rateSource: rateSourceOf(req) });
+                        result = { ok: true, user: { id: resolution.userId }, credentialVersion: verified.credentialVersion };
+                    } catch (error) {
+                        if (error?.code === 'rate_limited') return render('Too many attempts. Wait and try again.');
+                        result = { ok: false };
+                    }
+                }
                 if (method === 'passkey') {
                     let assertion = body.assertion;
                     try { if (typeof assertion === 'string') assertion = JSON.parse(assertion); } catch { throw googleError(); }

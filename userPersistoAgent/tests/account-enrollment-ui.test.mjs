@@ -213,19 +213,22 @@ test('confirmation rejects malformed input locally, reports server errors and ca
     assert.equal(calls.some((call) => call.name.startsWith('userpersisto_totp')), false);
 });
 
-test('removed administrator-password confirmation is ignored and a passkey confirmation uses the browser prompt', async () => {
+test('the administrator password confirmation is sent once and cleared; a passkey confirmation uses the browser prompt', async () => {
     const calls = [];
     const { widget, browser } = fixture({ callTool: tools(async () => setup, calls) });
     widget.updateProfile(profile({ reauthenticationMethods: ['adminPassword', 'passkey'] }));
     await widget.startTotp();
-    assert.equal(widget.confirmation.method, 'passkey');
-    assert.deepEqual(widget.reauthMethod.children.map((option) => option.value), ['passkey']);
-    assert.equal(widget.reauthPasswordInput, undefined);
-    assert.doesNotMatch(widget.element.innerHTML, /type="password"|Administrator password/);
-    widget.selectConfirmationMethod('adminPassword');
-    assert.equal(widget.confirmation.method, 'passkey', 'an unsupported method cannot be selected programmatically');
-    assert.deepEqual(calls, []);
+    assert.equal(widget.reauthPasswordLabel.hidden, false);
+    await widget.submitConfirmation();
+    assert.match(widget.status.textContent, /administrator password/);
+    widget.reauthPasswordInput.value = 'configured-admin-value';
+    await widget.submitConfirmation();
+    assert.deepEqual(calls[0], { name: 'reauth_verify', args: { operation: 'totp.enroll', method: 'adminPassword', password: 'configured-admin-value' } });
+    assert.equal(widget.reauthPasswordInput.value, '');
+    assert.deepEqual(calls[1], { name: 'userpersisto_totp_setup_start', args: { grant: GRANT } });
+    widget.cancel();
 
+    calls.length = 0;
     browser.navigator.credentials.get = async ({ publicKey }) => {
         assert.deepEqual([...new Uint8Array(publicKey.challenge)], [1, 2, 3]);
         return { id: 'cred', rawId: Uint8Array.of(9).buffer, type: 'public-key', response: {
@@ -244,17 +247,6 @@ test('removed administrator-password confirmation is ignored and a passkey confi
     assert.deepEqual(calls[0], { name: 'reauth_start', args: { operation: 'totp.enroll', method: 'passkey' } });
     assert.deepEqual(calls[1].args, { operation: 'totp.enroll', method: 'passkey', challengeKey: 'reauth-key',
         assertion: { id: 'cred', rawId: 'CQ', type: 'public-key', response: { clientDataJSON: 'AQ', authenticatorData: 'Ag', signature: 'Aw', userHandle: '' } } });
-    widget.dispose();
-});
-
-test('a profile with only a removed password method cannot start confirmation', async () => {
-    const calls = [];
-    const { widget } = fixture({ callTool: (...args) => { calls.push(args); } });
-    widget.updateProfile(profile({ reauthenticationMethods: ['adminPassword'] }));
-    await widget.startTotp();
-    assert.equal(widget.reauthForm.hidden, true);
-    assert.match(widget.status.textContent, /No confirmation method is available/);
-    assert.deepEqual(calls, []);
     widget.dispose();
 });
 
@@ -384,7 +376,7 @@ test('an account without a verified sign-in email proves its contact address aft
         return { ok: true };
     }, onEnrolled: async () => { refreshed++; } });
     widget.updateProfile(profile({ user: { id: 'admin-1', email: '', username: 'administrator' }, emailVerified: false,
-        reauthenticationMethods: ['totp'], contact: { email: 'ops@example.test', verified: false, pending: false } }));
+        reauthenticationMethods: ['adminPassword'], contact: { email: 'ops@example.test', verified: false, pending: false } }));
     assert.equal(widget.contactSection.hidden, false);
     assert.match(widget.contactStatus.textContent, /ops@example\.test is not verified and cannot be used to sign in/);
     assert.equal(widget.contactEmailInput.value, 'ops@example.test');
@@ -395,10 +387,10 @@ test('an account without a verified sign-in email proves its contact address aft
     widget.contactEmailInput.value = 'ops@example.test';
     await widget.startContactVerification();
     assert.match(widget.reauthTitle.textContent, /verify a sign-in email/);
-    widget.reauthCodeInput.value = '123456';
+    widget.reauthPasswordInput.value = 'configured-admin-value';
     await widget.submitConfirmation();
     assert.deepEqual(calls.slice(0, 2), [
-        { name: 'reauth_verify', args: { operation: 'contact.verify', method: 'totp', token: '123456' } },
+        { name: 'reauth_verify', args: { operation: 'contact.verify', method: 'adminPassword', password: 'configured-admin-value' } },
         { name: 'contact_start', args: { email: 'ops@example.test', grant: GRANT } },
     ]);
     assert.equal(widget.contactCodeForm.hidden, false);
@@ -458,7 +450,7 @@ test('dashboard shows Explorer only with its capability and saves profile fields
     dashboard.dispose();
 });
 
-test('accounts without an email are shown by username and stale password methods are omitted', async (t) => {
+test('the email-less administrator is shown by username and its methods are labeled', async (t) => {
     const nodes = new Map();
     const document = { querySelectorAll: () => [], getElementById: (id) => {
         if (!nodes.has(id)) nodes.set(id, new Element());
@@ -471,7 +463,7 @@ test('accounts without an email are shown by username and stale password methods
     const dashboard = mountDashboard(document);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(nodes.get('account-email').textContent, 'administrator');
-    assert.equal(nodes.get('account-methods').textContent, 'Google');
+    assert.equal(nodes.get('account-methods').textContent, 'Administrator password · Google');
     dashboard.dispose();
 });
 

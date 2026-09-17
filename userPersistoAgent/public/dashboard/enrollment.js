@@ -7,12 +7,13 @@ import {
 
 // Sensitive account changes need a fresh confirmation: the server issues a
 // single-use grant for exactly one operation, which is used immediately and
-// never stored. Codes and setup secrets are cleared on every
+// never stored. Codes, passwords and setup secrets are cleared on every
 // transition, cancellation, profile change and page exit.
 const REAUTH_LABELS = Object.freeze({
     emailCode: 'Email me a code',
     totp: 'Authenticator app code',
     passkey: 'Passkey',
+    adminPassword: 'Administrator password',
     google: 'Google Account',
 });
 const OPERATION_TITLES = Object.freeze({
@@ -106,6 +107,7 @@ export class AccountEnrollment {
                 <h3 data-reauth-title tabindex="-1"></h3>
                 <label>Confirm with<select data-reauth-method></select></label>
                 <label data-reauth-code-label hidden>Six-digit code<input data-reauth-code inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></label>
+                <label data-reauth-password-label hidden>Administrator password<input data-reauth-password type="password" autocomplete="current-password" maxlength="1024"></label>
                 <div class="up-enrollment-actions"><button type="submit" data-reauth-submit>Continue</button><button type="button" class="up-secondary" data-reauth-cancel>Cancel</button></div>
             </form>
             <form class="up-totp-setup" data-totp-setup hidden autocomplete="off">
@@ -131,6 +133,8 @@ export class AccountEnrollment {
         this.reauthMethod = select('reauth-method');
         this.reauthCodeLabel = select('reauth-code-label');
         this.reauthCodeInput = select('reauth-code');
+        this.reauthPasswordLabel = select('reauth-password-label');
+        this.reauthPasswordInput = select('reauth-password');
         this.reauthSubmit = select('reauth-submit');
         this.contactSection = select('contact');
         this.contactStatus = select('contact-status');
@@ -239,6 +243,7 @@ export class AccountEnrollment {
         this.reauthMethod.value = flow.method;
         const needsCode = flow.method === 'totp' || (flow.method === 'emailCode' && flow.codeSent);
         this.reauthCodeLabel.hidden = !needsCode;
+        this.reauthPasswordLabel.hidden = flow.method !== 'adminPassword';
         this.reauthSubmit.textContent = flow.method === 'emailCode' && !flow.codeSent ? 'Email me a code'
             : flow.method === 'passkey' ? 'Use a passkey' : flow.method === 'google' ? 'Confirm with Google' : 'Continue';
         this.reauthSubmit.disabled = this.busy;
@@ -288,6 +293,7 @@ export class AccountEnrollment {
         this.uriInput.value = '';
         this.tokenInput.value = '';
         this.reauthCodeInput.value = '';
+        this.reauthPasswordInput.value = '';
         this.contactCodeInput.value = '';
         this.setupForm.hidden = true;
         this.reauthForm.hidden = true;
@@ -328,6 +334,7 @@ export class AccountEnrollment {
         if (!this.confirmation || this.busy || !this.confirmationMethods().includes(method)) return;
         const wasSent = this.confirmation.method === 'emailCode' && this.confirmation.codeSent;
         this.reauthCodeInput.value = '';
+        this.reauthPasswordInput.value = '';
         this.confirmation = { ...this.confirmation, method, codeSent: false };
         this.render();
         if (wasSent) void Promise.resolve(this.callTool('reauth_cancel', {})).catch(() => {});
@@ -339,8 +346,13 @@ export class AccountEnrollment {
         const operation = this.operation;
         const { method } = flow;
         const code = this.reauthCodeInput.value.trim();
+        const password = this.reauthPasswordInput.value;
         if ((method === 'totp' || (method === 'emailCode' && flow.codeSent)) && !/^\d{6}$/.test(code)) {
             this.setStatus('Enter the six-digit code.', true);
+            return;
+        }
+        if (method === 'adminPassword' && !password) {
+            this.setStatus('Enter the administrator password.', true);
             return;
         }
         this.busy = true;
@@ -358,6 +370,7 @@ export class AccountEnrollment {
             const proof = { operation: flow.operation, method };
             if (method === 'emailCode') proof.code = code;
             if (method === 'totp') proof.token = code;
+            if (method === 'adminPassword') proof.password = password;
             if (method === 'passkey') {
                 this.setStatus('Follow your browser’s instructions to use your passkey.');
                 const options = checkedResult(await this.callTool('reauth_start', { operation: flow.operation, method }));
@@ -376,6 +389,7 @@ export class AccountEnrollment {
                 : checkedResult(await this.callTool('reauth_verify', proof));
             if (!this.current(operation)) return;
             this.reauthCodeInput.value = '';
+            this.reauthPasswordInput.value = '';
             this.confirmation = null;
             this.busy = false;
             this.abortController = null;
@@ -384,6 +398,7 @@ export class AccountEnrollment {
         } catch (error) {
             if (this.current(operation)) {
                 this.reauthCodeInput.value = '';
+                this.reauthPasswordInput.value = '';
                 this.setStatus(enrollmentError(error, 'We could not confirm it is you. Try again.'), true);
             }
         } finally {

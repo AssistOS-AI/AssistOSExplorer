@@ -150,6 +150,7 @@ function wizardState(overrides = {}) {
         setupComplete: true,
         registration: true,
         methods: { emailCode: true, passkey: false, totp: false, google: false },
+        adminPassword: false,
         attempt: { status: 'active', challenge: null, locked: false },
         ...overrides,
     };
@@ -181,6 +182,7 @@ function baseAdapter(overrides = {}) {
         verifyTotp: async () => {},
         verifyPasskey: async () => {},
         passkeyOptions: async () => ({ challengeKey: 'challenge-key', publicKey: { challenge: 'AQID', allowCredentials: [] } }),
+        adminLogin: async () => {},
         startGoogle: async () => {},
         restart: () => {},
         ...overrides,
@@ -363,17 +365,43 @@ test('no usable methods shows the no-methods screen with Back', async () => {
     button(root, 'Back');
 });
 
-// ==== removed password sign-in ==============================================
+// ==== administrator sign-in =================================================
 
-test('stale administrator-password configuration never exposes a separate sign-in or password field', async () => {
-    for (const setupComplete of [false, true]) {
-        const adapter = baseAdapter({ attempt: async () => wizardState({ adminPassword: true, setupComplete }) });
+test('administrator sign-in is hidden unless configured, never sends the start-screen email, and offers contact email only pre-setup', async () => {
+    {
+        const adapter = baseAdapter({ attempt: async () => wizardState({ adminPassword: false }) });
         const { root } = await mount({ adapter });
         assert.equal(root.querySelectorAll('button').some((node) => node.textContent === 'Administrator sign-in'), false);
-        assert.equal(root.querySelector('[name="password"]'), null);
-        assert.equal(root.querySelector('[name="contactEmail"]'), null);
-        assertLabels(root);
     }
+    for (const setupComplete of [false, true]) {
+        const calls = [];
+        const adapter = baseAdapter({
+            attempt: async () => wizardState({ adminPassword: true, setupComplete }),
+            adminLogin: async (args) => { calls.push(args); },
+        });
+        const { root } = await mount({ adapter });
+        root.querySelector('[name="email"]').value = 'someone@example.test';
+        await button(root, 'Administrator sign-in').fire('click');
+        assert.match(h1(root).textContent, /Administrator sign-in/);
+        assertLabels(root);
+        assert.equal(Boolean(root.querySelector('[name="contactEmail"]')), !setupComplete, 'contact email only appears before setup is complete');
+        root.querySelector('[name="password"]').value = 'the-admin-password';
+        if (!setupComplete) root.querySelector('[name="contactEmail"]').value = 'contact@example.test';
+        await root.querySelector('form.admin-panel').fire('submit');
+        assert.deepEqual(calls, [{ password: 'the-admin-password', contactEmail: setupComplete ? '' : 'contact@example.test' }]);
+        assert.ok(!('email' in calls[0]), 'the administrator screen never sends the start-screen email');
+    }
+});
+
+test('an incorrect administrator password shows the administrator-specific error and stays usable', async () => {
+    const adapter = baseAdapter({ attempt: async () => wizardState({ adminPassword: true }),
+        adminLogin: async () => { throw fail('authentication_failed'); } });
+    const { root } = await mount({ adapter });
+    await button(root, 'Administrator sign-in').fire('click');
+    root.querySelector('[name="password"]').value = 'wrong';
+    await root.querySelector('form.admin-panel').fire('submit');
+    assert.match(root.textContent, /Unable to sign in with that administrator password\./);
+    assert.equal(root.querySelector('button[type="submit"]').disabled, false);
 });
 
 // ==== code screen: resend cooldown, change email / cancel, errors =========
@@ -660,13 +688,12 @@ test('OIDC initialFailure action passkey-verify falls back to the start screen i
     assert.match(root.textContent, /Unable to use this passkey\./);
 });
 
-test('a stale OIDC admin-login failure returns to the normal sign-in screen without password controls', async () => {
+test('OIDC initialFailure action admin-login shows the administrator screen with the admin-specific error', async () => {
     const adapter = baseAdapter({ flow: 'oidc', attempt: async () => wizardState({ adminPassword: true }),
         initialFailure: { code: 'authentication_failed', message: 'nope', action: 'admin-login' } });
     const { root } = await mount({ adapter });
-    assert.match(h1(root).textContent, /Sign in/);
-    assert.match(root.textContent, /Unable to sign in\. Check your details and try again\./);
-    assert.equal(root.querySelector('[name="password"]'), null);
+    assert.match(h1(root).textContent, /Administrator sign-in/);
+    assert.match(root.textContent, /Unable to sign in with that administrator password\./);
 });
 
 test('OIDC initialFailure with code account_exists shows the collision screen', async () => {
@@ -775,13 +802,12 @@ test('a failed passkey attempt shows the failure screen with Try again and Back'
 // ==== accessibility ==========================================================
 
 test('every input has an associated label and every screen has exactly one focused h1', async () => {
-    const adapter = baseAdapter({ attempt: async () => wizardState({ methods: { emailCode: true, passkey: false, totp: false, google: false } }) });
+    const adapter = baseAdapter({ attempt: async () => wizardState({ adminPassword: true, methods: { emailCode: true, passkey: false, totp: false, google: false } }) });
     const { root } = await mount({ adapter });
     assert.equal(root.querySelectorAll('h1').length, 1);
     assert.equal(h1(root).focused, true);
     assertLabels(root);
-    root.querySelector('[name="email"]').value = 'new@example.test';
-    await root.querySelector('form.start-panel').fire('submit');
+    await button(root, 'Administrator sign-in').fire('click');
     assert.equal(root.querySelectorAll('h1').length, 1);
     assert.equal(h1(root).focused, true);
     assertLabels(root);
@@ -836,7 +862,8 @@ test('SSO adapter request bodies match the documented shape for every operation'
     await adapter.verifyEmail('123456');
     await adapter.passkeyOptions('a@example.test');
     await adapter.verifyTotp({ email: 'a@example.test', token: '654321' });
-    assert.equal(adapter.adminLogin, undefined);
+    await adapter.adminLogin({ password: 'secret-password', contactEmail: '' });
+    await adapter.adminLogin({ password: 'secret-password', contactEmail: 'c@example.test' });
     const byPath = Object.fromEntries(calls.map((call) => [new URL(call.url).pathname, call.body]));
     assert.deepEqual(byPath['/prefix/service/auth/attempt/cancel'], { requestId: 'req-1' });
     assert.deepEqual(calls.filter((c) => new URL(c.url).pathname === '/prefix/service/auth/email-code/start').map((c) => c.body), [
@@ -846,7 +873,11 @@ test('SSO adapter request bodies match the documented shape for every operation'
     assert.deepEqual(byPath['/prefix/service/auth/email-code/verify'], { requestId: 'req-1', state: 'state-1', code: '123456' });
     assert.deepEqual(byPath['/prefix/service/auth/passkey/options'], { requestId: 'req-1', email: 'a@example.test' });
     assert.deepEqual(byPath['/prefix/service/auth/totp/verify'], { requestId: 'req-1', state: 'state-1', email: 'a@example.test', token: '654321' });
-    assert.equal(calls.some((call) => call.url.endsWith('/admin/login')), false);
+    const adminCalls = calls.filter((c) => new URL(c.url).pathname === '/prefix/service/auth/admin/login').map((c) => c.body);
+    assert.deepEqual(adminCalls, [
+        { requestId: 'req-1', state: 'state-1', password: 'secret-password' },
+        { requestId: 'req-1', state: 'state-1', password: 'secret-password', contactEmail: 'c@example.test' },
+    ]);
 });
 
 test('SSO adapter builds the completion URL preserving origin and setting state and code', async () => {
@@ -916,14 +947,14 @@ function oidcFixture({ config, post } = {}) {
 }
 
 test('real SSO adapter never navigates a delayed successful credential response after Cancel, Back or expiry', async (t) => {
-    for (const method of ['email', 'totp', 'passkey']) {
+    for (const method of ['email', 'totp', 'admin', 'passkey']) {
         await t.test(method, async () => {
             const clock = fakeClock();
             let releaseVerify;
             let releaseCancel;
             const handoff = { ok: true, code: 'abandoned-code', redirectUri: 'https://workspace.example:9443/auth/callback' };
             const fixture = ssoFixture({ post: ({ url }) => {
-                if (url.endsWith('/attempt')) return wizardState({ expiresAt: clock.now() + 10_000 });
+                if (url.endsWith('/attempt')) return wizardState({ expiresAt: clock.now() + 10_000, adminPassword: true });
                 if (url.endsWith('/discover')) return { exists: true, methods: { emailCode: true, totp: true, passkey: true } };
                 if (url.endsWith('/email-code/start')) return { challenge: freshChallenge() };
                 if (url.endsWith('/passkey/options')) return { challengeKey: 'key', publicKey: { challenge: 'AQID', allowCredentials: [] } };
@@ -934,18 +965,24 @@ test('real SSO adapter never navigates a delayed successful credential response 
                 clientDataJSON: Uint8Array.of(1).buffer, authenticatorData: Uint8Array.of(2).buffer, signature: Uint8Array.of(3).buffer,
             } }) };
             const { root } = await mount({ adapter: fixture.adapter, clock, credentials });
-            root.querySelector('[name="email"]').value = 'member@example.test';
-            await root.querySelector('form.start-panel').fire('submit');
-            if (method === 'email') {
-                await button(root, 'Email me a code').fire('click');
-                root.querySelector('[name="code"]').value = '123456';
-                await root.querySelector('form.code-panel').fire('submit');
-            } else if (method === 'totp') {
-                await button(root, 'Use an authenticator app').fire('click');
-                root.querySelector('[name="token"]').value = '123456';
-                await root.querySelector('form.totp-panel').fire('submit');
+            if (method === 'admin') {
+                await button(root, 'Administrator sign-in').fire('click');
+                root.querySelector('[name="password"]').value = 'fixture-password';
+                await root.querySelector('form.admin-panel').fire('submit');
             } else {
-                await button(root, 'Use a passkey').fire('click');
+                root.querySelector('[name="email"]').value = 'member@example.test';
+                await root.querySelector('form.start-panel').fire('submit');
+                if (method === 'email') {
+                    await button(root, 'Email me a code').fire('click');
+                    root.querySelector('[name="code"]').value = '123456';
+                    await root.querySelector('form.code-panel').fire('submit');
+                } else if (method === 'totp') {
+                    await button(root, 'Use an authenticator app').fire('click');
+                    root.querySelector('[name="token"]').value = '123456';
+                    await root.querySelector('form.totp-panel').fire('submit');
+                } else {
+                    await button(root, 'Use a passkey').fire('click');
+                }
             }
             assert.equal(typeof releaseVerify, 'function', 'the real adapter request is waiting for its response');
             if (method === 'email') await button(root, 'Cancel').fire('click');
@@ -997,24 +1034,29 @@ test('both real adapters cancel only the abandoned Google transaction after a de
 });
 
 test('real OIDC adapter submits credential forms only after the wizard accepts the current operation', async (t) => {
-    for (const action of ['email', 'totp']) {
+    for (const action of ['email', 'totp', 'admin']) {
         await t.test(action, async () => {
             const fixture = oidcFixture({ post: ({ url }) => {
-                if (url.endsWith('/attempt')) return wizardState();
+                if (url.endsWith('/attempt')) return wizardState({ adminPassword: true });
                 if (url.endsWith('/discover')) return { exists: true, methods: { emailCode: true, totp: true } };
                 return { challenge: freshChallenge() };
             } });
             const { root } = await mount({ adapter: fixture.adapter });
-            root.querySelector('[name="email"]').value = 'member@example.test';
-            await root.querySelector('form.start-panel').fire('submit');
-            await button(root, action === 'email' ? 'Email me a code' : 'Use an authenticator app').fire('click');
-            root.querySelector(`[name="${action === 'email' ? 'code' : 'token'}"]`).value = '123456';
+            if (action === 'admin') {
+                await button(root, 'Administrator sign-in').fire('click');
+                root.querySelector('[name="password"]').value = 'fixture-password';
+            } else {
+                root.querySelector('[name="email"]').value = 'member@example.test';
+                await root.querySelector('form.start-panel').fire('submit');
+                await button(root, action === 'email' ? 'Email me a code' : 'Use an authenticator app').fire('click');
+                root.querySelector(`[name="${action === 'email' ? 'code' : 'token'}"]`).value = '123456';
+            }
             assert.equal(fixture.body.children.length, 0);
             await root.querySelector('form').fire('submit');
             assert.match(h1(root).textContent, /Signing you in/);
             assert.equal(fixture.body.children.length, 1);
             assert.equal(fixture.body.children[0].submitted, true);
-            assert.match(fixture.body.children[0].getAttribute('action'), new RegExp(`/${action === 'email' ? 'email-verify' : 'totp'}$`));
+            assert.match(fixture.body.children[0].getAttribute('action'), new RegExp(`/${action === 'email' ? 'email-verify' : action === 'admin' ? 'admin-login' : 'totp'}$`));
         });
     }
 });
@@ -1069,7 +1111,12 @@ test('OIDC adapter native completions build a real form with the exact action, c
     assert.equal(passkeyFields.csrf, 'csrf-token');
     assert.equal(JSON.parse(passkeyFields.assertion).id, 'cred-1');
 
-    assert.equal(adapter.adminLogin, undefined);
+    adapter.complete(adapter.adminLogin({ password: 'admin-password', contactEmail: '' }));
+    form = body.children.at(-1);
+    assert.deepEqual(Object.fromEntries(form.children.map((input) => [input.getAttribute('name'), input.getAttribute('value')])), { csrf: 'csrf-token', password: 'admin-password' });
+    adapter.complete(adapter.adminLogin({ password: 'admin-password', contactEmail: 'c@example.test' }));
+    form = body.children.at(-1);
+    assert.deepEqual(Object.fromEntries(form.children.map((input) => [input.getAttribute('name'), input.getAttribute('value')])), { csrf: 'csrf-token', password: 'admin-password', contactEmail: 'c@example.test' });
 });
 
 test('OIDC adapter abort() natively posts with the csrf token and does not fetch', async () => {

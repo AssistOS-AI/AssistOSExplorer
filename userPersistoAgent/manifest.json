@@ -95,6 +95,9 @@
           "required": false,
           "default": "true"
         },
+        "USERPERSISTO_ADMIN_PASSWORD": {
+          "required": false
+        },
         "USERPERSISTO_SELF_REGISTRATION_ENABLED": {
           "required": false
         },
