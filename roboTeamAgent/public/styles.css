@@ -357,3 +357,5 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .coding-agents-dialog { width: 480px; height: fit-content; }
 .coding-agents-dialog .message { flex-basis: 100%; }
 .active-coding-agent { margin: 8px 0 0; font-size: 0.875rem; color: var(--text-soft); }
+
+.skill-repository-warning { color: var(--warning, #b7791f); overflow-wrap: anywhere; }

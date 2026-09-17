@@ -1,3 +1,4 @@
+import { workspaceSkillSource } from './skill-repository-source.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -86,7 +87,8 @@ export class RobotSkillsets {
         const name = input.name === undefined ? `repo-${crypto.randomUUID()}` : selectionNames([input.name])[0];
         if (!NAME.test(name) || name === 'copilot' || name === 'workspace') throw invalid('invalid or reserved skill source name');
         const description = String(input.description || '').trim();
-        const source = String(input.source || '').trim();
+        const requestedSource = String(input.source || '').trim();
+        const source = await workspaceSkillSource(requestedSource, this.workspaceRoot);
         if (!source || source.length > 2048) throw invalid('invalid skillset source or description');
         const stagingRoot = path.join(this.robotStore.dataDir, 'skillset-imports');
         await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });

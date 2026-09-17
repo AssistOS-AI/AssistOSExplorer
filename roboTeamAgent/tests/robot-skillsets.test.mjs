@@ -392,3 +392,25 @@ test('selected skills accept a symlinked runtime storage path and save canonical
         assert.ok(directory.startsWith(f.source + path.sep));
     }
 });
+
+test('remote and managed registrations use workspace skills during import and later capture', async t => {
+    const f = await fixture(t);
+    const workspace = f.skillsets.workspaceRoot;
+    const cached = path.join(workspace, '.ploinky/repos/WorkspaceSkills');
+    await fs.mkdir(path.join(cached, 'skills'), { recursive: true });
+    await fs.cp(f.source, path.join(cached, 'skills'), { recursive: true });
+    // Keep the existing registration, then introduce a preferred workspace checkout.
+    const registration = await f.skillsets.add(f.robot.id, { name: 'local', source: cached });
+    const local = path.join(workspace, 'WorkspaceSkills');
+    await fs.mkdir(path.join(local, '.git'), { recursive: true });
+    await fs.cp(path.join(cached, 'skills'), path.join(local, 'skills'), { recursive: true });
+    await fs.writeFile(path.join(local, 'skills/read-pdf/helper.txt'), 'workspace helper');
+    const robot = await f.store.get(f.robot.id);
+    const captured = await f.capture(robot, { skillSets: ['local'] });
+    const record = captured.entries.find(entry => entry.name === 'read-pdf');
+    assert.equal(await fs.readFile(path.join(captured.catalogPath, record.name, 'helper.txt'), 'utf8'), 'workspace helper');
+    assert.equal(registration.source, cached);
+    const second = await f.store.create({ name: 'Other' });
+    const remote = await f.skillsets.add(second.id, { source: 'https://example.invalid/WorkspaceSkills.git' });
+    assert.equal(remote.source, local);
+});

@@ -1,3 +1,4 @@
+import { workspaceSkillSource } from './skill-repository-source.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -90,10 +91,11 @@ export class LiveSkillCatalog {
                 throw skillError(`Original source for ${set.name} is unavailable; explicit reselection is required`);
             }
             try {
-                const local = !set.builtin && path.isAbsolute(set.source);
-                const root = await fs.realpath(set.builtin ? copilotSkillsRoot : local ? set.source
+                const source = set.builtin ? set.source : await workspaceSkillSource(set.source, this.service.workspaceRoot);
+                const local = !set.builtin && path.isAbsolute(source);
+                const root = await fs.realpath(set.builtin ? copilotSkillsRoot : local ? source
                     : path.join(this.service.robotStore.robotPath(robot.id), 'skillsets', set.generation));
-                if (local && (root !== path.resolve(set.source) || !inside(scope, root) || inside(this.service.robotStore.dataDir, root))) {
+                if (local && (root !== path.resolve(source) || !inside(scope, root) || inside(this.service.robotStore.dataDir, root))) {
                     if (needed) throw skillError(`local skillset ${set.name} is outside launch scope or its original path changed`);
                     continue;
                 }

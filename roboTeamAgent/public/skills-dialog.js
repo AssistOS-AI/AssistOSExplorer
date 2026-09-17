@@ -12,7 +12,8 @@ function normalizeRepositorySource(source) {
 
 export function hasRecommendedRepository(robot, recommendation) {
     const sources = [recommendation.source, recommendation.url].filter(Boolean).map(normalizeRepositorySource);
-    return (robot.repositories || []).some(repo => !repo.builtin && sources.includes(normalizeRepositorySource(repo.source)));
+    return (robot.repositories || []).some(repo => !repo.builtin && (sources.includes(normalizeRepositorySource(repo.source))
+        || (recommendation.name && repo.source?.startsWith('/') && normalizeRepositorySource(repo.source).endsWith('/.ploinky/repos/' + recommendation.name))));
 }
 
 export async function loadSkillRecommendations(fetchImpl = globalThis.fetch) {
@@ -20,8 +21,9 @@ export async function loadSkillRecommendations(fetchImpl = globalThis.fetch) {
         headers: { accept: 'application/json' } });
     if (!response.ok) throw new Error('Could not load recommended repositories from Ploinky.');
     const payload = await response.json();
-    return (payload.marketplace?.repositories || []).filter(repo => repo.kind === 'skills' && repo.url)
+    return (payload.marketplace?.repositories || []).filter(repo => ['skills', 'mixed'].includes(repo.kind) && (repo.skillSource?.source || repo.url))
         .map(repo => ({ name: repo.name, description: repo.description || '', url: repo.url,
+            warnings: Array.isArray(repo.warnings) ? repo.warnings : [],
             source: repo.skillSource?.source || repo.url, origin: repo.skillSource?.origin || 'remote' }));
 }
 
@@ -31,7 +33,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
     dialog.setAttribute('aria-labelledby', 'skills-dialog-title');
     dialog.innerHTML = `<header class="skills-dialog-heading"><h2 id="skills-dialog-title"></h2><button type="button" class="button secondary close-skills">Close</button></header>
         <div class="repository-list"></div>
-        <section class="skill-recommendations" aria-labelledby="skill-recommendations-title"><h3 id="skill-recommendations-title">Recommended repositories</h3><p class="muted">Registered in Ploinky. Workspace checkouts are preferred.</p><div class="recommendation-list" aria-live="polite"></div></section>
+        <section class="skill-recommendations" aria-labelledby="skill-recommendations-title"><h3 id="skill-recommendations-title">Recommended repositories</h3><p class="muted">Detected in the workspace or registered in Ploinky. Workspace checkouts are preferred.</p><div class="recommendation-list" aria-live="polite"></div></section>
         <form class="repository-form"><label>Repository URL<input name="source" type="url" required maxlength="2048" placeholder="https://github.com/owner/skills.git"></label><button class="button primary" type="submit">Add repo</button></form>
         <p class="message" role="status" aria-live="polite"></p>`;
     dialog.querySelector('h2').textContent = `Manage skills · ${robot.name}`;
@@ -55,7 +57,8 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         for (const repo of current.repositories || []) {
             const row = node('section', '', 'repository-row');
             const details = document.createElement('details');
-            const summary = node('summary', repo.builtin ? 'Built-in copilot' : repo.source);
+            const preferred = recommendations.find(item => hasRecommendedRepository({ repositories: [repo] }, item));
+            const summary = node('summary', repo.builtin ? 'Built-in copilot' : preferred?.source || repo.source);
             details.append(summary);
             const content = node('div', '', 'repository-content');
             content.append(node('h3', `Skills (${repo.skills.length})`));
@@ -101,12 +104,13 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
         recommended.replaceChildren();
         if (loadingRecommendations) recommended.append(node('p', 'Loading recommendations…', 'muted'));
         else if (recommendationError) recommended.append(node('p', recommendationError, 'message error'));
-        else if (!recommendations.length) recommended.append(node('p', 'No skill repositories registered in Ploinky.', 'muted'));
+        else if (!recommendations.length) recommended.append(node('p', 'No skill repositories found in the workspace or registered in Ploinky.', 'muted'));
         for (const repo of recommendations) {
             const row = node('div', '', 'recommended-repository');
             const content = node('div', '', 'recommended-repository-info');
             content.append(node('strong', repo.name));
             if (repo.description) content.append(node('p', repo.description, 'muted'));
+            for (const warning of repo.warnings || []) content.append(node('p', `Warning: ${warning}`, 'skill-repository-warning'));
             row.append(content);
             if (canAdmin) {
                 const added = hasRecommendedRepository(current, repo);
