@@ -23,7 +23,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     let epoch = 0;
     let screen = 'loading';
     let email = '';
-    let config = { setupComplete: true, registration: false, signup: { email: false, google: false }, methods: {}, passwordPolicy: DEFAULT_PASSWORD_POLICY };
+    let config = { setupComplete: true, initialPasswordSetup: false, registration: false, signup: { email: false, google: false }, methods: {}, passwordPolicy: DEFAULT_PASSWORD_POLICY };
     let expiresAt = 0;
     let discovery = null; // { email, exists, methods }
     let challenge = null; // pending login code
@@ -264,7 +264,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             const data = await adapter.discover(candidate);
             if (stale(capturedEpoch)) return;
             email = candidate;
-            discovery = { email: candidate, exists: data.exists === true, methods: data.methods || {} };
+            rememberDiscovery(data, candidate);
             persist();
             afterDiscover();
         } catch (error) {
@@ -276,21 +276,26 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     }
 
     function afterDiscover() {
-        if (discovery.exists) return showPassword();
+        if (discovery.exists || discovery.initialPasswordSetup) return showPassword();
         if (config.signup?.email) return showSignupOffer();
         if (config.signup?.google) return showGoogleRegistration();
         return showNoAccount();
     }
 
+    function rememberDiscovery(data, address) {
+        config.initialPasswordSetup = data.initialPasswordSetup === true;
+        discovery = { email: address, exists: data.exists === true, methods: data.methods || {}, initialPasswordSetup: config.initialPasswordSetup };
+    }
+
     // Discovery for the current address, reused while it still applies.
     async function withDiscovery(then, onFailure) {
-        if (discovery?.email === email) return then();
+        if (discovery?.email === email && !discovery.initialPasswordSetup) return then();
         showLoading();
         const capturedEpoch = epoch;
         try {
             const data = await adapter.discover(email);
             if (stale(capturedEpoch)) return;
-            discovery = { email, exists: data.exists === true, methods: data.methods || {} };
+            rememberDiscovery(data, email);
             return then();
         } catch (error) {
             if (stale(capturedEpoch) || handleGlobalError(error)) return;
@@ -300,7 +305,8 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
 
     // ---- S2 password ---------------------------------------------------
     function showPassword(initialError = '') {
-        const usable = config.methods.password === true && discovery?.methods?.password === true;
+        const initialSetup = discovery?.exists === false && discovery.initialPasswordSetup === true;
+        const usable = initialSetup || (config.methods.password === true && discovery?.methods?.password === true);
         const form = h('form', { className: 'auth-panel password-panel', novalidate: true });
         const errorNode = status(initialError, { error: true });
         const passwordInput = h('input', { id: 'auth-password', name: 'password', type: 'password', autocomplete: 'current-password', required: true, disabled: !usable });
@@ -308,13 +314,16 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         const anotherWay = h('button', { type: 'button', className: 'auth-link', text: 'Try another way', onClick: () => { void withDiscovery(() => showMethods()); } });
         const children = [heading('Enter your password'), ...accountEmailField('auth-account-email'),
             h('label', { for: 'auth-password', text: 'Password' }), passwordInput];
+        if (initialSetup) children.push(status('First-time setup: enter admin to create this workspace’s first administrator.'));
         // Neutral wording: neither blocked status nor Google linkage is disclosed.
         if (!usable) {
             children.push(status(config.methods.password === true
                 ? 'Password sign-in is not available for this account here. Choose Try another way.'
                 : 'Password sign-in is not available in this workspace.'));
         }
-        children.push(loginButton, errorNode, anotherWay, backButton(() => showStart()));
+        children.push(loginButton, errorNode);
+        if (initialSetup && config.signup.email) children.push(h('button', { type: 'button', className: 'auth-link', text: 'Sign up', onClick: () => showSignupPassword() }));
+        children.push(anotherWay, backButton(() => showStart()));
         form.append(...children);
         form.addEventListener('submit', (event) => {
             event.preventDefault();
@@ -896,7 +905,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         try {
             const data = await adapter.discover(email);
             if (stale(capturedEpoch)) return;
-            discovery = { email, exists: data.exists === true, methods: data.methods || {} };
+            rememberDiscovery(data, email);
             persist();
             if (discovery.exists) showPassword();
             else afterDiscover();
@@ -1006,6 +1015,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         if (result.completed) { finish(capturedEpoch, result.handoff); return; }
         config = {
             setupComplete: result.setupComplete,
+            initialPasswordSetup: result.initialPasswordSetup === true,
             registration: result.registration === true,
             signup: { email: result.signup?.email === true, google: result.signup?.google === true },
             methods: result.methods || {},

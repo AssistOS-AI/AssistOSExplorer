@@ -4,7 +4,7 @@ import { cancelGoogleTransactionForParent } from './googleAuth.mjs';
 import { getLoginRequest, issueAuthCodeLocked, isAuthCodeLive, prepareSsoHandoff } from '../lib/sso.mjs';
 import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, startEmailSignIn } from '../lib/auth/signIn.mjs';
 import { changeSignupEmail, completeSignup, resendSignup, startSignup } from '../lib/auth/signup.mjs';
-import { loginWithUserPassword } from '../lib/auth/userPassword.mjs';
+import { loginWithInitialPassword } from '../lib/auth/initialPassword.mjs';
 import { readCompletion } from '../lib/auth/emailAttempts.mjs';
 import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
 import * as passkey from '../lib/auth/passkey.mjs';
@@ -48,7 +48,7 @@ const EMAIL_PROBES = new Set([
     '/service/auth/signup/email',
 ]);
 const SIGNUP_DELIVERY = new Set(['/service/auth/signup/start', '/service/auth/signup/resend', '/service/auth/signup/email']);
-const REPLAYABLE = new Set(['/service/auth/attempt', '/service/auth/email-code/verify', '/service/auth/signup/verify']);
+const REPLAYABLE = new Set(['/service/auth/attempt', '/service/auth/password/login', '/service/auth/email-code/verify', '/service/auth/signup/verify']);
 
 function fail(code, statusCode, extra = {}) {
     return Object.assign(new Error(code), { code, statusCode, ...extra });
@@ -83,8 +83,10 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
 
     // A browser whose completed response was lost can replay its own staged
     // handoff while that code is still unconsumed; otherwise it starts again.
-    async function replay(req, requestId, state) {
+    async function replay(req, requestId, state, passwordLogin = null) {
         const completion = await readCompletion({ flow: 'sso', id: requestId, browserProof: readBrowserProof(req) });
+        if (passwordLogin && (passwordLogin.password !== 'admin' || completion?.method !== 'initialPassword'
+            || completion.email !== String(passwordLogin.email || '').trim().toLowerCase())) return null;
         if (!completion?.handoff || !(await isAuthCodeLive({ providerState: requestId, code: completion.handoff.code }))) return null;
         return { ...callbackPayload(completion.handoff, state), replayed: true };
     }
@@ -108,7 +110,7 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
                 parent = await liveParent(requestId);
             } catch (error) {
                 if (REPLAYABLE.has(path) && ['login_request_invalid', 'login_request_expired'].includes(error?.code)) {
-                    const replayed = await replay(req, requestId, state);
+                    const replayed = await replay(req, requestId, state, path === '/service/auth/password/login' ? body : null);
                     if (replayed) return sendJson(res, 200, path === '/service/auth/attempt' ? { ok: true, completed: true, handoff: replayed } : replayed);
                 }
                 throw error;
@@ -135,8 +137,11 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
             }
             if (path === '/service/auth/password/login') {
                 if (!(await isAuthMethodEnabled('password'))) throw fail('auth_method_disabled', 404);
-                const result = await loginWithUserPassword({ parent, email: text(body, 'email', 320), password: secret(body, 'password'), rateSource, validateParent });
-                return sendJson(res, 200, callbackPayload(await issueAuthCodeLocked({ providerState: requestId, userId: result.user.id, generation: authGenerationOf(result.user) }), state));
+                const result = await loginWithInitialPassword({ parent, browserProof: ensureBrowserProof(req, res, cookie),
+                    email: text(body, 'email', 320), password: secret(body, 'password'), rateSource, validateParent,
+                    prepareHandoff: () => prepareSsoHandoff(requestId) });
+                const handoff = result.handoff || await issueAuthCodeLocked({ providerState: requestId, userId: result.user.id, generation: authGenerationOf(result.user) });
+                return sendJson(res, 200, callbackPayload(handoff, state));
             }
             if (path === '/service/auth/signup/start') {
                 const browserProof = ensureBrowserProof(req, res, cookie);

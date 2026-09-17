@@ -3,6 +3,7 @@ import { serializePersisted } from '../serial.mjs';
 import { getAuthPolicy } from '../policy.mjs';
 import { authGenerationOf, getUserById, getUserByEmail, getUserRoles, hasVerifiedMailbox, normalizeEmail, sanitizeUser } from '../users.mjs';
 import { recordAudit } from '../audit.mjs';
+import { getInstallationSetup } from '../setup.mjs';
 import { sendAuthCode } from '../email-agent-client.mjs';
 import {
     attemptError,
@@ -45,7 +46,8 @@ async function methodsFor(user, policy, emailAvailable) {
     return methods;
 }
 
-// Minimal, advisory discovery: existence and usable local method types only.
+// Minimal, advisory discovery: existence, initial setup availability and usable
+// local method types.
 // A blocked account reports every method false, so no field distinguishes a
 // missing enrollment from blocked status. No credential names, identifiers,
 // counts, timestamps, roles or Google linkage; pending signups are invisible.
@@ -55,7 +57,9 @@ export async function discoverAccount({ parent, email, rateSource, validateParen
     if (validateParent) await validateParent();
     discoveryBudget({ parent, rateSource });
     const user = await getUserByEmail(normalized);
-    return { exists: Boolean(user), methods: await methodsFor(user, await getAuthPolicy(), emailAvailable) };
+    const policy = await getAuthPolicy();
+    return { exists: Boolean(user), methods: await methodsFor(user, policy, emailAvailable),
+        initialPasswordSetup: !user && !(await getInstallationSetup()).complete && policy.enabledAuthMethods.includes('password') };
 }
 
 // Login codes go only to an active account's verified mailbox.

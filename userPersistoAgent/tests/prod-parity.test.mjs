@@ -142,7 +142,10 @@ test('SSO signup, password login, email-code login and public readiness behave i
         assert.equal(signedIn.status, 200, label);
         const readiness = await (await fetch(`${base}/service/auth/setup`)).json();
         const methods = await (await fetch(`${base}/service/auth/methods`)).json();
-        results.push({ configuration: { ...configuration, setupComplete: undefined }, readiness: { ...readiness, setupComplete: undefined }, methods });
+        assert.equal(configuration.initialPasswordSetup, results.length === 0, 'only the first unclaimed installation offers setup');
+        assert.equal(readiness.initialPasswordSetup, false, 'completed signup permanently closes the exception');
+        results.push({ configuration: { ...configuration, setupComplete: undefined, initialPasswordSetup: undefined },
+            readiness: { ...readiness, setupComplete: undefined }, methods });
     }
     for (const result of results.slice(1)) assert.deepEqual(result, results[0]);
     assert.equal(results[0].configuration.methods.password, true);

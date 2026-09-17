@@ -142,6 +142,7 @@ function wizardState(overrides = {}) {
     return {
         expiresAt: Date.now() + 5 * 60 * 1000,
         setupComplete: true,
+        initialPasswordSetup: false,
         registration: true,
         signup: { email: true, google: false },
         methods: { ...ALL_METHODS },
@@ -309,6 +310,86 @@ test('Next branches only on discovery: registered to S2, unknown to S4, Google-o
 });
 
 // ==== S2 password ===========================================================
+
+test('an unclaimed installation offers initial password setup without email delivery on the ordinary password screen', async () => {
+    const calls = [];
+    const mounted = await mount({ adapter: baseAdapter({
+        attempt: async () => wizardState({ setupComplete: false, initialPasswordSetup: true, registration: false,
+            signup: { email: false, google: false }, methods: { password: true } }),
+        discover: async () => ({ ...UNKNOWN, initialPasswordSetup: true }),
+        passwordLogin: async (args) => { calls.push(args); throw fail('authentication_failed'); },
+    }) });
+    await submitEmail(mounted.root, 'owner@example.test');
+    assert.equal(h1(mounted.root).textContent, 'Enter your password');
+    assert.match(mounted.root.textContent, /First-time setup: enter admin/);
+    assert.equal(mounted.root.querySelector('[name="password"]').disabled, false);
+    assert.equal(button(mounted.root, 'Log in').disabled, false);
+    assert.equal(hasButton(mounted.root, 'Sign up'), false);
+    assert.equal(hasButton(mounted.root, 'Administrator sign-in'), false);
+    mounted.root.querySelector('[name="password"]').value = ' admin';
+    await mounted.root.querySelector('form.password-panel').fire('submit');
+    assert.deepEqual(calls, [{ email: 'owner@example.test', password: ' admin' }], 'the exact password reaches the server without trimming');
+    assert.equal(mounted.root.querySelector('[name="password"]').value, '');
+    assert.match(alertText(mounted.root), /That password is not correct/);
+    await button(mounted.root, 'Back').fire('click');
+    assert.equal(mounted.root.querySelector('[name="email"]').value, 'owner@example.test');
+    assert.equal(mounted.root.querySelector('[name="password"]'), null);
+});
+
+test('the initial password choice keeps normal verified signup reachable when email signup is available', async () => {
+    const starts = [];
+    const { root } = await mount({ adapter: baseAdapter({
+        attempt: async () => wizardState({ setupComplete: false, initialPasswordSetup: true }),
+        discover: async () => ({ ...UNKNOWN, initialPasswordSetup: true }),
+        passwordLogin: () => assert.fail('choosing Sign up must not claim initial password setup'),
+        startSignup: async (args) => { starts.push(args); return { challenge: signupChallenge({ email: 'owner@example.test' }) }; },
+    }) });
+    await submitEmail(root, 'owner@example.test');
+    await button(root, 'Sign up').fire('click');
+    assert.equal(h1(root).textContent, 'Create your password');
+    await createAccount(root, 'a separately chosen strong password');
+    assert.equal(starts.length, 1);
+    assert.equal(starts[0].email, 'owner@example.test');
+    assert.match(h1(root).textContent, /Enter the 6-digit code sent to owner@example/);
+});
+
+test('fresh discovery overrides boot and cached initial setup availability', async () => {
+    for (const [bootFlag, discoveryFlag] of [[true, false], [false, true]]) {
+        const { root } = await mount({ adapter: baseAdapter({
+            attempt: async () => wizardState({ setupComplete: false, initialPasswordSetup: bootFlag }),
+            discover: async () => ({ ...UNKNOWN, initialPasswordSetup: discoveryFlag }),
+        }) });
+        await submitEmail(root, 'owner@example.test');
+        assert.equal(h1(root).textContent, discoveryFlag ? 'Enter your password' : 'Create an account?');
+    }
+    let calls = 0;
+    const { root } = await mount({ adapter: baseAdapter({
+        attempt: async () => wizardState({ setupComplete: false, initialPasswordSetup: true }),
+        discover: async () => ({ ...UNKNOWN, initialPasswordSetup: ++calls === 1 }),
+    }) });
+    await submitEmail(root, 'owner@example.test');
+    await button(root, 'Try another way').fire('click');
+    assert.equal(calls, 2, 'unclaimed setup availability cannot be reused from cached discovery');
+    await button(root, 'Use your password').fire('click');
+    assert.equal(button(root, 'Log in').disabled, true);
+    assert.doesNotMatch(root.textContent, /First-time setup/);
+    await button(root, 'Back').fire('click');
+    await submitEmail(root, 'later@example.test');
+    assert.equal(h1(root).textContent, 'Create an account?');
+});
+
+test('an OIDC initial setup password failure restores the ordinary password screen without retaining the secret', async () => {
+    const { root } = await mount({ adapter: baseAdapter({ flow: 'oidc', initialEmail: 'owner@example.test',
+        initialFailure: { action: 'password-login', code: 'authentication_failed' },
+        attempt: async () => wizardState({ setupComplete: false, initialPasswordSetup: true, signup: { email: false, google: true } }),
+        discover: async () => ({ ...UNKNOWN, initialPasswordSetup: true }),
+    }) });
+    assert.equal(h1(root).textContent, 'Enter your password');
+    assert.match(root.textContent, /First-time setup: enter admin/);
+    assert.equal(root.querySelector('[name="password"]').value, '');
+    assert.equal(button(root, 'Log in').disabled, false);
+    assert.match(alertText(root), /That password is not correct/);
+});
 
 test('S2 shows the read-only email, a password without maxlength, Log in, Try another way and Back', async () => {
     const { root } = await toPassword();

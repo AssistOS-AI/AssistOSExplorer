@@ -55,14 +55,14 @@ test('retired administrator and registration routes are gone and malformed bodie
     assert.equal((await getInstallationSetup()).complete, false);
 }));
 
-test('no password of any kind can claim or sign in to an unclaimed installation', () => fixture(async ({ base, post }) => {
+test('unclaimed setup rejects arbitrary passwords and ignores the retired password override', () => fixture(async ({ base, post }) => {
     process.env.USERPERSISTO_ADMIN_PASSWORD = 'fixture-retired-variable-value';
     const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     const browser = new CookieBrowser();
     const attempt = await (await post(browser, 'attempt', { requestId: request.providerState })).json();
     for (const retired of ['adminPassword', 'googleOnly']) assert.equal(Object.hasOwn(attempt, retired), false, retired);
     for (const email of ['owner@example.test', 'admin@example.test', 'administrator@example.test']) {
-        for (const password of ['admin', process.env.USERPERSISTO_ADMIN_PASSWORD, '']) {
+        for (const password of ['ADMIN', process.env.USERPERSISTO_ADMIN_PASSWORD, '']) {
             const refused = await post(browser, 'password/login', { requestId: request.providerState, state: 'x', email, password });
             assert.deepEqual([refused.status, await refused.json()], [401, { ok: false, error: 'authentication_failed' }]);
         }

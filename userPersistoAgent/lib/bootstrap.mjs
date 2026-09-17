@@ -1,7 +1,7 @@
 import { getStore, flush } from './store.mjs';
 
 // Roles and capabilities only. No account or credential is seeded: the first
-// completed verified password signup or Google sign-in claims setup.
+// completed initial-password setup, verified signup or Google sign-in claims setup.
 const ROLES = [
     { name: 'admin', description: 'Full administration', priority: 1 },
     { name: 'user', description: 'Explorer user', priority: 2 },

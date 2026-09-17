@@ -13,7 +13,7 @@ import { loginVerify as verifyTotp } from '../auth/totp.mjs';
 import { loginOptions as passkeyOptions, loginVerify as verifyPasskey } from '../auth/passkey.mjs';
 import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, startEmailSignIn } from '../auth/signIn.mjs';
 import { changeSignupEmail, completeSignup, resendSignup, startSignup } from '../auth/signup.mjs';
-import { loginWithUserPassword } from '../auth/userPassword.mjs';
+import { loginWithInitialPassword } from '../auth/initialPassword.mjs';
 import { readAttempt } from '../auth/emailAttempts.mjs';
 import { wizardConfiguration } from '../auth/wizardConfig.mjs';
 import { ensureBrowserProof, rateSourceOf, readBrowserProof } from '../auth/browserBinding.mjs';
@@ -335,8 +335,9 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
             }
             if (action === 'password-login') {
                 attemptedEmail = field(body, 'email', 320);
+                const browserProof = ensureBrowserProof(req, res, cookie);
                 // Passwords are passed through unmodified; the domain bounds them.
-                const result = await loginWithUserPassword({ parent, email: attemptedEmail, password: body.password, rateSource, validateParent });
+                const result = await loginWithInitialPassword({ parent, browserProof, email: attemptedEmail, password: body.password, rateSource, validateParent });
                 authenticated = { ok: true, user: result.user };
                 amr = ['pwd'];
             }

@@ -301,7 +301,7 @@ test('refused code requests spend the send budget, so they cannot probe addresse
     assert.equal(mail.messages.length, 0);
 });
 
-test('discovery returns existence and usable method types only, and a blocked account reports none', async () => {
+test('discovery returns existence, initial setup availability and usable methods, and a blocked account reports none', async () => {
     const context = await parent();
     await setup.signUpWithPassword('owner@example.test');
     const withPassword = await setup.signUpWithPassword('discover@example.test');
@@ -309,16 +309,16 @@ test('discovery returns existence and usable method types only, and a blocked ac
     await store.createAuthMethod({ key: `${withPassword.user.id}:totp`, userId: withPassword.user.id, type: 'totp', enabled: true, credential: { secretEncrypted: 'x' } });
     await flush();
     const found = await signIn.discoverAccount({ parent: context, email: 'DISCOVER@example.test', emailAvailable: true });
-    assert.deepEqual(found, { exists: true, methods: { password: true, emailCode: true, passkey: false, totp: true } });
+    assert.deepEqual(found, { exists: true, initialPasswordSetup: false, methods: { password: true, emailCode: true, passkey: false, totp: true } });
     assert.equal((await signIn.discoverAccount({ parent: context, email: 'DISCOVER@example.test', emailAvailable: false })).methods.emailCode, false);
     const passwordless = await member('passwordless@example.test');
     assert.deepEqual(await signIn.discoverAccount({ parent: context, email: passwordless.email, emailAvailable: true }),
-        { exists: true, methods: { password: false, emailCode: true, passkey: false, totp: false } });
+        { exists: true, initialPasswordSetup: false, methods: { password: false, emailCode: true, passkey: false, totp: false } });
     await updateUser(withPassword.user.id, { status: 'blocked' });
     assert.deepEqual(await signIn.discoverAccount({ parent: context, email: 'discover@example.test', emailAvailable: true }),
-        { exists: true, methods: { password: false, emailCode: false, passkey: false, totp: false } });
+        { exists: true, initialPasswordSetup: false, methods: { password: false, emailCode: false, passkey: false, totp: false } });
     assert.deepEqual(await signIn.discoverAccount({ parent: context, email: 'nobody@example.test' }),
-        { exists: false, methods: { password: false, emailCode: false, passkey: false, totp: false } });
+        { exists: false, initialPasswordSetup: false, methods: { password: false, emailCode: false, passkey: false, totp: false } });
     await assert.rejects(signIn.discoverAccount({ parent: context, email: 'bad' }), { code: 'invalid_email' });
     let limited = false;
     for (let index = 0; index < 25 && !limited; index += 1) {

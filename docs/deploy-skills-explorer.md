@@ -109,13 +109,14 @@ sign-in wizard shell, confirm that its opening page carries no password field,
 and verify OIDC discovery and its exact public issuer. They report only
 ownership-complete, registration, and method-availability booleans and never
 submit a sign-up or claim the first administrator.
-No account or password ships with the deployment. On an unclaimed installation,
-the first completed Google sign-in or verified email sign-up through either the
-Router SSO or OIDC wizard claims that role: enter the owner's email, choose
-**Sign up**, create a password of at least 15 characters, and enter the
-emailed 6-digit code, or choose **Sign in with Google**. Email sign-up needs
-working EmailAgent delivery, so configure mail (or Google) before the first
-sign-in. Complete the selected owner's setup before inviting restricted users.
+No account is pre-created. On an unclaimed installation, enter the owner's
+email, select **Next**, enter the literal password `admin`, and select **Log in**.
+This creates the first administrator without email delivery or a verification
+code; its email remains unverified. Google sign-in and ordinary verified signup
+can also claim the installation first. Ordinary signup uses **Sign up**, a
+password of at least 15 characters and the emailed code. The exception closes
+permanently after the first claim. Configure EmailAgent delivery to verify the
+initial administrator's email and enable normal email registration. Complete the selected owner's setup before inviting restricted users.
 Subsequent public sign-ups receive `selfRegistered` and do not gain Explorer
 access automatically. Automated release gates sign in and sign up through the
 same screens with the smoke helper described in `tests/smoke/README.md`.

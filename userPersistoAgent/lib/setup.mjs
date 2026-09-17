@@ -4,7 +4,7 @@ import { assertRegistrationRoleAllowed, getAuthPolicy, REGISTRATION_ROLE } from 
 import { recordAudit } from './audit.mjs';
 
 export const SETUP_KEY = 'installation.setup';
-const SETUP_METHODS = new Set(['google', 'passwordSignup']);
+const SETUP_METHODS = new Set(['google', 'passwordSignup', 'initialPassword']);
 
 function setupError(code, message, statusCode = 403) {
     return Object.assign(new Error(message), { code, statusCode });
@@ -32,7 +32,8 @@ export async function getInstallationSetup() {
 // commit, after live-parent and proof checks. The returned stage function only
 // writes: the unclaimed installation gets its administrator and setup record
 // together; a claimed installation gets exactly `selfRegistered`. Every public
-// account has a verified sign-in email.
+// account normally has a verified sign-in email; initialPassword deliberately
+// leaves the first administrator's mailbox unverified.
 export async function prepareNewAccount({
     email,
     username = '',
@@ -44,6 +45,9 @@ export async function prepareNewAccount({
     if (!SETUP_METHODS.has(method)) throw setupError('invalid_setup_method', 'Unsupported account creation method.', 500);
     const store = await getStore();
     const setup = await readInstallationSetup(store);
+    if (method === 'initialPassword' && setup.complete) {
+        throw setupError('authentication_failed', 'Unable to sign in.', 401);
+    }
     let roles;
     if (!setup.complete) {
         roles = ['admin'];

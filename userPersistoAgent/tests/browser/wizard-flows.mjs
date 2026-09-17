@@ -100,6 +100,95 @@ function trackNativePosts(page) {
     return async (action) => (await Promise.all(pending)).filter((post) => post.action === action).map((post) => post.carriesProof);
 }
 
+async function runInitialPasswordSetup({ label, prefix, prod }) {
+    phase = `${label}: initializing first-user password setup without email delivery`;
+    installation.folder = await mkdtemp(join(tmpdir(), 'userpersisto-initial-password-browser-'));
+    for (const name of MANAGED_ENVIRONMENT) delete process.env[name];
+    if (prod !== undefined) process.env.PROD = prod;
+    process.env.PERSISTENCE_FOLDER = installation.folder;
+    process.env.USERPERSISTO_SETTINGS_KEY = 'initial-password-browser-fixture-settings-key';
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
+    resetEmailAttemptLimitsForTests();
+    resetPasswordLimitsForTests();
+    resetKdfForTests();
+    await ensureSeedData();
+    let emailRequests = 0;
+    const service = installation.service = startService({ port: 0, host: '127.0.0.1' }, {
+        emailStatus: async () => ({ available: false }),
+        deliverEmail: async () => { emailRequests++; throw new Error('Email delivery is unavailable in this fixture'); },
+    });
+    attachRouterCallback(service);
+    if (!service.listening) await once(service, 'listening');
+    const origin = `http://localhost:${service.address().port}`;
+    process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${origin}/service/auth/google/callback`;
+    const browserErrors = [];
+    async function open() {
+        const request = await createLoginRequest({ redirectUri: `${origin}/auth/callback` });
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        page.setDefaultTimeout(15_000);
+        page.on('pageerror', (error) => browserErrors.push(error.message));
+        await page.goto(`${origin}/service/auth/?requestId=${encodeURIComponent(request.providerState)}&state=initial-setup-state`);
+        await page.locator('form.start-panel').waitFor();
+        return { request, context, page };
+    }
+    async function complete(flow) {
+        await flow.page.getByRole('heading', { name: 'Router callback', exact: true }).waitFor();
+        const callback = new URL(flow.page.url());
+        assert.equal(callback.origin, origin);
+        assert.equal(callback.pathname, '/auth/callback');
+        assert.equal(callback.searchParams.get('state'), 'initial-setup-state');
+        return consumeAuthCode({ providerState: flow.request.providerState, code: callback.searchParams.get('code') });
+    }
+    const first = await open();
+    const waiting = await open(); // Its boot configuration predates the first claim.
+    assert.deepEqual(await startControls(first.page), ['Sign in with Google', 'Email', 'input:email', 'Next']);
+    await first.page.getByRole('textbox', { name: 'Email', exact: true }).fill('initial-owner@example.test');
+    await first.page.getByRole('button', { name: 'Next', exact: true }).click();
+    await first.page.getByRole('heading', { name: 'Enter your password', exact: true }).waitFor();
+    await first.page.getByText('First-time setup: enter admin to create this workspace’s first administrator.', { exact: true }).waitFor();
+    assert.equal(await first.page.getByRole('button', { name: 'Sign up', exact: true }).count(), 0);
+    assert.equal(await first.page.getByRole('button', { name: 'Administrator sign-in', exact: true }).count(), 0);
+    await screenshot(first.page, `${prefix}-00-initial-password-no-email`);
+
+    phase = `${label}: first-user setup rejects nonexact admin and creates an unverified administrator with exact admin`;
+    await first.page.getByLabel('Password', { exact: true }).fill('Admin');
+    await first.page.getByRole('button', { name: 'Log in', exact: true }).click();
+    await first.page.getByText('That password is not correct. Try again or choose another way to sign in.', { exact: true }).waitFor();
+    assert.equal((await inputFacts(first.page, '#auth-password')).empty, true);
+    assert.equal((await getInstallationSetup()).complete, false);
+    assert.equal(await getUserByEmail('initial-owner@example.test'), null);
+    await first.page.getByLabel('Password', { exact: true }).fill('admin');
+    await first.page.getByRole('button', { name: 'Log in', exact: true }).click();
+    const administrator = await complete(first);
+    assert.deepEqual(administrator.roles, ['admin']);
+    assert.equal(administrator.user.email, 'initial-owner@example.test');
+    assert.equal(Boolean((await getUserByEmail(administrator.user.email)).emailVerifiedAt), false);
+    await first.context.close();
+
+    phase = `${label}: a stale first-run page cannot offer bootstrap to the second email`;
+    await waiting.page.getByRole('textbox', { name: 'Email', exact: true }).fill('second-unknown@example.test');
+    await waiting.page.getByRole('button', { name: 'Next', exact: true }).click();
+    await waiting.page.getByRole('heading', { name: 'Create an account with Google', exact: true }).waitFor();
+    assert.equal(await waiting.page.locator('input[type="password"]').count(), 0);
+    assert.equal(await getUserByEmail('second-unknown@example.test'), null);
+    await waiting.context.close();
+
+    phase = `${label}: the first administrator returns through ordinary account password login`;
+    const returning = await open();
+    await returning.page.getByRole('textbox', { name: 'Email', exact: true }).fill(administrator.user.email);
+    await returning.page.getByRole('button', { name: 'Next', exact: true }).click();
+    await returning.page.getByRole('heading', { name: 'Enter your password', exact: true }).waitFor();
+    assert.equal(await returning.page.getByText('First-time setup:', { exact: false }).count(), 0);
+    await returning.page.getByLabel('Password', { exact: true }).fill('admin');
+    await returning.page.getByRole('button', { name: 'Log in', exact: true }).click();
+    assert.equal((await complete(returning)).user.id, administrator.user.id);
+    assert.equal(emailRequests, 0);
+    assert.deepEqual(browserErrors, []);
+    assert.equal((await (await getStore()).select('user')).totalCount, 1);
+    await returning.context.close();
+}
+
 async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     const mail = [];
     const rejectNextDelivery = new Set();
@@ -205,9 +294,9 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     const signupStarts = countPosts(flow.page, '/service/auth/signup/start');
     await flow.page.getByRole('textbox', { name: 'Email' }).fill('owner@example.test');
     await next(flow.page);
-    await heading(flow.page, 'Create an account?');
-    await flow.page.getByText('No account uses owner@example.test.').waitFor();
-    await shot(flow.page, '02-sso-signup-offer');
+    await heading(flow.page, 'Enter your password');
+    await flow.page.getByText('First-time setup: enter admin to create this workspace’s first administrator.', { exact: true }).waitFor();
+    await shot(flow.page, '02-sso-first-setup-choice');
     await flow.page.getByRole('button', { name: 'Sign up', exact: true }).click();
     await heading(flow.page, 'Create your password');
     for (const selector of ['#auth-new-password', '#auth-confirm-password']) {
@@ -637,6 +726,8 @@ async function verify() {
     ];
     // A failure leaves the installation open so its pages can be captured first.
     for (const run of runs) {
+        await runInitialPasswordSetup(run);
+        await teardownInstallation();
         await runInstallation(run);
         await teardownInstallation();
     }

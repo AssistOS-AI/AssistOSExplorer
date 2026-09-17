@@ -81,7 +81,7 @@ test('public SSO and signed-in account surfaces hide unavailable email and rejec
     assert.equal(config.methods.emailCode, false);
     assert.equal(config.registration, false);
     const discovered = await (await post('discover', { email: user.email })).json();
-    assert.deepEqual(discovered, { ok: true, exists: true, methods: { password: true, emailCode: false, passkey: false, totp: false } });
+    assert.deepEqual(discovered, { ok: true, exists: true, initialPasswordSetup: false, methods: { password: true, emailCode: false, passkey: false, totp: false } });
     assert.equal((await post('email-code/start', { email: user.email, purpose: 'login' })).status, 404);
     for (const path of ['signup/start', 'signup/resend', 'signup/email']) {
         const refused = await post(path, { email: 'new-member@example.test', password: 'a long enough new password', passwordConfirmation: 'a long enough new password' });
@@ -105,11 +105,13 @@ test('public SSO and signed-in account surfaces hide unavailable email and rejec
     assert.equal(sends, 1, 'a real requested code is sent when the provider is configured');
 }));
 
-test('default production status fails closed without an EmailAgent client, while explicit delivery fixtures remain usable', () => fixture(async ({ start }) => {
+test('unavailable email keeps initial-password setup available without advertising email signup', () => fixture(async ({ start }) => {
     const production = await start();
     const unavailable = await (await fetch(`${production}/service/auth/setup`)).json();
     assert.equal(unavailable.methods.emailCode, false);
-    assert.equal(unavailable.registration, false);
+    assert.equal(unavailable.registration, true);
+    assert.equal(unavailable.initialPasswordSetup, true);
+    assert.equal(unavailable.signup.email, false);
     assert.equal((await wizardConfiguration()).methods.emailCode, false, 'a caller without a readiness result cannot advertise email');
     const controlled = await start({ deliverEmail: async () => ({ delivered: true, providerMessageId: 'fixture' }) });
     const configured = await (await fetch(`${controlled}/service/auth/setup`)).json();
@@ -133,7 +135,7 @@ test('an unconfigured service completes first-owner signup through development l
             else process.env.USERPERSISTO_DEV_BOOTSTRAP = value;
             const configuration = await (await post('attempt')).json();
             assert.equal(configuration.methods.emailCode, false);
-            assert.deepEqual([configuration.registration, configuration.signup.email], [false, false]);
+            assert.deepEqual([configuration.registration, configuration.signup.email, configuration.initialPasswordSetup], [true, false, true]);
             assert.equal((await post('signup/start', { email, password, passwordConfirmation: password })).status, 403);
         }
         assert.equal(warnings.length, 0);

@@ -20,8 +20,9 @@ import { getInstallationSetup } from '../lib/setup.mjs';
 import { getUserByEmail, getUserRoles } from '../lib/users.mjs';
 import { completeReauthentication } from '../lib/auth/operationGrants.mjs';
 import { setAccountPassword } from '../lib/auth/passwordManagement.mjs';
+import { setKdfObserverForTests } from '../lib/auth/password.mjs';
 import * as totp from '../lib/auth/totp.mjs';
-import { completeGoogleIdentity } from '../lib/externalIdentities.mjs';
+import { completeGoogleIdentity, inspectGoogleIdentity } from '../lib/externalIdentities.mjs';
 
 const redirectUri = 'https://methods-client.example.test/callback';
 const mailCapture = Symbol.for('userpersisto.oidc-methods.test-mail');
@@ -97,6 +98,44 @@ async function fixture(methods, fn) {
         const config = await oidcClient.discovery(new URL(issuer), 'methods-client', undefined, oidcClient.None(), { execute: [oidcClient.allowInsecureRequests, oidcClient.enableNonRepudiationChecks] });
         await fn({ user, owner, origin, issuer, config, password });
     } finally {
+        if (server?.listening) await new Promise((resolve) => server.close(resolve));
+        resetOidcProviderForTests();
+        await resetStoreForTests();
+        for (const name of Object.keys(process.env)) if (!Object.hasOwn(previousEnvironment, name)) delete process.env[name];
+        Object.assign(process.env, previousEnvironment);
+        await rm(folder, { recursive: true, force: true });
+    }
+}
+
+async function initialPasswordFixture(fn) {
+    const previousEnvironment = { ...process.env };
+    const folder = await mkdtemp(join(tmpdir(), 'userpersisto-oidc-initial-password-'));
+    process.env.PERSISTENCE_FOLDER = folder;
+    process.env.USERPERSISTO_SETTINGS_KEY = 'disposable-initial-password-settings-key';
+    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']) delete process.env[name];
+    globalThis[mailCapture].length = 0;
+    setup.resetAuthLimitsForTests();
+    let server;
+    try {
+        await ensureSeedData();
+        server = startService({ port: 0, host: '127.0.0.1' }, { emailStatus: async () => ({ available: false }) });
+        if (!server.listening) await once(server, 'listening');
+        const issuer = `http://127.0.0.1:${server.address().port}/service/oidc`;
+        process.env.USERPERSISTO_OIDC_ISSUER = issuer;
+        // An operator-provisioned public client does not claim installation setup.
+        await getOrCreateOidcKeys();
+        const now = new Date().toISOString();
+        await writeOidcDocument('Client', 'methods-client', { enabled: true, createdAt: now, updatedAt: now, metadata: {
+            client_id: 'methods-client', client_name: 'methods-client', application_type: 'web', subject_type: 'public', redirect_uris: [redirectUri],
+            post_logout_redirect_uris: [], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'],
+            scope: 'openid email', id_token_signed_response_alg: 'RS256',
+        } });
+        const config = await oidcClient.discovery(new URL(issuer), 'methods-client', undefined, oidcClient.None(), {
+            execute: [oidcClient.allowInsecureRequests, oidcClient.enableNonRepudiationChecks],
+        });
+        await fn({ config });
+    } finally {
+        setStoreFaultInjectorForTests(null);
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         resetOidcProviderForTests();
         await resetStoreForTests();
@@ -325,6 +364,80 @@ test('password login completes natively with pwd, re-renders failures without se
     const old = await next.browser.post(`${next.location}/password-login`, { csrf: next.csrf, email: user.email, password });
     assert.equal(old.status, 400);
     await consentTokens(config, next, await next.browser.post(`${next.location}/password-login`, { csrf: next.csrf, email: user.email, password: replacement }), user.id);
+}));
+
+test('OIDC first-install password login needs no email delivery and keeps the mailbox unverified', () => initialPasswordFixture(async ({ config }) => {
+    const email = 'oidc-initial-owner@gmail.com';
+    const flow = await begin(config);
+    const page = interactionConfig(await (await flow.browser.fetch(flow.location)).text());
+    assert.deepEqual([page.setupComplete, page.initialPasswordSetup, page.signup.email], [false, true, false]);
+    const body = { csrf: flow.csrf, email, password: 'admin' };
+    const foreign = await flow.browser.post(`${flow.location}/password-login`, body, 'https://unrelated.example.test');
+    assert.equal(foreign.status, 403);
+    assert.equal((await flow.browser.post(`${flow.location}/password-login`, { ...body, csrf: 'invalid' })).status, 403);
+    process.env.USERPERSISTO_AUTH_METHODS = 'google';
+    const disabled = await flow.browser.post(`${flow.location}/password-login`, body);
+    assert.equal(interactionConfig(await disabled.text()).failure.code, 'auth_method_disabled');
+    assert.equal(await getUserByEmail(email), null);
+    delete process.env.USERPERSISTO_AUTH_METHODS;
+    for (const password of ['ADMIN', ' admin', 'admin ', 'ａｄｍｉｎ', setup.newTestPassword()]) {
+        const refused = await flow.browser.post(`${flow.location}/password-login`, { ...body, password });
+        assert.equal(refused.status, 400);
+        assert.equal(await getUserByEmail(email), null);
+    }
+    const submitted = await flow.browser.post(`${flow.location}/password-login`, body);
+    const created = await getUserByEmail(email);
+    assert.ok(created);
+    assert.deepEqual(await getUserRoles(created.id), ['admin']);
+    assert.equal(created.emailVerifiedAt, '');
+    assert.equal((await getInstallationSetup()).initialAdministratorId, created.id);
+    assert.equal(globalThis[mailCapture].length, 0);
+    const tokens = await consentTokens(config, flow, submitted, created.id);
+    assert.deepEqual(await sessionAmr(flow.browser), ['pwd']);
+    const info = await oidcClient.fetchUserInfo(config, tokens.access_token, created.id);
+    assert.deepEqual([info.email, info.email_verified], [email, false]);
+    const collision = await inspectGoogleIdentity({ issuer: 'https://accounts.google.com', subject: 'initial-owner-google', email, emailVerified: true });
+    assert.equal(collision.kind, 'collision');
+    assert.deepEqual(collision.eligibleMethods, ['password'], 'the unproven email cannot authorize a Google link');
+    const later = await begin(config);
+    const current = interactionConfig(await (await later.browser.fetch(later.location)).text());
+    assert.deepEqual([current.setupComplete, current.initialPasswordSetup], [true, false]);
+    await consentTokens(config, later, await later.browser.post(`${later.location}/password-login`, { csrf: later.csrf, email, password: 'admin' }), created.id);
+    const other = await begin(config);
+    assert.equal((await other.browser.post(`${other.location}/password-login`, { csrf: other.csrf, email: 'another@example.test', password: 'admin' })).status, 400);
+    assert.equal(await getUserByEmail('another@example.test'), null);
+    assert.equal((await (await getStore()).select('user')).objects.length, 1);
+}));
+
+test('OIDC initial-password completion replays only for its browser after the local commit', () => initialPasswordFixture(async ({ config }) => {
+    const email = 'oidc-initial-retry@example.test';
+    const flow = await begin(config);
+    let injected = false;
+    setStoreFaultInjectorForTests(async (phase, name, args) => {
+        if (!injected && phase === 'before' && ['updateOidcRecord', 'createOidcRecord'].includes(name) && args.at(-1)?.model === 'Interaction') {
+            injected = true;
+            throw new Error('injected initial-password interaction result failure');
+        }
+    });
+    const interrupted = await flow.browser.post(`${flow.location}/password-login`, { csrf: flow.csrf, email, password: 'admin' });
+    setStoreFaultInjectorForTests(null);
+    assert.equal(injected, true);
+    assert.ok(interrupted.status >= 500);
+    const created = await getUserByEmail(email);
+    assert.ok(created);
+    assert.equal(created.emailVerifiedAt, '');
+    const foreign = await new Browser().post(`${flow.location}/password-login`, { csrf: flow.csrf, email, password: 'admin' });
+    assert.ok(foreign.status >= 400 && foreign.status < 500);
+    let kdfRuns = 0;
+    setKdfObserverForTests(() => { kdfRuns += 1; });
+    const resumed = await flow.browser.post(`${flow.location}/password-login`, { csrf: flow.csrf, email, password: 'admin' });
+    setKdfObserverForTests(null);
+    assert.equal(kdfRuns, 0, 'same-browser completion replays instead of verifying or creating another account');
+    const repeated = await flow.browser.fetch(flow.location);
+    assert.equal(repeated.status, 303, 'a committed interaction retains its normal resume redirect');
+    await consentTokens(config, flow, resumed, created.id);
+    assert.equal((await (await getStore()).select('user')).objects.length, 1);
+    assert.equal(globalThis[mailCapture].length, 0);
 }));
 
 test('the first administrator claims an unclaimed installation through OIDC signup across two persistence boundaries', async () => {

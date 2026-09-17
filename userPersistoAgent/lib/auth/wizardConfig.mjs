@@ -19,7 +19,8 @@ export async function wizardConfiguration({ emailAvailable = false } = {}) {
     };
     return {
         setupComplete: setup.complete,
-        registration: signup.email || signup.google,
+        initialPasswordSetup: !setup.complete && enabled.includes('password'),
+        registration: (!setup.complete && enabled.includes('password')) || signup.email || signup.google,
         signup,
         methods: {
             password: enabled.includes('password'),

@@ -440,6 +440,25 @@ export function stageChallengeOutcome(store, parent, checked, { userId = '', gen
     return stageSave(store, parent, checked.loaded, next);
 }
 
+// The initial-password exception has no email challenge. Its trusted caller
+// holds the parent/users locks and stages this browser-bound completion in the
+// same commit as the first account, credential, setup record and handoff.
+export async function prepareInitialPasswordCompletion({ parent, browserProof, email }) {
+    const store = await getStore();
+    const loaded = await load(store, parent, browserProof);
+    if (loaded.payload.status === 'completed') throw attemptError('attempt_invalid', 409);
+    return (completion) => stageSave(store, parent, loaded, {
+        ...loaded.payload,
+        email,
+        purpose: '',
+        status: 'completed',
+        challenge: null,
+        signup: null,
+        account: null,
+        completion: { ...completion, method: 'initialPassword', email },
+    })();
+}
+
 // Cancels unfinished work server-side, erasing the challenge, address, purpose
 // and any staged verifier. A completed attempt stays completed: cancellation
 // cannot undo an account that was already committed.

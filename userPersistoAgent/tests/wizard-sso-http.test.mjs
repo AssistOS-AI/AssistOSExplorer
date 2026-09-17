@@ -161,8 +161,10 @@ async function nextFromStart(wizard, email) {
 
 async function signUpThroughWizard(wizard, mail, email, password) {
     await nextFromStart(wizard, email);
-    await waitForHeading(wizard.root, /^Create an account\?$/);
-    wizard.root.querySelector('form.signup-offer-panel').fire('submit');
+    await waitForHeading(wizard.root, /^(Create an account\?|Enter your password)$/);
+    const offer = wizard.root.querySelector('form.signup-offer-panel');
+    if (offer) offer.fire('submit');
+    else [...wizard.root.querySelectorAll('button')].find((node) => node.textContent === 'Sign up').fire('click');
     await waitForHeading(wizard.root, /^Create your password$/);
     wizard.root.querySelector('[name="password"]').value = password;
     wizard.root.querySelector('[name="passwordConfirmation"]').value = password;
