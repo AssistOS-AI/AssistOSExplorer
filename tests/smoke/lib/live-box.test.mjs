@@ -234,18 +234,18 @@ test('live Box source evidence requires the exact verified read-only Ploinky bin
   }], '/work/ploinky', { realpathSync }), /does not equal/);
 });
 
-test('live Box workspace evidence requires the exact host source as one writable /workspace bind', () => {
+test('live Box workspace evidence requires the exact host source as one writable same-path bind', () => {
   const mounts = [{
     Type: 'bind',
     Source: '/host/workspace',
-    Destination: '/workspace',
+    Destination: '/host/workspace',
     RW: true,
   }];
   const realpathSync = (value) => value;
   assert.deepEqual(validateWorkspaceSourceMount(mounts, '/host/workspace', { realpathSync }), {
     type: 'bind',
     source: '/host/workspace',
-    destination: '/workspace',
+    destination: '/host/workspace',
     readWrite: true,
   });
   assert.throws(
@@ -254,11 +254,19 @@ test('live Box workspace evidence requires the exact host source as one writable
   );
   assert.throws(
     () => validateWorkspaceSourceMount(mounts, '/different/workspace', { realpathSync }),
-    /does not equal/,
+    /exactly one/,
   );
   assert.throws(
     () => validateWorkspaceSourceMount([...mounts, mounts[0]], '/host/workspace', { realpathSync }),
     /exactly one/,
+  );
+  assert.throws(
+    () => validateWorkspaceSourceMount([{ ...mounts[0], Destination: '/workspace' }], '/host/workspace', { realpathSync }),
+    /exactly one/,
+  );
+  assert.throws(
+    () => validateWorkspaceSourceMount([...mounts, { ...mounts[0], Destination: '/alias' }], '/host/workspace', { realpathSync }),
+    /another alias/,
   );
 });
 

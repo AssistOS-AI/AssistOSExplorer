@@ -25,6 +25,7 @@
       <div class="content-wrapper">
         <section class="doc-section" id="workspace-navigation">
           <h1>Workspace Operations</h1>
+          <p>The selected host workspace keeps its absolute path inside Ploinky Box and Explorer's global runtime. Explorer obtains that root from <code>PLOINKY_WORKSPACE_ROOT</code>; its global grant already includes <code>.ploinky/repos</code>, without a separate fixed workspace alias.</p>
           <p>Explorer is the primary workspace surface for browsing directories, opening files, selecting compatible previews or editors, and invoking contextual actions without leaving AchillesIDE. The current path is reflected in the application route, so a supported file or directory location can be restored after navigation.</p>
           <p>File selection opens the appropriate text editor, Markdown editor, media preview, Office integration, or agent-backed view. Ordinary workspace paths use Explorer's filesystem tools. Paths under <code>/Confidential</code> are virtual resources and use the permissions and storage contract owned by <a href="wiki.html#definition-dpu">DPU</a>. Research acquisition and access-request controls preserve the selected DPU resource, display an immediate busy state, and refresh the resource preview when the authorized operation or confirmation flow completes. After acquisition, use <strong>Verify read</strong> beside any entry in <strong>Verified Files</strong> to perform a real bounded read through DPU and see the byte count and continuation state directly in Explorer.</p>
         </section>

@@ -18,6 +18,7 @@ const STARTED_AT = '2026-07-16T10:00:00.000Z';
 const HOST_KEY_A = `SHA256:${'A'.repeat(43)}`;
 const HOST_KEY_B = `SHA256:${'B'.repeat(43)}`;
 const AGENTLIB_COMMIT = '1'.repeat(40);
+const WORKSPACE_ROOT = '/verified/work space ăîș';
 // Cross-checked against Ploinky imageSourceId + sourceIdHash for IMAGE_ID and 2*64.
 const IMAGE_AGENTLIB_SOURCE_ID = 'f1b3a1c480fffb60894cb1f24c0b137725c9180a2ef1148467c18d79a9985a85';
 
@@ -31,6 +32,8 @@ function containerInspect(bindings = {
     Image: IMAGE_ID.slice('sha256:'.length),
     State: { Running: true, StartedAt: STARTED_AT },
     Config: {
+      WorkingDir: WORKSPACE_ROOT,
+      Env: [`PLOINKY_WORKSPACE_ROOT=${WORKSPACE_ROOT}`],
       Labels: {
         'io.assistos.ploinky-box.role': 'box',
         'io.assistos.ploinky-box.path-hash': 'd'.repeat(12),
@@ -47,6 +50,7 @@ function containerInspect(bindings = {
         'io.assistos.ploinky-box.agentlib-commit': AGENTLIB_COMMIT,
       },
     },
+    Mounts: [{ Type: 'bind', Source: WORKSPACE_ROOT, Destination: WORKSPACE_ROOT, RW: true }],
     HostConfig: {
       PortBindings: bindings,
       SecurityOpt: [
@@ -64,7 +68,7 @@ function imageInspect() {
     Config: {
       Labels: {},
       User: 'podman',
-      WorkingDir: '/workspace',
+      WorkingDir: '/',
       Entrypoint: ['/usr/local/bin/ploinky-box-entrypoint'],
     },
   }];
@@ -77,7 +81,7 @@ function imageAgentLibInspect() {
     inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-source-id'] = IMAGE_AGENTLIB_SOURCE_ID;
     inspected[0].Mounts = [
         { Type: 'bind', Source: '/verified/ploinky', Destination: '/opt/ploinky', RW: false },
-        { Type: 'bind', Source: '/verified/workspace', Destination: '/workspace', RW: true },
+        { Type: 'bind', Source: WORKSPACE_ROOT, Destination: WORKSPACE_ROOT, RW: true },
     ];
     return inspected;
 }
@@ -100,6 +104,29 @@ test('image AgentLib evidence binds immutable image identity, content fingerprin
         changed.semanticLabels[field] = value;
         assert.throws(() => validateBoxEvidence(changed, expected()), /Image AgentLib/);
     }
+});
+
+test('Box evidence requires a workspace-free image and one exact runtime workspace', () => {
+  for (const mutate of [
+    (image) => { image.Config.WorkingDir = '/workspace'; },
+    (image) => { image.Config.Env = ['PLOINKY_WORKSPACE_ROOT=/workspace']; },
+    (image) => { image.Config.Env = ['PLOINKY_WORKSPACE_ROOT=']; },
+  ]) {
+    const image = imageInspect();
+    mutate(image[0]);
+    assert.throws(() => buildBoxEvidence({ containerInspect: containerInspect(), imageInspect: image, ...expected() }), /image workdir|workspace root default/);
+  }
+  for (const mutate of [
+    (container) => { container.Config.WorkingDir = '/workspace'; },
+    (container) => { container.Config.Env = []; },
+    (container) => { container.Config.Env.push(`PLOINKY_WORKSPACE_ROOT=${WORKSPACE_ROOT}`); },
+    (container) => { container.Mounts[0].Destination = '/workspace'; },
+    (container) => { container.Mounts[0].Source = '/other/workspace'; },
+  ]) {
+    const container = containerInspect();
+    mutate(container[0]);
+    assert.throws(() => buildBoxEvidence({ containerInspect: container, imageInspect: imageInspect(), ...expected() }), /workspace|WORKSPACE_ROOT|source mount/);
+  }
 });
 
 test('image AgentLib rejects substituted source identity, fingerprint, missing commit, and nonexact labels', () => {
@@ -211,6 +238,11 @@ test('live collection carries an explicit wildcard expectation through discovery
     const live = collectLiveBoxEvidence(options);
     assert.equal(live.box.normalizedPortBindings['8080/tcp'][0].HostIp, '0.0.0.0');
     assert.equal(live.box.semanticLabels.routerBindAddress, '0.0.0.0');
+    assert.equal(live.workspaceSourceMount.source, WORKSPACE_ROOT);
+    inspection[0].Mounts.push({ Type: 'bind', Source: '/other/workspace', Destination: '/other/workspace', RW: true });
+    assert.throws(() => collectLiveBoxEvidence({
+      ...options, expectedWorkspaceSource: '/other/workspace', realpathSync: (value) => value,
+    }), /runtime workspace does not equal/);
     assert.throws(() => collectLiveBoxEvidence({ ...options, expectedRouterBindAddress: '127.0.0.1' }), /found 0/);
   } finally {
     if (prior === undefined) delete process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS;

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { inspectBoxWorkspace } from './box-workspace.mjs';
 import {
   assertRouterBindAddressLabel,
   DEFAULT_ROUTER_BIND_ADDRESS,
@@ -359,7 +360,11 @@ export function buildBoxEvidence({
     throw new Error(`Outer image ${requiredImageId} must not carry labels.`);
   }
   if (String(imageConfig.User || '') !== 'podman') throw new Error('Box image user must be podman.');
-  if (String(imageConfig.WorkingDir || '') !== '/workspace') throw new Error('Box image workdir must be /workspace.');
+  if (String(imageConfig.WorkingDir || '') !== '/') throw new Error('Box image workdir must be /.');
+  if ((imageConfig.Env || []).some((entry) => typeof entry === 'string'
+    && entry.startsWith('PLOINKY_WORKSPACE_ROOT='))) {
+    throw new Error('Box image must not contain a workspace root default.');
+  }
   if (JSON.stringify(imageConfig.Entrypoint || []) !== JSON.stringify(['/usr/local/bin/ploinky-box-entrypoint'])) {
     throw new Error('Box image entrypoint is invalid.');
   }
@@ -373,6 +378,7 @@ export function buildBoxEvidence({
     expectedRouterBindAddress,
   });
   if (semanticLabels.agentLibMode === 'image') requireUnshadowedImageAgentLib(container.Mounts);
+  inspectBoxWorkspace(container);
   return validateBoxEvidence({
     containerName,
     containerId,

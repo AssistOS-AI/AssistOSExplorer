@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const STORAGE_KEY_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-const SOURCE_STATE_EXCEPTION = '.ploinky/repos';
 
 function assertSafePersistentStorage(storage, label) {
     assert.equal(typeof storage, 'object', `${label} must be an object`);
@@ -31,7 +30,6 @@ function assertCanonicalVolumeSource(source, label) {
     const normalized = path.posix.normalize(source);
     assert.equal(normalized, source, `${label} source must be lexically canonical`);
     assert.equal(path.posix.isAbsolute(source), false, `${label} source must be workspace-relative`);
-    if (source === SOURCE_STATE_EXCEPTION) return;
     assert.equal(source.startsWith('.data/'), true, `${label} writable data must live below .data`);
 }
 
@@ -60,4 +58,11 @@ test('every active top-level manifest declares only canonical writable storage',
         }
         inspectPersistentStorage(manifest, agentName);
     }
+});
+
+test('Explorer relies on its global workspace grant without a fixed workspace alias', async () => {
+    const manifest = JSON.parse(await fs.readFile(path.join(repoRoot, 'explorer', 'manifest.json'), 'utf8'));
+    assert.deepEqual(manifest.volumes || {}, {});
+    assert.equal(manifest.profiles.default.preinstall, 'scripts/hooks/preinstall.sh');
+    assert.equal(JSON.stringify(manifest).includes('/workspace/'), false);
 });

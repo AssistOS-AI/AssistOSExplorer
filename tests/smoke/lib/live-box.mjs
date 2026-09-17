@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { inspectBoxWorkspace, validateSamePathWorkspaceMount } from './box-workspace.mjs';
 
 import {
   buildBoxEvidence,
@@ -22,7 +23,6 @@ const BOX_MEDIA_HOST_PORT_LABEL = 'io.assistos.ploinky-box.media-host-port';
 const DEFAULT_GENERATION_MAX_AGE_MS = 30 * 60_000;
 const DEFAULT_IMAGE_MAX_AGE_MS = 4 * 60 * 60_000;
 const PLOINKY_SOURCE_DESTINATION = '/opt/ploinky';
-const WORKSPACE_SOURCE_DESTINATION = '/workspace';
 const NESTED_PODMAN_SECCOMP_RELATIVE_PATH = 'ploinky-box/seccomp/podman-nested-pid-fallback.json';
 
 function exactDate(value, name) {
@@ -93,39 +93,13 @@ export function validateWorkspaceSourceMount(mounts, expectedSource, {
   if (!pathIsAbsolute(expectedSource)) {
     throw new Error('Expected host workspace path must be absolute.');
   }
-  if (!Array.isArray(mounts)) {
-    throw new Error('Live Box inspection must include its exact mount inventory.');
-  }
-  const candidates = mounts.filter((mount) => (
-    String(mount?.Destination ?? mount?.destination ?? '') === WORKSPACE_SOURCE_DESTINATION
-  ));
-  if (candidates.length !== 1) {
-    throw new Error(`Live Box must have exactly one ${WORKSPACE_SOURCE_DESTINATION} source mount.`);
-  }
-  const mount = candidates[0];
-  const type = String(mount?.Type ?? mount?.type ?? '').toLowerCase();
-  const source = String(mount?.Source ?? mount?.source ?? '');
-  const readWrite = mount?.RW ?? mount?.rw;
-  if (type !== 'bind' || readWrite !== true || !pathIsAbsolute(source)) {
-    throw new Error(`Live Box ${WORKSPACE_SOURCE_DESTINATION} must be one absolute writable bind mount.`);
-  }
   let expectedRealpath;
-  let sourceRealpath;
   try {
     expectedRealpath = realpathSync(expectedSource);
-    sourceRealpath = realpathSync(source);
   } catch (error) {
     throw new Error(`Unable to resolve the live Box workspace source mount: ${error.message}`);
   }
-  if (sourceRealpath !== expectedRealpath) {
-    throw new Error('Live Box workspace source mount does not equal the expected host workspace.');
-  }
-  return Object.freeze({
-    type: 'bind',
-    source: sourceRealpath,
-    destination: WORKSPACE_SOURCE_DESTINATION,
-    readWrite: true,
-  });
+  return validateSamePathWorkspaceMount(mounts, expectedRealpath);
 }
 
 export function validateVerifiedSeccompRuntime(box, expectedPloinkySource, {
@@ -389,7 +363,7 @@ export function collectLiveBoxEvidence({
   imageMaxAgeMs = DEFAULT_IMAGE_MAX_AGE_MS,
   requireFreshImage = true,
   expectedPloinkySource = '',
-  expectedWorkspaceSource = '',
+  expectedWorkspaceSource = String(process.env.SMOKE_WORKSPACE_ROOT || ''),
   nowMs = Date.now(),
   command = defaultCommand,
   realpathSync = fs.realpathSync,
@@ -433,7 +407,7 @@ export function collectLiveBoxEvidence({
     requireFreshImage,
     box,
   }, { baseURL: local.baseURL, nowMs, expectedRouterBindAddress });
-  if (!expectedPloinkySource && !expectedWorkspaceSource) return validated;
+  const observedWorkspace = inspectBoxWorkspace(selected);
   const ploinkySourceMount = expectedPloinkySource
     ? validateReadOnlyPloinkySourceMount(
       selected?.Mounts,
@@ -447,7 +421,10 @@ export function collectLiveBoxEvidence({
       expectedWorkspaceSource,
       { realpathSync },
     )
-    : null;
+    : observedWorkspace;
+  if (workspaceSourceMount.source !== observedWorkspace.source) {
+    throw new Error('Live Box runtime workspace does not equal the selected host workspace.');
+  }
   const seccompProfile = ploinkySourceMount
     ? validateVerifiedSeccompRuntime(validated.box, ploinkySourceMount.source, {
       fsApi: fs,

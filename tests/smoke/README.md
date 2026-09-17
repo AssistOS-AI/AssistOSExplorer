@@ -41,6 +41,14 @@ npm run test:onlyoffice-confidential
 uses the exact Ploinky checkout mounted read-only at `/opt/ploinky`. A different
 checkout is rejected even when it happens to name the same commit.
 
+Box evidence requires the selected host workspace at the same absolute path
+inside the container. Its inspected `PLOINKY_WORKSPACE_ROOT`, working directory,
+and sole writable workspace bind must agree; `SMOKE_WORKSPACE_ROOT` must select
+that same host directory. DPU observers use this inspected root and immutable
+container ID. The image itself has `/` as its working directory and carries no
+workspace-root environment default. Release pins, freshness, and pre/post
+generation checks remain mandatory.
+
 The sign-in helper uses UserPersisto accounts; it does not seed local browser
 credentials. No account or password ships with UserPersisto. The three release
 gates require two distinct accounts:

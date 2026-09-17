@@ -9,9 +9,8 @@ import {
   selectLocalScreenContainer,
 } from './live-box.mjs';
 import { readExpectedRouterBindAddress } from './router-bind-address.mjs';
+import { inspectBoxWorkspace } from './box-workspace.mjs';
 
-export const BOX_DPU_DATA_ROOT = '/workspace/.data/dpu-data';
-const BOX_WORKSPACE_ROOT = '/workspace';
 const MAX_BUFFER = 64 * 1024 * 1024;
 const READ_FILE_SCRIPT = [
   "const fs = require('node:fs');",
@@ -99,7 +98,19 @@ function runPodman(args, {
   return result;
 }
 
-let selectedOuterContainer = '';
+let selectedOuterContainer = null;
+
+export function resolveDpuBoxPaths(container, {
+  workspaceRoot = smokeConfig.workspaceRoot,
+  realpathSync = fs.realpathSync,
+} = {}) {
+  if (!workspaceRoot) throw new Error('SMOKE_WORKSPACE_ROOT is required for Box DPU evidence.');
+  const workspace = inspectBoxWorkspace(container);
+  if (workspace.source !== realpathSync(workspaceRoot)) {
+    throw new Error('DPU Box workspace does not equal SMOKE_WORKSPACE_ROOT.');
+  }
+  return Object.freeze({ workspaceRoot: workspace.source, dataRoot: path.join(workspace.source, '.data', 'dpu-data') });
+}
 
 function inspectExplicitOuterContainer(expectedName) {
   const inspection = runPodman([
@@ -121,16 +132,17 @@ function inspectExplicitOuterContainer(expectedName) {
   if (actualName !== expectedName) {
     throw new Error(`Explicit Box outer container resolved to ${actualName || '<unknown>'}, expected ${expectedName}.`);
   }
-  return actualName;
+  const id = String(selected.Id || selected.ID || '');
+  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('DPU Box requires an exact immutable container ID.');
+  return { id, name: actualName, ...resolveDpuBoxPaths(selected) };
 }
 
-function outerContainerName() {
+function outerContainer() {
   if (!selectedOuterContainer) {
     const explicitName = String(process.env.SMOKE_PLOINKY_BOX_CONTAINER || '').trim();
     const local = resolveDpuBoxEndpoint();
-    selectedOuterContainer = explicitName
-      ? inspectExplicitOuterContainer(explicitName)
-      : collectLiveBoxEvidence({ baseURL: local.baseURL }).box.containerName;
+    selectedOuterContainer = inspectExplicitOuterContainer(explicitName
+      || collectLiveBoxEvidence({ baseURL: local.baseURL }).box.containerName);
   }
   return selectedOuterContainer;
 }
@@ -138,7 +150,7 @@ function outerContainerName() {
 function boxExists(target) {
   const result = runPodman([
     'exec',
-    outerContainerName(),
+    outerContainer().id,
     'test',
     '-e',
     target,
@@ -149,7 +161,7 @@ function boxExists(target) {
 function boxRead(target) {
   return runPodman([
     'exec',
-    outerContainerName(),
+    outerContainer().id,
     'node',
     '-e',
     READ_FILE_SCRIPT,
@@ -161,7 +173,7 @@ function boxWrite(target, contents) {
   runPodman([
     'exec',
     '-i',
-    outerContainerName(),
+    outerContainer().id,
     'node',
     '-e',
     WRITE_FILE_SCRIPT,
@@ -171,12 +183,12 @@ function boxWrite(target, contents) {
 
 export const dpuData = Object.freeze({
   exists(...segments) {
-    if (isBoxDeployment()) return boxExists(boxPath(BOX_DPU_DATA_ROOT, ...segments));
+    if (isBoxDeployment()) return boxExists(boxPath(outerContainer().dataRoot, ...segments));
     return fs.existsSync(localPath(...segments));
   },
 
   readBuffer(...segments) {
-    if (isBoxDeployment()) return boxRead(boxPath(BOX_DPU_DATA_ROOT, ...segments));
+    if (isBoxDeployment()) return boxRead(boxPath(outerContainer().dataRoot, ...segments));
     return fs.readFileSync(localPath(...segments));
   },
 
@@ -192,7 +204,7 @@ export const dpuData = Object.freeze({
     const pathSegments = Array.isArray(segments) ? segments : [segments];
     const contents = Buffer.from(JSON.stringify(value, null, 2));
     if (isBoxDeployment()) {
-      boxWrite(boxPath(BOX_DPU_DATA_ROOT, ...pathSegments), contents);
+      boxWrite(boxPath(outerContainer().dataRoot, ...pathSegments), contents);
       return;
     }
     fs.writeFileSync(localPath(...pathSegments), contents);
@@ -200,7 +212,7 @@ export const dpuData = Object.freeze({
 
   workspaceFileExists(documentPath) {
     const relative = safeRelativePath([documentPath]);
-    if (isBoxDeployment()) return boxExists(boxPath(BOX_WORKSPACE_ROOT, relative));
+    if (isBoxDeployment()) return boxExists(boxPath(outerContainer().workspaceRoot, relative));
     if (!smokeConfig.workspaceRoot) return false;
     const root = path.resolve(smokeConfig.workspaceRoot);
     const target = path.resolve(root, relative);
@@ -212,7 +224,7 @@ export const dpuData = Object.freeze({
 
   describe(...segments) {
     if (isBoxDeployment()) {
-      return `${outerContainerName()}:${boxPath(BOX_DPU_DATA_ROOT, ...segments)}`;
+      return `${outerContainer().name}:${boxPath(outerContainer().dataRoot, ...segments)}`;
     }
     return localPath(...segments);
   },

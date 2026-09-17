@@ -115,6 +115,32 @@ test('preinstall does not create Ploinky state in a clean workspace', async () =
     });
 });
 
+test('preinstall grants only the primary Explorer the literal global workspace path', async () => {
+    await withTempDir(async (tempDir) => {
+        const { fixtureRoot, fixtureHook } = await createHookFixture(tempDir);
+        const workspaceRoot = path.join(tempDir, "work space ăîș 'quoted'");
+        const agentsFile = path.join(workspaceRoot, '.ploinky', 'agents.json');
+        const axifaceRoot = path.join(tempDir, 'axi-face');
+        await fs.mkdir(path.dirname(agentsFile), { recursive: true });
+        await fs.mkdir(path.join(axifaceRoot, 'src'), { recursive: true });
+        await fs.mkdir(path.join(axifaceRoot, 'packs'), { recursive: true });
+        await fs.writeFile(path.join(axifaceRoot, 'src', 'axi-face.mjs'), 'export {};\n');
+        const base = { type: 'agent', agentName: 'explorer', repoName: 'AchillesIDE', runMode: 'isolated' };
+        const records = { primary: { ...base }, alias: { ...base, alias: 'other' }, foreign: { ...base, repoName: 'other' } };
+        await fs.writeFile(agentsFile, JSON.stringify(records));
+        const result = spawnSync('bash', [fixtureHook], {
+            cwd: fixtureRoot,
+            env: { ...process.env, PLOINKY_WORKSPACE_ROOT: workspaceRoot, PLOINKY_REPO_NAME: 'AchillesIDE', PLOINKY_AGENT_NAME: 'explorer', AXIFACE_REPO_PATH: axifaceRoot },
+            encoding: 'utf8',
+        });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        const updated = JSON.parse(await fs.readFile(agentsFile, 'utf8'));
+        assert.deepEqual(updated.primary, { ...base, runMode: 'global', projectPath: workspaceRoot });
+        assert.deepEqual(updated.alias, records.alias);
+        assert.deepEqual(updated.foreign, records.foreign);
+    });
+});
+
 for (const source of ['vendored', 'external']) {
     test(`preinstall keeps ${source} AxiFace source unchanged and generates only an ignored Explorer index`, async () => {
         await withTempDir(async (tempDir) => {
