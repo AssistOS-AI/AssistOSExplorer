@@ -15,7 +15,7 @@ button:disabled { opacity: .55; cursor: default; }
 .userpersisto-row.user-editor { display: grid; grid-template-columns: 1fr; gap: 16px; padding: 20px; background: white; }
 .userpersisto-policy { border: 0; }
 .userpersisto-policy > h2 { margin: 0 0 16px; }
-.userpersisto-status { min-height: 22px; overflow-wrap: anywhere; }
+.userpersisto-status { min-height: 22px; margin: 12px 0 16px; overflow-wrap: anywhere; }
 @media (max-width: 720px) {
     .management-shell { width: calc(100% - 32px); }
     .userpersisto-user-fields { grid-template-columns: 1fr; }

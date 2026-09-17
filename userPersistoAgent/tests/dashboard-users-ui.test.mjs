@@ -43,6 +43,15 @@ test('user editor shows the account email as read-only text, never as an editabl
     assert.doesNotMatch(panel.usersListEl.innerHTML, /type="email"/);
 });
 
+test('user rows show roles and status without displaying the internal account ID', () => {
+    const { panel } = fixture();
+    panel.state.users = [{ id: 'USER.7', email: 'member@example.test', roles: ['admin', 'user'], status: 'active' }];
+    panel.renderUsers();
+    assert.match(panel.usersListEl.innerHTML, /<p class="userpersisto-row-meta">Roles: admin, user · Status: active<\/p>/);
+    assert.match(panel.usersListEl.innerHTML, /data-user-id="USER\.7"/, 'the row still carries the ID for updates');
+    assert.doesNotMatch(panel.usersListEl.innerHTML, />[^<]*USER\.7/, 'no visible text shows the ID');
+});
+
 test('role editing preserves custom and multiple selected roles and renders them safely', async () => {
     const roles = ['user', 'book-reviewer', '" autofocus onfocus="alert(1)'];
     const { panel, row, calls } = fixture({ roles });
@@ -70,6 +79,30 @@ test('the role dropdown includes catalog roles not yet assigned to the displayed
     assert.doesNotMatch(panel.usersListEl.innerHTML, /value="admin"|<editor>/);
     panel.clearUsers();
     assert.deepEqual(panel.state.availableRoles, []);
+});
+
+test('pressing outside an open role dropdown closes it, and unloading stops listening', () => {
+    const { panel } = fixture();
+    const listeners = new Map();
+    const document = {
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        removeEventListener: (type, listener) => { if (listeners.get(type) === listener) listeners.delete(type); },
+    };
+    const insideMenu = {};
+    const pressed = { open: true, contains: (node) => node === insideMenu };
+    const other = { open: true, contains: () => false };
+    panel.element = { ownerDocument: document, dataset: {}, querySelectorAll: () => [] };
+    panel.usersListEl = {
+        querySelectorAll: (selector) => selector === '[data-role-picker][open]' ? [pressed, other].filter((picker) => picker.open) : [],
+    };
+    panel.bindEvents();
+    listeners.get('pointerdown')({ target: insideMenu });
+    assert.equal(pressed.open, true, 'pressing inside a dropdown keeps it open');
+    assert.equal(other.open, false, 'any other open dropdown closes');
+    listeners.get('pointerdown')({ target: {} });
+    assert.equal(pressed.open, false);
+    panel.afterUnload();
+    assert.equal(listeners.has('pointerdown'), false);
 });
 
 test('filtering many roles retains selections outside the visible results', () => {

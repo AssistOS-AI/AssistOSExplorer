@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { callManagementTool, updateAccountNavigation } from '../public/dashboard/api.mjs';
 
 function response(payload, status = 200) {
@@ -76,4 +77,13 @@ test('account navigation hides each management link without its capability, incl
     assert.deepEqual(links.map((link) => link.hidden), [true, false]);
     updateAccountNavigation(document, null);
     assert.deepEqual(links.map((link) => link.hidden), [true, true]);
+});
+
+test('every account page marks only its own navigation tab as current beside sign out, without a product header', async () => {
+    for (const [file, href] of [['index.html', './'], ['users.html', 'users.html'], ['roles.html', 'roles.html'], ['applications.html', 'applications.html'], ['authentication.html', 'authentication.html']]) {
+        const html = await readFile(new URL(`../public/dashboard/${file}`, import.meta.url), 'utf8');
+        assert.deepEqual([...html.matchAll(/<a href="([^"]+)"[^>]* aria-current="page"/g)].map((match) => match[1]), [href], file);
+        assert.match(html, /<\/nav>\s*<a class="account-sign-out" href="\/auth\/logout">Sign out<\/a>\s*<\/header>/, file);
+        assert.doesNotMatch(html, /account-brand|>UserPersisto<\/a>/, file);
+    }
 });

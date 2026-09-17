@@ -109,7 +109,13 @@ export class UserpersistoSettings {
         this.userSearchInput?.addEventListener("keydown", (event) => {
             if (event.key === "Enter") { event.preventDefault(); void this.searchUsers(); }
         });
-
+        // Role menus overlay the rows below them, so pressing anywhere else closes them.
+        this.closeRolePickersOutside = (event) => {
+            this.usersListEl?.querySelectorAll("[data-role-picker][open]").forEach((picker) => {
+                if (!picker.contains(event.target)) picker.open = false;
+            });
+        };
+        this.element.ownerDocument?.addEventListener("pointerdown", this.closeRolePickersOutside);
     }
 
     syncPanelFromAttributes() {
@@ -306,6 +312,7 @@ export class UserpersistoSettings {
     afterUnload() {
         this.disposed = true;
         clearTimeout(this.searchTimer);
+        this.element.ownerDocument?.removeEventListener("pointerdown", this.closeRolePickersOutside);
         this.revokeAdministrativeAccess();
     }
 
@@ -405,7 +412,7 @@ export class UserpersistoSettings {
                 <section class="userpersisto-row user-editor" data-user-id="${escapeHtml(user.id)}" aria-label="${escapeHtml(user.email || user.id)}">
                     <div>
                         <h3 class="userpersisto-row-title">${escapeHtml(user.email || user.id)}</h3>
-                        <p class="userpersisto-row-meta">${escapeHtml(user.id)} · Roles: ${escapeHtml(roles.join(", ") || "none")} · Status: ${escapeHtml(user.status || "unknown")}</p>
+                        <p class="userpersisto-row-meta">Roles: ${escapeHtml(roles.join(", ") || "none")} · Status: ${escapeHtml(user.status || "unknown")}</p>
                     </div>
                     <div class="userpersisto-user-fields">
                         <div class="form-item"><span class="form-label">Email</span><span class="userpersisto-row-meta">${escapeHtml(user.email || "")}</span></div>
