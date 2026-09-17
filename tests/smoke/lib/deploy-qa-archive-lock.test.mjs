@@ -139,7 +139,8 @@ test('cold bootstrap requires no prior Box or authored workspace and pins the sh
 test('direct quiesce exec uses QA publication ports for OnlyOffice targeted drain', () => {
     const call = workflow.slice(workflow.indexOf("printf '%s' \"$QA_QUIESCE_SOURCE\" | \"$engine\" container exec"));
     const args = call.slice(0, call.indexOf('> "$QA_BACKUP_DIR-quiesce.log"'));
-    assert.match(args, /--env PLOINKY_WORKSPACE_ROOT=\/workspace/);
+    assert.match(args, /--workdir "\$WORK_DIR" --env "PLOINKY_WORKSPACE_ROOT=\$WORK_DIR"/);
+    assert.doesNotMatch(args, /\/workspace/);
     assert.match(args, /--env PLOINKY_ROUTER_HOST_PORT=8097/);
     assert.match(args, /--env PLOINKY_MEDIA_HOST_PORT=7882/);
     assert.match(args, /"\$container_id" node --input-type=module -/);

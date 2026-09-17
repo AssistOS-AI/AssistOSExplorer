@@ -924,7 +924,7 @@ jobs:
                   assert.equal(git(['rev-parse', '--show-toplevel']), directory, 'Managed source must be its own repository');
                   const origin = git(['remote', 'get-url', 'origin']);
                   if (relative.startsWith('.ploinky/agentlib/generations/')) {
-                      assert(['/workspace/.ploinky/agentlib/mirror.git', path.join(target, '.ploinky/agentlib/mirror.git')].includes(origin), 'Unreviewed shared-library source origin');
+                      assert.equal(origin, path.join(target, '.ploinky/agentlib/mirror.git'), 'Unreviewed shared-library source origin');
                       assert.equal(git(['rev-parse', 'HEAD']), path.basename(relative).slice(0, 40), 'Shared-library generation commit changed');
                   } else assert.match(origin, /^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i, 'Unreviewed managed source origin');
                   assert.equal(git(['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none']), '', 'Local managed source edits require reconciliation before redeployment');
@@ -1270,7 +1270,7 @@ jobs:
               assert_qa_workspace_lock_held
               echo "[deploy-qa] Stopping nested QA services before the consistent durable-data backup..."
               printf '%s' "$QA_QUIESCE_SOURCE" | "$engine" container exec -i --user podman \
-                --workdir /workspace --env PLOINKY_WORKSPACE_ROOT=/workspace \
+                --workdir "$WORK_DIR" --env "PLOINKY_WORKSPACE_ROOT=$WORK_DIR" \
                 --env PLOINKY_ROUTER_HOST_PORT=8097 --env PLOINKY_MEDIA_HOST_PORT=7882 \
                 "$container_id" node --input-type=module - > "$QA_BACKUP_DIR-quiesce.log"
               assert_qa_workspace_lock_held
@@ -1704,10 +1704,10 @@ jobs:
             exit 1
           fi
 
-          "$BOX_ENGINE" container exec --user podman --workdir /workspace \
-            --env PLOINKY_WORKSPACE_ROOT=/workspace "$BOX_INSTANCE" node --input-type=module -e '
+          "$BOX_ENGINE" container exec --user podman --workdir "$WORK_DIR" \
+            --env "PLOINKY_WORKSPACE_ROOT=$WORK_DIR" "$BOX_INSTANCE" node --input-type=module -e '
               const { initializeFreshEdgeRoutingSources } = await import("/opt/ploinky/cli/sandbox/edgeGeneration.js");
-              initializeFreshEdgeRoutingSources({ workspaceRoot: "/workspace" });
+              initializeFreshEdgeRoutingSources({ workspaceRoot: "/home/admin/explorerQaWorkspace" });
             '
           sudo -n /usr/bin/node --input-type=module - "$WORK_DIR" "$QA_BACKUP_DIR" <<'NODE'
           import assert from 'node:assert/strict';
@@ -1740,7 +1740,7 @@ jobs:
 
           echo "[deploy-qa] Binding ALA to the one Ploinky-selected AgentLib and checking its CLI contract..."
           "$BOX_ENGINE" container exec -i --user podman "$BOX_INSTANCE" \
-            node --input-type=module - /workspace/AdvancedLanguageAgent /opt/ploinky-agentlib <<'NODE'
+            node --input-type=module - "$WORK_DIR/AdvancedLanguageAgent" /opt/ploinky-agentlib <<'NODE'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import path from 'node:path';
@@ -1793,7 +1793,7 @@ jobs:
             "$BOX_INSTANCE" \
             node --input-type=module --eval '
               import fs from "node:fs";
-              const target = "/workspace/.ploinky";
+              const target = "/home/admin/explorerQaWorkspace/.ploinky";
               try {
                 const current = fs.lstatSync(target);
                 if (!current.isDirectory() || current.isSymbolicLink()) {
@@ -1809,13 +1809,13 @@ jobs:
               fs.chmodSync(target, 0o700);
             '
 
-          STAGED_EDGE_DESIRED="/workspace/.ploinky/.explorer-qa-edge-desired.json"
+          STAGED_EDGE_DESIRED="$WORK_DIR/.ploinky/.explorer-qa-edge-desired.json"
           "$BOX_ENGINE" container exec \
             --user podman \
             "$BOX_INSTANCE" \
             node --input-type=module --eval '
               import fs from "node:fs";
-              const staged = "/workspace/.ploinky/.explorer-qa-edge-desired.json";
+              const staged = "/home/admin/explorerQaWorkspace/.ploinky/.explorer-qa-edge-desired.json";
               try {
                 const current = fs.lstatSync(staged);
                 if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) {
@@ -1837,8 +1837,8 @@ jobs:
             "$BOX_INSTANCE" \
             node --input-type=module --eval '
               import fs from "node:fs";
-              const staged = "/workspace/.ploinky/.explorer-qa-edge-desired.json";
-              const target = "/workspace/.ploinky/edge-desired.json";
+              const staged = "/home/admin/explorerQaWorkspace/.ploinky/.explorer-qa-edge-desired.json";
+              const target = "/home/admin/explorerQaWorkspace/.ploinky/edge-desired.json";
               try {
                 const stagedStat = fs.lstatSync(staged);
                 if (!stagedStat.isFile() || stagedStat.isSymbolicLink() || stagedStat.nlink !== 1) {
@@ -1887,7 +1887,7 @@ jobs:
           });
           fs.chmodSync(target, 0o600);
           NODE
-          STAGED_CREDENTIAL_FILE="/workspace/.ploinky/.explorer-qa-cloudflare-credentials.json"
+          STAGED_CREDENTIAL_FILE="$WORK_DIR/.ploinky/.explorer-qa-cloudflare-credentials.json"
           CREDENTIAL_STATUS=0
           "$BOX_ENGINE" container cp \
             "$CLOUDFLARE_CREDENTIAL_FILE" \
@@ -1895,8 +1895,8 @@ jobs:
           if [ "$CREDENTIAL_STATUS" = "0" ]; then
             "$BOX_ENGINE" container exec \
               --user podman \
-              --workdir /workspace \
-              --env PLOINKY_WORKSPACE_ROOT=/workspace \
+              --workdir "$WORK_DIR" \
+              --env "PLOINKY_WORKSPACE_ROOT=$WORK_DIR" \
               "$BOX_INSTANCE" \
               node --input-type=module --eval '
                 import fs from "node:fs";
@@ -1929,9 +1929,9 @@ jobs:
             exit "$CREDENTIAL_STATUS"
           fi
 
-          "$BOX_ENGINE" container exec -i --user podman --workdir /workspace \
+          "$BOX_ENGINE" container exec -i --user podman --workdir "$WORK_DIR" \
             --env "QA_USERPERSISTO_GOOGLE_CLIENT_ID=$QA_USERPERSISTO_GOOGLE_CLIENT_ID" \
-            --env PLOINKY_WORKSPACE_ROOT=/workspace "$BOX_INSTANCE" node --input-type=module - "$PUBLIC_URL" <<'NODE'
+            --env "PLOINKY_WORKSPACE_ROOT=$WORK_DIR" "$BOX_INSTANCE" node --input-type=module - "$PUBLIC_URL" <<'NODE'
           import assert from 'node:assert/strict';
           import crypto from 'node:crypto';
           import fs from 'node:fs';
@@ -1956,7 +1956,7 @@ jobs:
               assert.equal(values.PERSISTENCE_FOLDER, '/data/persisto', 'Review the noncanonical UserPersisto persistence folder before configuring QA origins');
               // The service is stopped. Read its preserved snapshot without
               // opening/migrating the store or touching users and setup state.
-              const folder = '/workspace/.data/userPersistoAgent/persisto';
+              const folder = '/home/admin/explorerQaWorkspace/.data/userPersistoAgent/persisto';
               let objects = {};
               try {
                   const snapshot = JSON.parse(fs.readFileSync(`${folder}/.userpersisto.snapshot.json`, 'utf8'));
@@ -2022,8 +2022,8 @@ jobs:
                 --user podman \
                 "$BOX_INSTANCE" \
                 node \
-                /workspace/.ploinky/repos/AchillesIDE/.github/scripts/check-no-wait-readiness.mjs \
-                /workspace/.ploinky/running/no-wait \
+                "$WORK_DIR/.ploinky/repos/AchillesIDE/.github/scripts/check-no-wait-readiness.mjs" \
+                "$WORK_DIR/.ploinky/running/no-wait" \
                 "$EXPECTED_NO_WAIT_AGENTS" \
                 "$QA_DEPLOY_STARTED_AT_MS" 2>&1
             )" || NO_WAIT_EXIT=$?
@@ -2118,7 +2118,7 @@ jobs:
               readRegistry: () => {
                   assertCurrent();
                   return JSON.parse(execFileSync(current.engine, ['container', 'exec', '--user', 'podman', current.box.id,
-                      'node', '-e', 'process.stdout.write(require("fs").readFileSync("/workspace/.ploinky/agents.json","utf8"))'],
+                      'node', '-e', 'process.stdout.write(require("fs").readFileSync("/home/admin/explorerQaWorkspace/.ploinky/agents.json","utf8"))'],
                   { encoding: 'utf8', stdio: 'pipe', timeout: 30000 }));
               },
               enable: args => {
@@ -2141,7 +2141,7 @@ jobs:
               "$BOX_ENGINE" container exec \
                 --user podman \
                 "$BOX_INSTANCE" \
-                git -C "/workspace/.ploinky/repos/$repository_name" rev-parse HEAD
+                git -C "$WORK_DIR/.ploinky/repos/$repository_name" rev-parse HEAD
             )"
             expected_commit="${EXPECTED_COMMITS[$repository_name]}"
             if [ "$deployed_commit" != "$expected_commit" ]; then
@@ -2151,16 +2151,16 @@ jobs:
             fi
             deployed_branch="$(
               "$BOX_ENGINE" container exec --user podman "$BOX_INSTANCE" \
-                git -C "/workspace/.ploinky/repos/$repository_name" branch --show-current
+                git -C "$WORK_DIR/.ploinky/repos/$repository_name" branch --show-current
             )"
             deployed_upstream="$(
               "$BOX_ENGINE" container exec --user podman "$BOX_INSTANCE" \
-                git -C "/workspace/.ploinky/repos/$repository_name" rev-parse \
+                git -C "$WORK_DIR/.ploinky/repos/$repository_name" rev-parse \
                   --abbrev-ref --symbolic-full-name '@{upstream}'
             )"
             deployed_dirty="$(
               "$BOX_ENGINE" container exec --user podman "$BOX_INSTANCE" \
-                git -C "/workspace/.ploinky/repos/$repository_name" status --porcelain
+                git -C "$WORK_DIR/.ploinky/repos/$repository_name" status --porcelain
             )"
             if [ "$deployed_branch" != "$expected_branch" ] ||
               [ "$deployed_upstream" != "origin/$expected_branch" ] ||

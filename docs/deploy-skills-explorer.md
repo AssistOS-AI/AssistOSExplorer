@@ -27,6 +27,16 @@ repository revision and the outer Box's locked AgentLib identity. The paired
 destroy workflow requires only its explicit destructive confirmation and
 preserves the deployed runtime as the authority for teardown.
 
+QA Boxes use Ploinky's same-path workspace contract. The host workspace
+`/home/admin/explorerQaWorkspace` is mounted read-write at that same absolute
+path inside the Box, is the Box working directory, and is its only
+`PLOINKY_WORKSPACE_ROOT`. There is no `/workspace` alias. Deployment, teardown,
+shutdown, recovery and runtime verification run every in-Box command against
+that path, and Box admission rejects a different workspace mount, working
+directory or workspace root. A Box created under the retired `/workspace`
+layout is neither adopted nor recovered by these helpers; replace it through an
+explicitly authorized QA reset.
+
 The QA verifier accepts the current image-bundled AgentLib source without
 inventing a host checkout or mount. It requires an exact Linux/amd64 image ID,
 the locked commit, matching bundle fingerprint and derived image source ID,

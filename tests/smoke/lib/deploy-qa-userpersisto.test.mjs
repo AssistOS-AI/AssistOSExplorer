@@ -25,7 +25,7 @@ function configurationFixture(t, { explicit = '', objects, corrupt = false, goog
             sha256: corrupt ? 'invalid' : crypto.createHash('sha256').update(payload).digest('hex') }));
     }
     const writes = [];
-    const source = block('UserPersisto configuration').replace('/workspace/.data/userPersistoAgent/persisto', root);
+    const source = block('UserPersisto configuration').replace('/home/admin/explorerQaWorkspace/.data/userPersistoAgent/persisto', root);
     return {
         writes,
         run() {

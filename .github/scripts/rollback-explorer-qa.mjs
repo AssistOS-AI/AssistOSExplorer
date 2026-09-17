@@ -221,8 +221,16 @@ function inspectBoxIdentity(item, scope) {
         '7882/udp': [{ HostIp: '0.0.0.0', HostPort: '7882' }],
         '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '8097' }],
     }, 'QA_BOX_PORTS_INVALID');
-    requireProof(mounts.some(mount => mount.Source === scope.workspace && mount.Destination === '/workspace'
-        && mount.RW === true && mount.Type === 'bind'), 'QA_BOX_WORKSPACE_INVALID');
+    // The host workspace is mounted at its own absolute path and selected as the
+    // Box working directory and workspace root; there is no fixed alias.
+    const workspaceMounts = mounts.filter(mount => mount.Destination === scope.workspace);
+    const workspaceRoots = (Array.isArray(item.Config?.Env) ? item.Config.Env : [])
+        .filter(entry => String(entry).startsWith('PLOINKY_WORKSPACE_ROOT='));
+    requireProof(workspaceMounts.length === 1 && workspaceMounts[0].Source === scope.workspace
+        && workspaceMounts[0].RW === true && workspaceMounts[0].Type === 'bind'
+        && item.Config.WorkingDir === scope.workspace
+        && workspaceRoots.length === 1 && workspaceRoots[0] === `PLOINKY_WORKSPACE_ROOT=${scope.workspace}`
+        && !mounts.some(mount => mount.Destination === '/workspace'), 'QA_BOX_WORKSPACE_INVALID');
     const agentLibMode = String(labels[LABEL + 'agentlib-mode'] || '');
     requireProof(['', 'local', 'managed', 'image'].includes(agentLibMode), 'QA_AGENTLIB_MODE_INVALID');
     for (const destination of ['/opt/ploinky', ...(agentLibMode === 'image' ? [] : [AGENTLIB_IMAGE_PATH])]) {
@@ -467,8 +475,8 @@ function command(program, args, options = {}) {
 export function productionAdapters(scope = QA_SCOPE) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(PLOINKY_|CLOUDFLARE_)/.test(key)));
     const inside = (item, source, args = [], timeout = 120_000) => command(item.engine,
-        ['container', 'exec', '-i', '--user', 'podman', '--workdir', '/workspace',
-            '--env', 'PLOINKY_WORKSPACE_ROOT=/workspace', '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
+        ['container', 'exec', '-i', '--user', 'podman', '--workdir', scope.workspace,
+            '--env', `PLOINKY_WORKSPACE_ROOT=${scope.workspace}`, '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
             '--env', 'PLOINKY_MEDIA_HOST_PORT=7882', item.box.id, 'node', '--input-type=module', '-', ...args],
         { input: source, timeout, env });
     const sanitize = (engine, item) => {
@@ -547,7 +555,7 @@ export function productionAdapters(scope = QA_SCOPE) {
             const origin = git(['remote', 'get-url', 'origin']);
             if (directoryPath.includes('/.ploinky/agentlib/generations/')) {
                 requireProof(new RegExp(`^${commit}-[a-f0-9]{12}$`).test(path.basename(directoryPath))
-                    && ['/workspace/.ploinky/agentlib/mirror.git', path.join(scope.workspace, '.ploinky/agentlib/mirror.git')].includes(origin), 'QA_SOURCE_ORIGIN_INVALID');
+                    && origin === path.join(scope.workspace, '.ploinky/agentlib/mirror.git'), 'QA_SOURCE_ORIGIN_INVALID');
             } else requireProof(/^https:\/\/github\.com\/AssistOS-AI\/[A-Za-z0-9_.-]+(?:\.git)?$/i.test(origin), 'QA_SOURCE_ORIGIN_INVALID');
             return { commit, branch: git(['rev-parse', '--abbrev-ref', 'HEAD']), origin };
         },
@@ -651,7 +659,7 @@ export function productionAdapters(scope = QA_SCOPE) {
                     if(typeof secrets[key]!=='string'||!secrets[key]) throw Error('missing preserved credential');
                 }
                 const {initializeFreshEdgeRoutingSources}=await import('/opt/ploinky/cli/sandbox/edgeGeneration.js');
-                initializeFreshEdgeRoutingSources({workspaceRoot:'/workspace'});
+                initializeFreshEdgeRoutingSources({workspaceRoot:${JSON.stringify(scope.workspace)}});
             `);
         },
         async start(item, authority) {
@@ -662,7 +670,7 @@ export function productionAdapters(scope = QA_SCOPE) {
             const profileFile = path.join(scope.workspace, '.ploinky/profile');
             await restorePriorSelections({ selections: authority.agents,
                 profile: present(profileFile) ? fs.readFileSync(profileFile, 'utf8').trim() || 'default' : 'default',
-                readRegistry: () => JSON.parse(inside(item, `import fs from 'node:fs'; process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync('/workspace/.ploinky/agents.json','utf8'))));`)),
+                readRegistry: () => JSON.parse(inside(item, `import fs from 'node:fs'; process.stdout.write(JSON.stringify(JSON.parse(fs.readFileSync(${JSON.stringify(path.join(scope.workspace, '.ploinky/agents.json'))},'utf8'))));`)),
                 enable: args => command(cli, args, options),
             });
         },
@@ -675,7 +683,7 @@ export function productionAdapters(scope = QA_SCOPE) {
                 const {loadActiveEdgeRoutingGeneration}=await import('/opt/ploinky/cli/sandbox/edgeGeneration.js');
                 const registry=getAgentsRegistry();
                 const states=applyRuntimeReadinessProjection(await collectAgentRuntimeStatesAsync({registry}),registry);
-                const active=loadActiveEdgeRoutingGeneration({workspaceRoot:'/workspace'});
+                const active=loadActiveEdgeRoutingGeneration({workspaceRoot:${JSON.stringify(scope.workspace)}});
                 const matches=expected.every(old=>states.some(row=>row.repoName===old.repo&&row.agentName===old.agent
                     &&(registry[row.containerName]?.alias||'')===old.alias&&registry[row.containerName]?.containerId!==old.oldId
                     &&(registry[row.containerName]?.profile||'default')===old.profile&&registry[row.containerName]?.auth?.mode===old.auth

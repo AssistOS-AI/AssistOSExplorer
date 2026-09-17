@@ -58,13 +58,14 @@ function fixture(t, { predecessor = true, supported = true } = {}) {
         repoName: 'AchillesIDE', agentName: 'explorer', auth: { mode: 'local' }, runMode: 'isolated', profile: 'default' } };
     write(path.join(scope.workspace, '.ploinky/agents.json'), registry);
     const raw = id => ({ Id: id, Image: `sha256:${IMAGE}`, Name: scope.box,
-        Config: { User: 'podman', Labels: { 'io.assistos.ploinky-box.path-hash': scope.hash,
+        Config: { User: 'podman', WorkingDir: scope.workspace, Env: [`PLOINKY_WORKSPACE_ROOT=${scope.workspace}`],
+            Labels: { 'io.assistos.ploinky-box.path-hash': scope.hash,
             'io.assistos.ploinky-box.role': 'box', 'io.assistos.ploinky-box.image-ref': `example.test/box@sha256:${IMAGE}` } },
         HostConfig: { Privileged: false, Init: true, PortBindings: {
             '7882/udp': [{ HostIp: '0.0.0.0', HostPort: '7882' }],
             '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '8097' }],
         } }, State: { Running: true }, Mounts: [
-            { Source: scope.workspace, Destination: '/workspace', RW: true, Type: 'bind' },
+            { Source: scope.workspace, Destination: scope.workspace, RW: true, Type: 'bind' },
             { Source: path.join(scope.workspace, '.runtime/ploinky'), Destination: '/opt/ploinky', RW: false, Type: 'bind' },
             { Source: path.join(scope.workspace, librarySource), Destination: '/opt/ploinky-agentlib', RW: false, Type: 'bind' },
         ] });
@@ -407,9 +408,27 @@ test('container security and environment fields contribute to the exact immutabl
     const f = fixture(t), baseline = f.raw(OLD);
     const expected = sanitizeBox(baseline, f.scope).contract;
     for (const change of [item => { item.HostConfig.SecurityOpt = ['seccomp=unconfined']; },
-        item => { item.Config.Env = ['DIFFERENT=secret-not-logged']; }, item => { item.HostConfig.Binds = ['/foreign:/extra']; }]) {
+        item => { item.Config.Env = [...item.Config.Env, 'DIFFERENT=secret-not-logged']; }, item => { item.HostConfig.Binds = ['/foreign:/extra']; }]) {
         const changed = structuredClone(baseline); change(changed);
         assert.notEqual(sanitizeBox(changed, f.scope).contract, expected);
+    }
+});
+
+test('Box admission requires the same-path host workspace mount, working directory and workspace root', t => {
+    const f = fixture(t), baseline = f.raw(OLD);
+    assert.equal(sanitizeBox(baseline, f.scope).mounts.filter(mount => mount.Destination === f.scope.workspace).length, 1);
+    for (const change of [
+        item => { item.Mounts.find(mount => mount.Source === f.scope.workspace).Destination = '/workspace'; },
+        item => { item.Mounts.push({ Source: f.scope.workspace, Destination: '/workspace', RW: true, Type: 'bind' }); },
+        item => { item.Mounts.find(mount => mount.Source === f.scope.workspace).RW = false; },
+        item => { item.Config.WorkingDir = '/workspace'; },
+        item => { delete item.Config.WorkingDir; },
+        item => { item.Config.Env = ['PLOINKY_WORKSPACE_ROOT=/workspace']; },
+        item => { item.Config.Env = []; },
+        item => { item.Config.Env.push(`PLOINKY_WORKSPACE_ROOT=${f.scope.workspace}`); },
+    ]) {
+        const changed = structuredClone(baseline); change(changed);
+        assert.throws(() => sanitizeBox(changed, f.scope), { code: 'QA_BOX_WORKSPACE_INVALID' });
     }
 });
 
@@ -511,7 +530,7 @@ test('production routing initialization and readiness pass both selected QA port
         const fs = require('node:fs');
         const args = process.argv.slice(2), source = fs.readFileSync(0, 'utf8');
         fs.appendFileSync(process.env.QA_EXEC_RECORD, JSON.stringify({ args, source }) + '\\n');
-        for (const entry of ['PLOINKY_WORKSPACE_ROOT=/workspace', 'PLOINKY_ROUTER_HOST_PORT=8097', 'PLOINKY_MEDIA_HOST_PORT=7882']) {
+        for (const entry of ['PLOINKY_WORKSPACE_ROOT=/home/admin/explorerQaWorkspace', 'PLOINKY_ROUTER_HOST_PORT=8097', 'PLOINKY_MEDIA_HOST_PORT=7882']) {
             if (!args.some((value, index) => value === '--env' && args[index + 1] === entry)) process.exit(31);
         }
         process.stdout.write(JSON.stringify({ ready: true, failed: false, generation: 'fixture', count: 1 }));
@@ -533,8 +552,8 @@ test('production routing initialization and readiness pass both selected QA port
     assert.match(calls[0].source, /initializeFreshEdgeRoutingSources/);
     assert.match(calls[1].source, /loadActiveEdgeRoutingGeneration/);
     for (const call of calls) {
-        assert.deepEqual(call.args.slice(0, 14), ['container', 'exec', '-i', '--user', 'podman', '--workdir', '/workspace',
-            '--env', 'PLOINKY_WORKSPACE_ROOT=/workspace', '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
+        assert.deepEqual(call.args.slice(0, 14), ['container', 'exec', '-i', '--user', 'podman', '--workdir', '/home/admin/explorerQaWorkspace',
+            '--env', 'PLOINKY_WORKSPACE_ROOT=/home/admin/explorerQaWorkspace', '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
             '--env', 'PLOINKY_MEDIA_HOST_PORT=7882', FRESH]);
         assert.equal(call.args.includes('PLOINKY_ROUTER_HOST_PORT=9000'), false);
         assert.equal(call.args.includes('PLOINKY_MEDIA_HOST_PORT=9001'), false);

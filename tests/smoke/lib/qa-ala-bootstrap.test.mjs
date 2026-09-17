@@ -17,7 +17,7 @@ test('QA provisions exact default-branch ALA before admission without a private 
     assert.match(workflow, /ALA_COMMIT="\$\(git ls-remote --exit-code --heads/);
     assert.match(workflow, /\[ -e "\$ALA_DIR" \] \|\| \[ -L "\$ALA_DIR" \]/);
     assert.match(workflow, /git clone --single-branch --branch "\$ALA_BRANCH" "\$ALA_URL" "\$ALA_DIR"/);
-    assert.match(workflow, /node --input-type=module - \/workspace\/AdvancedLanguageAgent \/opt\/ploinky-agentlib/);
+    assert.match(workflow, /node --input-type=module - "\$WORK_DIR\/AdvancedLanguageAgent" \/opt\/ploinky-agentlib/);
     assert.match(workflow, /\$\(git -C "\$ALA_DIR" rev-parse HEAD\)" != "\$ALA_COMMIT"/);
     assert.match(workflow, /git -C "\$ALA_DIR" status --porcelain/);
     assert.equal(workflow.match(/^          verify_ala_checkout$/gm)?.length, 3);

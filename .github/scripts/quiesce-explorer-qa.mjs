@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 export const SHUTDOWN_TIMEOUT_MS = 35_000;
-const WORKSPACE = '/workspace';
+// The QA Box mounts its host workspace at the same absolute path.
+export const WORKSPACE = '/home/admin/explorerQaWorkspace';
 const PLOINKY = '/opt/ploinky';
 const ID = /^[a-f0-9]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;

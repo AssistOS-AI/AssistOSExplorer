@@ -44,15 +44,16 @@ try {
     }
     const dependencyLock = JSON.parse(fs.readFileSync(path.join(QA_SCOPE.workspace, '.runtime/ploinky/ploinky-box/dependencies.lock.json')));
     const agentLib = await adapters.verifyAgentLib(current, dependencyLock.repositories.achillesAgentLib.commit);
-    const prefix = ['container', 'exec', '--user', 'podman', '--workdir', '/workspace', current.box.id];
+    // The Box sees the host workspace at the same absolute path.
+    const prefix = ['container', 'exec', '--user', 'podman', '--workdir', QA_SCOPE.workspace, current.box.id];
     const noWait = run(current.engine, [...prefix, 'node',
-        '/workspace/.ploinky/repos/AchillesIDE/.github/scripts/check-no-wait-readiness.mjs',
-        '/workspace/.ploinky/running/no-wait', '10', String(expected.minimumRunStartedAtMs)]).trim();
+        path.join(QA_SCOPE.workspace, '.ploinky/repos/AchillesIDE/.github/scripts/check-no-wait-readiness.mjs'),
+        path.join(QA_SCOPE.workspace, '.ploinky/running/no-wait'), '10', String(expected.minimumRunStartedAtMs)]).trim();
     const runtime = JSON.parse(run(current.engine, [...prefix, 'node', '--input-type=module', '-e', `
         import assert from 'node:assert/strict';
         import fs from 'node:fs';
         import { execFileSync } from 'node:child_process';
-        const registry = JSON.parse(fs.readFileSync('/workspace/.ploinky/agents.json'));
+        const registry = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(QA_SCOPE.workspace, '.ploinky/agents.json'))}));
         const records = Object.entries(registry).filter(([, value]) => value?.type === 'agent');
         assert.equal(records.length, 16);
         const agents = records.map(([name, value]) => {
@@ -62,7 +63,7 @@ try {
             assert.equal(container.State.Running, true);
             return {name, id:container.Id, image:container.Image};
         });
-        const selector = JSON.parse(fs.readFileSync('/workspace/.ploinky/data/edge-routing/active.json'));
+        const selector = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(QA_SCOPE.workspace, '.ploinky/data/edge-routing/active.json'))}));
         assert.equal(selector.state, 'active');
         console.log(JSON.stringify({agents, generation:selector.generation, activationId:selector.activationId}));
     `]));

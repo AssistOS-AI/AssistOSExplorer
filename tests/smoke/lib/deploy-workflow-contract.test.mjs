@@ -85,10 +85,10 @@ const WORKFLOWS = [
       "'marketplace-ui'",
       "'webchat'",
       "'webtty'",
-      'const target = "/workspace/.ploinky"',
+      'const target = "/home/admin/explorerQaWorkspace/.ploinky"',
       'Ploinky authority directory has the wrong owner',
-      'STAGED_EDGE_DESIRED="/workspace/.ploinky/.explorer-qa-edge-desired.json"',
-      'const target = "/workspace/.ploinky/edge-desired.json"',
+      'STAGED_EDGE_DESIRED="$WORK_DIR/.ploinky/.explorer-qa-edge-desired.json"',
+      'const target = "/home/admin/explorerQaWorkspace/.ploinky/edge-desired.json"',
       'staged edge desired file has the wrong owner',
       'Cloudflare mode: cloudflare',
       'Cloudflare management: api-managed',
@@ -257,10 +257,10 @@ test('Explorer QA destroy removes only its Ploinky-owned Cloudflare publication'
     'hosts: {}',
     'tunnelName,',
     'deleteTunnelOnTeardown: true',
-    'const target = "/workspace/.ploinky"',
+    'const target = "/home/admin/explorerQaWorkspace/.ploinky"',
     'Ploinky authority directory has the wrong owner',
-    'STAGED_EDGE_DESIRED="/workspace/.ploinky/.explorer-qa-edge-desired.json"',
-    'const target = "/workspace/.ploinky/edge-desired.json"',
+    'STAGED_EDGE_DESIRED="$WORK_DIR/.ploinky/.explorer-qa-edge-desired.json"',
+    'const target = "/home/admin/explorerQaWorkspace/.ploinky/edge-desired.json"',
     'staged edge desired file has the wrong owner',
     'Cloudflare mode: local-only',
     'Cloudflare connector: absent',
@@ -291,6 +291,7 @@ test('Explorer QA destroy removes only its Ploinky-owned Cloudflare publication'
   assert.doesNotMatch(source, /tunnelTokenSecret|publication\/explorer-qa-tunnel/);
   assert.doesNotMatch(source, /BOX_STATUS="\$\("\$PLOINKY" status\)"/);
   assert.doesNotMatch(source, /workspace_name|inputs\.workspace_name/);
+  assert.doesNotMatch(source, /(?<![\w.-])\/workspace(?![\w-])/, 'QA destroy uses the same-path host workspace inside the Box');
   assert.doesNotMatch(source, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
   assert.equal(source.match(/ssh-keyscan/g)?.length, 1, 'destroy host key must be scanned only in pinned preflight');
   assert.ok(
@@ -321,6 +322,7 @@ test('Explorer QA workflow rejects unsafe identity and tunnel state before SSH',
   );
 
   assert.doesNotMatch(source, /workspace_name|inputs\.workspace_name/);
+  assert.doesNotMatch(source, /(?<![\w.-])\/workspace(?![\w-])/, 'QA deploy uses the same-path host workspace inside the Box');
   assert.doesNotMatch(source, /vars\.EXPLORER_QA_(?:SSH_USER|SSH_HOST|WORKSPACE)/);
   assert.equal(source.match(/ssh-keyscan/g)?.length, 1, 'host key must be scanned only in pinned preflight');
   assert.ok(

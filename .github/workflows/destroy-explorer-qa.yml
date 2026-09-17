@@ -504,7 +504,7 @@ jobs:
             "$BOX_INSTANCE" \
             node --input-type=module --eval '
               import fs from "node:fs";
-              const target = "/workspace/.ploinky";
+              const target = "/home/admin/explorerQaWorkspace/.ploinky";
               try {
                 const current = fs.lstatSync(target);
                 if (!current.isDirectory() || current.isSymbolicLink()) {
@@ -520,13 +520,13 @@ jobs:
               fs.chmodSync(target, 0o700);
             '
 
-          STAGED_EDGE_DESIRED="/workspace/.ploinky/.explorer-qa-edge-desired.json"
+          STAGED_EDGE_DESIRED="$WORK_DIR/.ploinky/.explorer-qa-edge-desired.json"
           "$BOX_ENGINE" container exec \
             --user podman \
             "$BOX_INSTANCE" \
             node --input-type=module --eval '
               import fs from "node:fs";
-              const staged = "/workspace/.ploinky/.explorer-qa-edge-desired.json";
+              const staged = "/home/admin/explorerQaWorkspace/.ploinky/.explorer-qa-edge-desired.json";
               try {
                 const current = fs.lstatSync(staged);
                 if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) {
@@ -548,8 +548,8 @@ jobs:
             "$BOX_INSTANCE" \
             node --input-type=module --eval '
               import fs from "node:fs";
-              const staged = "/workspace/.ploinky/.explorer-qa-edge-desired.json";
-              const target = "/workspace/.ploinky/edge-desired.json";
+              const staged = "/home/admin/explorerQaWorkspace/.ploinky/.explorer-qa-edge-desired.json";
+              const target = "/home/admin/explorerQaWorkspace/.ploinky/edge-desired.json";
               try {
                 const stagedStat = fs.lstatSync(staged);
                 if (!stagedStat.isFile() || stagedStat.isSymbolicLink() || stagedStat.nlink !== 1) {
@@ -597,7 +597,7 @@ jobs:
           });
           fs.chmodSync(target, 0o600);
           NODE
-          STAGED_CREDENTIAL_FILE="/workspace/.ploinky/.explorer-qa-cloudflare-credentials.json"
+          STAGED_CREDENTIAL_FILE="$WORK_DIR/.ploinky/.explorer-qa-cloudflare-credentials.json"
           CREDENTIAL_STATUS=0
           "$BOX_ENGINE" container cp \
             "$CLOUDFLARE_CREDENTIAL_FILE" \
@@ -605,8 +605,8 @@ jobs:
           if [ "$CREDENTIAL_STATUS" = "0" ]; then
             "$BOX_ENGINE" container exec \
               --user podman \
-              --workdir /workspace \
-              --env PLOINKY_WORKSPACE_ROOT=/workspace \
+              --workdir "$WORK_DIR" \
+              --env "PLOINKY_WORKSPACE_ROOT=$WORK_DIR" \
               "$BOX_INSTANCE" \
               node --input-type=module --eval '
                 import fs from "node:fs";

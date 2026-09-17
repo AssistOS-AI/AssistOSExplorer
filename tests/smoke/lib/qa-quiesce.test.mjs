@@ -11,7 +11,14 @@ import {
     readLinuxProcess,
     runBounded,
     SHUTDOWN_TIMEOUT_MS,
+    WORKSPACE,
 } from '../../../.github/scripts/quiesce-explorer-qa.mjs';
+import { QA_SCOPE } from '../../../.github/scripts/rollback-explorer-qa.mjs';
+
+test('in-Box shutdown uses the pinned same-path QA workspace', () => {
+    assert.equal(WORKSPACE, QA_SCOPE.workspace);
+    assert.equal(WORKSPACE, '/home/admin/explorerQaWorkspace');
+});
 
 function fixture({ exitCodes = {}, neverStop = [], postgres = 'shut down' } = {}) {
     const agents = ['dpuAgent', 'explorer', 'onlyOffice', 'roboTeamAgent', 'soul-gateway',
@@ -241,12 +248,12 @@ for (const field of ['Mounts', 'HostConfig']) {
 function mountFixture(agent = 'onlyOffice') {
     const name = `ploinky_QA_${agent}`;
     const binds = [
-        { source: `/workspace/.ploinky/container-runtime/${name}/Agent-123-456`, target: '/Agent', ro: true },
+        { source: `${WORKSPACE}/.ploinky/container-runtime/${name}/Agent-123-456`, target: '/Agent', ro: true },
         { source: '/opt/ploinky-agentlib', target: '/opt/ploinky-agentlib', ro: true },
-        { source: `/workspace/.ploinky/container-runtime/${name}/code-123-456`, target: '/code', ro: false },
-        { source: `/workspace/.ploinky/repos/QA/${agent}`, target: `/workspace/.ploinky/repos/QA/${agent}`, ro: false },
-        { source: '/workspace/.data/shared', target: '/shared' },
-        { source: `/workspace/.data/${agent}`, target: '/root' },
+        { source: `${WORKSPACE}/.ploinky/container-runtime/${name}/code-123-456`, target: '/code', ro: false },
+        { source: `${WORKSPACE}/.ploinky/repos/QA/${agent}`, target: `${WORKSPACE}/.ploinky/repos/QA/${agent}`, ro: false },
+        { source: `${WORKSPACE}/.data/shared`, target: '/shared' },
+        { source: `${WORKSPACE}/.data/${agent}`, target: '/root' },
     ];
     const volumes = agent === 'onlyOffice' ? {
         '.data/onlyOffice/data': '/var/www/onlyoffice/Data', '.data/onlyOffice/log': '/var/log/onlyoffice',
@@ -255,9 +262,9 @@ function mountFixture(agent = 'onlyOffice') {
     const manifest = { volumes, runtime: { resources: agent === 'dpuAgent'
         ? { persistentStorage: { key: 'dpu-data', containerPath: '/dpu-data' } } : {} } };
     const Mounts = binds.map((bind) => ({ Type: 'bind', Source: bind.source, Destination: bind.target, RW: bind.ro !== true }));
-    for (const [source, target] of Object.entries(volumes)) Mounts.push({ Type: 'bind', Source: `/workspace/${source}`, Destination: target, RW: true });
-    if (agent === 'dpuAgent') Mounts.push({ Type: 'bind', Source: '/workspace/.data/dpu-data', Destination: '/dpu-data', RW: true });
-    Mounts.push({ Type: 'bind', Source: `/workspace/.ploinky/run/health-probes/${name}`, Destination: '/run/ploinky-health-probes', RW: true });
+    for (const [source, target] of Object.entries(volumes)) Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/${source}`, Destination: target, RW: true });
+    if (agent === 'dpuAgent') Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/dpu-data`, Destination: '/dpu-data', RW: true });
+    Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.ploinky/run/health-probes/${name}`, Destination: '/run/ploinky-health-probes', RW: true });
     return { binding: { name, agent, record: { config: { binds }, profile: 'default' } }, inspected: { Mounts },
         options: { manifest, realpath: (value) => value } };
 }
@@ -274,7 +281,7 @@ for (const scenario of ['redirected-data', 'data-symlink', 'database-overlay', '
         const f = mountFixture();
         if (scenario === 'redirected-data') f.inspected.Mounts.find((item) => item.Destination === '/root').Source = '/foreign/root';
         if (scenario === 'data-symlink') f.options.realpath = (value) => value.endsWith('/onlyOffice') ? '/foreign/root' : value;
-        if (scenario === 'database-overlay') f.inspected.Mounts.push({ Type: 'bind', Source: '/workspace/.data/foreign', Destination: '/root/postgres', RW: false });
+        if (scenario === 'database-overlay') f.inspected.Mounts.push({ Type: 'bind', Source: `${WORKSPACE}/.data/foreign`, Destination: '/root/postgres', RW: false });
         if (scenario === 'writable-agentlib') f.inspected.Mounts.find((item) => item.Destination === '/opt/ploinky-agentlib').RW = true;
         if (scenario === 'missing-manifest-volume') delete f.options.manifest.volumes['.data/onlyOffice/lib'];
         if (scenario === 'unknown-writable') f.inspected.Mounts.push({ Type: 'bind', Source: '/foreign', Destination: '/new', RW: true });
@@ -297,11 +304,11 @@ function processFixture() {
     const watchdog = '/opt/ploinky/cli/server/Watchdog.js';
     const router = '/opt/ploinky/cli/server/RoutingServer.js';
     const processes = new Map([
-        [1, { pid: 1, ppid: 0, startTicks: '1', uid: 1000, cwd: '/workspace', exe: '/run/podman-init',
+        [1, { pid: 1, ppid: 0, startTicks: '1', uid: 1000, cwd: WORKSPACE, exe: '/run/podman-init',
             argv: ['/run/podman-init', '--', '/usr/local/bin/ploinky-box-entrypoint'] }],
-        [2, { pid: 2, ppid: 1, startTicks: '2', uid: 1000, cwd: '/workspace', exe: '/usr/bin/sleep', argv: ['sleep', 'infinity'] }],
-        [100, { pid: 100, ppid: 1, startTicks: '100', uid: 1000, cwd: '/workspace', exe: '/usr/bin/node', argv: ['node', watchdog] }],
-        [101, { pid: 101, ppid: 100, startTicks: '101', uid: 1000, cwd: '/workspace', exe: '/usr/bin/node', argv: ['node', router] }],
+        [2, { pid: 2, ppid: 1, startTicks: '2', uid: 1000, cwd: WORKSPACE, exe: '/usr/bin/sleep', argv: ['sleep', 'infinity'] }],
+        [100, { pid: 100, ppid: 1, startTicks: '100', uid: 1000, cwd: WORKSPACE, exe: '/usr/bin/node', argv: ['node', watchdog] }],
+        [101, { pid: 101, ppid: 100, startTicks: '101', uid: 1000, cwd: WORKSPACE, exe: '/usr/bin/node', argv: ['node', router] }],
     ]);
     const signals = [];
     const fsApi = {
@@ -370,7 +377,7 @@ test('Linux process parsing uses start ticks after a command name containing par
             if (name.endsWith('/cmdline')) return 'node\0/opt/ploinky/cli/server/RoutingServer.js\0';
             return 'Uid:\t1000\t1000\t1000\t1000\n';
         },
-        realpathSync: (name) => name.endsWith('/cwd') ? '/workspace' : '/usr/bin/node',
+        realpathSync: (name) => name.endsWith('/cwd') ? WORKSPACE : '/usr/bin/node',
     };
     const parsed = readLinuxProcess(101, fsApi);
     assert.equal(parsed.startTicks, '777');

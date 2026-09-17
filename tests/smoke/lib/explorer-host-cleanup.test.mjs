@@ -20,7 +20,7 @@ function fixture(t) {
         return { path: file, device: String(stat.dev), inode: String(stat.ino), uid: 1001 };
     };
     const engines = {
-        podman: { available: true, containers: [{ id: A, image: C, mounts: [{ type: 'bind', source: QA, destination: '/workspace' }] }], images: [C] },
+        podman: { available: true, containers: [{ id: A, image: C, mounts: [{ type: 'bind', source: QA, destination: QA }] }], images: [C] },
         podmanRoot: { available: true, containers: [{ id: B, image: D, mounts: [] }], images: [D] },
         docker: { available: false }, dockerRoot: { available: false },
     };
