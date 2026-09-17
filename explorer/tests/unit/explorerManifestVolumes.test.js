@@ -6,8 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-test('Explorer mounts Ploinky repos for cross-agent settings discovery', async () => {
+test('Explorer discovers repositories through its global workspace without a fixed alias', async () => {
     const manifest = JSON.parse(await fs.readFile(path.join(repoRoot, 'manifest.json'), 'utf8'));
 
-    assert.equal(manifest.volumes?.['.ploinky/repos'], '/workspace/.ploinky/repos');
+    assert.equal(Object.hasOwn(manifest.volumes || {}, '.ploinky/repos'), false);
+    assert.equal(Object.values(manifest.volumes || {}).some((destination) => (
+        destination === '/workspace' || String(destination).startsWith('/workspace/')
+    )), false);
 });
