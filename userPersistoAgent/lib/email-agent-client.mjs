@@ -60,13 +60,16 @@ export async function getEmailAuthCodeStatus({ createClient = createEmailAgentCl
     }
 }
 
-export async function sendAuthCode({ to, code, correlationId = '' }, { createClient = createEmailAgentClient } = {}) {
+// `purpose` is forwarded only when set, so EmailAgent keeps its generic message
+// for sign-in codes and uses signup-verification wording for pending signups.
+export async function sendAuthCode({ to, code, correlationId = '', purpose = '' }, { createClient = createEmailAgentClient } = {}) {
     const client = await createClient();
     try {
         const response = await client.callTool('email_send_auth_code', {
             to,
             code,
             correlationId,
+            ...(purpose ? { purpose } : {}),
         });
         const result = parseToolResult(response);
         if (response?.isError === true || result?.ok === false || result?.error

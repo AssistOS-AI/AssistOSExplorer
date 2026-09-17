@@ -224,7 +224,7 @@
     {
       "name": "email_send_auth_code",
       "title": "Send authentication code",
-      "description": "Agent-to-agent: sends a six-digit authentication code without returning the code.",
+      "description": "Agent-to-agent: sends a six-digit authentication code without returning the code. The optional purpose signup-verification selects wording for a pending signup and is passed to a configured template.",
       "command": "sh",
       "args": [
         "tools/email_tool.sh"
@@ -244,6 +244,12 @@
           },
           "correlationId": {
             "type": "string"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "signup-verification"
+            ]
           }
         },
         "required": [

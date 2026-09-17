@@ -84,5 +84,12 @@ test('email delivery never mistakes an MCP error or malformed response for provi
     }) });
     assert.equal(accepted.delivered, true);
     assert.equal(accepted.providerMessageId, 'provider-1');
-    assert.deepEqual(calls, [['email_send_auth_code', { to: 'member@example.test', code: '123456', correlationId: 'request' }]]);
+    // The optional purpose is forwarded only when set.
+    await sendAuthCode({ to: 'member@example.test', code: '654321', correlationId: 'signup', purpose: 'signup-verification' }, { createClient: async () => ({
+        callTool: async (...args) => { calls.push(args); return { content: [{ type: 'text', text: '{"providerMessageId":"provider-2"}' }] }; },
+    }) });
+    assert.deepEqual(calls, [
+        ['email_send_auth_code', { to: 'member@example.test', code: '123456', correlationId: 'request' }],
+        ['email_send_auth_code', { to: 'member@example.test', code: '654321', correlationId: 'signup', purpose: 'signup-verification' }],
+    ]);
 });

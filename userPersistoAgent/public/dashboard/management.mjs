@@ -72,7 +72,7 @@ export class UserpersistoSettings {
         this.usersPreviousButton = this.element.querySelector("#usersPreviousButton");
         this.usersNextButton = this.element.querySelector("#usersNextButton");
         this.policySaveButton = this.element.querySelector('[data-local-action="saveAuthPolicy"]');
-        this.authMethodInputs = Object.fromEntries(["emailCode", "passkey", "totp", "google"].map((method) => [
+        this.authMethodInputs = Object.fromEntries(["password", "emailCode", "passkey", "totp", "google"].map((method) => [
             method,
             this.element.querySelector(`[data-auth-method="${method}"]`)
         ]));

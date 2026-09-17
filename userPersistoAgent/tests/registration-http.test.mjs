@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
-import { getUserByEmail } from '../lib/users.mjs';
+import { getUserByEmail, listUsers } from '../lib/users.mjs';
 import { getInstallationSetup } from '../lib/setup.mjs';
 import { createLoginRequest, consumeAuthCode } from '../lib/sso.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
@@ -14,9 +14,11 @@ import { CookieBrowser } from './helpers/googleProvider.mjs';
 import * as setup from './helpers/setup.mjs';
 
 async function fixture(fn) {
+    const environment = { ...process.env };
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-register-http-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
+    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']) delete process.env[name];
     setup.resetAuthLimitsForTests();
     const mail = [];
     let server;
@@ -30,17 +32,18 @@ async function fixture(fn) {
         });
         await fn({ base, mail, post });
     } finally {
-
         if (server?.listening) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
         await resetStoreForTests();
         await rm(folder, { recursive: true, force: true });
+        for (const name of Object.keys(process.env)) if (!Object.hasOwn(environment, name)) delete process.env[name];
+        Object.assign(process.env, environment);
     }
 }
 
-test('retired password routes are gone and malformed bodies fail before any setup decision', () => fixture(async ({ base }) => {
-    for (const route of ['register', 'password/login', 'totp/setup']) {
+test('retired administrator and registration routes are gone and malformed bodies fail before any setup decision', () => fixture(async ({ base }) => {
+    for (const route of ['register', 'admin/login', 'totp/setup']) {
         const response = await fetch(`${base}/service/auth/${route}`, { method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ email: 'owner@example.test', password: 'long-enough-password' }) });
+            body: JSON.stringify({ email: 'owner@example.test', password: 'admin' }) });
         assert.equal(response.status, 404, route);
         assert.equal((await response.json()).error, 'not_found');
     }
@@ -52,7 +55,26 @@ test('retired password routes are gone and malformed bodies fail before any setu
     assert.equal((await getInstallationSetup()).complete, false);
 }));
 
-test('HTTP email registration claims the first administrator through the browser-bound attempt', () => fixture(async ({ base, mail, post }) => {
+test('no password of any kind can claim or sign in to an unclaimed installation', () => fixture(async ({ base, post }) => {
+    process.env.USERPERSISTO_ADMIN_PASSWORD = 'fixture-retired-variable-value';
+    const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
+    const browser = new CookieBrowser();
+    const attempt = await (await post(browser, 'attempt', { requestId: request.providerState })).json();
+    for (const retired of ['adminPassword', 'googleOnly']) assert.equal(Object.hasOwn(attempt, retired), false, retired);
+    for (const email of ['owner@example.test', 'admin@example.test', 'administrator@example.test']) {
+        for (const password of ['admin', process.env.USERPERSISTO_ADMIN_PASSWORD, '']) {
+            const refused = await post(browser, 'password/login', { requestId: request.providerState, state: 'x', email, password });
+            assert.deepEqual([refused.status, await refused.json()], [401, { ok: false, error: 'authentication_failed' }]);
+        }
+    }
+    const legacy = await post(browser, 'email-code/start', { requestId: request.providerState, email: 'owner@example.test', purpose: 'register' });
+    assert.deepEqual([legacy.status, (await legacy.json()).error], [400, 'invalid_request'], 'email codes never register');
+    assert.equal((await getInstallationSetup()).complete, false);
+    assert.equal((await listUsers()).totalCount, 0);
+    assert.equal((await (await getStore()).select('ssoAuthCode')).objects.length, 0);
+}));
+
+test('HTTP signup claims the first administrator through the browser-bound attempt and signs in automatically', () => fixture(async ({ base, mail, post }) => {
     const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     const browser = new CookieBrowser();
     const attempt = await post(browser, 'attempt', { requestId: request.providerState, state: 'router-core-state' });
@@ -62,79 +84,81 @@ test('HTTP email registration claims the first administrator through the browser
     assert.match(cookie, /SameSite=Strict/);
     assert.match(cookie, /Path=\/service\//);
     const state = await attempt.json();
-    assert.equal(state.setupComplete, false);
-    assert.equal(state.registration, true);
-    assert.equal(state.adminPassword, true);
+    assert.deepEqual([state.setupComplete, state.registration, state.signup, state.methods.password], [false, true, { email: true, google: true }, true]);
+    assert.deepEqual(state.passwordPolicy, { minLength: 15, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' });
     assert.ok(state.expiresAt > Date.now());
     const discovered = await (await post(browser, 'discover', { requestId: request.providerState, email: 'owner@example.test' })).json();
-    assert.deepEqual([discovered.exists, discovered.methods], [false, { emailCode: false, passkey: false, totp: false }]);
-    const started = await post(browser, 'email-code/start', { requestId: request.providerState, email: 'owner@example.test', purpose: 'register' });
+    assert.deepEqual([discovered.exists, discovered.methods], [false, { password: false, emailCode: false, passkey: false, totp: false }]);
+    const password = setup.newTestPassword();
+    const started = await post(browser, 'signup/start', { requestId: request.providerState, email: 'owner@example.test', password, passwordConfirmation: password });
     assert.equal(started.status, 200, await started.clone().text());
-    const body = await started.json();
-    assert.equal(body.challenge.delivery, 'accepted');
-    assert.equal(JSON.stringify(body).includes(mail.at(-1).code), false);
+    const text = await started.text();
+    const body = JSON.parse(text);
+    assert.deepEqual([body.challenge.purpose, body.challenge.delivery, body.challenge.email], ['register', 'accepted', 'owner@example.test']);
+    assert.equal(text.includes(mail.at(-1).code), false);
+    assert.equal(text.includes(password), false);
+    assert.equal(mail.at(-1).purpose, 'signup-verification');
     assert.equal(await getUserByEmail('owner@example.test'), null, 'no account before proof');
+    const resumed = await (await post(browser, 'attempt', { requestId: request.providerState })).json();
+    assert.deepEqual([resumed.attempt.signupPending, resumed.attempt.challenge.purpose], [true, 'register']);
     // Another browser holding the code cannot use this attempt.
-    const stolen = await post(new CookieBrowser(), 'email-code/verify', { requestId: request.providerState, state: 'router-core-state', code: mail.at(-1).code });
+    const stolen = await post(new CookieBrowser(), 'signup/verify', { requestId: request.providerState, state: 'router-core-state', code: mail.at(-1).code });
     assert.equal(stolen.status, 400);
-    const verified = await post(browser, 'email-code/verify', { requestId: request.providerState, state: 'router-core-state', code: mail.at(-1).code });
+    const verified = await post(browser, 'signup/verify', { requestId: request.providerState, state: 'router-core-state', code: mail.at(-1).code });
     assert.equal(verified.status, 200, await verified.clone().text());
     const completion = await verified.json();
-    assert.equal(completion.initialAdministrator, true);
-    assert.equal(completion.state, 'router-core-state');
-    assert.equal(completion.redirectUri, `${base}/auth/callback`);
+    assert.deepEqual([completion.created, completion.initialAdministrator, completion.state, completion.redirectUri],
+        [true, true, 'router-core-state', `${base}/auth/callback`]);
     // A lost response replays the same unconsumed handoff to the same browser only.
-    const replay = await (await post(browser, 'email-code/verify', { requestId: request.providerState, state: 'router-core-state', code: '000000' })).json();
-    assert.equal(replay.code, completion.code);
-    assert.equal(replay.replayed, true);
-    assert.equal((await post(new CookieBrowser(), 'email-code/verify', { requestId: request.providerState, state: 'router-core-state', code: mail.at(-1).code })).status, 400);
+    const replay = await (await post(browser, 'signup/verify', { requestId: request.providerState, state: 'router-core-state', code: '000000' })).json();
+    assert.deepEqual([replay.code, replay.replayed], [completion.code, true]);
+    assert.equal((await post(new CookieBrowser(), 'signup/verify', { requestId: request.providerState, state: 'router-core-state', code: mail.at(-1).code })).status, 400);
     const consumed = await consumeAuthCode({ providerState: request.providerState, code: completion.code });
     assert.deepEqual(consumed.roles, ['admin']);
-    assert.equal((await getInstallationSetup()).initialAdministratorId, consumed.user.id);
-    const afterConsumption = await post(browser, 'email-code/verify', { requestId: request.providerState, state: 'router-core-state', code: '000000' });
+    const record = await getInstallationSetup();
+    assert.deepEqual([record.initialAdministratorId, record.method], [consumed.user.id, 'passwordSignup']);
+    const afterConsumption = await post(browser, 'signup/verify', { requestId: request.providerState, state: 'router-core-state', code: '000000' });
     assert.equal(afterConsumption.status, 400);
     assert.equal((await afterConsumption.json()).error, 'login_request_invalid');
+    // The chosen password now signs the administrator in without any code.
+    const next = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
+    const sentBefore = mail.length;
+    const login = await post(new CookieBrowser(), 'password/login', { requestId: next.providerState, state: 'next-state', email: 'OWNER@example.test', password });
+    assert.equal(login.status, 200, await login.clone().text());
+    const signedIn = await login.json();
+    assert.deepEqual([signedIn.state, signedIn.redirectUri], ['next-state', `${base}/auth/callback`]);
+    assert.equal((await consumeAuthCode({ providerState: next.providerState, code: signedIn.code })).user.id, consumed.user.id);
+    assert.equal(mail.length, sentBefore, 'password login never sends a code');
 }));
 
 test('dead, expired or cross-origin requests are client errors and create nothing', () => fixture(async ({ base, post, mail }) => {
     const browser = new CookieBrowser();
+    const password = setup.newTestPassword();
+    const body = (requestId) => ({ requestId, email: 'ghost@example.test', password, passwordConfirmation: password });
     for (const requestId of ['not-a-live-request', '']) {
-        const response = await post(browser, 'email-code/start', { requestId, email: 'ghost@example.test', purpose: 'register' });
-        assert.equal(response.status, 400);
-        assert.equal((await response.json()).error, 'login_request_invalid');
+        for (const path of ['signup/start', 'password/login']) {
+            const response = await post(browser, path, body(requestId));
+            assert.equal(response.status, 400, path);
+            assert.equal((await response.json()).error, 'login_request_invalid');
+        }
     }
     const expiring = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     const store = await getStore();
     const record = await store.getSsoLoginRequestByProviderState(expiring.providerState);
     await store.updateSsoLoginRequest(record.id, { expiresAt: new Date(Date.now() - 1000).toISOString() });
-    const expired = await post(browser, 'attempt', { requestId: expiring.providerState });
-    assert.equal(expired.status, 400);
-    assert.equal((await expired.json()).error, 'login_request_expired');
+    for (const path of ['attempt', 'signup/start', 'signup/verify', 'password/login']) {
+        const expired = await post(browser, path, body(expiring.providerState));
+        assert.equal(expired.status, 400, path);
+        assert.equal((await expired.json()).error, 'login_request_expired');
+    }
     const live = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     for (const origin of ['https://foreign.example', 'null']) {
-        const foreign = await post(browser, 'email-code/start', { requestId: live.providerState, email: 'ghost@example.test', purpose: 'register' }, { origin });
-        assert.equal(foreign.status, 403);
+        for (const path of ['signup/start', 'signup/resend', 'signup/email', 'signup/verify', 'password/login']) {
+            const foreign = await post(browser, path, body(live.providerState), { origin });
+            assert.deepEqual([foreign.status, (await foreign.json()).error], [403, 'invalid_origin'], `${origin} ${path}`);
+        }
     }
     assert.equal(mail.length, 0);
     assert.equal(await getUserByEmail('ghost@example.test'), null);
     assert.equal((await getInstallationSetup()).complete, false);
-}));
-
-test('an explicit empty administrator password disables first-run password login', () => fixture(async ({ base, post }) => {
-    const previous = process.env.USERPERSISTO_ADMIN_PASSWORD;
-    process.env.USERPERSISTO_ADMIN_PASSWORD = '';
-    try {
-        const request = await createLoginRequest({ redirectUri: base + '/auth/callback' });
-        const browser = new CookieBrowser();
-        const attempt = await (await post(browser, 'attempt', { requestId: request.providerState })).json();
-        assert.equal(attempt.adminPassword, false);
-        const refused = await post(browser, 'admin/login', { requestId: request.providerState, password: 'admin' });
-        assert.equal(refused.status, 404);
-        assert.equal((await refused.json()).error, 'admin_password_unavailable');
-        assert.equal((await getInstallationSetup()).complete, false);
-        assert.equal((await (await getStore()).select('ssoAuthCode')).objects.length, 0);
-    } finally {
-        if (previous === undefined) delete process.env.USERPERSISTO_ADMIN_PASSWORD;
-        else process.env.USERPERSISTO_ADMIN_PASSWORD = previous;
-    }
 }));

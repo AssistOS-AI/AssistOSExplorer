@@ -1,19 +1,25 @@
-import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { getStore, commitStagedPersistence } from '../store.mjs';
 import { withPersistenceScope } from '../persistence-scope.mjs';
 import { encryptOidcPayload, decryptOidcPayload } from '../oidc/secrets.mjs';
 import { hashCode, codeHashMatches } from './email-code.mjs';
+import { readThrottle, stageThrottleFailure, throttleKey, throttleRetryAfter } from './throttle.mjs';
 import { normalizeEmail } from '../users.mjs';
 
-// One email challenge attempt per (flow, parent, browser). Codes are bound to
-// the normalized email, purpose, browser, parent and generation; a resend or
-// any email/purpose change starts a new generation. The failure and send
-// counters survive resend, change-email and cancel within the attempt.
+// One email challenge attempt per (flow, parent, browser). A login code is
+// bound to the attempt, its generation and the literal `login`; a signup code
+// additionally to the staged password verifier's id. A resend, an email change
+// or a new signup starts a new generation. The failure and send counters
+// survive resend, change-email and cancel within the attempt.
 export const CODE_TTL_MS = 5 * 60 * 1000;
 export const RESEND_COOLDOWN_MS = 60 * 1000;
 export const MAX_CODE_FAILURES = 5;
-const MAX_SENDS_PER_ATTEMPT = 5;
-const ATTEMPT_VERSION = 1;
+export const MAX_SENDS_PER_ATTEMPT = 5;
+// The version, lookup namespace and encryption context are one format and
+// change together. Records of any other format live under another lookup key:
+// they are never found, decrypted or converted, and expire through the sweep.
+const ATTEMPT_VERSION = 2;
+const ATTEMPT_NAMESPACE = 'userpersisto:auth-attempt:v2';
 const PURPOSES = new Set(['login', 'register']);
 const FLOWS = new Set(['sso', 'oidc']);
 const BROWSER_PROOF = /^[A-Za-z0-9_-]{43}$/;
@@ -23,6 +29,7 @@ const EMAIL_FAILURE_LIMIT = 10;
 const MEMORY_WINDOW_MS = 15 * 60 * 1000;
 const MAX_MEMORY_SUBJECTS = 20_000;
 const SHARED_SOURCE = 'shared';
+const RETRY_NOW_DELIVERIES = new Set(['failed', 'pending']);
 const LIMITS = {
     sendPerEmail: 5,
     sendPerSource: 20,
@@ -44,6 +51,7 @@ export function attemptError(code, statusCode = 400, extra = {}) {
         delivery_failed: 'We could not send the code. Try again later.',
         resend_too_soon: 'Wait before requesting another code.',
         invalid_email: 'Enter a valid email address.',
+        signup_restart_required: 'Choose your password again to continue.',
     };
     return Object.assign(new Error(messages[code] || 'Unable to continue.'), { code, statusCode, ...extra });
 }
@@ -80,6 +88,12 @@ export function consumeMemoryBudget(scope, subject, limit, now = Date.now()) {
     memoryBuckets.set(key, bucket);
 }
 
+// Returns one unit to a live bucket, for work refused before it was attempted.
+export function refundMemoryBudget(scope, subject) {
+    const bucket = memoryBuckets.get(`${scope}\0${subject}`);
+    if (bucket && bucket.count > 0) bucket.count -= 1;
+}
+
 export function resetEmailAttemptLimitsForTests() {
     memoryBuckets.clear();
 }
@@ -90,12 +104,24 @@ export function discoveryBudget({ parent, rateSource }) {
     consumeMemoryBudget('discover-source', source, source === SHARED_SOURCE ? LIMITS.discoverShared : LIMITS.discoverPerSource);
 }
 
+// A refused start reveals as much as discovery does, so it spends the same
+// per-address and per-source budgets as a send.
+export function spendSendBudgets(email, rateSource, now = Date.now()) {
+    const source = rateSourceKey(rateSource);
+    consumeMemoryBudget('send-email', emailSubject(email), LIMITS.sendPerEmail, now);
+    consumeMemoryBudget('send-source', source, source === SHARED_SOURCE ? LIMITS.sendShared : LIMITS.sendPerSource, now);
+}
+
 function attemptKey(parent, browserProof) {
-    return digest(JSON.stringify(['userpersisto:auth-attempt:v1', parent.flow, parent.id, digest(browserProof)]));
+    return digest(JSON.stringify([ATTEMPT_NAMESPACE, parent.flow, parent.id, digest(browserProof)]));
 }
 
 function context(key) {
     return `userpersisto:auth-attempt:${ATTEMPT_VERSION}:${key}`;
+}
+
+function codeContext(key, generation, signup) {
+    return `${key}:${generation}:${signup ? signup.verifierId : 'login'}`;
 }
 
 function assertParent(parent) {
@@ -110,7 +136,7 @@ function assertBrowser(browserProof) {
 
 function emptyPayload(parent) {
     return { flow: parent.flow, parentId: parent.id, email: '', purpose: '', generation: 0, failures: 0, sends: 0,
-        challenge: null, completion: null };
+        challenge: null, account: null, signup: null, completion: null };
 }
 
 async function cleanExpired(store, now) {
@@ -127,6 +153,8 @@ async function cleanExpired(store, now) {
     }
 }
 
+// The single reader: a record whose version, key or context disagrees with
+// this format is refused, never converted.
 function decode(record, key) {
     if (!record || record.version !== ATTEMPT_VERSION || !HANDLE.test(record.attemptKey || '') || record.attemptKey !== key) return null;
     try {
@@ -171,6 +199,8 @@ function stageSave(store, parent, loaded, payload) {
     };
 }
 
+// A failed or interrupted delivery (`pending` observed by a later request) may
+// be retried at once; operations for one parent are serialized by its lock.
 function publicChallenge(payload, now = Date.now()) {
     const challenge = payload.challenge;
     if (!challenge) return null;
@@ -178,7 +208,7 @@ function publicChallenge(payload, now = Date.now()) {
         email: payload.email,
         purpose: payload.purpose,
         expiresAt: challenge.expiresAt,
-        resendAt: challenge.delivery === 'failed' ? now : challenge.sentAt + RESEND_COOLDOWN_MS,
+        resendAt: RETRY_NOW_DELIVERIES.has(challenge.delivery) ? now : challenge.sentAt + RESEND_COOLDOWN_MS,
         attemptsRemaining: Math.max(0, MAX_CODE_FAILURES - payload.failures),
         delivery: challenge.delivery,
         expired: challenge.expiresAt <= now,
@@ -187,7 +217,8 @@ function publicChallenge(payload, now = Date.now()) {
 
 export function describeAttempt(payload) {
     if (payload.status === 'completed') return { status: 'completed', completion: { userId: payload.completion?.userId || '' } };
-    return { status: 'active', challenge: publicChallenge(payload), locked: payload.failures >= MAX_CODE_FAILURES };
+    return { status: 'active', challenge: publicChallenge(payload), locked: payload.failures >= MAX_CODE_FAILURES,
+        signupPending: Boolean(payload.signup) };
 }
 
 // After a completed handoff consumed its parent, the same browser may still
@@ -214,22 +245,15 @@ export function readAttempt({ parent, browserProof }) {
     });
 }
 
-async function readThrottle(store, key, now) {
-    const record = await store.getAuthThrottleByThrottleKey(key);
-    const live = record && Number.isSafeInteger(record.windowStartedAt) && now - record.windowStartedAt < EMAIL_FAILURE_WINDOW_MS
-        && record.windowStartedAt <= now;
-    return { record, count: live ? record.count : 0, windowStartedAt: live ? record.windowStartedAt : now };
-}
-
 function emailFailureKey(email) {
-    return digest(JSON.stringify(['userpersisto:throttle:email-verify', email]));
+    return throttleKey('userpersisto:throttle:email-verify', email);
 }
 
 // Durable aggregate budget across parents, browsers and generations.
 async function assertEmailFailureBudget(store, email, now) {
-    const throttle = await readThrottle(store, emailFailureKey(email), now);
+    const throttle = await readThrottle(store, emailFailureKey(email), now, EMAIL_FAILURE_WINDOW_MS);
     if (throttle.count >= EMAIL_FAILURE_LIMIT) {
-        throw attemptError('rate_limited', 429, { retryAfter: Math.max(1, Math.ceil((throttle.windowStartedAt + EMAIL_FAILURE_WINDOW_MS - now) / 1000)) });
+        throw attemptError('rate_limited', 429, { retryAfter: throttleRetryAfter(throttle, now) });
     }
     return throttle;
 }
@@ -245,28 +269,36 @@ export function assertEmailVerifyBudget(email) {
 export function recordEmailVerifyFailure(email) {
     return withPersistenceScope(async () => {
         const store = await getStore();
-        const throttle = await readThrottle(store, emailFailureKey(email), Date.now());
-        await commitStagedPersistence(stageEmailFailure(store, email, throttle));
+        const throttle = await readThrottle(store, emailFailureKey(email), Date.now(), EMAIL_FAILURE_WINDOW_MS);
+        await commitStagedPersistence(stageThrottleFailure(store, throttle));
     });
 }
 
-function stageEmailFailure(store, email, throttle) {
-    const key = emailFailureKey(email);
-    const data = { throttleKey: key, windowStartedAt: throttle.windowStartedAt, count: throttle.count + 1,
-        expiresAt: throttle.windowStartedAt + EMAIL_FAILURE_WINDOW_MS };
-    return async () => {
-        if (throttle.record) await store.updateAuthThrottle(throttle.record.id, data);
-        else await store.createAuthThrottle(data);
+function stagingFor(purpose, signup, payload, now) {
+    if (purpose !== 'register') return null;
+    if (signup === 'retain') return payload.signup;
+    return { verifier: signup.verifier, verifierId: randomBytes(16).toString('hex'), stagedAt: now,
+        ...(typeof signup.emailComparisonVerifier === 'string' && signup.emailComparisonVerifier
+            ? { emailComparisonVerifier: signup.emailComparisonVerifier } : {}),
     };
 }
 
 // Issues a new generation and stages it before any network delivery. Returns
 // the code for the caller's out-of-scope delivery and the generation to confirm.
 // `precheck` runs inside the scope to apply account/purpose/policy rules.
-export function issueChallenge({ parent, browserProof, email, purpose, rateSource, resend = false, precheck }) {
+// A login code erases any staged signup. A registration code either stages a
+// new password verifier (`signup: { verifier }`) or keeps the current one
+// (`signup: 'retain'`, for resend and email change); without one the caller
+// must choose a password again.
+export function issueChallenge({ parent, browserProof, email, purpose, rateSource, resend = false, precheck, signup }) {
     if (!PURPOSES.has(purpose)) throw attemptError('invalid_request');
-    let normalized;
-    try { normalized = normalizeEmail(email); } catch { throw attemptError('invalid_email'); }
+    const retain = signup === 'retain';
+    const staging = purpose === 'register' && (retain || (typeof signup?.verifier === 'string' && signup.verifier));
+    if (purpose === 'register' ? !staging : signup !== undefined) throw attemptError('invalid_request');
+    let normalized = '';
+    if (!retain || email !== undefined) {
+        try { normalized = normalizeEmail(email); } catch { throw attemptError('invalid_email'); }
+    }
     return withPersistenceScope(async () => {
         const store = await getStore();
         const now = Date.now();
@@ -275,42 +307,46 @@ export function issueChallenge({ parent, browserProof, email, purpose, rateSourc
         const payload = loaded.payload;
         if (payload.status === 'completed') throw attemptError('attempt_invalid', 409);
         if (payload.failures >= MAX_CODE_FAILURES) throw attemptError('too_many_attempts', 429);
-        const same = payload.email === normalized && payload.purpose === purpose && payload.challenge;
+        if (retain && (payload.purpose !== 'register' || !payload.signup)) throw attemptError('signup_restart_required', 409);
+        const address = normalized || payload.email;
+        const same = payload.email === address && payload.purpose === purpose && Boolean(payload.challenge);
         if (resend && !same) throw attemptError('attempt_invalid', 409);
-        if (same && payload.challenge.delivery !== 'failed' && payload.challenge.sentAt + RESEND_COOLDOWN_MS > now) {
+        if (same && !RETRY_NOW_DELIVERIES.has(payload.challenge.delivery) && payload.challenge.sentAt + RESEND_COOLDOWN_MS > now) {
             throw attemptError('resend_too_soon', 429, { retryAfter: Math.ceil((payload.challenge.sentAt + RESEND_COOLDOWN_MS - now) / 1000) });
         }
-        if (payload.sends >= MAX_SENDS_PER_ATTEMPT) throw attemptError('rate_limited', 429, { retryAfter: Math.ceil((parent.expiresAt - now) / 1000) });
-        await assertEmailFailureBudget(store, normalized, now);
+        if (payload.sends >= MAX_SENDS_PER_ATTEMPT) {
+            throw attemptError('rate_limited', 429, { retryAfter: Math.ceil((parent.expiresAt - now) / 1000), reason: 'send_limit' });
+        }
+        await assertEmailFailureBudget(store, address, now);
         // A refused start (account_exists, account_not_found, registration_disabled)
         // reveals as much as discovery does, so it spends the same budgets as a send.
-        const source = rateSourceKey(rateSource);
-        consumeMemoryBudget('send-email', emailSubject(normalized), LIMITS.sendPerEmail, now);
-        consumeMemoryBudget('send-source', source, source === SHARED_SOURCE ? LIMITS.sendShared : LIMITS.sendPerSource, now);
-        const account = precheck ? await precheck(normalized) : null;
+        spendSendBudgets(address, rateSource, now);
+        const account = precheck ? await precheck(address) : null;
         const generation = payload.generation + 1;
+        const nextSignup = stagingFor(purpose, signup, payload, now);
         const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
         const next = {
             ...payload,
-            email: normalized,
+            email: address,
             purpose,
             account: account || null,
             generation,
             sends: payload.sends + 1,
+            signup: nextSignup,
             challenge: {
-                codeHash: hashCode(code, `${loaded.key}:${generation}`),
+                codeHash: hashCode(code, codeContext(loaded.key, generation, nextSignup)),
                 sentAt: now,
                 expiresAt: Math.min(now + CODE_TTL_MS, parent.expiresAt),
                 delivery: 'pending',
             },
         };
         await commitStagedPersistence(stageSave(store, parent, loaded, next));
-        return { code, email: normalized, generation, correlationId: `${parent.flow}-attempt:${loaded.key.slice(0, 16)}:${generation}` };
+        return { code, email: address, generation, correlationId: `${parent.flow}-attempt:${loaded.key.slice(0, 16)}:${generation}` };
     });
 }
 
 // Records the delivery outcome for the still-current generation only.
-export function recordDelivery({ parent, browserProof, generation, delivery, providerMessageId = '', correlationId = '' }) {
+export function recordDelivery({ parent, browserProof, generation, delivery, providerMessageId = '', correlationId = '', template = 'auth-code' }) {
     return withPersistenceScope(async () => {
         const store = await getStore();
         const loaded = await load(store, parent, browserProof);
@@ -324,7 +360,7 @@ export function recordDelivery({ parent, browserProof, generation, delivery, pro
                 logId: digest(`${loaded.key}:${generation}:${Date.now()}:${Math.random()}`).slice(0, 32),
                 providerMessageId: String(providerMessageId || ''),
                 toEmailHash: createHash('sha256').update(payload.email || '').digest('base64url'),
-                template: 'auth-code',
+                template,
                 result: delivery,
                 correlationId: String(correlationId || ''),
                 createdAt: new Date().toISOString(),
@@ -336,9 +372,9 @@ export function recordDelivery({ parent, browserProof, generation, delivery, pro
 
 // Delivery is network work outside every lock except the caller's parent lock.
 // Provider acceptance, a known failure and an unknown outcome stay distinct.
-export async function deliverCode(deliver, { to, code, correlationId }) {
+export async function deliverCode(deliver, { to, code, correlationId, purpose = '' }) {
     try {
-        const result = await deliver({ to, code, correlationId });
+        const result = await deliver({ to, code, correlationId, ...(purpose ? { purpose } : {}) });
         if (result?.delivered === true) return { delivery: 'accepted', providerMessageId: result.providerMessageId || '' };
         return { delivery: 'failed', providerMessageId: '' };
     } catch {
@@ -353,56 +389,68 @@ export function developmentLogFallback({ to, code, delivery }) {
     return 'development-log';
 }
 
-// Verifies a submitted code for the current generation. Caller holds the users
-// lock (and so the persistence scope) and the parent lock. On success the
-// challenge is consumed in the same staged commit as the caller's completion.
-export async function checkChallengeCode({ parent, browserProof, code }) {
+// Verifies a submitted code of the expected purpose for the current generation.
+// Caller holds the users lock (and so the persistence scope) and the parent
+// lock. On success the challenge is consumed in the same staged commit as the
+// caller's completion. A completed attempt takes the replay branch.
+export async function checkChallengeCode({ parent, browserProof, code, purpose }) {
+    if (!PURPOSES.has(purpose)) throw attemptError('invalid_request');
     const store = await getStore();
     const now = Date.now();
     const loaded = await load(store, parent, browserProof);
     const payload = loaded.payload;
     if (payload.status === 'completed') return { completed: true, payload, loaded };
-    if (!payload.challenge) throw attemptError('attempt_invalid', 409);
-    if (payload.failures >= MAX_CODE_FAILURES) throw attemptError('too_many_attempts', 429);
-    if (payload.challenge.delivery === 'pending' || payload.challenge.delivery === 'failed') throw attemptError('attempt_invalid', 409);
+    if (purpose === 'register') {
+        // Cancel, five wrong codes, a login code or a refused completion erase
+        // the staging; only a new password can continue.
+        if (payload.failures >= MAX_CODE_FAILURES) throw attemptError('too_many_attempts', 429);
+        if (!payload.signup) throw attemptError('signup_restart_required', 409);
+        if (!payload.challenge || payload.purpose !== 'register') throw attemptError('attempt_invalid', 409);
+    } else {
+        if (!payload.challenge || payload.purpose !== 'login') throw attemptError('attempt_invalid', 409);
+        if (payload.failures >= MAX_CODE_FAILURES) throw attemptError('too_many_attempts', 429);
+    }
+    if (RETRY_NOW_DELIVERIES.has(payload.challenge.delivery)) throw attemptError('attempt_invalid', 409);
     if (payload.challenge.expiresAt <= now) throw attemptError('code_expired', 410);
     const throttle = await assertEmailFailureBudget(store, payload.email, now);
     const submitted = typeof code === 'string' ? code.trim() : '';
     const matches = /^\d{6}$/.test(submitted)
-        && codeHashMatches(submitted, `${loaded.key}:${payload.generation}`, payload.challenge.codeHash);
+        && codeHashMatches(submitted, codeContext(loaded.key, payload.generation, payload.signup), payload.challenge.codeHash);
     if (!matches) {
         const failures = payload.failures + 1;
-        const next = { ...payload, failures, ...(failures >= MAX_CODE_FAILURES ? { challenge: null } : {}) };
+        const next = { ...payload, failures, ...(failures >= MAX_CODE_FAILURES ? { challenge: null, signup: null } : {}) };
         const saveAttempt = stageSave(store, parent, loaded, next);
-        const saveThrottle = stageEmailFailure(store, payload.email, throttle);
+        const saveThrottle = stageThrottleFailure(store, throttle);
         await commitStagedPersistence(async () => { await saveAttempt(); await saveThrottle(); });
         if (failures >= MAX_CODE_FAILURES) throw attemptError('too_many_attempts', 429);
         throw attemptError('code_invalid', 400, { attemptsRemaining: MAX_CODE_FAILURES - failures });
     }
-    return { completed: false, payload, loaded, email: payload.email, purpose: payload.purpose };
+    return { completed: false, payload, loaded, email: payload.email, purpose: payload.purpose, signup: payload.signup };
 }
 
 // Stage the proof's consumption: either the completion tombstone for the
 // account the caller staged, or a cleared challenge when the verified proof
-// cannot be used (late collision, disabled policy). Counters are preserved.
+// cannot be used (late collision, disabled policy). The staged verifier is
+// erased in both cases. Counters are preserved.
 export function stageChallengeOutcome(store, parent, checked, { userId = '', generation, handoff = null } = {}) {
     const payload = checked.payload;
     const next = userId
-        ? { ...payload, status: 'completed', challenge: null, completion: { userId, generation, handoff } }
-        : { ...payload, challenge: null, email: '', purpose: '' };
+        ? { ...payload, status: 'completed', challenge: null, signup: null, completion: { userId, generation, handoff } }
+        : { ...payload, challenge: null, signup: null, email: '', purpose: '' };
     return stageSave(store, parent, checked.loaded, next);
 }
 
-// Cancels unfinished work server-side. A completed attempt stays completed:
-// cancellation cannot undo an account that was already committed.
+// Cancels unfinished work server-side, erasing the challenge, address, purpose
+// and any staged verifier. A completed attempt stays completed: cancellation
+// cannot undo an account that was already committed.
 export function cancelAttempt({ parent, browserProof }) {
     return withPersistenceScope(async () => {
         const store = await getStore();
         const loaded = await load(store, parent, browserProof);
         const payload = loaded.payload;
         if (payload.status === 'completed') return { status: 'completed' };
-        if (loaded.record && (payload.challenge || payload.email)) {
-            await commitStagedPersistence(stageSave(store, parent, loaded, { ...payload, challenge: null, email: '', purpose: '' }));
+        if (loaded.record && (payload.challenge || payload.email || payload.signup)) {
+            await commitStagedPersistence(stageSave(store, parent, loaded, { ...payload, challenge: null, signup: null, email: '', purpose: '' }));
         }
         return { status: 'cancelled' };
     });

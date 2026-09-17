@@ -25,7 +25,7 @@ const credentialId = randomBytes(24).toString('base64url');
 
 before(async () => {
     await ensureSeedData();
-    const owner = await setup.registerWithEmailCode('owner@example.test');
+    const owner = await setup.signUpWithPassword('owner@example.test');
     await consumeAuthCode({ providerState: owner.request.providerState, code: owner.handoff.code });
     const blocked = await createUser({ email: 'blocked@example.test', roles: ['user'], emailVerified: true });
     await updateUser(blocked.id, { status: 'blocked' });
@@ -229,8 +229,21 @@ test('public authentication failures do not reveal sensitive internal reasons', 
         assert.equal(failure.status, 401);
         assert.deepEqual(failure.body, { ok: false, error: 'authentication_failed' });
     }
-    // Retired password endpoints no longer exist at all.
-    for (const path of ['/service/auth/password/login', '/service/auth/admin/login', '/service/auth/register']) {
-        assert.equal((await post(path, { email: 'blocked@example.test', password: 'guess-password', requestId: requests[5].providerState })).status, 404);
+    // Retired administrator and registration endpoints no longer exist at all.
+    for (const path of ['/service/auth/admin/login', '/service/auth/register', '/service/auth/totp/setup']) {
+        assert.deepEqual(await post(path, { email: 'blocked@example.test', password: 'admin', requestId: requests[5].providerState }),
+            { status: 404, body: { ok: false, error: 'not_found' } }, path);
+    }
+    // Account password login follows the effective policy, then fails neutrally.
+    const attempt = (email, password) => post('/service/auth/password/login', { email, password, requestId: requests[5].providerState, state: 'errors' });
+    assert.deepEqual(await attempt('owner@example.test', 'guess-password'), { status: 404, body: { ok: false, error: 'auth_method_disabled' } });
+    await updateAuthPolicy({ enabledAuthMethods: ['password', 'emailCode', 'passkey', 'totp'] }, { emailStatus: async () => ({ available: true }) });
+    try {
+        for (const [email, password] of [['missing@example.test', 'guess-password'], ['blocked@example.test', 'guess-password'],
+            ['passkey@example.test', 'guess-password'], ['owner@example.test', 'guess-password'], ['owner@example.test', 'admin']]) {
+            assert.deepEqual(await attempt(email, password), { status: 401, body: { ok: false, error: 'authentication_failed' } }, email);
+        }
+    } finally {
+        await updateAuthPolicy({ enabledAuthMethods: ['emailCode', 'passkey', 'totp'] }, { emailStatus: async () => ({ available: true }) });
     }
 });

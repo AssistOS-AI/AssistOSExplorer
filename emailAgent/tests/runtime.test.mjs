@@ -74,6 +74,7 @@ test('emailAgent starts its MCP server and executes verified email settings call
         cwd: stateDir,
         env: {
             PATH: `${dirname(process.execPath)}:${process.env.PATH || ''}`,
+            ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}),
             PORT: String(port),
             PLOINKY_AGENT_BIND_HOST: '127.0.0.1',
             PLOINKY_AGENT_LIB_DIR: join(ploinkyRoot, 'Agent'),
@@ -213,6 +214,9 @@ test('emailAgent starts its MCP server and executes verified email settings call
         ['email_send_template', { to: 'recipient@example.test', templateId: '12', variables: [] }],
         ['email_send_auth_code', { to: 'recipient@example.test', code: '12345' }],
         ['email_send_auth_code', { to: 'recipient@example.test', code: '12345x' }],
+        ['email_send_auth_code', { to: 'recipient@example.test', code: '123456', purpose: 'login' }],
+        ['email_send_auth_code', { to: 'recipient@example.test', code: '123456', purpose: 42 }],
+        ['email_send_auth_code', { to: 'recipient@example.test', code: '123456', purpose: 'signup-verification', template: 'other' }],
     ];
     for (const [name, args] of invalidInputs) {
         const rejected = await callTool(name, args);
@@ -230,6 +234,13 @@ test('emailAgent starts its MCP server and executes verified email settings call
     assert.equal(template.error, undefined, JSON.stringify(template));
     assert.equal(template.result?.isError, true, JSON.stringify(template));
     assert.match(template.result?.content?.[0]?.text || '', /MCP error -32603:.*Missing EmailAgent settings: MAILJET_API_SECRET/s);
+    // The signup purpose passes schema validation and the signed request hash
+    // and reaches the same pre-network settings check.
+    const signupCode = await callTool('email_send_auth_code', {
+        to: 'recipient@example.test', code: '123456', correlationId: 'signup-fixture', purpose: 'signup-verification',
+    }, agentActor);
+    assert.equal(signupCode.error, undefined, JSON.stringify(signupCode));
+    assert.match(signupCode.result?.content?.[0]?.text || '', /MCP error -32603:.*Missing EmailAgent settings: MAILJET_API_SECRET/s);
 
     await callTool('email_config_set', { MAILJET_API_SECRET: 'fixture-only-secret' });
     const ready = await callTool('email_auth_code_status', {}, agentActor);

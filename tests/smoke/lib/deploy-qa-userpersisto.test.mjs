@@ -102,7 +102,7 @@ async function verifyPublic(overrides = {}) {
     const login = `${publicUrl}${service}/auth/?requestId=request&state=state`;
     const responses = {
         [login]: '<main id="auth_content"></main><script type="module" src="main.js"></script>',
-        [`${publicUrl}${service}/auth/setup`]: { ok: true, setupComplete: false, registration: true, methods: { emailCode: true } },
+        [`${publicUrl}${service}/auth/setup`]: { ok: true, setupComplete: false, registration: true, methods: { password: true, emailCode: true } },
         [`${issuer}/.well-known/openid-configuration`]: {
             issuer, code_challenge_methods_supported: ['S256'], authorization_endpoint: `${issuer}/auth`,
             token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/jwks`, userinfo_endpoint: `${issuer}/me`,
@@ -110,7 +110,8 @@ async function verifyPublic(overrides = {}) {
         ...overrides.responses,
     };
     const requests = [];
-    await new AsyncFunction('body', 'headers', 'mismatchBody', 'mismatchHeaders', 'fetch', 'process', block('public passwordless verification'))(
+    const logs = [];
+    await new AsyncFunction('body', 'headers', 'mismatchBody', 'mismatchHeaders', 'fetch', 'process', 'console', block('public email-first verification'))(
         overrides.body || `Continue with Single Sign-On<script>window.location.replace(${JSON.stringify(login)})</script>`,
         'cf-ray: test', { ok: false, error: 'auth_route_context_mismatch' }, 'cf-ray: test',
         async (url, options) => {
@@ -121,12 +122,15 @@ async function verifyPublic(overrides = {}) {
             return { ok: true, headers: new Map([['cf-ray', 'test']]), text: async () => responses[url], json: async () => responses[url] };
         },
         { exit: () => { throw new Error('verification rejected'); } },
+        { log: (label, details) => logs.push({ label, details: JSON.parse(details) }) },
     );
-    return requests;
+    return { requests, logs };
 }
 
 test('QA public verification checks the SSO wizard and OIDC metadata without claiming an unclaimed installation', async () => {
-    assert.equal((await verifyPublic()).length, 3);
+    const result = await verifyPublic();
+    assert.equal(result.requests.length, 3);
+    assert.deepEqual(result.logs[0].details.methods, { password: true, emailCode: true, passkey: false, totp: false, google: false });
     await assert.rejects(verifyPublic({ body: '<form data-auth-login-form><input type="password"></form>' }), /rejected/);
     await assert.rejects(verifyPublic({ body: 'Continue with Single Sign-On<script>window.location.replace("https://other.example/auth/?state=x&requestId=y")</script>' }), /rejected/);
     await assert.rejects(verifyPublic({ responses: {

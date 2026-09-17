@@ -4,6 +4,7 @@ import { requireActiveActor } from '../lib/authorization.mjs';
 import { runTool } from '../tools/registry.mjs';
 import { cancelReauthentication, completeReauthentication, startReauthentication } from '../lib/auth/operationGrants.mjs';
 import { completeContactVerification, startContactVerification } from '../lib/auth/contactVerification.mjs';
+import { setAccountPassword } from '../lib/auth/passwordManagement.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
 import { assertWritablePolicyFields, updateAuthPolicy } from '../lib/policy.mjs';
 import { rateSourceOf } from '../lib/auth/browserBinding.mjs';
@@ -149,9 +150,10 @@ function withEmailAvailability(profile, emailAvailable) {
     };
 }
 
-// Fresh re-authentication and contact verification for the signed-in actor.
-// These never run through the tool registry, so no MCP caller can relay
-// codes or the administrator password to obtain an operation grant.
+// Fresh re-authentication, contact verification and password management for
+// the signed-in actor. These never run through the tool registry, so no MCP
+// caller can relay codes or passwords to obtain a grant or change a password.
+// Passwords pass through unmodified; the domain applies their bounds.
 async function accountSecurity(path, body, { actorUserId, origin, deliverEmail, rateSource }) {
     const common = { userId: actorUserId, operation: bodyText(body, 'operation', 64), method: bodyText(body, 'method', 32) };
     if (path === 'reauth/start') {
@@ -159,7 +161,7 @@ async function accountSecurity(path, body, { actorUserId, origin, deliverEmail, 
     }
     if (path === 'reauth/verify') {
         return completeReauthentication({ ...common, origin, code: bodyText(body, 'code', 16), token: bodyText(body, 'token', 16),
-            challengeKey: bodyText(body, 'challengeKey', 128), assertion: body.assertion, password: bodyText(body, 'password', 4096), rateSource });
+            challengeKey: bodyText(body, 'challengeKey', 128), assertion: body.assertion, password: body.password, rateSource });
     }
     if (path === 'reauth/cancel') {
         await cancelReauthentication({ userId: actorUserId });
@@ -171,6 +173,10 @@ async function accountSecurity(path, body, { actorUserId, origin, deliverEmail, 
     }
     if (path === 'contact/verify') {
         return completeContactVerification({ userId: actorUserId, code: bodyText(body, 'code', 16) });
+    }
+    if (path === 'auth/password/set') {
+        return setAccountPassword({ userId: actorUserId, grant: bodyText(body, 'grant', 64), password: body.password,
+            passwordConfirmation: body.passwordConfirmation });
     }
     return null;
 }
@@ -234,7 +240,7 @@ export async function handleDashboard(req, res, url, { sendJson, serveStatic, go
                 : await runTool(adminOperation.tool, args, context);
             return sendJson(res, 200, { ok: true, result });
         }
-        if (path.startsWith('/api/reauth/') || path.startsWith('/api/contact/')) {
+        if (path.startsWith('/api/reauth/') || path.startsWith('/api/contact/') || path === '/api/auth/password/set') {
             await requireActiveActor(actorUserId);
             if ((path === '/api/contact/start' || (path === '/api/reauth/start' && body.method === 'emailCode'))
                 && (await emailStatus()).available !== true) fail(409, 'reauthentication_unavailable');

@@ -2259,7 +2259,7 @@ jobs:
           const headers = fs.readFileSync(process.argv[3], 'utf8').toLowerCase();
           const mismatchBody = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
           const mismatchHeaders = fs.readFileSync(process.argv[5], 'utf8').toLowerCase();
-          // BEGIN QA public passwordless verification
+          // BEGIN QA public email-first verification
           const publicUrl = 'https://explorer-qa.axiologic.dev';
           if (/EDGE_GENERATION_INACTIVE|cloudflare tunnel error|error code: 1033/i.test(body)) process.exit(1);
           const redirect = body.match(/window\.location\.replace\(("(?:[^"\\]|\\.)*")\)/);
@@ -2298,12 +2298,12 @@ jobs:
           console.log('[deploy-qa] UserPersisto readiness:', JSON.stringify({
             setupComplete: setup.setupComplete,
             registration: setup.registration,
-            methods: Object.fromEntries(['emailCode', 'passkey', 'totp', 'google'].map(name => [name, setup.methods[name] === true])),
+            methods: Object.fromEntries(['password', 'emailCode', 'passkey', 'totp', 'google'].map(name => [name, setup.methods[name] === true])),
           }));
-          // END QA public passwordless verification
+          // END QA public email-first verification
           NODE
             then
-              echo "[deploy-qa] Public edge verified the host-bound SSO login, passwordless wizard, OIDC issuer, and rejected a WebAssist selector switch."
+              echo "[deploy-qa] Public edge verified the host-bound SSO login, email-first wizard, OIDC issuer, and rejected a WebAssist selector switch."
               break
             fi
             if [ "$attempt" = "60" ]; then

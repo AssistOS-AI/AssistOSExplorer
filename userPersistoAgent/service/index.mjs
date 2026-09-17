@@ -16,7 +16,6 @@ import { createSsoWizardHandlers } from './ssoWizard.mjs';
 import { getCanonicalLoginOrigin } from '../lib/auth/canonicalLoginOrigin.mjs';
 import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
-import { googleOnlyAuthentication } from '../lib/auth/production.mjs';
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 const MIME = {
@@ -115,7 +114,7 @@ async function serveStatic(res, relPath) {
 
 async function handleGet(req, res, path, { emailStatus }) {
     if (path === '/service/auth/methods') {
-        const emailAvailable = !googleOnlyAuthentication() && (await emailStatus()).available === true;
+        const emailAvailable = (await emailStatus()).available === true;
         const methods = (await getEnabledAuthMethods()).filter((method) => method !== 'emailCode' || emailAvailable);
         return sendJson(res, 200, {
             ok: true,
@@ -124,7 +123,7 @@ async function handleGet(req, res, path, { emailStatus }) {
         });
     }
     if (path === '/service/auth/setup') {
-        const configuration = await wizardConfiguration({ emailAvailable: !googleOnlyAuthentication() && (await emailStatus()).available === true });
+        const configuration = await wizardConfiguration({ emailAvailable: (await emailStatus()).available === true });
         const methods = (await getEnabledAuthMethods()).filter((method) => method !== 'emailCode' || configuration.methods.emailCode);
         return sendJson(res, 200, { ok: true, ...configuration, enabledAuthMethods: methods,
             defaultAuthMethod: methods[0] || '', googleAvailable: configuration.methods.google });
@@ -203,8 +202,9 @@ async function handlePost(req, res, path, handlers) {
                 if (Object.prototype.hasOwnProperty.call(body, key)) patch[key] = body[key];
             }
             if (Object.prototype.hasOwnProperty.call(body, 'name')) patch.displayName = body.name;
+            // Each user sets their own password in My Account; administrators never set one.
             if (Object.prototype.hasOwnProperty.call(body, 'password') && body.password !== undefined && body.password !== null && body.password !== '') {
-                throw unsupported('password_unsupported', 'Accounts do not have passwords.');
+                throw unsupported('password_unsupported', 'Administrators cannot set account passwords.');
             }
             // Administration addresses the persisted account regardless of its
             // active status; only the SSO projection requires an active account.
@@ -270,6 +270,8 @@ async function handle(req, res, handlers) {
             res.setHeader('Retry-After', String(error.retryAfter));
         }
         if (Number.isSafeInteger(error.attemptsRemaining)) extra.attemptsRemaining = error.attemptsRemaining;
+        // A machine-readable refinement such as `too_short` or `send_limit`, never free text.
+        if (status < 500 && typeof error.reason === 'string' && /^[a-z_]{1,32}$/.test(error.reason)) extra.reason = error.reason;
         sendJson(res, status, { ok: false, error: code, ...extra });
     }
 }

@@ -4,28 +4,35 @@ import {
     publicKeyCreationFromServer,
     publicKeyRequestFromServer,
 } from '../auth/auth-api.js';
+import { DEFAULT_PASSWORD_POLICY, newPasswordProblem, passwordReasonMessage } from '../auth/password-rules.js';
 
 // Sensitive account changes need a fresh confirmation: the server issues a
 // single-use grant for exactly one operation, which is used immediately and
 // never stored. Codes, passwords and setup secrets are cleared on every
 // transition, cancellation, profile change and page exit.
 const REAUTH_LABELS = Object.freeze({
+    password: 'Password',
     emailCode: 'Email me a code',
     totp: 'Authenticator app code',
     passkey: 'Passkey',
-    adminPassword: 'Administrator password',
     google: 'Google Account',
 });
 const OPERATION_TITLES = Object.freeze({
+    'password.set': 'Confirm it is you to set a password',
     'passkey.register': 'Confirm it is you to add a passkey',
     'totp.enroll': 'Confirm it is you to set up an authenticator',
     'contact.verify': 'Confirm it is you to verify a sign-in email',
 });
 
+// HTTP failures carry `error` with an optional `reason` refinement; tool
+// results carry only `reason`.
 function errorCode(error) {
-    return error?.payload?.reason || error?.payload?.error
-        || error?.data?.reason || error?.data?.error || error?.reason || error?.message;
+    return error?.payload?.error || error?.payload?.reason
+        || error?.data?.error || error?.data?.reason || error?.reason || error?.message;
 }
+
+// A refused new password leaves the operation grant unspent on the server.
+const PASSWORD_RETRY_CODES = new Set(['invalid_password', 'password_mismatch', 'rate_limited']);
 
 function enrollmentError(error, fallback) {
     const code = errorCode(error);
@@ -33,6 +40,8 @@ function enrollmentError(error, fallback) {
     if (error?.name === 'NotAllowedError' || error?.name === 'AbortError') return 'Passkey request was canceled. You can try again.';
     if (error?.name === 'SecurityError') return 'Passkeys are unavailable at this address. Open your workspace using its secure address.';
     if (code === 'invalid_token') return 'That code did not match. Enter the current six-digit code from your authenticator.';
+    if (code === 'password_mismatch') return 'The passwords do not match.';
+    if (code === 'invalid_password') return passwordReasonMessage(payload.reason || error?.reason);
     if (code === 'code_invalid') {
         return `That code did not match.${Number.isInteger(payload.attemptsRemaining) ? ` ${payload.attemptsRemaining} attempt${payload.attemptsRemaining === 1 ? '' : 's'} left.` : ''}`;
     }
@@ -96,6 +105,18 @@ export class AccountEnrollment {
                 </form>
             </section>
             <div class="up-method">
+                <div><h3>Password</h3><p>Sign in with your email and a password.</p><p data-password-status></p></div>
+                <button type="button" data-password-start>Set a password</button>
+            </div>
+            <form class="up-password-setup" data-password-setup hidden>
+                <h3 data-password-title tabindex="-1"></h3>
+                <input data-password-username type="email" autocomplete="username" readonly hidden>
+                <label>New password<input data-password-new type="password" autocomplete="new-password" spellcheck="false" required></label>
+                <label>Confirm new password<input data-password-confirm type="password" autocomplete="new-password" spellcheck="false" required></label>
+                <p data-password-hint></p>
+                <div class="up-enrollment-actions"><button type="submit" data-password-save>Save password</button><button type="button" class="up-secondary" data-password-cancel>Cancel</button></div>
+            </form>
+            <div class="up-method">
                 <div><h3>Passkeys</h3><p>Sign in with your device, fingerprint, or security key.</p><p data-passkey-status></p></div>
                 <button type="button" data-passkey-start>Add a passkey</button>
             </div>
@@ -107,7 +128,7 @@ export class AccountEnrollment {
                 <h3 data-reauth-title tabindex="-1"></h3>
                 <label>Confirm with<select data-reauth-method></select></label>
                 <label data-reauth-code-label hidden>Six-digit code<input data-reauth-code inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"></label>
-                <label data-reauth-password-label hidden>Administrator password<input data-reauth-password type="password" autocomplete="current-password" maxlength="1024"></label>
+                <label data-reauth-password-label hidden>Password<input data-reauth-password type="password" autocomplete="current-password" spellcheck="false"></label>
                 <div class="up-enrollment-actions"><button type="submit" data-reauth-submit>Continue</button><button type="button" class="up-secondary" data-reauth-cancel>Cancel</button></div>
             </form>
             <form class="up-totp-setup" data-totp-setup hidden autocomplete="off">
@@ -119,6 +140,15 @@ export class AccountEnrollment {
             </form>
             <p class="up-enrollment-status" data-enrollment-status role="status" aria-live="polite"></p>`;
         const select = (name) => this.element.querySelector(`[data-${name}]`);
+        this.passwordButton = select('password-start');
+        this.passwordStatus = select('password-status');
+        this.passwordForm = select('password-setup');
+        this.passwordTitle = select('password-title');
+        this.passwordUsername = select('password-username');
+        this.passwordInput = select('password-new');
+        this.passwordConfirmInput = select('password-confirm');
+        this.passwordHint = select('password-hint');
+        this.passwordSaveButton = select('password-save');
         this.passkeyButton = select('passkey-start');
         this.passkeyStatus = select('passkey-status');
         this.totpButton = select('totp-start');
@@ -146,6 +176,9 @@ export class AccountEnrollment {
         this.contactVerifyButton = select('contact-verify');
         this.contactResendButton = select('contact-resend');
         this.status = select('enrollment-status');
+        this.passwordButton.addEventListener('click', () => void this.startPassword());
+        select('password-cancel').addEventListener('click', () => this.cancel());
+        this.passwordForm.addEventListener('submit', (event) => { event.preventDefault(); void this.savePassword(); });
         this.passkeyButton.addEventListener('click', () => void this.startPasskey());
         this.totpButton.addEventListener('click', () => void this.startTotp());
         select('totp-cancel').addEventListener('click', () => this.cancel());
@@ -201,6 +234,7 @@ export class AccountEnrollment {
 
     render() {
         if (this.disposed) return;
+        this.renderPassword();
         const passkey = this.profile?.enrollments?.passkey || {};
         const totp = this.profile?.enrollments?.totp || {};
         const verified = this.signInEmailVerified();
@@ -225,11 +259,38 @@ export class AccountEnrollment {
         this.renderContact();
     }
 
+    passwordConfigured() {
+        return this.profile?.enrollments?.password?.configured === true;
+    }
+
+    renderPassword() {
+        const configured = this.passwordConfigured();
+        const editing = Boolean(this.passwordGrant);
+        this.passwordStatus.textContent = !this.enabled('password') ? 'Disabled by your administrator.'
+            : !this.signInEmailVerified() ? 'Verify a sign-in email first.'
+                : editing ? 'Enter your new password below.'
+                    : configured ? 'A password is set for this account.' : 'No password set yet.';
+        this.passwordButton.textContent = configured ? 'Change password' : 'Set a password';
+        this.passwordButton.disabled = this.busy || editing || !this.enabled('password') || !this.signInEmailVerified();
+        this.passwordForm.hidden = !editing;
+        this.passwordTitle.textContent = configured ? 'Change password' : 'Set a password';
+        const length = `Use at least ${DEFAULT_PASSWORD_POLICY.minLength} characters.`;
+        this.passwordHint.textContent = configured
+            ? `${length} Changing your password signs out every session, including this one.`
+            : `${length} A long phrase that only you know works well.`;
+        this.passwordUsername.value = this.profile?.user?.email || '';
+        this.passwordInput.disabled = this.busy;
+        this.passwordConfirmInput.disabled = this.busy;
+        this.passwordSaveButton.disabled = this.busy || !editing;
+    }
+
     renderConfirmation() {
         const flow = this.confirmation;
         this.reauthForm.hidden = !flow;
         if (!flow) return;
-        this.reauthTitle.textContent = OPERATION_TITLES[flow.operation] || 'Confirm it is you';
+        this.reauthTitle.textContent = flow.operation === 'password.set' && this.passwordConfigured()
+            ? 'Confirm it is you to change your password'
+            : OPERATION_TITLES[flow.operation] || 'Confirm it is you';
         const methods = this.confirmationMethods();
         if (this.reauthMethod.dataset?.methods !== methods.join(',')) {
             this.reauthMethod.replaceChildren(...methods.map((method) => {
@@ -243,7 +304,7 @@ export class AccountEnrollment {
         this.reauthMethod.value = flow.method;
         const needsCode = flow.method === 'totp' || (flow.method === 'emailCode' && flow.codeSent);
         this.reauthCodeLabel.hidden = !needsCode;
-        this.reauthPasswordLabel.hidden = flow.method !== 'adminPassword';
+        this.reauthPasswordLabel.hidden = flow.method !== 'password';
         this.reauthSubmit.textContent = flow.method === 'emailCode' && !flow.codeSent ? 'Email me a code'
             : flow.method === 'passkey' ? 'Use a passkey' : flow.method === 'google' ? 'Confirm with Google' : 'Continue';
         this.reauthSubmit.disabled = this.busy;
@@ -287,8 +348,10 @@ export class AccountEnrollment {
         this.activeMethod = '';
         this.busy = false;
         this.confirmation = null;
+        this.passwordGrant = '';
         this.setupId = '';
         this.contactEmail = '';
+        this.clearPasswordInputs();
         this.secretInput.value = '';
         this.uriInput.value = '';
         this.tokenInput.value = '';
@@ -296,8 +359,14 @@ export class AccountEnrollment {
         this.reauthPasswordInput.value = '';
         this.contactCodeInput.value = '';
         this.setupForm.hidden = true;
+        this.passwordForm.hidden = true;
         this.reauthForm.hidden = true;
         this.contactCodeForm.hidden = true;
+    }
+
+    clearPasswordInputs() {
+        this.passwordInput.value = '';
+        this.passwordConfirmInput.value = '';
     }
 
     cancel() {
@@ -351,8 +420,8 @@ export class AccountEnrollment {
             this.setStatus('Enter the six-digit code.', true);
             return;
         }
-        if (method === 'adminPassword' && !password) {
-            this.setStatus('Enter the administrator password.', true);
+        if (method === 'password' && !password) {
+            this.setStatus('Enter your password.', true);
             return;
         }
         this.busy = true;
@@ -370,7 +439,7 @@ export class AccountEnrollment {
             const proof = { operation: flow.operation, method };
             if (method === 'emailCode') proof.code = code;
             if (method === 'totp') proof.token = code;
-            if (method === 'adminPassword') proof.password = password;
+            if (method === 'password') proof.password = password;
             if (method === 'passkey') {
                 this.setStatus('Follow your browser’s instructions to use your passkey.');
                 const options = checkedResult(await this.callTool('reauth_start', { operation: flow.operation, method }));
@@ -399,7 +468,9 @@ export class AccountEnrollment {
             if (this.current(operation)) {
                 this.reauthCodeInput.value = '';
                 this.reauthPasswordInput.value = '';
-                this.setStatus(enrollmentError(error, 'We could not confirm it is you. Try again.'), true);
+                this.setStatus(method === 'password' && errorCode(error) === 'authentication_failed'
+                    ? 'That password is not correct. Try again or choose another confirmation method.'
+                    : enrollmentError(error, 'We could not confirm it is you. Try again.'), true);
             }
         } finally {
             if (this.current(operation)) { this.busy = false; this.render(); }
@@ -447,6 +518,65 @@ export class AccountEnrollment {
                 if (transaction) void Promise.resolve(this.callTool('reauth_cancel', {
                     method: 'google', operation: flow.operation, transaction,
                 })).catch(() => {});
+            }
+        }
+    }
+
+    async startPassword() {
+        if (this.disposed || this.busy || this.passwordButton.disabled) return;
+        this.requestConfirmation('password.set', 'password', (grant, operation) => this.openPasswordForm(grant, operation));
+    }
+
+    // The grant stays in memory only while this form is open, so a refused
+    // password can be corrected without confirming again.
+    openPasswordForm(grant, operation) {
+        if (!this.current(operation)) return;
+        this.activeMethod = 'password';
+        this.passwordGrant = String(grant || '');
+        this.render();
+        this.passwordTitle.focus?.();
+    }
+
+    async savePassword() {
+        if (this.disposed || this.busy || !this.passwordGrant || !this.enabled('password')) return;
+        const password = this.passwordInput.value;
+        const passwordConfirmation = this.passwordConfirmInput.value;
+        // Submitted values never stay in the page, whatever the outcome.
+        this.clearPasswordInputs();
+        const problem = newPasswordProblem(password, passwordConfirmation);
+        if (problem) {
+            this.setStatus(enrollmentError({ payload: { error: problem.code, reason: problem.reason } }, 'Choose a different password.'), true);
+            this.passwordInput.focus?.();
+            return;
+        }
+        const operation = this.operation;
+        this.busy = true;
+        this.render();
+        try {
+            const result = checkedResult(await this.callTool('password_set', { grant: this.passwordGrant, password, passwordConfirmation }));
+            if (!this.current(operation)) return;
+            this.clearSensitiveState();
+            const completedOperation = this.operation;
+            this.profile = { ...this.profile, enrollments: { ...this.profile.enrollments, password: { configured: true } } };
+            this.render();
+            this.setStatus(result.changed
+                ? 'Password changed. Every session is signed out, including this one; sign in again with your new password when asked.'
+                : 'Password set. You can use it to sign in.');
+            try { await this.onEnrolled(); } catch (_) {
+                if (this.current(completedOperation)) this.setStatus('Password saved. Refresh your profile to see its current status.');
+            }
+        } catch (error) {
+            if (!this.current(operation)) return;
+            if (!PASSWORD_RETRY_CODES.has(errorCode(error))) {
+                this.clearSensitiveState();
+                this.render();
+            }
+            this.setStatus(enrollmentError(error, 'Unable to save your password. Confirm it is you and try again.'), true);
+        } finally {
+            if (this.current(operation)) {
+                this.busy = false;
+                this.render();
+                if (this.passwordGrant) this.passwordInput.focus?.();
             }
         }
     }

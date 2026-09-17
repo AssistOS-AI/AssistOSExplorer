@@ -9,7 +9,7 @@ import { authGenerationOf, getUserById } from '../lib/users.mjs';
 import { completeGoogleReauthentication, googleReauthenticationAccount } from '../lib/auth/operationGrants.mjs';
 import { loginVerify as verifyTotp } from '../lib/auth/totp.mjs';
 import { loginOptions, loginVerify } from '../lib/auth/passkey.mjs';
-import { verifyAdministratorPassword } from '../lib/auth/adminPassword.mjs';
+import { verifyAccountPassword } from '../lib/auth/userPassword.mjs';
 import { hashCode, codeHashMatches } from '../lib/auth/email-code.mjs';
 import { assertEmailVerifyBudget, deliverCode, developmentLogFallback, recordEmailVerifyFailure } from '../lib/auth/emailAttempts.mjs';
 import { rateSourceOf } from '../lib/auth/browserBinding.mjs';
@@ -23,7 +23,7 @@ const HANDLE = /^[a-f0-9]{64}$/;
 const CODE_COOLDOWN_MS = 60_000;
 const MAX_CODE_FAILURES = 5;
 const MAX_CODE_SENDS = 5;
-const METHOD_LABELS = { emailCode: 'an email code', passkey: 'a passkey', totp: 'an authenticator code', adminPassword: 'the administrator password' };
+const METHOD_LABELS = { emailCode: 'an email code', password: 'your password', passkey: 'a passkey', totp: 'an authenticator code' };
 const same = (a, b) => {
     const left = Buffer.from(String(a || ''));
     const right = Buffer.from(String(b || ''));
@@ -277,7 +277,12 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
             const retained = payload.parent;
             if (payload.flow !== context.flow || retained.origin !== context.parent.origin || retained.redirectUri !== context.parent.redirectUri
                 || (payload.flow === 'oidc' ? retained.uid !== context.parent.uid || retained.clientId !== context.parent.clientId : retained.requestId !== context.parent.requestId)) throw googleError();
-            await context.validate();
+            const validateParent = async () => {
+                if ((await requireGoogleConfiguration()).fingerprint !== config.fingerprint) throw googleError();
+                if (transaction.expiresAt <= Date.now()) throw googleError();
+                await context.validate();
+            };
+            await validateParent();
             if (req.method === 'POST' && (req.headers.origin !== config.redirect.origin || !same(body.csrf, payload.csrf))) throw googleError('invalid_request', 403);
             if (req.method !== 'GET' && req.method !== 'POST') throw googleError('invalid_request', 405);
             if (req.method === 'GET' && action) throw googleError('invalid_request', 405);
@@ -316,9 +321,10 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                                 content += form(base, 'verify-link-code', payload.csrf, `${input('code', 'Email code', 'inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"')}<button>Verify code</button>`);
                             }
                         }
+                        // Password inputs carry no maxlength: browsers would silently truncate a pasted password.
+                        if (methods.includes('password')) content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="password">${input('password', 'Password', 'type="password" autocomplete="current-password"')}<button>Confirm with password</button>`);
                         if (methods.includes('totp')) content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="totp">${input('token', 'Authenticator code', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6"')}<button>Confirm with authenticator</button>`);
                         if (methods.includes('passkey')) content += form(base, 'challenge', payload.csrf, '<button data-google-passkey>Confirm with passkey</button>');
-                        if (methods.includes('adminPassword')) content += form(base, 'authenticate', payload.csrf, `<input type="hidden" name="method" value="adminPassword">${input('password', 'Administrator password', 'type="password" autocomplete="current-password" maxlength="1024"')}<button>Confirm with administrator password</button>`);
                         if (!methods.length) content += '<p>This account has no sign-in method that can confirm linking. Sign in with your existing method, or contact an administrator.</p>';
                     }
                 } else content += `<p>Verify your current mailbox before creating an account.</p>${form(base, 'send-email-proof', payload.csrf, '<button>Send verification code</button>')}${form(base, 'verify-email-proof', payload.csrf, `${input('code', 'Email verification code', 'inputmode="numeric" autocomplete="one-time-code" maxlength="6"')}<button>Verify and continue</button>`)}`;
@@ -366,7 +372,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
             };
             if (['authenticate', 'challenge'].includes(action)) {
                 const method = action === 'challenge' ? 'passkey' : body.method;
-                if (resolution.kind !== 'collision' || !['passkey', 'totp', 'adminPassword'].includes(method) || !resolution.eligibleMethods.includes(method)) throw googleError();
+                if (resolution.kind !== 'collision' || !['password', 'passkey', 'totp'].includes(method) || !resolution.eligibleMethods.includes(method)) throw googleError();
                 let result;
                 if (action === 'challenge') {
                     result = await loginOptions({ email: resolution.email, origin: retained.origin, purpose: `google-link:${handle}` });
@@ -375,14 +381,17 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                     return json(res, 200, result);
                 }
                 if (method === 'totp') result = await verifyTotp({ email: resolution.email, token: body.token }, { includeCredentialProof: true });
-                if (method === 'adminPassword') {
-                    // Only the designated administrator and current verifier can
-                    // authorize a link; the later commit rechecks this proof.
+                if (method === 'password') {
+                    // The exact collision account's own password, under the login
+                    // lock, budgets and KDF gate; the later commit rechecks the
+                    // credential version and account generation.
                     try {
-                        const verified = await verifyAdministratorPassword({ password: body.password, rateSource: rateSourceOf(req) });
-                        result = { ok: true, user: { id: resolution.userId }, credentialVersion: verified.credentialVersion };
+                        const verified = await verifyAccountPassword({ userId: resolution.userId, password: body.password, rateSource: rateSourceOf(req), validateParent },
+                            { includeCredentialProof: true });
+                        result = verified;
                     } catch (error) {
                         if (error?.code === 'rate_limited') return render('Too many attempts. Wait and try again.');
+                        if (!['authentication_failed', 'auth_method_disabled'].includes(error?.code)) throw error;
                         result = { ok: false };
                     }
                 }
@@ -394,7 +403,7 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
                 }
                 if (!result?.ok || result.user.id !== resolution.userId) return render('Unable to confirm with that credential.');
                 await save({ linkProof: { transactionId: handle, userId: resolution.userId, email: resolution.email, method,
-                    authenticatedAt: Date.now(), credentialVersion: result.credentialVersion,
+                    authenticatedAt: Date.now(), credentialVersion: result.credentialVersion, generation: authGenerationOf(result.user),
                     ...(result.credentialKey ? { credentialKey: result.credentialKey } : {}) }, passkeyChallenge: undefined });
                 return render();
             }
@@ -436,11 +445,6 @@ export function createGoogleAuthHandlers({ protocol = createGoogleProtocol(), de
             } else if (action && action !== 'verify-email-proof') throw googleError();
             if (resolution.kind === 'collision' && action !== 'confirm-link') return render();
             if (resolution.kind === 'registration' && resolution.mailboxProofRequired && !payload.mailboxProof) return render();
-            const validateParent = async () => {
-                if ((await requireGoogleConfiguration()).fingerprint !== config.fingerprint) throw googleError();
-                if (transaction.expiresAt <= Date.now()) throw googleError();
-                await context.validate();
-            };
             const result = await completeGoogleIdentity({ identity: payload.identity, transactionId: handle, collisionTarget: payload.collision, linkProof: payload.linkProof, mailboxProof: payload.mailboxProof,
                 validateParent, prepareCompletion: () => prepareGoogleTransactionTransition(handle, proof, { from: ['verified'], to: 'consumed' }) });
             setProof(res, handle, config, '', 0);

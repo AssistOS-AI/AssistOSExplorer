@@ -7,19 +7,19 @@ import { authGenerationOf, getUserById, hasVerifiedMailbox } from '../users.mjs'
 import { sendAuthCode } from '../email-agent-client.mjs';
 import { attemptError } from './emailAttempts.mjs';
 import { cancelAccountCode, checkAccountCode, sendAccountCode } from './accountCodes.mjs';
-import { administratorPasswordUsableFor, assertAdministratorPasswordProof, verifyAdministratorPassword } from './adminPassword.mjs';
+import { assertPasswordProof, verifyAccountPassword } from './userPassword.mjs';
 import * as passkey from './passkey.mjs';
 import * as totp from './totp.mjs';
 import { getGoogleStatus, GOOGLE_ISSUER } from './google.mjs';
 import { googleIdentityKey } from '../externalIdentities.mjs';
-import { googleOnlyAuthentication } from './production.mjs';
+import { GRANT_OPERATIONS } from './grantOperations.mjs';
 
 // Sensitive My Account operations need fresh, explicit re-authentication. A
 // successful proof yields a single-use grant bound to the account, the one
 // operation it authorizes and the account generation, valid for five minutes.
 // An old session alone, or a grant for another operation, cannot enroll.
-export const GRANT_OPERATIONS = new Set(['passkey.register', 'totp.enroll', 'contact.verify']);
-const REAUTH_METHODS = ['emailCode', 'passkey', 'totp', 'adminPassword'];
+export { GRANT_OPERATIONS };
+const REAUTH_METHODS = ['password', 'emailCode', 'passkey', 'totp'];
 const GRANT_METHODS = new Set([...REAUTH_METHODS, 'google']);
 const GRANT_TTL_MS = 5 * 60 * 1000;
 const GRANT_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -51,11 +51,11 @@ async function activeUser(userId) {
     return user;
 }
 
-// Passkey and authenticator sign-in are reached through the account's sign-in
-// email, so they are enrolled only once a verified mailbox exists. Contact
-// verification exists only for an account without one (no email replacement).
+// Password, passkey and authenticator sign-in are reached through the account's
+// sign-in email, so they are enrolled only once a verified mailbox exists.
+// Contact verification exists only for an account without one (no email replacement).
 export function assertOperationAllowed(user, operation) {
-    if ((operation === 'passkey.register' || operation === 'totp.enroll') && !hasVerifiedMailbox(user)) {
+    if (['passkey.register', 'totp.enroll', 'password.set'].includes(operation) && !hasVerifiedMailbox(user)) {
         throw grantError('verified_email_required', 409);
     }
     if (operation === 'contact.verify' && hasVerifiedMailbox(user)) throw grantError('sign_in_email_exists', 409);
@@ -66,15 +66,14 @@ export async function reauthenticationMethods(user) {
     const enabled = policy.enabledAuthMethods;
     const credentials = await (await getStore()).getAuthMethodsObjectsByUserId(user.id) || [];
     const methods = [];
+    const enrolled = (type) => Boolean(user.email) && enabled.includes(type) && credentials.some((method) => method.enabled && method.type === type);
+    if (enrolled('password')) methods.push('password');
     if (enabled.includes('emailCode') && hasVerifiedMailbox(user)) methods.push('emailCode');
-    for (const type of ['passkey', 'totp']) {
-        if (user.email && enabled.includes(type) && credentials.some((method) => method.enabled && method.type === type)) methods.push(type);
-    }
+    for (const type of ['passkey', 'totp']) if (enrolled(type)) methods.push(type);
     if ((await getGoogleStatus()).available) {
         const bindings = await (await getStore()).getExternalIdentitiesObjectsByUserId(user.id) || [];
         if (bindings.some((binding) => binding.issuer === GOOGLE_ISSUER && binding.subject)) methods.push('google');
     }
-    if (await administratorPasswordUsableFor(user.id)) methods.push('adminPassword');
     return methods;
 }
 
@@ -119,7 +118,7 @@ async function assertMethod(user, method) {
 
 // Starts re-authentication. Email codes go to the verified sign-in mailbox;
 // passkeys receive a challenge scoped to this account and operation. TOTP and
-// the administrator password need no start step.
+// the account password need no start step.
 export async function startReauthentication({ userId, operation, method, origin = '', rpId = '', resend = false, deliver = sendAuthCode }) {
     assertOperation(operation);
     const user = await activeUser(userId);
@@ -182,8 +181,9 @@ export async function completeReauthentication({ userId, operation, method, code
     assertOperationAllowed(user, operation);
     await assertMethod(user, method);
     let passwordProof = null;
-    if (method === 'adminPassword') {
-        passwordProof = await verifyAdministratorPassword({ password, rateSource });
+    if (method === 'password') {
+        // Same lock, budgets and KDF gate as password login.
+        passwordProof = await verifyAccountPassword({ userId: user.id, password, rateSource }, { includeCredentialProof: true });
     } else if (method === 'totp') {
         const result = await totp.reauthenticationVerify({ userId: user.id, token });
         if (!result.ok) {
@@ -200,7 +200,8 @@ export async function completeReauthentication({ userId, operation, method, code
         if (authGenerationOf(current) !== authGenerationOf(user) || !(await reauthenticationMethods(current)).includes(method)) {
             throw grantError('authentication_failed', 401);
         }
-        if (passwordProof && !(await assertAdministratorPasswordProof(await getStore(), { userId: current.id, credentialVersion: passwordProof.credentialVersion }))) {
+        if (passwordProof && !(await assertPasswordProof(await getStore(), { userId: current.id,
+            credentialVersion: passwordProof.credentialVersion, generation: authGenerationOf(current) }))) {
             throw grantError('authentication_failed', 401);
         }
         if (method !== 'emailCode') return issueGrant(current, operation, method);
@@ -217,9 +218,10 @@ export function cancelReauthentication({ userId }) {
     return cancelAccountCode({ userId, purpose: 'reauth-code' });
 }
 
-// Consumes a grant inside the caller's users lock and persistence scope. The
-// account's own grant is deleted on any use, so it authorizes exactly one
-// operation start; another account's grant is refused without touching it.
+// Looks up and validates a grant inside the caller's users lock and persistence
+// scope without spending it. The caller stages `consume` in the commit that
+// uses it: the account's own grant is deleted on any use, so it authorizes
+// exactly one operation; another account's grant is refused without touching it.
 export async function stageGrantConsumption({ userId, operation, grant }) {
     assertOperation(operation);
     if (typeof grant !== 'string' || !GRANT_TOKEN.test(grant)) throw grantError('operation_grant_required', 403);
@@ -230,7 +232,6 @@ export async function stageGrantConsumption({ userId, operation, grant }) {
     try { meta = JSON.parse(record.correlationId || '{}') || {}; } catch { meta = {}; }
     const user = await getUserById(userId);
     const valid = record.subject === userId && meta.operation === operation && GRANT_METHODS.has(meta.method) && Date.parse(record.expiresAt) > Date.now()
-        && (!googleOnlyAuthentication() || meta.method === 'google')
         && user?.status === 'active' && meta.generation === authGenerationOf(user);
     return {
         valid,

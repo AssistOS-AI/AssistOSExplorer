@@ -3,6 +3,7 @@
 // private runtime-origins operation and provider bridge, and the real
 // UserPersisto provider runtime, service and wizard endpoints with isolated
 // persistence and captured email delivery.
+import { randomBytes } from 'node:crypto';
 import test, { after, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -243,10 +244,12 @@ async function beginLogin(host, returnTo = '/portal/') {
     };
 }
 
-async function emailCode(wizard, requestId, email, purpose) {
+// Stages a password signup through the wizard routes and returns its emailed code.
+async function signupCode(wizard, requestId, email) {
     const before = deliveries.length;
     assert.equal((await wizard('/service/auth/attempt', { requestId })).status, 200);
-    const started = await wizard('/service/auth/email-code/start', { requestId, email, purpose });
+    const password = `integration ${randomBytes(18).toString('base64url')}`;
+    const started = await wizard('/service/auth/signup/start', { requestId, email, password, passwordConfirmation: password });
     assert.equal(started.status, 200, JSON.stringify(started.body));
     assert.equal(deliveries.length, before + 1);
     return deliveries.at(-1).code;
@@ -259,8 +262,8 @@ test('a bound Tailscale origin completes login, callback, and session with an em
     assert.ok(privateRequests.length > readsBefore, 'the login decision read the active Router origins');
 
     const wizard = wizardBrowser(TAILSCALE_HOST);
-    const code = await emailCode(wizard, requestId, 'owner@example.test', 'register');
-    const verified = await wizard('/service/auth/email-code/verify', { requestId, code, state });
+    const code = await signupCode(wizard, requestId, 'owner@example.test');
+    const verified = await wizard('/service/auth/signup/verify', { requestId, code, state });
     assert.equal(verified.status, 200, JSON.stringify(verified.body));
     assert.equal(verified.body.redirectUri, `http://${TAILSCALE_HOST}/auth/callback`);
     assert.equal(verified.body.state, state);
@@ -331,7 +334,7 @@ test('unknown, opted-out, and unavailable origins are rejected with clear safe r
 test('removing a bound origin denies its pending login at the next origin check while remaining origins work', async (t) => {
     const pending = await beginLogin(TAILSCALE_HOST);
     const wizard = wizardBrowser(TAILSCALE_HOST);
-    const code = await emailCode(wizard, pending.requestId, 'pending-member@example.test', 'register');
+    const code = await signupCode(wizard, pending.requestId, 'pending-member@example.test');
 
     // Rebind to one address: the Box is recreated and the graph re-applied.
     bindBox(['pgx']);
@@ -341,7 +344,7 @@ test('removing a bound origin denies its pending login at the next origin check 
     });
     applyEdgeRoutingGeneration({ workspaceRoot: workspace, reason: 'integration-rebind', publicationState: 'ready' });
 
-    const rejected = await wizard('/service/auth/email-code/verify', { requestId: pending.requestId, code, state: pending.state });
+    const rejected = await wizard('/service/auth/signup/verify', { requestId: pending.requestId, code, state: pending.state });
     assert.equal(rejected.status, 403);
     assert.deepEqual(rejected.body, { ok: false, error: 'redirect_origin_not_allowed' });
     const codes = await (await getStore()).select('ssoAuthCode');

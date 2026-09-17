@@ -13,7 +13,8 @@ const { updateAuthPolicy } = await import('../lib/policy.mjs');
 const { getUserCapabilities } = await import('../lib/authorization.mjs');
 const { getInstallationSetup } = await import('../lib/setup.mjs');
 const { getStore, resetStoreForTests } = await import('../lib/store.mjs');
-const { completeEmailSignIn, startEmailSignIn } = await import('../lib/auth/signIn.mjs');
+const { completeSignup, startSignup } = await import('../lib/auth/signup.mjs');
+const { loginWithUserPassword } = await import('../lib/auth/userPassword.mjs');
 const { createLoginRequest, prepareSsoHandoff } = await import('../lib/sso.mjs');
 const { completeGoogleIdentity, GOOGLE_ISSUER } = await import('../lib/externalIdentities.mjs');
 const setup = await import('./helpers/setup.mjs');
@@ -32,23 +33,31 @@ async function freshStore() {
 beforeEach(async () => {
     await freshStore();
     delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
+    delete process.env.USERPERSISTO_AUTH_METHODS;
 });
 
-test('requesting a registration code creates no account and does not claim setup', async () => {
+async function stagedSignup(email) {
     const request = await createLoginRequest({ redirectUri: 'http://127.0.0.1/auth/callback' });
     const parent = { flow: 'sso', id: request.providerState, expiresAt: Date.parse(request.expiresAt) };
+    const browserProof = setup.newBrowserProof();
+    const secret = setup.newTestPassword();
     const sent = [];
-    await startEmailSignIn({ parent, browserProof: setup.newBrowserProof(), email: 'pending-owner@example.test', purpose: 'register',
+    await startSignup({ parent, browserProof, email, password: secret, passwordConfirmation: secret,
         deliver: async (message) => { sent.push(message); return { delivered: true }; } });
-    assert.equal(sent.length, 1);
+    return { request, parent, browserProof, sent, secret };
+}
+
+test('a pending password signup creates no account and does not claim setup', async () => {
+    const pending = await stagedSignup('pending-owner@example.test');
+    assert.equal(pending.sent.length, 1);
     assert.equal(await getUserByEmail('pending-owner@example.test'), null);
     assert.equal((await getInstallationSetup()).complete, false);
 });
 
 test('concurrent mixed-method first completions create exactly one administrator and a durable setup record', async () => {
     const outcomes = await Promise.all([
-        setup.registerWithEmailCode('owner-a@example.test'),
-        setup.registerWithEmailCode('owner-b@example.test'),
+        setup.signUpWithPassword('owner-a@example.test'),
+        setup.signUpWithPassword('owner-b@example.test'),
         completeGoogleIdentity({
             identity: { issuer: GOOGLE_ISSUER, subject: 'first-google-owner', email: 'owner-c@gmail.com', emailVerified: true },
             transactionId: 'first-google-completion',
@@ -70,11 +79,11 @@ test('concurrent mixed-method first completions create exactly one administrator
 });
 
 test('later public signups receive exactly selfRegistered and no Explorer access', async () => {
-    const first = await setup.registerWithEmailCode('first@example.test');
+    const first = await setup.signUpWithPassword('first@example.test');
     assert.equal(first.initialAdministrator, true);
     assert.deepEqual(first.roles, ['admin']);
     assert.ok((await getUserCapabilities(first.user.id)).includes('explorer.access'));
-    const later = await setup.registerWithEmailCode('later@example.test');
+    const later = await setup.signUpWithPassword('later@example.test');
     assert.equal(later.initialAdministrator, false);
     assert.deepEqual(await getUserRoles(later.user.id), ['selfRegistered']);
     assert.deepEqual(await getUserCapabilities(later.user.id), ['selfregistered.dashboard.access']);
@@ -82,52 +91,54 @@ test('later public signups receive exactly selfRegistered and no Explorer access
 });
 
 test('registration policy governs only later signup and cannot configure another default role', async () => {
-    const first = await setup.registerWithEmailCode('policy-owner@example.test');
+    const first = await setup.signUpWithPassword('policy-owner@example.test');
     await assert.rejects(updateAuthPolicy({ defaultRegistrationRole: 'user' }, { actorId: first.user.id }), { code: 'invalid_policy_field' });
-    await assert.rejects(updateAuthPolicy({ enabledAuthMethods: ['password'] }, { actorId: first.user.id }), { code: 'invalid_auth_method' });
+    // `password` is an ordinary policy method; retired names are not.
+    for (const retired of ['adminPassword', 'passwordless']) {
+        await assert.rejects(updateAuthPolicy({ enabledAuthMethods: [retired] }, { actorId: first.user.id }), { code: 'invalid_auth_method' });
+    }
+    const passwordOnly = await updateAuthPolicy({ enabledAuthMethods: ['password'] }, { actorId: first.user.id, emailStatus: async () => ({ available: false }) });
+    assert.deepEqual(passwordOnly.enabledAuthMethods, ['password']);
+    await updateAuthPolicy({ enabledAuthMethods: ['password', 'emailCode', 'passkey', 'totp', 'google'] }, { actorId: first.user.id, emailStatus: async () => ({ available: true }) });
     process.env.USERPERSISTO_DEFAULT_REGISTRATION_ROLE = 'user';
     try {
-        const later = await setup.registerWithEmailCode('ignores-env@example.test');
+        const later = await setup.signUpWithPassword('ignores-env@example.test');
         assert.deepEqual(await getUserRoles(later.user.id), ['selfRegistered']);
     } finally { delete process.env.USERPERSISTO_DEFAULT_REGISTRATION_ROLE; }
     await updateAuthPolicy({ selfRegistrationEnabled: false }, { actorId: first.user.id, emailStatus: async () => ({ available: true }) });
-    await assert.rejects(setup.registerWithEmailCode('closed@example.test'), { code: 'registration_disabled' });
+    await assert.rejects(setup.signUpWithPassword('closed@example.test'), { code: 'registration_disabled' });
     assert.equal(await getUserByEmail('closed@example.test'), null);
     // Returning sign-in still works while registration is disabled.
-    const returning = await setup.signInWithEmailCode('policy-owner@example.test', { purpose: 'login' });
+    const returning = await setup.signInWithEmailCode('policy-owner@example.test');
     assert.equal(returning.user.id, first.user.id);
+    assert.equal((await loginWithUserPassword({ email: 'policy-owner@example.test', password: first.password })).user.id, first.user.id);
 });
 
 test('a signup started while unclaimed is rechecked against policy when another completion claims first', async () => {
     // Before setup the first-owner path ignores the registration policy.
     process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED = 'false';
-    const request = await createLoginRequest({ redirectUri: 'http://127.0.0.1/auth/callback' });
-    const parent = { flow: 'sso', id: request.providerState, expiresAt: Date.parse(request.expiresAt) };
-    const browserProof = setup.newBrowserProof();
-    let pending;
-    await startEmailSignIn({ parent, browserProof, email: 'pending-signup@example.test', purpose: 'register',
-        deliver: async (message) => { pending = message; return { delivered: true }; } });
-    const owner = await setup.registerWithEmailCode('claims-first@example.test');
+    const pending = await stagedSignup('pending-signup@example.test');
+    const owner = await setup.signUpWithPassword('claims-first@example.test');
     assert.equal(owner.initialAdministrator, true);
     // Completion now takes the later-signup path, where registration is disabled.
-    await assert.rejects(completeEmailSignIn({ parent, browserProof, code: pending.code, prepareHandoff: () => prepareSsoHandoff(request.providerState) }),
-        { code: 'registration_disabled' });
+    await assert.rejects(completeSignup({ parent: pending.parent, browserProof: pending.browserProof, code: pending.sent.at(-1).code,
+        prepareHandoff: () => prepareSsoHandoff(pending.request.providerState) }), { code: 'registration_disabled' });
     assert.equal(await getUserByEmail('pending-signup@example.test'), null);
     assert.equal((await getInstallationSetup()).initialAdministratorId, owner.user.id);
 });
 
 test('setup remains claimed after the administrator is blocked, demoted or deleted', async () => {
-    const first = await setup.registerWithEmailCode('claimed-owner@example.test');
+    const first = await setup.signUpWithPassword('claimed-owner@example.test');
     const store = await getStore();
     await store.deleteUser(first.user.id);
     assert.equal((await getInstallationSetup()).complete, true);
-    const next = await setup.registerWithEmailCode('after-removal@example.test');
+    const next = await setup.signUpWithPassword('after-removal@example.test');
     assert.equal(next.initialAdministrator, false);
     assert.deepEqual(await getUserRoles(next.user.id), ['selfRegistered']);
     // A restart does not reopen public ownership either.
     await resetStoreForTests();
     assert.equal((await getInstallationSetup()).initialAdministratorId, first.user.id);
-    const afterRestart = await setup.registerWithEmailCode('after-restart@example.test');
+    const afterRestart = await setup.signUpWithPassword('after-restart@example.test');
     assert.deepEqual(await getUserRoles(afterRestart.user.id), ['selfRegistered']);
 });
 
@@ -154,7 +165,7 @@ test('direct sign-in email mutation is refused while other profile updates remai
 });
 
 test('account ids never resolve through the email index or an empty value', async () => {
-    const admin = await setup.registerWithEmailCode('owner@example.test');
+    const admin = await setup.signUpWithPassword('owner@example.test');
     assert.equal(await getUserById(''), null);
     assert.equal(await getUserById(admin.user.email), null);
     assert.equal(await getUserByEmail(''), null);

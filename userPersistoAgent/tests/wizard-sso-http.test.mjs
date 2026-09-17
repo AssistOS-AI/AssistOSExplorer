@@ -7,6 +7,8 @@ import { once } from 'node:events';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createLoginRequest, consumeAuthCode } from '../lib/sso.mjs';
 import { resetStoreForTests } from '../lib/store.mjs';
+import { getUserByEmail } from '../lib/users.mjs';
+import { completeGoogleIdentity, GOOGLE_ISSUER } from '../lib/externalIdentities.mjs';
 import { startService } from '../service/index.mjs';
 import { CookieBrowser } from './helpers/googleProvider.mjs';
 import * as setup from './helpers/setup.mjs';
@@ -15,33 +17,42 @@ import { createSsoAdapter } from '../public/auth/sso-adapter.js';
 
 // Integration test: the real wizard, the real SSO adapter, and the real
 // service, wired together the way public/auth/main.js wires them (minus a
-// real browser). Pattern lifted from tests/registration-http.test.mjs.
+// real browser).
 async function fixture(fn) {
+    const environment = { ...process.env };
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-wizard-sso-http-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
+    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']) delete process.env[name];
     setup.resetAuthLimitsForTests();
     const mail = [];
+    const delivery = { fail: 0 };
     let server;
     try {
         await ensureSeedData();
-        server = startService({ port: 0, host: '127.0.0.1' }, { deliverEmail: async (message) => { mail.push(message); return { delivered: true, providerMessageId: 'fixture' }; } });
+        server = startService({ port: 0, host: '127.0.0.1' }, { deliverEmail: async (message) => {
+            mail.push(message);
+            if (delivery.fail > 0) {
+                delivery.fail -= 1;
+                return { delivered: false };
+            }
+            return { delivered: true, providerMessageId: 'fixture' };
+        } });
         if (!server.listening) await once(server, 'listening');
         const base = `http://127.0.0.1:${server.address().port}`;
-        await fn({ base, mail });
+        await fn({ base, mail, delivery });
     } finally {
-        setup.clearAdministratorPassword();
-        setup.resetAuthLimitsForTests();
         if (server?.listening) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
         await resetStoreForTests();
         await rm(folder, { recursive: true, force: true });
+        for (const name of Object.keys(process.env)) if (!Object.hasOwn(environment, name)) delete process.env[name];
+        Object.assign(process.env, environment);
     }
 }
 
 // ---- a minimal fake DOM, duplicated (not imported) from auth-ui.test.mjs so
 // importing this file never registers that file's tests. Real network I/O
-// means we cannot rely on a single microtask flush between interactions, so
-// every helper below is paired with waitFor() instead.
+// means a single microtask flush is not enough, so helpers use waitFor().
 class Element {
     constructor(tagName) {
         this.tagName = tagName.toUpperCase();
@@ -65,7 +76,7 @@ class Element {
     setAttribute(name, value) {
         this.attributes.set(name, String(value));
         if (name === 'class') this.className = String(value);
-        else if (['hidden', 'disabled', 'required'].includes(name)) this[name] = true;
+        else if (['hidden', 'disabled', 'required', 'readonly'].includes(name)) this[name] = true;
         else this[name === 'for' ? 'htmlFor' : name] = String(value);
     }
     getAttribute(name) { return name === 'class' ? this.className : this.attributes.get(name) ?? null; }
@@ -105,16 +116,20 @@ async function waitFor(check, { timeout = 5000, interval = 15 } = {}) {
     while (true) {
         const result = check();
         if (result) return result;
-        if (Date.now() - startedAt > timeout) throw new Error(`waitFor timed out; current h1: ${check.h1 || ''}`);
+        if (Date.now() - startedAt > timeout) throw new Error('waitFor timed out');
         await new Promise((resolve) => setTimeout(resolve, interval));
     }
 }
 function h1Text(root) { return root.querySelector('h1')?.textContent || ''; }
 async function waitForHeading(root, pattern) {
-    return waitFor(() => pattern.test(h1Text(root)), { timeout: 5000 });
+    try {
+        return await waitFor(() => pattern.test(h1Text(root)));
+    } catch {
+        assert.fail(`expected heading ${pattern}, have "${h1Text(root)}": ${root.textContent}`);
+    }
 }
 function findButton(root, text) {
-    return root.querySelectorAll('button').find((node) => node.textContent === text || node.textContent.startsWith(text));
+    return root.querySelectorAll('button').find((node) => node.textContent === text);
 }
 
 // The Router adds Origin to every real browser POST automatically; the
@@ -134,114 +149,181 @@ function callbackFromNavigation(navigated, base, expectedState) {
     const url = new URL(navigated[0]);
     assert.equal(url.origin, base);
     assert.equal(url.pathname, '/auth/callback');
-    assert.ok(url.searchParams.get('code'));
     assert.equal(url.searchParams.get('state'), expectedState);
     return url.searchParams.get('code');
 }
 
-test('register + unknown claims the first administrator, then a second browser resumes as login + unknown and self-registers', () => fixture(async ({ base, mail }) => {
-    const request1 = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
-    const browser1 = new CookieBrowser();
-    const wizard1 = mount(browser1, base, request1.providerState);
-    try {
-        await waitForHeading(wizard1.root, /Sign in/); // unclaimed setup still uses registration for the email route
-        wizard1.root.querySelector('[name="email"]').value = 'owner@example.test';
-        wizard1.root.querySelector('form.start-panel').fire('submit');
-        await waitForHeading(wizard1.root, /Enter the 6-digit code sent to owner@example\.test/);
-        const code1 = mail.at(-1).code;
-        wizard1.root.querySelector('[name="code"]').value = code1;
-        wizard1.root.querySelector('form.code-panel').fire('submit');
-        await waitFor(() => wizard1.navigated.length === 1);
-        const authCode1 = callbackFromNavigation(wizard1.navigated, base, request1.providerState);
-        const consumed1 = await consumeAuthCode({ providerState: request1.providerState, code: authCode1 });
-        assert.deepEqual(consumed1.roles, ['admin']);
-        assert.equal(consumed1.user.email, 'owner@example.test');
-    } finally {
-        wizard1.dispose();
-    }
+async function nextFromStart(wizard, email) {
+    await waitForHeading(wizard.root, /^Sign in$/);
+    wizard.root.querySelector('[name="email"]').value = email;
+    wizard.root.querySelector('form.start-panel').fire('submit');
+}
 
-    const request2 = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
-    const browser2 = new CookieBrowser();
-    const wizard2 = mount(browser2, base, request2.providerState);
+async function signUpThroughWizard(wizard, mail, email, password) {
+    await nextFromStart(wizard, email);
+    await waitForHeading(wizard.root, /^Create an account\?$/);
+    wizard.root.querySelector('form.signup-offer-panel').fire('submit');
+    await waitForHeading(wizard.root, /^Create your password$/);
+    wizard.root.querySelector('[name="password"]').value = password;
+    wizard.root.querySelector('[name="passwordConfirmation"]').value = password;
+    wizard.root.querySelector('form.signup-password-panel').fire('submit');
+}
+
+async function signIn(base, fn) {
+    const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
+    const wizard = mount(new CookieBrowser(), base, request.providerState);
     try {
-        await waitForHeading(wizard2.root, /Sign in/); // setup is now complete: default mode is login
-        wizard2.root.querySelector('[name="email"]').value = 'member@example.test';
-        wizard2.root.querySelector('form.start-panel').fire('submit');
-        await waitForHeading(wizard2.root, /Create an account\?/); // login + unknown
-        assert.match(wizard2.root.textContent, /No account uses member@example\.test\. Create one\?/);
-        findButton(wizard2.root, 'Create account').fire('click');
-        wizard2.root.querySelector('form.confirm-panel').fire('submit');
-        await waitForHeading(wizard2.root, /Enter the 6-digit code sent to member@example\.test/);
-        const code2 = mail.at(-1).code;
-        wizard2.root.querySelector('[name="code"]').value = code2;
-        wizard2.root.querySelector('form.code-panel').fire('submit');
-        await waitFor(() => wizard2.navigated.length === 1);
-        const authCode2 = callbackFromNavigation(wizard2.navigated, base, request2.providerState);
-        const consumed2 = await consumeAuthCode({ providerState: request2.providerState, code: authCode2 });
-        assert.deepEqual(consumed2.roles, ['selfRegistered']);
-        assert.equal(consumed2.user.email, 'member@example.test');
+        const code = await fn(wizard, request);
+        return consumeAuthCode({ providerState: request.providerState, code });
     } finally {
-        wizard2.dispose();
+        wizard.dispose();
     }
+}
+
+test('the first signup through S4, S5 and S6 claims the administrator and a second browser self-registers', () => fixture(async ({ base, mail }) => {
+    const ownerPassword = setup.newTestPassword();
+    const owner = await signIn(base, async (wizard, request) => {
+        await waitFor(() => /The first completed sign-in becomes its administrator/.test(wizard.root.textContent));
+        await signUpThroughWizard(wizard, mail, 'owner@example.test', ownerPassword);
+        await waitForHeading(wizard.root, /^Enter the 6-digit code sent to owner@example\.test$/);
+        assert.equal(await getUserByEmail('owner@example.test'), null, 'no account before the code');
+        assert.equal(mail.at(-1).purpose, 'signup-verification');
+        wizard.root.querySelector('[name="code"]').value = mail.at(-1).code;
+        wizard.root.querySelector('form.signup-code-panel').fire('submit');
+        await waitFor(() => wizard.navigated.length === 1);
+        return callbackFromNavigation(wizard.navigated, base, request.providerState);
+    });
+    assert.deepEqual([owner.user.email, owner.roles], ['owner@example.test', ['admin']]);
+
+    const member = await signIn(base, async (wizard, request) => {
+        await signUpThroughWizard(wizard, mail, 'member@example.test', setup.newTestPassword());
+        await waitForHeading(wizard.root, /^Enter the 6-digit code sent to member@example\.test$/);
+        wizard.root.querySelector('[name="code"]').value = mail.at(-1).code;
+        wizard.root.querySelector('form.signup-code-panel').fire('submit');
+        await waitFor(() => wizard.navigated.length === 1);
+        return callbackFromNavigation(wizard.navigated, base, request.providerState);
+    });
+    assert.deepEqual([member.user.email, member.roles, member.capabilities.includes('explorer.access')], ['member@example.test', ['selfRegistered'], false]);
+
+    // The owner's chosen password signs in on S2 without any code.
+    const sentBefore = mail.length;
+    const again = await signIn(base, async (wizard, request) => {
+        await nextFromStart(wizard, 'owner@example.test');
+        await waitForHeading(wizard.root, /^Enter your password$/);
+        wizard.root.querySelector('[name="password"]').value = 'not the owner password';
+        wizard.root.querySelector('form.password-panel').fire('submit');
+        await waitFor(() => /That password is not correct/.test(wizard.root.textContent));
+        assert.equal(wizard.root.querySelector('[name="password"]').value, '');
+        wizard.root.querySelector('[name="password"]').value = ownerPassword;
+        wizard.root.querySelector('form.password-panel').fire('submit');
+        await waitFor(() => wizard.navigated.length === 1);
+        return callbackFromNavigation(wizard.navigated, base, request.providerState);
+    });
+    assert.equal(again.user.id, owner.user.id);
+    assert.equal(mail.length, sentBefore, 'password login sends no code');
 }));
 
-test('register + existing email confirms into sign-in through the chooser and completes with an email code', () => fixture(async ({ base, mail }) => {
-    // The first completed sign-in on a fresh fixture becomes the
-    // administrator; claim that slot with a throwaway account first so
-    // "existing@example.test" is an ordinary (selfRegistered) account.
-    await setup.registerWithEmailCode('seed-admin@example.test');
-    await setup.registerWithEmailCode('existing@example.test');
-    const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
-    const browser = new CookieBrowser();
-    const wizard = mount(browser, base, request.providerState);
-    try {
-        await waitForHeading(wizard.root, /Sign in/);
-        findButton(wizard.root, 'Create an account').fire('click');
-        await waitForHeading(wizard.root, /Create an account/);
-        wizard.root.querySelector('[name="email"]').value = 'existing@example.test';
-        wizard.root.querySelector('form.start-panel').fire('submit');
-        await waitForHeading(wizard.root, /Sign in instead\?/); // register + exists
-        assert.match(wizard.root.textContent, /An account already uses existing@example\.test\. Sign in instead\?/);
-        wizard.root.querySelector('form.confirm-panel').fire('submit');
-        await waitForHeading(wizard.root, /Choose how to sign in/); // the same discovery, no extra request
-        const emailButton = findButton(wizard.root, 'Email me a code');
-        assert.ok(emailButton, 'email code is a usable method for a verified mailbox');
-        emailButton.fire('click');
-        await waitForHeading(wizard.root, /Enter the 6-digit code sent to existing@example\.test/);
-        const code = mail.at(-1).code;
-        wizard.root.querySelector('[name="code"]').value = code;
+test('Try another way signs a registered account in with an email code against the real service', () => fixture(async ({ base, mail }) => {
+    await setup.signUpWithPassword('owner@example.test');
+    const existing = await setup.signUpWithPassword('existing@example.test');
+    const consumed = await signIn(base, async (wizard, request) => {
+        await nextFromStart(wizard, 'existing@example.test');
+        await waitForHeading(wizard.root, /^Enter your password$/);
+        findButton(wizard.root, 'Try another way').fire('click');
+        await waitForHeading(wizard.root, /^Try another way$/);
+        const entries = wizard.root.querySelectorAll('.auth-method').map((entry) => entry.querySelector('button'));
+        assert.deepEqual(entries.map((node) => [node.textContent, node.disabled]),
+            [['Email me a code', false], ['Use a passkey', true], ['Use an authenticator app', true]]);
+        findButton(wizard.root, 'Email me a code').fire('click');
+        await waitForHeading(wizard.root, /^Enter the 6-digit code sent to existing@example\.test$/);
+        assert.equal(Object.hasOwn(mail.at(-1), 'purpose'), false);
+        wizard.root.querySelector('[name="code"]').value = mail.at(-1).code;
         wizard.root.querySelector('form.code-panel').fire('submit');
         await waitFor(() => wizard.navigated.length === 1);
-        const authCode = callbackFromNavigation(wizard.navigated, base, request.providerState);
-        const consumed = await consumeAuthCode({ providerState: request.providerState, code: authCode });
-        assert.equal(consumed.user.email, 'existing@example.test');
-        assert.deepEqual(consumed.roles, ['selfRegistered']);
-        assert.notEqual(consumed.user.id, undefined);
-    } finally {
-        wizard.dispose();
-    }
+        return callbackFromNavigation(wizard.navigated, base, request.providerState);
+    });
+    assert.equal(consumed.user.id, existing.user.id);
 }));
 
-test('the unified opening form submits password plus optional contact email to claim the administrator', () => fixture(async ({ base }) => {
-    const password = setup.configureAdministratorPassword();
+test('a failed delivery after staging recovers with Send again and never asks for the password again', () => fixture(async ({ base, mail, delivery }) => {
+    const password = setup.newTestPassword();
+    const created = await signIn(base, async (wizard, request) => {
+        delivery.fail = 1;
+        await signUpThroughWizard(wizard, mail, 'retry@example.test', password);
+        await waitForHeading(wizard.root, /^We could not send the code$/);
+        assert.equal(wizard.root.querySelector('[name="code"]').disabled, true);
+        assert.equal(wizard.root.querySelectorAll('input').some((input) => input.type === 'password'), false);
+        findButton(wizard.root, 'Send again').fire('click');
+        await waitForHeading(wizard.root, /^Enter the 6-digit code sent to retry@example\.test$/);
+        assert.equal(mail.length, 2);
+        wizard.root.querySelector('[name="code"]').value = mail.at(-1).code;
+        wizard.root.querySelector('form.signup-code-panel').fire('submit');
+        await waitFor(() => wizard.navigated.length === 1);
+        return callbackFromNavigation(wizard.navigated, base, request.providerState);
+    });
+    assert.deepEqual(created.roles, ['admin']);
+    const signedIn = await signIn(base, async (wizard, request) => {
+        await nextFromStart(wizard, 'retry@example.test');
+        await waitForHeading(wizard.root, /^Enter your password$/);
+        wizard.root.querySelector('[name="password"]').value = password;
+        wizard.root.querySelector('form.password-panel').fire('submit');
+        await waitFor(() => wizard.navigated.length === 1);
+        return callbackFromNavigation(wizard.navigated, base, request.providerState);
+    });
+    assert.equal(signedIn.user.id, created.user.id, 'the originally chosen password was kept');
+}));
+
+test('a lost signup response resumes the durable challenge and completes without resubmitting a password', () => fixture(async ({ base, mail }) => {
     const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     const browser = new CookieBrowser();
+    const send = browser.fetch.bind(browser);
+    let signupStarts = 0;
+    browser.fetch = async (url, options) => {
+        const response = await send(url, options);
+        if (new URL(url).pathname === '/service/auth/signup/start') {
+            signupStarts++;
+            assert.equal(response.status, 200);
+            await response.arrayBuffer(); // The server committed; its response was lost on the way back.
+            throw new TypeError('Failed to fetch');
+        }
+        return response;
+    };
     const wizard = mount(browser, base, request.providerState);
     try {
-        await waitForHeading(wizard.root, /Sign in/);
-        assert.match(wizard.root.textContent, /This workspace is not set up yet\. The first completed sign-in becomes its administrator\./);
-        assert.equal(findButton(wizard.root, 'Administrator sign-in'), undefined);
-        assert.equal(wizard.root.querySelector('[name="contactEmail"]'), null);
-        wizard.root.querySelector('[name="password"]').value = password;
-        wizard.root.querySelector('[name="email"]').value = 'ops@example.test';
-        wizard.root.querySelector('form.start-panel').fire('submit');
+        await signUpThroughWizard(wizard, mail, 'response-lost@example.test', setup.newTestPassword());
+        await waitForHeading(wizard.root, /^Enter the 6-digit code sent to response-lost@example\.test$/);
+        assert.equal(wizard.root.querySelector('[name="password"]'), null);
+        assert.equal(signupStarts, 1);
+        assert.equal(mail.length, 1);
+        assert.equal(await getUserByEmail('response-lost@example.test'), null);
+        wizard.root.querySelector('[name="code"]').value = mail[0].code;
+        wizard.root.querySelector('form.signup-code-panel').fire('submit');
         await waitFor(() => wizard.navigated.length === 1);
-        const authCode = callbackFromNavigation(wizard.navigated, base, request.providerState);
-        const consumed = await consumeAuthCode({ providerState: request.providerState, code: authCode });
-        assert.equal(consumed.user.username, 'administrator');
-        assert.equal(consumed.user.email, '');
+        const consumed = await consumeAuthCode({ providerState: request.providerState,
+            code: callbackFromNavigation(wizard.navigated, base, request.providerState) });
+        assert.equal(consumed.user.email, 'response-lost@example.test');
         assert.deepEqual(consumed.roles, ['admin']);
-    } finally {
-        wizard.dispose();
-    }
+        assert.equal(signupStarts, 1);
+    } finally { wizard.dispose(); }
+}));
+
+test('a Google-created account sees the neutral unavailable password state and can use another way', () => fixture(async ({ base, mail }) => {
+    const { user } = await completeGoogleIdentity({ identity: { issuer: GOOGLE_ISSUER, subject: 'wizard-google-owner', email: 'google-owner@gmail.com', emailVerified: true } });
+    const consumed = await signIn(base, async (wizard, request) => {
+        await nextFromStart(wizard, 'google-owner@gmail.com');
+        await waitForHeading(wizard.root, /^Enter your password$/);
+        assert.equal(wizard.root.querySelector('[name="password"]').disabled, true);
+        assert.equal(findButton(wizard.root, 'Log in').disabled, true);
+        assert.match(wizard.root.textContent, /Password sign-in is not available for this account here\. Choose Try another way\./);
+        assert.doesNotMatch(wizard.root.textContent, /Google account|linked/i);
+        findButton(wizard.root, 'Try another way').fire('click');
+        await waitForHeading(wizard.root, /^Try another way$/);
+        findButton(wizard.root, 'Email me a code').fire('click');
+        await waitForHeading(wizard.root, /^Enter the 6-digit code sent to google-owner@gmail\.com$/);
+        wizard.root.querySelector('[name="code"]').value = mail.at(-1).code;
+        wizard.root.querySelector('form.code-panel').fire('submit');
+        await waitFor(() => wizard.navigated.length === 1);
+        return callbackFromNavigation(wizard.navigated, base, request.providerState);
+    });
+    assert.equal(consumed.user.id, user.id);
 }));

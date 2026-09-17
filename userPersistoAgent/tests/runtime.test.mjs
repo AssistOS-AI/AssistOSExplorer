@@ -11,7 +11,7 @@ import { createProvider, resolveProviderConfig } from '../runtime/index.mjs';
 import { getUserById, getUserRoles } from '../lib/users.mjs';
 import { issueAuthCode } from '../lib/sso.mjs';
 import { getStore, flush } from '../lib/store.mjs';
-import { registerWithEmailCode, resetAuthLimitsForTests } from './helpers/setup.mjs';
+import { signUpWithPassword, resetAuthLimitsForTests } from './helpers/setup.mjs';
 
 test('SSO sends browsers to the public callback origin while provider calls stay private', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-public-login-'));
@@ -71,8 +71,8 @@ test('provider account projections preserve optional fields and an email-only ac
     try {
         await ensureSeedData();
         resetAuthLimitsForTests();
-        const owner = await registerWithEmailCode('owner@example.test');
-        const member = await registerWithEmailCode('member@example.test');
+        const owner = await signUpWithPassword('owner@example.test');
+        const member = await signUpWithPassword('member@example.test');
         server = startService({ port: 0, host: '127.0.0.1' });
         if (!server.listening) await once(server, 'listening');
         const provider = createProvider({ getConfig: async () => ({

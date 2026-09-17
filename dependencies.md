@@ -16,10 +16,11 @@ the bundled ESM/UMD artifacts and running Explorer's tests.
 
 ## UserPersisto persistence runtime
 
-Administrator password authentication uses the existing Node.js runtime's
-`node:crypto` scrypt, random-byte and constant-time comparison primitives,
-plus the existing Persisto storage and browser wizard. Restoring it adds no
-package, build step, global tool or runtime download.
+Account password sign-in, signup and password management use the existing
+Node.js runtime's `node:crypto` scrypt, random-byte, AES-GCM and constant-time
+comparison primitives, native Unicode normalization and well-formedness checks,
+plus the existing Persisto storage and browser wizard. They add no package,
+build step, global tool or runtime download.
 
 UserPersisto includes the eight required persistence/audit-constant source files from OpenDSU/Persisto commit `a711a67f6bdfdec15af91f9f79aa8a0d69397149` under `userPersistoAgent/external/Persisto`. The files are unchanged; `upstream.json` records exact SHA-256 digests, and the MIT license (Copyright 2025 OpenDSU) is retained in `LICENSE`. This is the same runtime revision previously fetched by the agent installation hook, not a new persistence engine.
 

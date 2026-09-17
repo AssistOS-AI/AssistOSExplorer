@@ -21,6 +21,9 @@ function safeJson(value) {
       process.env.SMOKE_PASSWORD,
       process.env.SMOKE_SECONDARY_USERNAME,
       process.env.SMOKE_SECONDARY_PASSWORD,
+      process.env.SMOKE_ACCOUNT_PASSWORD,
+      process.env.SMOKE_SECONDARY_ACCOUNT_PASSWORD,
+      process.env.SMOKE_RUN_ACCOUNT_PASSWORD,
     ].filter(Boolean),
   });
   assert.deepEqual(findSecretLeaks(payload), [], 'OnlyOffice evidence must not contain configured secrets.');

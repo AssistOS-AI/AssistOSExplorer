@@ -27,6 +27,9 @@ class Element {
 }
 
 const GRANT = 'G'.repeat(43);
+// Fixture values for a mocked server; no real credential is involved.
+const CURRENT_PASSWORD = 'fixture current passphrase';
+const NEW_PASSWORD = 'fixture violet lantern harbor';
 
 function profile(overrides = {}) {
     return {
@@ -213,17 +216,32 @@ test('confirmation rejects malformed input locally, reports server errors and ca
     assert.equal(calls.some((call) => call.name.startsWith('userpersisto_totp')), false);
 });
 
-test('the administrator password confirmation is sent once and cleared; a passkey confirmation uses the browser prompt', async () => {
+test('a password confirmation is sent once and cleared; a passkey confirmation uses the browser prompt', async () => {
     const calls = [];
-    const { widget, browser } = fixture({ callTool: tools(async () => setup, calls) });
-    widget.updateProfile(profile({ reauthenticationMethods: ['adminPassword', 'passkey'] }));
+    let passwordAccepted = false;
+    const { widget, browser } = fixture({ callTool: async (name, args) => {
+        calls.push({ name, args });
+        if (name === 'reauth_verify') return passwordAccepted ? { ok: true, grant: GRANT } : { ok: false, error: 'authentication_failed' };
+        return setup;
+    } });
+    widget.updateProfile(profile({ reauthenticationMethods: ['password', 'passkey'] }));
     await widget.startTotp();
+    assert.equal(widget.reauthMethod.value, 'password', 'the first published method is preselected');
     assert.equal(widget.reauthPasswordLabel.hidden, false);
+    assert.equal(widget.reauthCodeLabel.hidden, true);
     await widget.submitConfirmation();
-    assert.match(widget.status.textContent, /administrator password/);
-    widget.reauthPasswordInput.value = 'configured-admin-value';
+    assert.match(widget.status.textContent, /Enter your password/);
+    assert.equal(calls.length, 0, 'an empty password never submits');
+    widget.reauthPasswordInput.value = 'fixture mistyped passphrase';
     await widget.submitConfirmation();
-    assert.deepEqual(calls[0], { name: 'reauth_verify', args: { operation: 'totp.enroll', method: 'adminPassword', password: 'configured-admin-value' } });
+    assert.match(widget.status.textContent, /That password is not correct/);
+    assert.equal(widget.reauthPasswordInput.value, '', 'a refused password is cleared');
+    assert.equal(widget.reauthForm.hidden, false);
+    calls.length = 0;
+    passwordAccepted = true;
+    widget.reauthPasswordInput.value = CURRENT_PASSWORD;
+    await widget.submitConfirmation();
+    assert.deepEqual(calls[0], { name: 'reauth_verify', args: { operation: 'totp.enroll', method: 'password', password: CURRENT_PASSWORD } });
     assert.equal(widget.reauthPasswordInput.value, '');
     assert.deepEqual(calls[1], { name: 'userpersisto_totp_setup_start', args: { grant: GRANT } });
     widget.cancel();
@@ -347,15 +365,21 @@ test('disabled methods, browser limitations and an unverified sign-in email bloc
     let called = false;
     const { widget, browser } = fixture({ callTool: () => { called = true; } });
     widget.updateProfile(profile({ allowedAuthMethods: ['emailCode'] }));
+    await widget.startPassword();
     await widget.startPasskey();
     await widget.startTotp();
     assert.equal(called, false);
+    assert.match(widget.passwordStatus.textContent, /Disabled/);
+    assert.equal(widget.passwordButton.disabled, true);
     assert.match(widget.totpStatus.textContent, /Disabled/);
     assert.match(widget.passkeyStatus.textContent, /Disabled/);
-    widget.updateProfile(profile({ emailVerified: false, user: { id: 'user-1', email: '' } }));
+    widget.updateProfile(profile({ allowedAuthMethods: ['password', 'emailCode', 'passkey', 'totp'], emailVerified: false, user: { id: 'user-1', email: '' } }));
+    await widget.startPassword();
     await widget.startPasskey();
     await widget.startTotp();
     assert.equal(called, false);
+    assert.match(widget.passwordStatus.textContent, /Verify a sign-in email first/);
+    assert.equal(widget.passwordButton.disabled, true);
     assert.match(widget.passkeyStatus.textContent, /Verify a sign-in email first/);
     assert.match(widget.totpStatus.textContent, /Verify a sign-in email first/);
     browser.isSecureContext = false;
@@ -375,8 +399,8 @@ test('an account without a verified sign-in email proves its contact address aft
         if (name === 'contact_verify') return verifyResult;
         return { ok: true };
     }, onEnrolled: async () => { refreshed++; } });
-    widget.updateProfile(profile({ user: { id: 'admin-1', email: '', username: 'administrator' }, emailVerified: false,
-        reauthenticationMethods: ['adminPassword'], contact: { email: 'ops@example.test', verified: false, pending: false } }));
+    widget.updateProfile(profile({ user: { id: 'member-1', email: '', username: 'member' }, emailVerified: false,
+        reauthenticationMethods: ['password'], contact: { email: 'ops@example.test', verified: false, pending: false } }));
     assert.equal(widget.contactSection.hidden, false);
     assert.match(widget.contactStatus.textContent, /ops@example\.test is not verified and cannot be used to sign in/);
     assert.equal(widget.contactEmailInput.value, 'ops@example.test');
@@ -387,10 +411,10 @@ test('an account without a verified sign-in email proves its contact address aft
     widget.contactEmailInput.value = 'ops@example.test';
     await widget.startContactVerification();
     assert.match(widget.reauthTitle.textContent, /verify a sign-in email/);
-    widget.reauthPasswordInput.value = 'configured-admin-value';
+    widget.reauthPasswordInput.value = CURRENT_PASSWORD;
     await widget.submitConfirmation();
     assert.deepEqual(calls.slice(0, 2), [
-        { name: 'reauth_verify', args: { operation: 'contact.verify', method: 'adminPassword', password: 'configured-admin-value' } },
+        { name: 'reauth_verify', args: { operation: 'contact.verify', method: 'password', password: CURRENT_PASSWORD } },
         { name: 'contact_start', args: { email: 'ops@example.test', grant: GRANT } },
     ]);
     assert.equal(widget.contactCodeForm.hidden, false);
@@ -450,21 +474,226 @@ test('dashboard shows Explorer only with its capability and saves profile fields
     dashboard.dispose();
 });
 
-test('the email-less administrator is shown by username and its methods are labeled', async (t) => {
+test('an account without a sign-in email is shown by username and its methods are labeled', async (t) => {
     const nodes = new Map();
     const document = { querySelectorAll: () => [], getElementById: (id) => {
         if (!nodes.has(id)) nodes.set(id, new Element());
         return nodes.get(id);
     } };
     t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ ok: true, profile: profile({
-        user: { id: 'admin-1', email: '', username: 'administrator' }, emailVerified: false,
-        authMethods: [{ type: 'adminPassword' }, { type: 'google' }],
+        user: { id: 'member-1', email: '', username: 'member' }, emailVerified: false,
+        authMethods: [{ type: 'password' }, { type: 'google' }, { type: 'adminPassword' }],
     }) }) }));
     const dashboard = mountDashboard(document);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(nodes.get('account-email').textContent, 'administrator');
-    assert.equal(nodes.get('account-methods').textContent, 'Administrator password · Google');
+    assert.equal(nodes.get('account-email').textContent, 'member');
+    assert.equal(nodes.get('account-methods').textContent, 'Password · Google', 'unknown method types are not labeled');
     dashboard.dispose();
+});
+
+function passwordProfile(configured, overrides = {}) {
+    return profile({
+        allowedAuthMethods: ['password', 'emailCode', 'passkey', 'totp'],
+        authMethods: configured ? [{ type: 'password' }, { type: 'emailCode' }] : [{ type: 'emailCode' }],
+        reauthenticationMethods: configured ? ['password', 'emailCode'] : ['emailCode'],
+        enrollments: { password: { configured }, passkey: { configured: false, count: 0 }, totp: { configured: false, pending: false } },
+        ...overrides,
+    });
+}
+
+const passwordInputMarkup = (html, name) => html.match(new RegExp(`<input data-${name}[^>]*>`))?.[0] || '';
+
+test('password inputs use credential-manager autocomplete and no length cap', () => {
+    const { element, widget } = fixture({ callTool: async () => ({ ok: true }) });
+    for (const name of ['password-new', 'password-confirm']) {
+        const markup = passwordInputMarkup(element.innerHTML, name);
+        assert.match(markup, /type="password"/, name);
+        assert.match(markup, /autocomplete="new-password"/, name);
+        assert.doesNotMatch(markup, /maxlength/, name);
+    }
+    const current = passwordInputMarkup(element.innerHTML, 'reauth-password');
+    assert.match(current, /type="password"/);
+    assert.match(current, /autocomplete="current-password"/);
+    assert.doesNotMatch(current, /maxlength/);
+    assert.match(passwordInputMarkup(element.innerHTML, 'password-username'), /autocomplete="username"/);
+    assert.doesNotMatch(element.innerHTML, /[Aa]dministrator password/);
+    widget.dispose();
+});
+
+test('setting a first password confirms once, keeps the grant only in memory for corrections and empties both inputs', async () => {
+    const calls = [];
+    let refreshed = 0;
+    let setResult = { ok: false, error: 'invalid_password', reason: 'too_common' };
+    const { widget, element } = fixture({ callTool: tools(async (name, args) => {
+        assert.equal(name, 'password_set');
+        assert.equal(widget.passwordInput.value, '', 'inputs are emptied as soon as the request starts');
+        assert.equal(widget.passwordConfirmInput.value, '');
+        assert.equal(args.grant, GRANT);
+        return setResult;
+    }, calls), onEnrolled: async () => { refreshed++; } });
+    widget.updateProfile(passwordProfile(false));
+    assert.equal(widget.passwordButton.textContent, 'Set a password');
+    assert.equal(widget.passwordButton.disabled, false);
+    assert.match(widget.passwordStatus.textContent, /No password set yet/);
+    assert.equal(widget.passwordForm.hidden, true);
+
+    await widget.startPassword();
+    assert.equal(widget.reauthForm.hidden, false);
+    assert.equal(widget.reauthTitle.textContent, 'Confirm it is you to set a password');
+    assert.equal(widget.passwordForm.hidden, true, 'the password form waits for the confirmation');
+    await confirm(widget);
+    assert.deepEqual(calls.filter((call) => call.name === 'reauth_verify').map((call) => call.args),
+        [{ operation: 'password.set', method: 'emailCode', code: '123456' }]);
+    assert.equal(widget.reauthForm.hidden, true);
+    assert.equal(widget.passwordForm.hidden, false);
+    assert.equal(widget.passwordTitle.textContent, 'Set a password');
+    assert.equal(widget.passwordUsername.value, 'member@example.test');
+    assert.equal(widget.passwordButton.disabled, true, 'the open form is not restarted');
+    assert.doesNotMatch(JSON.stringify([...element.nodes.values()].map((node) => node.value)), new RegExp(GRANT), 'the grant is never placed in the page');
+
+    widget.passwordInput.value = NEW_PASSWORD;
+    widget.passwordConfirmInput.value = `${NEW_PASSWORD} typo`;
+    await widget.savePassword();
+    assert.equal(widget.status.textContent, 'The passwords do not match.');
+    widget.passwordInput.value = 'too short';
+    widget.passwordConfirmInput.value = 'too short';
+    await widget.savePassword();
+    assert.equal(widget.status.textContent, 'Use at least 15 characters.');
+    assert.equal(withoutConfirmation(calls).length, 0, 'predictable input errors never reach the server');
+    assert.equal(widget.passwordInput.value, '');
+    assert.equal(widget.passwordConfirmInput.value, '');
+
+    widget.passwordInput.value = NEW_PASSWORD;
+    widget.passwordConfirmInput.value = NEW_PASSWORD;
+    await widget.savePassword();
+    assert.equal(widget.status.textContent, 'Choose a password that is harder to guess.');
+    assert.equal(widget.passwordForm.hidden, false, 'a refused password keeps the unspent grant');
+    assert.equal(widget.passwordInput.value, '');
+    assert.equal(widget.passwordConfirmInput.value, '');
+    assert.equal(widget.busy, false);
+
+    setResult = { ok: false, error: 'rate_limited', retryAfter: 30 };
+    widget.passwordInput.value = NEW_PASSWORD;
+    widget.passwordConfirmInput.value = NEW_PASSWORD;
+    await widget.savePassword();
+    assert.match(widget.status.textContent, /Wait 30 s/);
+    assert.equal(widget.passwordForm.hidden, false);
+
+    setResult = { ok: true, changed: false };
+    widget.passwordInput.value = NEW_PASSWORD;
+    widget.passwordConfirmInput.value = NEW_PASSWORD;
+    await widget.savePassword();
+    assert.deepEqual(withoutConfirmation(calls).map((call) => call.args), Array(3).fill({ grant: GRANT, password: NEW_PASSWORD, passwordConfirmation: NEW_PASSWORD }));
+    assert.equal(calls.filter((call) => call.name === 'reauth_verify').length, 1, 'one confirmation served every correction');
+    assert.equal(widget.status.textContent, 'Password set. You can use it to sign in.');
+    assert.equal(widget.passwordForm.hidden, true);
+    assert.equal(widget.passwordGrant, '');
+    assert.equal(widget.passwordInput.value, '');
+    assert.equal(widget.passwordConfirmInput.value, '');
+    assert.equal(widget.passwordButton.textContent, 'Change password');
+    assert.equal(widget.passwordButton.disabled, false);
+    assert.equal(refreshed, 1);
+    await widget.savePassword();
+    assert.equal(withoutConfirmation(calls).length, 4 - 1, 'a completed form cannot submit again');
+    widget.dispose();
+});
+
+test('changing a password confirms with the current one, reports that every session is signed out and a spent grant requires confirming again', async () => {
+    const calls = [];
+    let verify = { ok: false, error: 'authentication_failed' };
+    let setResult = { ok: false, error: 'operation_grant_required' };
+    const { widget } = fixture({ callTool: async (name, args) => {
+        calls.push({ name, args });
+        if (name === 'reauth_verify') return verify;
+        if (name === 'password_set') return setResult;
+        throw new Error(`Unexpected ${name}`);
+    } });
+    widget.updateProfile(passwordProfile(true));
+    assert.equal(widget.passwordButton.textContent, 'Change password');
+    assert.match(widget.passwordStatus.textContent, /A password is set/);
+    await widget.startPassword();
+    assert.equal(widget.reauthTitle.textContent, 'Confirm it is you to change your password');
+    assert.equal(widget.reauthMethod.value, 'password');
+    widget.reauthPasswordInput.value = 'fixture mistyped passphrase';
+    await widget.submitConfirmation();
+    assert.match(widget.status.textContent, /That password is not correct/);
+    assert.equal(widget.passwordForm.hidden, true);
+
+    verify = { ok: true, grant: GRANT };
+    widget.reauthPasswordInput.value = CURRENT_PASSWORD;
+    await widget.submitConfirmation();
+    assert.equal(widget.passwordForm.hidden, false);
+    assert.equal(widget.passwordTitle.textContent, 'Change password');
+    assert.match(widget.passwordHint.textContent, /signs out every session, including this one/);
+    widget.passwordInput.value = NEW_PASSWORD;
+    widget.passwordConfirmInput.value = NEW_PASSWORD;
+    await widget.savePassword();
+    assert.equal(widget.status.textContent, 'Confirm it is you again to continue.');
+    assert.equal(widget.passwordForm.hidden, true, 'a refused grant is forgotten');
+    assert.equal(widget.passwordGrant, '');
+    assert.equal(widget.passwordInput.value, '');
+    assert.equal(widget.passwordButton.disabled, false);
+    assert.equal(widget.busy, false);
+
+    setResult = { ok: true, changed: true };
+    await widget.startPassword();
+    widget.reauthPasswordInput.value = CURRENT_PASSWORD;
+    await widget.submitConfirmation();
+    widget.passwordInput.value = NEW_PASSWORD;
+    widget.passwordConfirmInput.value = NEW_PASSWORD;
+    await widget.savePassword();
+    assert.match(widget.status.textContent, /Password changed\. Every session is signed out, including this one/);
+    assert.deepEqual(calls.filter((call) => call.name === 'reauth_verify').map((call) => call.args.password),
+        ['fixture mistyped passphrase', CURRENT_PASSWORD, CURRENT_PASSWORD]);
+    assert.equal(widget.reauthPasswordInput.value, '');
+    widget.dispose();
+});
+
+test('cancel, a policy change, page exit and a late response leave no password or grant behind', async () => {
+    let complete;
+    const calls = [];
+    const { widget, browser } = fixture({ callTool: tools((name) => {
+        assert.equal(name, 'password_set');
+        return new Promise((resolve) => { complete = resolve; });
+    }, calls) });
+    let pageHide;
+    browser.addEventListener = (name, listener) => { if (name === 'pagehide') pageHide = listener; };
+    widget.dispose();
+    const mounted = new AccountEnrollment(new Element(), { browser, callTool: widget.callTool });
+    assert.equal(typeof pageHide, 'function');
+    mounted.updateProfile(passwordProfile(false));
+    const open = async () => {
+        await mounted.startPassword();
+        await confirm(mounted);
+        assert.equal(mounted.passwordForm.hidden, false);
+        mounted.passwordInput.value = NEW_PASSWORD;
+        mounted.passwordConfirmInput.value = NEW_PASSWORD;
+    };
+    const assertCleared = (label) => {
+        assert.equal(mounted.passwordInput.value, '', label);
+        assert.equal(mounted.passwordConfirmInput.value, '', label);
+        assert.equal(mounted.passwordGrant, '', label);
+        assert.equal(mounted.passwordForm.hidden, true, label);
+    };
+    await open();
+    mounted.cancel();
+    assertCleared('cancel');
+    await open();
+    mounted.updateProfile(passwordProfile(false, { allowedAuthMethods: ['emailCode', 'passkey', 'totp'] }));
+    assertCleared('policy change');
+    assert.match(mounted.passwordStatus.textContent, /Disabled/);
+    mounted.updateProfile(passwordProfile(false));
+    await open();
+    pageHide();
+    assertCleared('pagehide');
+    await open();
+    const pending = mounted.savePassword();
+    mounted.dispose();
+    complete({ ok: true, changed: false });
+    await pending;
+    assertCleared('dispose');
+    assert.equal(mounted.status.textContent, '', 'a late response is ignored');
+    assert.equal(withoutConfirmation(calls).length, 1);
 });
 
 // Drives the confirmation step through the real dashboard API wiring.
@@ -505,6 +734,48 @@ test('leaving My Account clears setup secrets and ignores a pending setup respon
     assert.equal(enrollment.querySelector('[data-totp-uri]').value, '');
     assert.equal(enrollment.querySelector('[data-totp-setup]').hidden, true);
     assert.equal(enrollment.querySelector('[data-reauth-code]').value, '');
+});
+
+test('My Account sends passwords only to the dedicated endpoint and maps refinements through the dashboard API', async (t) => {
+    const nodes = new Map();
+    const document = { querySelectorAll: () => [], getElementById: (id) => {
+        if (!nodes.has(id)) nodes.set(id, new Element());
+        return nodes.get(id);
+    } };
+    const requests = [];
+    let setResponse = { ok: false, status: 400, json: async () => ({ ok: false, error: 'invalid_password', reason: 'too_long' }) };
+    t.mock.method(globalThis, 'fetch', async (path, options) => {
+        requests.push({ path, body: options.body ? JSON.parse(options.body) : undefined });
+        if (path === 'api/profile') return { ok: true, status: 200, json: async () => ({ ok: true, profile: passwordProfile(false) }) };
+        if (path === 'api/auth/password/set') return setResponse;
+        return confirmationResponse(path) || { ok: false, status: 404, json: async () => ({ ok: false, error: 'not_found' }) };
+    });
+    const dashboard = mountDashboard(document);
+    await new Promise((resolve) => setImmediate(resolve));
+    const enrollment = nodes.get('account-enrollment');
+    const field = (key) => enrollment.querySelector(`[data-${key}]`);
+    field('password-start').listeners.click();
+    await confirmThroughDashboard(enrollment);
+    assert.equal(field('password-setup').hidden, false);
+    const submit = async () => {
+        field('password-new').value = NEW_PASSWORD;
+        field('password-confirm').value = NEW_PASSWORD;
+        field('password-setup').listeners.submit({ preventDefault() {} });
+        await new Promise((resolve) => setImmediate(resolve));
+    };
+    await submit();
+    assert.equal(field('enrollment-status').textContent, 'Use at most 128 characters.');
+    assert.equal(field('password-setup').hidden, false);
+    setResponse = { ok: true, status: 200, json: async () => ({ ok: true, changed: false }) };
+    await submit();
+    await new Promise((resolve) => setImmediate(resolve));
+    const passwordRequests = requests.filter((request) => JSON.stringify(request.body || {}).includes(NEW_PASSWORD));
+    assert.deepEqual(passwordRequests.map((request) => request.path), ['api/auth/password/set', 'api/auth/password/set']);
+    assert.deepEqual(passwordRequests[0].body, { grant: GRANT, password: NEW_PASSWORD, passwordConfirmation: NEW_PASSWORD });
+    assert.equal(field('password-new').value, '');
+    assert.equal(field('password-setup').hidden, true);
+    assert.equal(requests.filter((request) => request.path === 'api/profile').length, 2, 'the profile is refreshed after saving');
+    dashboard.dispose();
 });
 
 test('dashboard API preserves enrollment reasons for specific retry feedback', async (t) => {

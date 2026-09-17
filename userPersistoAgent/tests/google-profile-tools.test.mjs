@@ -56,15 +56,17 @@ test('Google status and policy source require current administrative capability 
     assert.deepEqual(policy.environmentOverrides, ['USERPERSISTO_AUTH_METHODS']);
     assert.equal(policy.registrationRole, 'selfRegistered');
     assert.equal(Object.hasOwn(policy, 'defaultRegistrationRole'), false);
-    // A retired method named by the environment is ignored rather than re-enabled.
-    process.env.USERPERSISTO_AUTH_METHODS = 'password,emailCode';
+    // An unsupported method named by the environment is ignored rather than enabled.
+    process.env.USERPERSISTO_AUTH_METHODS = 'adminPassword,emailCode';
     assert.deepEqual((await runTool('userpersisto_auth_policy_get', {}, { actorUserId: admin.id })).enabledAuthMethods, ['emailCode']);
-    // An override naming only retired methods filters down to nothing. Ignoring
+    process.env.USERPERSISTO_AUTH_METHODS = 'password,emailCode';
+    assert.deepEqual((await runTool('userpersisto_auth_policy_get', {}, { actorUserId: admin.id })).enabledAuthMethods, ['password', 'emailCode']);
+    // An override naming only unsupported methods filters down to nothing. Ignoring
     // the whole override keeps sign-in working; an empty list would fail every
     // policy read and lock everyone out of a running installation.
-    process.env.USERPERSISTO_AUTH_METHODS = 'password';
+    process.env.USERPERSISTO_AUTH_METHODS = 'adminPassword';
     const ignored = await runTool('userpersisto_auth_policy_get', {}, { actorUserId: admin.id });
-    assert.deepEqual(ignored.enabledAuthMethods, ['emailCode', 'passkey', 'totp', 'google']);
+    assert.deepEqual(ignored.enabledAuthMethods, ['password', 'emailCode', 'passkey', 'totp', 'google']);
     // The variable is still reported as set, so an operator can see the one
     // that is being ignored rather than wondering why it had no effect.
     assert.deepEqual(ignored.environmentOverrides, ['USERPERSISTO_AUTH_METHODS']);

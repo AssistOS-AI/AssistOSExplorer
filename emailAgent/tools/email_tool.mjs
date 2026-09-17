@@ -2,6 +2,7 @@ import { stdin, stdout, env, exit } from 'node:process';
 import { getSettings, saveSettings, getSecret } from '../lib/settings.mjs';
 import { sendText, sendTemplate, providerStatus } from '../lib/mailjet.mjs';
 import { assertEmailToolAuthorized, authInfoFromEnvelope } from './invocation-context.mjs';
+import { authCodeMessage } from '../lib/authCodeMessage.mjs';
 
 const chunks = [];
 for await (const chunk of stdin) chunks.push(chunk);
@@ -28,10 +29,11 @@ const HANDLERS = {
     email_send_template: () => sendTemplate({ to: args.to, templateId: args.templateId, variables: args.variables || {} }),
     email_send_test: () => sendText({ to: args.to, subject: 'EmailAgent test', text: 'EmailAgent test email.' }),
     email_send_auth_code: async () => {
+        const message = authCodeMessage({ code: args.code, purpose: args.purpose });
         const templateId = await getSecret('EMAIL_AUTH_CODE_TEMPLATE_ID');
         const result = templateId
-            ? await sendTemplate({ to: args.to, templateId, variables: { code: args.code } })
-            : await sendText({ to: args.to, subject: 'Your authentication code', text: `Your authentication code is: ${args.code}` });
+            ? await sendTemplate({ to: args.to, templateId, variables: message.variables })
+            : await sendText({ to: args.to, subject: message.subject, text: message.text });
         return { providerMessageId: result.providerMessageId, correlationId: args.correlationId || '' };
     },
 };

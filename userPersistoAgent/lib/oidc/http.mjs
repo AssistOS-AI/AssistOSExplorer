@@ -12,10 +12,10 @@ import { authGenerationOf, getUserById } from '../users.mjs';
 import { loginVerify as verifyTotp } from '../auth/totp.mjs';
 import { loginOptions as passkeyOptions, loginVerify as verifyPasskey } from '../auth/passkey.mjs';
 import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, startEmailSignIn } from '../auth/signIn.mjs';
+import { changeSignupEmail, completeSignup, resendSignup, startSignup } from '../auth/signup.mjs';
+import { loginWithUserPassword } from '../auth/userPassword.mjs';
 import { readAttempt } from '../auth/emailAttempts.mjs';
-import { completeAdministratorPassword } from '../auth/adminPassword.mjs';
 import { wizardConfiguration } from '../auth/wizardConfig.mjs';
-import { googleOnlyAuthentication } from '../auth/production.mjs';
 import { ensureBrowserProof, rateSourceOf, readBrowserProof } from '../auth/browserBinding.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../email-agent-client.mjs';
 import { cancelGoogleTransactionForParent } from '../../service/googleAuth.mjs';
@@ -23,22 +23,26 @@ import { cancelGoogleTransactionForParent } from '../../service/googleAuth.mjs';
 // OIDC adapter for the shared wizard. JSON actions return wizard state; every
 // credential completion is a native form POST that ends in the engine's
 // interactionFinished redirect, so the browser keeps the cookie-bound flow.
-const JSON_ACTIONS = new Set(['attempt', 'attempt-cancel', 'discover', 'email-start', 'passkey-options']);
-const NATIVE_ACTIONS = new Set(['email-verify', 'totp', 'passkey-verify', 'admin-login']);
+const JSON_ACTIONS = new Set(['attempt', 'attempt-cancel', 'discover', 'signup-start', 'signup-resend', 'signup-email', 'email-start', 'passkey-options']);
+const NATIVE_ACTIONS = new Set(['password-login', 'signup-verify', 'email-verify', 'totp', 'passkey-verify']);
 const METHOD_FOR_ACTION = {
+    'password-login': 'password', 'signup-start': 'password', 'signup-resend': 'password', 'signup-email': 'password', 'signup-verify': 'password',
     'email-start': 'emailCode', 'email-verify': 'emailCode', totp: 'totp', 'passkey-options': 'passkey', 'passkey-verify': 'passkey',
 };
+const SIGNUP_DELIVERY = new Set(['signup-start', 'signup-resend', 'signup-email']);
 const NOTICES = new Set(['google-cancelled', 'google-denied', 'google-unavailable']);
 const FAILURE_MESSAGES = {
-    account_exists: 'An account already uses this email. Sign in instead.',
+    account_exists: 'An account already uses this email. Log in instead.',
     registration_disabled: 'Registration is not available.',
+    auth_method_disabled: 'This sign-in method is not available.',
     code_invalid: 'Unable to sign in. That code is not correct.',
     code_expired: 'Unable to sign in. That code expired; request a new code.',
     too_many_attempts: 'Unable to sign in. Too many incorrect codes; start again.',
     rate_limited: 'Unable to sign in. Too many attempts; wait and try again.',
     attempt_invalid: 'Unable to sign in. Start again.',
-    admin_password_unavailable: 'Administrator sign-in is not available.',
+    signup_restart_required: 'Choose your password again to continue.',
 };
+const REASON = /^[a-z_]{1,32}$/;
 
 function json(res, status, data) {
     res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -161,7 +165,8 @@ function failureFrom(error) {
     const code = String(error?.code || 'authentication_failed');
     return { code, message: FAILURE_MESSAGES[code] || 'Unable to sign in. Check your details and try again.',
         ...(Number.isSafeInteger(error?.attemptsRemaining) ? { attemptsRemaining: error.attemptsRemaining } : {}),
-        ...(Number.isSafeInteger(error?.retryAfter) ? { retryAfter: error.retryAfter } : {}) };
+        ...(Number.isSafeInteger(error?.retryAfter) ? { retryAfter: error.retryAfter } : {}),
+        ...(typeof error?.reason === 'string' && REASON.test(error.reason) ? { reason: error.reason } : {}) };
 }
 
 function jsonFailure(res, error) {
@@ -169,13 +174,14 @@ function jsonFailure(res, error) {
     if (!(status >= 400 && status < 500)) throw error;
     return json(res, status, { ok: false, error: String(error.code || 'invalid_request'),
         ...(Number.isSafeInteger(error.retryAfter) ? { retryAfter: error.retryAfter } : {}),
-        ...(Number.isSafeInteger(error.attemptsRemaining) ? { attemptsRemaining: error.attemptsRemaining } : {}) });
+        ...(Number.isSafeInteger(error.attemptsRemaining) ? { attemptsRemaining: error.attemptsRemaining } : {}),
+        ...(typeof error.reason === 'string' && REASON.test(error.reason) ? { reason: error.reason } : {}) });
 }
 
 async function interactionRequest(req, res, issuer, provider, match, { google, deliverEmail, emailStatus }) {
     const [, uid, action = '', subaction = ''] = match;
     if (subaction && action !== 'google-resume') throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
-    const emailAvailable = !googleOnlyAuthentication() && (await emailStatus()).available === true;
+    const emailAvailable = (await emailStatus()).available === true;
     return serialize(`oidc-interaction:${uid}`, async () => {
         const interaction = await provider.interactionDetails(req, res);
         if (interaction.uid !== uid) throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
@@ -259,16 +265,20 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
         }
         if (interaction.prompt.name !== 'login' || (!JSON_ACTIONS.has(action) && !NATIVE_ACTIONS.has(action))) return json(res, 400, { error: 'invalid_request' });
         const method = METHOD_FOR_ACTION[action];
-        if (method && !(await isAuthMethodEnabled(method))) return json(res, 400, { error: 'access_denied' });
+        const methodEnabled = !method || await isAuthMethodEnabled(method);
+        if (JSON_ACTIONS.has(action) && !methodEnabled) return json(res, 400, { error: 'access_denied' });
         const rateSource = rateSourceOf(req);
         const cookie = { path: servicePath(issuer), secure: issuer.protocol === 'https:' };
         const challengeStore = new PersistoOidcAdapter('LoginChallenge');
         if (JSON_ACTIONS.has(action)) {
             try {
+                if (SIGNUP_DELIVERY.has(action) && !emailAvailable) {
+                    throw Object.assign(new Error('registration_disabled'), { code: 'registration_disabled', statusCode: 403 });
+                }
                 if (action === 'attempt') {
                     const browserProof = ensureBrowserProof(req, res, cookie);
                     return json(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable })),
-                        attempt: googleOnlyAuthentication() ? null : await attemptStatus({ parent, browserProof }) });
+                        attempt: await attemptStatus({ parent, browserProof }) });
                 }
                 if (action === 'attempt-cancel') {
                     if (body.googleTransaction !== undefined) {
@@ -281,6 +291,19 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
                 }
                 if (action === 'discover') {
                     return json(res, 200, { ok: true, ...(await discoverAccount({ parent, email: field(body, 'email', 320), rateSource, validateParent, emailAvailable })) });
+                }
+                if (action === 'signup-start') {
+                    const browserProof = ensureBrowserProof(req, res, cookie);
+                    return json(res, 200, { ok: true, ...(await startSignup({ parent, browserProof, email: field(body, 'email', 320),
+                        password: body.password, passwordConfirmation: body.passwordConfirmation, rateSource, validateParent, deliver: deliverEmail })) });
+                }
+                if (action === 'signup-resend' || action === 'signup-email') {
+                    const browserProof = readBrowserProof(req);
+                    if (!browserProof) throw Object.assign(new Error('attempt_invalid'), { code: 'attempt_invalid', statusCode: 400 });
+                    const result = action === 'signup-resend'
+                        ? await resendSignup({ parent, browserProof, rateSource, validateParent, deliver: deliverEmail })
+                        : await changeSignupEmail({ parent, browserProof, email: field(body, 'email', 320), rateSource, validateParent, deliver: deliverEmail });
+                    return json(res, 200, { ok: true, ...result });
                 }
                 if (action === 'email-start') {
                     if (!emailAvailable) throw Object.assign(new Error('auth_method_disabled'), { code: 'auth_method_disabled', statusCode: 404 });
@@ -303,6 +326,31 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
         let amr;
         let attemptedEmail = '';
         try {
+            // Native submissions return to the wizard on policy changes. Code
+            // completions reach their domain checks so a refused verified proof
+            // is consumed and any pending signup verifier is erased.
+            if (!methodEnabled && action !== 'signup-verify' && action !== 'email-verify') {
+                attemptedEmail = action === 'passkey-verify' ? (await challengeStore.find(uid))?.email || '' : field(body, 'email', 320);
+                throw Object.assign(new Error('auth_method_disabled'), { code: 'auth_method_disabled', statusCode: 404 });
+            }
+            if (action === 'password-login') {
+                attemptedEmail = field(body, 'email', 320);
+                // Passwords are passed through unmodified; the domain bounds them.
+                const result = await loginWithUserPassword({ parent, email: attemptedEmail, password: body.password, rateSource, validateParent });
+                authenticated = { ok: true, user: result.user };
+                amr = ['pwd'];
+            }
+            if (action === 'signup-verify') {
+                const browserProof = readBrowserProof(req);
+                if (!browserProof) throw Object.assign(new Error('attempt_invalid'), { code: 'attempt_invalid', statusCode: 400 });
+                attemptedEmail = (await readAttempt({ parent, browserProof }).catch(() => null))?.email || '';
+                // First boundary: the local commit of account, credential and setup.
+                // The engine's interaction result below is the second; a stop
+                // between them resumes here through the completed attempt.
+                const result = await completeSignup({ parent, browserProof, code: field(body, 'code', 16), validateParent });
+                authenticated = { ok: true, user: result.user };
+                amr = ['emailCode'];
+            }
             if (action === 'email-verify') {
                 const browserProof = readBrowserProof(req);
                 if (!browserProof) throw Object.assign(new Error('attempt_invalid'), { code: 'attempt_invalid', statusCode: 400 });
@@ -327,13 +375,6 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
                         origin: issuer.origin, purpose: `oidc-login:${uid}` });
                 }
                 amr = ['passkey'];
-            }
-            if (action === 'admin-login') {
-                attemptedEmail = field(body, 'contactEmail', 320);
-                const result = await completeAdministratorPassword({ password: field(body, 'password', 4096), rateSource,
-                    contactEmail: attemptedEmail, validateParent });
-                authenticated = { ok: true, user: result.user };
-                amr = ['pwd'];
             }
         } catch (error) {
             if (!(Number(error.statusCode) >= 400 && Number(error.statusCode) < 500) || error.code === 'persistence_unavailable') throw error;

@@ -41,31 +41,45 @@ npm run test:onlyoffice-confidential
 uses the exact Ploinky checkout mounted read-only at `/opt/ploinky`. A different
 checkout is rejected even when it happens to name the same commit.
 
-The sign-in helper requires existing UserPersisto test accounts; it does not seed
-local browser credentials. UserPersisto accounts are passwordless. The three
-release gates require two distinct accounts:
+The sign-in helper uses UserPersisto accounts; it does not seed local browser
+credentials. No account or password ships with UserPersisto. The three release
+gates require two distinct accounts:
 
-1. Complete the first sign-in with Google or a verified email code to claim the
-   fresh installation as administrator before any other account signs in. For
-   automated gates, that account needs an available email-code method or an
-   enrolled authenticator app.
-2. Sign up the second account with an email code, then have the administrator
-   grant it the `user` role. Later public sign-ups receive `selfRegistered`,
-   which permits the account dashboard but not Explorer access.
+1. Claim the fresh installation first, before any other account signs in: sign
+   in with Google, or enter an email, choose **Sign up**, create a password and
+   enter the emailed verification code. That first verified account becomes
+   the administrator. Email sign-up needs working email delivery (or
+   `USERPERSISTO_DEV_BOOTSTRAP=true` on a trusted development host).
+2. Sign up the second account the same way, then have the administrator grant
+   it the `user` role. Later public sign-ups receive `selfRegistered`, which
+   permits My Account but not Explorer access.
 
-Both accounts use the same passwordless wizard.
-`SMOKE_SIGN_IN_METHOD` and `SMOKE_SECONDARY_SIGN_IN_METHOD` accept
-`emailCode` (the default for both accounts) or `totp`. Email codes come
-from `SMOKE_EMAIL_CODE_COMMAND`, a shell command that prints the newest code for
-the address in `$SMOKE_EMAIL` (for example a test-mailbox reader, or the agent
-log when `USERPERSISTO_DEV_BOOTSTRAP=true` makes an undelivered code visible as
+Both accounts use the same email-first wizard: **Email** and **Next**, then
+**Enter your password**, or **Try another way** for an email code or an
+authenticator app. `SMOKE_SIGN_IN_METHOD` and `SMOKE_SECONDARY_SIGN_IN_METHOD`
+accept `password`, `emailCode` (the default for both accounts) or `totp`.
+`SMOKE_ACCOUNT_PASSWORD` and `SMOKE_SECONDARY_ACCOUNT_PASSWORD` supply the
+UserPersisto account passwords. Email codes come from
+`SMOKE_EMAIL_CODE_COMMAND`, a shell command that prints the newest code for the
+address in `$SMOKE_EMAIL` (for example a test-mailbox reader, or the agent log
+when `USERPERSISTO_DEV_BOOTSTRAP=true` makes an undelivered code visible as
 `DEVELOPMENT email code`); the helper only accepts a code different from the one
 visible before the send. `SMOKE_TOTP_SECRET` and `SMOKE_SECONDARY_TOTP_SECRET`
 supply an enrolled authenticator's base32 secret instead. Treat all of these as
 secrets. `SMOKE_PASSWORD` and `SMOKE_SECONDARY_PASSWORD` apply only to Ploinky's
-local `/auth/login` form, never to UserPersisto. The helper refuses passwordless
-sign-in while the installation is unclaimed so a test member cannot become its
-administrator.
+local `/auth/login` form, never to UserPersisto.
+
+When the configured email has no account, the helper signs up through **Sign
+up**, **Create your password** and the emailed code (which requires
+`SMOKE_EMAIL_CODE_COMMAND`), using the configured account password or, when none
+is configured, the run password. The configuration creates that random run
+password once as `SMOKE_RUN_ACCOUNT_PASSWORD` in the Playwright runner process, so
+its workers share it and the existing `*PASSWORD*` redaction keeps it out of
+reports and traces. The helper refuses to sign in or sign up while the
+installation is unclaimed, so a test account cannot become its administrator by
+accident. A refused password or code fails immediately with the wizard's message,
+and an unavailable method, a failed code delivery, or a missing code command
+fails as `BLOCKED`.
 
 For sustained suites, enroll an authenticator through My Account after proving
 the account with its existing sign-in method. Email-code delivery is rate-limited
@@ -91,8 +105,9 @@ SMOKE_BASE_URL=http://127.0.0.1:8080 \
 npm test
 ```
 
-For UserPersisto, the helper drives Login mode with the account email followed
-by the email code or authenticator for every role. It then verifies the resulting
+For UserPersisto, the helper enters the account email and continues with the
+account password, or with an email code or authenticator through **Try another
+way**, for every role. It then verifies the resulting
 Router principal. A returned username matches only the configured username, and
 a returned email matches only the configured login email; either exact
 normalized field match identifies the configured account. The returned username
@@ -112,8 +127,9 @@ npm run test:qa
 ```
 
 `test:qa` is pinned to `https://explorer-qa.axiologic.dev`. Its two run-scoped
-Explorer users sign up with email codes under `SMOKE_ACCOUNT_EMAIL_DOMAIN`
-(default `example.test`); the administrator then assigns their roles through the
+Explorer users sign up under `SMOKE_ACCOUNT_EMAIL_DOMAIN` (default
+`example.test`) with the run password and an emailed verification code, then sign
+in with that password; the administrator then assigns their roles through the
 Administration UI. It runs exactly two
 browser tests, and blocks the generated users afterward. The first test
 creates a `.docx` under `/Confidential/My Space`, proves the active

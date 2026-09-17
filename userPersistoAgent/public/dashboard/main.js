@@ -6,6 +6,8 @@ const TOOL_PATHS = Object.freeze({
     userpersisto_passkey_registration_verify: 'auth/passkey/verify',
     userpersisto_totp_setup_start: 'auth/totp/start',
     userpersisto_totp_setup_verify: 'auth/totp/verify',
+    // Passwords never pass through the tool registry.
+    password_set: 'auth/password/set',
     // Fresh confirmation and contact verification are My Account HTTP operations only.
     reauth_start: 'reauth/start',
     reauth_verify: 'reauth/verify',
@@ -15,7 +17,7 @@ const TOOL_PATHS = Object.freeze({
     contact_verify: 'contact/verify',
 });
 const METHOD_LABELS = {
-    emailCode: 'Email code', passkey: 'Passkey', totp: 'Authenticator app', google: 'Google', adminPassword: 'Administrator password',
+    password: 'Password', emailCode: 'Email code', passkey: 'Passkey', totp: 'Authenticator app', google: 'Google',
 };
 
 export async function dashboardApi(path, payload) {
@@ -84,7 +86,7 @@ export function mountDashboard(document) {
         if (disposed || sessionExpired) return;
         if (!profile?.user) throw new Error('Profile unavailable');
         updateAccountNavigation(document, profile);
-        // The configured-password administrator may have no sign-in email yet.
+        // An account without a sign-in email is shown by username or ID.
         select('account-email').textContent = profile.user.email || profile.user.username || profile.user.id;
         select('account-role').textContent = (profile.roles || []).map((role) => role === 'selfRegistered' ? 'Member' : role).join(', ');
         select('account-methods').textContent = [...new Set((profile.authMethods || []).filter((method) => Object.hasOwn(METHOD_LABELS, method.type)).map((method) => METHOD_LABELS[method.type]))].join(' · ') || 'No sign-in methods configured';

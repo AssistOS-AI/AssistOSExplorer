@@ -134,27 +134,37 @@ async function post(runtime, path, body, { bridge = false, browser } = {}) {
     return { status: response.status, body: await response.json() };
 }
 
-async function registerOwner(runtime) {
+async function loginRequest(runtime) {
     const request = await post(runtime, '/service/runtime/sso-login-request', {
         redirectUri: `http://127.0.0.1:${runtime.servicePort}/auth/callback`,
     }, { bridge: true });
     assert.equal(request.status, 200);
+    return request.body.request.providerState;
+}
+
+// Stages a password signup through the wizard routes; the code is read from
+// the construction-time mail capture of the spawned runtime.
+async function stageSignup(runtime, email) {
+    const requestId = await loginRequest(runtime);
     const browser = new CookieBrowser();
-    const requestId = request.body.request.providerState;
-    const started = await post(runtime, '/service/auth/email-code/start', {
-        requestId, email: 'runtime-owner@example.test', purpose: 'register',
-    }, { browser });
+    const password = `runtime ${randomBytes(18).toString('base64url')}`;
+    const started = await post(runtime, '/service/auth/signup/start', { requestId, email, password, passwordConfirmation: password }, { browser });
     assert.equal(started.status, 200, JSON.stringify(started.body));
     const message = JSON.parse(await readFile(runtime.env.RUNTIME_TEST_MAIL, 'utf8'));
-    assert.equal(message.to, 'runtime-owner@example.test');
-    const registered = await post(runtime, '/service/auth/email-code/verify', { requestId, code: message.code }, { browser });
+    assert.deepEqual([message.to, message.purpose], [email, 'signup-verification']);
+    return { requestId, browser, password, code: message.code };
+}
+
+async function registerOwner(runtime) {
+    const pending = await stageSignup(runtime, 'runtime-owner@example.test');
+    const registered = await post(runtime, '/service/auth/signup/verify', { requestId: pending.requestId, code: pending.code }, { browser: pending.browser });
     assert.equal(registered.status, 200, JSON.stringify(registered.body));
     assert.equal(registered.body.initialAdministrator, true);
     const consumed = await post(runtime, '/service/runtime/sso-consume-code', {
-        providerState: request.body.request.providerState, code: registered.body.code,
+        providerState: pending.requestId, code: registered.body.code,
     }, { bridge: true });
     assert.equal(consumed.status, 200);
-    return consumed.body.user.id;
+    return { userId: consumed.body.user.id, password: pending.password };
 }
 
 async function fakeRuntime(root) {
@@ -180,15 +190,17 @@ process.once('SIGTERM', async () => {
     return { PLOINKY_AGENT_LIB_DIR: fakeRoot, RUNTIME_TEST_STATE: join(root, 'runtime-state.json') };
 }
 
-test('MCP starts after the durable service and drains before HTTP/store; normal restart retains the owner', async t => {
+test('MCP starts after the durable service and drains before HTTP/store; normal restart retains the owner, its password and a pending signup', async t => {
     const root = await fixture(t);
     const env = await fakeRuntime(root);
     const runtime = await startRuntime(t, root, { env });
     await waitFor(() => existsSync(env.RUNTIME_TEST_STATE), runtime);
     const started = JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8'));
     assert.equal(started.setup.setupComplete, false);
-    assert.equal(started.setup.adminPassword, true);
-    await registerOwner(runtime);
+    assert.deepEqual([started.setup.signup.email, started.setup.methods.password, started.setup.passwordPolicy.minLength], [true, true, 15]);
+    for (const retired of ['adminPassword', 'googleOnly']) assert.equal(Object.hasOwn(started.setup, retired), false, retired);
+    const owner = await registerOwner(runtime);
+    const pending = await stageSignup(runtime, 'runtime-pending@example.test');
     assert.equal((await post(runtime, '/internal/tool', { name: 'userpersisto_profile_get' })).status, 401);
     runtime.child.kill('SIGTERM');
     assert.deepEqual(await runtime.exited, { code: 0, signal: null }, runtime.output());
@@ -199,6 +211,14 @@ test('MCP starts after the durable service and drains before HTTP/store; normal 
     const restarted = await startRuntime(t, root, { env });
     await waitFor(() => existsSync(env.RUNTIME_TEST_STATE), restarted);
     assert.equal(JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8')).setup.setupComplete, true);
+    const requestId = await loginRequest(restarted);
+    const login = await post(restarted, '/service/auth/password/login', { requestId, state: 'restart', email: 'runtime-owner@example.test', password: owner.password });
+    assert.equal(login.status, 200, JSON.stringify(login.body));
+    const signedIn = await post(restarted, '/service/runtime/sso-consume-code', { providerState: requestId, code: login.body.code }, { bridge: true });
+    assert.equal(signedIn.body.user.id, owner.userId);
+    const completed = await post(restarted, '/service/auth/signup/verify', { requestId: pending.requestId, code: pending.code }, { browser: pending.browser });
+    assert.equal(completed.status, 200, JSON.stringify(completed.body));
+    assert.equal(completed.body.initialAdministrator, false);
     restarted.child.kill('SIGTERM');
     assert.deepEqual(await restarted.exited, { code: 0, signal: null }, restarted.output());
 });
@@ -281,7 +301,7 @@ test('the bundled AgentServer advertises every schema and forwards signed valida
         PLOINKY_AGENT_SECRET: secret.toString('hex'), PLOINKY_AGENT_ID: audience,
     } });
     await waitFor(async () => (await fetch(`http://127.0.0.1:${runtime.mcpPort}/health`)).ok, runtime);
-    const userId = await registerOwner(runtime);
+    const { userId } = await registerOwner(runtime);
     const mcp = async (body, { sessionId, token } = {}) => {
         const response = await fetch(`http://127.0.0.1:${runtime.mcpPort}/mcp`, {
             method: 'POST', headers: {
@@ -330,7 +350,9 @@ test('the bundled AgentServer advertises every schema and forwards signed valida
     const profile = await successful(profileTool.name, {});
     assert.equal(profile.user.id, userId);
     assert.equal(profile.user.email, 'runtime-owner@example.test');
-    assert.deepEqual(profile.authMethods.map((method) => method.type), ['emailCode']);
+    assert.deepEqual(profile.authMethods.map((method) => method.type), ['password', 'emailCode']);
+    assert.deepEqual(profile.enrollments.password, { configured: true });
+    assert.doesNotMatch(JSON.stringify(profile), /hashEncrypted|scrypt\$|passwordHash/);
     const updated = await successful('userpersisto_profile_update', { displayName: 'Runtime Owner' });
     assert.equal(updated.user.displayName, 'Runtime Owner');
     await successful('userpersisto_user_roles_update', { userId, roles: ['admin', 'user'] });

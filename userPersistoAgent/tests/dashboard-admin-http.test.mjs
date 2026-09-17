@@ -265,7 +265,7 @@ test('applications support sanitized CRUD, one-time secret rotation, public clie
 test('policy and provider status use fixed whitelisted fields and preserve operator-only configuration', async () => {
     const initial = await adminRequest('policy/get');
     assert.equal(initial.response.status, 200);
-    assert.deepEqual(initial.data.result.enabledAuthMethods, ['emailCode', 'passkey', 'totp', 'google']);
+    assert.deepEqual(initial.data.result.enabledAuthMethods, ['password', 'emailCode', 'passkey', 'totp', 'google']);
     assert.equal(initial.data.result.registrationRole, 'selfRegistered');
     const saved = await adminRequest('policy/set', { userId: settingsManager.id, body: {
         enabledAuthMethods: ['emailCode', 'totp'], selfRegistrationEnabled: false,
@@ -288,7 +288,7 @@ test('policy and provider status use fixed whitelisted fields and preserve opera
     const oidc = await adminRequest('applications/status');
     assert.equal(oidc.response.status, 200);
     assert.equal(oidc.data.result.issuer, process.env.USERPERSISTO_OIDC_ISSUER);
-    const retired = await adminRequest('policy/set', { body: { enabledAuthMethods: ['password'] } });
+    const retired = await adminRequest('policy/set', { body: { enabledAuthMethods: ['adminPassword'] } });
     assert.equal(retired.response.status, 400);
     assert.equal(retired.data.error, 'invalid_auth_method');
     await adminRequest('policy/set', { body: { defaultRegistrationRole: 'admin', selfRegistrationEnabled: true } });

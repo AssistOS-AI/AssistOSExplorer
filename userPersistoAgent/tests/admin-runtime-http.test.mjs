@@ -40,7 +40,7 @@ test('provider administration updates a blocked account without an internal erro
         assert.equal(roleOnly.body.user.username, '');
         assert.equal(roleOnly.body.user.passwordHash, undefined);
         assert.deepEqual(await getUserRoles(target.id), ['user']);
-        // Accounts are passwordless and sign-in mailboxes change only with fresh proof.
+        // Administration never sets an account password, and sign-in mailboxes change only with fresh proof.
         const before = await getUserById(target.id);
         const password = await bridge('sso-admin-user-update', { actorUserId: admin.id, userId: target.id, password: 'new-password-12' });
         assert.deepEqual([password.status, password.body.error], [400, 'password_unsupported']);

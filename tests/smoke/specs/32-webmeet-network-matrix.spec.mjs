@@ -84,9 +84,10 @@ test.describe('WebMeet native external-network matrix @external', () => {
     expect(expectedEgressA).not.toBe(expectedEgressB);
     required('SMOKE_USERNAME');
     required('SMOKE_SECONDARY_USERNAME');
-    // UserPersisto accounts use email codes or an enrolled authenticator.
+    // Existing UserPersisto accounts use their password, email codes or an enrolled authenticator.
     for (const account of [smokeConfig.primaryUser, smokeConfig.secondaryUser]) {
       if (account.signInMethod === 'totp') expect(account.totpSecret, 'an enrolled authenticator secret is required').toBeTruthy();
+      else if (account.signInMethod === 'password') expect(account.accountPassword, 'a configured account password is required').toBeTruthy();
       else required('SMOKE_EMAIL_CODE_COMMAND');
     }
     expect(

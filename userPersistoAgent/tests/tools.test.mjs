@@ -99,7 +99,19 @@ test('retired password, creation and unbound sign-in tools are absent from schem
         await assert.rejects(() => runTool(name, {}, {}), /Unknown tool/);
     }
     const serialized = JSON.stringify(config);
-    assert.ok(!serialized.includes('"password"'), 'no tool schema accepts a password');
+    // No schema property at any depth can carry a password; `password` may
+    // appear only as a policy method name.
+    const propertyNames = (schema) => (!schema || typeof schema !== 'object' ? [] : [
+        ...Object.keys(schema.properties || {}),
+        ...Object.values(schema).flatMap((value) => (Array.isArray(value) ? value.flatMap(propertyNames) : propertyNames(value))),
+    ]);
+    for (const tool of config.tools) {
+        assert.deepEqual(propertyNames(tool.inputSchema).filter((name) => /pass(word|phrase)/i.test(name)), [], `${tool.name} accepts no password`);
+    }
+    const policy = config.tools.find((tool) => tool.name === 'userpersisto_auth_policy_set');
+    assert.deepEqual(policy.inputSchema.properties.enabledAuthMethods.items.enum, ['password', 'emailCode', 'passkey', 'totp', 'google'],
+        'the policy tool can keep every supported method, including password');
+    assert.equal(JSON.stringify(policy.inputSchema).split('"password"').length - 1, 1, 'password appears only as a method name');
     assert.ok(!serialized.includes('defaultRegistrationRole'));
     const update = config.tools.find((tool) => tool.name === 'userpersisto_user_update');
     assert.equal(Object.hasOwn(update.inputSchema.properties, 'email'), false);

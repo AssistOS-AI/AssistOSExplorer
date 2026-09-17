@@ -18,6 +18,7 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         error.status = status;
         if (Number.isSafeInteger(data && data.retryAfter)) error.retryAfter = data.retryAfter;
         if (Number.isSafeInteger(data && data.attemptsRemaining)) error.attemptsRemaining = data.attemptsRemaining;
+        if (typeof (data && data.reason) === 'string') error.reason = data.reason;
         return error;
     }
 
@@ -62,6 +63,22 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         discover(email) {
             return post('discover', { requestId, email });
         },
+        passwordLogin({ email, password }) {
+            return post('password/login', { requestId, state, email, password });
+        },
+        startSignup({ email, password, passwordConfirmation }) {
+            return post('signup/start', { requestId, email, password, passwordConfirmation });
+        },
+        // Retries carry no password: the server keeps the staged verifier.
+        resendSignup() {
+            return post('signup/resend', { requestId });
+        },
+        changeSignupEmail(email) {
+            return post('signup/email', { requestId, email });
+        },
+        verifySignup(code) {
+            return post('signup/verify', { requestId, state, code });
+        },
         startEmail({ email, purpose, resend }) {
             return post('email-code/start', { requestId, email, purpose, ...(resend ? { resend: true } : {}) });
         },
@@ -76,9 +93,6 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         },
         passkeyOptions(email) {
             return post('passkey/options', { requestId, email });
-        },
-        adminLogin({ password, contactEmail }) {
-            return post('admin/login', { requestId, state, password, ...(contactEmail ? { contactEmail } : {}) });
         },
         startGoogle() {
             return post('google/start', { requestId, state });

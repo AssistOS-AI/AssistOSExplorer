@@ -11,6 +11,7 @@ export function createOidcAdapter({ config, document, fetch, navigate, closeWind
         error.status = status;
         if (Number.isSafeInteger(data && data.retryAfter)) error.retryAfter = data.retryAfter;
         if (Number.isSafeInteger(data && data.attemptsRemaining)) error.attemptsRemaining = data.attemptsRemaining;
+        if (typeof (data && data.reason) === 'string') error.reason = data.reason;
         return error;
     }
 
@@ -67,6 +68,23 @@ export function createOidcAdapter({ config, document, fetch, navigate, closeWind
         discover(email) {
             return postJson('discover', { email });
         },
+        // Native completion: submitted only after the wizard accepts the epoch.
+        passwordLogin({ email, password }) {
+            return { action: 'password-login', fields: { email, password } };
+        },
+        startSignup({ email, password, passwordConfirmation }) {
+            return postJson('signup-start', { email, password, passwordConfirmation });
+        },
+        // Retries carry no password: the server keeps the staged verifier.
+        resendSignup() {
+            return postJson('signup-resend');
+        },
+        changeSignupEmail(email) {
+            return postJson('signup-email', { email });
+        },
+        verifySignup(code) {
+            return { action: 'signup-verify', fields: { code } };
+        },
         startEmail({ email, purpose, resend }) {
             return postJson('email-start', { email, purpose, ...(resend ? { resend: 'true' } : {}) });
         },
@@ -83,9 +101,6 @@ export function createOidcAdapter({ config, document, fetch, navigate, closeWind
             // email/challengeKey are retained server-side against the interaction
             // uid; only the assertion travels with the completion.
             return { action: 'passkey-verify', fields: { assertion: JSON.stringify(assertionCredentialToServer(assertion)) } };
-        },
-        adminLogin({ password, contactEmail }) {
-            return { action: 'admin-login', fields: { password, ...(contactEmail ? { contactEmail } : {}) } };
         },
         startGoogle() {
             return postJson('google');

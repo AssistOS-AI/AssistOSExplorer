@@ -476,7 +476,7 @@
         {
             "name": "userpersisto_auth_policy_set",
             "title": "Set authentication policy",
-            "description": "Admin: configure enabled passwordless sign-in methods, self-registration and redirect origins. Public signup always receives selfRegistered.",
+            "description": "Admin: configure enabled sign-in methods, self-registration and redirect origins. Account passwords are never accepted here. Public signup always receives selfRegistered.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -488,7 +488,7 @@
                         "type": "array",
                         "minItems": 1,
                         "uniqueItems": true,
-                        "items": { "type": "string", "enum": ["emailCode", "passkey", "totp", "google"] }
+                        "items": { "type": "string", "enum": ["password", "emailCode", "passkey", "totp", "google"] }
                     },
                     "selfRegistrationEnabled": { "type": "boolean" },
                     "allowedRedirectOrigins": { "type": "array", "items": { "type": "string", "format": "uri" } }

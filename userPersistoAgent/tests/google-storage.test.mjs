@@ -24,12 +24,12 @@ async function fixture() {
     folder = await mkdtemp(join(tmpdir(), 'userpersisto-google-storage-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'isolated-google-storage-test-key';
-    process.env.USERPERSISTO_AUTH_METHODS = 'emailCode,google';
+    process.env.USERPERSISTO_AUTH_METHODS = 'password,emailCode,google';
     await ensureSeedData();
-    // Setup is claimed through the real verified-email decision, so later
+    // Setup is claimed through the real verified password signup, so later
     // Google signups are ordinary selfRegistered accounts.
     setup.resetAuthLimitsForTests();
-    await setup.registerWithEmailCode('owner@example.test');
+    await setup.signUpWithPassword('owner@example.test');
 }
 
 async function transaction({ parentId = random(), expiresAt = Date.now() + 60000 } = {}) {

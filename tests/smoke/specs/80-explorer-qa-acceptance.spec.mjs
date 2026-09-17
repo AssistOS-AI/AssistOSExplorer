@@ -35,18 +35,21 @@ import {
   sendWebMeetChat,
 } from '../lib/webmeet.mjs';
 
-// Passwordless accounts: each signs up with an email code, then the
-// administrator grants its role. Codes come from SMOKE_EMAIL_CODE_COMMAND.
+// Each account signs up through the email-first wizard with the run password
+// and its emailed verification code (from SMOKE_EMAIL_CODE_COMMAND), then signs
+// in with that password; the administrator grants each account its role.
 const accountSuffix = `${smokeConfig.runId}-${crypto.randomBytes(4).toString('hex')}`.toLowerCase();
 const ownerAccount = Object.freeze({
   username: `e2e-owner-${accountSuffix}`,
   loginEmail: `e2e-owner-${accountSuffix}@${smokeConfig.accountEmailDomain}`,
-  signInMethod: 'emailCode',
+  signInMethod: 'password',
+  accountPassword: smokeConfig.runAccountPassword,
 });
 const memberAccount = Object.freeze({
   username: `e2e-member-${accountSuffix}`,
   loginEmail: `e2e-member-${accountSuffix}@${smokeConfig.accountEmailDomain}`,
-  signInMethod: 'emailCode',
+  signInMethod: 'password',
+  accountPassword: smokeConfig.runAccountPassword,
 });
 const createdAccounts = [];
 const ACCOUNT_PAGE = '/base-agent-additional-server/userPersistoAgent/7000/service/dashboard/';
@@ -267,7 +270,7 @@ test.describe('Explorer QA acceptance', () => {
       ignoreHTTPSErrors: true,
     });
     try {
-      // Each account is created by its own completed email-code sign-up.
+      // Each account is created by its own completed, email-verified sign-up.
       for (const account of [ownerAccount, memberAccount]) {
         const signUpContext = await browser.newContext({ baseURL: smokeConfig.baseURL, ignoreHTTPSErrors: true });
         try {

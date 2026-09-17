@@ -91,7 +91,7 @@ async function startHttpsProxy(port) {
 }
 
 async function verify() {
-    assert.ok(['emailCode', 'totp', 'passkey'].includes(linkMethod), 'GOOGLE_BROWSER_LINK_METHOD must be emailCode, totp or passkey.');
+    assert.ok(['emailCode', 'password', 'totp', 'passkey'].includes(linkMethod), 'GOOGLE_BROWSER_LINK_METHOD must be emailCode, password, totp or passkey.');
     assert.ok(['127.0.0.1', 'localhost'].includes(browserHost), 'GOOGLE_BROWSER_HOST must be 127.0.0.1 or localhost.');
     assert.ok(isAbsolute(runtimePath), 'GOOGLE_BROWSER_PLAYWRIGHT_MODULE must name an absolute existing module path.');
     const { chromium } = await import(pathToFileURL(runtimePath).href);
@@ -105,8 +105,9 @@ async function verify() {
     delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
     delete process.env.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS;
     await ensureSeedData();
-    // The installation owner claims setup through the real verified-email path.
-    const { user: owner } = await setup.registerWithEmailCode('browser-owner@example.test');
+    // The installation owner claims setup through the real verified signup path
+    // with a per-run password that is never printed.
+    const { user: owner, password: ownerPassword } = await setup.signUpWithPassword('browser-owner@example.test');
     const store = await getStore();
     let totpSecret;
     if (linkMethod === 'totp') {
@@ -126,7 +127,7 @@ async function verify() {
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${serviceOrigin}/service/auth/google/callback`;
     const issuer = `${serviceOrigin}/service/oidc`;
     process.env.USERPERSISTO_OIDC_ISSUER = issuer;
-    await updateAuthPolicy({ enabledAuthMethods: [...new Set(['emailCode', 'google', linkMethod])] }, {
+    await updateAuthPolicy({ enabledAuthMethods: [...new Set(['password', 'emailCode', 'google', linkMethod])] }, {
         actorId: owner.id,
         emailStatus: async () => ({ available: true }),
     });
@@ -237,14 +238,22 @@ async function verify() {
     page.on('console', (message) => {
         if (message.type() === 'error' && message.text().includes('Content Security Policy')) cspErrors += 1;
     });
-    phase = 'establishing passwordless email-code login and existing application consent';
+    phase = linkMethod === 'password' ? 'establishing password login and existing application consent'
+        : 'establishing email-code login through Try another way and existing application consent';
     await page.goto(`${applicationOrigin}/start`);
     await page.getByRole('textbox', { name: 'Email', exact: true }).fill(owner.email);
     await page.getByRole('button', { name: 'Next', exact: true }).click();
-    await page.getByRole('button', { name: 'Email me a code', exact: true }).click();
-    await page.getByRole('textbox', { name: 'Code', exact: true }).waitFor();
-    await page.getByRole('textbox', { name: 'Code', exact: true }).fill(mail.at(-1).code);
-    await page.getByRole('button', { name: 'Verify', exact: true }).click();
+    await page.getByRole('heading', { name: 'Enter your password', exact: true }).waitFor();
+    if (linkMethod === 'password') {
+        await page.getByLabel('Password', { exact: true }).fill(ownerPassword);
+        await page.getByRole('button', { name: 'Log in', exact: true }).click();
+    } else {
+        await page.getByRole('button', { name: 'Try another way', exact: true }).click();
+        await page.getByRole('button', { name: 'Email me a code', exact: true }).click();
+        await page.getByRole('textbox', { name: 'Code', exact: true }).waitFor();
+        await page.getByRole('textbox', { name: 'Code', exact: true }).fill(mail.at(-1).code);
+        await page.getByRole('button', { name: 'Verify', exact: true }).click();
+    }
     await page.getByRole('button', { name: 'Allow access', exact: true }).click();
     await page.getByRole('heading', { name: 'Client completed', exact: true }).waitFor();
     assert.equal(successfulCallbacks, 1, 'Ordinary login must establish a verified application session.');
@@ -270,17 +279,17 @@ async function verify() {
         await page.goto(`${applicationOrigin}/start`, { waitUntil: 'commit' });
         await scriptHeld;
         // The server shell renders no Google control; only the loaded wizard does.
-        assert.equal(await page.getByRole('button', { name: 'Continue with Google', exact: true }).count(), 0, 'Google must not be offered before the wizard module loads.');
+        assert.equal(await page.getByRole('button', { name: 'Sign in with Google', exact: true }).count(), 0, 'Google must not be offered before the wizard module loads.');
         assert.equal(prematureGooglePosts, 0, 'No Google request can start before the wizard module loads.');
     } finally {
         releaseWizardScript();
         page.off('request', observeGooglePost);
     }
-    await page.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Sign in with Google', exact: true }).waitFor();
     await page.unroute(wizardScriptPattern, holdWizardScript);
     phase = 'completing a controlled signed GIS credential into the collision page';
     const googleStart = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/google'));
-    await page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
+    await page.getByRole('button', { name: 'Sign in with Google', exact: true }).click();
     const proofHeader = (await (await googleStart).allHeaders())['set-cookie'];
     assert.ok(proofHeader && !/;\s*Domain=/i.test(proofHeader), 'Google attempt cookie must remain host-only.');
     const resumeResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/google-resume'));
@@ -306,10 +315,14 @@ async function verify() {
         assert.ok(mail.at(-1).correlationId.startsWith('google-link-email:'), 'The link code must be bound to the Google transaction.');
         await page.getByRole('textbox', { name: 'Email code', exact: true }).fill(mail.at(-1).code);
     }
+    if (linkMethod === 'password') {
+        assert.equal(await page.getByLabel('Password', { exact: true }).evaluate((input) => input.hasAttribute('maxlength')), false, 'The password proof input has no length cap.');
+        await page.getByLabel('Password', { exact: true }).fill(ownerPassword);
+    }
     if (linkMethod === 'totp') await page.getByRole('textbox', { name: 'Authenticator code', exact: true }).fill(totp.generateToken(totpSecret));
     const completionPath = linkMethod === 'emailCode' ? '/google-resume/verify-link-code' : '/google-resume/authenticate';
     const authenticationResponse = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith(completionPath));
-    const button = { emailCode: 'Verify code', totp: 'Confirm with authenticator', passkey: 'Confirm with passkey' }[linkMethod];
+    const button = { emailCode: 'Verify code', password: 'Confirm with password', totp: 'Confirm with authenticator', passkey: 'Confirm with passkey' }[linkMethod];
     await page.getByRole('button', { name: button, exact: true }).click();
     let authenticated;
     try { authenticated = await authenticationResponse; } catch (error) {
@@ -331,6 +344,10 @@ async function verify() {
     if (linkMethod === 'totp') {
         assert.ok((await store.getAuthMethodByKey(`${owner.id}:totp`)).credential.lastUsedCounter > 0, 'Server verification must consume the enrolled TOTP counter.');
     }
+    if (linkMethod === 'password') {
+        const proofs = (await store.select('auditEvent', { action: 'auth.password.reauthenticate' }, { start: 0, pageSize: 10 })).objects;
+        assert.deepEqual(proofs.map((event) => [event.target, event.result]), [[owner.id, 'ok']], 'The account password must be verified once as the link proof.');
+    }
     assert.equal(successfulCallbacks, 1, 'Reauthentication must await explicit linking confirmation before application success.');
     assert.equal((await store.select('externalIdentity', {}, { start: 0, pageSize: 10 })).objects.length, 0, 'Reauthentication alone must not link Google.');
     phase = 'confirming Google linking through the previously consented cross-origin callback';
@@ -344,14 +361,14 @@ async function verify() {
     assert.equal(bindings.length, 1, 'Confirmation must create exactly one Google binding.');
     assert.equal(bindings[0].userId, owner.id, 'The binding must belong to the authenticated local user.');
     assert.equal((await context.cookies(`${serviceOrigin}/service/`)).filter((cookie) => /^(?:__Secure-)?up_google_/.test(cookie.name)).length, 0, 'Successful completion must clear the attempt proof cookie.');
-    output(`PASS Chromium ${browser.version()} ${httpsMode ? 'HTTPS' : 'HTTP'} ${browserHost} ${linkMethod}: controlled signed GIS credential, passwordless wizard sign-in, no Google control before the wizard loads, native form Origin, explicit linking, consented callback CSP, local subject and roles, scoped host-only proof cookie.`);
+    output(`PASS Chromium ${browser.version()} ${httpsMode ? 'HTTPS' : 'HTTP'} ${browserHost} ${linkMethod}: controlled signed GIS credential, ${linkMethod === 'password' ? 'password' : 'Try another way email-code'} wizard sign-in, no Google control before the wizard loads, native form Origin, explicit linking, consented callback CSP, local subject and roles, scoped host-only proof cookie.`);
 }
 
 try {
     await verify();
 } catch (error) {
     // Browser diagnostics may contain callback queries or request bodies. Keep
-    // this opt-in runner's output free of codes, cookies and tokens.
+    // this opt-in runner's output free of codes, passwords, cookies and tokens.
     console.error(`FAIL during ${phase}: ${error.code === 'ERR_ASSERTION' ? error.message.split('\n')[0] : 'browser or fixture operation failed'}`);
     process.exitCode = 1;
 } finally {

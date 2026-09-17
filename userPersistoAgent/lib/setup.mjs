@@ -4,7 +4,7 @@ import { assertRegistrationRoleAllowed, getAuthPolicy, REGISTRATION_ROLE } from 
 import { recordAudit } from './audit.mjs';
 
 export const SETUP_KEY = 'installation.setup';
-const SETUP_METHODS = new Set(['google', 'emailCode', 'adminPassword']);
+const SETUP_METHODS = new Set(['google', 'passwordSignup']);
 
 function setupError(code, message, statusCode = 403) {
     return Object.assign(new Error(message), { code, statusCode });
@@ -31,12 +31,12 @@ export async function getInstallationSetup() {
 // Callers hold serializePersisted('users') from this check through the staged
 // commit, after live-parent and proof checks. The returned stage function only
 // writes: the unclaimed installation gets its administrator and setup record
-// together; a claimed installation gets exactly `selfRegistered`.
+// together; a claimed installation gets exactly `selfRegistered`. Every public
+// account has a verified sign-in email.
 export async function prepareNewAccount({
     email,
     username = '',
     displayName = '',
-    contactEmail = '',
     emailVerified = false,
     method,
     source,
@@ -53,8 +53,7 @@ export async function prepareNewAccount({
         await assertRegistrationRoleAllowed(REGISTRATION_ROLE, store);
         roles = [REGISTRATION_ROLE];
     }
-    const allowEmptyEmail = method === 'adminPassword' && !setup.complete;
-    await assertNewUserAvailable({ email, username, roles, contactEmail, allowEmptyEmail });
+    await assertNewUserAvailable({ email, username, roles });
     const initialAdministrator = !setup.complete;
     return async () => {
         const actorId = initialAdministrator ? 'initial-setup' : 'self-registration';
@@ -62,12 +61,10 @@ export async function prepareNewAccount({
             email,
             username,
             displayName,
-            contactEmail,
             source: source || (initialAdministrator ? `initial-${method}` : `${method}-self-registration`),
             roles,
             actorId,
             emailVerified,
-            allowEmptyEmail,
         });
         if (initialAdministrator) {
             const completedAt = new Date().toISOString();

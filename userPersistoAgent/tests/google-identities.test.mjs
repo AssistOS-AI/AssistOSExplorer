@@ -4,6 +4,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getStore, flush, resetStoreForTests } from '../lib/store.mjs';
+import { verifyAccountPassword } from '../lib/auth/userPassword.mjs';
+import { setAccountPassword } from '../lib/auth/passwordManagement.mjs';
+import { completeReauthentication } from '../lib/auth/operationGrants.mjs';
 import { credentialVersion } from '../lib/auth/credentialVersion.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, getUserById, getUserByEmail, getUserRoles, updateUser, setUserRoles, listUsers } from '../lib/users.mjs';
@@ -19,23 +22,35 @@ async function proof(user, method = 'emailCode') {
     const now = Date.now();
     const result = { transactionId, userId: user.id, email: user.email, method, authenticatedAt: now, confirmedAt: now };
     if (method === 'emailCode' || method === 'googleAuthoritative') result.credentialVersion = mailboxVersion(await getUserById(user.id));
-    else if (method === 'passkey' || method === 'totp') {
+    else if (method === 'password') {
+        return { ...result, ...(await passwordProof(user)) };
+    } else if (method === 'passkey' || method === 'totp') {
         result.credentialKey = `${user.id}:${method}`;
         result.credentialVersion = credentialVersion(method, (await (await getStore()).getAuthMethodByKey(result.credentialKey)).credential);
+        result.generation = (await getUserById(user.id)).authGeneration;
     }
     return result;
+}
+
+// A password proof comes only from verifying the account's own password.
+const passwords = new Map();
+async function passwordProof(user) {
+    const verified = await verifyAccountPassword({ userId: user.id, password: passwords.get(user.id) || 'not the account password' }, { includeCredentialProof: true });
+    return { credentialKey: verified.credentialKey, credentialVersion: verified.credentialVersion, generation: verified.generation };
 }
 
 async function fixture({ claimed = true } = {}) {
     folder = await mkdtemp(join(tmpdir(), 'userpersisto-google-identities-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
-    process.env.USERPERSISTO_AUTH_METHODS = 'google,passkey,totp,emailCode';
+    process.env.USERPERSISTO_AUTH_METHODS = 'google,passkey,totp,emailCode,password';
     process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED = 'true';
     setup.resetAuthLimitsForTests();
     await ensureSeedData();
     if (claimed) {
-        return (await setup.registerWithEmailCode('fixture-owner@example.test')).user;
+        const owner = await setup.signUpWithPassword('fixture-owner@example.test');
+        passwords.set(owner.user.id, owner.password);
+        return owner.user;
     }
     return null;
 }
@@ -90,7 +105,7 @@ test('mailbox proofs never link an unverified, disabled or stale local mailbox',
     await store.updateUser(verified.id, { authGeneration: 1 });
     await flush();
     await assert.rejects(completeGoogleIdentity({ identity: verifiedIdentity, transactionId, linkProof: stale }), { code: 'google_link_authentication_required' });
-    process.env.USERPERSISTO_AUTH_METHODS = 'google,passkey,totp';
+    process.env.USERPERSISTO_AUTH_METHODS = 'google,passkey,totp,password';
     assert.deepEqual((await inspectGoogleIdentity(verifiedIdentity)).eligibleMethods, []);
     await assert.rejects(completeGoogleIdentity({ identity: verifiedIdentity, transactionId, linkProof: await proof(verified, 'emailCode') }), { code: 'google_link_authentication_required' });
     assert.equal(await store.getExternalIdentityByIdentityKey(googleIdentityKey(external)), undefined);
@@ -124,18 +139,39 @@ test('fresh email-code, passkey and TOTP proofs with confirmation preserve roles
         assert.deepEqual(result.roles, ['admin', 'user']);
         assert.deepEqual(await getUserById(user.id), { ...original, updatedAt: (await getUserById(user.id)).updatedAt });
     }
-    // Password proofs require a configured designated administrator.
+    // No shared administrator proof exists; an account without a password cannot offer one.
     const member = await createUser({ email: 'member-admin-proof@gmail.com', roles: ['user'] });
     const memberIdentity = identity('member-admin-proof', member.email);
-    assert.equal((await inspectGoogleIdentity(memberIdentity)).eligibleMethods.includes('adminPassword'), false);
-    await assert.rejects(completeGoogleIdentity({ identity: memberIdentity, transactionId, linkProof: await proof(member, 'adminPassword') }),
-        { code: 'google_link_authentication_required' });
+    assert.deepEqual((await inspectGoogleIdentity(memberIdentity)).eligibleMethods, []);
+    for (const method of ['adminPassword', 'password']) {
+        await assert.rejects(completeGoogleIdentity({ identity: memberIdentity, transactionId, linkProof: { ...(await proof(member, 'emailCode')), method } }),
+            { code: 'google_link_authentication_required' });
+    }
+    await assert.rejects(proof(member, 'password'), { code: 'authentication_failed' });
     assert.deepEqual(await getUserRoles(member.id), ['user']);
-    const ownerIdentity = identity('retired-owner-password-proof', owner.email);
-    assert.equal((await inspectGoogleIdentity(ownerIdentity)).eligibleMethods.includes('adminPassword'), false);
-    await assert.rejects(completeGoogleIdentity({ identity: ownerIdentity, transactionId, linkProof: await proof(owner, 'adminPassword') }),
-        { code: 'google_link_authentication_required' });
-    assert.deepEqual(await getUserRoles(owner.id), ['admin']);
+});
+
+test('the account password proves a collision account, and a password change invalidates the retained proof', async () => {
+    const owner = await fixture();
+    const ownerIdentity = identity('owner-password-proof', owner.email);
+    assert.equal((await inspectGoogleIdentity(ownerIdentity)).eligibleMethods.includes('password'), true);
+    const stale = await proof(owner, 'password');
+    // Another account's or a guessed password never yields a proof.
+    await assert.rejects(verifyAccountPassword({ userId: owner.id, password: 'another password entirely' }, { includeCredentialProof: true }), { code: 'authentication_failed' });
+    for (const patch of [{ credentialVersion: 'wrong' }, { credentialKey: 'USER.other:password' }, { generation: 7 }]) {
+        await assert.rejects(completeGoogleIdentity({ identity: ownerIdentity, transactionId, linkProof: { ...stale, ...patch } }), { code: 'google_link_authentication_required' });
+    }
+    // Change the password through My Account with a fresh password grant.
+    const { grant } = await completeReauthentication({ userId: owner.id, operation: 'password.set', method: 'password', password: passwords.get(owner.id) });
+    const replacement = setup.newTestPassword();
+    assert.deepEqual(await setAccountPassword({ userId: owner.id, grant, password: replacement, passwordConfirmation: replacement }), { ok: true, changed: true });
+    passwords.set(owner.id, replacement);
+    await assert.rejects(completeGoogleIdentity({ identity: ownerIdentity, transactionId, linkProof: stale }), { code: 'google_link_authentication_required' });
+    const fresh = await proof(owner, 'password');
+    const linked = await completeGoogleIdentity({ identity: ownerIdentity, transactionId, linkProof: fresh });
+    assert.equal(linked.user.id, owner.id);
+    assert.deepEqual(linked.roles, ['admin']);
+    assert.equal((await getInstallationSetup()).initialAdministratorId, owner.id);
 });
 
 test('collision proofs reject changed targets, disabled credentials, stale authentication and absent confirmation', async () => {
@@ -161,6 +197,27 @@ test('collision proofs reject changed targets, disabled credentials, stale authe
     await assert.rejects(inspectGoogleIdentity(external, { collisionTarget: { userId: user.id, email: user.email } }), { code: 'google_collision_changed' });
     assert.equal(await getUserByEmail('collision@gmail.com'), null);
 });
+
+for (const method of ['passkey', 'totp']) {
+    test(`password replacement invalidates a retained ${method} Google-link proof`, async () => {
+        const user = await fixture();
+        const store = await getStore();
+        await store.createAuthMethod({ key: `${user.id}:${method}`, userId: user.id, type: method, enabled: true, credential: { fixture: true } });
+        await flush();
+        const external = identity(`password-change-${method}`, user.email);
+        const retained = await proof(user, method);
+        await assert.rejects(completeGoogleIdentity({ identity: external, transactionId, linkProof: { ...retained, generation: undefined } }),
+            { code: 'google_link_authentication_required' });
+        const { grant } = await completeReauthentication({ userId: user.id, operation: 'password.set', method: 'password', password: passwords.get(user.id) });
+        const password = setup.newTestPassword();
+        await setAccountPassword({ userId: user.id, grant, password, passwordConfirmation: password });
+        assert.equal((await getUserById(user.id)).authGeneration, retained.generation + 1);
+        await assert.rejects(completeGoogleIdentity({ identity: external, transactionId, linkProof: retained }),
+            { code: 'google_link_authentication_required' });
+        assert.equal(await store.getExternalIdentityByIdentityKey(googleIdentityKey(external)), undefined);
+        assert.equal((await completeGoogleIdentity({ identity: external, transactionId, linkProof: await proof(user, method) })).linked, true);
+    });
+}
 
 test('third-party new-user mailbox proof is fresh, transaction-bound and cannot upgrade a late collision', async () => {
     await fixture();

@@ -22,6 +22,10 @@ const DISPOSITIONS = Object.freeze({
     signals: ['verified-router-client'],
     disposition: 'Loads the mounted Ploinky AgentMcpClient for DPU calls; it owns no Router socket.',
   },
+  'userPersistoAgent/lib/auth/managedRouterOrigins.mjs': {
+    signals: ['generated-router-key'],
+    disposition: 'Detects managed-runtime provenance and delegates fresh authenticated origin reads to the mounted Ploinky runtimeRouterOrigins helper.',
+  },
   'userPersistoAgent/lib/email-agent-client.mjs': {
     signals: ['verified-router-client'],
     disposition: 'Delegates authentication-email delivery to the mounted Ploinky AgentMcpClient for emailAgent MCP calls.',

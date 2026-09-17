@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { getStore, commitStagedPersistence } from '../store.mjs';
 import { serializePersisted } from '../serial.mjs';
 import { encryptOidcPayload, decryptOidcPayload } from '../oidc/secrets.mjs';
+import { GRANT_OPERATIONS } from './grantOperations.mjs';
 
 export const GOOGLE_TRANSACTION_TTL_MS = 5 * 60 * 1000;
 export const GOOGLE_TRANSACTION_VERSION = 1;
@@ -46,7 +47,7 @@ function validatePayload(payload, expiresAt, now) {
         || (payload.flow === 'oidc' && (!parent.uid || !parent.clientId))
         || (payload.flow === 'reauth' && (typeof parent.userId !== 'string' || !parent.userId
             || !Number.isSafeInteger(parent.generation) || parent.generation < 0
-            || !['passkey.register', 'totp.enroll', 'contact.verify'].includes(parent.operation)))
+            || !GRANT_OPERATIONS.has(parent.operation)))
         || !Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt > now + GOOGLE_TRANSACTION_TTL_MS) {
         throw transactionError();
     }

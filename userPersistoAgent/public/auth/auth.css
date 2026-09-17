@@ -85,22 +85,33 @@ body {
   cursor: wait;
 }
 
+.auth-panel input:disabled {
+  background: #f3f5f9;
+  color: #6b7a90;
+}
+
+/* The account address on password screens: shown for password managers, not edited. */
+.auth-panel input.auth-readonly {
+  background: #f3f5f9;
+  color: #48617e;
+}
+
+.auth-panel .auth-secondary {
+  background: #fff;
+  color: #1652c7;
+  border: 1px solid #cbd3df;
+}
+
+.auth-hint {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
 .auth-copy {
   margin: 4px 0 8px;
   color: #48617e;
   font-size: 0.94rem;
   line-height: 1.5;
-}
-
-.auth-switch {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  margin: 4px 0 0;
-  color: #48617e;
-  font-size: 0.9rem;
 }
 
 .auth-panel .auth-link {
@@ -164,8 +175,23 @@ body {
   text-align: left;
 }
 
-.auth-method-list button:hover {
+.auth-method-list button:hover:not(:disabled) {
   border-color: #1652c7;
+}
+
+.auth-method {
+  display: grid;
+  gap: 2px;
+}
+
+.auth-method-list button:disabled {
+  cursor: not-allowed;
+}
+
+.auth-method-reason {
+  margin: 0 0 2px;
+  color: #6b7a90;
+  font-size: 0.82rem;
 }
 
 .auth-timer {

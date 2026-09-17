@@ -101,7 +101,7 @@ try {
     origin = `http://localhost:${router.address().port}`;
     process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${origin}/service/auth/google/callback`;
     process.env.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS = origin;
-    await updateAuthPolicy({ enabledAuthMethods: ['google', 'passkey', 'totp'] });
+    await updateAuthPolicy({ enabledAuthMethods: ['password', 'google', 'passkey', 'totp'] });
     browser = await chromium.launch({ headless: true,
         ...(process.env.GOOGLE_BROWSER_EXECUTABLE ? { executablePath: process.env.GOOGLE_BROWSER_EXECUTABLE } : {}) });
     const context = await browser.newContext();
@@ -112,7 +112,7 @@ try {
     page.on('pageerror', (error) => failures.push(error.message));
     phase = 'Google-only initial administrator through a controlled signed GIS credential';
     await page.goto(`${origin}/start`);
-    await page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
+    await page.getByRole('button', { name: 'Sign in with Google', exact: true }).click();
     await page.getByRole('button', { name: 'Continue with test identity' }).click();
     await page.waitForURL(`${origin}/service/dashboard/`);
     await page.getByRole('button', { name: 'Set up authenticator', exact: true }).waitFor();
@@ -146,12 +146,66 @@ try {
     await page.getByRole('button', { name: 'Add a passkey', exact: true }).click();
     await confirmGoogle();
     await page.getByText('Passkey added. You can use it the next time you sign in.', { exact: true }).waitFor();
+    // Per-run fixture passwords, never printed; screenshots mask password inputs.
+    const firstPassword = `fixture ${randomBytes(12).toString('base64url')}`;
+    const changedPassword = `fixture ${randomBytes(12).toString('base64url')}`;
+    const passwordMask = () => ({ mask: [page.locator('input[type="password"]')] });
+    const savePassword = async (value) => {
+        for (const label of ['New password', 'Confirm new password']) {
+            const facts = await page.getByLabel(label, { exact: true }).evaluate((input) => [input.type, input.autocomplete, input.hasAttribute('maxlength')]);
+            assert.deepEqual(facts, ['password', 'new-password', false], label);
+            await page.getByLabel(label, { exact: true }).fill(value);
+        }
+        await page.getByRole('button', { name: 'Save password', exact: true }).click();
+    };
+
+    phase = 'Google confirmation and a first account password without a mail service';
+    await page.getByRole('button', { name: 'Set a password', exact: true }).click();
+    await confirmGoogle();
+    await page.locator('[data-password-setup]').waitFor({ state: 'visible' });
+    await page.screenshot({ path: join(artifacts, 'google-account-password-form.png'), fullPage: true, ...passwordMask() });
+    await savePassword(firstPassword);
+    await page.getByText('Password set. You can use it to sign in.', { exact: true }).waitFor();
+    assert.equal(await page.locator('[data-password-setup]').isHidden(), true);
+    assert.deepEqual(await page.locator('[data-password-new], [data-password-confirm]').evaluateAll((inputs) => inputs.map((input) => input.value === '')), [true, true]);
+
+    phase = 'confirming with the current password and changing it';
+    await page.getByRole('button', { name: 'Change password', exact: true }).click();
+    await page.locator('[data-reauth]').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('[data-reauth-method]').inputValue(), 'password', 'The account password is the first confirmation method.');
+    await page.locator('[data-reauth-password]').fill(firstPassword);
+    await page.locator('[data-reauth-submit]').click();
+    await page.locator('[data-password-setup]').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('[data-reauth-password]').inputValue() === '', true, 'The confirmation password is cleared.');
+    await savePassword(changedPassword);
+    await page.getByText('Password changed. Every session is signed out, including this one; sign in again with your new password when asked.', { exact: true }).waitFor();
+
     const methods = await (await getStore()).getAuthMethodsObjectsByUserId(userId);
     assert.ok(methods.some((method) => method.enabled && method.type === 'totp'));
     assert.ok(methods.some((method) => method.enabled && method.type === 'passkey'));
+    assert.ok(methods.some((method) => method.enabled && method.type === 'password'));
     assert.deepEqual(failures, []);
-    await page.screenshot({ path: join(artifacts, 'google-enrolled-methods.png'), fullPage: true });
-    console.log(`PASS Chromium ${browser.version()}: controlled signed GIS credential, Google-only real SSO handoff, signed My Account requests, isolated Google popup, TOTP and passkey enrollment without mail; artifacts ${artifacts}`);
+    await page.screenshot({ path: join(artifacts, 'google-enrolled-methods.png'), fullPage: true, ...passwordMask() });
+
+    phase = 'the Google-created account signs in with its changed password in a fresh browser';
+    const fresh = await browser.newContext();
+    const signIn = await fresh.newPage();
+    signIn.setDefaultTimeout(15_000);
+    signIn.on('pageerror', (error) => failures.push(error.message));
+    await signIn.goto(`${origin}/start`);
+    await signIn.getByRole('textbox', { name: 'Email', exact: true }).fill(provider.state.email);
+    await signIn.getByRole('button', { name: 'Next', exact: true }).click();
+    await signIn.getByRole('heading', { name: 'Enter your password', exact: true }).waitFor();
+    await signIn.getByLabel('Password', { exact: true }).fill(firstPassword);
+    await signIn.getByRole('button', { name: 'Log in', exact: true }).click();
+    await signIn.getByText('That password is not correct. Try again or choose another way to sign in.', { exact: true }).waitFor();
+    await signIn.getByLabel('Password', { exact: true }).fill(changedPassword);
+    await signIn.getByRole('button', { name: 'Log in', exact: true }).click();
+    await signIn.waitForURL(`${origin}/service/dashboard/`);
+    await signIn.getByRole('button', { name: 'Change password', exact: true }).waitFor();
+    assert.deepEqual(failures, []);
+    await fresh.close();
+    console.log(`PASS Chromium ${browser.version()}: controlled signed GIS credential, Google-only real SSO handoff, signed My Account requests, isolated Google popup, TOTP, passkey and first password enrollment without mail, password change confirmed by the current password, and password sign-in with only the changed password; artifacts ${artifacts}`);
 } catch (error) {
     console.error(`FAIL during ${phase}: ${error.message}`);
     process.exitCode = 1;

@@ -12,6 +12,7 @@ import { getStore, resetStoreForTests } from '../lib/store.mjs';
 import { updateAuthPolicy } from '../lib/policy.mjs';
 import { createLoginRequest } from '../lib/sso.mjs';
 import { consumeOperationGrant } from '../lib/auth/operationGrants.mjs';
+import { newTestPassword } from './helpers/setup.mjs';
 import { startService } from '../service/index.mjs';
 
 async function fixture(run) {
@@ -32,7 +33,7 @@ async function fixture(run) {
         const base = `http://127.0.0.1:${server.address().port}`;
         process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${base}/service/auth/google/callback`;
         process.env.USERPERSISTO_ALLOWED_REDIRECT_ORIGINS = base;
-        await updateAuthPolicy({ enabledAuthMethods: ['google', 'passkey', 'totp'] });
+        await updateAuthPolicy({ enabledAuthMethods: ['password', 'google', 'passkey', 'totp'] });
         const browser = new CookieBrowser();
         const parent = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
         const start = await (await browser.json(`${base}/service/auth/google/start`, { requestId: parent.providerState, state: 'router-reauth-fixture' })).json();
@@ -91,6 +92,23 @@ test('Google-only accounts confirm enrollment with their linked identity without
         assert.equal(started.status, 200, JSON.stringify(started.data));
         assert.match(started.data.secret, /^[A-Z2-7]+$/);
         await assert.rejects(consumeOperationGrant({ userId: user.id, operation: 'totp.enroll', grant: result.data.grant }), { code: 'operation_grant_required' });
+    });
+});
+
+test('Google-only accounts confirm setting their first password with Google without email delivery', async () => {
+    await fixture(async ({ begin, approve, request, user }) => {
+        const flow = await begin('password.set');
+        await approve(flow);
+        const confirmed = await request('reauth/google/complete', { transaction: flow.transaction, operation: flow.operation });
+        assert.equal(confirmed.status, 200, confirmed.data.error);
+        assert.equal(confirmed.data.operation, 'password.set');
+        const password = newTestPassword();
+        const saved = await request('auth/password/set', { grant: confirmed.data.grant, password, passwordConfirmation: password });
+        assert.equal(saved.status, 200, saved.data.error);
+        assert.deepEqual(saved.data, { ok: true, changed: false });
+        assert.equal((await (await getStore()).getAuthMethodByKey(`${user.id}:password`))?.enabled, true);
+        const replayed = await request('auth/password/set', { grant: confirmed.data.grant, password, passwordConfirmation: password });
+        assert.deepEqual([replayed.status, replayed.data.error], [403, 'operation_grant_required'], 'The Google-issued grant is single-use.');
     });
 });
 

@@ -9,10 +9,13 @@ import { chromium } from '@playwright/test';
 test('authentication visits only its final surface and preserves a separate service login', { timeout: 90_000 }, async (t) => {
   const requests = [];
   const localAccount = { username: 'fixture-user', password: 'fixture-password' };
-  const providerAccount = { username: 'fixture-user', loginEmail: 'fixture-user@example.test', signInMethod: 'emailCode' };
+  // Fixture values for a local mock provider; no real credential is involved.
+  const providerAccount = { username: 'fixture-user', loginEmail: 'fixture-user@example.test', signInMethod: 'password',
+    accountPassword: 'fixture account passphrase' };
   const administratorAccount = { username: 'administrator', loginEmail: 'owner@example.test', signInMethod: 'emailCode' };
+  const totpSecret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
   const providerPath = '/base-agent-additional-server/userPersistoAgent/7000/service/auth/';
-  const providerAssets = new Map(['index.html', 'main.js', 'wizard.js', 'sso-adapter.js', 'auth-api.js', 'auth.css', 'google-button.css'].map((name) => [
+  const providerAssets = new Map(['index.html', 'main.js', 'wizard.js', 'password-rules.js', 'sso-adapter.js', 'auth-api.js', 'auth.css', 'google-button.css'].map((name) => [
     name,
     fs.readFileSync(new URL(`../../../userPersistoAgent/public/auth/${name}`, import.meta.url)),
   ]));
@@ -29,6 +32,23 @@ test('authentication visits only its final surface and preserves a separate serv
   let returnTo = '';
   let principalUsername = '';
   let issuedCode = '';
+  let pendingSignup = null;
+  // A controlled authenticator clock shared by the helper and this provider.
+  let totpTime = 1_700_000_000_000;
+  const totpClock = { now: () => totpTime, wait: async (durationMs) => { totpTime += durationMs; } };
+  const registered = new Map();
+  const resetAccounts = () => {
+    registered.clear();
+    registered.set(providerAccount.loginEmail, { password: providerAccount.accountPassword, totp: true });
+    registered.set(administratorAccount.loginEmail, { password: '', totp: false });
+  };
+  const handoff = (payload) => ({ ok: true, code: 'fixture-code', state: payload.state, redirectUri: '/auth/callback' });
+  const issueCode = (email, purpose) => {
+    issuedCode = String(100000 + Math.floor(Math.random() * 900000));
+    fs.writeFileSync(codeFile, `code for ${email}: ${issuedCode}\n`);
+    return { ok: true, challenge: { email, purpose, expiresAt: Date.now() + 300_000, resendAt: Date.now() + 60_000,
+      attemptsRemaining: 5, delivery: 'accepted', expired: false } };
+  };
   const json = (response, status, body) => {
     response.writeHead(status, { 'content-type': 'application/json' });
     response.end(JSON.stringify(body));
@@ -67,24 +87,43 @@ test('authentication visits only its final surface and preserves a separate serv
         if (payload.requestId !== 'fixture-state') return json(response, 400, { ok: false, error: 'login_request_invalid' });
         if (relativePath === 'attempt') {
           return json(response, 200, { ok: true, expiresAt: Date.now() + 300_000, setupComplete, registration: true,
-            methods: { emailCode: true, passkey: false, totp: false, google: false },
+            signup: { email: true, google: false },
+            methods: { password: true, emailCode: true, passkey: false, totp: true, google: false },
+            passwordPolicy: { minLength: 15, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' },
             attempt: { status: 'active', challenge: null, locked: false } });
         }
         if (relativePath === 'attempt/cancel') return json(response, 200, { ok: true, status: 'cancelled' });
+        const known = registered.get(payload.email);
         if (relativePath === 'discover') {
-          const exists = [providerAccount.loginEmail, administratorAccount.loginEmail].includes(payload.email);
-          return json(response, 200, { ok: true, exists, methods: { emailCode: exists, passkey: false, totp: false } });
+          return json(response, 200, { ok: true, exists: Boolean(known),
+            methods: { password: Boolean(known?.password), emailCode: Boolean(known), passkey: false, totp: Boolean(known?.totp) } });
+        }
+        if (relativePath === 'password/login') {
+          if (!known?.password || payload.password !== known.password) return json(response, 401, { ok: false, error: 'authentication_failed' });
+          return json(response, 200, handoff(payload));
         }
         if (relativePath === 'email-code/start') {
-          issuedCode = String(100000 + Math.floor(Math.random() * 900000));
-          fs.writeFileSync(codeFile, `code for ${payload.email}: ${issuedCode}\n`);
-          return json(response, 200, { ok: true, challenge: { email: payload.email, purpose: payload.purpose, expiresAt: Date.now() + 300_000,
-            resendAt: Date.now() + 60_000, attemptsRemaining: 5, delivery: 'accepted', expired: false } });
+          if (payload.purpose !== 'login' || !known) return json(response, 400, { ok: false, error: 'invalid_request' });
+          return json(response, 200, issueCode(payload.email, 'login'));
         }
         if (relativePath === 'email-code/verify') {
-          const valid = payload.code === issuedCode;
-          if (!valid) return json(response, 401, { ok: false, error: 'authentication_failed' });
-          return json(response, 200, { ok: true, code: 'fixture-code', state: payload.state, redirectUri: '/auth/callback' });
+          if (payload.code !== issuedCode) return json(response, 400, { ok: false, error: 'code_invalid', attemptsRemaining: 4 });
+          return json(response, 200, handoff(payload));
+        }
+        if (relativePath === 'totp/verify') {
+          if (!known?.totp || payload.token !== totpToken(totpSecret, totpTime)) return json(response, 401, { ok: false, error: 'authentication_failed' });
+          return json(response, 200, handoff(payload));
+        }
+        if (relativePath === 'signup/start') {
+          if (known) return json(response, 409, { ok: false, error: 'account_exists' });
+          pendingSignup = { email: payload.email, password: payload.password, confirmed: payload.password === payload.passwordConfirmation };
+          return json(response, 200, issueCode(payload.email, 'register'));
+        }
+        if (relativePath === 'signup/verify') {
+          if (!pendingSignup || payload.code !== issuedCode) return json(response, 400, { ok: false, error: 'code_invalid', attemptsRemaining: 4 });
+          registered.set(pendingSignup.email, { password: pendingSignup.password, totp: false });
+          pendingSignup = null;
+          return json(response, 200, handoff(payload));
         }
         return json(response, 404, { ok: false, error: 'not_found' });
       }
@@ -132,39 +171,53 @@ test('authentication visits only its final surface and preserves a separate serv
   const baseURL = `http://127.0.0.1:${server.address().port}`;
   process.env.SMOKE_BASE_URL = baseURL;
   process.env.SMOKE_EMAIL_CODE_COMMAND = `grep -F "for $SMOKE_EMAIL:" ${JSON.stringify(codeFile)} || true`;
-  const { signIn } = await import('./auth.mjs');
+  const { signIn, totpToken } = await import('./auth.mjs');
   const providerPost = (name) => requests.filter((entry) => entry.method === 'POST' && entry.pathname === `${providerPath}${name}`).length;
+  const completionRoutes = ['password/login', 'email-code/start', 'email-code/verify', 'totp/verify', 'signup/start', 'signup/verify', 'admin/login'];
+  const signedUpAccount = { username: 'new-member', loginEmail: 'new-member@example.test', signInMethod: 'password' };
+  const modes = [
+    { name: 'local', account: localAccount },
+    { name: 'immediate SSO password', account: providerAccount, posts: ['password/login'] },
+    { name: 'delayed frontend SSO email code through Try another way', delay: 250,
+      account: { ...providerAccount, signInMethod: 'emailCode' }, posts: ['email-code/start', 'email-code/verify'] },
+    { name: 'email-only SSO password', account: { username: providerAccount.loginEmail, signInMethod: 'password', accountPassword: providerAccount.accountPassword },
+      posts: ['password/login'] },
+    { name: 'SSO profile username differs with an authenticator through Try another way', principal: 'persisted-profile',
+      account: { ...providerAccount, username: 'configured-account-label', signInMethod: 'totp', totpSecret }, posts: ['totp/verify'] },
+    { name: 'administrator SSO email code', account: administratorAccount, posts: ['email-code/start', 'email-code/verify'] },
+    { name: 'SSO sign-up with the run password', account: signedUpAccount, posts: ['signup/start', 'signup/verify'] },
+  ];
   let browser;
   try {
     browser = await chromium.launch();
-    for (const mode of ['local', 'immediate SSO', 'delayed frontend SSO', 'email-only SSO', 'SSO profile username differs', 'administrator SSO']) {
-      const useSso = mode !== 'local';
-      await t.test(`${mode} sign-in`, async () => {
+    for (const mode of modes) {
+      const useSso = mode.name !== 'local';
+      await t.test(`${mode.name} sign-in`, async () => {
         sso = useSso;
         setupComplete = true;
-        redirectDelay = mode === 'delayed frontend SSO' ? 250 : 0;
-        principalUsername = mode === 'SSO profile username differs' ? 'persisted-profile' : '';
-        account = mode === 'email-only SSO'
-          ? { username: providerAccount.loginEmail, signInMethod: 'emailCode' }
-          : mode === 'SSO profile username differs'
-            ? { ...providerAccount, username: 'configured-account-label' }
-            : mode === 'administrator SSO' ? administratorAccount
-              : useSso ? providerAccount : localAccount;
+        redirectDelay = mode.delay || 0;
+        principalUsername = mode.principal || '';
+        account = mode.account;
+        resetAccounts();
         requests.length = 0;
         fs.writeFileSync(codeFile, '');
         const context = await browser.newContext({ baseURL });
         const page = await context.newPage();
         try {
           const target = '/service/?source=smoke#requested-tab';
-          const principal = await signIn(page, account, target, { requireConfiguredPrincipal: true });
+          const principal = await signIn(page, account, target, { requireConfiguredPrincipal: true, totpClock });
           assert.equal(principal.canonicalUsername, principalUsername || account.username);
           assert.equal(page.url(), `${baseURL}${target}`);
           assert.equal(requests.filter((entry) => entry.pathname === '/service/').length, 1,
             'the target must not boot before login or be reloaded after login');
           assert.deepEqual(requests.filter((entry) => entry.pathname === '/auth/login').map((entry) => entry.method), useSso ? ['GET'] : ['GET', 'POST']);
           if (useSso) {
-            assert.deepEqual([providerPost('email-code/start'), providerPost('email-code/verify'), providerPost('admin/login')], [1, 1, 0],
-              'every role signs in with one verified email code and never uses the retired password path');
+            assert.deepEqual(completionRoutes.map(providerPost), completionRoutes.map((route) => (mode.posts.includes(route) ? 1 : 0)),
+              'each method completes through exactly its own wizard route and never a retired administrator path');
+          }
+          if (account === signedUpAccount) {
+            assert.equal(registered.get(signedUpAccount.loginEmail)?.password === process.env.SMOKE_RUN_ACCOUNT_PASSWORD, true,
+              'an account signed up without a configured password uses the run password');
           }
           assert.equal(requests.filter((entry) => entry.pathname === '/' || entry.pathname.startsWith('/explorer')).length, 0);
           assert.equal(await page.locator('input[name="username"]').inputValue(), '');
@@ -191,6 +244,32 @@ test('authentication visits only its final surface and preserves a separate serv
         }
       });
     }
+    await t.test('a refused password and unavailable methods are reported without waiting for navigation', async () => {
+      sso = true;
+      setupComplete = true;
+      redirectDelay = 0;
+      principalUsername = '';
+      resetAccounts();
+      requests.length = 0;
+      const context = await browser.newContext({ baseURL });
+      const page = await context.newPage();
+      try {
+        const started = Date.now();
+        account = { ...providerAccount, accountPassword: 'fixture mistyped passphrase' };
+        await assert.rejects(signIn(page, account, '/service/', { requireConfiguredPrincipal: true }),
+          /UserPersisto refused the sign-in: That password is not correct/);
+        assert.ok(Date.now() - started < 15_000, 'a refusal must not wait for the navigation timeout');
+        account = { ...administratorAccount, signInMethod: 'password' };
+        await assert.rejects(signIn(page, account, '/service/', { requireConfiguredPrincipal: true }),
+          /BLOCKED: password sign-in is not available/);
+        account = { ...administratorAccount, signInMethod: 'totp', totpSecret };
+        await assert.rejects(signIn(page, account, '/service/', { requireConfiguredPrincipal: true, totpClock }),
+          /BLOCKED: authenticator sign-in is not available/);
+        assert.deepEqual(completionRoutes.map(providerPost), completionRoutes.map((route) => (route === 'password/login' ? 1 : 0)));
+      } finally {
+        await context.close();
+      }
+    });
     for (const scenario of ['initial setup', 'different same-origin path', 'different origin']) {
       for (const delay of [0, 250]) {
         await t.test(`does not submit credentials to ${scenario} after ${delay ? 'delayed frontend' : 'immediate'} SSO`, async () => {
@@ -198,6 +277,7 @@ test('authentication visits only its final surface and preserves a separate serv
           redirectDelay = delay;
           account = providerAccount;
           principalUsername = '';
+          resetAccounts();
           setupComplete = scenario !== 'initial setup';
           loginPath = scenario === 'different same-origin path' ? '/other-service/auth/' : providerPath;
           loginOrigin = scenario === 'different origin' ? baseURL.replace('127.0.0.1', 'localhost') : '';

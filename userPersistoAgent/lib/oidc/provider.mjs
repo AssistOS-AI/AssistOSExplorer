@@ -19,7 +19,7 @@ async function findAccount(_ctx, id) {
             if (!fresh || fresh.status !== 'active') return { sub: id };
             return {
                 sub: fresh.id,
-                // The email-less configured administrator has no email claim at all.
+                // An account record without a sign-in email has no email claim at all.
                 ...(fresh.email ? { email: fresh.email, email_verified: Boolean(fresh.emailVerifiedAt) } : {}),
                 ...(fresh.username ? { preferred_username: fresh.username } : {}),
                 ...(fresh.displayName ? { name: fresh.displayName } : {}),

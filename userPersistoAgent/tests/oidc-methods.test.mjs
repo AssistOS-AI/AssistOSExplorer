@@ -13,7 +13,13 @@ import * as setup from './helpers/setup.mjs';
 import { updateAuthPolicy } from '../lib/policy.mjs';
 import { createOidcClient } from '../lib/oidc/clients.mjs';
 import { resetOidcProviderForTests } from '../lib/oidc/provider.mjs';
-import { getStore, flush, resetStoreForTests } from '../lib/store.mjs';
+import { getStore, flush, resetStoreForTests, setStoreFaultInjectorForTests } from '../lib/store.mjs';
+import { readOidcDocument, writeOidcDocument } from '../lib/oidc/adapter.mjs';
+import { getOrCreateOidcKeys } from '../lib/oidc/secrets.mjs';
+import { getInstallationSetup } from '../lib/setup.mjs';
+import { getUserByEmail, getUserRoles } from '../lib/users.mjs';
+import { completeReauthentication } from '../lib/auth/operationGrants.mjs';
+import { setAccountPassword } from '../lib/auth/passwordManagement.mjs';
 import * as totp from '../lib/auth/totp.mjs';
 import { completeGoogleIdentity } from '../lib/externalIdentities.mjs';
 
@@ -80,7 +86,7 @@ async function fixture(methods, fn) {
         process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = 'http://127.0.0.1/service/auth/google/callback';
         const { user: owner } = await completeGoogleIdentity({ identity: { issuer: 'https://accounts.google.com', subject: 'methods-owner',
             email: 'methods-owner@gmail.com', emailVerified: true } });
-        const { user } = await setup.registerWithEmailCode('methods-member@example.test');
+        const { user, password } = await setup.signUpWithPassword('methods-member@example.test');
         await updateAuthPolicy({ enabledAuthMethods: [...new Set([...methods, 'google'])] }, { actorId: owner.id });
         server = startService({ port: 0, host: '127.0.0.1' });
         if (!server.listening) await once(server, 'listening');
@@ -89,7 +95,7 @@ async function fixture(methods, fn) {
         process.env.USERPERSISTO_OIDC_ISSUER = issuer;
         await createOidcClient({ client_id: 'methods-client', redirect_uris: [redirectUri], token_endpoint_auth_method: 'none', scope: 'openid email' }, { actorId: owner.id });
         const config = await oidcClient.discovery(new URL(issuer), 'methods-client', undefined, oidcClient.None(), { execute: [oidcClient.allowInsecureRequests, oidcClient.enableNonRepudiationChecks] });
-        await fn({ user, owner, origin, issuer, config });
+        await fn({ user, owner, origin, issuer, config, password });
     } finally {
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         resetOidcProviderForTests();
@@ -179,11 +185,16 @@ test('email-code interaction delivers through EmailAgent and binds verification 
     await updateAuthPolicy({ enabledAuthMethods: ['google'] }, { actorId: owner.id });
     const disabled = await flow.browser.post(`${flow.location}/email-verify`, { csrf: flow.csrf, code });
     assert.equal(disabled.status, 400);
-    assert.deepEqual(await disabled.json(), { error: 'access_denied' });
+    assert.deepEqual(interactionConfig(await disabled.text()).failure, {
+        action: 'email-verify', code: 'auth_method_disabled', message: 'This sign-in method is not available.',
+    });
     await updateAuthPolicy({ enabledAuthMethods: ['emailCode'] }, { actorId: owner.id });
-    await finish(config, flow, await flow.browser.post(`${flow.location}/email-verify`, { csrf: flow.csrf, code }), user);
+    const refusedReplay = await flow.browser.post(`${flow.location}/email-verify`, { csrf: flow.csrf, code });
+    assert.equal(interactionConfig(await refusedReplay.text()).failure.code, 'attempt_invalid');
+    assert.equal((await flow.browser.post(`${flow.location}/email-start`, { csrf: flow.csrf, email: user.email, purpose: 'login' })).status, 200);
+    await finish(config, flow, await flow.browser.post(`${flow.location}/email-verify`, { csrf: flow.csrf, code: globalThis[mailCapture].at(-1).code }), user);
     const logged = (await (await getStore()).select('emailLog')).objects.filter((entry) => entry.providerMessageId === 'disposable-test-message');
-    assert.equal(logged.length, 1);
+    assert.equal(logged.length, 2);
     assert.equal(logged[0].result, 'accepted');
 }));
 
@@ -224,77 +235,170 @@ test('passkey interaction verifies a real P-256 assertion and rejects another in
 
 test('disabled methods reject direct interaction POSTs before challenge creation', async () => fixture([], async ({ config, user }) => {
     const flow = await begin(config);
-    for (const action of ['totp', 'email-start', 'email-verify', 'passkey-options', 'passkey-verify']) {
-        const response = await flow.browser.post(`${flow.location}/${action}`, { csrf: flow.csrf, email: user.email, token: '000000', code: '000000', assertion: '{}' });
+    const nativeActions = new Set(['totp', 'email-verify', 'passkey-verify', 'password-login', 'signup-verify']);
+    for (const action of ['totp', 'email-start', 'email-verify', 'passkey-options', 'passkey-verify', 'password-login', 'signup-start', 'signup-resend', 'signup-email', 'signup-verify']) {
+        const response = await flow.browser.post(`${flow.location}/${action}`, { csrf: flow.csrf, email: user.email, token: '000000', code: '000000', assertion: '{}',
+            password: 'a password guess value', passwordConfirmation: 'a password guess value' });
         assert.equal(response.status, 400, action);
-        assert.deepEqual(await response.json(), { error: 'access_denied' });
+        if (nativeActions.has(action)) {
+            const rendered = interactionConfig(await response.text());
+            assert.equal(rendered.failure.action, action);
+            assert.equal(rendered.methods.password, false);
+        } else assert.deepEqual(await response.json(), { error: 'access_denied' });
     }
     assert.equal(globalThis[mailCapture].length, 0);
     assert.equal((await (await getStore()).select('authChallenge')).objects.length, 0);
 }));
 
-test('an existing Google administrator retains email sign-in without gaining the default password', async () => fixture(['emailCode'], async ({ config, owner }) => {
+function interactionConfig(html) {
+    return JSON.parse(html.match(/<script type="application\/json" id="userpersisto-wizard-config">([^<]+)<\/script>/)[1]);
+}
+
+test('disabling password during OIDC signup returns to the wizard and erases the verified pending signup', async () => fixture(['password'], async ({ config, owner }) => {
     const flow = await begin(config);
-    const refused = await flow.browser.post(flow.location + '/admin-login', { csrf: flow.csrf, password: 'retired-test-secret' });
+    const email = 'policy-change-signup@example.test';
+    const password = setup.newTestPassword();
+    const started = await flow.browser.post(`${flow.location}/signup-start`, { csrf: flow.csrf, email, password, passwordConfirmation: password });
+    assert.equal(started.status, 200, await started.clone().text());
+    const code = globalThis[mailCapture].at(-1).code;
+    await updateAuthPolicy({ enabledAuthMethods: ['google'] }, { actorId: owner.id });
+    const refused = await flow.browser.post(`${flow.location}/signup-verify`, { csrf: flow.csrf, code });
     assert.equal(refused.status, 400);
-    assert.match(await refused.text(), /data-server-failure/);
-    const sent = await flow.browser.post(flow.location + '/email-start', { csrf: flow.csrf, email: owner.email, purpose: 'login' });
-    assert.equal(sent.status, 200, await sent.clone().text());
-    const submitted = await flow.browser.post(flow.location + '/email-verify', { csrf: flow.csrf, code: globalThis[mailCapture].at(-1).code });
-    await finish(config, flow, submitted, owner);
+    assert.match(refused.headers.get('content-type'), /text\/html/);
+    const rendered = interactionConfig(await refused.text());
+    assert.deepEqual([rendered.failure.action, rendered.failure.code, rendered.email], ['signup-verify', 'auth_method_disabled', email]);
+    const resumed = await (await flow.browser.post(`${flow.location}/attempt`, { csrf: flow.csrf })).json();
+    assert.equal(resumed.attempt.signupPending, false);
+    assert.equal(resumed.attempt.challenge, null);
+    assert.equal(await getUserByEmail(email), null);
+    await updateAuthPolicy({ enabledAuthMethods: ['password', 'google'] }, { actorId: owner.id });
+    const retry = await flow.browser.post(`${flow.location}/signup-verify`, { csrf: flow.csrf, code });
+    assert.equal(interactionConfig(await retry.text()).failure.code, 'signup_restart_required');
+    assert.equal(await getUserByEmail(email), null);
 }));
 
-test('administrator sign-in completes through the interaction and the email-less administrator has no email claim', async () => {
-    const folder = await mkdtemp(join(tmpdir(), 'userpersisto-oidc-admin-'));
+// The interaction result's `amr` is persisted on the browser's engine session;
+// ID tokens carry only the configured claims.
+async function sessionAmr(browser) {
+    const sessionId = browser.cookies.get('up_oidc_session')?.value;
+    assert.ok(sessionId, 'the browser holds an engine session');
+    return (await readOidcDocument('Session', sessionId))?.amr;
+}
+
+async function consentTokens(config, flow, submitted, subject) {
+    assert.equal(submitted.status, 303, await submitted.clone().text());
+    let location = submitted.headers.get('location');
+    for (let step = 0; step < 8 && !location.startsWith(redirectUri); step += 1) {
+        const page = await flow.browser.fetch(location);
+        if ([302, 303].includes(page.status)) { location = page.headers.get('location'); continue; }
+        const html = await page.text();
+        assert.match(html, /Allow access\?/, 'signing in never approves application scopes');
+        location = (await flow.browser.post(`${location}/confirm`, { csrf: csrfFrom(html) })).headers.get('location');
+    }
+    const tokens = await oidcClient.authorizationCodeGrant(config, new URL(location), { expectedNonce: flow.nonce, expectedState: flow.state, pkceCodeVerifier: flow.verifier });
+    assert.equal(tokens.claims().sub, subject);
+    return tokens;
+}
+
+test('password login completes natively with pwd, re-renders failures without secrets and no administrator action exists', async () => fixture(['password', 'emailCode'], async ({ config, owner, user, password }) => {
+    const flow = await begin(config);
+    const retired = await flow.browser.post(`${flow.location}/admin-login`, { csrf: flow.csrf, password: 'admin' });
+    assert.deepEqual([retired.status, await retired.json()], [400, { error: 'invalid_request' }]);
+    for (const [email, guess] of [[owner.email, 'admin'], [user.email, 'not the member password'], ['nobody@example.test', password]]) {
+        const refused = await flow.browser.post(`${flow.location}/password-login`, { csrf: flow.csrf, email, password: guess });
+        assert.equal(refused.status, 400);
+        const html = await refused.text();
+        assert.equal(html.includes(guess), false, 'the attempted password is never rendered');
+        const rendered = interactionConfig(html);
+        assert.deepEqual([rendered.failure.action, rendered.failure.code, rendered.email], ['password-login', 'authentication_failed', email]);
+    }
+    const tokens = await consentTokens(config, flow, await flow.browser.post(`${flow.location}/password-login`, { csrf: flow.csrf, email: user.email, password }), user.id);
+    assert.deepEqual(await sessionAmr(flow.browser), ['pwd']);
+    const info = await oidcClient.fetchUserInfo(config, tokens.access_token, user.id);
+    assert.equal(info.email, user.email);
+    // A password change advances the generation and revokes stored OIDC artifacts.
+    const { grant } = await completeReauthentication({ userId: user.id, operation: 'password.set', method: 'password', password });
+    const replacement = setup.newTestPassword();
+    assert.deepEqual(await setAccountPassword({ userId: user.id, grant, password: replacement, passwordConfirmation: replacement }), { ok: true, changed: true });
+    await assert.rejects(oidcClient.fetchUserInfo(config, tokens.access_token, user.id));
+    const next = await begin(config);
+    const old = await next.browser.post(`${next.location}/password-login`, { csrf: next.csrf, email: user.email, password });
+    assert.equal(old.status, 400);
+    await consentTokens(config, next, await next.browser.post(`${next.location}/password-login`, { csrf: next.csrf, email: user.email, password: replacement }), user.id);
+}));
+
+test('the first administrator claims an unclaimed installation through OIDC signup across two persistence boundaries', async () => {
+    const previousEnvironment = { ...process.env };
+    const folder = await mkdtemp(join(tmpdir(), 'userpersisto-oidc-signup-'));
     process.env.PERSISTENCE_FOLDER = folder;
-    process.env.USERPERSISTO_SETTINGS_KEY = 'disposable-oidc-admin-settings-key';
-    delete process.env.USERPERSISTO_AUTH_METHODS;
+    process.env.USERPERSISTO_SETTINGS_KEY = 'disposable-oidc-signup-settings-key';
+    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']) delete process.env[name];
+    globalThis[mailCapture].length = 0;
     setup.resetAuthLimitsForTests();
     let server;
     try {
         await ensureSeedData();
-        const password = setup.configureAdministratorPassword();
-        const { user: administrator } = await setup.claimAdministrator(password);
-        assert.equal(administrator.email, '');
         server = startService({ port: 0, host: '127.0.0.1' });
         if (!server.listening) await once(server, 'listening');
         const issuer = `http://127.0.0.1:${server.address().port}/service/oidc`;
         process.env.USERPERSISTO_OIDC_ISSUER = issuer;
-        await createOidcClient({ client_id: 'methods-client', redirect_uris: [redirectUri], token_endpoint_auth_method: 'none', scope: 'openid email' }, { actorId: administrator.id });
+        // An operator-provisioned public client; no account exists yet.
+        await getOrCreateOidcKeys();
+        const now = new Date().toISOString();
+        await writeOidcDocument('Client', 'methods-client', { enabled: true, createdAt: now, updatedAt: now, metadata: {
+            client_id: 'methods-client', client_name: 'methods-client', application_type: 'web', subject_type: 'public', redirect_uris: [redirectUri],
+            post_logout_redirect_uris: [], token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'],
+            scope: 'openid email', id_token_signed_response_alg: 'RS256' } });
         const config = await oidcClient.discovery(new URL(issuer), 'methods-client', undefined, oidcClient.None(), { execute: [oidcClient.allowInsecureRequests, oidcClient.enableNonRepudiationChecks] });
         const flow = await begin(config);
-        const wrong = await flow.browser.post(`${flow.location}/admin-login`, {
-            csrf: flow.csrf, password: 'not-the-configured-value', contactEmail: 'operator@example.test',
-        });
+        const page = interactionConfig(await (await flow.browser.fetch(flow.location)).text());
+        assert.deepEqual([page.setupComplete, page.signup.email, page.methods.password], [false, true, true]);
+        const password = setup.newTestPassword();
+        const staged = await flow.browser.post(`${flow.location}/signup-start`, { csrf: flow.csrf, email: 'oidc-owner@example.test', password, passwordConfirmation: password });
+        assert.equal(staged.status, 200, await staged.clone().text());
+        const stagedBody = await staged.json();
+        assert.deepEqual([stagedBody.challenge.purpose, stagedBody.challenge.delivery], ['register', 'accepted']);
+        assert.equal(globalThis[mailCapture].at(-1).purpose, 'signup-verification');
+        assert.equal(await getUserByEmail('oidc-owner@example.test'), null);
+        const code = globalThis[mailCapture].at(-1).code;
+        // A wrong code re-renders on the verification step without the code.
+        const wrong = await flow.browser.post(`${flow.location}/signup-verify`, { csrf: flow.csrf, code: code === '000000' ? '111111' : '000000' });
         assert.equal(wrong.status, 400);
-        const failedHtml = await wrong.text();
-        assert.match(failedHtml, /data-server-failure/);
-        const failedConfig = JSON.parse(failedHtml.match(/<script[^>]+id="userpersisto-wizard-config"[^>]*>([^<]+)<\/script>/)?.[1] || 'null');
-        assert.equal(failedConfig?.email, 'operator@example.test', 'the unified error form retains the attempted contact address');
-        assert.equal(failedConfig?.failure?.action, 'admin-login');
-        assert.doesNotMatch(failedHtml, /not-the-configured-value/);
-        const submitted = await flow.browser.post(`${flow.location}/admin-login`, { csrf: flow.csrf, password });
-        assert.equal(submitted.status, 303, await submitted.clone().text());
-        let location = submitted.headers.get('location');
-        for (let step = 0; step < 8 && !location.startsWith(redirectUri); step += 1) {
-            const page = await flow.browser.fetch(location);
-            if ([302, 303].includes(page.status)) { location = page.headers.get('location'); continue; }
-            const html = await page.text();
-            assert.match(html, /Allow access\?/, 'administrator sign-in never approves application scopes');
-            location = (await flow.browser.post(`${location}/confirm`, { csrf: csrfFrom(html) })).headers.get('location');
-        }
-        const tokens = await oidcClient.authorizationCodeGrant(config, new URL(location), { expectedNonce: flow.nonce, expectedState: flow.state, pkceCodeVerifier: flow.verifier });
-        assert.equal(tokens.claims().sub, administrator.id);
-        assert.equal(Object.hasOwn(tokens.claims(), 'email'), false);
-        const info = await oidcClient.fetchUserInfo(config, tokens.access_token, administrator.id);
-        assert.equal(Object.hasOwn(info, 'email'), false, 'an empty sign-in email is not published as a claim');
-        assert.equal(Object.hasOwn(info, 'email_verified'), false);
+        const wrongHtml = await wrong.text();
+        assert.deepEqual([interactionConfig(wrongHtml).failure.action, interactionConfig(wrongHtml).failure.code], ['signup-verify', 'code_invalid']);
+        // Stop between the local commit and the engine's interaction result.
+        let injected = false;
+        setStoreFaultInjectorForTests(async (phase, name, args) => {
+            if (!injected && phase === 'before' && ['updateOidcRecord', 'createOidcRecord'].includes(name) && args.at(-1)?.model === 'Interaction') {
+                injected = true;
+                throw new Error('injected interaction result write failure');
+            }
+        });
+        const interrupted = await flow.browser.post(`${flow.location}/signup-verify`, { csrf: flow.csrf, code });
+        setStoreFaultInjectorForTests(null);
+        assert.equal(injected, true);
+        assert.ok(interrupted.status >= 500, `the interrupted finish reports failure: ${interrupted.status}`);
+        const created = await getUserByEmail('oidc-owner@example.test');
+        assert.ok(created, 'the first boundary committed the account');
+        assert.deepEqual(await getUserRoles(created.id), ['admin']);
+        assert.deepEqual([(await getInstallationSetup()).initialAdministratorId, (await getInstallationSetup()).method], [created.id, 'passwordSignup']);
+        // Another browser cannot resume; the same browser does without a new code.
+        const foreign = await new Browser().post(`${flow.location}/signup-verify`, { csrf: flow.csrf, code });
+        assert.ok(foreign.status >= 400 && foreign.status < 500);
+        const tokens = await consentTokens(config, flow, await flow.browser.post(`${flow.location}/signup-verify`, { csrf: flow.csrf, code: '000000' }), created.id);
+        assert.deepEqual(await sessionAmr(flow.browser), ['emailCode']);
+        const info = await oidcClient.fetchUserInfo(config, tokens.access_token, created.id);
+        assert.deepEqual([info.email, info.email_verified], ['oidc-owner@example.test', true]);
+        // The chosen password signs the new administrator in afterwards.
+        const later = await begin(config);
+        await consentTokens(config, later, await later.browser.post(`${later.location}/password-login`, { csrf: later.csrf, email: 'oidc-owner@example.test', password }), created.id);
     } finally {
+        setStoreFaultInjectorForTests(null);
         if (server?.listening) await new Promise((resolve) => server.close(resolve));
         resetOidcProviderForTests();
         await resetStoreForTests();
-        setup.clearAdministratorPassword();
-        delete process.env.USERPERSISTO_OIDC_ISSUER;
+        for (const name of Object.keys(process.env)) if (!Object.hasOwn(previousEnvironment, name)) delete process.env[name];
+        Object.assign(process.env, previousEnvironment);
         await rm(folder, { recursive: true, force: true });
     }
 });

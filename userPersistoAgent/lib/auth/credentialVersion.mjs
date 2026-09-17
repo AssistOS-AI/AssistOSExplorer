@@ -11,6 +11,9 @@ export function credentialVersion(method, credential) {
         const jwk = credential?.publicKeyJwk || {};
         material = [credential?.credentialId, credential?.alg, credential?.clientDataHash,
             Object.keys(jwk).sort().map((key) => [key, jwk[key]])];
+    } else if (method === 'password') {
+        // Rotates only when the password changes; the encrypted verifier is excluded.
+        material = [credential?.version, credential?.setAt];
     } else if (method === 'mailbox') {
         // A sign-in mailbox proof is stale once the address, its verification or
         // the account's credential generation changes.

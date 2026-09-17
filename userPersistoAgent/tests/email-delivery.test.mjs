@@ -8,10 +8,11 @@ process.env.PERSISTENCE_FOLDER = mkdtempSync(join(tmpdir(), 'userpersisto-mail-'
 process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
 
 const { ensureSeedData } = await import('../lib/bootstrap.mjs');
-const { getUserByEmail } = await import('../lib/users.mjs');
+const { createUser, getUserByEmail } = await import('../lib/users.mjs');
 const { createLoginRequest } = await import('../lib/sso.mjs');
 const { getStore, resetStoreForTests } = await import('../lib/store.mjs');
 const signIn = await import('../lib/auth/signIn.mjs');
+const signup = await import('../lib/auth/signup.mjs');
 const setup = await import('./helpers/setup.mjs');
 
 after(async () => {
@@ -35,32 +36,47 @@ async function logs() {
     return (await (await getStore()).select('emailLog', {}, { start: 0, pageSize: 50 })).objects;
 }
 
+async function verifiedAccount(email) {
+    return createUser({ email, roles: ['user'], emailVerified: true });
+}
+
 test('provider acceptance, known failure and unknown outcome are reported distinctly and logged redacted', async () => {
+    for (const email of ['accepted@example.test', 'failed@example.test', 'unknown@example.test']) await verifiedAccount(email);
     const accepted = await attempt();
-    const result = await signIn.startEmailSignIn({ ...accepted, email: 'accepted@example.test', purpose: 'register',
+    const result = await signIn.startEmailSignIn({ ...accepted, email: 'accepted@example.test', purpose: 'login',
         deliver: async () => ({ delivered: true, providerMessageId: 'provider-1' }) });
     assert.equal(result.challenge.delivery, 'accepted');
 
     const failed = await attempt();
-    await assert.rejects(signIn.startEmailSignIn({ ...failed, email: 'failed@example.test', purpose: 'register',
+    await assert.rejects(signIn.startEmailSignIn({ ...failed, email: 'failed@example.test', purpose: 'login',
         deliver: async () => ({ delivered: false, result: 'rejected' }) }), (error) => error.code === 'delivery_failed' && error.statusCode === 502);
     // A known failure never leaves a verifiable code and allows an immediate retry.
     await assert.rejects(signIn.completeEmailSignIn({ ...failed, code: '123456' }), { code: 'attempt_invalid' });
-    const retried = await signIn.startEmailSignIn({ ...failed, email: 'failed@example.test', purpose: 'register',
+    const retried = await signIn.startEmailSignIn({ ...failed, email: 'failed@example.test', purpose: 'login',
         deliver: async () => ({ delivered: true }) });
     assert.equal(retried.challenge.delivery, 'accepted');
 
     const unknown = await attempt();
-    const uncertain = await signIn.startEmailSignIn({ ...unknown, email: 'unknown@example.test', purpose: 'register',
+    const uncertain = await signIn.startEmailSignIn({ ...unknown, email: 'unknown@example.test', purpose: 'login',
         deliver: async () => { throw new Error('transport timeout'); } });
     assert.equal(uncertain.challenge.delivery, 'unknown');
 
+    // A signup reports its delivery the same way but only stages the account.
+    const password = setup.newTestPassword();
+    const pendingSignup = await attempt();
+    const staged = await signup.startSignup({ ...pendingSignup, email: 'signup@example.test', password, passwordConfirmation: password,
+        deliver: async (message) => {
+            assert.equal(message.purpose, 'signup-verification');
+            return { delivered: true };
+        } });
+    assert.equal(staged.challenge.delivery, 'accepted');
+
     const results = (await logs()).map((entry) => entry.result).sort();
-    assert.deepEqual(results, ['accepted', 'accepted', 'failed', 'unknown']);
+    assert.deepEqual(results, ['accepted', 'accepted', 'accepted', 'failed', 'unknown']);
     for (const entry of await logs()) {
         assert.ok(!JSON.stringify(entry).includes('@example.test'), 'logs hold only an address digest');
     }
-    assert.equal(await getUserByEmail('accepted@example.test'), null);
+    assert.equal(await getUserByEmail('signup@example.test'), null);
 });
 
 test('the development log fallback is explicit, labelled and never reported as provider acceptance', async () => {
@@ -68,13 +84,14 @@ test('the development log fallback is explicit, labelled and never reported as p
     const originalWarn = console.warn;
     console.warn = (...parts) => { warnings.push(parts.join(' ')); };
     try {
+        await verifiedAccount('dev@example.test');
         const withoutFlag = await attempt();
-        await assert.rejects(signIn.startEmailSignIn({ ...withoutFlag, email: 'dev@example.test', purpose: 'register',
+        await assert.rejects(signIn.startEmailSignIn({ ...withoutFlag, email: 'dev@example.test', purpose: 'login',
             deliver: async () => ({ delivered: false }) }), { code: 'delivery_failed' });
         assert.equal(warnings.length, 0);
         process.env.USERPERSISTO_DEV_BOOTSTRAP = 'true';
         const development = await attempt();
-        const result = await signIn.startEmailSignIn({ ...development, email: 'dev@example.test', purpose: 'register',
+        const result = await signIn.startEmailSignIn({ ...development, email: 'dev@example.test', purpose: 'login',
             deliver: async () => { throw new Error('no email agent'); } });
         assert.equal(result.challenge.delivery, 'development-log');
         assert.equal(warnings.length, 1);

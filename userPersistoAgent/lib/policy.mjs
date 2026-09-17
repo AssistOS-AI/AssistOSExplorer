@@ -3,11 +3,10 @@ import { serialize } from './serial.mjs';
 import { withPersistenceScope } from './persistence-scope.mjs';
 import { getEmailAuthCodeStatus } from './email-agent-client.mjs';
 import { describeManagedRouterOrigins, resolveManagedRouterOrigins } from './auth/managedRouterOrigins.mjs';
-import { googleOnlyAuthentication } from './auth/production.mjs';
 
-// Ordinary accounts are passwordless. The installation administrator password
-// is a separate, single-account exception and never a policy method.
-const AUTH_METHODS = new Set(['emailCode', 'passkey', 'totp', 'google']);
+// Sign-in methods an administrator can enable. `password` is each account's
+// own password; there is no shared or installation-level password.
+const AUTH_METHODS = new Set(['password', 'emailCode', 'passkey', 'totp', 'google']);
 export const REGISTRATION_ROLE = 'selfRegistered';
 const POLICY_FIELDS = new Set(['enabledAuthMethods', 'selfRegistrationEnabled', 'allowedRedirectOrigins']);
 // Returned with the policy for administrators; generated or derived, never saved.
@@ -23,7 +22,7 @@ const READ_ONLY_POLICY_FIELDS = new Set([
     'effectiveRedirectOrigins',
 ]);
 const DEFAULT_POLICY = Object.freeze({
-    enabledAuthMethods: ['emailCode', 'passkey', 'totp', 'google'],
+    enabledAuthMethods: ['password', 'emailCode', 'passkey', 'totp', 'google'],
     selfRegistrationEnabled: true,
     allowedRedirectOrigins: [],
 });
@@ -46,8 +45,9 @@ function envList(name) {
     return raw ? uniqueStrings(raw.split(',')) : null;
 }
 
-// An environment override naming a retired method (for example `password`)
-// must not re-enable it or take the whole sign-in surface down.
+// An environment override naming an unsupported method must not enable it or
+// take the whole sign-in surface down. A list without `password` deliberately
+// disables password signup and login.
 function environmentMethods() {
     const configured = envList('USERPERSISTO_AUTH_METHODS');
     if (!configured) return null;
@@ -57,7 +57,7 @@ function environmentMethods() {
         warnedEnvironmentMethods.add(method);
         console.warn(`[userPersisto] USERPERSISTO_AUTH_METHODS ignores unsupported method "${method.slice(0, 32).replace(/[^A-Za-z0-9_-]/g, '')}".`);
     }
-    // An override that names only retired methods filters down to nothing, and
+    // An override that names only unsupported methods filters down to nothing, and
     // an empty list would fail every policy read. Ignore it instead, so the
     // override can never be the reason nobody can sign in.
     if (!supported.length) {
@@ -133,7 +133,7 @@ function storedFields(value) {
 
 function applyEnvironment(policy) {
     const merged = { ...policy };
-    const configuredMethods = googleOnlyAuthentication() ? ['google'] : environmentMethods();
+    const configuredMethods = environmentMethods();
     const configuredOrigins = envList('USERPERSISTO_ALLOWED_REDIRECT_ORIGINS');
     if (configuredMethods) merged.enabledAuthMethods = configuredMethods;
     if (configuredOrigins) merged.allowedRedirectOrigins = configuredOrigins;
@@ -144,8 +144,8 @@ function applyEnvironment(policy) {
 }
 
 export function environmentPolicyOverrides() {
-    return ['PROD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']
-        .filter((name) => name === 'PROD' ? googleOnlyAuthentication() : String(process.env[name] || '').trim());
+    return ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']
+        .filter((name) => String(process.env[name] || '').trim());
 }
 
 export async function getAuthPolicy() {
@@ -220,22 +220,20 @@ async function hasCapability(store, userId, capability) {
 }
 
 // Sign-in methods an account can actually use under the effective policy and
-// configuration: administrator password only for its designated account, email
-// code only with a verified mailbox, passkey/TOTP when enrolled and reachable
-// through that mailbox, Google when configured and bound. Read-only; safe inside
-// the persistence scope.
-export async function usableSignInMethods(user, { store = null, policy = null, includeAdministratorPassword = true, emailAvailable = false } = {}) {
+// configuration: its own password when one is enabled, email code only with a
+// verified mailbox, passkey/TOTP when enrolled and reachable through that
+// mailbox, Google when configured and bound. Read-only; safe inside the
+// persistence scope.
+export async function usableSignInMethods(user, { store = null, policy = null, emailAvailable = false } = {}) {
     if (!user || user.status !== 'active') return [];
     const persisto = store || await getStore();
-    const effective = policy || await getAuthPolicy();
-    const enabled = googleOnlyAuthentication() ? ['google'] : effective.enabledAuthMethods;
+    const enabled = (policy || await getAuthPolicy()).enabledAuthMethods;
     const methods = [];
-    if (includeAdministratorPassword) {
-        const { administratorPasswordUsableFor } = await import('./auth/adminPassword.mjs');
-        if (await administratorPasswordUsableFor(user.id)) methods.push('adminPassword');
+    const credentials = await persisto.getAuthMethodsObjectsByUserId(user.id) || [];
+    if (user.email && enabled.includes('password') && credentials.some((method) => method.enabled && method.type === 'password')) {
+        methods.push('password');
     }
     if (emailAvailable && enabled.includes('emailCode') && user.email && user.emailVerifiedAt) methods.push('emailCode');
-    const credentials = await persisto.getAuthMethodsObjectsByUserId(user.id) || [];
     for (const type of ['passkey', 'totp']) {
         if (user.email && enabled.includes(type) && credentials.some((method) => method.enabled && method.type === type)) methods.push(type);
     }

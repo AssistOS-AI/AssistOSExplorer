@@ -10,7 +10,7 @@ import { SNAPSHOT_FILE } from '../lib/durable-storage.mjs';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createUser, getUserRoles } from '../lib/users.mjs';
 import { getInstallationSetup } from '../lib/setup.mjs';
-import { registerWithEmailCode, resetAuthLimitsForTests } from './helpers/setup.mjs';
+import { signUpWithPassword, resetAuthLimitsForTests } from './helpers/setup.mjs';
 import { completeGoogleIdentity, GOOGLE_ISSUER } from '../lib/externalIdentities.mjs';
 import { grant, getBalance } from '../lib/credits.mjs';
 
@@ -89,7 +89,7 @@ test('concurrent flush cannot publish an initial user without its administrator 
     let done = false;
     let samples = 0;
     const [registration] = await Promise.all([
-        registerWithEmailCode('atomic-owner@example.test').finally(() => { done = true; }),
+        signUpWithPassword('atomic-owner@example.test').finally(() => { done = true; }),
         (async () => {
             do {
                 await flush();
@@ -109,12 +109,12 @@ test('concurrent flush cannot publish an initial user without its administrator 
     assert.deepEqual(await getUserRoles(registration.user.id), ['admin']);
 });
 
-test('a failure while staging the setup record leaves neither owner nor setup after restart', async () => {
-    for (const method of ['emailCode', 'google']) {
+test('a failure while staging the setup record leaves neither owner, credential nor setup after restart', async () => {
+    for (const method of ['passwordSignup', 'google']) {
         await fixture();
         await ensureSeedData();
         resetAuthLimitsForTests();
-        const complete = () => method === 'emailCode' ? registerWithEmailCode('interrupted-owner@example.test') : completeGoogleIdentity({
+        const complete = () => method === 'passwordSignup' ? signUpWithPassword('interrupted-owner@example.test') : completeGoogleIdentity({
             identity: { issuer: GOOGLE_ISSUER, subject: 'interrupted-google-owner', email: 'interrupted-owner@gmail.com', emailVerified: true },
             transactionId: 'interrupted-google-completion',
         });
@@ -128,11 +128,12 @@ test('a failure while staging the setup record leaves neither owner nor setup af
         const store = await getStore();
         assert.equal((await getInstallationSetup()).complete, false, `${method}: setup stays unclaimed`);
         assert.equal((await store.select('user')).totalCount, 0, `${method}: no ambiguous owner exists`);
+        assert.equal((await store.select('authMethod')).totalCount, 0, `${method}: no orphaned password credential exists`);
         // A later completion claims the installation normally.
         resetAuthLimitsForTests();
         const retried = await complete();
         assert.equal(retried.initialAdministrator, true);
-        assert.equal((await getInstallationSetup()).initialAdministratorId, retried.user.id);
+        assert.deepEqual([(await getInstallationSetup()).initialAdministratorId, (await getInstallationSetup()).method], [retried.user.id, method]);
         await resetStoreForTests();
         await rm(folder, { recursive: true, force: true });
     }

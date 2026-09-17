@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,13 +31,20 @@ function resolveOptionalPath(value) {
 }
 
 // Automated UserPersisto sign-in uses the same methods for every role.
-const SIGN_IN_METHODS = new Set(['emailCode', 'totp']);
+const SIGN_IN_METHODS = new Set(['password', 'emailCode', 'totp']);
 function readSignInMethod(name, fallback) {
   const value = String(process.env[name] || '').trim();
   return SIGN_IN_METHODS.has(value) ? value : fallback;
 }
 
 const runId = String(process.env.SMOKE_RUN_ID || defaultRunId()).replace(/[^A-Za-z0-9_-]/g, '-');
+// Accounts signed up by a run without a configured password share one random
+// run password. The Playwright runner process creates it before its workers
+// start, so every worker inherits the same value, and the existing redaction
+// of *PASSWORD* environment values removes it from reports and traces.
+if (!process.env.SMOKE_RUN_ACCOUNT_PASSWORD) {
+  process.env.SMOKE_RUN_ACCOUNT_PASSWORD = `smoke-${crypto.randomBytes(24).toString('base64url')}`;
+}
 const qaAcceptance = readBool('SMOKE_QA_ACCEPTANCE', false);
 const workspaceRoot = resolveOptionalPath(process.env.SMOKE_WORKSPACE_ROOT);
 const dpuDataRoot = resolveOptionalPath(process.env.SMOKE_DPU_DATA_ROOT)
@@ -62,11 +70,14 @@ export const smokeConfig = Object.freeze({
   // Shell command printing the latest UserPersisto code for $SMOKE_EMAIL.
   emailCodeCommand: String(process.env.SMOKE_EMAIL_CODE_COMMAND || '').trim(),
   accountEmailDomain: String(process.env.SMOKE_ACCOUNT_EMAIL_DOMAIN || 'example.test').trim(),
-  // `password` applies only to Ploinky's local /auth/login form.
+  runAccountPassword: process.env.SMOKE_RUN_ACCOUNT_PASSWORD,
+  // `password` applies only to Ploinky's local /auth/login form;
+  // `accountPassword` is the UserPersisto account password.
   primaryUser: {
     username: process.env.SMOKE_USERNAME || 'admin',
     loginEmail: process.env.SMOKE_LOGIN_EMAIL || process.env.SMOKE_USERNAME || 'admin',
     password: process.env.SMOKE_PASSWORD || 'admin',
+    accountPassword: String(process.env.SMOKE_ACCOUNT_PASSWORD || ''),
     signInMethod: readSignInMethod('SMOKE_SIGN_IN_METHOD', 'emailCode'),
     totpSecret: String(process.env.SMOKE_TOTP_SECRET || ''),
   },
@@ -74,6 +85,7 @@ export const smokeConfig = Object.freeze({
     username: process.env.SMOKE_SECONDARY_USERNAME || 'user',
     loginEmail: process.env.SMOKE_SECONDARY_LOGIN_EMAIL || process.env.SMOKE_SECONDARY_USERNAME || 'user',
     password: process.env.SMOKE_SECONDARY_PASSWORD || 'user',
+    accountPassword: String(process.env.SMOKE_SECONDARY_ACCOUNT_PASSWORD || ''),
     signInMethod: readSignInMethod('SMOKE_SECONDARY_SIGN_IN_METHOD', 'emailCode'),
     totpSecret: String(process.env.SMOKE_SECONDARY_TOTP_SECRET || ''),
   },

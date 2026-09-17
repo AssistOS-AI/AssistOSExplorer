@@ -15,6 +15,7 @@ import { startService } from '../service/index.mjs';
 import { CookieBrowser } from './helpers/googleProvider.mjs';
 import { createRouterSigner } from './helpers/router-fixture.mjs';
 import * as setup from './helpers/setup.mjs';
+import { completeGoogleIdentity, GOOGLE_ISSUER } from '../lib/externalIdentities.mjs';
 
 async function fixture(run) {
     const environment = { ...process.env };
@@ -49,7 +50,8 @@ async function fixture(run) {
 }
 
 test('policy cannot strand an email-only administrator when EmailAgent is unavailable; its probe runs outside persistence', { timeout: 10_000 }, () => fixture(async () => {
-    const account = await setup.registerWithEmailCode('owner@example.test');
+    // A Google-created administrator has no password; Google itself is not configured here.
+    const account = await completeGoogleIdentity({ identity: { issuer: GOOGLE_ISSUER, subject: 'readiness-owner', email: 'owner@gmail.com', emailVerified: true } });
     const user = await getUserById(account.user.id);
     assert.deepEqual(await usableSignInMethods(user, { emailAvailable: false }), []);
     assert.deepEqual(await usableSignInMethods(user, { emailAvailable: true }), ['emailCode']);
@@ -67,7 +69,7 @@ test('policy cannot strand an email-only administrator when EmailAgent is unavai
 }));
 
 test('public SSO and signed-in account surfaces hide unavailable email and reject sending without consuming a grant', () => fixture(async ({ start }) => {
-    const { user } = await setup.registerWithEmailCode('member@example.test');
+    const { user } = await setup.signUpWithPassword('member@example.test');
     const sign = await createRouterSigner();
     let available = false;
     let sends = 0;
@@ -79,8 +81,12 @@ test('public SSO and signed-in account surfaces hide unavailable email and rejec
     assert.equal(config.methods.emailCode, false);
     assert.equal(config.registration, false);
     const discovered = await (await post('discover', { email: user.email })).json();
-    assert.deepEqual(discovered, { ok: true, exists: true, methods: { emailCode: false, passkey: false, totp: false } });
+    assert.deepEqual(discovered, { ok: true, exists: true, methods: { password: true, emailCode: false, passkey: false, totp: false } });
     assert.equal((await post('email-code/start', { email: user.email, purpose: 'login' })).status, 404);
+    for (const path of ['signup/start', 'signup/resend', 'signup/email']) {
+        const refused = await post(path, { email: 'new-member@example.test', password: 'a long enough new password', passwordConfirmation: 'a long enough new password' });
+        assert.deepEqual([refused.status, (await refused.json()).error], [403, 'registration_disabled'], path);
+    }
     assert.equal((await (await fetch(`${base}/service/auth/methods`)).json()).methods.includes('emailCode'), false);
     const profilePath = '/service/dashboard/api/profile';
     const profile = await (await fetch(`${base}${profilePath}`, { headers: sign({ method: 'GET', path: profilePath, userId: user.id }) })).json();
@@ -117,6 +123,7 @@ test('an unconfigured service completes first-owner signup through development l
     const browser = new CookieBrowser();
     const post = (path, body = {}) => browser.json(`${base}/service/auth/${path}`, { requestId: request.providerState, ...body });
     const email = 'development-owner@example.test';
+    const password = setup.newTestPassword();
     const warnings = [];
     const originalWarn = console.warn;
     console.warn = (...parts) => { warnings.push(parts.join(' ')); };
@@ -126,8 +133,8 @@ test('an unconfigured service completes first-owner signup through development l
             else process.env.USERPERSISTO_DEV_BOOTSTRAP = value;
             const configuration = await (await post('attempt')).json();
             assert.equal(configuration.methods.emailCode, false);
-            assert.equal(configuration.registration, false);
-            assert.equal((await post('email-code/start', { email, purpose: 'register' })).status, 404);
+            assert.deepEqual([configuration.registration, configuration.signup.email], [false, false]);
+            assert.equal((await post('signup/start', { email, password, passwordConfirmation: password })).status, 403);
         }
         assert.equal(warnings.length, 0);
         assert.equal((await listUsers()).totalCount, 0, 'startup and rejected attempts seed no account');
@@ -137,14 +144,15 @@ test('an unconfigured service completes first-owner signup through development l
         assert.equal((await listUsers()).totalCount, 0, 'the development flag never seeds an administrator');
         const configuration = await (await post('attempt')).json();
         assert.equal(configuration.methods.emailCode, true);
-        assert.equal(configuration.registration, true);
-        const started = await post('email-code/start', { email, purpose: 'register' });
+        assert.deepEqual([configuration.registration, configuration.signup.email], [true, true]);
+        const started = await post('signup/start', { email, password, passwordConfirmation: password });
         assert.equal(started.status, 200);
         assert.equal((await started.json()).challenge.delivery, 'development-log');
         assert.equal((await listUsers()).totalCount, 0, 'requesting a code does not claim setup');
+        assert.equal(warnings.some((warning) => warning.includes(password)), false, 'the password is never logged');
         const code = warnings.find((warning) => warning.startsWith(`[userPersisto] DEVELOPMENT email code for ${email}: `))?.match(/: (\d{6})$/)?.[1];
         assert.equal(typeof code, 'string', 'a labelled code was captured without printing it');
-        const verified = await post('email-code/verify', { code });
+        const verified = await post('signup/verify', { code });
         assert.equal(verified.status, 200);
         const completion = await verified.json();
         assert.equal(completion.created, true);

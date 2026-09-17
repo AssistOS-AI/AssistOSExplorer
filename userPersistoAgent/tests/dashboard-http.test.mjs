@@ -76,7 +76,7 @@ test('restricted accounts get their own sanitized profile and cannot change anot
     assert.equal(data.profile.subscription, null);
     assert.deepEqual(data.profile.authMethods, [{ type: 'emailCode', name: 'Email code' }]);
     assert.equal(data.profile.emailVerified, true);
-    assert.deepEqual(data.profile.enrollments, { passkey: { configured: false, count: 0 }, totp: { configured: false, pending: false } });
+    assert.deepEqual(data.profile.enrollments, { password: { configured: false }, passkey: { configured: false, count: 0 }, totp: { configured: false, pending: false } });
     assert.deepEqual(data.profile.allowedAuthMethods, ['emailCode', 'passkey', 'totp']);
     assert.doesNotMatch(JSON.stringify(data), /passwordHash|loginAttempts|lastLoginAttempt|credential|codeHash/);
 

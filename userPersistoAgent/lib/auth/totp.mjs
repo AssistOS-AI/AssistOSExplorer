@@ -6,7 +6,6 @@ import { authGenerationOf, getUserByEmail, getUserById, sanitizeUser } from '../
 import { recordAudit } from '../audit.mjs';
 import { stageCredentialGenerationAdvance } from './generation.mjs';
 import { clearLoginFailures, isLoginLocked, recordLoginFailure, withLoginAttemptLock } from './login-attempts.mjs';
-import { assertLocalAuthenticationAllowed } from './production.mjs';
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const PERIOD_SECONDS = 30;
@@ -235,7 +234,6 @@ export function setupVerify({ userId, token, setupId }) {
 }
 
 async function verifyTotpForUser(user, token, { includeCredentialProof = false, action = 'auth.totp.login' } = {}) {
-    assertLocalAuthenticationAllowed();
     if (!user) return { ok: false, reason: 'invalid_credentials' };
     if (user.status !== 'active') return { ok: false, reason: 'user_blocked' };
     if (isLoginLocked(user)) return { ok: false, reason: 'account_locked' };
@@ -263,7 +261,6 @@ async function verifyTotpForUser(user, token, { includeCredentialProof = false, 
 }
 
 export async function loginVerify({ email, token }, { includeCredentialProof = false } = {}) {
-    assertLocalAuthenticationAllowed();
     const normalizedEmail = String(email || '').trim().toLowerCase();
     return withLoginAttemptLock(normalizedEmail, () => serializePersisted('users', async () =>
         verifyTotpForUser(await getUserByEmail(normalizedEmail), token, { includeCredentialProof })));
@@ -272,7 +269,6 @@ export async function loginVerify({ email, token }, { includeCredentialProof = f
 // Re-authentication of an already signed-in account for a sensitive operation.
 // It shares the account's login lock, lockout counter and replay protection.
 export async function reauthenticationVerify({ userId, token }) {
-    assertLocalAuthenticationAllowed();
     const user = await getUserById(userId);
     return withLoginAttemptLock(user?.email || `user:${userId}`, () => serializePersisted('users', async () =>
         verifyTotpForUser(await getUserById(userId), token, { action: 'auth.totp.reauthenticate' })));

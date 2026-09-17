@@ -2,8 +2,8 @@ const ensuredStores = new WeakSet();
 
 // Field lists are documentation; Persisto does NOT enforce them. Validation lives in the domain modules.
 export const TYPES = {
-    // `email` is the verified sign-in mailbox ('' only for the configured-password
-    // administrator); `contactEmail` is unverified contact information.
+    // `email` is the sign-in mailbox (verified when `emailVerifiedAt` is set);
+    // `contactEmail` is unverified contact information.
     user: { email: 'string', username: 'string', displayName: 'string', contactEmail: 'string', status: 'string', source: 'string', createdAt: 'string', updatedAt: 'string', emailVerifiedAt: 'string', authGeneration: 'integer', loginAttempts: 'integer', lastLoginAttempt: 'string' },
     role: { name: 'string', description: 'string', priority: 'integer' },
     permission: { capability: 'string', description: 'string', scope: 'string' },

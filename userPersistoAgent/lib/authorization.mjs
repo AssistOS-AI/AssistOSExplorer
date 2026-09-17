@@ -2,7 +2,6 @@ import { getStore } from './store.mjs';
 import { getUserById, getUserRoles, hasVerifiedMailbox } from './users.mjs';
 import { getEnabledAuthMethods } from './auth/methods.mjs';
 import { GOOGLE_ISSUER } from './externalIdentities.mjs';
-import { administratorPasswordUsableFor } from './auth/adminPassword.mjs';
 
 export async function getUserCapabilities(userId) {
     const store = await getStore();
@@ -72,11 +71,13 @@ export async function getProfile(userId) {
     const enabledMethods = methods.filter((method) => method.enabled);
     const passkeyCount = enabledMethods.filter((method) => method.type === 'passkey').length;
     const totpConfigured = enabledMethods.some((method) => method.type === 'totp');
+    const passwordConfigured = enabledMethods.some((method) => method.type === 'password');
     const totpSetup = await store.getAuthChallengeByChallengeId(`totp-setup:${userId}`);
     const totpPending = totpSetup?.subject === userId
         && totpSetup.purpose === 'totp-setup'
         && Date.parse(totpSetup.expiresAt) > Date.now();
     const authMethods = [];
+    if (passwordConfigured) authMethods.push({ type: 'password', name: 'Password' });
     if (hasVerifiedMailbox(user)) authMethods.push({ type: 'emailCode', name: 'Email code' });
     if (passkeyCount) authMethods.push({ type: 'passkey', name: 'Passkey' });
     if (totpConfigured) authMethods.push({ type: 'totp', name: 'Authenticator app' });
@@ -84,7 +85,6 @@ export async function getProfile(userId) {
     if (externalIdentities.some((identity) => identity.issuer === GOOGLE_ISSUER)) {
         authMethods.push({ type: 'google', name: 'Google' });
     }
-    if (await administratorPasswordUsableFor(userId)) authMethods.push({ type: 'adminPassword', name: 'Administrator password' });
     const { passwordHash, loginAttempts, lastLoginAttempt, ...safeUser } = user;
     const { reauthenticationMethods } = await import('./auth/operationGrants.mjs');
     const contactChallenge = await store.getAuthChallengeByChallengeId(`contact-verify:${userId}`);
@@ -97,7 +97,9 @@ export async function getProfile(userId) {
         allowedAuthMethods: await getEnabledAuthMethods(),
         // Methods that can confirm a sensitive My Account operation right now.
         reauthenticationMethods: user.status === 'active' ? await reauthenticationMethods(user) : [],
+        // Configuration state only: no verifier, version or timestamp is exposed.
         enrollments: {
+            password: { configured: passwordConfigured },
             passkey: { configured: passkeyCount > 0, count: passkeyCount },
             totp: { configured: totpConfigured, pending: Boolean(totpPending) },
         },
