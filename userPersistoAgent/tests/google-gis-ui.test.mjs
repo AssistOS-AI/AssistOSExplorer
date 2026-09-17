@@ -5,6 +5,11 @@ import { mountGoogleSignIn } from '../public/auth/google-sign-in.mjs';
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const ORIGIN = 'http://localhost:8080';
 const BASE = '/base-agent-additional-server/userPersistoAgent/7000/service/';
+// Recorded from the SDK's button popup in Chrome on a 1920x1080 screen.
+const GIS_POPUP_URL = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=123456-local.apps.googleusercontent.com';
+const GIS_POPUP_TARGET = 'g_credential_picker_6675584889ae0204';
+const GIS_POPUP_BASE_FEATURES = 'toolbar=no,location=no,directories=no,status=no,menubar=no,scrollbars=no,resizable=no,copyhistory=no';
+const GIS_POPUP_FEATURES = `${GIS_POPUP_BASE_FEATURES},width=500,height=550,top=265,left=710`;
 
 class Element {
     constructor() {
@@ -61,7 +66,7 @@ function deferred() {
 
 function jsonResponse(payload, ok = true) { return { ok, json: async () => payload }; }
 
-function harness({ sdk = true, config: changes = {}, fetch } = {}) {
+function harness({ sdk = true, config: changes = {}, fetch, screen = { availLeft: 0, availTop: 32, availWidth: 1920, availHeight: 1048 } } = {}) {
     const clock = fakeClock();
     const nodes = new Map(['config', 'button', 'status', 'cancel', 'retry', 'timer']
         .map((name) => [`google-sign-in-${name}`, new Element()]));
@@ -93,6 +98,14 @@ function harness({ sdk = true, config: changes = {}, fetch } = {}) {
     };
     const window = new Element();
     window.location = { origin: ORIGIN, assign: (path) => navigation.push(path) };
+    window.screen = screen;
+    const opened = [];
+    const browserOpen = function (...args) {
+        const popup = { closed: false };
+        opened.push({ receiver: this, args, popup });
+        return popup;
+    };
+    window.open = browserOpen;
     if (sdk) window.google = { accounts: { id: googleId } };
     const controller = mountGoogleSignIn({
         document,
@@ -104,7 +117,7 @@ function harness({ sdk = true, config: changes = {}, fetch } = {}) {
         },
     });
     return {
-        document, window, config, googleId, controller, clock, requests, navigation, initializations, renders,
+        document, window, config, googleId, controller, clock, requests, navigation, initializations, renders, opened, browserOpen,
         node: (name) => nodes.get(`google-sign-in-${name}`),
         cancellations: () => cancellations,
         credential(value = 'signed.id.token') { initializations.at(-1).callback({ credential: value }); },
@@ -145,6 +158,57 @@ test('official GIS button sends one credential to the same-origin endpoint with 
     h.credential('late.id.token');
     assert.equal(h.requests.length, 1);
     h.controller.dispose();
+});
+
+test('the SDK Google popup opens large enough for Google screens and centered in the screen work area', async () => {
+    for (const [screen, geometry] of [
+        [undefined, 'width=590,height=900,left=665,top=66'],
+        [{ availLeft: 1920, availTop: 0, availWidth: 1366, availHeight: 728 }, 'width=590,height=648,left=2308,top=0'],
+        [{ availWidth: 1440, availHeight: 900 }, 'width=590,height=820,left=425,top=0'],
+    ]) {
+        const h = harness({ screen });
+        await h.controller.ready;
+        const popup = h.window.open(GIS_POPUP_URL, GIS_POPUP_TARGET, GIS_POPUP_FEATURES);
+        assert.equal(h.opened.length, 1);
+        assert.equal(h.opened[0].receiver, h.window);
+        assert.deepEqual(h.opened[0].args, [GIS_POPUP_URL, GIS_POPUP_TARGET, `${GIS_POPUP_BASE_FEATURES},${geometry}`]);
+        assert.equal(popup, h.opened[0].popup);
+        h.controller.dispose();
+    }
+});
+
+test('other windows and unsized Google windows open exactly as requested', async () => {
+    const h = harness();
+    await h.controller.ready;
+    const calls = [
+        ['https://example.com/popup', GIS_POPUP_TARGET, GIS_POPUP_FEATURES],
+        ['https://accounts.google.com.evil.example/o/oauth2/v2/auth', GIS_POPUP_TARGET, GIS_POPUP_FEATURES],
+        ['http://accounts.google.com/o/oauth2/v2/auth', GIS_POPUP_TARGET, GIS_POPUP_FEATURES],
+        [`${BASE}auth/`, GIS_POPUP_TARGET, GIS_POPUP_FEATURES],
+        [GIS_POPUP_URL, '_blank', 'noopener,noreferrer'],
+        [GIS_POPUP_URL, GIS_POPUP_TARGET],
+        [GIS_POPUP_URL],
+        [],
+    ];
+    for (const args of calls) h.window.open(...args);
+    assert.deepEqual(h.opened.map((call) => call.args), calls);
+    assert.ok(h.opened.every((call) => call.receiver === h.window));
+    h.controller.dispose();
+});
+
+test('pagehide or dispose restores window.open, and an invalid page never adjusts it', async () => {
+    for (const leave of [(h) => h.window.fire('pagehide'), (h) => h.controller.dispose()]) {
+        const h = harness();
+        await h.controller.ready;
+        assert.notEqual(h.window.open, h.browserOpen);
+        leave(h);
+        assert.equal(h.window.open, h.browserOpen);
+    }
+    const invalid = harness({ sdk: false, config: { credentialUrl: 'https://evil.example/collect' } });
+    await invalid.controller.ready;
+    assert.equal(invalid.window.open, invalid.browserOpen);
+    invalid.controller.dispose();
+    assert.equal(invalid.window.open, invalid.browserOpen);
 });
 
 test('loads only the official SDK, bounds loading, and permits a fresh load retry', async () => {
