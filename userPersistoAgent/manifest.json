@@ -98,6 +98,9 @@
         "USERPERSISTO_ADMIN_PASSWORD": {
           "required": false
         },
+        "PROD": {
+          "required": false
+        },
         "USERPERSISTO_SELF_REGISTRATION_ENABLED": {
           "required": false
         },

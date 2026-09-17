@@ -7,6 +7,7 @@ import { readInstallationSetup, prepareNewAccount } from './setup.mjs';
 import { recordAudit } from './audit.mjs';
 import { credentialVersion } from './auth/credentialVersion.mjs';
 import { administratorPasswordUsableFor, assertAdministratorPasswordProof } from './auth/adminPassword.mjs';
+import { googleOnlyAuthentication } from './auth/production.mjs';
 
 export const GOOGLE_ISSUER = 'https://accounts.google.com';
 export const GOOGLE_LOCAL_PROOF_TTL_MS = 2 * 60 * 1000;
@@ -60,9 +61,10 @@ async function existingIdentity(store, identity) {
 
 async function eligibleMethods(store, user, policy, identity) {
     const methods = [];
-    if (policy.enabledAuthMethods.includes('emailCode') && hasVerifiedMailbox(user)) {
-        methods.push('emailCode');
-        if (identity && googleIsAuthoritativeFor(identity, user.email)) methods.push('googleAuthoritative');
+    if (hasVerifiedMailbox(user)) {
+        if (policy.enabledAuthMethods.includes('emailCode')) methods.push('emailCode');
+        if ((policy.enabledAuthMethods.includes('emailCode') || googleOnlyAuthentication())
+            && identity && googleIsAuthoritativeFor(identity, user.email)) methods.push('googleAuthoritative');
     }
     const enrolled = await store.getAuthMethodsObjectsByUserId(user.id) || [];
     for (const type of ['passkey', 'totp']) {

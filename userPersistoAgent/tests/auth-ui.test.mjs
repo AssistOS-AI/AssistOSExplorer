@@ -151,6 +151,7 @@ function wizardState(overrides = {}) {
         registration: true,
         methods: { emailCode: true, passkey: false, totp: false, google: false },
         adminPassword: false,
+        googleOnly: false,
         attempt: { status: 'active', challenge: null, locked: false },
         ...overrides,
     };
@@ -215,6 +216,78 @@ function assertLabels(root) {
         assert.ok(root.querySelectorAll('label').some((label) => label.htmlFor === input.id), `label is associated with ${input.id}`);
     }
 }
+
+function assertGoogleOnly(root, { available = true } = {}) {
+    assert.equal(h1(root).textContent, 'Sign in');
+    assert.equal(root.querySelectorAll('input, select').length, 0, 'production never exposes local credential controls');
+    assert.equal(root.querySelector('button[type="submit"]'), null);
+    assert.equal(root.querySelectorAll('form').length, 0);
+    assert.equal(root.querySelector('.auth-switch'), null);
+    assert.equal(root.querySelector('form.admin-panel'), null);
+    assert.equal(root.querySelectorAll('button').some((node) => node.textContent === 'Create an account'), false);
+    assert.equal(root.querySelectorAll('button').some((node) => node.textContent === 'Continue with Google'), available);
+}
+
+test('production exposes Google as the only sign-in method and still initiates the Google flow', async () => {
+    for (const setupComplete of [false, true]) {
+        let started = 0;
+        const adapter = baseAdapter({
+            attempt: async () => wizardState({ googleOnly: true, setupComplete, adminPassword: true,
+                methods: { google: true, emailCode: true, totp: true, passkey: true } }),
+            discover: () => assert.fail('production must not discover local accounts'),
+            adminLogin: () => assert.fail('production must not submit administrator passwords'),
+            startGoogle: async () => { started++; },
+        });
+        const { root } = await mount({ adapter });
+        assertGoogleOnly(root);
+        await button(root, 'Continue with Google').fire('click');
+        assert.equal(started, 1);
+    }
+});
+
+test('production refresh ignores stored email, active local challenges and local OIDC failure state', async () => {
+    for (const action of ['', 'email-verify', 'totp', 'passkey-verify', 'admin-login']) {
+        const storage = fakeStorage();
+        storage.setItem('wizard-test', JSON.stringify({ mode: 'register', email: 'stored@example.test' }));
+        const adapter = baseAdapter({
+            flow: action ? 'oidc' : 'sso',
+            screenHint: 'signup',
+            initialEmail: 'failed@example.test',
+            initialFailure: action ? { action, code: 'authentication_failed', message: 'local credential rejected' } : null,
+            attempt: async () => wizardState({ googleOnly: true, setupComplete: false, adminPassword: true,
+                methods: { google: true, emailCode: true, totp: true, passkey: true },
+                attempt: { status: 'active', locked: false, challenge: freshChallenge() } }),
+            discover: () => assert.fail('a pending local flow cannot resume in production'),
+        });
+        for (let refresh = 0; refresh < 2; refresh++) {
+            const { root, dispose } = await mount({ adapter, storage });
+            assertGoogleOnly(root);
+            assert.doesNotMatch(root.textContent, /stored@example|failed@example|member@example|6-digit|administrator password|local credential rejected/);
+            dispose();
+        }
+    }
+});
+
+test('production without usable Google shows unavailable status and never falls back to local methods', async () => {
+    const adapter = baseAdapter({ attempt: async () => wizardState({ googleOnly: true, adminPassword: true,
+        methods: { google: false, emailCode: true, totp: true, passkey: true } }) });
+    const { root } = await mount({ adapter });
+    assertGoogleOnly(root, { available: false });
+    assert.match(root.textContent, /Google.*(?:not available|unavailable)/);
+});
+
+test('production keeps Google cancellation and start errors visible without exposing local sign-in', async () => {
+    const adapter = baseAdapter({ notice: 'google-cancelled',
+        attempt: async () => wizardState({ googleOnly: true, methods: { google: true } }),
+        startGoogle: async () => { throw fail('google_unavailable'); } });
+    const { root } = await mount({ adapter });
+    assertGoogleOnly(root);
+    assert.match(root.textContent, /Google sign-in was cancelled/);
+    await button(root, 'Continue with Google').fire('click');
+    assertGoogleOnly(root);
+    assert.match(root.textContent, /Unable to continue with Google\. Try again\./);
+    assert.equal(button(root, 'Continue with Google').disabled, false);
+});
 
 // ==== the four discover() transitions =====================================
 
@@ -367,40 +440,82 @@ test('no usable methods shows the no-methods screen with Back', async () => {
 
 // ==== administrator sign-in =================================================
 
-test('administrator sign-in is hidden unless configured, never sends the start-screen email, and offers contact email only pre-setup', async () => {
+test('the opening form orders Google, email, administrator password and Sign in without a separate administrator screen', async () => {
+    const adapter = baseAdapter({ attempt: async () => wizardState({ adminPassword: true, setupComplete: false,
+        methods: { google: true, emailCode: true } }) });
+    const { root } = await mount({ adapter });
+    assert.equal(h1(root).textContent, 'Sign in');
+    assert.equal(root.querySelectorAll('form').length, 1);
+    assert.equal(root.querySelector('form.admin-panel'), null);
+    assert.equal(root.querySelector('[name="contactEmail"]'), null);
+    assert.equal(root.querySelectorAll('button').some((node) => node.textContent === 'Administrator sign-in'), false);
+    assert.deepEqual(root.querySelector('form.start-panel').children
+        .filter((node) => ['BUTTON', 'LABEL', 'INPUT'].includes(node.tagName))
+        .map((node) => node.tagName === 'INPUT' ? node.name : node.textContent),
+    ['Continue with Google', 'Email', 'email', 'Admin password', 'password', 'Sign in']);
+    assertLabels(root);
+});
+
+test('inline password availability is explicit and email is contact information only before setup', async () => {
     {
         const adapter = baseAdapter({ attempt: async () => wizardState({ adminPassword: false }) });
         const { root } = await mount({ adapter });
-        assert.equal(root.querySelectorAll('button').some((node) => node.textContent === 'Administrator sign-in'), false);
+        assert.equal(root.querySelector('[name="password"]'), null);
+        assert.equal(root.querySelector('button[type="submit"]').textContent, 'Next');
     }
     for (const setupComplete of [false, true]) {
         const calls = [];
+        const storage = fakeStorage();
         const adapter = baseAdapter({
             attempt: async () => wizardState({ adminPassword: true, setupComplete }),
             adminLogin: async (args) => { calls.push(args); },
+            discover: () => assert.fail('password sign-in never discovers an email account'),
         });
-        const { root } = await mount({ adapter });
+        const { root } = await mount({ adapter, storage });
+        const saved = storage.getItem(adapter.storageKey);
         root.querySelector('[name="email"]').value = 'someone@example.test';
-        await button(root, 'Administrator sign-in').fire('click');
-        assert.match(h1(root).textContent, /Administrator sign-in/);
-        assertLabels(root);
-        assert.equal(Boolean(root.querySelector('[name="contactEmail"]')), !setupComplete, 'contact email only appears before setup is complete');
-        root.querySelector('[name="password"]').value = 'the-admin-password';
-        if (!setupComplete) root.querySelector('[name="contactEmail"]').value = 'contact@example.test';
-        await root.querySelector('form.admin-panel').fire('submit');
-        assert.deepEqual(calls, [{ password: 'the-admin-password', contactEmail: setupComplete ? '' : 'contact@example.test' }]);
-        assert.ok(!('email' in calls[0]), 'the administrator screen never sends the start-screen email');
+        const passwordInput = root.querySelector('[name="password"]');
+        passwordInput.value = 'the-admin-password';
+        assert.notEqual(root.querySelector('[name="email"]').required, true, 'email is optional on the password route');
+        await root.querySelector('form.start-panel').fire('submit');
+        assert.deepEqual(calls, [{ password: 'the-admin-password', contactEmail: setupComplete ? '' : 'someone@example.test' }]);
+        assert.ok(!('email' in calls[0]), 'the email never selects the administrator identity');
+        assert.equal(passwordInput.value, '');
+        assert.equal(storage.getItem(adapter.storageKey), saved, 'password submissions persist neither password nor contact email');
     }
 });
 
-test('an incorrect administrator password shows the administrator-specific error and stays usable', async () => {
+test('password sign-in works without an email and empty-password submissions keep normal email validation and discovery', async () => {
+    const calls = [];
+    const adapter = baseAdapter({ attempt: async () => wizardState({ adminPassword: true }),
+        adminLogin: async (args) => { calls.push(['admin', args]); },
+        discover: async (email) => { calls.push(['discover', email]); return { exists: true, methods: { emailCode: true } }; } });
+    const first = await mount({ adapter });
+    first.root.querySelector('[name="password"]').value = 'admin';
+    await first.root.querySelector('form.start-panel').fire('submit');
+    assert.deepEqual(calls, [['admin', { password: 'admin', contactEmail: '' }]]);
+
+    const storage = fakeStorage();
+    const second = await mount({ adapter, storage });
+    await second.root.querySelector('form.start-panel').fire('submit');
+    assert.equal(calls.length, 1, 'empty email and password must not submit either route');
+    assert.match(second.root.textContent, /valid email/);
+    second.root.querySelector('[name="email"]').value = 'member@example.test';
+    await second.root.querySelector('form.start-panel').fire('submit');
+    assert.deepEqual(calls.at(-1), ['discover', 'member@example.test']);
+    assert.match(h1(second.root).textContent, /Choose how to sign in/);
+    assert.deepEqual(JSON.parse(storage.getItem(adapter.storageKey)), { mode: 'login', email: 'member@example.test' });
+});
+
+test('an incorrect inline administrator password is cleared and leaves the unified form usable', async () => {
     const adapter = baseAdapter({ attempt: async () => wizardState({ adminPassword: true }),
         adminLogin: async () => { throw fail('authentication_failed'); } });
     const { root } = await mount({ adapter });
-    await button(root, 'Administrator sign-in').fire('click');
     root.querySelector('[name="password"]').value = 'wrong';
-    await root.querySelector('form.admin-panel').fire('submit');
+    await root.querySelector('form.start-panel').fire('submit');
     assert.match(root.textContent, /Unable to sign in with that administrator password\./);
+    assert.equal(root.querySelector('[name="password"]').value, '');
+    assert.equal(h1(root).textContent, 'Sign in');
     assert.equal(root.querySelector('button[type="submit"]').disabled, false);
 });
 
@@ -688,11 +803,15 @@ test('OIDC initialFailure action passkey-verify falls back to the start screen i
     assert.match(root.textContent, /Unable to use this passkey\./);
 });
 
-test('OIDC initialFailure action admin-login shows the administrator screen with the admin-specific error', async () => {
-    const adapter = baseAdapter({ flow: 'oidc', attempt: async () => wizardState({ adminPassword: true }),
+test('OIDC initialFailure action admin-login returns to the unified start form with an empty password and admin-specific error', async () => {
+    const adapter = baseAdapter({ flow: 'oidc', initialEmail: 'operator@example.test',
+        attempt: async () => wizardState({ adminPassword: true, setupComplete: false }),
         initialFailure: { code: 'authentication_failed', message: 'nope', action: 'admin-login' } });
     const { root } = await mount({ adapter });
-    assert.match(h1(root).textContent, /Administrator sign-in/);
+    assert.equal(h1(root).textContent, 'Sign in');
+    assert.ok(root.querySelector('form.start-panel'));
+    assert.equal(root.querySelector('[name="email"]').value, 'operator@example.test');
+    assert.equal(root.querySelector('[name="password"]').value, '');
     assert.match(root.textContent, /Unable to sign in with that administrator password\./);
 });
 
@@ -807,7 +926,8 @@ test('every input has an associated label and every screen has exactly one focus
     assert.equal(root.querySelectorAll('h1').length, 1);
     assert.equal(h1(root).focused, true);
     assertLabels(root);
-    await button(root, 'Administrator sign-in').fire('click');
+    root.querySelector('[name="email"]').value = 'new@example.test';
+    await root.querySelector('form.start-panel').fire('submit');
     assert.equal(root.querySelectorAll('h1').length, 1);
     assert.equal(h1(root).focused, true);
     assertLabels(root);
@@ -966,9 +1086,8 @@ test('real SSO adapter never navigates a delayed successful credential response 
             } }) };
             const { root } = await mount({ adapter: fixture.adapter, clock, credentials });
             if (method === 'admin') {
-                await button(root, 'Administrator sign-in').fire('click');
                 root.querySelector('[name="password"]').value = 'fixture-password';
-                await root.querySelector('form.admin-panel').fire('submit');
+                await root.querySelector('form.start-panel').fire('submit');
             } else {
                 root.querySelector('[name="email"]').value = 'member@example.test';
                 await root.querySelector('form.start-panel').fire('submit');
@@ -986,7 +1105,7 @@ test('real SSO adapter never navigates a delayed successful credential response 
             }
             assert.equal(typeof releaseVerify, 'function', 'the real adapter request is waiting for its response');
             if (method === 'email') await button(root, 'Cancel').fire('click');
-            else if (method === 'passkey') clock.advance(11_000);
+            else if (method === 'passkey' || method === 'admin') clock.advance(11_000);
             else await button(root, 'Back').fire('click');
             releaseVerify(handoff);
             await settle();
@@ -1043,7 +1162,6 @@ test('real OIDC adapter submits credential forms only after the wizard accepts t
             } });
             const { root } = await mount({ adapter: fixture.adapter });
             if (action === 'admin') {
-                await button(root, 'Administrator sign-in').fire('click');
                 root.querySelector('[name="password"]').value = 'fixture-password';
             } else {
                 root.querySelector('[name="email"]').value = 'member@example.test';

@@ -5,6 +5,7 @@ import { authGenerationOf, getUserByEmail, getUserById, sanitizeUser } from '../
 import { recordAudit } from '../audit.mjs';
 import { assertBrowserOriginAllowed } from '../policy.mjs';
 import { serialize, serializePersisted } from '../serial.mjs';
+import { assertLocalAuthenticationAllowed } from './production.mjs';
 
 const CHALLENGE_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_RP_NAME = 'UserPersisto';
@@ -506,6 +507,7 @@ async function verifyRegistration({ userId, attestation, challengeKey, origin })
 }
 
 export async function loginOptions({ email, origin = '', rpId = '', purpose = 'login' }) {
+    assertLocalAuthenticationAllowed();
     const user = await getUserByEmail(email);
     if (!user) {
         return { ok: false, reason: 'invalid_credentials' };
@@ -547,6 +549,7 @@ export async function loginOptions({ email, origin = '', rpId = '', purpose = 'l
 }
 
 export async function loginVerify({ email, assertion, challengeKey, origin = '', purpose = 'login' }, { includeCredentialProof = false } = {}) {
+    assertLocalAuthenticationAllowed();
     const user = await getUserByEmail(email);
     if (!user) {
         return { ok: false, reason: 'invalid_credentials' };
@@ -583,6 +586,7 @@ export async function loginVerify({ email, assertion, challengeKey, origin = '',
         let version;
         let authenticatedUser;
         await serialize(`webauthn-credential:${user.id}:${credentialId}`, () => serializePersisted('users', async () => {
+            assertLocalAuthenticationAllowed();
             authenticatedUser = await getUserById(user.id);
             if (!authenticatedUser || authenticatedUser.status !== 'active'
                 || authGenerationOf(authenticatedUser) !== authGenerationOf(user)

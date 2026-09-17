@@ -9,6 +9,7 @@ import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
 import * as passkey from '../lib/auth/passkey.mjs';
 import * as totp from '../lib/auth/totp.mjs';
 import { isAuthMethodEnabled } from '../lib/policy.mjs';
+import { googleOnlyAuthentication, assertLocalAuthenticationAllowed } from '../lib/auth/production.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
 import {
     assertSameOrigin,
@@ -62,6 +63,7 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
     // A browser whose completed response was lost can replay its own staged
     // handoff while that code is still unconsumed; otherwise it starts again.
     async function replay(req, requestId, state) {
+        if (googleOnlyAuthentication()) return null;
         const completion = await readCompletion({ flow: 'sso', id: requestId, browserProof: readBrowserProof(req) });
         if (!completion?.handoff || !(await isAuthCodeLive({ providerState: requestId, code: completion.handoff.code }))) return null;
         return { ...callbackPayload(completion.handoff, state), replayed: true };
@@ -73,7 +75,8 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
         const requestId = text(body, 'requestId', 128).trim();
         const state = text(body, 'state', 512);
         if (!requestId) throw fail('login_request_invalid', 400);
-        const emailAvailable = ['/service/auth/attempt', '/service/auth/discover', '/service/auth/email-code/start'].includes(path)
+        if (path !== '/service/auth/attempt' && path !== '/service/auth/attempt/cancel') assertLocalAuthenticationAllowed();
+        const emailAvailable = !googleOnlyAuthentication() && ['/service/auth/attempt', '/service/auth/discover', '/service/auth/email-code/start'].includes(path)
             && (await emailStatus()).available === true;
         await serialize(`sso-request:${requestId}`, async () => {
             let parent;
@@ -93,7 +96,7 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
             if (path === '/service/auth/attempt') {
                 const browserProof = ensureBrowserProof(req, res, cookie);
                 return sendJson(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable })),
-                    attempt: await attemptStatus({ parent, browserProof }) });
+                    attempt: googleOnlyAuthentication() ? null : await attemptStatus({ parent, browserProof }) });
             }
             if (path === '/service/auth/attempt/cancel') {
                 if (body.googleTransaction !== undefined) {

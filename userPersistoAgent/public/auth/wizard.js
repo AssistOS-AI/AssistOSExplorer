@@ -1,6 +1,6 @@
 import { publicKeyRequestFromServer } from './auth-api.js';
 
-// Protocol-agnostic passwordless sign-in wizard. Talks only to `adapter`
+// Protocol-agnostic sign-in wizard. Talks only to `adapter`
 // (see sso-adapter.js / oidc-adapter.js); every screen is rebuilt with
 // createElement/textContent and mounted with `root.replaceChildren(...)`.
 // Every async operation captures the transition epoch in effect when it
@@ -18,7 +18,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     let screen = 'loading';
     let mode = 'login';
     let email = '';
-    let config = { setupComplete: true, registration: false, methods: {}, adminPassword: false };
+    let config = { setupComplete: true, registration: false, methods: {}, adminPassword: false, googleOnly: false };
     let expiresAt = 0;
     let discovery = null;
     let challenge = null;
@@ -89,9 +89,9 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         auth_origin_topology_unavailable: 'The workspace authentication addresses are temporarily unavailable. Try again after the workspace is ready.',
         auth_origin_topology_invalid: 'The workspace authentication configuration is invalid. Contact the workspace administrator.',
     };
-    function errorMessage(error, { onAdminScreen = false } = {}) {
+    function errorMessage(error, { administratorPassword = false } = {}) {
         const code = (error && error.code) || '';
-        if (code === 'authentication_failed' && onAdminScreen) return 'Unable to sign in with that administrator password.';
+        if (code === 'authentication_failed' && administratorPassword) return 'Unable to sign in with that administrator password.';
         if (code === 'code_invalid') {
             const base = 'That code is not correct.';
             return Number.isSafeInteger(error.attemptsRemaining) ? `${base} ${error.attemptsRemaining} attempts left.` : base;
@@ -190,7 +190,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             } catch (error) {
                 if (stale(capturedEpoch)) return;
                 button.disabled = false;
-                onFailure('Unable to continue with Google. Try another sign-in method.');
+                onFailure(config.googleOnly ? 'Unable to continue with Google. Try again.' : 'Unable to continue with Google. Try another sign-in method.');
             }
         } }, [
             h('span', { className: 'google-icon', 'aria-hidden': 'true' }),
@@ -205,30 +205,51 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
 
     function showStart(initialError = '') {
         if (!config.registration) mode = 'login';
-        const form = h('form', { className: 'auth-panel start-panel' });
+        const form = h(config.googleOnly ? 'section' : 'form', { className: 'auth-panel start-panel' });
         const errorNode = status(initialError, { error: true });
-        const emailInput = h('input', { id: 'auth-email', name: 'email', type: 'email', autocomplete: 'email', required: true });
+        const emailInput = h('input', { id: 'auth-email', name: 'email', type: 'email', autocomplete: 'email', required: !config.adminPassword });
+        const passwordInput = config.adminPassword
+            ? h('input', { id: 'auth-admin-password', name: 'password', type: 'password', autocomplete: 'current-password', maxlength: '1024' })
+            : null;
+        const submitLabel = config.adminPassword ? (mode === 'register' && config.setupComplete ? 'Continue' : 'Sign in') : 'Next';
+        const submitButton = h('button', { type: 'submit', text: submitLabel });
         emailInput.value = email;
-        const children = [heading(mode === 'register' ? 'Create an account' : 'Sign in')];
+        const children = [heading(!config.googleOnly && mode === 'register' && (config.setupComplete || !config.adminPassword) ? 'Create an account' : 'Sign in')];
         if (!config.setupComplete) children.push(h('p', { className: 'auth-copy', text: 'This workspace is not set up yet. The first completed sign-in becomes its administrator.' }));
         if (adapter.clientName) children.push(h('p', { className: 'auth-copy' }, [h('span', { text: 'Continue to ' }), h('strong', { text: adapter.clientName })]));
         const notice = noticeStatus();
         if (notice) children.push(notice);
         if (config.methods.google) children.push(googleButton((message) => { errorNode.textContent = message; errorNode.setAttribute('role', 'alert'); }));
+        if (config.googleOnly) {
+            if (!config.methods.google) children.push(status('Google sign-in is not available right now.'));
+            children.push(errorNode);
+            if (typeof adapter.abort === 'function') children.push(h('button', { type: 'button', className: 'auth-link', text: 'Cancel', onClick: () => { showCompleting(); adapter.abort(); } }));
+            form.append(...children);
+            commit('start', form);
+            return;
+        }
         children.push(h('label', { for: 'auth-email', text: 'Email' }), emailInput);
-        children.push(h('button', { type: 'submit', text: 'Next' }));
+        if (passwordInput) children.push(h('label', { for: 'auth-admin-password', text: 'Admin password' }), passwordInput);
+        children.push(submitButton);
         children.push(errorNode);
-        if (config.registration) {
+        if (config.registration && (config.setupComplete || !config.adminPassword)) {
             children.push(mode === 'login'
                 ? h('p', { className: 'auth-switch' }, [h('span', { text: 'New here? ' }), h('button', { type: 'button', className: 'auth-link', text: 'Create an account', onClick: () => { mode = 'register'; email = emailInput.value.trim(); persist(); showStart(); } })])
                 : h('p', { className: 'auth-switch' }, [h('span', { text: 'Already have an account? ' }), h('button', { type: 'button', className: 'auth-link', text: 'Sign in', onClick: () => { mode = 'login'; email = emailInput.value.trim(); persist(); showStart(); } })]));
         }
-        if (config.adminPassword) children.push(h('button', { type: 'button', className: 'auth-link auth-admin-switch', text: 'Administrator sign-in', onClick: () => showAdmin() }));
         if (typeof adapter.abort === 'function') children.push(h('button', { type: 'button', className: 'auth-link', text: 'Cancel', onClick: () => { showCompleting(); adapter.abort(); } }));
         form.append(...children);
         form.addEventListener('submit', (event) => {
             event.preventDefault();
-            void beginDiscovery(emailInput.value.trim(), form);
+            if (submitButton.disabled) return;
+            if (passwordInput?.value) {
+                void submitAdmin(passwordInput, config.setupComplete ? null : emailInput, submitButton, errorNode);
+            } else if (!emailInput.value.trim()) {
+                errorNode.textContent = errorMessage({ code: 'invalid_email' });
+                emailInput.focus();
+            } else {
+                void beginDiscovery(emailInput.value.trim(), form);
+            }
         });
         commit('start', form);
     }
@@ -530,35 +551,12 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         }
     }
 
-    // ---- administrator ------------------------------------------------------
-    function showAdmin(initialError = '') {
-        const form = h('form', { className: 'auth-panel admin-panel' });
-        const errorNode = status(initialError, { error: true });
-        const passwordInput = h('input', { id: 'auth-admin-password', name: 'password', type: 'password', autocomplete: 'current-password', maxlength: '1024', required: true });
-        const contactInput = !config.setupComplete ? h('input', { id: 'auth-admin-contact', name: 'contactEmail', type: 'email', autocomplete: 'email' }) : null;
-        const verifyButton = h('button', { type: 'submit', text: 'Sign in' });
-        form.append(
-            heading('Administrator sign-in'),
-            h('p', { className: 'auth-copy', text: 'Enter the administrator password for this workspace.' }),
-            h('label', { for: 'auth-admin-password', text: 'Password' }),
-            passwordInput,
-        );
-        if (contactInput) {
-            form.append(h('label', { for: 'auth-admin-contact', text: 'Contact email (optional)' }), contactInput,
-                h('p', { className: 'auth-copy', text: 'You can verify this email later in My Account.' }));
-        }
-        form.append(verifyButton, errorNode, backButton(() => showStart()));
-        form.addEventListener('submit', (event) => {
-            event.preventDefault();
-            void submitAdmin(passwordInput, contactInput, verifyButton, errorNode);
-        });
-        commit('admin', form);
-    }
-
+    // ---- administrator password ---------------------------------------------
     async function submitAdmin(passwordInput, contactInput, verifyButton, errorNode) {
         const capturedEpoch = epoch;
         const password = passwordInput.value;
         const contactEmail = contactInput ? contactInput.value.trim() : '';
+        passwordInput.value = '';
         verifyButton.disabled = true;
         try {
             const result = await adapter.adminLogin({ password, contactEmail });
@@ -568,7 +566,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             passwordInput.value = '';
             if (handleGlobalError(error)) return;
             verifyButton.disabled = false;
-            errorNode.textContent = errorMessage(error, { onAdminScreen: true });
+            errorNode.textContent = errorMessage(error, { administratorPassword: true });
             errorNode.setAttribute('role', 'alert');
         }
     }
@@ -667,8 +665,8 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
                 return showStart(message);
             }
         }
-        if (failure.action === 'admin-login') return showAdmin(errorMessage(failure, { onAdminScreen: true }));
         mode = defaultMode();
+        if (failure.action === 'admin-login') return showStart(errorMessage(failure, { administratorPassword: true }));
         return showStart(errorMessage(failure));
     }
 
@@ -688,9 +686,14 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         }
         if (stale(capturedEpoch)) return;
         if (result.completed) { finish(capturedEpoch, result.handoff); return; }
-        config = { setupComplete: result.setupComplete, registration: result.registration, methods: result.methods || {}, adminPassword: result.adminPassword };
+        config = { setupComplete: result.setupComplete, registration: result.registration, methods: result.methods || {}, adminPassword: result.adminPassword, googleOnly: result.googleOnly === true };
         expiresAt = result.expiresAt;
         startTicking();
+        if (config.googleOnly) {
+            mode = 'login';
+            email = '';
+            return showStart(adapter.initialFailure ? errorMessage(adapter.initialFailure) : '');
+        }
         if (adapter.initialFailure) { await handleInitialFailure(adapter.initialFailure, adapter.initialEmail, result); return; }
         const liveChallenge = result.attempt && result.attempt.status === 'active' ? result.attempt.challenge : null;
         if (liveChallenge && !liveChallenge.expired) {

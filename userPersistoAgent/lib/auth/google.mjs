@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { getAuthPolicy } from '../policy.mjs';
+import { googleOnlyAuthentication } from './production.mjs';
 
 export const GOOGLE_ISSUER = 'https://accounts.google.com';
 export const GOOGLE_CALLBACK_PATH = '/service/auth/google/callback';
@@ -54,7 +55,7 @@ export async function getGoogleStatus() {
     return { enabled, configured: config.valid, available: enabled && config.valid,
         mode: config.mode, missing: config.missing, redirectUri: config.redirect?.href || '', clientId: config.clientId,
         secretRequired: false, configurationSource: config.configurationSource,
-        policySource: process.env.USERPERSISTO_AUTH_METHODS?.trim() ? 'environment' : 'stored-or-default',
+        policySource: googleOnlyAuthentication() ? 'production' : process.env.USERPERSISTO_AUTH_METHODS?.trim() ? 'environment' : 'stored-or-default',
         reason: !enabled ? 'disabled' : !config.valid ? 'configuration_incomplete' : 'ready' };
 }
 

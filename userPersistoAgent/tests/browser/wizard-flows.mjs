@@ -41,6 +41,20 @@ async function closeServer(server) {
     await new Promise((done) => server.close(done));
 }
 
+function attachRouterCallback(server) {
+    const handlers = server.listeners('request');
+    assert.equal(handlers.length, 1, 'The fixture wraps one real UserPersisto request handler.');
+    server.removeListener('request', handlers[0]);
+    server.on('request', (req, res) => {
+        if (req.method === 'GET' && new URL(req.url, 'http://fixture').pathname === '/auth/callback') {
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.end('<h1>Router callback</h1>');
+            return;
+        }
+        return handlers[0].call(server, req, res);
+    });
+}
+
 function latestCode(address) {
     const message = [...mail].reverse().find((entry) => entry.to === address);
     assert.ok(message, `A code must have been delivered to ${address}.`);
@@ -60,7 +74,7 @@ async function verifyDefaultAdministrator(browserErrors) {
     try {
         process.env.PERSISTENCE_FOLDER = persistence;
         process.env.USERPERSISTO_SETTINGS_KEY = 'first-admin-browser-fixture-settings-key';
-        for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS']) delete process.env[name];
+        for (const name of ['PROD', 'USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS']) delete process.env[name];
         await ensureSeedData();
         server = startService({ port: 0, host: '127.0.0.1' });
         if (!server.listening) await once(server, 'listening');
@@ -79,18 +93,26 @@ async function verifyDefaultAdministrator(browserErrors) {
                 await route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Router callback</h1>' });
             });
             await page.goto(`${origin}/service/auth/?requestId=${encodeURIComponent(request.providerState)}`);
-            await page.getByRole('button', { name: 'Administrator sign-in', exact: true }).click();
-            assert.equal(await page.locator('[name="contactEmail"]').count(), firstRun ? 1 : 0);
+            await page.getByLabel('Admin password', { exact: true }).waitFor();
+            assert.equal(await page.getByRole('button', { name: 'Administrator sign-in', exact: true }).count(), 0);
+            assert.equal(await page.locator('[name="contactEmail"]').count(), 0);
+            assert.equal(await page.locator('form').count(), 1);
+            const order = await page.locator('form.start-panel').evaluate((form) => [...form.children]
+                .filter((node) => ['BUTTON', 'LABEL', 'INPUT'].includes(node.tagName))
+                .map((node) => node.tagName === 'INPUT' ? node.name : node.textContent));
+            assert.deepEqual(order, ['Continue with Google', 'Email', 'email', 'Admin password', 'password', 'Sign in']);
             if (firstRun) {
                 await screenshot(page, '00-first-run-administrator');
-                await page.locator('[name="contactEmail"]').fill('operator@example.test');
-                await page.getByLabel('Password', { exact: true }).fill('incorrect');
-                await page.locator('form.admin-panel').getByRole('button', { name: 'Sign in', exact: true }).click();
+                await page.getByLabel('Email', { exact: true }).fill('operator@example.test');
+                await page.getByLabel('Admin password', { exact: true }).fill('incorrect');
+                await page.locator('form.start-panel').getByRole('button', { name: 'Sign in', exact: true }).click();
                 await page.getByText('Unable to sign in with that administrator password.', { exact: true }).waitFor();
+                assert.equal(await page.getByLabel('Admin password', { exact: true }).inputValue(), '');
+                assert.equal(await page.getByLabel('Email', { exact: true }).inputValue(), 'operator@example.test');
                 assert.equal((await getInstallationSetup()).complete, false);
             }
-            await page.getByLabel('Password', { exact: true }).fill('admin');
-            await page.locator('form.admin-panel').getByRole('button', { name: 'Sign in', exact: true }).click();
+            await page.getByLabel('Admin password', { exact: true }).fill('admin');
+            await page.locator('form.start-panel').getByRole('button', { name: 'Sign in', exact: true }).click();
             await page.getByRole('heading', { name: 'Router callback' }).waitFor();
             const signedIn = await consumeAuthCode({ providerState: request.providerState, code: callback.searchParams.get('code') });
             assert.deepEqual(signedIn.roles, ['admin']);
@@ -133,13 +155,16 @@ async function verify() {
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'wizard-browser-fixture-settings-key';
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
-    for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[name];
+    for (const name of ['PROD', 'USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_DEV_BOOTSTRAP']) delete process.env[name];
     await ensureSeedData();
     google = await controlledGoogleProvider();
     service = startService({ port: 0, host: '127.0.0.1' }, {
         google: { protocol: google.protocol },
         deliverEmail: async (message) => { mail.push(message); return { delivered: true, providerMessageId: 'browser-fixture' }; },
     });
+    // Google completes through an HTTP redirect chain. Playwright route hooks
+    // only intercept its first URL, so the fixture serves the Router callback.
+    attachRouterCallback(service);
     if (!service.listening) await once(service, 'listening');
     // The identity service is `localhost`; the application is `127.0.0.1`, a different site.
     const providerOrigin = `http://localhost:${service.address().port}`;
@@ -156,10 +181,10 @@ async function verify() {
         page.setDefaultTimeout(15_000);
         page.on('pageerror', (error) => browserErrors.push(`sso: ${error.message}`));
         let callback = null;
-        // No Router runs here: capture the handoff the page navigates to.
-        await page.route('**/auth/callback?**', async (route) => {
-            callback = new URL(route.request().url());
-            await route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Router callback</h1>' });
+        // Observe the handoff for both direct navigation and HTTP redirects.
+        page.on('request', (request) => {
+            const target = new URL(request.url());
+            if (request.isNavigationRequest() && target.origin === providerOrigin && target.pathname === '/auth/callback') callback = target;
         });
         await page.goto(`${providerOrigin}/service/auth/?requestId=${encodeURIComponent(request.providerState)}&state=router-core-state`);
         return { request, context, page, callback: () => callback };
@@ -168,6 +193,8 @@ async function verify() {
         await flow.page.getByRole('heading', { name: 'Router callback' }).waitFor();
         const target = flow.callback();
         assert.ok(target, 'The wizard must navigate to the stored Router callback.');
+        assert.equal(target.origin, providerOrigin);
+        assert.equal(target.pathname, '/auth/callback');
         assert.equal(target.searchParams.get('state'), 'router-core-state', 'The Router state must be preserved.');
         const consumed = await consumeAuthCode({ providerState: flow.request.providerState, code: target.searchParams.get('code') });
         await flow.context.close();
@@ -177,11 +204,11 @@ async function verify() {
     phase = 'SSO: first verified email signup claims the installation';
     let flow = await ssoPage();
     await flow.page.getByText('The first completed sign-in becomes its administrator').waitFor();
-    assert.equal(await flow.page.getByRole('button', { name: 'Administrator sign-in' }).isVisible(), true);
-    assert.equal(await flow.page.locator('input[type="password"]').count(), 0);
+    assert.equal(await flow.page.getByRole('button', { name: 'Administrator sign-in' }).count(), 0);
+    assert.equal(await flow.page.getByLabel('Admin password', { exact: true }).isVisible(), true);
     await screenshot(flow.page, '01-sso-first-run');
     await flow.page.getByRole('textbox', { name: 'Email' }).fill('owner@example.test');
-    await flow.page.getByRole('button', { name: 'Next', exact: true }).click();
+    await flow.page.locator('form.start-panel').getByRole('button', { name: 'Sign in', exact: true }).click();
     await flow.page.getByRole('textbox', { name: 'Code' }).waitFor();
     assert.equal((await getInstallationSetup()).complete, false, 'Requesting a code does not claim the installation.');
     assert.equal(await flow.page.getByRole('button', { name: /^Resend/ }).isDisabled(), true, 'Resend waits for the cooldown.');
@@ -194,7 +221,7 @@ async function verify() {
 
     phase = 'SSO: Login with an unknown email asks before registering';
     flow = await ssoPage();
-    assert.equal(await flow.page.getByRole('button', { name: 'Administrator sign-in' }).count(), 0, 'email-first accounts do not gain the default administrator password');
+    assert.equal(await flow.page.locator('input[type="password"]').count(), 0, 'email-first accounts do not gain the default administrator password');
     await flow.page.getByRole('textbox', { name: 'Email' }).fill('member@example.test');
     await flow.page.getByRole('button', { name: 'Next', exact: true }).click();
     await flow.page.getByRole('button', { name: 'Create account', exact: true }).waitFor();
@@ -324,7 +351,7 @@ async function verify() {
         token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], scope: 'openid email roles' }, { actorId: owner.user.id });
     config = await oidc.discovery(new URL(issuer), 'wizard-browser-regression', undefined, oidc.None(), { execute: [oidc.allowInsecureRequests] });
 
-    async function popup() {
+    async function popup({ googleOnly = false } = {}) {
         const context = await browser.newContext();
         await google.installBrowserSdk(context);
         const opener = await context.newPage();
@@ -333,7 +360,8 @@ async function verify() {
         const [page] = await Promise.all([context.waitForEvent('page'), opener.click('#open')]);
         page.setDefaultTimeout(15_000);
         page.on('pageerror', (error) => browserErrors.push(`oidc: ${error.message}`));
-        await page.getByRole('textbox', { name: 'Email' }).waitFor();
+        if (googleOnly) await page.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
+        else await page.getByRole('textbox', { name: 'Email' }).waitFor();
         return { context, page };
     }
 
@@ -402,15 +430,91 @@ async function verify() {
     assert.equal(completions.at(-1).sub, owner.user.id);
     await session.context.close();
 
-    assert.deepEqual(browserErrors, [], 'No page may raise an uncaught error.');
     const store = await getStore();
     assert.equal((await store.select('user')).totalCount, 2, 'Only the two completed sign-ups created accounts.');
-    output(`PASS Chromium ${browser.version()}: SSO fresh default-administrator signup with optional contact email, wrong-password rejection and returning sign-in; separate email-first signup without default-password activation, four transitions, canceled delayed verification, administrator email-code sign-in, controlled GIS cancellation notice; OIDC cross-site popup email code with SameSite=Strict browser binding, native failure re-render, TOTP failure Back to email, administrator email-code sign-in with separate consent. Screenshots: ${artifactRoot}`);
+
+    async function assertProductionStart(page, { googleAvailable = true } = {}) {
+        await page.locator('#auth_content h1').waitFor();
+        assert.equal(await page.locator('#auth_content input, #auth_content select, #auth_content form').count(), 0);
+        assert.equal(await page.locator('#auth_content button[type="submit"], #auth_content .auth-switch').count(), 0);
+        assert.equal(await page.getByRole('button', { name: 'Continue with Google', exact: true }).count(), googleAvailable ? 1 : 0);
+        assert.equal(await page.getByRole('button', { name: 'Create an account', exact: true }).count(), 0);
+        assert.equal(await page.getByRole('button', { name: 'Administrator sign-in', exact: true }).count(), 0);
+    }
+
+    phase = 'PROD: refreshing an active email flow exposes only Google';
+    flow = await ssoPage();
+    const pendingAddress = 'pending-production@example.test';
+    await flow.page.getByRole('textbox', { name: 'Email' }).fill(pendingAddress);
+    await flow.page.getByRole('button', { name: 'Next', exact: true }).click();
+    const pendingEmailResponse = flow.page.waitForResponse((response) => new URL(response.url()).pathname === '/service/auth/email-code/start'
+        && response.request().method() === 'POST');
+    await flow.page.getByRole('button', { name: 'Create account', exact: true }).click();
+    const pendingSent = await pendingEmailResponse;
+    assert.equal(pendingSent.status(), 200, `Pending production fixture email request returned HTTP ${pendingSent.status()}`);
+    await flow.page.getByRole('textbox', { name: 'Code' }).waitFor();
+    assert.equal(await getUserByEmail(pendingAddress), null, 'the pending registration creates no account');
+    process.env.PROD = 'false'; // Presence selects production, regardless of its text value.
+    await flow.page.reload();
+    await flow.page.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
+    await assertProductionStart(flow.page);
+    assert.equal(await flow.page.locator('#auth_content').innerText().then((text) => text.includes(pendingAddress)), false);
+    await screenshot(flow.page, '10-prod-google-only');
+    await flow.page.reload();
+    await flow.page.getByRole('button', { name: 'Continue with Google', exact: true }).waitFor();
+    await assertProductionStart(flow.page);
+
+    phase = 'PROD: Google cancellation keeps the Google-only screen and Google sign-in completes';
+    await flow.page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
+    phase = 'PROD: cancelling the live Google prompt';
+    await flow.page.getByRole('button', { name: 'Back to sign-in', exact: true }).click();
+    phase = 'PROD: displaying the Google cancellation notice';
+    await flow.page.getByText('Google sign-in was cancelled.').waitFor();
+    await assertProductionStart(flow.page);
+    phase = 'PROD: starting Google again after cancellation';
+    await flow.page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
+    phase = 'PROD: submitting the controlled Google credential';
+    await flow.page.getByRole('button', { name: 'Continue with test identity', exact: true }).click();
+    phase = 'PROD: completing the Google SSO callback';
+    const googleAccount = await finishSso(flow);
+    assert.equal(googleAccount.user.email, google.state.email);
+    assert.deepEqual(googleAccount.roles, ['selfRegistered']);
+
+    phase = 'PROD: OIDC uses Google only and still requires application consent';
+    session = await popup({ googleOnly: true });
+    await assertProductionStart(session.page);
+    await screenshot(session.page, '11-prod-oidc-google-only');
+    await session.page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
+    await session.page.getByRole('button', { name: 'Continue with test identity', exact: true }).click();
+    await session.page.getByRole('button', { name: 'Allow access', exact: true }).click();
+    await session.page.getByRole('heading', { name: 'Client completed' }).waitFor();
+    assert.equal(completions.at(-1).sub, googleAccount.user.id);
+    await session.context.close();
+
+    phase = 'PROD: unavailable Google exposes no fallback credentials';
+    process.env.PROD = '';
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = '';
+    flow = await ssoPage();
+    await flow.page.getByText('Google sign-in is not available right now.', { exact: true }).waitFor();
+    await assertProductionStart(flow.page, { googleAvailable: false });
+    await screenshot(flow.page, '12-prod-google-unavailable');
+    await flow.context.close();
+    assert.equal((await store.select('user')).totalCount, 3, 'Only the completed email and Google sign-ups create accounts.');
+    assert.deepEqual(browserErrors, [], 'No page may raise an uncaught error.');
+    output(`PASS Chromium ${browser.version()}: PROD absent exposes the combined Google/email/admin-password form and preserves SSO/OIDC email, password and authenticator flows; PROD present suppresses pending local flows after refresh, allows only Google through SSO and OIDC with separate consent, preserves cancellation errors, and exposes no fallback when Google is unavailable. Screenshots: ${artifactRoot}`);
 }
 
 try {
     await verify();
 } catch (error) {
+    let index = 0;
+    for (const context of browser?.contexts() || []) {
+        for (const page of context.pages()) {
+            if (page.isClosed()) continue;
+            await page.screenshot({ path: join(artifactRoot, `failure-page-${index++}.png`), fullPage: true,
+                mask: [page.locator('input, textarea')] }).catch(() => {});
+        }
+    }
     // Browser diagnostics may contain callback queries or form bodies; keep
     // this runner's output free of codes, cookies and tokens.
     console.error(`FAIL during ${phase}: ${error.code === 'ERR_ASSERTION' ? error.message.split('\n')[0] : error.name || 'browser or fixture operation failed'}`);

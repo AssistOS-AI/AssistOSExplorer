@@ -16,6 +16,7 @@ import { createSsoWizardHandlers } from './ssoWizard.mjs';
 import { getCanonicalLoginOrigin } from '../lib/auth/canonicalLoginOrigin.mjs';
 import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
+import { googleOnlyAuthentication } from '../lib/auth/production.mjs';
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 const MIME = {
@@ -114,7 +115,7 @@ async function serveStatic(res, relPath) {
 
 async function handleGet(req, res, path, { emailStatus }) {
     if (path === '/service/auth/methods') {
-        const emailAvailable = (await emailStatus()).available === true;
+        const emailAvailable = !googleOnlyAuthentication() && (await emailStatus()).available === true;
         const methods = (await getEnabledAuthMethods()).filter((method) => method !== 'emailCode' || emailAvailable);
         return sendJson(res, 200, {
             ok: true,
@@ -123,7 +124,7 @@ async function handleGet(req, res, path, { emailStatus }) {
         });
     }
     if (path === '/service/auth/setup') {
-        const configuration = await wizardConfiguration({ emailAvailable: (await emailStatus()).available === true });
+        const configuration = await wizardConfiguration({ emailAvailable: !googleOnlyAuthentication() && (await emailStatus()).available === true });
         const methods = (await getEnabledAuthMethods()).filter((method) => method !== 'emailCode' || configuration.methods.emailCode);
         return sendJson(res, 200, { ok: true, ...configuration, enabledAuthMethods: methods,
             defaultAuthMethod: methods[0] || '', googleAvailable: configuration.methods.google });

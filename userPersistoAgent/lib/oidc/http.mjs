@@ -15,6 +15,7 @@ import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, star
 import { readAttempt } from '../auth/emailAttempts.mjs';
 import { completeAdministratorPassword } from '../auth/adminPassword.mjs';
 import { wizardConfiguration } from '../auth/wizardConfig.mjs';
+import { googleOnlyAuthentication } from '../auth/production.mjs';
 import { ensureBrowserProof, rateSourceOf, readBrowserProof } from '../auth/browserBinding.mjs';
 import { getEmailAuthCodeStatus, sendAuthCode } from '../email-agent-client.mjs';
 import { cancelGoogleTransactionForParent } from '../../service/googleAuth.mjs';
@@ -174,7 +175,7 @@ function jsonFailure(res, error) {
 async function interactionRequest(req, res, issuer, provider, match, { google, deliverEmail, emailStatus }) {
     const [, uid, action = '', subaction = ''] = match;
     if (subaction && action !== 'google-resume') throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
-    const emailAvailable = (await emailStatus()).available === true;
+    const emailAvailable = !googleOnlyAuthentication() && (await emailStatus()).available === true;
     return serialize(`oidc-interaction:${uid}`, async () => {
         const interaction = await provider.interactionDetails(req, res);
         if (interaction.uid !== uid) throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
@@ -266,7 +267,8 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
             try {
                 if (action === 'attempt') {
                     const browserProof = ensureBrowserProof(req, res, cookie);
-                    return json(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable })), attempt: await attemptStatus({ parent, browserProof }) });
+                    return json(res, 200, { ok: true, expiresAt: parent.expiresAt, ...(await wizardConfiguration({ emailAvailable })),
+                        attempt: googleOnlyAuthentication() ? null : await attemptStatus({ parent, browserProof }) });
                 }
                 if (action === 'attempt-cancel') {
                     if (body.googleTransaction !== undefined) {
@@ -327,8 +329,9 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
                 amr = ['passkey'];
             }
             if (action === 'admin-login') {
+                attemptedEmail = field(body, 'contactEmail', 320);
                 const result = await completeAdministratorPassword({ password: field(body, 'password', 4096), rateSource,
-                    contactEmail: field(body, 'contactEmail', 320), validateParent });
+                    contactEmail: attemptedEmail, validateParent });
                 authenticated = { ok: true, user: result.user };
                 amr = ['pwd'];
             }

@@ -12,6 +12,7 @@ import * as passkey from './passkey.mjs';
 import * as totp from './totp.mjs';
 import { getGoogleStatus, GOOGLE_ISSUER } from './google.mjs';
 import { googleIdentityKey } from '../externalIdentities.mjs';
+import { googleOnlyAuthentication } from './production.mjs';
 
 // Sensitive My Account operations need fresh, explicit re-authentication. A
 // successful proof yields a single-use grant bound to the account, the one
@@ -229,6 +230,7 @@ export async function stageGrantConsumption({ userId, operation, grant }) {
     try { meta = JSON.parse(record.correlationId || '{}') || {}; } catch { meta = {}; }
     const user = await getUserById(userId);
     const valid = record.subject === userId && meta.operation === operation && GRANT_METHODS.has(meta.method) && Date.parse(record.expiresAt) > Date.now()
+        && (!googleOnlyAuthentication() || meta.method === 'google')
         && user?.status === 'active' && meta.generation === authGenerationOf(user);
     return {
         valid,

@@ -144,7 +144,7 @@ test('register + unknown claims the first administrator, then a second browser r
     const browser1 = new CookieBrowser();
     const wizard1 = mount(browser1, base, request1.providerState);
     try {
-        await waitForHeading(wizard1.root, /Create an account/); // unclaimed setup defaults to register mode
+        await waitForHeading(wizard1.root, /Sign in/); // unclaimed setup still uses registration for the email route
         wizard1.root.querySelector('[name="email"]').value = 'owner@example.test';
         wizard1.root.querySelector('form.start-panel').fire('submit');
         await waitForHeading(wizard1.root, /Enter the 6-digit code sent to owner@example\.test/);
@@ -222,20 +222,19 @@ test('register + existing email confirms into sign-in through the chooser and co
     }
 }));
 
-test('administrator sign-in on an unclaimed installation creates the email-less administrator', () => fixture(async ({ base }) => {
+test('the unified opening form submits password plus optional contact email to claim the administrator', () => fixture(async ({ base }) => {
     const password = setup.configureAdministratorPassword();
     const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     const browser = new CookieBrowser();
     const wizard = mount(browser, base, request.providerState);
     try {
-        await waitForHeading(wizard.root, /Create an account/); // still unclaimed
+        await waitForHeading(wizard.root, /Sign in/);
         assert.match(wizard.root.textContent, /This workspace is not set up yet\. The first completed sign-in becomes its administrator\./);
-        findButton(wizard.root, 'Administrator sign-in').fire('click');
-        await waitForHeading(wizard.root, /Administrator sign-in/);
-        assert.ok(wizard.root.querySelector('[name="contactEmail"]'), 'contact email is offered before setup is complete');
+        assert.equal(findButton(wizard.root, 'Administrator sign-in'), undefined);
+        assert.equal(wizard.root.querySelector('[name="contactEmail"]'), null);
         wizard.root.querySelector('[name="password"]').value = password;
-        wizard.root.querySelector('[name="contactEmail"]').value = 'ops@example.test';
-        wizard.root.querySelector('form.admin-panel').fire('submit');
+        wizard.root.querySelector('[name="email"]').value = 'ops@example.test';
+        wizard.root.querySelector('form.start-panel').fire('submit');
         await waitFor(() => wizard.navigated.length === 1);
         const authCode = callbackFromNavigation(wizard.navigated, base, request.providerState);
         const consumed = await consumeAuthCode({ providerState: request.providerState, code: authCode });

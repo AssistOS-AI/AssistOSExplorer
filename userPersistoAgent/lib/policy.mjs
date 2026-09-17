@@ -3,6 +3,7 @@ import { serialize } from './serial.mjs';
 import { withPersistenceScope } from './persistence-scope.mjs';
 import { getEmailAuthCodeStatus } from './email-agent-client.mjs';
 import { describeManagedRouterOrigins, resolveManagedRouterOrigins } from './auth/managedRouterOrigins.mjs';
+import { googleOnlyAuthentication } from './auth/production.mjs';
 
 // Ordinary accounts are passwordless. The installation administrator password
 // is a separate, single-account exception and never a policy method.
@@ -132,7 +133,7 @@ function storedFields(value) {
 
 function applyEnvironment(policy) {
     const merged = { ...policy };
-    const configuredMethods = environmentMethods();
+    const configuredMethods = googleOnlyAuthentication() ? ['google'] : environmentMethods();
     const configuredOrigins = envList('USERPERSISTO_ALLOWED_REDIRECT_ORIGINS');
     if (configuredMethods) merged.enabledAuthMethods = configuredMethods;
     if (configuredOrigins) merged.allowedRedirectOrigins = configuredOrigins;
@@ -143,8 +144,8 @@ function applyEnvironment(policy) {
 }
 
 export function environmentPolicyOverrides() {
-    return ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']
-        .filter((name) => String(process.env[name] || '').trim());
+    return ['PROD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']
+        .filter((name) => name === 'PROD' ? googleOnlyAuthentication() : String(process.env[name] || '').trim());
 }
 
 export async function getAuthPolicy() {
@@ -227,7 +228,7 @@ export async function usableSignInMethods(user, { store = null, policy = null, i
     if (!user || user.status !== 'active') return [];
     const persisto = store || await getStore();
     const effective = policy || await getAuthPolicy();
-    const enabled = effective.enabledAuthMethods;
+    const enabled = googleOnlyAuthentication() ? ['google'] : effective.enabledAuthMethods;
     const methods = [];
     if (includeAdministratorPassword) {
         const { administratorPasswordUsableFor } = await import('./auth/adminPassword.mjs');

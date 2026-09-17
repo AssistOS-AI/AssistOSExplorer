@@ -263,9 +263,16 @@ test('administrator sign-in completes through the interaction and the email-less
         await createOidcClient({ client_id: 'methods-client', redirect_uris: [redirectUri], token_endpoint_auth_method: 'none', scope: 'openid email' }, { actorId: administrator.id });
         const config = await oidcClient.discovery(new URL(issuer), 'methods-client', undefined, oidcClient.None(), { execute: [oidcClient.allowInsecureRequests, oidcClient.enableNonRepudiationChecks] });
         const flow = await begin(config);
-        const wrong = await flow.browser.post(`${flow.location}/admin-login`, { csrf: flow.csrf, password: 'not-the-configured-value' });
+        const wrong = await flow.browser.post(`${flow.location}/admin-login`, {
+            csrf: flow.csrf, password: 'not-the-configured-value', contactEmail: 'operator@example.test',
+        });
         assert.equal(wrong.status, 400);
-        assert.match(await wrong.text(), /data-server-failure/);
+        const failedHtml = await wrong.text();
+        assert.match(failedHtml, /data-server-failure/);
+        const failedConfig = JSON.parse(failedHtml.match(/<script[^>]+id="userpersisto-wizard-config"[^>]*>([^<]+)<\/script>/)?.[1] || 'null');
+        assert.equal(failedConfig?.email, 'operator@example.test', 'the unified error form retains the attempted contact address');
+        assert.equal(failedConfig?.failure?.action, 'admin-login');
+        assert.doesNotMatch(failedHtml, /not-the-configured-value/);
         const submitted = await flow.browser.post(`${flow.location}/admin-login`, { csrf: flow.csrf, password });
         assert.equal(submitted.status, 303, await submitted.clone().text());
         let location = submitted.headers.get('location');

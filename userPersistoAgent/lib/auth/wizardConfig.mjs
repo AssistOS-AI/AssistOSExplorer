@@ -2,6 +2,7 @@ import { getAuthPolicy } from '../policy.mjs';
 import { getInstallationSetup } from '../setup.mjs';
 import { getGoogleStatus } from './google.mjs';
 import { isAdministratorPasswordConfigured } from './adminPassword.mjs';
+import { googleOnlyAuthentication } from './production.mjs';
 
 // Public, secret-free presentation state shared by both protocol adapters.
 export async function wizardConfiguration({ emailAvailable = false } = {}) {
@@ -11,6 +12,7 @@ export async function wizardConfiguration({ emailAvailable = false } = {}) {
     const google = (await getGoogleStatus()).available;
     const registrationOpen = !setup.complete || policy.selfRegistrationEnabled;
     return {
+        googleOnly: googleOnlyAuthentication(),
         setupComplete: setup.complete,
         registration: registrationOpen && ((emailAvailable && enabled.includes('emailCode')) || google),
         methods: {

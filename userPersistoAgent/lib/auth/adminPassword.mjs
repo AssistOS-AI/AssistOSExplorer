@@ -8,6 +8,7 @@ import { getUserById, getUserRoles, sanitizeUser } from '../users.mjs';
 import { recordAudit } from '../audit.mjs';
 import { stageCredentialGenerationAdvance } from './generation.mjs';
 import { getEmailAuthCodeStatus } from '../email-agent-client.mjs';
+import { googleOnlyAuthentication } from './production.mjs';
 
 // Explicit protected configuration overrides the new-installation default.
 // A claimed store retains the default only if it was claimed with that method.
@@ -38,6 +39,7 @@ function adminError(code, statusCode, extra = {}) {
 }
 
 async function configuredPassword(store) {
+    if (googleOnlyAuthentication()) return { password: '', defaultPassword: false };
     let value = process.env[ADMIN_PASSWORD_VARIABLE];
     const defaultPassword = value === undefined;
     if (defaultPassword) {
@@ -82,6 +84,26 @@ export function syncAdministratorPasswordState() {
 
 async function syncLocked() {
     const store = await getStore();
+    if (googleOnlyAuthentication()) {
+        // Production suspends the credential without erasing its default-mode
+        // eligibility. Returning to local mode can restore that same account.
+        synced = null;
+        await serializePersisted('users', async () => {
+            const { record, state } = await readState(store);
+            if (!state || state.productionSuspended === true) return;
+            const setup = await readInstallationSetup(store);
+            const ownedCredential = state.defaultPassword !== true || setup.method === 'adminPassword';
+            const administrator = ownedCredential && setup.initialAdministratorId ? await getUserById(setup.initialAdministratorId) : null;
+            const updatedAt = new Date().toISOString();
+            await commitStagedPersistence(async () => {
+                await store.updateSystemSetting(record.id, { value: { ...state, productionSuspended: true,
+                    version: randomBytes(16).toString('hex'), updatedAt }, updatedAt, updatedBy: 'configuration' });
+                if (administrator) await stageCredentialGenerationAdvance(administrator.id);
+                await recordAudit({ actorId: 'configuration', action: 'auth.adminPassword.suspended', target: administrator?.id || '' }, { save: false });
+            });
+        });
+        return null;
+    }
     const { password, defaultPassword } = await configuredPassword(store);
     const digest = password ? createHash('sha256').update(JSON.stringify([password, defaultPassword])).digest('hex') : '';
     if (synced && synced.store === store && synced.digest === digest) return synced.state;
@@ -90,7 +112,7 @@ async function syncLocked() {
     return serializePersisted('users', async () => {
         const { record, state: current } = await readState(store);
         let next = current;
-        if (password && (!current || (current.defaultPassword === true) !== defaultPassword || !verifyPassword(password, current.passwordHash))) {
+        if (password && (!current || current.productionSuspended === true || (current.defaultPassword === true) !== defaultPassword || !verifyPassword(password, current.passwordHash))) {
             next = { passwordHash: hashPassword(password), version: randomBytes(16).toString('hex'), defaultPassword, updatedAt: new Date().toISOString() };
         } else if (!password) {
             next = null;

@@ -5,6 +5,7 @@ import { authGenerationOf, getUserById, getUserByEmail, getUserRoles, hasVerifie
 import { prepareNewAccount, readInstallationSetup } from '../setup.mjs';
 import { recordAudit } from '../audit.mjs';
 import { sendAuthCode } from '../email-agent-client.mjs';
+import { assertLocalAuthenticationAllowed } from './production.mjs';
 import {
     attemptError,
     cancelAttempt,
@@ -48,6 +49,7 @@ async function methodsFor(user, policy, emailAvailable) {
 // Minimal discovery: existence and usable local method types only. No
 // credential names, identifiers, counts, timestamps, roles or Google linkage.
 export async function discoverAccount({ parent, email, rateSource, validateParent, emailAvailable = false }) {
+    assertLocalAuthenticationAllowed();
     let normalized;
     try { normalized = normalizeEmail(email); } catch { throw attemptError('invalid_email'); }
     if (validateParent) await validateParent();
@@ -74,6 +76,7 @@ async function precheckPurpose(purpose, email) {
 }
 
 export async function startEmailSignIn({ parent, browserProof, email, purpose, rateSource, resend = false, validateParent, deliver = sendAuthCode }) {
+    assertLocalAuthenticationAllowed();
     if (validateParent) await validateParent();
     const issued = await issueChallenge({ parent, browserProof, email, purpose, rateSource, resend,
         precheck: (normalized) => precheckPurpose(purpose, normalized) });
@@ -100,6 +103,7 @@ export function cancelSignIn({ parent, browserProof }) {
 // the same commit, so a lost response can replay it for this browser/parent.
 export function completeEmailSignIn({ parent, browserProof, code, validateParent, prepareHandoff }) {
     return serializePersisted('users', async () => {
+        assertLocalAuthenticationAllowed();
         if (validateParent) await validateParent();
         const store = await getStore();
         const checked = await checkChallengeCode({ parent, browserProof, code });
