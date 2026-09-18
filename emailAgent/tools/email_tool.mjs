@@ -3,6 +3,7 @@ import { getSettings, saveSettings, getSecret } from '../lib/settings.mjs';
 import { sendText, sendTemplate, providerStatus } from '../lib/mailjet.mjs';
 import { assertEmailToolAuthorized, authInfoFromEnvelope } from './invocation-context.mjs';
 import { authCodeMessage } from '../lib/authCodeMessage.mjs';
+import { passwordResetMessage } from '../lib/passwordResetMessage.mjs';
 
 const chunks = [];
 for await (const chunk of stdin) chunks.push(chunk);
@@ -34,6 +35,13 @@ const HANDLERS = {
         const result = templateId
             ? await sendTemplate({ to: args.to, templateId, variables: message.variables })
             : await sendText({ to: args.to, subject: message.subject, text: message.text });
+        return { providerMessageId: result.providerMessageId, correlationId: args.correlationId || '' };
+    },
+    email_send_password_reset: async () => {
+        const message = passwordResetMessage({ resetUrl: args.resetUrl, expiresInMinutes: args.expiresInMinutes });
+        // A single-use link must reach the recipient unchanged, never through a tracking redirect.
+        const result = await sendText({ to: args.to, subject: message.subject, text: message.text, html: message.html,
+            trackClicks: 'disabled', trackOpens: 'disabled' });
         return { providerMessageId: result.providerMessageId, correlationId: args.correlationId || '' };
     },
 };

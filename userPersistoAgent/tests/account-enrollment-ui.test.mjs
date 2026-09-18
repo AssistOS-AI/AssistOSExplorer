@@ -388,6 +388,38 @@ test('disabled methods, browser limitations and an unverified sign-in email bloc
     assert.match(widget.passkeyStatus.textContent, /secure address/);
 });
 
+test('an unverified account that already owns a password can change it while other enrollment stays blocked', async () => {
+    const calls = [];
+    const { widget } = fixture({ callTool: tools(async (name) => {
+        assert.equal(name, 'password_set');
+        return { ok: true, changed: true };
+    }, calls), onEnrolled: async () => {} });
+    widget.updateProfile(passwordProfile(true, { emailVerified: false, user: { id: 'direct-1', email: 'direct@example.test' } }));
+    assert.match(widget.passwordStatus.textContent, /A password is set for this account\./);
+    assert.equal(widget.passwordButton.textContent, 'Change password');
+    assert.equal(widget.passwordButton.disabled, false);
+    assert.match(widget.passkeyStatus.textContent, /Verify a sign-in email first/);
+    assert.match(widget.totpStatus.textContent, /Verify a sign-in email first/);
+    assert.equal(widget.passkeyButton.disabled, true);
+    assert.equal(widget.totpButton.disabled, true);
+
+    await widget.startPassword();
+    assert.equal(widget.reauthForm.hidden, false);
+    assert.equal(widget.reauthTitle.textContent, 'Confirm it is you to change your password');
+    widget.reauthPasswordInput.value = CURRENT_PASSWORD;
+    await widget.submitConfirmation();
+    assert.deepEqual(calls.filter((call) => call.name === 'reauth_verify').map((call) => call.args),
+        [{ operation: 'password.set', method: 'password', password: CURRENT_PASSWORD }]);
+    assert.equal(widget.passwordForm.hidden, false);
+    assert.equal(widget.passwordTitle.textContent, 'Change password');
+    widget.passwordInput.value = NEW_PASSWORD;
+    widget.passwordConfirmInput.value = NEW_PASSWORD;
+    await widget.savePassword();
+    assert.match(widget.status.textContent, /^Password changed\. Every session is signed out, including this one/);
+    assert.equal(widget.passwordInput.value, '');
+    assert.equal(widget.passwordConfirmInput.value, '');
+});
+
 test('an account without a verified sign-in email proves its contact address after confirmation', async () => {
     const calls = [];
     let refreshed = 0;

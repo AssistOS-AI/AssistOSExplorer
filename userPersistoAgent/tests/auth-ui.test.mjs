@@ -471,6 +471,85 @@ test('S2 failures keep the screen with neutral or wait copy and an empty passwor
     }
 });
 
+// ==== S2 forgot password =====================================================
+
+test('S2 offers Forgot password only when the password is usable and reset delivery is configured', async () => {
+    const enabled = await toPassword({ adapter: { attempt: async () => wizardState({ passwordReset: true }) } });
+    assert.equal(hasButton(enabled.root, 'Forgot password?'), true);
+    const disabled = await toPassword({ adapter: { attempt: async () => wizardState({ passwordReset: false }) } });
+    assert.equal(hasButton(disabled.root, 'Forgot password?'), false);
+    // Unusable password for this account: no disabled control, no reason text.
+    const unusable = await toPassword({ adapter: { attempt: async () => wizardState({ passwordReset: true }),
+        discover: async () => ({ exists: true, methods: { password: false, emailCode: true, passkey: false, totp: false } }) } });
+    assert.equal(button(unusable.root, 'Log in').disabled, true);
+    assert.equal(hasButton(unusable.root, 'Forgot password?'), false);
+    assert.doesNotMatch(unusable.root.textContent, /Forgot password/);
+});
+
+test('S2 never offers Forgot password for an unknown address on an unclaimed installation', async () => {
+    const { root } = await toPassword({ adapter: {
+        attempt: async () => wizardState({ setupComplete: false, initialPasswordSetup: true, passwordReset: true }),
+        discover: async () => ({ ...UNKNOWN, initialPasswordSetup: true }),
+    } });
+    assert.equal(h1(root).textContent, 'Enter your password');
+    assert.equal(button(root, 'Log in').disabled, false, 'the initial admin password stays usable');
+    assert.equal(hasButton(root, 'Forgot password?'), false);
+});
+
+test('S8 shows a refused Send again on the Check your email screen', async () => {
+    let calls = 0;
+    const mounted = await toPassword({ adapter: { attempt: async () => wizardState({ passwordReset: true }),
+        forgotPassword: async () => { calls += 1; if (calls > 1) throw fail('rate_limited', { retryAfter: 42 }); return { ok: true }; } } });
+    await button(mounted.root, 'Forgot password?').fire('click');
+    await mounted.root.querySelector('form.forgot-email-panel').fire('submit');
+    assert.equal(h1(mounted.root).textContent, 'Check your email');
+    mounted.clock.advance(60_000);
+    const sendAgain = mounted.root.querySelectorAll('button').find((node) => node.textContent.startsWith('Send again'));
+    await sendAgain.fire('click');
+    assert.equal(calls, 2);
+    assert.equal(h1(mounted.root).textContent, 'Check your email');
+    assert.equal(alertText(mounted.root), 'Too many attempts. Wait 42 s and try again.');
+    assert.equal(sendAgain.disabled, false);
+});
+
+test('S7 sends the reset link for the read-only email and S8 waits with a 60-second Send again counter', async () => {
+    const calls = [];
+    const mounted = await toPassword({ adapter: { attempt: async () => wizardState({ passwordReset: true }),
+        forgotPassword: async (args) => { calls.push(args); return { ok: true }; } } });
+    await button(mounted.root, 'Forgot password?').fire('click');
+    assert.equal(h1(mounted.root).textContent, 'Reset your password');
+    const emailField = mounted.root.querySelector('#auth-forgot-email');
+    assert.deepEqual([emailField.value, emailField.readonly, emailField.autocomplete], ['member@example.test', true, 'username']);
+    assert.match(mounted.root.textContent, /We will email a link to choose a new password\./);
+    await mounted.root.querySelector('form.forgot-email-panel').fire('submit');
+    assert.deepEqual(calls, [{ email: 'member@example.test' }]);
+    assert.equal(h1(mounted.root).textContent, 'Check your email');
+    assert.match(mounted.root.textContent, /If member@example\.test can reset its password here, a link is on its way\. It expires in 30 minutes\./);
+    const sendAgain = mounted.root.querySelectorAll('button').find((node) => node.textContent.startsWith('Send again'));
+    assert.ok(sendAgain, 'Send again is rendered');
+    assert.equal(sendAgain.disabled, true, 'the cooldown starts immediately');
+    assert.match(sendAgain.textContent, /Send again in \d+ s/);
+    mounted.clock.advance(60_000);
+    assert.equal(sendAgain.disabled, false);
+    assert.equal(sendAgain.textContent, 'Send again');
+    await sendAgain.fire('click');
+    assert.equal(calls.length, 2);
+    assert.equal(h1(mounted.root).textContent, 'Check your email');
+    await button(mounted.root, 'Back to sign in').fire('click');
+    assert.equal(h1(mounted.root).textContent, 'Sign in');
+});
+
+test('S7 and S8 surface a delivery failure with the shared copy and keep the email', async () => {
+    const mounted = await toPassword({ adapter: { attempt: async () => wizardState({ passwordReset: true }),
+        forgotPassword: async () => { throw fail('delivery_failed'); } } });
+    await button(mounted.root, 'Forgot password?').fire('click');
+    await mounted.root.querySelector('form.forgot-email-panel').fire('submit');
+    assert.equal(h1(mounted.root).textContent, 'Reset your password');
+    assert.equal(alertText(mounted.root), 'We could not send the email. Try again later.');
+    assert.equal(mounted.root.querySelector('#auth-forgot-email').value, 'member@example.test');
+    assert.equal(button(mounted.root, 'Send reset link').disabled, false);
+});
+
 // ==== S3 alternatives =========================================================
 
 test('S3 always lists the three alternatives in order with policy, browser and account reasons', async () => {
@@ -620,6 +699,64 @@ test('S5 disables inputs in flight, empties them on the response and never keeps
     const policy = await toSignupPassword({ startSignup: async () => { throw fail('invalid_password', { reason: 'too_common' }); } });
     await createAccount(policy.root, 'passwordpassword1');
     assert.equal(alertText(policy.root), 'Choose a password that is harder to guess.');
+});
+
+// ==== S5 default (unverified) direct signup =================================
+
+function directState() {
+    return wizardState({ signup: { email: true, google: false, verification: 'none' } });
+}
+
+test('S5 in default mode explains that no verification is needed and Create account signs in directly', async () => {
+    const calls = [];
+    let completed = null;
+    const mounted = await toSignupPassword({
+        attempt: async () => directState(),
+        createSignup: async (args) => { calls.push(args); return { code: 'handoff-code', redirectUri: 'https://workspace.example/auth/callback', state: 'state-1' }; },
+        startSignup: async () => assert.fail('default mode must not stage a verified signup'),
+        complete: (result) => { completed = result; },
+    });
+    assert.match(mounted.root.textContent, /No email verification is needed now\. You can verify your email later from My Account\./);
+    await createAccount(mounted.root, 'a long enough password');
+    assert.deepEqual(calls, [{ email: 'new@example.test', password: 'a long enough password', passwordConfirmation: 'a long enough password' }]);
+    assert.equal(h1(mounted.root).textContent, 'Signing you in…');
+    assert.deepEqual(completed, { code: 'handoff-code', redirectUri: 'https://workspace.example/auth/callback', state: 'state-1' });
+});
+
+test('S5 default mode uses the OIDC signup-create native completion and never shows the code screen', async () => {
+    const completions = [];
+    const mounted = await toSignupPassword({
+        flow: 'oidc', clientName: 'Explorer', abort: () => {},
+        attempt: async () => directState(),
+        createSignup: ({ email, password, passwordConfirmation }) => ({ action: 'signup-create', fields: { email, password, passwordConfirmation } }),
+        startSignup: async () => assert.fail('default mode must not stage a verified signup'),
+        complete: (result) => { completions.push(result); },
+    });
+    assert.match(mounted.root.textContent, /No email verification is needed now\./);
+    await createAccount(mounted.root, 'a long enough password');
+    assert.equal(h1(mounted.root).textContent, 'Signing you in…');
+    assert.deepEqual(completions, [{ action: 'signup-create', fields: {
+        email: 'new@example.test', password: 'a long enough password', passwordConfirmation: 'a long enough password' } }]);
+});
+
+test('S5 in required mode keeps the verified code screen and no direct-completion line', async () => {
+    const mounted = await toSignupPassword({ attempt: async () => wizardState({ signup: { email: true, google: false, verification: 'required' } }) });
+    assert.doesNotMatch(mounted.root.textContent, /No email verification is needed/);
+    await createAccount(mounted.root, 'a long enough password');
+    assert.equal(h1(mounted.root).textContent, 'Enter the 6-digit code sent to new@example.test');
+});
+
+test('a policy change to required verification restores S5 with the copy without keeping the password', async () => {
+    let attempts = 0;
+    const mounted = await toSignupPassword({
+        attempt: async () => (++attempts === 1 ? directState() : wizardState({ signup: { email: true, google: false, verification: 'required' } })),
+        createSignup: async () => { throw fail('signup_verification_required'); },
+    });
+    await createAccount(mounted.root, 'a long enough password');
+    assert.equal(h1(mounted.root).textContent, 'Create your password');
+    assert.equal(alertText(mounted.root), 'Email verification is now required. Choose your password again to continue.');
+    assert.doesNotMatch(mounted.root.textContent, /No email verification is needed/, 'the reloaded configuration shows required mode');
+    assert.deepEqual([...mounted.root.querySelectorAll('input[type="password"]')].map((input) => input.value), ['', '']);
 });
 
 // ==== S6 verification and delivery states ==================================
@@ -1047,6 +1184,17 @@ test('OIDC failures reopen S2 for password-login and S6 for signup-verify with e
     assert.equal(h1(totp.root).textContent, 'Try another way');
 });
 
+test('an OIDC signup-create failure re-renders S5 with the attempted email and empty passwords', async () => {
+    const mounted = await mount({ adapter: baseAdapter({ flow: 'oidc', initialEmail: 'stuck@example.test',
+        initialFailure: { action: 'signup-create', code: 'password_mismatch', message: 'The passwords do not match.' },
+        attempt: async () => directState() }) });
+    assert.equal(h1(mounted.root).textContent, 'Create your password');
+    assert.equal(mounted.root.querySelector('#auth-signup-email').value, 'stuck@example.test');
+    assert.equal(alertText(mounted.root), 'The passwords do not match.');
+    assert.deepEqual([...mounted.root.querySelectorAll('input[type="password"]')].map((input) => input.value), ['', '']);
+    assertLabels(mounted.root);
+});
+
 test('a Google notice is a non-error status and the wizard stays usable', async () => {
     const { root } = await mount({ adapter: baseAdapter({ notice: 'google-denied', attempt: async () => wizardState({ methods: { ...ALL_METHODS, google: true } }) }) });
     const notice = root.querySelectorAll('.status').find((node) => node.textContent === 'Google did not complete sign-in.');
@@ -1090,7 +1238,9 @@ test('SSO adapter request bodies match the documented shape for every operation'
         : { ok: true, code: 'c', redirectUri: 'https://workspace.example:9443/auth/callback', state: 'state-1', challenge: signupChallenge() }) });
     await adapter.cancel();
     await adapter.passwordLogin({ email: 'a@example.test', password: 'a password value' });
+    await adapter.forgotPassword({ email: 'a@example.test' });
     await adapter.startSignup({ email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' });
+    await adapter.createSignup({ email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' });
     await adapter.resendSignup();
     await adapter.changeSignupEmail('b@example.test');
     await adapter.verifySignup('246810');
@@ -1102,7 +1252,9 @@ test('SSO adapter request bodies match the documented shape for every operation'
     const byPath = (path) => calls.filter((call) => new URL(call.url).pathname === `/prefix/service/auth/${path}`).map((call) => call.body);
     assert.deepEqual(byPath('attempt/cancel'), [{ requestId: 'req-1' }]);
     assert.deepEqual(byPath('password/login'), [{ requestId: 'req-1', state: 'state-1', email: 'a@example.test', password: 'a password value' }]);
+    assert.deepEqual(byPath('password/forgot'), [{ requestId: 'req-1', email: 'a@example.test' }]);
     assert.deepEqual(byPath('signup/start'), [{ requestId: 'req-1', email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' }]);
+    assert.deepEqual(byPath('signup/create'), [{ requestId: 'req-1', state: 'state-1', email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' }]);
     assert.deepEqual(byPath('signup/resend'), [{ requestId: 'req-1' }]);
     assert.deepEqual(byPath('signup/email'), [{ requestId: 'req-1', email: 'b@example.test' }]);
     assert.deepEqual(byPath('signup/verify'), [{ requestId: 'req-1', state: 'state-1', code: '246810' }]);
@@ -1170,6 +1322,7 @@ test('OIDC adapter JSON actions post form-urlencoded bodies with the csrf token 
     await adapter.attempt();
     await adapter.cancel();
     await adapter.discover('a@example.test');
+    await adapter.forgotPassword({ email: 'a@example.test' });
     await adapter.startSignup({ email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' });
     await adapter.resendSignup();
     await adapter.changeSignupEmail('b@example.test');
@@ -1181,6 +1334,7 @@ test('OIDC adapter JSON actions post form-urlencoded bodies with the csrf token 
     assert.deepEqual(byAction('attempt'), [{ csrf: 'csrf-token' }]);
     assert.deepEqual(byAction('attempt-cancel'), [{ csrf: 'csrf-token' }]);
     assert.deepEqual(byAction('discover'), [{ csrf: 'csrf-token', email: 'a@example.test' }]);
+    assert.deepEqual(byAction('password-forgot'), [{ csrf: 'csrf-token', email: 'a@example.test' }]);
     assert.deepEqual(byAction('signup-start'), [{ csrf: 'csrf-token', email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' }]);
     assert.deepEqual(byAction('signup-resend'), [{ csrf: 'csrf-token' }]);
     assert.deepEqual(byAction('signup-email'), [{ csrf: 'csrf-token', email: 'b@example.test' }]);
@@ -1197,6 +1351,10 @@ test('OIDC adapter native completions build real forms with the exact action and
     assert.deepEqual([form.tagName, form.getAttribute('method'), form.getAttribute('action'), form.submitted],
         ['FORM', 'post', 'https://issuer.example/service/oidc/interaction/abc123/password-login', true]);
     assert.deepEqual(formFields(form), { csrf: 'csrf-token', email: 'a@example.test', password: 'a password value' });
+    adapter.complete(adapter.createSignup({ email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' }));
+    form = body.children.at(-1);
+    assert.equal(form.getAttribute('action'), 'https://issuer.example/service/oidc/interaction/abc123/signup-create');
+    assert.deepEqual(formFields(form), { csrf: 'csrf-token', email: 'a@example.test', password: 'a password value', passwordConfirmation: 'a password value' });
     adapter.complete(adapter.verifySignup('246810'));
     form = body.children.at(-1);
     assert.equal(form.getAttribute('action'), 'https://issuer.example/service/oidc/interaction/abc123/signup-verify');

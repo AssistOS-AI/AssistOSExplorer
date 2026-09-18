@@ -162,28 +162,39 @@ function requireEmailCodeCommand(purpose) {
   }
 }
 
-// Signs up an unknown email through Sign up, Create your password and the
-// emailed verification code, then follows the automatic sign-in.
+// Signs up an unknown email through Sign up and Create your password. Under
+// the default policy the account is created and signed in by **Create
+// account** directly; when the workspace requires email verification the same
+// click opens the code screen, whose code comes from SMOKE_EMAIL_CODE_COMMAND.
 async function signUpThroughUserPersisto(page, content, { email, password, timeout, codeCommandRunner }) {
-  requireEmailCodeCommand('the sign-up verification code');
   const baseline = await currentEmailCode(email, codeCommandRunner);
   await content.getByRole('button', { name: 'Sign up', exact: true }).click();
   const passwordInput = content.locator('input[name="password"]');
   await passwordInput.waitFor({ state: 'visible', timeout });
   await passwordInput.fill(password);
   await content.locator('input[name="passwordConfirmation"]').fill(password);
-  await content.getByRole('button', { name: 'Create account', exact: true }).click();
   const codeInput = content.locator('input[name="code"]');
   const refusal = content.locator('[role="alert"]').filter({ hasText: /\S/ }).first();
   const collision = content.getByRole('heading', { name: 'Log in instead?', exact: true });
-  await codeInput.or(refusal).or(collision).first().waitFor({ state: 'visible', timeout });
-  if (await collision.isVisible()) throw new Error('An account already uses the configured sign-up email.');
-  if (await refusal.isVisible()) {
+  const navigated = page.waitForNavigation({ waitUntil: 'load', timeout }).then(() => 'navigated');
+  navigated.catch(() => {});
+  const refused = refusal.waitFor({ state: 'visible', timeout }).then(() => 'refusal');
+  const collided = collision.waitFor({ state: 'visible', timeout }).then(() => 'collision');
+  const codeScreen = codeInput.waitFor({ state: 'visible', timeout }).then(() => 'code');
+  refused.catch(() => {});
+  collided.catch(() => {});
+  codeScreen.catch(() => {});
+  await content.getByRole('button', { name: 'Create account', exact: true }).click();
+  const outcome = await Promise.race([navigated, refused, collided, codeScreen]);
+  if (outcome === 'navigated') return;
+  if (outcome === 'collision') throw new Error('An account already uses the configured sign-up email.');
+  if (outcome === 'refusal') {
     throw new Error(`UserPersisto refused the sign-up: ${String(await refusal.textContent() || '').trim()}`);
   }
   if (await content.getByRole('button', { name: 'Send again', exact: true }).isVisible()) {
     throw new Error('BLOCKED: UserPersisto could not send the sign-up verification code.');
   }
+  requireEmailCodeCommand('the sign-up verification code');
   const code = await readEmailCode(email, { after: baseline, ...(codeCommandRunner ? { run: codeCommandRunner } : {}) });
   await codeInput.fill(code);
   await completeThroughWizard(page, content, content.getByRole('button', { name: 'Verify', exact: true }), timeout);

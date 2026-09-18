@@ -75,6 +75,13 @@ export function createOidcAdapter({ config, document, fetch, navigate, closeWind
         startSignup({ email, password, passwordConfirmation }) {
             return postJson('signup-start', { email, password, passwordConfirmation });
         },
+        // Direct signup is a native completion, like password login.
+        createSignup({ email, password, passwordConfirmation }) {
+            return { action: 'signup-create', fields: { email, password, passwordConfirmation } };
+        },
+        forgotPassword({ email }) {
+            return postJson('password-forgot', { email });
+        },
         // Retries carry no password: the server keeps the staged verifier.
         resendSignup() {
             return postJson('signup-resend');

@@ -7,7 +7,7 @@ import { authGenerationOf, getUserById, hasVerifiedMailbox } from '../users.mjs'
 import { sendAuthCode } from '../email-agent-client.mjs';
 import { attemptError } from './emailAttempts.mjs';
 import { cancelAccountCode, checkAccountCode, sendAccountCode } from './accountCodes.mjs';
-import { assertPasswordProof, verifyAccountPassword } from './userPassword.mjs';
+import { assertPasswordProof, readPasswordCredential, verifyAccountPassword } from './userPassword.mjs';
 import * as passkey from './passkey.mjs';
 import * as totp from './totp.mjs';
 import { getGoogleStatus, GOOGLE_ISSUER } from './google.mjs';
@@ -52,13 +52,18 @@ async function activeUser(userId) {
 }
 
 // Password, passkey and authenticator sign-in are reached through the account's
-// sign-in email, so they are enrolled only once a verified mailbox exists.
-// Contact verification exists only for an account without one (no email replacement).
-export function assertOperationAllowed(user, operation) {
-    if (['passkey.register', 'totp.enroll', 'password.set'].includes(operation) && !hasVerifiedMailbox(user)) {
+// sign-in email, so they are enrolled only once a verified mailbox exists. An
+// unverified account that already owns a usable password may still change it:
+// the password is the only credential such an account can hold, and a reset
+// replaces it. Contact verification exists only for an account without one
+// (no email replacement).
+export async function assertOperationAllowedFor(store, user, operation) {
+    const verified = hasVerifiedMailbox(user);
+    if (!verified && ['passkey.register', 'totp.enroll'].includes(operation)) throw grantError('verified_email_required', 409);
+    if (!verified && operation === 'password.set' && !(await readPasswordCredential(store, user.id))?.usable) {
         throw grantError('verified_email_required', 409);
     }
-    if (operation === 'contact.verify' && hasVerifiedMailbox(user)) throw grantError('sign_in_email_exists', 409);
+    if (operation === 'contact.verify' && verified) throw grantError('sign_in_email_exists', 409);
 }
 
 export async function reauthenticationMethods(user) {
@@ -82,7 +87,7 @@ export async function reauthenticationMethods(user) {
 export async function googleReauthenticationAccount({ userId, operation, generation }) {
     assertOperation(operation);
     const user = await activeUser(userId);
-    assertOperationAllowed(user, operation);
+    await assertOperationAllowedFor(await getStore(), user, operation);
     if (!(await reauthenticationMethods(user)).includes('google')
         || (generation !== undefined && generation !== authGenerationOf(user))) {
         throw grantError('reauthentication_unavailable', 409);
@@ -122,7 +127,7 @@ async function assertMethod(user, method) {
 export async function startReauthentication({ userId, operation, method, origin = '', rpId = '', resend = false, deliver = sendAuthCode }) {
     assertOperation(operation);
     const user = await activeUser(userId);
-    assertOperationAllowed(user, operation);
+    await assertOperationAllowedFor(await getStore(), user, operation);
     await assertMethod(user, method);
     if (method === 'emailCode') {
         const challenge = await sendAccountCode({ userId: user.id, purpose: 'reauth-code', email: user.email, operation,
@@ -178,7 +183,7 @@ async function issueGrant(user, operation, method, extraStage = null) {
 export async function completeReauthentication({ userId, operation, method, code, token, assertion, challengeKey, origin = '', password, rateSource = '' }) {
     assertOperation(operation);
     const user = await activeUser(userId);
-    assertOperationAllowed(user, operation);
+    await assertOperationAllowedFor(await getStore(), user, operation);
     await assertMethod(user, method);
     let passwordProof = null;
     if (method === 'password') {
@@ -247,7 +252,7 @@ export function consumeOperationGrant({ userId, operation, grant }) {
         const staged = await stageGrantConsumption({ userId, operation, grant });
         await commitStagedPersistence(staged.consume);
         if (!staged.valid) throw grantError('operation_grant_required', 403);
-        assertOperationAllowed(staged.user, operation);
+        await assertOperationAllowedFor(await getStore(), staged.user, operation);
         return { user: staged.user, generation: staged.generation };
     });
 }

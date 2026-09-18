@@ -12,21 +12,23 @@ import { authGenerationOf, getUserById } from '../users.mjs';
 import { loginVerify as verifyTotp } from '../auth/totp.mjs';
 import { loginOptions as passkeyOptions, loginVerify as verifyPasskey } from '../auth/passkey.mjs';
 import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, startEmailSignIn } from '../auth/signIn.mjs';
-import { changeSignupEmail, completeSignup, resendSignup, startSignup } from '../auth/signup.mjs';
+import { changeSignupEmail, completeSignup, createSignupAccount, resendSignup, startSignup } from '../auth/signup.mjs';
 import { loginWithInitialPassword } from '../auth/initialPassword.mjs';
+import { requestPasswordReset } from '../auth/passwordReset.mjs';
 import { readAttempt } from '../auth/emailAttempts.mjs';
 import { wizardConfiguration } from '../auth/wizardConfig.mjs';
 import { ensureBrowserProof, rateSourceOf, readBrowserProof } from '../auth/browserBinding.mjs';
-import { getEmailAuthCodeStatus, sendAuthCode } from '../email-agent-client.mjs';
+import { getEmailAuthCodeStatus, sendAuthCode, sendPasswordResetEmail } from '../email-agent-client.mjs';
 import { cancelGoogleTransactionForParent } from '../../service/googleAuth.mjs';
 
 // OIDC adapter for the shared wizard. JSON actions return wizard state; every
 // credential completion is a native form POST that ends in the engine's
 // interactionFinished redirect, so the browser keeps the cookie-bound flow.
-const JSON_ACTIONS = new Set(['attempt', 'attempt-cancel', 'discover', 'signup-start', 'signup-resend', 'signup-email', 'email-start', 'passkey-options']);
-const NATIVE_ACTIONS = new Set(['password-login', 'signup-verify', 'email-verify', 'totp', 'passkey-verify']);
+const JSON_ACTIONS = new Set(['attempt', 'attempt-cancel', 'discover', 'signup-start', 'signup-resend', 'signup-email', 'email-start', 'password-forgot', 'passkey-options']);
+const NATIVE_ACTIONS = new Set(['password-login', 'signup-create', 'signup-verify', 'email-verify', 'totp', 'passkey-verify']);
 const METHOD_FOR_ACTION = {
-    'password-login': 'password', 'signup-start': 'password', 'signup-resend': 'password', 'signup-email': 'password', 'signup-verify': 'password',
+    'password-login': 'password', 'signup-create': 'password', 'signup-start': 'password', 'signup-resend': 'password', 'signup-email': 'password', 'signup-verify': 'password',
+    'password-forgot': 'password',
     'email-start': 'emailCode', 'email-verify': 'emailCode', totp: 'totp', 'passkey-options': 'passkey', 'passkey-verify': 'passkey',
 };
 const SIGNUP_DELIVERY = new Set(['signup-start', 'signup-resend', 'signup-email']);
@@ -41,6 +43,7 @@ const FAILURE_MESSAGES = {
     rate_limited: 'Unable to sign in. Too many attempts; wait and try again.',
     attempt_invalid: 'Unable to sign in. Start again.',
     signup_restart_required: 'Choose your password again to continue.',
+    signup_verification_required: 'Email verification is now required. Choose your password again to continue.',
 };
 const REASON = /^[a-z_]{1,32}$/;
 
@@ -178,7 +181,7 @@ function jsonFailure(res, error) {
         ...(typeof error.reason === 'string' && REASON.test(error.reason) ? { reason: error.reason } : {}) });
 }
 
-async function interactionRequest(req, res, issuer, provider, match, { google, deliverEmail, emailStatus }) {
+async function interactionRequest(req, res, issuer, provider, match, { google, deliverEmail, deliverPasswordReset, emailStatus }) {
     const [, uid, action = '', subaction = ''] = match;
     if (subaction && action !== 'google-resume') throw Object.assign(new Error('invalid_request'), { statusCode: 400 });
     const emailAvailable = (await emailStatus()).available === true;
@@ -305,6 +308,12 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
                         : await changeSignupEmail({ parent, browserProof, email: field(body, 'email', 320), rateSource, validateParent, deliver: deliverEmail });
                     return json(res, 200, { ok: true, ...result });
                 }
+                if (action === 'password-forgot') {
+                    if (!emailAvailable) throw Object.assign(new Error('password_reset_unavailable'), { code: 'password_reset_unavailable', statusCode: 409 });
+                    const result = await requestPasswordReset({ parent, email: field(body, 'email', 320), rateSource, emailAvailable, validateParent,
+                        resetBaseUrl: `${issuer.origin}${servicePath(issuer)}auth/reset.html`, deliver: deliverPasswordReset });
+                    return json(res, 200, { ok: true, ...result });
+                }
                 if (action === 'email-start') {
                     if (!emailAvailable) throw Object.assign(new Error('auth_method_disabled'), { code: 'auth_method_disabled', statusCode: 404 });
                     const browserProof = ensureBrowserProof(req, res, cookie);
@@ -338,6 +347,17 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
                 const browserProof = ensureBrowserProof(req, res, cookie);
                 // Passwords are passed through unmodified; the domain bounds them.
                 const result = await loginWithInitialPassword({ parent, browserProof, email: attemptedEmail, password: body.password, rateSource, validateParent });
+                authenticated = { ok: true, user: result.user };
+                amr = ['pwd'];
+            }
+            if (action === 'signup-create') {
+                attemptedEmail = field(body, 'email', 320);
+                const browserProof = ensureBrowserProof(req, res, cookie);
+                // First boundary: the local commit of account, credential and setup.
+                // The engine's interaction result below is the second; a stop
+                // between them resumes here through the completed attempt.
+                const result = await createSignupAccount({ parent, browserProof, email: attemptedEmail, password: body.password,
+                    passwordConfirmation: body.passwordConfirmation, rateSource, validateParent });
                 authenticated = { ok: true, user: result.user };
                 amr = ['pwd'];
             }
@@ -389,7 +409,7 @@ async function interactionRequest(req, res, issuer, provider, match, { google, d
     });
 }
 
-export async function handleOidc(req, res, { google, deliverEmail = sendAuthCode, emailStatus = getEmailAuthCodeStatus } = {}) {
+export async function handleOidc(req, res, { google, deliverEmail = sendAuthCode, deliverPasswordReset = sendPasswordResetEmail, emailStatus = getEmailAuthCodeStatus } = {}) {
     const path = new URL(req.url, 'http://internal').pathname;
     if (path !== OIDC_SERVICE_PATH && !path.startsWith(`${OIDC_SERVICE_PATH}/`)) return false;
     try {
@@ -407,7 +427,7 @@ export async function handleOidc(req, res, { google, deliverEmail = sendAuthCode
         res.setHeader('Referrer-Policy', 'same-origin');
         res.setHeader('X-Content-Type-Options', 'nosniff');
         const interaction = new URL(suffix, issuer.origin).pathname.match(/^\/interaction\/([A-Za-z0-9_-]+)(?:\/([a-z-]+))?(?:\/([a-z-]+))?$/);
-        if (interaction) await interactionRequest(req, res, issuer, provider, interaction, { google, deliverEmail, emailStatus });
+        if (interaction) await interactionRequest(req, res, issuer, provider, interaction, { google, deliverEmail, deliverPasswordReset, emailStatus });
         else {
             // No network-backed provider extensions are enabled. Exclude account,
             // client and grant mutations throughout local token validation/issuance.

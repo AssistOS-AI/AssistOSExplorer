@@ -8,7 +8,7 @@ import { describeManagedRouterOrigins, resolveManagedRouterOrigins } from './aut
 // own password; there is no shared or installation-level password.
 const AUTH_METHODS = new Set(['password', 'emailCode', 'passkey', 'totp', 'google']);
 export const REGISTRATION_ROLE = 'selfRegistered';
-const POLICY_FIELDS = new Set(['enabledAuthMethods', 'selfRegistrationEnabled', 'allowedRedirectOrigins']);
+const POLICY_FIELDS = new Set(['enabledAuthMethods', 'selfRegistrationEnabled', 'signupEmailVerificationRequired', 'allowedRedirectOrigins']);
 // Returned with the policy for administrators; generated or derived, never saved.
 const READ_ONLY_POLICY_FIELDS = new Set([
     'registrationRole',
@@ -20,10 +20,12 @@ const READ_ONLY_POLICY_FIELDS = new Set([
     'managedOriginGeneration',
     'managedRedirectOrigins',
     'effectiveRedirectOrigins',
+    'emailDeliveryAvailable',
 ]);
 const DEFAULT_POLICY = Object.freeze({
     enabledAuthMethods: ['password', 'emailCode', 'passkey', 'totp', 'google'],
     selfRegistrationEnabled: true,
+    signupEmailVerificationRequired: false,
     allowedRedirectOrigins: [],
 });
 const warnedEnvironmentMethods = new Set();
@@ -98,6 +100,7 @@ function normalizePolicy(input = {}) {
     return {
         enabledAuthMethods: methods,
         selfRegistrationEnabled: input.selfRegistrationEnabled !== false,
+        signupEmailVerificationRequired: input.signupEmailVerificationRequired === true,
         allowedRedirectOrigins: normalizeOrigins(input.allowedRedirectOrigins || []),
     };
 }
@@ -140,11 +143,15 @@ function applyEnvironment(policy) {
     if (String(process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED || '').trim()) {
         merged.selfRegistrationEnabled = String(process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED).trim().toLowerCase() === 'true';
     }
+    if (String(process.env.USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED || '').trim()) {
+        merged.signupEmailVerificationRequired = String(process.env.USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED).trim().toLowerCase() === 'true';
+    }
     return merged;
 }
 
 export function environmentPolicyOverrides() {
-    return ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']
+    return ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED',
+        'USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED']
         .filter((name) => String(process.env[name] || '').trim());
 }
 

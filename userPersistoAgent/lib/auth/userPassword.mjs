@@ -151,6 +151,13 @@ function failureKey(subject) {
     return throttleKey('userpersisto:throttle:password-login', subject);
 }
 
+// A successful password reset proves mailbox control and clears the address's
+// failed-attempt throttle in the same commit as the new credential.
+export async function stagePasswordFailureClear(store, email) {
+    const throttle = await readThrottle(store, failureKey(email), Date.now(), FAILURE_WINDOW_MS);
+    return stageThrottleClear(store, throttle);
+}
+
 // One implementation for password login, My Account re-authentication and the
 // Google link proof. Lock order: parent (caller), per-email login lock, users,
 // persistence scope. Parent, policy and the failure budget are rechecked inside

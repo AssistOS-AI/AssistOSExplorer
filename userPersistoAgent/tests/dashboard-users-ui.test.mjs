@@ -43,11 +43,15 @@ test('user editor shows the account email as read-only text, never as an editabl
     assert.doesNotMatch(panel.usersListEl.innerHTML, /type="email"/);
 });
 
-test('user rows show roles and status without displaying the internal account ID', () => {
+test('user rows show roles, status and mailbox verification without displaying the internal account ID', () => {
     const { panel } = fixture();
-    panel.state.users = [{ id: 'USER.7', email: 'member@example.test', roles: ['admin', 'user'], status: 'active' }];
+    panel.state.users = [
+        { id: 'USER.7', email: 'member@example.test', roles: ['admin', 'user'], status: 'active', emailVerifiedAt: '2026-09-18T10:00:00.000Z' },
+        { id: 'USER.8', email: 'unverified@example.test', roles: ['user'], status: 'active', emailVerifiedAt: '' },
+    ];
     panel.renderUsers();
-    assert.match(panel.usersListEl.innerHTML, /<p class="userpersisto-row-meta">Roles: admin, user · Status: active<\/p>/);
+    assert.match(panel.usersListEl.innerHTML, /<p class="userpersisto-row-meta">Roles: admin, user · Status: active · Email: verified<\/p>/);
+    assert.match(panel.usersListEl.innerHTML, /<p class="userpersisto-row-meta">Roles: user · Status: active · Email: unverified<\/p>/);
     assert.match(panel.usersListEl.innerHTML, /data-user-id="USER\.7"/, 'the row still carries the ID for updates');
     assert.doesNotMatch(panel.usersListEl.innerHTML, />[^<]*USER\.7/, 'no visible text shows the ID');
 });

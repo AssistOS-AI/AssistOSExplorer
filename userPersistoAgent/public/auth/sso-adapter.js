@@ -69,6 +69,13 @@ export function createSsoAdapter({ location, fetch, navigate }) {
         startSignup({ email, password, passwordConfirmation }) {
             return post('signup/start', { requestId, email, password, passwordConfirmation });
         },
+        // Direct signup creates the account, signs in and returns the handoff.
+        createSignup({ email, password, passwordConfirmation }) {
+            return post('signup/create', { requestId, state, email, password, passwordConfirmation });
+        },
+        forgotPassword({ email }) {
+            return post('password/forgot', { requestId, email });
+        },
         // Retries carry no password: the server keeps the staged verifier.
         resendSignup() {
             return post('signup/resend', { requestId });

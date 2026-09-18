@@ -3,17 +3,19 @@ import { authGenerationOf } from '../lib/users.mjs';
 import { cancelGoogleTransactionForParent } from './googleAuth.mjs';
 import { getLoginRequest, issueAuthCodeLocked, isAuthCodeLive, prepareSsoHandoff } from '../lib/sso.mjs';
 import { attemptStatus, cancelSignIn, completeEmailSignIn, discoverAccount, startEmailSignIn } from '../lib/auth/signIn.mjs';
-import { changeSignupEmail, completeSignup, resendSignup, startSignup } from '../lib/auth/signup.mjs';
+import { changeSignupEmail, completeSignup, createSignupAccount, resendSignup, startSignup } from '../lib/auth/signup.mjs';
 import { loginWithInitialPassword } from '../lib/auth/initialPassword.mjs';
+import { requestPasswordReset } from '../lib/auth/passwordReset.mjs';
 import { readCompletion } from '../lib/auth/emailAttempts.mjs';
 import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
 import * as passkey from '../lib/auth/passkey.mjs';
 import * as totp from '../lib/auth/totp.mjs';
 import { isAuthMethodEnabled } from '../lib/policy.mjs';
-import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
+import { getEmailAuthCodeStatus, sendAuthCode, sendPasswordResetEmail } from '../lib/email-agent-client.mjs';
 import {
     assertSameOrigin,
     ensureBrowserProof,
+    expectedOrigin,
     forwardedSecure,
     forwardedServicePath,
     rateSourceOf,
@@ -29,9 +31,11 @@ const ROUTES = new Set([
     '/service/auth/discover',
     '/service/auth/password/login',
     '/service/auth/signup/start',
+    '/service/auth/signup/create',
     '/service/auth/signup/resend',
     '/service/auth/signup/email',
     '/service/auth/signup/verify',
+    '/service/auth/password/forgot',
     '/service/auth/email-code/start',
     '/service/auth/email-code/verify',
     '/service/auth/passkey/options',
@@ -46,9 +50,11 @@ const EMAIL_PROBES = new Set([
     '/service/auth/signup/start',
     '/service/auth/signup/resend',
     '/service/auth/signup/email',
+    '/service/auth/password/forgot',
 ]);
 const SIGNUP_DELIVERY = new Set(['/service/auth/signup/start', '/service/auth/signup/resend', '/service/auth/signup/email']);
-const REPLAYABLE = new Set(['/service/auth/attempt', '/service/auth/password/login', '/service/auth/email-code/verify', '/service/auth/signup/verify']);
+const REPLAYABLE = new Set(['/service/auth/attempt', '/service/auth/password/login', '/service/auth/signup/create',
+    '/service/auth/email-code/verify', '/service/auth/signup/verify']);
 
 function fail(code, statusCode, extra = {}) {
     return Object.assign(new Error(code), { code, statusCode, ...extra });
@@ -75,18 +81,19 @@ export function isSsoWizardRoute(path) {
     return ROUTES.has(path);
 }
 
-export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStatus = getEmailAuthCodeStatus } = {}) {
+export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStatus = getEmailAuthCodeStatus, deliverPasswordReset = sendPasswordResetEmail } = {}) {
     async function liveParent(requestId) {
         const request = await getLoginRequest(requestId);
-        return { flow: 'sso', id: requestId, expiresAt: Date.parse(request.expiresAt) };
+        return { flow: 'sso', id: requestId, expiresAt: Date.parse(request.expiresAt), redirectUri: request.redirectUri };
     }
 
     // A browser whose completed response was lost can replay its own staged
     // handoff while that code is still unconsumed; otherwise it starts again.
-    async function replay(req, requestId, state, passwordLogin = null) {
+    // `expected` pins the completion kind and address; `null` forbids replay.
+    async function replay(req, requestId, state, expected = undefined) {
+        if (expected === null) return null;
         const completion = await readCompletion({ flow: 'sso', id: requestId, browserProof: readBrowserProof(req) });
-        if (passwordLogin && (passwordLogin.password !== 'admin' || completion?.method !== 'initialPassword'
-            || completion.email !== String(passwordLogin.email || '').trim().toLowerCase())) return null;
+        if (expected && (completion?.method !== expected.method || completion.email !== String(expected.email || '').trim().toLowerCase())) return null;
         if (!completion?.handoff || !(await isAuthCodeLive({ providerState: requestId, code: completion.handoff.code }))) return null;
         return { ...callbackPayload(completion.handoff, state), replayed: true };
     }
@@ -110,7 +117,11 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
                 parent = await liveParent(requestId);
             } catch (error) {
                 if (REPLAYABLE.has(path) && ['login_request_invalid', 'login_request_expired'].includes(error?.code)) {
-                    const replayed = await replay(req, requestId, state, path === '/service/auth/password/login' ? body : null);
+                    const expected = path === '/service/auth/password/login'
+                        ? (body.password === 'admin' ? { method: 'initialPassword', email: body.email } : null)
+                        : path === '/service/auth/signup/create' ? { method: 'passwordSignup', email: body.email }
+                            : undefined;
+                    const replayed = await replay(req, requestId, state, expected);
                     if (replayed) return sendJson(res, 200, path === '/service/auth/attempt' ? { ok: true, completed: true, handoff: replayed } : replayed);
                 }
                 throw error;
@@ -143,11 +154,30 @@ export function createSsoWizardHandlers({ deliverEmail = sendAuthCode, emailStat
                 const handoff = result.handoff || await issueAuthCodeLocked({ providerState: requestId, userId: result.user.id, generation: authGenerationOf(result.user) });
                 return sendJson(res, 200, callbackPayload(handoff, state));
             }
+            if (path === '/service/auth/password/forgot') {
+                // The emailed link may only point at the origin this request is
+                // served from, which the membership rule accepted for the parent.
+                const origin = new URL(parent.redirectUri).origin;
+                if (origin !== expectedOrigin(req)) throw fail('invalid_origin', 403);
+                if (!emailAvailable) throw fail('password_reset_unavailable', 409);
+                const result = await requestPasswordReset({ parent, email: text(body, 'email', 320), rateSource, emailAvailable,
+                    validateParent, resetBaseUrl: `${origin}${forwardedServicePath(req)}auth/reset.html`, deliver: deliverPasswordReset });
+                return sendJson(res, 200, { ok: true, ...result });
+            }
             if (path === '/service/auth/signup/start') {
                 const browserProof = ensureBrowserProof(req, res, cookie);
                 const started = await startSignup({ parent, browserProof, email: text(body, 'email', 320), password: secret(body, 'password'),
                     passwordConfirmation: secret(body, 'passwordConfirmation'), rateSource, validateParent, deliver: deliverEmail });
                 return sendJson(res, 200, { ok: true, ...started });
+            }
+            if (path === '/service/auth/signup/create') {
+                const browserProof = ensureBrowserProof(req, res, cookie);
+                const result = await createSignupAccount({ parent, browserProof, email: text(body, 'email', 320), password: secret(body, 'password'),
+                    passwordConfirmation: secret(body, 'passwordConfirmation'), rateSource, validateParent,
+                    prepareHandoff: () => prepareSsoHandoff(requestId) });
+                if (!result.handoff) throw fail('attempt_invalid', 409);
+                return sendJson(res, 200, { ...callbackPayload(result.handoff, state),
+                    ...(result.replayed ? { replayed: true } : { created: result.created, initialAdministrator: result.initialAdministrator }) });
             }
             if (path === '/service/auth/signup/resend') {
                 const resent = await resendSignup({ parent, browserProof: requireBrowserProof(req), rateSource, validateParent, deliver: deliverEmail });

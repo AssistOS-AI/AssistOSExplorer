@@ -440,10 +440,12 @@ export function stageChallengeOutcome(store, parent, checked, { userId = '', gen
     return stageSave(store, parent, checked.loaded, next);
 }
 
-// The initial-password exception has no email challenge. Its trusted caller
-// holds the parent/users locks and stages this browser-bound completion in the
-// same commit as the first account, credential, setup record and handoff.
-export async function prepareInitialPasswordCompletion({ parent, browserProof, email }) {
+// A direct account creation (the initial-password exception or an unverified
+// password signup) has no email challenge. Its trusted caller holds the
+// parent/users locks and stages this browser-bound completion in the same
+// commit as the account, credential, setup record and handoff.
+export async function prepareDirectCompletion({ parent, browserProof, email, method }) {
+    if (method !== 'initialPassword' && method !== 'passwordSignup') throw attemptError('invalid_request');
     const store = await getStore();
     const loaded = await load(store, parent, browserProof);
     if (loaded.payload.status === 'completed') throw attemptError('attempt_invalid', 409);
@@ -455,7 +457,7 @@ export async function prepareInitialPasswordCompletion({ parent, browserProof, e
         challenge: null,
         signup: null,
         account: null,
-        completion: { ...completion, method: 'initialPassword', email },
+        completion: { ...completion, method, email },
     })();
 }
 

@@ -52,7 +52,7 @@ const ADMIN_OPERATIONS = new Map([
     ['policy/get', { tool: 'userpersisto_auth_policy_get', fields: [] }],
     ['policy/set', {
         tool: 'userpersisto_auth_policy_set',
-        fields: ['enabledAuthMethods', 'selfRegistrationEnabled', 'allowedRedirectOrigins'],
+        fields: ['enabledAuthMethods', 'selfRegistrationEnabled', 'signupEmailVerificationRequired', 'allowedRedirectOrigins'],
     }],
     ['google/status', { tool: 'userpersisto_google_status', fields: [] }],
 ]);

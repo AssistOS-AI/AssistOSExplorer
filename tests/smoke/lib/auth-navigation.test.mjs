@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { chromium } from '@playwright/test';
 
 test('authentication visits only its final surface and preserves a separate service login', { timeout: 90_000 }, async (t) => {
@@ -33,6 +36,7 @@ test('authentication visits only its final surface and preserves a separate serv
   let principalUsername = '';
   let issuedCode = '';
   let pendingSignup = null;
+  let signupVerification = 'required';
   // A controlled authenticator clock shared by the helper and this provider.
   let totpTime = 1_700_000_000_000;
   const totpClock = { now: () => totpTime, wait: async (durationMs) => { totpTime += durationMs; } };
@@ -87,7 +91,7 @@ test('authentication visits only its final surface and preserves a separate serv
         if (payload.requestId !== 'fixture-state') return json(response, 400, { ok: false, error: 'login_request_invalid' });
         if (relativePath === 'attempt') {
           return json(response, 200, { ok: true, expiresAt: Date.now() + 300_000, setupComplete, registration: true,
-            signup: { email: true, google: false },
+            signup: { email: true, google: false, verification: signupVerification },
             methods: { password: true, emailCode: true, passkey: false, totp: true, google: false },
             passwordPolicy: { minLength: 15, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' },
             attempt: { status: 'active', challenge: null, locked: false } });
@@ -118,6 +122,12 @@ test('authentication visits only its final surface and preserves a separate serv
           if (known) return json(response, 409, { ok: false, error: 'account_exists' });
           pendingSignup = { email: payload.email, password: payload.password, confirmed: payload.password === payload.passwordConfirmation };
           return json(response, 200, issueCode(payload.email, 'register'));
+        }
+        if (relativePath === 'signup/create') {
+          if (signupVerification === 'required') return json(response, 409, { ok: false, error: 'signup_verification_required' });
+          if (known) return json(response, 409, { ok: false, error: 'account_exists' });
+          registered.set(payload.email, { password: payload.password, totp: false });
+          return json(response, 200, handoff(payload));
         }
         if (relativePath === 'signup/verify') {
           if (!pendingSignup || payload.code !== issuedCode) return json(response, 400, { ok: false, error: 'code_invalid', attemptsRemaining: 4 });
@@ -173,7 +183,7 @@ test('authentication visits only its final surface and preserves a separate serv
   process.env.SMOKE_EMAIL_CODE_COMMAND = `grep -F "for $SMOKE_EMAIL:" ${JSON.stringify(codeFile)} || true`;
   const { signIn, totpToken } = await import('./auth.mjs');
   const providerPost = (name) => requests.filter((entry) => entry.method === 'POST' && entry.pathname === `${providerPath}${name}`).length;
-  const completionRoutes = ['password/login', 'email-code/start', 'email-code/verify', 'totp/verify', 'signup/start', 'signup/verify', 'admin/login'];
+  const completionRoutes = ['password/login', 'email-code/start', 'email-code/verify', 'totp/verify', 'signup/start', 'signup/create', 'signup/verify', 'admin/login'];
   const signedUpAccount = { username: 'new-member', loginEmail: 'new-member@example.test', signInMethod: 'password' };
   const modes = [
     { name: 'local', account: localAccount },
@@ -195,6 +205,7 @@ test('authentication visits only its final surface and preserves a separate serv
       await t.test(`${mode.name} sign-in`, async () => {
         sso = useSso;
         setupComplete = true;
+        signupVerification = 'required';
         redirectDelay = mode.delay || 0;
         principalUsername = mode.principal || '';
         account = mode.account;
@@ -244,6 +255,59 @@ test('authentication visits only its final surface and preserves a separate serv
         }
       });
     }
+    // The smoke configuration reads SMOKE_EMAIL_CODE_COMMAND once at import, so
+    // a sign-up without it runs in a child process against this provider.
+    const signUpWithoutCodeCommand = async () => {
+      const environment = { ...process.env };
+      delete environment.SMOKE_EMAIL_CODE_COMMAND;
+      const script = `
+        import { chromium } from '@playwright/test';
+        const { signIn } = await import(${JSON.stringify(new URL('./auth.mjs', import.meta.url).href)});
+        const browser = await chromium.launch();
+        try {
+          const page = await (await browser.newContext({ baseURL: ${JSON.stringify(baseURL)} })).newPage();
+          const principal = await signIn(page, ${JSON.stringify(signedUpAccount)}, '/service/', { requireConfiguredPrincipal: true });
+          console.log(JSON.stringify({ ok: true, username: principal.canonicalUsername, url: page.url() }));
+        } catch (error) {
+          console.log(JSON.stringify({ ok: false, message: error.message }));
+        } finally {
+          await browser.close();
+        }`;
+      const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script],
+        { cwd: fileURLToPath(new URL('..', import.meta.url)), env: environment, timeout: 60_000 });
+      return JSON.parse(stdout.trim().split('\n').at(-1));
+    };
+    await t.test('direct sign-up completes after Create account without SMOKE_EMAIL_CODE_COMMAND', async () => {
+      sso = true;
+      setupComplete = true;
+      signupVerification = 'none';
+      redirectDelay = 0;
+      principalUsername = '';
+      account = signedUpAccount;
+      resetAccounts();
+      requests.length = 0;
+      fs.writeFileSync(codeFile, '');
+      const result = await signUpWithoutCodeCommand();
+      assert.deepEqual(result, { ok: true, username: signedUpAccount.username, url: `${baseURL}/service/` });
+      assert.deepEqual(completionRoutes.map(providerPost), completionRoutes.map((route) => (route === 'signup/create' ? 1 : 0)));
+      assert.equal(registered.get(signedUpAccount.loginEmail)?.password, process.env.SMOKE_RUN_ACCOUNT_PASSWORD);
+      assert.equal(fs.readFileSync(codeFile, 'utf8'), '', 'no code was issued');
+    });
+    await t.test('the sign-up code screen still requires SMOKE_EMAIL_CODE_COMMAND', async () => {
+      sso = true;
+      setupComplete = true;
+      signupVerification = 'required';
+      redirectDelay = 0;
+      principalUsername = '';
+      account = signedUpAccount;
+      resetAccounts();
+      requests.length = 0;
+      const result = await signUpWithoutCodeCommand();
+      assert.equal(result.ok, false);
+      assert.match(result.message, /BLOCKED: SMOKE_EMAIL_CODE_COMMAND is not configured, so the sign-up verification code cannot be automated\./);
+      assert.deepEqual(completionRoutes.map(providerPost), completionRoutes.map((route) => (route === 'signup/start' ? 1 : 0)));
+      assert.equal(registered.has(signedUpAccount.loginEmail), false);
+    });
     await t.test('a refused password and unavailable methods are reported without waiting for navigation', async () => {
       sso = true;
       setupComplete = true;
