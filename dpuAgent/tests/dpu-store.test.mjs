@@ -278,7 +278,7 @@ test('delegated confidential get uses usr as the acting principal', async () => 
       email: 'reader@example.com'
     },
     agent: {
-      principalId: 'agent:AssistOSExplorer/onlyOffice',
+      principalId: 'agent:OnlyOfficeAgent/onlyOffice',
       name: 'onlyOffice'
     },
     invocation: {
@@ -294,7 +294,7 @@ test('delegated confidential get uses usr as the acting principal', async () => 
   const listed = await listAuditEntries(adminAuth);
   const auditEntry = await getAuditEntry(adminAuth, { name: listed.items[0].name });
   assert.match(auditEntry.item.content, /"principalId":"reader@example\.com"/);
-  assert.match(auditEntry.item.content, /"agentPrincipalId":"agent:AssistOSExplorer\/onlyOffice"/);
+  assert.match(auditEntry.item.content, /"agentPrincipalId":"agent:OnlyOfficeAgent\/onlyOffice"/);
 });
 
 test('delegated confidential update uses usr as the acting principal', async () => {
@@ -315,7 +315,7 @@ test('delegated confidential update uses usr as the acting principal', async () 
       email: 'editor@example.com'
     },
     agent: {
-      principalId: 'agent:AssistOSExplorer/onlyOffice',
+      principalId: 'agent:OnlyOfficeAgent/onlyOffice',
       name: 'onlyOffice'
     },
     invocation: {
@@ -346,7 +346,7 @@ test('agent caller without usr cannot satisfy user-owned confidential acl', asyn
 
   const agentOnlyAuth = {
     agent: {
-      principalId: 'agent:AssistOSExplorer/onlyOffice',
+      principalId: 'agent:OnlyOfficeAgent/onlyOffice',
       name: 'onlyOffice'
     },
     invocation: {
@@ -383,7 +383,7 @@ test('delegated confidential get requires read delegation scope when present', a
       email: 'reader@example.com'
     },
     agent: {
-      principalId: 'agent:AssistOSExplorer/onlyOffice',
+      principalId: 'agent:OnlyOfficeAgent/onlyOffice',
       name: 'onlyOffice'
     },
     invocation: {
@@ -418,7 +418,7 @@ test('delegated confidential update requires write delegation scope when present
       email: 'editor@example.com'
     },
     agent: {
-      principalId: 'agent:AssistOSExplorer/onlyOffice',
+      principalId: 'agent:OnlyOfficeAgent/onlyOffice',
       name: 'onlyOffice'
     },
     invocation: {

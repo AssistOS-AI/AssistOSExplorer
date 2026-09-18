@@ -2,7 +2,7 @@ import { clearOnlyOfficeEditor, renderOnlyOfficeEditor } from "../../../services
 import { buildSecretPreviewMarkup } from "./file-exp-dpu-provider.js";
 import { renderMarkdownDiagrams } from "./file-exp-utils.js";
 import { mountAgentRuntimeLoader } from "../../../shared/ui/agent-runtime-loader/agent-runtime-loader.js";
-import { tryLoadOnlyOfficePreview } from "../../../services/onlyoffice/onlyoffice-preview-service.js";
+import { tryLoadOnlyOfficePreview, ONLYOFFICE_AGENT_REF } from "../../../services/onlyoffice/onlyoffice-preview-service.js";
 
 export function toggleHidden(fileExp, element, hidden = true) {
     if (!element) return;
@@ -397,7 +397,7 @@ export function renderStandardPreview(fileExp, refs, previewUiState) {
                 const selectedPath = String(fileExp.state.selectedPath || '');
                 void mountAgentRuntimeLoader(refs.componentMount, {
                     key: `onlyoffice:${runtimePath}`,
-                    agentRef: 'AchillesIDE/onlyOffice',
+                    agentRef: ONLYOFFICE_AGENT_REF,
                     label: 'OnlyOffice',
                     enableMode: 'global',
                     operation: async () => {

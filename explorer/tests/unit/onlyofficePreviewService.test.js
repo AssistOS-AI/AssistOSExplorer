@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { buildConfigKey } from '../../services/onlyoffice/onlyoffice-editor-host.js';
-import { tryLoadOnlyOfficePreview } from '../../services/onlyoffice/onlyoffice-preview-service.js';
+import { tryLoadOnlyOfficePreview, ONLYOFFICE_AGENT_REF } from '../../services/onlyoffice/onlyoffice-preview-service.js';
 
 function createSession(documentKey) {
     return {
@@ -308,7 +308,7 @@ test('disabled OnlyOffice with a missing route opens the runtime guidance instea
     t.after(() => { globalThis.fetch = originalFetch; });
     globalThis.fetch = async (url) => new Response(JSON.stringify(
         url === '/api/marketplace'
-            ? { agents: [{ ref: 'AchillesIDE/onlyOffice', active: false, status: 'disabled' }] }
+            ? { agents: [{ ref: ONLYOFFICE_AGENT_REF, active: false, status: 'disabled' }] }
             : { error: 'route not found' }
     ), { status: url === '/api/marketplace' ? 200 : 404, headers: { 'content-type': 'application/json' } });
     let preview;

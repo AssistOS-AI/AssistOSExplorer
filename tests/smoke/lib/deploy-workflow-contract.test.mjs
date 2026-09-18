@@ -47,6 +47,7 @@ const WORKFLOWS = [
       '"$PLOINKY" start explorer "${BRANCH_ARGS[@]}"',
       "'AchillesIDE|https://github.com/AssistOS-AI/AssistOSExplorer.git'",
       "'UmamiAgent|https://github.com/AssistOS-AI/UmamiAgent.git'",
+      "'OnlyOfficeAgent|https://github.com/AssistOS-AI/OnlyOfficeAgent.git'",
       "'AchillesCLI|https://github.com/AssistOS-AI/AchillesCLI.git'",
       "'copilot-agents|https://github.com/AssistOS-AI/copilot-agents.git'",
       "'proxies|https://github.com/AssistOS-AI/proxies.git'",

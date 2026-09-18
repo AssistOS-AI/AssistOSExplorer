@@ -8,9 +8,10 @@ set -euo pipefail
 #
 # Note: prior versions of this hook also started a raw OnlyOffice Document Server
 # sidecar (`ploinky_onlyoffice_<workspace>`). Document Server lifecycle now
-# belongs to the Ploinky-managed `onlyOffice` agent (see
-# `onlyOffice/manifest.json` and `onlyOffice/docs/specs/DS001-coding-style.md`).
-# Explorer no longer creates, recreates, or mutates that container.
+# belongs to the Ploinky-managed `onlyOffice` agent in the OnlyOfficeAgent
+# repository (`OnlyOfficeAgent/onlyOffice`; see
+# https://github.com/AssistOS-AI/OnlyOfficeAgent). Explorer no longer creates,
+# recreates, or mutates that container.
 
 workspace_root="${PLOINKY_WORKSPACE_ROOT:?PLOINKY_WORKSPACE_ROOT is required}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

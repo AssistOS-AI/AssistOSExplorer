@@ -126,7 +126,7 @@ This keeps similarly named files from different repositories from colliding unde
 <!-- {"achilles-ide-paragraph":{"id":"paragraph-9ab706ec-5970-40fb-a222-13bd7b07993c","type":"markdown","title":"Paragraph 1"}} -->
 - [Explorer specification matrix](../docs/specs/matrix.md)
 - [DPU agent documentation](../dpuAgent/docs/index.html)
-- [OnlyOffice agent documentation](../onlyOffice/docs/index.html)
+- [OnlyOffice agent documentation](https://assistos-ai.github.io/OnlyOfficeAgent/onlyOffice/docs/index.html)
 - [Workspace Monitor documentation](../workspaceMonitorAgent/docs/index.html)
 
 

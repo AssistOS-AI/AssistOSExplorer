@@ -10,7 +10,7 @@ publication, target addresses, and browser locators are box-owned runtime state.
 | Browser-facing plugins | Authenticated `/api/edge/topology` projection | Current active one-service locator, `Cache-Control: no-store` |
 | WebMeet control | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Shared generated secrets |
 | WebMeet data | `PLOINKY_WEBMEET_MASTER_KEY` | Agent-scoped generated secret |
-| OnlyOffice | `ONLYOFFICE_JWT_SECRET` | Shared generated secret |
+| OnlyOfficeAgent/onlyOffice | `ONLYOFFICE_JWT_SECRET` | Shared generated secret |
 | Umami | database/application secrets in its manifest | Agent-owned generated secrets |
 
 Consumer code must resolve topology for each operation that produces or uses a

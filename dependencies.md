@@ -40,7 +40,7 @@ Recovery reuses the host's Git, Podman or Docker, sudo, GNU `cp` and `cmp`, and 
 
 The host distribution supplies these tools and their license notices; this repository does not vendor or redistribute them. Git, GNU coreutils and sudo retain their upstream licenses, and util-linux has component-specific licenses. Exact distribution package revisions and bundled license-file paths belong in each deployment's host inventory and are not pinned by these scripts. Container engine versions and immutable Box images remain governed by Ploinky's runtime checks. No new global installation is authorized by this document.
 
-Existing component dependencies are documented in [OnlyOffice's dependency record](onlyOffice/dependencies.md) and [the smoke-suite dependency record](tests/smoke/dependencies.md). Soul uses SQLite's standard backup and transaction implementation rather than a custom database or WAL parser. Remove these optional recovery dependencies only when the corresponding preservation requirement is replaced and verified.
+Existing component dependencies are documented in [OnlyOffice's dependency record](https://github.com/AssistOS-AI/OnlyOfficeAgent/blob/main/onlyOffice/dependencies.md) and [the smoke-suite dependency record](tests/smoke/dependencies.md). Soul uses SQLite's standard backup and transaction implementation rather than a custom database or WAL parser. Remove these optional recovery dependencies only when the corresponding preservation requirement is replaced and verified.
 
 ## UserPersisto Google Identity Services
 
