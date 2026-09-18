@@ -4,7 +4,7 @@ import {
     publicKeyCreationFromServer,
     publicKeyRequestFromServer,
 } from '../auth/auth-api.js';
-import { DEFAULT_PASSWORD_POLICY, newPasswordProblem, passwordReasonMessage } from '../auth/password-rules.js';
+import { newPasswordProblem, passwordReasonMessage } from '../auth/password-rules.js';
 
 // Sensitive account changes need a fresh confirmation: the server issues a
 // single-use grant for exactly one operation, which is used immediately and
@@ -287,10 +287,9 @@ export class AccountEnrollment {
         this.passwordButton.disabled = this.busy || editing || !this.enabled('password') || !allowed;
         this.passwordForm.hidden = !editing;
         this.passwordTitle.textContent = configured ? 'Change password' : 'Set a password';
-        const length = `Use at least ${DEFAULT_PASSWORD_POLICY.minLength} characters.`;
         this.passwordHint.textContent = configured
-            ? `${length} Changing your password signs out every session, including this one.`
-            : `${length} A long phrase that only you know works well.`;
+            ? 'Changing your password signs out every session, including this one.'
+            : 'A long phrase that only you know works well.';
         this.passwordUsername.value = this.profile?.user?.email || '';
         this.passwordInput.disabled = this.busy;
         this.passwordConfirmInput.disabled = this.busy;

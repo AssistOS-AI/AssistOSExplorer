@@ -232,10 +232,9 @@ test('My Account sets a first password without revoking sessions, then changes i
     // Predictable input failures leave the grant unspent and run no KDF.
     for (const [body, error, reason] of [
         [{ grant, password: chosen, passwordConfirmation: `${chosen}!` }, 'password_mismatch', undefined],
-        [{ grant, password: 'fourteen chars', passwordConfirmation: 'fourteen chars' }, 'invalid_password', 'too_short'],
-        [{ grant, password: 'first-password@gmail.com', passwordConfirmation: 'first-password@gmail.com' }, 'invalid_password', 'equals_email'],
+        [{ grant, password: '', passwordConfirmation: '' }, 'invalid_password', 'too_short'],
         [{ grant, password: 'x'.repeat(1025), passwordConfirmation: 'x'.repeat(1025) }, 'invalid_password', 'too_long'],
-        [{ grant, password: 'passwordpassword', passwordConfirmation: 'passwordpassword' }, 'invalid_password', 'too_common'],
+        [{ grant, password: 'x'.repeat(129), passwordConfirmation: 'x'.repeat(129) }, 'invalid_password', 'too_long'],
     ]) {
         const refused = await setPassword(user.id, body);
         assert.deepEqual([refused.status, refused.data.error, refused.data.reason], [400, error, reason]);

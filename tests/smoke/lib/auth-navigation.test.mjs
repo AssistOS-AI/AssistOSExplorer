@@ -93,7 +93,7 @@ test('authentication visits only its final surface and preserves a separate serv
           return json(response, 200, { ok: true, expiresAt: Date.now() + 300_000, setupComplete, registration: true,
             signup: { email: true, google: false, verification: signupVerification },
             methods: { password: true, emailCode: true, passkey: false, totp: true, google: false },
-            passwordPolicy: { minLength: 15, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' },
+            passwordPolicy: { minLength: 1, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' },
             attempt: { status: 'active', challenge: null, locked: false } });
         }
         if (relativePath === 'attempt/cancel') return json(response, 200, { ok: true, status: 'cancelled' });

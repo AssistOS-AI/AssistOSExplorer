@@ -197,7 +197,7 @@ test('MCP starts after the durable service and drains before HTTP/store; normal 
     await waitFor(() => existsSync(env.RUNTIME_TEST_STATE), runtime);
     const started = JSON.parse(await readFile(env.RUNTIME_TEST_STATE, 'utf8'));
     assert.equal(started.setup.setupComplete, false);
-    assert.deepEqual([started.setup.signup.email, started.setup.methods.password, started.setup.passwordPolicy.minLength], [true, true, 15]);
+    assert.deepEqual([started.setup.signup.email, started.setup.methods.password, started.setup.passwordPolicy.minLength], [true, true, 1]);
     for (const retired of ['adminPassword', 'googleOnly']) assert.equal(Object.hasOwn(started.setup, retired), false, retired);
     const owner = await registerOwner(runtime);
     const pending = await stageSignup(runtime, 'runtime-pending@example.test');

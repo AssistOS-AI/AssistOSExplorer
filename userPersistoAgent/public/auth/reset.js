@@ -117,7 +117,7 @@ export function mountReset({ root, document, fetch, location, history = null, na
     function showChoose(initialError = '') {
         const form = h('form', { className: 'auth-panel reset-panel', novalidate: true });
         const errorNode = status(initialError, { error: true });
-        const passwordInput = h('input', { id: 'reset-new-password', name: 'password', type: 'password', autocomplete: 'new-password', required: true, 'aria-describedby': 'reset-password-hint' });
+        const passwordInput = h('input', { id: 'reset-new-password', name: 'password', type: 'password', autocomplete: 'new-password', required: true });
         const confirmInput = h('input', { id: 'reset-confirm-password', name: 'passwordConfirmation', type: 'password', autocomplete: 'new-password', required: true });
         const submitButton = h('button', { type: 'submit', text: 'Change password' });
         form.append(
@@ -125,7 +125,6 @@ export function mountReset({ root, document, fetch, location, history = null, na
             ...accountEmailField(),
             h('label', { for: 'reset-new-password', text: 'New password' }), passwordInput,
             h('label', { for: 'reset-confirm-password', text: 'Confirm new password' }), confirmInput,
-            h('p', { id: 'reset-password-hint', className: 'auth-copy auth-hint', text: `Use at least ${passwordPolicy.minLength} characters.` }),
             submitButton,
             errorNode,
         );

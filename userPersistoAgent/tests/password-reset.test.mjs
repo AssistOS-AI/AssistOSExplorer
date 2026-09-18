@@ -106,7 +106,7 @@ test('an eligible request mails one fragment link, stores only its digest and lo
     const inspected = await inspectPasswordReset({ token });
     assert.equal(inspected.email, 'reset-owner@example.test');
     assert.ok(inspected.expiresAt > Date.now() && inspected.expiresAt <= Date.now() + RESET_TOKEN_TTL_MS);
-    assert.deepEqual(inspected.passwordPolicy, { minLength: 15, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' });
+    assert.deepEqual(inspected.passwordPolicy, { minLength: 1, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' });
     assert.equal((await resetRecords()).length, 1, 'inspection consumes nothing');
     assertNoSecret(JSON.stringify(await Promise.all(['authChallenge', 'emailLog'].map(async (type) => (await store.select(type)).objects))), token);
 });
@@ -286,7 +286,7 @@ test('input refusals keep the link usable and two concurrent completions write o
     const { mail } = await request('concurrent-reset@example.test');
     const token = tokenOf(mail.messages.at(-1));
     const chosen = newTestPassword();
-    await assert.rejects(completePasswordReset({ token, password: 'short', passwordConfirmation: 'short' }), { code: 'invalid_password', reason: 'too_short' });
+    await assert.rejects(completePasswordReset({ token, password: '', passwordConfirmation: '' }), { code: 'invalid_password', reason: 'too_short' });
     await assert.rejects(completePasswordReset({ token, password: chosen, passwordConfirmation: `${chosen} other` }), { code: 'password_mismatch' });
     assert.equal((await resetRecords()).length, 1, 'input refusals never touch the token');
     assert.deepEqual(await inspectPasswordReset({ token }).then((value) => value.email), 'concurrent-reset@example.test');

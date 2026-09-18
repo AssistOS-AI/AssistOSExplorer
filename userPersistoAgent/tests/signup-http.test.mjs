@@ -80,16 +80,15 @@ test('signup routes validate transport, bounds and passwords before staging anyt
         [{ email: 'bad-address', password, passwordConfirmation: password }, 400, 'invalid_email'],
         [{ email: `${'a'.repeat(315)}@x.test`, password, passwordConfirmation: password }, 400, 'invalid_request'],
         [{ email: 'owner@example.test', password, passwordConfirmation: `${password}x` }, 400, 'password_mismatch'],
-        [{ email: 'owner@example.test', password: 'short password', passwordConfirmation: 'short password' }, 400, 'invalid_password', 'too_short'],
+        [{ email: 'owner@example.test', password: '', passwordConfirmation: '' }, 400, 'invalid_password', 'too_short'],
         [{ email: 'owner@example.test', password: 'p'.repeat(1025), passwordConfirmation: 'p'.repeat(1025) }, 400, 'invalid_password', 'too_long'],
-        [{ email: 'owner@example.test', password: 'owner@example.test', passwordConfirmation: 'owner@example.test' }, 400, 'invalid_password', 'equals_email'],
         [{ email: 'owner@example.test', password: 42, passwordConfirmation: 42 }, 400, 'invalid_password', 'too_short'],
         [{ email: 'owner@example.test', password: 'tab\tseparated password', passwordConfirmation: 'tab\tseparated password' }, 400, 'invalid_password', 'invalid_characters'],
     ];
     for (const [body, status, error, reason] of refusals) {
         const response = await post('signup/start', body);
         assert.deepEqual([response.status, response.body.error, response.body.reason], [status, error, reason], JSON.stringify(body).slice(0, 80));
-        assert.equal(response.text.includes(String(body.password)), false, 'refusals never echo a password');
+        if (body.password) assert.equal(response.text.includes(String(body.password)), false, 'refusals never echo a password');
     }
     const oversized = await browser.fetch(`${base}/service/auth/signup/start`, { method: 'POST', headers: { 'content-type': 'application/json', origin: base },
         body: JSON.stringify({ requestId: request.providerState, email: 'owner@example.test', password: 'x'.repeat(70_000) }) });
@@ -108,6 +107,15 @@ test('signup routes validate transport, bounds and passwords before staging anyt
     assert.equal(mail.length, 0);
     assert.equal((await listUsers()).totalCount, 0);
     assert.equal((await getStore().then((store) => store.select('authAttempt'))).objects.length, 0, 'nothing was staged');
+    // A short non-empty password and one equal to the address are both accepted
+    // now that the strength and email-comparison rules are gone.
+    const short = await flow();
+    const shortStart = await short.post('signup/start', { email: 'short@example.test', password: 'abc', passwordConfirmation: 'abc' });
+    assert.equal(shortStart.status, 200, shortStart.text);
+    const emailLike = await flow();
+    const equalEmailStart = await emailLike.post('signup/start',
+        { email: 'password-equal@example.test', password: 'password-equal@example.test', passwordConfirmation: 'password-equal@example.test' });
+    assert.equal(equalEmailStart.status, 200, equalEmailStart.text);
 }));
 
 test('R6 over HTTP: a failed delivery keeps the staged verifier and Send again needs no password', () => fixture(async ({ mail, flow, deliver }) => {

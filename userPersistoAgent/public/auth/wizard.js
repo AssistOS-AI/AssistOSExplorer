@@ -438,10 +438,9 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     }
 
     function showSignupPassword(initialError = '') {
-        const policy = passwordPolicy();
         const form = h('form', { className: 'auth-panel signup-password-panel', novalidate: true });
         const errorNode = status(initialError, { error: true });
-        const passwordInput = h('input', { id: 'auth-new-password', name: 'password', type: 'password', autocomplete: 'new-password', required: true, 'aria-describedby': 'auth-password-hint' });
+        const passwordInput = h('input', { id: 'auth-new-password', name: 'password', type: 'password', autocomplete: 'new-password', required: true });
         const confirmInput = h('input', { id: 'auth-confirm-password', name: 'passwordConfirmation', type: 'password', autocomplete: 'new-password', required: true });
         const createButton = h('button', { type: 'submit', text: 'Create account' });
         const back = backButton(() => { if (!createButton.disabled) showStart(); });
@@ -450,7 +449,6 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             ...accountEmailField('auth-signup-email'),
             h('label', { for: 'auth-new-password', text: 'Password' }), passwordInput,
             h('label', { for: 'auth-confirm-password', text: 'Confirm password' }), confirmInput,
-            h('p', { id: 'auth-password-hint', className: 'auth-copy auth-hint', text: `Use at least ${policy.minLength} characters.` }),
         ];
         if (config.signup?.verification !== 'required') {
             children.push(status('No email verification is needed now. You can verify your email later from My Account.'));
@@ -672,8 +670,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             sendButton.disabled = false;
             emailInput.disabled = false;
             back.disabled = false;
-            showError(errorNode, error.code === 'invalid_password' && error.reason === 'equals_email'
-                ? 'Choose an email address that is different from your password.' : errorMessage(error));
+            showError(errorNode, errorMessage(error));
         }
     }
 

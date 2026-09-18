@@ -587,10 +587,10 @@ test('setting a first password confirms once, keeps the grant only in memory for
     widget.passwordConfirmInput.value = `${NEW_PASSWORD} typo`;
     await widget.savePassword();
     assert.equal(widget.status.textContent, 'The passwords do not match.');
-    widget.passwordInput.value = 'too short';
-    widget.passwordConfirmInput.value = 'too short';
+    widget.passwordInput.value = '';
+    widget.passwordConfirmInput.value = '';
     await widget.savePassword();
-    assert.equal(widget.status.textContent, 'Use at least 15 characters.');
+    assert.equal(widget.status.textContent, 'Enter a password.');
     assert.equal(withoutConfirmation(calls).length, 0, 'predictable input errors never reach the server');
     assert.equal(widget.passwordInput.value, '');
     assert.equal(widget.passwordConfirmInput.value, '');

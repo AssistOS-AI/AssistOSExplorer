@@ -277,10 +277,7 @@ export function recordEmailVerifyFailure(email) {
 function stagingFor(purpose, signup, payload, now) {
     if (purpose !== 'register') return null;
     if (signup === 'retain') return payload.signup;
-    return { verifier: signup.verifier, verifierId: randomBytes(16).toString('hex'), stagedAt: now,
-        ...(typeof signup.emailComparisonVerifier === 'string' && signup.emailComparisonVerifier
-            ? { emailComparisonVerifier: signup.emailComparisonVerifier } : {}),
-    };
+    return { verifier: signup.verifier, verifierId: randomBytes(16).toString('hex'), stagedAt: now };
 }
 
 // Issues a new generation and stages it before any network delivery. Returns

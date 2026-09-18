@@ -314,13 +314,13 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     assert.equal(await flow.page.locator('#auth-signup-email').inputValue(), 'owner@example.test');
     await shot(flow.page, '03-sso-create-password');
 
-    phase = `${label}: SSO password creation refuses a mismatch and a short password locally`;
+    phase = `${label}: SSO password creation refuses a mismatch and an empty password locally`;
     await createPassword(flow.page, passwords.owner, `${passwords.owner}!`);
     await alert(flow.page, 'The passwords do not match.');
     assert.equal((await inputFacts(flow.page, '#auth-confirm-password')).empty, true, 'A mismatched confirmation is emptied.');
     assert.equal(await flow.page.evaluate(() => document.activeElement?.id), 'auth-confirm-password');
-    await createPassword(flow.page, 'short value', 'short value');
-    await alert(flow.page, 'Use at least 15 characters.');
+    await createPassword(flow.page, '', '');
+    await alert(flow.page, 'Enter a password.');
     assert.equal(signupStarts.count, 0, 'Predictable password errors never reach the server.');
 
     phase = `${label}: SSO a lost response resumes the staged password after a failed first delivery`;

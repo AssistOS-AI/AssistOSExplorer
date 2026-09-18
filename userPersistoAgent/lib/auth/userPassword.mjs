@@ -8,7 +8,6 @@ import { recordAudit } from '../audit.mjs';
 import { encryptOidcPayload, decryptOidcPayload } from '../oidc/secrets.mjs';
 import { credentialVersion } from './credentialVersion.mjs';
 import { parseVerifier, verifySecret } from './password.mjs';
-import { isCommonPassword } from './commonPasswords.mjs';
 import { readThrottle, stageThrottleClear, stageThrottleFailure, throttleKey, throttleRetryAfter } from './throttle.mjs';
 import { consumeMemoryBudget, emailSubject, rateSourceKey, refundMemoryBudget } from './emailAttempts.mjs';
 import { withLoginAttemptLock } from './login-attempts.mjs';
@@ -18,7 +17,7 @@ import { withLoginAttemptLock } from './login-attempts.mjs';
 // retained settings key with an owner-bound context. A password exists in
 // memory only for the request that carries it and is never logged or returned.
 export const PASSWORD_POLICY = Object.freeze({
-    minLength: 15,
+    minLength: 1,
     maxLength: 128,
     maxRawLength: 1024,
     maxPresentedBytes: 4096,
@@ -61,9 +60,10 @@ export function normalizeSecret(raw) {
 }
 
 // Creation rules for a new password. Order: the bounded, well-formed raw input,
-// then confirmation equality after normalization, then content rules measured
-// in Unicode code points. Returns the normalized secret for the KDF.
-export function validateNewPassword({ password, passwordConfirmation, email = '' }) {
+// then confirmation equality after normalization, then the bounds measured in
+// Unicode code points. There is no strength rule: any non-empty password within
+// the bounds is accepted. Returns the normalized secret for the KDF.
+export function validateNewPassword({ password, passwordConfirmation }) {
     const normalized = normalizeSecret(password);
     if (typeof passwordConfirmation !== 'string' || passwordConfirmation.length > PASSWORD_POLICY.maxRawLength
         || passwordConfirmation.normalize('NFKC') !== normalized) {
@@ -73,12 +73,6 @@ export function validateNewPassword({ password, passwordConfirmation, email = ''
     const codePoints = [...normalized];
     if (codePoints.length < PASSWORD_POLICY.minLength) throw passwordError('invalid_password', 400, { reason: 'too_short' });
     if (codePoints.length > PASSWORD_POLICY.maxLength) throw passwordError('invalid_password', 400, { reason: 'too_long' });
-    if (email && normalized.toLowerCase() === String(email).toLowerCase()) {
-        throw passwordError('invalid_password', 400, { reason: 'equals_email' });
-    }
-    if (codePoints.every((character) => character === codePoints[0]) || isCommonPassword(normalized)) {
-        throw passwordError('invalid_password', 400, { reason: 'too_common' });
-    }
     return { normalized };
 }
 

@@ -134,9 +134,9 @@ test('the KDF gate runs two evaluations, queues sixteen and refuses more at once
     await Promise.all(running);
 });
 
-test('new passwords follow the code point rules after NFKC with a bounded raw input and no truncation', () => {
-    const valid = (value, email = '') => userPassword.validateNewPassword({ password: value, passwordConfirmation: value, email }).normalized;
-    const refused = (value, reason, email = '') => assert.throws(() => valid(value, email), (error) => error.code === 'invalid_password' && error.reason === reason, `${reason}: ${value.slice(0, 20)}`);
+test('new passwords follow the code point rules after NFKC with a bounded raw input and no truncation, and have no strength rule', () => {
+    const valid = (value) => userPassword.validateNewPassword({ password: value, passwordConfirmation: value }).normalized;
+    const refused = (value, reason) => assert.throws(() => valid(value), (error) => error.code === 'invalid_password' && error.reason === reason, `${reason}: ${value.slice(0, 20)}`);
     const emoji = Array.from({ length: 128 }, (_, index) => String.fromCodePoint(0x1f600 + (index % 64), 0x1f400 + (index % 50)).slice(0, 2)).join('');
     const supplementary = [...emoji].slice(0, 120).join('');
     assert.equal(supplementary.length > 128, true, 'more than 128 UTF-16 code units');
@@ -144,17 +144,18 @@ test('new passwords follow the code point rules after NFKC with a bounded raw in
     refused([...emoji].slice(0, 100).join('') + 'abcdefghijklmnopqrstuvwxyz0123', 'too_long');
     // Normalization can lengthen or shorten a password before it is measured.
     assert.equal(valid('ﬁ'.repeat(7) + 'x'), 'fi'.repeat(7) + 'x');
-    refused('áéíóú'.repeat(2) + 'ybcd', 'too_short');
+    assert.equal(valid('áéíóú'.repeat(2) + 'ybcd'), ('áéíóú'.repeat(2) + 'ybcd').normalize('NFKC'), 'a short non-empty password is accepted');
     refused('ﷺ'.repeat(8), 'too_long');
     refused('', 'too_short');
-    refused('fourteen chars', 'too_short');
+    assert.equal(valid('fourteen chars'), 'fourteen chars', 'no minimum length beyond non-empty');
+    assert.equal(valid('abc'), 'abc', 'a very short non-empty password is accepted');
     refused('x'.repeat(1025), 'too_long');
     refused(`${'long enough password '.repeat(60)}`.slice(0, 1025), 'too_long');
     refused('fifteen characters\ud800', 'invalid_characters');
     refused('fifteen characters', 'invalid_characters');
-    refused('owner@example.test', 'equals_email', 'Owner@Example.test');
-    refused('zzzzzzzzzzzzzzzzzz', 'too_common');
-    refused('PasswordPassword', 'too_common');
+    assert.equal(valid('owner@example.test'), 'owner@example.test', 'a password equal to an email address is accepted');
+    assert.equal(valid('zzzzzzzzzzzzzzzzzz'), 'zzzzzzzzzzzzzzzzzz', 'a common or all-same-character password is accepted');
+    assert.equal(valid('PasswordPassword'), 'PasswordPassword');
     assert.throws(() => userPassword.validateNewPassword({ password: 'correct horse battery', passwordConfirmation: 'correct horse batterx' }), { code: 'password_mismatch' });
     assert.throws(() => userPassword.validateNewPassword({ password: 'correct horse battery', passwordConfirmation: undefined }), { code: 'password_mismatch' });
     assert.equal(userPassword.validateNewPassword({ password: 'ﬁrst long password', passwordConfirmation: 'first long password' }).normalized, 'first long password');

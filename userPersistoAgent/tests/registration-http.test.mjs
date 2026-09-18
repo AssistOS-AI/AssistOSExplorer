@@ -87,7 +87,7 @@ test('HTTP signup claims the first administrator through the browser-bound attem
     assert.match(cookie, /Path=\/service\//);
     const state = await attempt.json();
     assert.deepEqual([state.setupComplete, state.registration, state.signup, state.methods.password], [false, true, { email: true, verification: 'required', google: true }, true]);
-    assert.deepEqual(state.passwordPolicy, { minLength: 15, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' });
+    assert.deepEqual(state.passwordPolicy, { minLength: 1, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' });
     assert.ok(state.expiresAt > Date.now());
     const discovered = await (await post(browser, 'discover', { requestId: request.providerState, email: 'owner@example.test' })).json();
     assert.deepEqual([discovered.exists, discovered.methods], [false, { password: false, emailCode: false, passkey: false, totp: false }]);

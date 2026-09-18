@@ -6,7 +6,7 @@ import { authGenerationOf, getUserByEmail, normalizeEmail } from '../users.mjs';
 import { prepareNewAccount, readInstallationSetup } from '../setup.mjs';
 import { recordAudit } from '../audit.mjs';
 import { sendAuthCode } from '../email-agent-client.mjs';
-import { hashSecret, parseVerifier, verifySecret } from './password.mjs';
+import { hashSecret, parseVerifier } from './password.mjs';
 import { stagePasswordCredential, validateNewPassword } from './userPassword.mjs';
 import { replayCompletion } from './signIn.mjs';
 import {
@@ -83,10 +83,6 @@ async function precheckStart({ parent, browserProof, email, rateSource }) {
     await assertEmailVerifyBudget(email);
 }
 
-function emailShapedPassword(normalized) {
-    try { return normalizeEmail(normalized) === normalized.toLowerCase(); } catch { return false; }
-}
-
 function spendSignupKdfBudget(rateSource) {
     const source = rateSourceKey(rateSource);
     consumeMemoryBudget('signup-kdf-source', source, source === 'shared' ? SIGNUP_KDF_SHARED : SIGNUP_KDF_PER_SOURCE);
@@ -116,16 +112,8 @@ export async function startSignup({ parent, browserProof, email, password, passw
         await precheckStart({ parent, browserProof, email: normalizedEmail, rateSource });
     };
     const verifier = await hashSecret(normalized, { validateAdmission });
-    let emailComparisonVerifier = '';
-    if (emailShapedPassword(normalized)) {
-        if (normalized === normalized.toLowerCase()) emailComparisonVerifier = verifier;
-        else {
-            spendSignupKdfBudget(rateSource);
-            emailComparisonVerifier = await hashSecret(normalized.toLowerCase(), { validateAdmission });
-        }
-    }
     const issued = await issueChallenge({ parent, browserProof, email: normalizedEmail, purpose: 'register', rateSource,
-        signup: { verifier, ...(emailComparisonVerifier ? { emailComparisonVerifier } : {}) }, precheck: async (address) => {
+        signup: { verifier }, precheck: async (address) => {
             if (validateParent) await validateParent();
             await assertSignupAllowed(address);
         } });
@@ -157,15 +145,6 @@ export async function changeSignupEmail({ parent, browserProof, email, rateSourc
         if (current.signup?.verifierId !== pending.signup.verifierId) throw attemptError('signup_restart_required', 409);
     };
     await validateChange();
-    if (pending.signup.emailComparisonVerifier) {
-        if (!parseVerifier(pending.signup.emailComparisonVerifier)) throw attemptError('signup_restart_required', 409);
-        spendSignupKdfBudget(rateSource);
-        if (await verifySecret(normalizedEmail, pending.signup.emailComparisonVerifier, { validateAdmission: validateChange })) {
-            throw Object.assign(new Error('Choose a password different from your email address.'), {
-                code: 'invalid_password', statusCode: 400, reason: 'equals_email',
-            });
-        }
-    }
     const issued = await issueChallenge({ parent, browserProof, email: normalizedEmail, purpose: 'register', rateSource,
         signup: 'retain', precheck: async (address) => {
             if (validateParent) await validateParent();

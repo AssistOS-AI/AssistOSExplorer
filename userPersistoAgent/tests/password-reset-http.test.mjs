@@ -109,7 +109,7 @@ test('the parentless status and reset routes complete the flow without a parent,
     assert.equal(inspected.status, 200);
     assert.equal(inspected.body.email, 'parentless-owner@example.test');
     assert.ok(inspected.body.expiresAt > Date.now());
-    assert.deepEqual(inspected.body.passwordPolicy, { minLength: 15, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' });
+    assert.deepEqual(inspected.body.passwordPolicy, { minLength: 1, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' });
     assert.equal(inspected.headers.get('set-cookie'), null, 'inspection issues no cookie');
 
     const mismatch = await parentless('password/reset', { token, password: setup.newTestPassword(), passwordConfirmation: 'something else entirely' });

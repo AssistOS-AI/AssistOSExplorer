@@ -639,7 +639,7 @@ test('S5 asks for Password and Confirm password without maxlength and checks mis
         const input = root.querySelector(`[name="${name}"]`);
         assert.deepEqual([input.type, input.autocomplete, input.hasAttribute('maxlength')], ['password', 'new-password', false]);
     }
-    assert.match(root.textContent, /Use at least 15 characters\./);
+    assert.doesNotMatch(root.textContent, /Use at least \d+ characters\./, 'no length hint is rendered');
     assertLabels(root);
     await createAccount(root, 'a long enough password', 'a long enough passwore');
     assert.equal(alertText(root), 'The passwords do not match.');
@@ -853,7 +853,7 @@ test('Back cannot restore the old code screen while an email change is being sav
     assert.match(h1(root).textContent, /Enter the 6-digit code sent to changed@example/);
 });
 
-test('a lost change-email response recovers the server address and a refused password-equal email is correctable', async () => {
+test('a lost change-email response recovers the server address and a refused email change is correctable', async () => {
     let reads = 0;
     const { root } = await toSignupPassword({
         attempt: async () => wizardState(++reads === 1 ? {} : { attempt: { status: 'active', signupPending: true,
@@ -867,13 +867,13 @@ test('a lost change-email response recovers the server address and a refused pas
     assert.match(h1(root).textContent, /Enter the 6-digit code sent to changed@example/);
     assert.equal(root.querySelector('[name="password"]'), null);
 
-    const refused = await toSignupPassword({ changeSignupEmail: async () => { throw fail('invalid_password', { reason: 'equals_email' }); } });
+    const refused = await toSignupPassword({ changeSignupEmail: async () => { throw fail('invalid_password', { reason: 'weak' }); } });
     await createAccount(refused.root);
     await button(refused.root, 'Change email').fire('click');
     refused.root.querySelector('[name="email"]').value = 'chosen-password@example.test';
     await refused.root.querySelector('form.signup-email-panel').fire('submit');
     assert.equal(h1(refused.root).textContent, 'Change your email');
-    assert.match(alertText(refused.root), /Choose an email address that is different from your password/);
+    assert.match(alertText(refused.root), /Choose a password that is harder to guess\./);
     assert.equal(button(refused.root, 'Back').disabled, false);
     assert.equal(refused.root.querySelector('[name="email"]').disabled, false);
 });

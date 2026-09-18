@@ -123,7 +123,7 @@ test('P1 shows the address and password fields without maxlength, and P2 changes
         const input = root.querySelector(`#${id}`);
         assert.deepEqual([input.name, input.type, input.autocomplete, input.hasAttribute('maxlength')], [name, 'password', 'new-password', false]);
     }
-    assert.match(root.textContent, /Use at least 15 characters\./);
+    assert.doesNotMatch(root.textContent, /Use at least \d+ characters\./, 'no length hint is rendered');
     assert.deepEqual(calls[0], { url: 'https://account.example.test/service/auth/password/reset/status', body: { token: 'A'.repeat(43) } });
 
     root.querySelector('[name="password"]').value = 'a long enough password';
@@ -186,11 +186,11 @@ test('a reset refused as invalid opens P3, while input and rate refusals keep th
     }
 });
 
-test('client-side password rules are checked before any server call and the hint reflects the policy', async () => {
+test('client-side password rules are checked before any server call and a policy with minLength > 1 still requires it', async () => {
     const { root, calls } = fixture({ status: { response: { ok: true, status: 200, json: async () => ({ ok: true, email: 'owner@example.test',
         expiresAt: Date.now() + 60000, passwordPolicy: { minLength: 20, maxLength: 64, maxRawLength: 512, normalization: 'NFKC' } }) } } });
     await settle();
-    assert.match(root.textContent, /Use at least 20 characters\./);
+    assert.doesNotMatch(root.textContent, /Use at least \d+ characters\./, 'no length hint is rendered');
     root.querySelector('[name="password"]').value = 'nineteen chars only';
     root.querySelector('[name="passwordConfirmation"]').value = 'nineteen chars only';
     await root.querySelector('form.reset-panel').fire('submit');

@@ -119,15 +119,20 @@ test('creation rules reject before any durable write and before the parent is co
     const base = await options('rules@example.test');
     const expiredParent = { ...base.parent, expiresAt: Date.now() - 1000 };
     for (const [input, code, reason] of [
-        [{ ...base, password: 'short', passwordConfirmation: 'short', parent: expiredParent }, 'invalid_password', 'too_short'],
+        [{ ...base, password: '', passwordConfirmation: '', parent: expiredParent }, 'invalid_password', 'too_short'],
         [{ ...base, passwordConfirmation: `${base.password} other`, parent: expiredParent }, 'password_mismatch', undefined],
-        [{ ...base, password: 'rules@example.test', passwordConfirmation: 'rules@example.test', parent: expiredParent }, 'invalid_password', 'equals_email'],
     ]) {
         const error = await outcome(createSignupAccount(input));
         assert.equal(error.error?.code, code);
         assert.equal(error.error?.reason, reason);
     }
     await assertNoAccount();
+    // A short non-empty password and a password equal to the email address are
+    // both accepted now that the strength and email-comparison rules are gone.
+    const short = await options('short-rules@example.test', { password: 'abc', passwordConfirmation: 'abc' });
+    assert.equal((await createSignupAccount(short)).created, true);
+    const equalsEmail = await options('equals-rules@example.test', { password: 'equals-rules@example.test', passwordConfirmation: 'equals-rules@example.test' });
+    assert.equal((await createSignupAccount(equalsEmail)).created, true);
 });
 
 test('a lost response replays the same completion to the same browser only', async () => {
