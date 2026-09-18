@@ -1,0 +1,27 @@
+{
+    "pluginCategory": "application",
+    "contributionType": "menu",
+    "id": "git-clone",
+    "location": [
+        "file-exp:new-menu"
+    ],
+    "label": "Clone repository",
+    "tooltip": "Clone a Git repository",
+    "locationOrder": 20,
+    "presentation": {
+        "file-exp:new-menu": {
+            "label": "Clone repository",
+            "tooltip": "Clone an existing Git repository"
+        }
+    },
+    "icon": "./icon.svg",
+    "menuModule": "menu-contributions.js",
+    "dependencies": [
+        {
+            "component": "git-clone-repository-modal",
+            "presenter": "GitCloneRepositoryModal",
+            "type": "modal",
+            "ownerComponent": "git-tool-button"
+        }
+    ]
+}

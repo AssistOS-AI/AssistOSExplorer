@@ -15,10 +15,11 @@ The main behavior of gitAgent is the user and integration outcome described by t
 
 ### Summary
 
-Git integrates with Explorer through two application plugin surfaces:
+Git integrates with Explorer through three application plugin surfaces:
 
 - `git-tool-button`, mounted in `file-exp:toolbar`
-- `git-menu-contributions`, contributing semantic menu items to host-owned Explorer menus as part of the same logical `git` plugin
+- `git-menu-contributions`, contributing the `Add new repository` and `.gitignore` items to host-owned Explorer menus
+- `git-clone-repository`, contributing the `Clone repository` item to the host-owned Explorer `New` menu
 
 ### Plugin Registration
 
@@ -35,6 +36,14 @@ According to [git-menu-contributions config](../../../IDE-plugins/git-menu-contr
 - `contributionType`: `menu`
 - `id`: `git`
 - `location`: `file-exp:context-menu:file`, `file-exp:context-menu:directory`, `file-exp:new-menu`
+- `menuModule`: `menu-contributions.js`
+
+According to [git-clone-repository config](../../../IDE-plugins/git-clone-repository/config.json):
+
+- `pluginCategory`: `application`
+- `contributionType`: `menu`
+- `id`: `git-clone`
+- `location`: `file-exp:new-menu`
 - `menuModule`: `menu-contributions.js`
 
 ### Dependency Graph
@@ -65,7 +74,7 @@ The Git plugin owns:
 - commit, pull, push, and sync flows
 - Git authentication prompts
 - conflict resolution user interface (UI)
-- menu action semantics such as `New repository` in the host-owned Explorer `New` menu
+- menu action semantics such as `Add new repository` and `Clone repository` in the host-owned Explorer `New` menu
 - menu action semantics such as `Add to .gitignore` and `Remove from .gitignore`
 - direct ignore actions in `git-commit-modal`, without a separate pattern-editing prompt
 - AI commit-message generation with a modal-local busy overlay that keeps the Git content visible, prevents duplicate generation requests, and clears after either success or failure
@@ -82,9 +91,12 @@ For ignore actions in Explorer context menus, the owning Git behavior is:
 
 For the host-owned Explorer `New` menu, the owning Git behavior is:
 
-- `New repository` uses the current Explorer directory as the parent path
-- outside a Git worktree, it offers GitHub creation, GitHub cloning, and manual remote initialization in a new child directory
-- inside a Git worktree, the same entry opens an explicit `Add Git submodule` mode for an existing GitHub repository or a manual remote URL
+- `Add new repository` uses the current Explorer directory as the parent path and opens a repository creation modal
+- the Explorer global loader is shown from the menu action until the repository modal is rendered, and again after the modal closes until the repository operation and directory refresh complete and the new directory is visible in the Explorer tree
+- the add modal lists the available GitHub organizations and, on selection, fills an editable remote URL with the selected organization URL
+- outside a Git worktree, the add flow resolves from the remote: a GitHub repository URL, or a selected owner combined with the repository name, creates the remote through `git_create_github_repository`; any other remote URL initializes a local repository through `git_init_repository`
+- `Clone repository` uses the current Explorer directory as the parent path and clones a selected GitHub repository, or a manual remote URL, into a new child directory
+- inside a Git worktree, both the add and clone entries open an explicit `Add Git submodule` mode for an existing GitHub repository or a manual remote URL
 - submodule mode accepts an editable local directory name, runs against the nearest enclosing repository, and refreshes Explorer after success
 - creating or cloning an independent nested repository is forbidden; callers must use `git_submodule_add`
 - submodule addition follows standard Git staging behavior: `.gitmodules` and the gitlink are staged, but no commit or push is automatic

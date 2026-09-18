@@ -1,4 +1,5 @@
 import { callAgentTool, parseToolResult } from "/explorer/services/infrastructure/explorerApi.js";
+import { beginRepositoryLoader, endRepositoryLoader } from "../git-tool-button/components/git-repository-modal-shared/repository-loader.js";
 
 async function callGitTool(name, args) {
     const raw = await callAgentTool('gitAgent', name, args, { raw: true });
@@ -9,21 +10,129 @@ function normalizeRepositoryName(value) {
     return String(value || '').trim();
 }
 
-async function openNewRepositoryModal(basePath, { submoduleMode = false } = {}) {
-    const result = await assistOS.UI.showModal('git-new-repository-modal', { basePath, submoduleMode }, true);
-    if (!result || typeof result !== 'object') {
+async function openAddRepositoryModal(basePath, { submoduleMode = false } = {}) {
+    return assistOS.UI.showModal('git-add-repository-modal', { basePath, submoduleMode }, true);
+}
+
+function parseGithubTarget(remoteUrl, owner, name) {
+    const raw = String(remoteUrl || '').trim();
+    if (raw) {
+        const trimmed = raw.replace(/\/+$/g, '').replace(/\.git$/i, '');
+        const repoMatch = trimmed.match(/^https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+)$/i);
+        if (repoMatch) {
+            return { owner: repoMatch[1], repo: repoMatch[2] };
+        }
+        const ownerMatch = trimmed.match(/^https?:\/\/github\.com\/([^/\s]+)$/i);
+        if (ownerMatch && name) {
+            return { owner: ownerMatch[1], repo: name };
+        }
         return null;
     }
-    return {
-        mode: String(result.mode || 'manual').trim() || 'manual',
-        name: normalizeRepositoryName(result.name),
-        localName: normalizeRepositoryName(result.localName || result.name),
-        owner: String(result.owner || '').trim(),
-        visibility: String(result.visibility || 'private').trim(),
-        remote: String(result.remote || 'origin').trim(),
-        remoteUrl: String(result.remoteUrl || '').trim(),
-        repository: result.repository && typeof result.repository === 'object' ? result.repository : null
-    };
+    if (owner && name) {
+        return { owner, repo: name };
+    }
+    return null;
+}
+
+function resolveSubmoduleRemoteUrl(remoteUrl, owner, name) {
+    const raw = String(remoteUrl || '').trim();
+    const normalized = raw.replace(/\/+$/g, '').replace(/\.git$/i, '');
+    const ownerOnly = normalized.match(/^https?:\/\/github\.com\/([^/\s]+)$/i);
+    if (ownerOnly) {
+        return name ? `https://github.com/${ownerOnly[1]}/${name}.git` : raw;
+    }
+    if (raw) {
+        return raw;
+    }
+    if (owner && name) {
+        return `https://github.com/${owner}/${name}.git`;
+    }
+    return '';
+}
+
+async function executeAddRepository({ context, host }) {
+    const basePath = String(context?.currentFsPath || context?.currentDirectory || context?.currentPath || '').trim();
+    if (!basePath) {
+        throw new Error('Missing target directory for repository creation.');
+    }
+    let submoduleMode = false;
+    let result = null;
+    beginRepositoryLoader();
+    try {
+        const parentRepoInfo = await callGitTool('git_info', { path: basePath });
+        submoduleMode = Boolean(parentRepoInfo?.ok && parentRepoInfo?.repoPath);
+        result = await openAddRepositoryModal(basePath, { submoduleMode });
+    } finally {
+        endRepositoryLoader();
+    }
+    if (!result || typeof result !== 'object') {
+        return;
+    }
+    const name = normalizeRepositoryName(result.name);
+    const localName = normalizeRepositoryName(result.localName || result.name);
+    const owner = String(result.owner || '').trim();
+    const remoteUrl = String(result.remoteUrl || '').trim();
+    if (!name) {
+        throw new Error('Repository name is required.');
+    }
+
+    beginRepositoryLoader();
+    try {
+        if (submoduleMode) {
+            const submoduleUrl = resolveSubmoduleRemoteUrl(remoteUrl, owner, name);
+            if (!submoduleUrl) {
+                throw new Error('Remote URL is required.');
+            }
+            const addResult = await callGitTool('git_submodule_add', {
+                path: basePath,
+                name: localName,
+                remoteUrl: submoduleUrl
+            });
+            if (!addResult?.ok) {
+                throw new Error(addResult?.error || 'Failed to add Git submodule.');
+            }
+            host?.showStatus?.(`Added Git submodule: ${addResult.submodulePath || addResult.name || localName}.`);
+            await host?.refreshDirectory?.();
+            return;
+        }
+
+        const githubTarget = parseGithubTarget(remoteUrl, owner, name);
+        if (githubTarget) {
+            const createResult = await callGitTool('git_create_github_repository', {
+                path: basePath,
+                owner: githubTarget.owner,
+                name: githubTarget.repo,
+                localName: localName || githubTarget.repo,
+                visibility: result.visibility === 'public' ? 'public' : 'private',
+                remote: result.remote || 'origin'
+            });
+            if (!createResult?.ok) {
+                throw new Error(createResult?.error || 'Failed to create GitHub repository.');
+            }
+            const fullName = createResult.repository?.fullName || `${githubTarget.owner}/${githubTarget.repo}`;
+            host?.showStatus?.(`Created GitHub repository: ${fullName}.`);
+            await host?.refreshDirectory?.();
+            return;
+        }
+
+        if (!remoteUrl) {
+            throw new Error('Remote URL is required.');
+        }
+        const initResult = await callGitTool('git_init_repository', {
+            path: basePath,
+            name: localName,
+            remote: result.remote || 'origin',
+            remoteUrl
+        });
+        if (!initResult?.ok) {
+            host?.showStatus?.(initResult?.error || 'Failed to create repository.', true);
+            return;
+        }
+        host?.showStatus?.(`Created repository: ${initResult.name || localName} with ${initResult.remote || 'origin'}.`);
+        await host?.refreshDirectory?.();
+    } finally {
+        endRepositoryLoader();
+    }
 }
 
 function shouldOfferAddToGitignore(context) {
@@ -53,10 +162,10 @@ export async function getMenuItems({ context, plugin }) {
             return [];
         }
         return [{
-            id: 'git:new-repository',
-            label: 'New repository',
+            id: 'git:add-repository',
+            label: 'Add new repository',
             icon: plugin?.icon || '',
-            action: 'new-repository'
+            action: 'add-repository'
         }];
     }
 
@@ -89,91 +198,8 @@ export async function getMenuItems({ context, plugin }) {
 }
 
 export async function executeMenuAction({ action, context, host }) {
-    if (action === 'new-repository') {
-        const basePath = String(context?.currentFsPath || context?.currentDirectory || context?.currentPath || '').trim();
-        if (!basePath) {
-            throw new Error('Missing target directory for repository creation.');
-        }
-        const parentRepoInfo = await callGitTool('git_info', { path: basePath });
-        const submoduleMode = Boolean(parentRepoInfo?.ok && parentRepoInfo?.repoPath);
-        const modalResult = await openNewRepositoryModal(basePath, { submoduleMode });
-        if (!modalResult) {
-            return;
-        }
-        const repoName = modalResult.name;
-        if (!repoName) {
-            throw new Error('Repository name is required.');
-        }
-        if (submoduleMode) {
-            if (!modalResult.remoteUrl) {
-                throw new Error('Remote URL is required.');
-            }
-            const result = await callGitTool('git_submodule_add', {
-                path: basePath,
-                name: modalResult.localName || repoName,
-                remoteUrl: modalResult.remoteUrl
-            });
-            if (!result?.ok) {
-                throw new Error(result?.error || 'Failed to add Git submodule.');
-            }
-            host?.showStatus?.(`Added Git submodule: ${result.submodulePath || result.name || repoName}.`);
-            await host?.refreshDirectory?.();
-            return;
-        }
-        if (modalResult.mode === 'create-github') {
-            if (!modalResult.owner) {
-                throw new Error('GitHub owner is required.');
-            }
-            const result = await callGitTool('git_create_github_repository', {
-                path: basePath,
-                owner: modalResult.owner,
-                name: repoName,
-                localName: modalResult.localName || repoName,
-                visibility: modalResult.visibility === 'public' ? 'public' : 'private',
-                remote: modalResult.remote || 'origin'
-            });
-            if (!result?.ok) {
-                throw new Error(result?.error || 'Failed to create GitHub repository.');
-            }
-            const fullName = result.repository?.fullName || `${modalResult.owner}/${repoName}`;
-            host?.showStatus?.(`Created GitHub repository: ${fullName}.`);
-            await host?.refreshDirectory?.();
-            return;
-        }
-        if (modalResult.mode === 'clone-github') {
-            if (!modalResult.remoteUrl) {
-                throw new Error('Remote URL is required.');
-            }
-            const result = await callGitTool('git_clone_repository', {
-                path: basePath,
-                name: modalResult.localName || repoName,
-                remote: modalResult.remote || 'origin',
-                remoteUrl: modalResult.remoteUrl
-            });
-            if (!result?.ok) {
-                host?.showStatus?.(result?.error || 'Failed to clone repository.', true);
-                return;
-            }
-            const fullName = modalResult.repository?.fullName || repoName;
-            host?.showStatus?.(`Cloned repository: ${fullName}.`);
-            await host?.refreshDirectory?.();
-            return;
-        }
-        if (!modalResult.remoteUrl) {
-            throw new Error('Remote URL is required.');
-        }
-        const result = await callGitTool('git_init_repository', {
-            path: basePath,
-            name: repoName,
-            remote: modalResult.remote || 'origin',
-            remoteUrl: modalResult.remoteUrl
-        });
-        if (!result?.ok) {
-            host?.showStatus?.(result?.error || 'Failed to create repository.', true);
-            return;
-        }
-        host?.showStatus?.(`Created repository: ${result.name || repoName} with ${result.remote || modalResult.remote || 'origin'}.`);
-        await host?.refreshDirectory?.();
+    if (action === 'add-repository') {
+        await executeAddRepository({ context, host });
         return;
     }
 
@@ -216,7 +242,7 @@ export async function executeMenuAction({ action, context, host }) {
 
 export async function activateMenuItem({ context, host }) {
     const action = context?.slot === 'file-exp:new-menu'
-        ? 'new-repository'
+        ? 'add-repository'
         : 'add-to-gitignore';
     return executeMenuAction({ action, context, host });
 }

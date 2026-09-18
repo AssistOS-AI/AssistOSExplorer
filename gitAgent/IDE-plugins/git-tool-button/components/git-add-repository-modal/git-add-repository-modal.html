@@ -1,0 +1,35 @@
+<div class="modal-header">
+    <div class="modal-title" data-git-add-repository-title>New repository</div>
+    <div class="close" data-local-action="closeModal" aria-label="Close">
+        <img class="close-icon" src="/explorer/assets/icons/x-mark.svg" alt="close">
+    </div>
+</div>
+<div class="modal-body git-new-repository-modal-body">
+    <form class="git-new-repository-form" data-git-add-repository-form>
+        <label class="git-new-repository-field">
+            <span>Organization URL</span>
+            <div class="git-new-repository-targets" data-github-targets></div>
+        </label>
+        <label class="git-new-repository-field" for="gitAddRepositoryName">
+            <span>Repository name</span>
+            <input id="gitAddRepositoryName" name="githubName" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="git-new-repository-field" for="gitAddRepositoryRemoteUrl">
+            <span>Remote URL</span>
+            <input id="gitAddRepositoryRemoteUrl" name="remoteUrl" type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repository.git">
+        </label>
+        <label class="git-new-repository-field" for="gitAddRepositoryVisibility" data-git-add-visibility>
+            <span>Visibility</span>
+            <custom-select id="gitAddRepositoryVisibility"
+                           data-presenter="custom-select"
+                           name="visibility"
+                           data-options="%5B%7B%22value%22%3A%22private%22%2C%22label%22%3A%22Private%22%7D%2C%7B%22value%22%3A%22public%22%2C%22label%22%3A%22Public%22%7D%5D"
+                           data-selected="private"></custom-select>
+        </label>
+        <div class="git-new-repository-error" data-git-add-repository-error hidden></div>
+        <div class="bottom-modal-section modal-actions">
+            <button class="general-button" type="submit" data-git-add-repository-submit>Create</button>
+            <button class="gray-button" type="button" data-local-action="closeModal">Cancel</button>
+        </div>
+    </form>
+</div>

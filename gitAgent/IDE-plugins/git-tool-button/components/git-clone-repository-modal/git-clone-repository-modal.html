@@ -1,0 +1,28 @@
+<div class="modal-header">
+    <div class="modal-title" data-git-clone-repository-title>Clone repository</div>
+    <div class="close" data-local-action="closeModal" aria-label="Close">
+        <img class="close-icon" src="/explorer/assets/icons/x-mark.svg" alt="close">
+    </div>
+</div>
+<div class="modal-body git-new-repository-modal-body">
+    <form class="git-new-repository-form" data-git-clone-repository-form>
+        <label class="git-new-repository-field" for="gitCloneRepositorySearch">
+            <span data-git-clone-repository-search-label>Find repository</span>
+            <input id="gitCloneRepositorySearch" name="repositorySearch" type="search" autocomplete="off" spellcheck="false" placeholder="Search repositories">
+        </label>
+        <div class="git-new-repository-repositories" data-github-repositories></div>
+        <label class="git-new-repository-field" for="gitCloneRepositoryRemoteUrl">
+            <span>Remote URL</span>
+            <input id="gitCloneRepositoryRemoteUrl" name="remoteUrl" type="text" autocomplete="off" spellcheck="false" placeholder="https://github.com/owner/repository.git">
+        </label>
+        <label class="git-new-repository-field" for="gitCloneRepositoryLocalName">
+            <span>Local folder</span>
+            <input id="gitCloneRepositoryLocalName" name="cloneLocalName" type="text" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="git-new-repository-error" data-git-clone-repository-error hidden></div>
+        <div class="bottom-modal-section modal-actions">
+            <button class="general-button" type="submit" data-git-clone-repository-submit>Clone</button>
+            <button class="gray-button" type="button" data-local-action="closeModal">Cancel</button>
+        </div>
+    </form>
+</div>

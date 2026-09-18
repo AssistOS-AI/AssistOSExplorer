@@ -9,6 +9,7 @@
     ],
     "label": "Git",
     "tooltip": "Git actions for Explorer menus",
+    "locationOrder": 10,
     "presentation": {
         "file-exp:context-menu:file": {
             "label": "Add to .gitignore",
@@ -19,16 +20,16 @@
             "tooltip": "Add this directory to .gitignore"
         },
         "file-exp:new-menu": {
-            "label": "New repository",
-            "tooltip": "Create or clone a Git repository"
+            "label": "Add new repository",
+            "tooltip": "Create or initialize a Git repository"
         }
     },
     "icon": "./icon.svg",
     "menuModule": "menu-contributions.js",
     "dependencies": [
         {
-            "component": "git-new-repository-modal",
-            "presenter": "GitNewRepositoryModal",
+            "component": "git-add-repository-modal",
+            "presenter": "GitAddRepositoryModal",
             "type": "modal",
             "ownerComponent": "git-tool-button"
         }

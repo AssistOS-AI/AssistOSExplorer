@@ -42,8 +42,13 @@
             "type": "modal"
         },
         {
-            "component": "git-new-repository-modal",
-            "presenter": "GitNewRepositoryModal",
+            "component": "git-add-repository-modal",
+            "presenter": "GitAddRepositoryModal",
+            "type": "modal"
+        },
+        {
+            "component": "git-clone-repository-modal",
+            "presenter": "GitCloneRepositoryModal",
             "type": "modal"
         },
         {

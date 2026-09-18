@@ -40,7 +40,7 @@
                 <section>
                     <h2>AssistOSExplorer Integration</h2>
                     <p>Explorer integration uses the internal <code>AssistOSExplorer</code> repository. Frontend code calls <code>callAgentTool("gitAgent", ...)</code> and relies on this agent for Git operations, conflict checks, push/pull flows, and repository overview behavior.</p>
-                    <p>The Explorer <code>New repository</code> action is contextual: outside a repository it creates or clones a top-level repository, while inside a repository it opens <code>Add Git submodule</code> and accepts only an existing GitHub repository or manual remote URL.</p>
+                    <p>The Explorer <code>New</code> menu exposes two Git actions: <code>Add new repository</code> creates a GitHub remote or initializes a local repository from an editable remote URL, while <code>Clone repository</code> clones a selected GitHub repository or manual remote. Both actions are contextual: inside a repository they open <code>Add Git submodule</code> and accept only an existing GitHub repository or manual remote URL.</p>
                     <div class="doc-callout">
                         <p>Explorer remains the interaction surface, while <code>gitAgent</code> remains the operational boundary for Git process execution.</p>
                     </div>
