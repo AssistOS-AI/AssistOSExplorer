@@ -11,7 +11,7 @@ Explorer presents compatible Office documents while the onlyOffice agent owns th
 
 ## Core Content
 
-When enabling OnlyOffice in Marketplace, the administrator must select `global` runtime mode so the editor can access workspace files.
+OnlyOffice runs only in `global` runtime mode so the editor can access workspace files. The manifest declares `"enableModes": ["global"]`, so Marketplace offers only that mode and Ploinky rejects any other enable mode.
 
 The `onlyOffice` agent must be disabled by default. An administrator may enable it from Marketplace, and Explorer retains its built-in Office preview integration. When runtime status verifies that the agent is disabled, Explorer must explain that Office editing requires Marketplace enablement instead of waiting for startup or repeatedly requesting an editor session. The loader must provide Retry so the user can resume opening the document after an administrator enables the agent.
 

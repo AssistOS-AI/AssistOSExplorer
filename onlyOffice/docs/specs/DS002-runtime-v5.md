@@ -11,7 +11,7 @@ OnlyOffice [Runtime-v5](wiki.html#definition-runtime-v5) runs the pinned image b
 
 ## Core Content
 
-When enabling OnlyOffice in Marketplace, the administrator must select `global` runtime mode so the editor can access workspace files.
+OnlyOffice runs only in `global` runtime mode so the editor can access workspace files. The manifest declares `"enableModes": ["global"]`, so Marketplace offers only that mode and Ploinky rejects any other enable mode.
 
 Explorer must leave `onlyOffice` disabled by default. An administrator can enable it through Marketplace using Ploinky lifecycle controls; the same runtime, readiness, and authorization contracts apply after enablement.
 

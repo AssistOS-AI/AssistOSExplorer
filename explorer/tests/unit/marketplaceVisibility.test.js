@@ -275,6 +275,36 @@ test('Marketplace snapshots preserve actual rows, runtime-mode choices, expansio
     assert.equal(modal.state.expandedAgentRepos, expanded);
 });
 
+test('Marketplace offers only manifest enable modes and enables with the manifest default', async (t) => {
+    const modal = await createModal(t);
+    const agent = modal.state.marketplace.agents.find(item => item.ref === 'AllowedOrphan/worker');
+    Object.assign(agent, {enableModes: ['global', 'devel'], enableMode: 'global'});
+    modal.renderState();
+    const row = modal.agentsEl.querySelectorAll('[data-marketplace-agent-ref]')
+        .find(item => item.dataset.marketplaceAgentRef === agent.ref);
+    const mode = row.querySelector('[data-enable-mode-for]');
+    const toggle = row.querySelector('[data-agent-ref]');
+    assert.deepEqual(mode.children.map(option => option.value), ['global', 'devel']);
+    assert.deepEqual(mode.children.filter(option => option.selected).map(option => option.value), ['global']);
+    assert.equal(toggle.dataset.enableMode, 'global');
+
+    const requests = [];
+    modal.requestMarketplace = async (body) => { requests.push(body); return modal.state.marketplace; };
+    modal.scheduleAgentStatusRefresh = () => {};
+    await modal.handleAgentClick({target: {closest: selector => (selector === '[data-agent-ref]' ? toggle : null)}});
+    assert.deepEqual(requests, [{action: 'enable_agent', agentRef: agent.ref, mode: 'global'}]);
+});
+
+test('Marketplace defaults an unlisted current mode to the first manifest enable mode', async (t) => {
+    const modal = await createModal(t);
+    const agent = modal.state.marketplace.agents.find(item => item.ref === 'AllowedOrphan/worker');
+    Object.assign(agent, {enableModes: ['global'], enableMode: 'isolated'});
+    modal.renderState();
+    const toggle = modal.agentsEl.querySelectorAll('[data-agent-ref]')
+        .find(item => item.dataset.agentRef === agent.ref);
+    assert.equal(toggle.dataset.enableMode, 'global');
+});
+
 for (const status of [401, 403]) {
     test(`Marketplace removes cached management controls after refresh authorization failure ${status}`, async (t) => {
         const modal = await createModal(t);
