@@ -4,7 +4,7 @@ import {
     publicKeyCreationFromServer,
     publicKeyRequestFromServer,
 } from '../auth/auth-api.js';
-import { DEFAULT_PASSWORD_POLICY, newPasswordProblem, passwordReasonMessage } from '../auth/password-rules.js';
+import { newPasswordProblem, passwordReasonMessage } from '../auth/password-rules.js';
 
 // Sensitive account changes need a fresh confirmation: the server issues a
 // single-use grant for exactly one operation, which is used immediately and
@@ -215,6 +215,18 @@ export class AccountEnrollment {
         return this.profile?.emailVerified === true;
     }
 
+    // An unverified account may still change the password it already owns:
+    // the password is the only credential such an account can hold.
+    passwordChangeAllowed() {
+        return this.signInEmailVerified() || this.passwordConfigured();
+    }
+
+    methodUsable(profile, method) {
+        if (profile?.allowedAuthMethods?.includes(method) !== true) return false;
+        if (profile?.emailVerified === true) return true;
+        return method === 'password' && profile?.enrollments?.password?.configured === true;
+    }
+
     confirmationMethods() {
         return (this.profile?.reauthenticationMethods || []).filter((method) => Object.hasOwn(REAUTH_LABELS, method));
     }
@@ -222,7 +234,7 @@ export class AccountEnrollment {
     updateProfile(profile) {
         if (this.disposed) return;
         const activeStillAllowed = !this.activeMethod || this.activeMethod === 'contact'
-            || (profile?.allowedAuthMethods?.includes(this.activeMethod) && profile?.emailVerified === true);
+            || this.methodUsable(profile, this.activeMethod);
         const confirmationStillAllowed = !this.confirmation || profile?.reauthenticationMethods?.includes(this.confirmation.method);
         if (this.profile?.user?.id !== profile?.user?.id || !activeStillAllowed || !confirmationStillAllowed) {
             this.clearSensitiveState();
@@ -266,18 +278,18 @@ export class AccountEnrollment {
     renderPassword() {
         const configured = this.passwordConfigured();
         const editing = Boolean(this.passwordGrant);
+        const allowed = this.passwordChangeAllowed();
         this.passwordStatus.textContent = !this.enabled('password') ? 'Disabled by your administrator.'
-            : !this.signInEmailVerified() ? 'Verify a sign-in email first.'
+            : !this.signInEmailVerified() && !configured ? 'Verify a sign-in email first.'
                 : editing ? 'Enter your new password below.'
                     : configured ? 'A password is set for this account.' : 'No password set yet.';
         this.passwordButton.textContent = configured ? 'Change password' : 'Set a password';
-        this.passwordButton.disabled = this.busy || editing || !this.enabled('password') || !this.signInEmailVerified();
+        this.passwordButton.disabled = this.busy || editing || !this.enabled('password') || !allowed;
         this.passwordForm.hidden = !editing;
         this.passwordTitle.textContent = configured ? 'Change password' : 'Set a password';
-        const length = `Use at least ${DEFAULT_PASSWORD_POLICY.minLength} characters.`;
         this.passwordHint.textContent = configured
-            ? `${length} Changing your password signs out every session, including this one.`
-            : `${length} A long phrase that only you know works well.`;
+            ? 'Changing your password signs out every session, including this one.'
+            : 'A long phrase that only you know works well.';
         this.passwordUsername.value = this.profile?.user?.email || '';
         this.passwordInput.disabled = this.busy;
         this.passwordConfirmInput.disabled = this.busy;

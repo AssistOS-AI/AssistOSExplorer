@@ -92,3 +92,39 @@ export async function sendAuthCode({ to, code, correlationId = '', purpose = '' 
 export async function sendAuthCodeEmail({ email, code, correlationId = '' }) {
     return sendAuthCode({ to: email, code, correlationId });
 }
+
+// JSON-RPC code the Router answers when its tool policy refuses a call; the
+// tool never ran, so nothing was sent.
+const ROUTER_ACCESS_DENIED = -32003;
+
+// Same result contract as sendAuthCode: an MCP error, a declared failure or a
+// missing provider message id is a known failure. A Router policy refusal is
+// one too, for example before the Router has restarted after an upgrade added
+// this tool. The link is forwarded once and never logged here.
+export async function sendPasswordResetEmail({ to, resetUrl, expiresInMinutes = 30, correlationId = '' }, { createClient = createEmailAgentClient } = {}) {
+    const client = await createClient();
+    try {
+        let response;
+        try {
+            response = await client.callTool('email_send_password_reset', { to, resetUrl, expiresInMinutes, correlationId });
+        } catch (error) {
+            if (error?.code === ROUTER_ACCESS_DENIED) return { delivered: false, result: 'router-access-denied' };
+            throw error;
+        }
+        const result = parseToolResult(response);
+        if (response?.isError === true || result?.ok === false || result?.error
+            || typeof result.providerMessageId !== 'string' || !result.providerMessageId.trim()) {
+            return {
+                delivered: false,
+                result: result.error || 'email-agent-error',
+            };
+        }
+        return {
+            delivered: true,
+            providerMessageId: result.providerMessageId || '',
+            result,
+        };
+    } finally {
+        await Promise.resolve().then(() => client.close?.()).catch(() => {});
+    }
+}

@@ -87,3 +87,13 @@ test('every account page marks only its own navigation tab as current beside sig
         assert.doesNotMatch(html, /account-brand|>UserPersisto<\/a>/, file);
     }
 });
+
+test('the authentication policy description names every way the first administrator is claimed', async () => {
+    const html = await readFile(new URL('../public/dashboard/authentication.html', import.meta.url), 'utf8');
+    const [description] = html.match(/<div class="userpersisto-card-description">Administrator controls[^<]*<\/div>/) || [];
+    assert.ok(description);
+    assert.match(description, /initial password admin/);
+    assert.match(description, /password sign-up \(verified or direct\)/);
+    assert.match(description, /Google sign-in/);
+    assert.doesNotMatch(description, /first completed verified sign-up or Google sign-in/);
+});

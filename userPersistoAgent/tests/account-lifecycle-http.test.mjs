@@ -232,10 +232,9 @@ test('My Account sets a first password without revoking sessions, then changes i
     // Predictable input failures leave the grant unspent and run no KDF.
     for (const [body, error, reason] of [
         [{ grant, password: chosen, passwordConfirmation: `${chosen}!` }, 'password_mismatch', undefined],
-        [{ grant, password: 'fourteen chars', passwordConfirmation: 'fourteen chars' }, 'invalid_password', 'too_short'],
-        [{ grant, password: 'first-password@gmail.com', passwordConfirmation: 'first-password@gmail.com' }, 'invalid_password', 'equals_email'],
+        [{ grant, password: '', passwordConfirmation: '' }, 'invalid_password', 'too_short'],
         [{ grant, password: 'x'.repeat(1025), passwordConfirmation: 'x'.repeat(1025) }, 'invalid_password', 'too_long'],
-        [{ grant, password: 'passwordpassword', passwordConfirmation: 'passwordpassword' }, 'invalid_password', 'too_common'],
+        [{ grant, password: 'x'.repeat(129), passwordConfirmation: 'x'.repeat(129) }, 'invalid_password', 'too_long'],
     ]) {
         const refused = await setPassword(user.id, body);
         assert.deepEqual([refused.status, refused.data.error, refused.data.reason], [400, error, reason]);
@@ -319,6 +318,28 @@ test('a missing, foreign or invalid grant runs no KDF and never writes a passwor
     const usedLater = await setPassword(user.id, { grant: kept, password: chosen, passwordConfirmation: chosen });
     assert.deepEqual([usedLater.status, usedLater.data], [200, { ok: true, changed: false }]);
     assert.equal(kdf.hashes, 2);
+});
+
+test('an unverified account that already owns a password changes it, revokes sessions and still cannot enroll other methods', async () => {
+    const direct = await setup.signUpDirect('direct-lifecycle@example.test');
+    const user = direct.user;
+    assert.equal((await getUserById(user.id)).emailVerifiedAt, '');
+    const proof = await request('/service/dashboard/api/reauth/verify', { userId: user.id,
+        body: { operation: 'password.set', method: 'password', password: direct.password } });
+    assert.equal(proof.status, 200, JSON.stringify(proof.data));
+    const replacement = setup.newTestPassword();
+    const changed = await setPassword(user.id, { grant: proof.data.grant, password: replacement, passwordConfirmation: replacement });
+    assert.deepEqual([changed.status, changed.data], [200, { ok: true, changed: true }]);
+    const updated = await getUserById(user.id);
+    assert.deepEqual([updated.emailVerifiedAt, updated.authGeneration], ['', 1], 'changing the only credential keeps the mailbox unverified but revokes sessions');
+    assert.equal((await profileOf(user.id)).emailVerified, false);
+    await assert.rejects(loginWithUserPassword({ email: user.email, password: direct.password }), { code: 'authentication_failed' });
+    assert.equal((await loginWithUserPassword({ email: user.email, password: replacement })).user.id, user.id);
+    for (const operation of ['totp.enroll', 'passkey.register']) {
+        const refused = await request('/service/dashboard/api/reauth/start', { userId: user.id,
+            body: { operation, method: 'password', password: replacement } });
+        assert.deepEqual([refused.status, refused.data.error], [409, 'verified_email_required'], operation);
+    }
 });
 
 // Holds both requests' hashing until both have passed the read-only checks.

@@ -464,7 +464,7 @@
         {
             "name": "userpersisto_auth_policy_get",
             "title": "Get authentication policy",
-            "description": "Admin: read enabled sign-in methods, self-registration, the fixed selfRegistered signup role, explicit redirect origins, read-only workspace Router origin trust status, and active environment overrides.",
+            "description": "Admin: read enabled sign-in methods, self-registration, signup email verification, the fixed selfRegistered signup role, explicit redirect origins, read-only workspace Router origin trust status, read-only email delivery availability, and active environment overrides.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -476,7 +476,7 @@
         {
             "name": "userpersisto_auth_policy_set",
             "title": "Set authentication policy",
-            "description": "Admin: configure enabled sign-in methods, self-registration and redirect origins. Account passwords are never accepted here. Public signup always receives selfRegistered.",
+            "description": "Admin: configure enabled sign-in methods, self-registration, signup email verification and redirect origins. Account passwords are never accepted here. Public signup always receives selfRegistered.",
             "command": "sh",
             "args": ["tools/userpersisto_tool.sh"],
             "cwd": "/code",
@@ -491,6 +491,7 @@
                         "items": { "type": "string", "enum": ["password", "emailCode", "passkey", "totp", "google"] }
                     },
                     "selfRegistrationEnabled": { "type": "boolean" },
+                    "signupEmailVerificationRequired": { "type": "boolean" },
                     "allowedRedirectOrigins": { "type": "array", "items": { "type": "string", "format": "uri" } }
                 },
                 "minProperties": 1,

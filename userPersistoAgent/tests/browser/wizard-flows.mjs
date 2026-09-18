@@ -19,7 +19,7 @@ import { createOidcClient } from '../../lib/oidc/clients.mjs';
 import { resetOidcProviderForTests } from '../../lib/oidc/provider.mjs';
 import { RESEND_COOLDOWN_MS, resetEmailAttemptLimitsForTests } from '../../lib/auth/emailAttempts.mjs';
 import { resetKdfForTests } from '../../lib/auth/password.mjs';
-import { resetPasswordLimitsForTests } from '../../lib/auth/userPassword.mjs';
+import { resetPasswordLimitsForTests, loginWithUserPassword } from '../../lib/auth/userPassword.mjs';
 
 // Opt-in browser regression for the email-first wizard on both renderers: the
 // Router SSO page and an OIDC interaction in a popup opened by a cross-site
@@ -35,7 +35,7 @@ const artifactRoot = resolve(process.env.WIZARD_BROWSER_ARTIFACT_DIR || join(rep
 const environment = { ...process.env };
 const output = console.log.bind(console);
 const MANAGED_ENVIRONMENT = ['PROD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED',
-    'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_DEV_BOOTSTRAP'];
+    'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_DEV_BOOTSTRAP', 'USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED'];
 let phase = 'loading the explicitly selected Playwright runtime';
 let browser;
 const installation = { folder: '', service: null, application: null, google: null };
@@ -105,6 +105,9 @@ async function runInitialPasswordSetup({ label, prefix, prod }) {
     installation.folder = await mkdtemp(join(tmpdir(), 'userpersisto-initial-password-browser-'));
     for (const name of MANAGED_ENVIRONMENT) delete process.env[name];
     if (prod !== undefined) process.env.PROD = prod;
+    // This fixture exercises the verified flow: requiring verification keeps
+    // the email-signup offer dependent on delivery.
+    process.env.USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED = 'true';
     process.env.PERSISTENCE_FOLDER = installation.folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'initial-password-browser-fixture-settings-key';
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
@@ -210,6 +213,9 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     installation.folder = await mkdtemp(join(tmpdir(), 'userpersisto-wizard-browser-'));
     for (const name of MANAGED_ENVIRONMENT) delete process.env[name];
     if (prod !== undefined) process.env.PROD = prod;
+    // This fixture exercises the verified code flow; the direct default is
+    // covered by runDefaultSignupAndReset.
+    process.env.USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED = 'true';
     process.env.PERSISTENCE_FOLDER = installation.folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'wizard-browser-fixture-settings-key';
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
@@ -308,13 +314,13 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     assert.equal(await flow.page.locator('#auth-signup-email').inputValue(), 'owner@example.test');
     await shot(flow.page, '03-sso-create-password');
 
-    phase = `${label}: SSO password creation refuses a mismatch and a short password locally`;
+    phase = `${label}: SSO password creation refuses a mismatch and an empty password locally`;
     await createPassword(flow.page, passwords.owner, `${passwords.owner}!`);
     await alert(flow.page, 'The passwords do not match.');
     assert.equal((await inputFacts(flow.page, '#auth-confirm-password')).empty, true, 'A mismatched confirmation is emptied.');
     assert.equal(await flow.page.evaluate(() => document.activeElement?.id), 'auth-confirm-password');
-    await createPassword(flow.page, 'short value', 'short value');
-    await alert(flow.page, 'Use at least 15 characters.');
+    await createPassword(flow.page, '', '');
+    await alert(flow.page, 'Enter a password.');
     assert.equal(signupStarts.count, 0, 'Predictable password errors never reach the server.');
 
     phase = `${label}: SSO a lost response resumes the staged password after a failed first delivery`;
@@ -696,8 +702,210 @@ async function runInstallation({ label, prefix, prod, waitForCooldown }) {
     assert.deepEqual(browserErrors, [], 'No page may raise an uncaught error.');
 }
 
-async function teardownInstallation() {
-    await Promise.allSettled([closeServer(installation.application), closeServer(installation.service), installation.google?.close()]);
+// Default policy: no signup verification and an emailed reset link. Runs once
+// on a fresh installation without PROD.
+async function runDefaultSignupAndReset({ label, prefix }) {
+    const mail = [];
+    const resets = [];
+    const browserErrors = [];
+    const secret = () => randomBytes(12).toString('base64url');
+    const passwords = { owner: `fixture ${secret()}`, member: `fixture ${secret()}`, oidc: `fixture ${secret()}` };
+    const shot = (page, name) => screenshot(page, `${prefix}-${name}`);
+    const watch = (page, name) => page.on('pageerror', (error) => browserErrors.push(`${name}: ${error.message}`));
+    const next = (page) => page.getByRole('button', { name: 'Next', exact: true }).click();
+    const heading = (page, name) => page.getByRole('heading', { level: 1, name, exact: true }).waitFor();
+    const alert = (page, text) => page.locator('[role="alert"]').filter({ hasText: text }).first().waitFor();
+    const createPassword = async (page, password, confirmation = password) => {
+        await page.getByLabel('Password', { exact: true }).fill(password);
+        await page.getByLabel('Confirm password', { exact: true }).fill(confirmation);
+        await page.getByRole('button', { name: 'Create account', exact: true }).click();
+    };
+
+    phase = `${label}: initializing the default no-verification installation`;
+    installation.folder = await mkdtemp(join(tmpdir(), 'userpersisto-default-browser-'));
+    for (const name of MANAGED_ENVIRONMENT) delete process.env[name];
+    process.env.PERSISTENCE_FOLDER = installation.folder;
+    process.env.USERPERSISTO_SETTINGS_KEY = 'default-browser-fixture-settings-key';
+    process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'controlled-google-client';
+    resetEmailAttemptLimitsForTests();
+    resetPasswordLimitsForTests();
+    resetKdfForTests();
+    await ensureSeedData();
+    const service = installation.service = startService({ port: 0, host: '127.0.0.1' }, {
+        emailStatus: async () => ({ available: true }),
+        deliverEmail: async (message) => { mail.push({ ...message, delivered: true }); return { delivered: true, providerMessageId: 'browser-fixture' }; },
+        deliverPasswordReset: async (message) => { resets.push(message); return { delivered: true, providerMessageId: 'browser-reset-fixture' }; },
+    });
+    attachRouterCallback(service);
+    if (!service.listening) await once(service, 'listening');
+    const origin = `http://localhost:${service.address().port}`;
+    process.env.USERPERSISTO_GOOGLE_REDIRECT_URI = `${origin}/service/auth/google/callback`;
+    const issuer = `${origin}/service/oidc`;
+    process.env.USERPERSISTO_OIDC_ISSUER = issuer;
+
+    async function open() {
+        const request = await createLoginRequest({ redirectUri: `${origin}/auth/callback` });
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        page.setDefaultTimeout(15_000);
+        watch(page, 'sso');
+        await page.goto(`${origin}/service/auth/?requestId=${encodeURIComponent(request.providerState)}&state=default-state`);
+        await page.locator('form.start-panel').waitFor();
+        return { request, context, page };
+    }
+    async function complete(flow) {
+        await flow.page.getByRole('heading', { name: 'Router callback', exact: true }).waitFor();
+        const callback = new URL(flow.page.url());
+        assert.equal(callback.searchParams.get('state'), 'default-state');
+        return consumeAuthCode({ providerState: flow.request.providerState, code: callback.searchParams.get('code') });
+    }
+    async function signUpDirect(flow, email, password) {
+        await flow.page.getByRole('textbox', { name: 'Email', exact: true }).fill(email);
+        await flow.page.getByRole('button', { name: 'Next', exact: true }).click();
+        const offer = flow.page.locator('form.signup-offer-panel');
+        const onPassword = flow.page.getByRole('heading', { name: 'Enter your password', exact: true });
+        await offer.or(onPassword).first().waitFor();
+        if (await onPassword.isVisible()) await flow.page.getByRole('button', { name: 'Sign up', exact: true }).click();
+        else await flow.page.getByRole('button', { name: 'Sign up', exact: true }).click();
+        await heading(flow.page, 'Create your password');
+        await flow.page.getByText('No email verification is needed now. You can verify your email later from My Account.', { exact: true }).waitFor();
+        await createPassword(flow.page, password);
+        assert.equal(await flow.page.getByRole('textbox', { name: 'Code' }).count(), 0, 'The default flow never asks for a code.');
+        return complete(flow);
+    }
+
+    phase = `${label}: SSO direct signup claims the administrator without any mail`;
+    const ownerFlow = await open();
+    const owner = await signUpDirect(ownerFlow, 'direct.owner@example.test', passwords.owner);
+    assert.deepEqual([owner.roles, owner.user.emailVerifiedAt], [['admin'], '']);
+    assert.equal(mail.length, 0, 'A direct signup sends no code.');
+    await shot(ownerFlow.page, '17-sso-direct-signup');
+    await ownerFlow.context.close();
+
+    const memberFlow = await open();
+    const member = await signUpDirect(memberFlow, 'direct.member@example.test', passwords.member);
+    assert.deepEqual([member.roles, member.user.emailVerifiedAt, member.capabilities.includes('explorer.access')],
+        [['selfRegistered'], '', false]);
+    await memberFlow.context.close();
+
+    phase = `${label}: Forgot password emails a fragment link and the reset page changes the password once`;
+    const forgotFlow = await open();
+    await forgotFlow.page.getByRole('textbox', { name: 'Email', exact: true }).fill(owner.user.email);
+    await forgotFlow.page.getByRole('button', { name: 'Next', exact: true }).click();
+    await heading(forgotFlow.page, 'Enter your password');
+    await forgotFlow.page.getByRole('button', { name: 'Forgot password?', exact: true }).click();
+    await heading(forgotFlow.page, 'Reset your password');
+    await shot(forgotFlow.page, '18-forgot-password');
+    await forgotFlow.page.getByRole('button', { name: 'Send reset link', exact: true }).click();
+    await heading(forgotFlow.page, 'Check your email');
+    assert.equal(resets.length, 1);
+    assert.equal(resets[0].to, owner.user.email);
+    const token = /#token=([A-Za-z0-9_-]{43})$/.exec(resets[0].resetUrl)?.[1];
+    assert.ok(token, 'The link carries a fragment token.');
+    await shot(forgotFlow.page, '19-reset-link-sent');
+    await forgotFlow.context.close();
+
+    const resetContext = await browser.newContext();
+    const resetPage = await resetContext.newPage();
+    resetPage.setDefaultTimeout(15_000);
+    watch(resetPage, 'reset');
+    await resetPage.goto(resets[0].resetUrl);
+    await heading(resetPage, 'Choose a new password');
+    assert.equal(new URL(resetPage.url()).hash, '', 'The token leaves the address bar.');
+    assert.equal(await resetPage.locator('#reset-account-email').inputValue(), owner.user.email);
+    const replacement = `fixture ${secret()}`;
+    await resetPage.locator('#reset-new-password').fill(replacement);
+    await resetPage.locator('#reset-confirm-password').fill(`${replacement} typo`);
+    await resetPage.getByRole('button', { name: 'Change password', exact: true }).click();
+    await alert(resetPage, 'The passwords do not match.');
+    await resetPage.locator('#reset-new-password').fill(replacement);
+    await resetPage.locator('#reset-confirm-password').fill(replacement);
+    await shot(resetPage, '20-reset-choose-password');
+    await resetPage.getByRole('button', { name: 'Change password', exact: true }).click();
+    await heading(resetPage, 'Password changed');
+    await shot(resetPage, '21-reset-changed');
+    assert.equal(Boolean((await getUserByEmail(owner.user.email)).emailVerifiedAt), true, 'The reset verifies the mailbox.');
+    await assert.rejects(loginWithUserPassword({ email: owner.user.email, password: passwords.owner }), { code: 'authentication_failed' });
+    assert.equal((await loginWithUserPassword({ email: owner.user.email, password: replacement })).user.id, owner.user.id);
+    const reusedPage = await resetContext.newPage();
+    reusedPage.setDefaultTimeout(15_000);
+    watch(reusedPage, 'reset-reused');
+    await reusedPage.goto(resets[0].resetUrl);
+    await heading(reusedPage, 'This link is not valid');
+    await shot(reusedPage, '22-reset-link-used');
+    await resetContext.close();
+
+    phase = `${label}: OIDC native signup-create creates an unverified account before consent`;
+    let config;
+    let callbackUri;
+    const completions = [];
+    const attempts = new Map();
+    installation.application = http.createServer(async (req, res) => {
+        try {
+            const url = new URL(req.url, callbackUri);
+            if (url.pathname === '/') {
+                res.writeHead(200, { 'Content-Type': 'text/html' });
+                return res.end('<h1>Application</h1><button id="open">Sign in with UserPersisto</button><script>document.getElementById("open").onclick = () => window.open("/start", "userpersisto", "width=520,height=720");</script>');
+            }
+            if (url.pathname === '/start') {
+                const state = oidc.randomState();
+                const nonce = oidc.randomNonce();
+                const verifier = oidc.randomPKCECodeVerifier();
+                attempts.set(state, { nonce, verifier });
+                const target = oidc.buildAuthorizationUrl(config, { redirect_uri: callbackUri, scope: 'openid email', prompt: 'login', state, nonce,
+                    code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256', screen_hint: 'signup' });
+                res.writeHead(302, { Location: target.href });
+                return res.end();
+            }
+            if (url.pathname !== '/callback') { res.writeHead(404); return res.end(); }
+            const state = url.searchParams.get('state');
+            const attempt = attempts.get(state);
+            attempts.delete(state);
+            const tokens = await oidc.authorizationCodeGrant(config, url, { pkceCodeVerifier: attempt.verifier, expectedState: state, expectedNonce: attempt.nonce });
+            completions.push({ sub: tokens.claims().sub });
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            return res.end('<h1>Client completed</h1>');
+        } catch {
+            res.writeHead(400, { 'Content-Type': 'text/html' });
+            return res.end('<h1>Client verification failed</h1>');
+        }
+    });
+    installation.application.listen(0, '127.0.0.1');
+    await once(installation.application, 'listening');
+    const applicationOrigin = `http://127.0.0.1:${installation.application.address().port}`;
+    callbackUri = `${applicationOrigin}/callback`;
+    await createOidcClient({ client_id: 'default-signup-regression', client_name: 'Default signup application', redirect_uris: [callbackUri],
+        token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], scope: 'openid email' }, { actorId: owner.user.id });
+    config = await oidc.discovery(new URL(issuer), 'default-signup-regression', undefined, oidc.None(), { execute: [oidc.allowInsecureRequests] });
+    const oidcContext = await browser.newContext();
+    const opener = await oidcContext.newPage();
+    await opener.goto(applicationOrigin);
+    const [oidcPage] = await Promise.all([oidcContext.waitForEvent('page'), opener.click('#open')]);
+    oidcPage.setDefaultTimeout(15_000);
+    watch(oidcPage, 'oidc');
+    const nativePosts = trackNativePosts(oidcPage);
+    await heading(oidcPage, 'Create your account');
+    await oidcPage.getByRole('textbox', { name: 'Email' }).fill('direct.oidc@example.test');
+    await next(oidcPage);
+    await oidcPage.getByRole('button', { name: 'Sign up', exact: true }).click();
+    await heading(oidcPage, 'Create your password');
+    await createPassword(oidcPage, passwords.oidc);
+    await oidcPage.getByRole('button', { name: 'Allow access', exact: true }).waitFor();
+    const oidcMember = await getUserByEmail('direct.oidc@example.test');
+    assert.equal(Boolean(oidcMember.emailVerifiedAt), false);
+    await shot(oidcPage, '23-oidc-direct-consent');
+    await oidcPage.getByRole('button', { name: 'Allow access', exact: true }).click();
+    await oidcPage.getByRole('heading', { name: 'Client completed' }).waitFor();
+    assert.equal(completions.at(-1).sub, oidcMember.id);
+    assert.deepEqual(await nativePosts('signup-create'), [true], 'The native signup-create POST carried the browser proof.');
+    await oidcContext.close();
+
+    const store = await getStore();
+    assert.equal((await store.select('user')).totalCount, 3, 'Exactly the three completed sign-ups created accounts.');
+    assert.deepEqual(browserErrors, [], 'No page may raise an uncaught error.');
+}
+
+async function teardownInstallation() {    await Promise.allSettled([closeServer(installation.application), closeServer(installation.service), installation.google?.close()]);
     installation.application = null;
     installation.service = null;
     installation.google = null;
@@ -731,7 +939,9 @@ async function verify() {
         await runInstallation(run);
         await teardownInstallation();
     }
-    output(`PASS Chromium ${browser.version()}: on fresh installations without and with PROD, SSO shows Google/Email/Next, recovers lost signup and change-email responses without another password, blocks Back during an email change, handles a failed delivery, Send again, reload, a wrong code, two tabs and the resend cooldown, claims the first administrator and a selfRegistered member, signs in with a password containing supplementary-plane characters and through Try another way, shows the neutral no-password state, expires with Start again, handles Google cancellation and controlled sign-in, and completes OIDC signup and password login through native POSTs carrying the strict browser proof with separate consent. Screenshots: ${artifactRoot}`);
+    await runDefaultSignupAndReset({ label: 'default policy', prefix: 'c' });
+    await teardownInstallation();
+    output(`PASS Chromium ${browser.version()}: on fresh installations without and with PROD, SSO shows Google/Email/Next, recovers lost signup and change-email responses without another password, blocks Back during an email change, handles a failed delivery, Send again, reload, a wrong code, two tabs and the resend cooldown, claims the first administrator and a selfRegistered member, signs in with a password containing supplementary-plane characters and through Try another way, shows the neutral no-password state, expires with Start again, handles Google cancellation and controlled sign-in, and completes OIDC signup and password login through native POSTs carrying the strict browser proof with separate consent; under the default policy it also signs up two accounts without any mail on SSO and OIDC, requests an emailed reset link, and changes the password once on the standalone reset page before the used link shows the invalid state. Screenshots: ${artifactRoot}`);
 }
 
 try {

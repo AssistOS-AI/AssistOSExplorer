@@ -10,6 +10,7 @@ import { getStore } from '../lib/store.mjs';
 import { describeOriginPolicy, environmentPolicyOverrides, getAuthPolicy, isAuthMethodEnabled, updateAuthPolicy } from '../lib/policy.mjs';
 import * as oidcClients from '../lib/oidc/clients.mjs';
 import { getGoogleStatus } from '../lib/auth/google.mjs';
+import { getEmailAuthCodeStatus } from '../lib/email-agent-client.mjs';
 import * as roles from '../lib/roles.mjs';
 
 async function requireAdmin(context, capability = 'admin.users.manage') {
@@ -218,11 +219,13 @@ const HANDLERS = {
         await requireAdmin(context, 'admin.agentSettings.manage');
         const policy = await getAuthPolicy();
         // `allowedRedirectOrigins` stays the writable explicit list; managed and
-        // effective origins are separate read-only provenance.
+        // effective origins and email delivery availability are separate
+        // read-only provenance.
         return {
             ...policy,
             registrationRole: 'selfRegistered',
             environmentOverrides: environmentPolicyOverrides(),
+            emailDeliveryAvailable: (await getEmailAuthCodeStatus()).available === true,
             ...await describeOriginPolicy(policy),
         };
     },

@@ -197,7 +197,7 @@ test('browser binding, exact origin, CSRF token, consent denial, prompt none and
     assert.equal(loginPage.headers.get('referrer-policy'), 'same-origin');
     assert.match(loginPage.headers.get('content-security-policy'), /form-action 'self' https:\/\/client\.example\.test;/);
     const form = await loginPage.text();
-    for (const action of ['attempt', 'email-start', 'email-verify', 'password-login', 'signup-start', 'signup-resend', 'signup-email', 'signup-verify']) {
+    for (const action of ['attempt', 'email-start', 'email-verify', 'password-login', 'password-forgot', 'signup-start', 'signup-create', 'signup-resend', 'signup-email', 'signup-verify']) {
         assert.equal((await flow.browser.post(`${flow.location}/${action}`, { email: user.email, purpose: 'login', csrf: csrf(form) }, 'https://evil.example')).status, 403);
         assert.equal((await flow.browser.post(`${flow.location}/${action}`, { email: user.email, purpose: 'login', csrf: 'wrong' })).status, 403);
     }

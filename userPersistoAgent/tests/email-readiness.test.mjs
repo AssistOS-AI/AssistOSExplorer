@@ -23,7 +23,7 @@ async function fixture(run) {
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'readiness-fixture-key';
     for (const name of ['USERPERSISTO_ADMIN_PASSWORD', 'USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_DEV_BOOTSTRAP',
-        'USERPERSISTO_GOOGLE_CLIENT_ID', 'USERPERSISTO_GOOGLE_CLIENT_SECRET', 'USERPERSISTO_GOOGLE_REDIRECT_URI']) delete process.env[name];
+        'USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED', 'USERPERSISTO_GOOGLE_CLIENT_ID', 'USERPERSISTO_GOOGLE_CLIENT_SECRET', 'USERPERSISTO_GOOGLE_REDIRECT_URI']) delete process.env[name];
     // This fixture isolates email readiness from the distributed local Google client.
     process.env.USERPERSISTO_GOOGLE_CLIENT_ID = 'incomplete-email-fixture-google-client';
     setup.resetAuthLimitsForTests();
@@ -69,6 +69,9 @@ test('policy cannot strand an email-only administrator when EmailAgent is unavai
 }));
 
 test('public SSO and signed-in account surfaces hide unavailable email and reject sending without consuming a grant', () => fixture(async ({ start }) => {
+    // This suite pins the required-verification policy so its gating equals the
+    // pre-default behaviour; the default-mode twin lives in signup-policy.test.mjs.
+    await updateAuthPolicy({ signupEmailVerificationRequired: true }, { emailStatus: async () => ({ available: true }) });
     const { user } = await setup.signUpWithPassword('member@example.test');
     const sign = await createRouterSigner();
     let available = false;
@@ -106,20 +109,34 @@ test('public SSO and signed-in account surfaces hide unavailable email and rejec
 }));
 
 test('unavailable email keeps initial-password setup available without advertising email signup', () => fixture(async ({ start }) => {
+    await updateAuthPolicy({ signupEmailVerificationRequired: true }, { emailStatus: async () => ({ available: true }) });
     const production = await start();
     const unavailable = await (await fetch(`${production}/service/auth/setup`)).json();
     assert.equal(unavailable.methods.emailCode, false);
     assert.equal(unavailable.registration, true);
     assert.equal(unavailable.initialPasswordSetup, true);
     assert.equal(unavailable.signup.email, false);
+    assert.equal(unavailable.signup.verification, 'required');
     assert.equal((await wizardConfiguration()).methods.emailCode, false, 'a caller without a readiness result cannot advertise email');
     const controlled = await start({ deliverEmail: async () => ({ delivered: true, providerMessageId: 'fixture' }) });
     const configured = await (await fetch(`${controlled}/service/auth/setup`)).json();
     assert.equal(configured.methods.emailCode, true);
     assert.equal(configured.registration, true);
+
+    // Default-policy twin: signup is advertised without delivery, while the
+    // verified code flow still refuses and readiness never fakes email.
+    await updateAuthPolicy({ signupEmailVerificationRequired: false }, { emailStatus: async () => ({ available: true }) });
+    const advertisement = await (await fetch(`${production}/service/auth/setup`)).json();
+    assert.deepEqual([advertisement.signup.email, advertisement.signup.verification, advertisement.methods.emailCode], [true, 'none', false]);
+    const request = await createLoginRequest({ redirectUri: `${production}/auth/callback` });
+    const refused = await new CookieBrowser().json(`${production}/service/auth/signup/start`, {
+        requestId: request.providerState, email: 'default-mode@example.test', password: 'a long enough new password', passwordConfirmation: 'a long enough new password',
+    });
+    assert.deepEqual([refused.status, (await refused.json()).error], [403, 'registration_disabled']);
 }));
 
 test('an unconfigured service completes first-owner signup through development log delivery only after explicit enablement', () => fixture(async ({ start }) => {
+    await updateAuthPolicy({ signupEmailVerificationRequired: true }, { emailStatus: async () => ({ available: true }) });
     const base = await start();
     const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     const browser = new CookieBrowser();

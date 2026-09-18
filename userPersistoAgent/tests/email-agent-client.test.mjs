@@ -1,6 +1,6 @@
 import test, { after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
+import { getEmailAuthCodeStatus, sendAuthCode, sendPasswordResetEmail } from '../lib/email-agent-client.mjs';
 
 const originalDevelopmentMode = process.env.USERPERSISTO_DEV_BOOTSTRAP;
 beforeEach(() => { delete process.env.USERPERSISTO_DEV_BOOTSTRAP; });
@@ -92,4 +92,49 @@ test('email delivery never mistakes an MCP error or malformed response for provi
         ['email_send_auth_code', { to: 'member@example.test', code: '123456', correlationId: 'request' }],
         ['email_send_auth_code', { to: 'member@example.test', code: '654321', correlationId: 'signup', purpose: 'signup-verification' }],
     ]);
+});
+
+test('password reset delivery keeps the same success contract and forwards the link once', async () => {
+    for (const response of [
+        { isError: true, content: [{ type: 'text', text: 'MCP error: unavailable' }] },
+        { content: [{ type: 'text', text: 'malformed' }] },
+        {}, { providerMessageId: '' }, { providerMessageId: 42 },
+        { ok: false, providerMessageId: 'not-a-success' },
+        { error: 'agent invocation is required' },
+    ]) {
+        const result = await sendPasswordResetEmail({ to: 'member@example.test', resetUrl: 'https://account.example.test/service/auth/reset.html#token=x' },
+            { createClient: async () => ({ callTool: async () => response, close: async () => {} }) });
+        assert.equal(result.delivered, false);
+    }
+    const calls = [];
+    let closed = false;
+    const accepted = await sendPasswordResetEmail({ to: 'member@example.test', resetUrl: 'https://account.example.test/service/auth/reset.html#token=y',
+        expiresInMinutes: 15, correlationId: 'reset-1' }, { createClient: async () => ({
+        callTool: async (...args) => { calls.push(args); return { content: [{ type: 'text', text: '{"providerMessageId":"provider-9"}' }] }; },
+        close: () => { closed = true; },
+    }) });
+    assert.equal(accepted.delivered, true);
+    assert.equal(accepted.providerMessageId, 'provider-9');
+    assert.equal(closed, true);
+    assert.deepEqual(calls, [['email_send_password_reset', {
+        to: 'member@example.test',
+        resetUrl: 'https://account.example.test/service/auth/reset.html#token=y',
+        expiresInMinutes: 15,
+        correlationId: 'reset-1',
+    }]]);
+});
+
+test('a Router policy refusal of the reset tool is a known failure, while a transport error stays unknown', async () => {
+    const reset = { to: 'member@example.test', resetUrl: 'https://account.example.test/service/auth/reset.html#token=z' };
+    let closed = false;
+    const denied = await sendPasswordResetEmail(reset, { createClient: async () => ({
+        callTool: async () => { throw Object.assign(new Error('Access denied'), { code: -32003, data: { code: 'AGENT_POLICY_DENIED' } }); },
+        close: () => { closed = true; },
+    }) });
+    assert.equal(denied.delivered, false);
+    assert.equal(closed, true);
+    await assert.rejects(sendPasswordResetEmail(reset, { createClient: async () => ({
+        callTool: async () => { throw new Error('socket hang up'); },
+        close: async () => {},
+    }) }), /socket hang up/);
 });

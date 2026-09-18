@@ -251,60 +251,24 @@ test('change email keeps the verifier, invalidates the old address and never ask
     assert.equal((await loginWithUserPassword({ email: 'fixed@example.test', password: secret })).user.id, created.user.id);
 });
 
-test('changing email rejects the selected password ignoring case and retains private staging for a corrected address', async () => {
+test('changing email to an address equal to the chosen password succeeds without an extra hash', async () => {
     for (const secret of ['destination@example.test', 'Mixed.Destination@Example.test']) {
         const context = await parent();
         const browser = setup.newBrowserProof();
         const mail = mailbox();
         const originalEmail = secret === secret.toLowerCase() ? 'original-lower@example.test' : 'original-mixed@example.test';
-        const correctedEmail = secret === secret.toLowerCase() ? 'corrected-lower@example.test' : 'corrected-mixed@example.test';
         const before = hashes;
         await start(context, browser, { email: originalEmail, secret, deliver: mail.deliver });
         const staged = await attempts.readAttempt({ parent: context, browserProof: browser });
-        assert.ok(password.parseVerifier(staged.signup.emailComparisonVerifier));
-        assert.equal(staged.signup.emailComparisonVerifier === staged.signup.verifier, secret === secret.toLowerCase());
-        assert.equal(hashes - before, secret === secret.toLowerCase() ? 1 : 2, 'only mixed-case email-shaped secrets need a second verifier');
-        const originalCode = mail.last().code;
-        const refused = await outcome(signup.changeSignupEmail({ parent: context, browserProof: browser, email: secret.toLowerCase(), deliver: mail.deliver }));
-        assert.deepEqual(refused, { ok: false, code: 'invalid_password', reason: 'equals_email' });
-        assert.equal(mail.messages.length, 1, 'a refused address sends no new proof');
-        const retained = await attempts.readAttempt({ parent: context, browserProof: browser });
-        assert.deepEqual(retained.signup, staged.signup);
-        assert.equal(retained.email, originalEmail);
-        assert.equal(retained.generation, staged.generation);
-        assert.equal(retained.challenge.codeHash, staged.challenge.codeHash);
-        assert.equal(snapshotText().includes(secret), false, 'both verifiers remain encrypted and plaintext is never stored');
-        await resetStoreForTests();
-        const restored = await attempts.readAttempt({ parent: context, browserProof: browser });
-        assert.deepEqual(restored.signup, staged.signup, 'comparison survives a real persistence reload');
-        await signup.changeSignupEmail({ parent: context, browserProof: browser, email: correctedEmail, deliver: mail.deliver });
-        assert.equal(hashes - before, secret === secret.toLowerCase() ? 1 : 2, 'address comparison never hashes the chosen password again');
-        if (mail.last().code !== originalCode) await assert.rejects(complete(context, browser, originalCode), { code: 'code_invalid' });
+        assert.equal(Object.hasOwn(staged.signup, 'emailComparisonVerifier'), false, 'no email-comparison verifier is staged');
+        assert.equal(hashes - before, 1, 'only the chosen password is hashed');
+        const changed = await signup.changeSignupEmail({ parent: context, browserProof: browser, email: secret.toLowerCase(), deliver: mail.deliver });
+        assert.equal(changed.challenge.email, secret.toLowerCase());
+        assert.equal(mail.last().to, secret.toLowerCase());
+        assert.equal(hashes - before, 1, 'changing the email to match the password never hashes it again');
         const created = await complete(context, browser, mail.last().code);
-        assert.equal(created.user.email, correctedEmail);
-        assert.equal((await loginWithUserPassword({ email: correctedEmail, password: secret })).user.id, created.user.id);
-    }
-});
-
-test('password-email comparisons are source-budgeted before the KDF without erasing the pending signup', async () => {
-    for (const [secret, source, remaining] of [['bounded.destination@example.test', 'a', 9], ['Mixed.Destination@Example.test', 'b', 8]]) {
-        const context = await parent();
-        const browser = setup.newBrowserProof();
-        const mail = mailbox();
-        const rateSource = source.repeat(64);
-        await signup.startSignup({ parent: context, browserProof: browser, email: `bounded-original-${source}@example.test`, password: secret,
-            passwordConfirmation: secret, rateSource, deliver: mail.deliver });
-        let verifications = 0;
-        password.setKdfObserverForTests(({ purpose }) => { if (purpose === 'verify') verifications += 1; });
-        for (let index = 0; index < remaining; index += 1) {
-            await assert.rejects(signup.changeSignupEmail({ parent: context, browserProof: browser, email: secret.toLowerCase(), rateSource, deliver: mail.deliver }),
-                { code: 'invalid_password', reason: 'equals_email' });
-        }
-        assert.equal(verifications, remaining);
-        await assert.rejects(signup.changeSignupEmail({ parent: context, browserProof: browser, email: secret.toLowerCase(), rateSource, deliver: mail.deliver }), { code: 'rate_limited' });
-        assert.equal(verifications, remaining, 'both initial hashes and address comparisons spend the source KDF budget');
-        assert.equal((await status(context, browser)).signupPending, true);
-        assert.equal(mail.messages.length, 1);
+        assert.equal(created.user.email, secret.toLowerCase());
+        assert.equal((await loginWithUserPassword({ email: secret.toLowerCase(), password: secret })).user.id, created.user.id);
     }
 });
 
@@ -478,7 +442,7 @@ test('refusals before staging keep nothing and predictable ones run no KDF', asy
     const cases = [
         [{ email: 'bad-address', secret }, 'invalid_email'],
         [{ email: 'mismatch@example.test', secret, confirmation: `${secret}!` }, 'password_mismatch'],
-        [{ email: 'short@example.test', secret: 'too short' }, 'invalid_password'],
+        [{ email: 'short@example.test', secret: '' }, 'invalid_password'],
         [{ email: owner.user.email, secret }, 'account_exists'],
     ];
     for (const [input, code] of cases) {

@@ -148,6 +148,7 @@ test('emailAgent starts its MCP server and executes verified email settings call
         'email_config_set',
         'email_provider_status',
         'email_send_auth_code',
+        'email_send_password_reset',
         'email_send_template',
         'email_send_test',
         'email_send_text',
@@ -217,6 +218,8 @@ test('emailAgent starts its MCP server and executes verified email settings call
         ['email_send_auth_code', { to: 'recipient@example.test', code: '123456', purpose: 'login' }],
         ['email_send_auth_code', { to: 'recipient@example.test', code: '123456', purpose: 42 }],
         ['email_send_auth_code', { to: 'recipient@example.test', code: '123456', purpose: 'signup-verification', template: 'other' }],
+        ['email_send_password_reset', { to: 'recipient@example.test' }],
+        ['email_send_password_reset', { to: 'recipient@example.test', resetUrl: 'https://example.test/reset#token=x', expiresInMinutes: 'soon' }],
     ];
     for (const [name, args] of invalidInputs) {
         const rejected = await callTool(name, args);

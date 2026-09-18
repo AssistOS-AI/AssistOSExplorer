@@ -7,11 +7,12 @@ import { stageCredentialGenerationAdvance } from './generation.mjs';
 import { consumeMemoryBudget } from './emailAttempts.mjs';
 import { hashSecret } from './password.mjs';
 import { readPasswordCredential, stagePasswordCredential, validateNewPassword } from './userPassword.mjs';
-import { assertOperationAllowed, stageGrantConsumption } from './operationGrants.mjs';
+import { assertOperationAllowedFor, stageGrantConsumption } from './operationGrants.mjs';
 
 // My Account password set and change: normal credential management for the
-// signed-in actor, authorized by one fresh `password.set` operation grant.
-// There is no administrator-set password and no unauthenticated reset.
+// signed-in actor, authorized by one fresh `password.set` operation grant. An
+// unverified account may change the password it already owns; a first password
+// still needs a verified mailbox. There is no administrator-set password.
 const OPERATION = 'password.set';
 const ACCOUNT_KDF_LIMIT = 5;
 
@@ -53,7 +54,7 @@ export async function setAccountPassword({ userId, grant, password, passwordConf
     const { normalized } = validateNewPassword({ password, passwordConfirmation, email: actor.email });
     const inspectGrant = () => serializePersisted('users', async () => {
         const user = await activeActor(userId);
-        assertOperationAllowed(user, OPERATION);
+        await assertOperationAllowedFor(await getStore(), user, OPERATION);
         await assertPasswordEnabled();
         const staged = await stageGrantConsumption({ userId, operation: OPERATION, grant });
         if (!staged.valid) {
@@ -74,7 +75,7 @@ export async function setAccountPassword({ userId, grant, password, passwordConf
         };
         const user = staged.user;
         if (!user || user.status !== 'active') return refuse(managementError('user_not_active', 403));
-        try { assertOperationAllowed(user, OPERATION); } catch (error) { return refuse(error); }
+        try { await assertOperationAllowedFor(store, user, OPERATION); } catch (error) { return refuse(error); }
         if (!(await getAuthPolicy()).enabledAuthMethods.includes('password')) return refuse(managementError('auth_method_disabled', 404));
         const current = await readPasswordCredential(store, userId);
         if (!staged.valid || staged.generation !== observed.generation || authGenerationOf(user) !== observed.generation

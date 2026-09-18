@@ -6,7 +6,7 @@ import { authGenerationOf, getUserByEmail, normalizeEmail } from '../users.mjs';
 import { prepareNewAccount, readInstallationSetup } from '../setup.mjs';
 import { recordAudit } from '../audit.mjs';
 import { sendAuthCode } from '../email-agent-client.mjs';
-import { hashSecret, parseVerifier, verifySecret } from './password.mjs';
+import { hashSecret, parseVerifier } from './password.mjs';
 import { stagePasswordCredential, validateNewPassword } from './userPassword.mjs';
 import { replayCompletion } from './signIn.mjs';
 import {
@@ -18,7 +18,9 @@ import {
     consumeMemoryBudget,
     deliverCode,
     developmentLogFallback,
+    discoveryBudget,
     issueChallenge,
+    prepareDirectCompletion,
     rateSourceKey,
     readAttempt,
     recordDelivery,
@@ -45,6 +47,7 @@ function signupError(code, statusCode) {
         account_exists: 'An account already uses this email. Log in instead.',
         registration_disabled: 'Registration is not available.',
         auth_method_disabled: 'This sign-in method is not available.',
+        signup_verification_required: 'Email verification is now required. Choose your password again to continue.',
     };
     return Object.assign(new Error(messages[code] || 'Unable to continue.'), { code, statusCode });
 }
@@ -80,10 +83,6 @@ async function precheckStart({ parent, browserProof, email, rateSource }) {
     await assertEmailVerifyBudget(email);
 }
 
-function emailShapedPassword(normalized) {
-    try { return normalizeEmail(normalized) === normalized.toLowerCase(); } catch { return false; }
-}
-
 function spendSignupKdfBudget(rateSource) {
     const source = rateSourceKey(rateSource);
     consumeMemoryBudget('signup-kdf-source', source, source === 'shared' ? SIGNUP_KDF_SHARED : SIGNUP_KDF_PER_SOURCE);
@@ -113,16 +112,8 @@ export async function startSignup({ parent, browserProof, email, password, passw
         await precheckStart({ parent, browserProof, email: normalizedEmail, rateSource });
     };
     const verifier = await hashSecret(normalized, { validateAdmission });
-    let emailComparisonVerifier = '';
-    if (emailShapedPassword(normalized)) {
-        if (normalized === normalized.toLowerCase()) emailComparisonVerifier = verifier;
-        else {
-            spendSignupKdfBudget(rateSource);
-            emailComparisonVerifier = await hashSecret(normalized.toLowerCase(), { validateAdmission });
-        }
-    }
     const issued = await issueChallenge({ parent, browserProof, email: normalizedEmail, purpose: 'register', rateSource,
-        signup: { verifier, ...(emailComparisonVerifier ? { emailComparisonVerifier } : {}) }, precheck: async (address) => {
+        signup: { verifier }, precheck: async (address) => {
             if (validateParent) await validateParent();
             await assertSignupAllowed(address);
         } });
@@ -154,15 +145,6 @@ export async function changeSignupEmail({ parent, browserProof, email, rateSourc
         if (current.signup?.verifierId !== pending.signup.verifierId) throw attemptError('signup_restart_required', 409);
     };
     await validateChange();
-    if (pending.signup.emailComparisonVerifier) {
-        if (!parseVerifier(pending.signup.emailComparisonVerifier)) throw attemptError('signup_restart_required', 409);
-        spendSignupKdfBudget(rateSource);
-        if (await verifySecret(normalizedEmail, pending.signup.emailComparisonVerifier, { validateAdmission: validateChange })) {
-            throw Object.assign(new Error('Choose a password different from your email address.'), {
-                code: 'invalid_password', statusCode: 400, reason: 'equals_email',
-            });
-        }
-    }
     const issued = await issueChallenge({ parent, browserProof, email: normalizedEmail, purpose: 'register', rateSource,
         signup: 'retain', precheck: async (address) => {
             if (validateParent) await validateParent();
@@ -171,6 +153,57 @@ export async function changeSignupEmail({ parent, browserProof, email, rateSourc
             if (current.signup?.verifierId !== pending.signup.verifierId) throw attemptError('signup_restart_required', 409);
         } });
     return deliverSignupCode({ parent, browserProof, issued, deliver });
+}
+
+// Direct password signup, used while the policy does not require a verified
+// mailbox. The account is created with an unverified email and no email work:
+// only the live parent, the registration rules, the chosen password and the
+// per-source hashing budget apply. On an unclaimed installation it claims the
+// same first-administrator authority as the initial-password exception.
+export async function createSignupAccount({ parent, browserProof, email, password, passwordConfirmation, rateSource = '', validateParent, prepareHandoff }) {
+    let normalizedEmail;
+    try { normalizedEmail = normalizeEmail(email); } catch { throw attemptError('invalid_email'); }
+    const { normalized } = validateNewPassword({ password, passwordConfirmation, email: normalizedEmail });
+    if (validateParent) await validateParent();
+    if (browserProof) {
+        const attempt = await readAttempt({ parent, browserProof });
+        if (attempt.status === 'completed' && attempt.completion?.method === 'passwordSignup'
+            && attempt.completion.email === normalizedEmail) {
+            return replayCompletion(attempt);
+        }
+    }
+    // A refusal reveals as much as discovery does and spends the same budget.
+    discoveryBudget({ parent, rateSource });
+    const precheck = async () => {
+        if ((await getAuthPolicy()).signupEmailVerificationRequired) throw signupError('signup_verification_required', 409);
+        await assertSignupAllowed(normalizedEmail);
+        if (browserProof) {
+            const attempt = await readAttempt({ parent, browserProof });
+            if (attempt.status === 'completed') throw attemptError('attempt_invalid', 409);
+        }
+    };
+    await withPersistenceScope(precheck);
+    spendSignupKdfBudget(rateSource);
+    const validateAdmission = async () => {
+        if (validateParent) await validateParent();
+        await withPersistenceScope(precheck);
+    };
+    const verifier = await hashSecret(normalized, { validateAdmission });
+    return serializePersisted('users', async () => {
+        await validateAdmission();
+        const store = await getStore();
+        const stageAccount = await prepareNewAccount({ email: normalizedEmail, emailVerified: false, method: 'passwordSignup' });
+        const stageCompletion = await prepareDirectCompletion({ parent, browserProof, email: normalizedEmail, method: 'passwordSignup' });
+        const stageHandoff = prepareHandoff ? await prepareHandoff() : null;
+        return commitStagedPersistence(async () => {
+            const account = await stageAccount();
+            await stagePasswordCredential(store, { userId: account.user.id, verifier });
+            const handoff = stageHandoff ? await stageHandoff(account.user.id) : null;
+            await stageCompletion({ userId: account.user.id, generation: authGenerationOf(account.user), handoff });
+            await recordAudit({ actorId: account.user.id, action: 'auth.password.register', target: account.user.id, reason: `${parent.flow}:unverified` }, { save: false });
+            return { ok: true, ...account, created: true, generation: authGenerationOf(account.user), handoff };
+        });
+    });
 }
 
 // Verifies the signup code and creates the account in one staged commit under

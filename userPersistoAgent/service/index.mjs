@@ -13,9 +13,10 @@ import { handleOidc } from '../lib/oidc/http.mjs';
 import { handleDashboard } from './dashboard.mjs';
 import { createGoogleAuthHandlers } from './googleAuth.mjs';
 import { createSsoWizardHandlers } from './ssoWizard.mjs';
+import { createPasswordResetHandlers } from './passwordReset.mjs';
 import { getCanonicalLoginOrigin } from '../lib/auth/canonicalLoginOrigin.mjs';
 import { wizardConfiguration } from '../lib/auth/wizardConfig.mjs';
-import { getEmailAuthCodeStatus, sendAuthCode } from '../lib/email-agent-client.mjs';
+import { getEmailAuthCodeStatus, sendAuthCode, sendPasswordResetEmail } from '../lib/email-agent-client.mjs';
 
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 const MIME = {
@@ -92,6 +93,9 @@ async function serveStatic(res, relPath) {
     }
     try {
         const data = await readFile(file);
+        // The reset page carries its token in the fragment and must never leak
+        // a URL to another origin through the Referer header.
+        if (staticPath === 'auth/reset.html') res.setHeader('Referrer-Policy', 'no-referrer');
         res.writeHead(200, {
             'Content-Type': MIME[extname(file)] || 'application/octet-stream',
             'Content-Length': data.length,
@@ -151,6 +155,7 @@ async function handlePost(req, res, path, handlers) {
         return sendJson(res, 200, { ok: true, ...result });
     }
     const body = await readJson(req);
+    if (await handlers.passwordReset.handle(req, res, path, body, sendJson)) return;
     if (await handlers.wizard.handle(req, res, path, body, sendJson)) return;
     if (path === '/service/runtime/sso-login-request') {
         assertRuntimeSecret(req);
@@ -248,7 +253,7 @@ async function handle(req, res, handlers) {
             return await handleDashboard(req, res, url, { sendJson, serveStatic, google, deliverEmail: handlers.deliverEmail, emailStatus: handlers.emailStatus });
         }
         if (await google.handle(req, res)) return;
-        if (await handleOidc(req, res, { google, deliverEmail: handlers.deliverEmail, emailStatus: handlers.emailStatus })) return;
+        if (await handleOidc(req, res, { google, deliverEmail: handlers.deliverEmail, deliverPasswordReset: handlers.deliverPasswordReset, emailStatus: handlers.emailStatus })) return;
         if (req.method === 'GET' || req.method === 'HEAD') {
             if (req.method === 'HEAD') {
                 res.writeHead(405, { 'Cache-Control': 'no-store' });
@@ -276,13 +281,17 @@ async function handle(req, res, handlers) {
     }
 }
 
-// `options.google`, `options.deliverEmail` and `options.emailStatus` are construction-time test seams;
-// no environment variable or request can select a provider or mail transport.
+// `options.google`, `options.deliverEmail`, `options.deliverPasswordReset` and
+// `options.emailStatus` are construction-time test seams; no environment
+// variable or request can select a provider or mail transport.
 export function startService(port, options = {}) {
     const deliverEmail = options.deliverEmail || sendAuthCode;
+    const deliverPasswordReset = options.deliverPasswordReset || sendPasswordResetEmail;
     const emailStatus = options.emailStatus || (options.deliverEmail ? async () => ({ available: true }) : getEmailAuthCodeStatus);
     const google = createGoogleAuthHandlers({ ...options.google, deliverEmail: options.google?.deliverEmail || deliverEmail });
-    const handlers = { google, deliverEmail, emailStatus, wizard: createSsoWizardHandlers({ deliverEmail, emailStatus }) };
+    const handlers = { google, deliverEmail, deliverPasswordReset, emailStatus,
+        wizard: createSsoWizardHandlers({ deliverEmail, emailStatus, deliverPasswordReset }),
+        passwordReset: createPasswordResetHandlers() };
     const server = http.createServer((req, res) => handle(req, res, handlers));
     server.listen(port, () => {
         console.log(`[userPersisto] service listening on ${port}`);

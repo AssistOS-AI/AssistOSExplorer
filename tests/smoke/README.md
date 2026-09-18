@@ -54,10 +54,13 @@ credentials. No account or password ships with UserPersisto. The three release
 gates require two distinct accounts:
 
 1. Claim the fresh installation first, before any other account signs in: sign
-   in with Google, or enter an email, choose **Sign up**, create a password and
-   enter the emailed verification code. That first verified account becomes
-   the administrator. Email sign-up needs working email delivery (or
-   `USERPERSISTO_DEV_BOOTSTRAP=true` on a trusted development host).
+   in with Google, or enter an email, choose **Sign up** and create a password.
+   Under the default policy **Create account** creates the account immediately
+   with an unverified mailbox, so email sign-up needs no delivery; a workspace
+   with `USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED=true` instead opens
+   the code screen, whose code needs working email delivery (or
+   `USERPERSISTO_DEV_BOOTSTRAP=true` on a trusted development host) through
+   `SMOKE_EMAIL_CODE_COMMAND`. Either first account becomes the administrator.
 2. Sign up the second account the same way, then have the administrator grant
    it the `user` role. Later public sign-ups receive `selfRegistered`, which
    permits My Account but not Explorer access.
@@ -78,9 +81,12 @@ secrets. `SMOKE_PASSWORD` and `SMOKE_SECONDARY_PASSWORD` apply only to Ploinky's
 local `/auth/login` form, never to UserPersisto.
 
 When the configured email has no account, the helper signs up through **Sign
-up**, **Create your password** and the emailed code (which requires
-`SMOKE_EMAIL_CODE_COMMAND`), using the configured account password or, when none
-is configured, the run password. The configuration creates that random run
+up** and **Create your password**, using the configured account password or,
+when none is configured, the run password. Under the default policy **Create
+account** completes the sign-up and sign-in without a code; when the workspace
+requires email verification it opens the code screen and the helper needs
+`SMOKE_EMAIL_CODE_COMMAND` (or the development log fallback). The configuration
+creates that random run
 password once as `SMOKE_RUN_ACCOUNT_PASSWORD` in the Playwright runner process, so
 its workers share it and the existing `*PASSWORD*` redaction keeps it out of
 reports and traces. The helper refuses to sign in or sign up while the

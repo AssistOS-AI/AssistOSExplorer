@@ -63,6 +63,7 @@ function panelFor() {
     panel.state.authProfile = { roles: ['admin'], capabilities: ['admin.agentSettings.manage'] };
     panel.authMethodInputs = Object.fromEntries(['emailCode', 'passkey', 'totp', 'google'].map((method) => [method, { checked: false }]));
     panel.selfRegistrationInput = { checked: true };
+    panel.signupVerificationInput = { checked: false };
     panel.allowedRedirectOriginsInput = { value: '' };
     panel.authPolicySourceEl = {};
     panel.googleStatusEl = {};
@@ -113,7 +114,8 @@ test('setters refuse read-only managed metadata instead of silently persisting o
     await useManagedRuntime(t, { workspace, origins: MANAGED });
     const before = JSON.stringify(await storedPolicy());
     for (const field of ['managedRedirectOrigins', 'effectiveRedirectOrigins', 'managedOriginTrustEnabled', 'managedOriginStatus',
-        'managedOriginGeneration', 'allowedRedirectOriginsSource', 'loopbackOriginsAllowed', 'environmentOverrides', 'registrationRole']) {
+        'managedOriginGeneration', 'allowedRedirectOriginsSource', 'loopbackOriginsAllowed', 'environmentOverrides', 'registrationRole',
+        'emailDeliveryAvailable']) {
         const rejected = await admin_('policy/set', { enabledAuthMethods: ['emailCode'], [field]: MANAGED });
         assert.equal(rejected.status, 400, field);
         assert.equal(rejected.data.error, 'read_only_policy_field', field);
@@ -135,7 +137,8 @@ test('loading and saving the authentication page cannot register managed Router 
 
     await panel.saveAuthPolicy();
     const save = calls.find((call) => call.name === 'userpersisto_auth_policy_set');
-    assert.deepEqual(Object.keys(save.args).sort(), ['allowedRedirectOrigins', 'enabledAuthMethods', 'selfRegistrationEnabled']);
+    assert.deepEqual(Object.keys(save.args).sort(), ['allowedRedirectOrigins', 'enabledAuthMethods', 'selfRegistrationEnabled', 'signupEmailVerificationRequired']);
+    assert.equal(save.args.signupEmailVerificationRequired, false);
     assert.deepEqual(save.args.allowedRedirectOrigins, ['https://workspace.example.test']);
     const stored = await storedPolicy();
     assert.deepEqual(stored.allowedRedirectOrigins, ['https://workspace.example.test']);
@@ -181,4 +184,36 @@ test('administrators can tell disabled, standalone, unsupported, unavailable, an
         if (!['PLOINKY_AGENT_ID', 'PLOINKY_AGENT_RUNTIME_ROOT'].includes(name)) delete process.env[name];
     }
     assert.match(await statusFor(), /Not running under a managed workspace Router/);
+});
+
+test('the authentication page explains missing email delivery and reflects the verification switch', async (t) => {
+    await useManagedRuntime(t, { workspace, origins: MANAGED });
+    await admin_('policy/set', { enabledAuthMethods: ['password', 'emailCode'], signupEmailVerificationRequired: true });
+    const { panel } = panelFor();
+    const nodes = [];
+    const deliveryStatus = {
+        _text: '',
+        get textContent() { return this._text + nodes.filter((node) => typeof node === 'string').join(''); },
+        set textContent(value) { nodes.length = 0; this._text = String(value); },
+        replaceChildren() { nodes.length = 0; this._text = ''; },
+        append(...children) { for (const child of children) nodes.push(child); },
+    };
+    panel.emailDeliveryStatusEl = deliveryStatus;
+    panel.element.ownerDocument = { createElement: () => ({ href: '', target: '', rel: '', textContent: '' }) };
+    await panel.refreshAuthPolicy();
+    assert.equal(panel.state.policyLoaded, true);
+    assert.equal(panel.signupVerificationInput.checked, true);
+    assert.match(deliveryStatus.textContent, /Email delivery is not configured\. Unavailable: email codes, password reset, email sign-up\. /);
+    const link = nodes.find((node) => node && node.href);
+    assert.deepEqual([link.href, link.textContent, link.rel], ['/admin/settings.html', 'Open Settings → Email Agent', 'noopener noreferrer']);
+
+    process.env.USERPERSISTO_DEV_BOOTSTRAP = 'true';
+    t.after(() => { delete process.env.USERPERSISTO_DEV_BOOTSTRAP; });
+    await panel.refreshAuthPolicy();
+    assert.equal(deliveryStatus.textContent, 'Email delivery is configured.');
+
+    await admin_('policy/set', { signupEmailVerificationRequired: false });
+    process.env.USERPERSISTO_DEV_BOOTSTRAP = 'true';
+    await panel.refreshAuthPolicy();
+    assert.equal(panel.signupVerificationInput.checked, false);
 });

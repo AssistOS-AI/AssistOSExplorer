@@ -33,6 +33,10 @@ export function createAgentClient(agent) {
     return {
         async callTool(name, payload) {
             if (name === 'email_auth_code_status') return { available: true };
+            if (name === 'email_send_password_reset') {
+                globalThis[Symbol.for('userpersisto.oidc-methods.test-mail')].push(structuredClone(payload));
+                return { ok: true, providerMessageId: 'disposable-reset-message' };
+            }
             if (name !== 'email_send_auth_code') throw new Error('Unexpected test tool');
             globalThis[Symbol.for('userpersisto.oidc-methods.test-mail')].push(structuredClone(payload));
             return { ok: true, providerMessageId: 'disposable-test-message' };
@@ -112,7 +116,8 @@ async function initialPasswordFixture(fn) {
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-oidc-initial-password-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'disposable-initial-password-settings-key';
-    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']) delete process.env[name];
+    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_ALLOWED_REDIRECT_ORIGINS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED',
+        'USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED']) delete process.env[name];
     globalThis[mailCapture].length = 0;
     setup.resetAuthLimitsForTests();
     let server;
@@ -274,8 +279,8 @@ test('passkey interaction verifies a real P-256 assertion and rejects another in
 
 test('disabled methods reject direct interaction POSTs before challenge creation', async () => fixture([], async ({ config, user }) => {
     const flow = await begin(config);
-    const nativeActions = new Set(['totp', 'email-verify', 'passkey-verify', 'password-login', 'signup-verify']);
-    for (const action of ['totp', 'email-start', 'email-verify', 'passkey-options', 'passkey-verify', 'password-login', 'signup-start', 'signup-resend', 'signup-email', 'signup-verify']) {
+    const nativeActions = new Set(['totp', 'email-verify', 'passkey-verify', 'password-login', 'signup-create', 'signup-verify']);
+    for (const action of ['totp', 'email-start', 'email-verify', 'passkey-options', 'passkey-verify', 'password-login', 'password-forgot', 'signup-start', 'signup-create', 'signup-resend', 'signup-email', 'signup-verify']) {
         const response = await flow.browser.post(`${flow.location}/${action}`, { csrf: flow.csrf, email: user.email, token: '000000', code: '000000', assertion: '{}',
             password: 'a password guess value', passwordConfirmation: 'a password guess value' });
         assert.equal(response.status, 400, action);
@@ -287,6 +292,22 @@ test('disabled methods reject direct interaction POSTs before challenge creation
     }
     assert.equal(globalThis[mailCapture].length, 0);
     assert.equal((await (await getStore()).select('authChallenge')).objects.length, 0);
+}));
+
+test('OIDC password-forgot emails a fragment link for an existing password account and answers uniformly', () => fixture(['password'], async ({ config, user }) => {
+    const flow = await begin(config);
+    const sent = await flow.browser.post(`${flow.location}/password-forgot`, { csrf: flow.csrf, email: user.email });
+    assert.equal(sent.status, 200, await sent.clone().text());
+    assert.deepEqual(await sent.json(), { ok: true });
+    assert.equal(globalThis[mailCapture].length, 1);
+    const captured = globalThis[mailCapture][0];
+    assert.equal(captured.to, user.email);
+    assert.equal(captured.expiresInMinutes, 30);
+    assert.match(captured.resetUrl, /^http:\/\/127\.0\.0\.1:\d+\/service\/auth\/reset\.html#token=[A-Za-z0-9_-]{43}$/);
+    assert.equal((await (await flow.browser.post(`${flow.location}/attempt`, { csrf: flow.csrf })).json()).passwordReset, true);
+    globalThis[mailCapture].length = 0;
+    const unknown = await flow.browser.post(`${flow.location}/password-forgot`, { csrf: flow.csrf, email: 'nobody@example.test' });
+    assert.deepEqual([unknown.status, await unknown.json(), globalThis[mailCapture].length], [200, { ok: true }, 0]);
 }));
 
 function interactionConfig(html) {
@@ -367,6 +388,7 @@ test('password login completes natively with pwd, re-renders failures without se
 }));
 
 test('OIDC first-install password login needs no email delivery and keeps the mailbox unverified', () => initialPasswordFixture(async ({ config }) => {
+    await updateAuthPolicy({ signupEmailVerificationRequired: true }, { emailStatus: async () => ({ available: true }) });
     const email = 'oidc-initial-owner@gmail.com';
     const flow = await begin(config);
     const page = interactionConfig(await (await flow.browser.fetch(flow.location)).text());
@@ -409,6 +431,13 @@ test('OIDC first-install password login needs no email delivery and keeps the ma
     assert.equal((await (await getStore()).select('user')).objects.length, 1);
 }));
 
+test('OIDC default policy advertises password signup without email delivery', () => initialPasswordFixture(async ({ config }) => {
+    const flow = await begin(config);
+    const page = interactionConfig(await (await flow.browser.fetch(flow.location)).text());
+    assert.deepEqual([page.setupComplete, page.initialPasswordSetup, page.signup.email, page.signup.verification, page.passwordReset],
+        [false, true, true, 'none', false]);
+}));
+
 test('OIDC initial-password completion replays only for its browser after the local commit', () => initialPasswordFixture(async ({ config }) => {
     const email = 'oidc-initial-retry@example.test';
     const flow = await begin(config);
@@ -433,6 +462,80 @@ test('OIDC initial-password completion replays only for its browser after the lo
     const resumed = await flow.browser.post(`${flow.location}/password-login`, { csrf: flow.csrf, email, password: 'admin' });
     setKdfObserverForTests(null);
     assert.equal(kdfRuns, 0, 'same-browser completion replays instead of verifying or creating another account');
+    const repeated = await flow.browser.fetch(flow.location);
+    assert.equal(repeated.status, 303, 'a committed interaction retains its normal resume redirect');
+    await consentTokens(config, flow, resumed, created.id);
+    assert.equal((await (await getStore()).select('user')).objects.length, 1);
+    assert.equal(globalThis[mailCapture].length, 0);
+}));
+
+test('OIDC native signup-create creates the first administrator without mail and finishes the interaction', () => initialPasswordFixture(async ({ config }) => {
+    const flow = await begin(config);
+    const email = 'oidc-signup-create@example.test';
+    const password = setup.newTestPassword();
+    const refused = await flow.browser.post(`${flow.location}/signup-create`, { csrf: flow.csrf, email, password, passwordConfirmation: `${password} other` });
+    assert.equal(refused.status, 400);
+    const rendered = interactionConfig(await refused.text());
+    assert.deepEqual([rendered.failure.action, rendered.failure.code, rendered.email], ['signup-create', 'password_mismatch', email]);
+    assert.equal(await getUserByEmail(email), null);
+    const submitted = await flow.browser.post(`${flow.location}/signup-create`, { csrf: flow.csrf, email, password, passwordConfirmation: password });
+    const created = await getUserByEmail(email);
+    assert.ok(created);
+    assert.equal(created.emailVerifiedAt, '');
+    assert.deepEqual(await getUserRoles(created.id), ['admin']);
+    assert.deepEqual([(await getInstallationSetup()).method, (await getInstallationSetup()).initialAdministratorId], ['passwordSignup', created.id]);
+    assert.equal(globalThis[mailCapture].length, 0, 'direct OIDC signup never asks EmailAgent for a code');
+    const tokens = await consentTokens(config, flow, submitted, created.id);
+    assert.deepEqual(await sessionAmr(flow.browser), ['pwd']);
+    const info = await oidcClient.fetchUserInfo(config, tokens.access_token, created.id);
+    assert.deepEqual([info.email, info.email_verified], [email, false]);
+}));
+
+test('OIDC signup-create spends the discovery budget of its interaction and renders rate_limited once it is spent', () => initialPasswordFixture(async ({ config }) => {
+    const email = 'oidc-signup-create-budget@example.test';
+    const password = setup.newTestPassword();
+    const owner = await begin(config);
+    await owner.browser.post(`${owner.location}/signup-create`, { csrf: owner.csrf, email, password, passwordConfirmation: password });
+    assert.ok(await getUserByEmail(email));
+
+    const flow = await begin(config);
+    const body = { csrf: flow.csrf, email, password, passwordConfirmation: password };
+    for (let index = 0; index < 20; index += 1) {
+        const refused = interactionConfig(await (await flow.browser.post(`${flow.location}/signup-create`, body)).text());
+        assert.deepEqual([refused.failure.action, refused.failure.code], ['signup-create', 'account_exists']);
+    }
+    const limited = interactionConfig(await (await flow.browser.post(`${flow.location}/signup-create`, body)).text());
+    assert.deepEqual([limited.failure.action, limited.failure.code], ['signup-create', 'rate_limited']);
+    assert.equal((await (await getStore()).select('user')).objects.length, 1);
+}));
+
+test('OIDC signup-create replays across its two boundaries for the same browser only', () => initialPasswordFixture(async ({ config }) => {
+    const email = 'oidc-signup-create-replay@example.test';
+    const password = setup.newTestPassword();
+    const flow = await begin(config);
+    let injected = false;
+    setStoreFaultInjectorForTests(async (phase, name, args) => {
+        if (!injected && phase === 'before' && ['updateOidcRecord', 'createOidcRecord'].includes(name) && args.at(-1)?.model === 'Interaction') {
+            injected = true;
+            throw new Error('injected signup-create interaction result failure');
+        }
+    });
+    const body = { csrf: flow.csrf, email, password, passwordConfirmation: password };
+    const interrupted = await flow.browser.post(`${flow.location}/signup-create`, body);
+    setStoreFaultInjectorForTests(null);
+    assert.equal(injected, true);
+    assert.ok(interrupted.status >= 500);
+    const created = await getUserByEmail(email);
+    assert.ok(created);
+    assert.equal(created.emailVerifiedAt, '');
+    const foreign = await new Browser().post(`${flow.location}/signup-create`, body);
+    assert.ok(foreign.status >= 400 && foreign.status < 500);
+    assert.equal((await (await getStore()).select('user')).objects.length, 1);
+    let kdfRuns = 0;
+    setKdfObserverForTests(() => { kdfRuns += 1; });
+    const resumed = await flow.browser.post(`${flow.location}/signup-create`, body);
+    setKdfObserverForTests(null);
+    assert.equal(kdfRuns, 0, 'same-browser completion replays instead of hashing or creating another account');
     const repeated = await flow.browser.fetch(flow.location);
     assert.equal(repeated.status, 303, 'a committed interaction retains its normal resume redirect');
     await consentTokens(config, flow, resumed, created.id);

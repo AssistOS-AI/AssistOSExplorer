@@ -16,6 +16,15 @@ async function getConfig() {
     return { apiKey, apiSecret, fromEmail, fromName };
 }
 
+// Send API v3.1 per-message tracking values; omitted, the account setting applies.
+const TRACKING = new Set(['account_default', 'disabled', 'enabled', 'anon']);
+
+function trackingValue(value, field) {
+    if (value === undefined || value === null) return undefined;
+    if (!TRACKING.has(value)) throw new Error(`${field} is invalid.`);
+    return value;
+}
+
 function providerMessageId(payload) {
     const to = payload?.Messages?.[0]?.To?.[0];
     return String(to?.MessageID || to?.MessageUUID || payload?.Messages?.[0]?.MessageID || '');
@@ -64,6 +73,8 @@ export async function sendText(input = {}) {
     const html = input.html === undefined || input.html === null ? '' : String(input.html);
     if (!subject) throw new Error('subject is required.');
     if (!text && !html) throw new Error('text or html is required.');
+    const trackClicks = trackingValue(input.trackClicks, 'trackClicks');
+    const trackOpens = trackingValue(input.trackOpens, 'trackOpens');
 
     return sendMailjetMessage({
         From: { Email: normalizeEmail(config.fromEmail, 'fromEmail'), Name: config.fromName },
@@ -71,6 +82,8 @@ export async function sendText(input = {}) {
         Subject: subject,
         ...(text ? { TextPart: text } : {}),
         ...(html ? { HTMLPart: html } : {}),
+        ...(trackClicks ? { TrackClicks: trackClicks } : {}),
+        ...(trackOpens ? { TrackOpens: trackOpens } : {}),
     });
 }
 

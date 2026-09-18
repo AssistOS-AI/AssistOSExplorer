@@ -7,7 +7,7 @@ import { authGenerationOf, getUserByEmail, normalizeEmail } from '../users.mjs';
 import { recordAudit } from '../audit.mjs';
 import { hashSecret } from './password.mjs';
 import { loginWithUserPassword, stagePasswordCredential } from './userPassword.mjs';
-import { consumeMemoryBudget, prepareInitialPasswordCompletion, rateSourceKey, readAttempt } from './emailAttempts.mjs';
+import { consumeMemoryBudget, prepareDirectCompletion, rateSourceKey, readAttempt } from './emailAttempts.mjs';
 import { replayCompletion } from './signIn.mjs';
 
 const failed = () => Object.assign(new Error('Unable to sign in.'), { code: 'authentication_failed', statusCode: 401 });
@@ -50,7 +50,7 @@ export async function loginWithInitialPassword(options) {
         await validateCreation();
         const store = await getStore();
         const stageAccount = await prepareNewAccount({ email, emailVerified: false, method: 'initialPassword' });
-        const stageCompletion = await prepareInitialPasswordCompletion({ parent, browserProof, email });
+        const stageCompletion = await prepareDirectCompletion({ parent, browserProof, email, method: 'initialPassword' });
         const stageHandoff = prepareHandoff ? await prepareHandoff() : null;
         return commitStagedPersistence(async () => {
             const account = await stageAccount();

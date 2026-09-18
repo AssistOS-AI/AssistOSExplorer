@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { completeEmailSignIn, startEmailSignIn } from '../../lib/auth/signIn.mjs';
-import { completeSignup, startSignup } from '../../lib/auth/signup.mjs';
+import { completeSignup, createSignupAccount, startSignup } from '../../lib/auth/signup.mjs';
 import { resetEmailAttemptLimitsForTests } from '../../lib/auth/emailAttempts.mjs';
 import { resetKdfForTests, setKdfProfileForTests } from '../../lib/auth/password.mjs';
 import { resetPasswordLimitsForTests } from '../../lib/auth/userPassword.mjs';
@@ -50,6 +50,17 @@ export async function signUpWithPassword(email, { password = newTestPassword(), 
     const delivered = mail.messages.at(-1);
     const result = await completeSignup({ parent, browserProof, code: delivered.code, prepareHandoff: () => prepareSsoHandoff(request.providerState) });
     return { ...result, request, delivered, password, browserProof };
+}
+
+// Signs up through the direct (unverified) password path against a live SSO
+// parent. No delivery capture exists because this flow never sends mail. On an
+// unclaimed installation the first call claims the administrator.
+export async function signUpDirect(email, { password = newTestPassword(), redirectUri = 'http://127.0.0.1/auth/callback', browserProof = newBrowserProof() } = {}) {
+    const request = await createLoginRequest({ redirectUri });
+    const parent = { flow: 'sso', id: request.providerState, expiresAt: Date.parse(request.expiresAt) };
+    const result = await createSignupAccount({ parent, browserProof, email, password, passwordConfirmation: password,
+        prepareHandoff: () => prepareSsoHandoff(request.providerState) });
+    return { ...result, request, password, browserProof };
 }
 
 // Signs an existing account with a verified mailbox in with a login code.
