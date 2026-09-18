@@ -33,18 +33,19 @@ test('task descriptions prefer prompt-like arguments and remain bounded', () => 
     assert.ok(__testables.describeTask('agent', 'execute', { query: 'x'.repeat(400) }).length <= 240);
 });
 
-test('ongoing task restoration ignores malformed lines and terminal tasks', () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-task-journal-'));
-    const history = path.join(workspace, '.data', 'achilles-cli', 'tasks');
+test('ongoing task restoration ignores terminal tasks', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-task-records-'));
+    const history = path.join(workspace, '.achilles-cli', 'tasks');
     fs.mkdirSync(history, { recursive: true });
     const ongoingId = 'task_aaaaaaaaaaaaaaaaaaaaaaaa';
     const finishedId = 'task_bbbbbbbbbbbbbbbbbbbbbbbb';
-    fs.writeFileSync(path.join(history, 'agent_tasks'), [
-        JSON.stringify({ id: ongoingId, targetAgent: 'one', remoteTaskId: '1', status: 'ongoing' }),
-        '{partial',
-        JSON.stringify({ id: finishedId, targetAgent: 'two', remoteTaskId: '2', status: 'finished' }),
-        '',
-    ].join('\n'));
+    for (const task of [
+        { id: ongoingId, targetAgent: 'one', remoteTaskId: '1', status: 'ongoing' },
+        { id: finishedId, targetAgent: 'two', remoteTaskId: '2', status: 'finished' },
+    ]) {
+        fs.mkdirSync(path.join(history, task.id), { recursive: true });
+        fs.writeFileSync(path.join(history, task.id, 'task.json'), `${JSON.stringify(task)}\n`);
+    }
     const tasks = __testables.readOngoingTasks(workspace);
     assert.deepEqual(tasks.map((task) => task.id), [ongoingId]);
 });

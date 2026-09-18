@@ -10,7 +10,11 @@ const cwd = value('--cwd');
 const id = value('--session-id');
 const backend = value('--ca');
 if (args.includes('--ploinky-task')) throw new Error('Legacy Ploinky option was forwarded.');
-const folder = value('--folder');
+const folder = args[args.indexOf('as') - 1];
+if (value('--cwd') !== cwd) throw new Error('Missing canonical writable cwd');
+if (args.includes('--external-workspace') || args.includes('--skill-catalog') || args.includes('--skill')) {
+    throw new Error('Removed ALA skill options were forwarded.');
+}
 if (!folder || value('as') !== 'ploinky-runtime') throw new Error('Missing generic runtime mount.');
 if (!(await fs.stat(path.join(folder, 'tasks.sock'))).isSocket()) throw new Error('Missing task notification socket.');
 const prompt = await fs.readFile(value('--taskFile'), 'utf8');

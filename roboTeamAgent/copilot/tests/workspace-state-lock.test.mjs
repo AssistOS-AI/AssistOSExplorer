@@ -22,7 +22,7 @@ function workspace(t) {
 
 function child(t, dir, code, extraEnv = {}) {
     const env = { ...process.env, WORKSPACE: dir, ...extraEnv };
-    if (!Object.hasOwn(extraEnv, 'PLOINKY_WORKSPACE_ROOT')) delete env.PLOINKY_WORKSPACE_ROOT;
+    env.PLOINKY_WORKSPACE_ROOT ||= dir;
     const script = `
         import { acquireExecutionLease, withWorkspaceMutation } from ${JSON.stringify(lockModule)};
         import * as settings from ${JSON.stringify(settingsModule)};
@@ -65,7 +65,7 @@ test('separate processes preserve concurrent settings and multiline history in o
         `await settings.setCodingAgentModel(dir, 'codex', 'native-codex');`,
         `await settings.setCodingAgentModel(dir, 'pi', 'native-pi');`,
     ];
-    const workers = scripts.map((setting, index) => child(t, index % 2 ? nested : dir, `
+    const workers = scripts.map((setting, index) => child(t, dir, `
         const history = new HistoryManager({ workingDir: dir });
         for (let i = 0; i < 12; i += 1) {
             ${setting}
@@ -131,7 +131,7 @@ test('a genuinely exited process leaves a recoverable execution lease', async (t
 test('ambiguous owners and symlinked locks fail closed; release cannot remove a replacement owner', async (t) => {
     const dir = workspace(t);
     await withWorkspaceMutation(dir, () => {});
-    const mutationPath = path.join(dir, '.data', 'achilles-cli', 'locks', 'mutation.lock');
+    const mutationPath = path.join(dir, '.achilles-cli', 'locks', 'mutation.lock');
     fs.writeFileSync(mutationPath, '{partial');
     await assert.rejects(withWorkspaceMutation(dir, () => assert.fail('entered')), { code: 'WORKSPACE_STATE_LOCK_AMBIGUOUS' });
     assert.equal(fs.readFileSync(mutationPath, 'utf8'), '{partial');
@@ -197,7 +197,7 @@ test('mutation contention stops within its bounded acquisition window without en
 test('a reused PID identity is recoverable but an abandoned recovery claim is preserved for reconciliation', async (t) => {
     const dir = workspace(t);
     await acquireExecutionLease(dir, 'old-process');
-    const lockDir = path.join(dir, '.data', 'achilles-cli', 'locks');
+    const lockDir = path.join(dir, '.achilles-cli', 'locks');
     const file = path.join(lockDir, fs.readdirSync(lockDir).find((name) => name.startsWith('execution-')));
     const owner = JSON.parse(fs.readFileSync(file, 'utf8'));
     fs.writeFileSync(file, JSON.stringify({ ...owner, start: '0' }));

@@ -1,3 +1,4 @@
+import { requireWorkspaceRoot } from '../../../server/workspace-root.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -55,7 +56,7 @@ function normalizeWorkspaceAttachmentPath(localPath) {
 }
 
 function resolveWorkspaceAttachmentPath(localPath, options = {}) {
-    const baseDir = options.workingDir || options.workspaceRoot || process.env.PLOINKY_WORKSPACE_ROOT || '';
+    const baseDir = options.workingDir || options.workspaceRoot || requireWorkspaceRoot();
     if (!baseDir) return null;
     const normalizedPath = normalizeWorkspaceAttachmentPath(localPath);
     if (!normalizedPath) return null;
@@ -89,7 +90,7 @@ function resolveWebchatAttachmentPath(attachment, options = {}) {
 }
 
 function resolveWorkspaceReferencePath(reference, options = {}) {
-    const baseDir = options.workingDir || options.workspaceRoot || process.env.PLOINKY_WORKSPACE_ROOT || '';
+    const baseDir = options.workingDir || options.workspaceRoot || requireWorkspaceRoot();
     if (!baseDir) return { status: 'unsafe' };
     const normalizedPath = String(reference?.path || '').replace(/\\+/g, '/').replace(/^\/+/, '');
     if (!normalizedPath) return { status: 'unsafe' };
@@ -187,7 +188,7 @@ export function materializeWebchatAttachments(attachments = [], options = {}) {
         }
         const resolution = resolveWebchatAttachmentPath(attachment, {
             sharedRoot,
-            workingDir: options.workingDir || options.workspaceRoot || process.env.PLOINKY_WORKSPACE_ROOT || '',
+            workingDir: options.workingDir || options.workspaceRoot || requireWorkspaceRoot(),
             workspaceRoot: options.workspaceRoot || '',
         });
         const filename = String(attachment.filename || attachment.id || 'attachment').trim() || 'attachment';
@@ -253,7 +254,7 @@ export function materializeWebchatAttachments(attachments = [], options = {}) {
 }
 
 export function materializeWebchatContext(normalizedMessage = {}, options = {}) {
-    const referenceWorkingDir = options.workingDir || process.env.PLOINKY_WORKSPACE_ROOT || '';
+    const referenceWorkingDir = options.workingDir || requireWorkspaceRoot();
     const {
         resources: attachmentResources,
         paths: attachmentPaths,

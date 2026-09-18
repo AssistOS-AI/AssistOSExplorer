@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { RobotStore } from '../../server/robot-store.mjs';
 import { RobotSkillsets } from '../../server/robot-skillsets.mjs';
-import { resolveAlaInstallation } from '../src/lib/alaInstallation.mjs';
+import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
 import { ConversationSessionStore, buildConversationInitialHistory } from '../src/lib/conversationSessionStore.mjs';
 import { createRobotSkillCatalog } from '../src/lib/robotSkillCatalog.mjs';
 import { REPLSession } from '../src/repl/REPLSession.mjs';
@@ -30,8 +30,12 @@ async function fixture(t) {
         }
         await fs.rm(root, { recursive: true, force: true });
     });
-    const { discoverTaskSkills } = await resolveAlaInstallation();
     const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot: workingDir, scopeRoot: workingDir, discoverSkills: discoverTaskSkills });
+    skillsets.repositoriesClient = {
+        listRepositories: async () => [{ name: 'fixture', source: workingDir, origin: 'workspace' }],
+        install: async () => ({ conflicts: [] }),
+        remove: async () => ({ conflicts: [] }),
+    };
     const sessionStore = new ConversationSessionStore({ workingDir });
     const first = await sessionStore.createSession();
     const second = await sessionStore.createSession();

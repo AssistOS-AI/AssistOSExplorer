@@ -43,7 +43,7 @@ test('copilot cache preparation is silent but preparation failures remain visibl
     assert.deepEqual(output, []);
 });
 
-test('robot chat state is isolated and opening another cwd does not reuse the wrong conversation', async (t) => {
+test('chat history belongs to the project, survives robot deletion and is shared across robot selection', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-chat-scope-'));
     const keys = ['ROBOTEAM_DATA_DIR', 'ROBOTEAM_COPILOT_ROOT', 'ROBOTEAM_COPILOT_ROBOT_ID',
         'ROBOTEAM_COPILOT_ROBOT_NAME', 'ACHILLES_ALA_HOME', 'ACHILLES_ALA_COMMAND', 'PLOINKY_WORKSPACE_ROOT'];
@@ -64,11 +64,14 @@ test('robot chat state is isolated and opening another cwd does not reuse the wr
     const other = await new ConversationSessionStore({ workingDir: two }).ensureCurrentSession();
     assert.notEqual(first.sessionId, other.sessionId);
     assert.equal(other.cwd, two);
-    assert.equal(sessions.listSessions().sessions.length, 2);
+    assert.equal(sessions.listSessions().sessions.length, 1);
     await prepareCopilotContext('analyst', { prepareTools: false, dataDir: store.dataDir });
     const analyst = new ConversationSessionStore({ workingDir: one });
-    assert.equal(analyst.listSessions().sessions.length, 0);
-    await assert.rejects(analyst.resumeSession(first.sessionId), /ENOENT/);
+    assert.equal(analyst.listSessions().sessions.length, 1);
+    assert.equal((await analyst.resumeSession(first.sessionId)).sessionId, first.sessionId);
+    await store.delete((await store.getByName('analyst')).id);
+    assert.equal(new ConversationSessionStore({ workingDir: one }).loadSession(first.sessionId).sessionId, first.sessionId);
+    await assert.rejects(fs.stat(path.join(store.robotPath((await store.getByName('default')).id), 'copilot')), { code: 'ENOENT' });
 });
 
 test('task runner uses robot home, persists a conversation, and resumes its native session', { timeout: 15000 }, async (t) => {
@@ -82,11 +85,23 @@ test('task runner uses robot home, persists a conversation, and resumes its nati
     await fs.writeFile(path.join(fake, 'package.json'), '{"name":"advanced-language-agent","type":"module"}');
     const entry = path.join(fake, 'ala.mjs');
     await fs.copyFile(new URL('../copilot/tests/fixtures/ala-engine-child.mjs', import.meta.url), entry);
-    for (const module of ['config.mjs', 'repositories.mjs', 'anthropic-skills.mjs', 'coding-agents/service.mjs']) {
+    for (const module of ['config.mjs', 'coding-agents/service.mjs']) {
         await fs.writeFile(path.join(fake, 'src', module), `export * from ${JSON.stringify(pathToFileURL(path.join(real.packageRoot, 'src', module)).href)};`);
     }
     await fs.writeFile(path.join(fake, 'src/coding-agents/discovery.mjs'),
         `export async function discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; }`);
+    const clientFile = path.join(root, 'ploinky/Agent/client/RepositoryClient.mjs');
+    await fs.mkdir(path.dirname(clientFile), { recursive: true });
+    await fs.writeFile(clientFile, `import fs from 'node:fs/promises';
+import path from 'node:path';
+export const createRepositoryClient = () => ({
+    listRepositories: async () => [],
+    install: async ({ skillRepos }) => {
+        for (const entry of skillRepos) await fs.mkdir(path.join(entry.destination, '.agents/skills'), { recursive: true });
+        return { conflicts: [] };
+    },
+    remove: async () => ({ conflicts: [] }),
+});`);
     const store = new RobotStore({ dataDir });
     const robot = await store.create({ name: 'worker' });
     const sessionId = randomUUID();
@@ -99,7 +114,7 @@ test('task runner uses robot home, persists a conversation, and resumes its nati
                 '--', fileURLToPath(import.meta.url), '--robot', robot.name, '--cwd', workspace, '--session-id', sessionId, '--ca', 'codex',
                 '--taskFile', taskFile, ...(resume ? ['--resume-session'] : [])], {
                 env: { ...process.env,
-                    PLOINKY_WORKSPACE_ROOT: workspace }, stdio: ['pipe', 'pipe', 'pipe'],
+                    PLOINKY_WORKSPACE_ROOT: root }, stdio: ['pipe', 'pipe', 'pipe'],
             });
             let stdout = ''; let stderr = '';
             child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -114,9 +129,9 @@ test('task runner uses robot home, persists a conversation, and resumes its nati
     const first = await run('First');
     assert.equal(first.output.resumed, false);
     assert.match(first.stderr, /session-ready/);
-    const sessionPath = path.join(store.robotPath(robot.id), 'copilot/sessions', `${sessionId}.json`);
+    const sessionPath = path.join(workspace, '.achilles-cli/sessions', `${sessionId}.json`);
     const firstSession = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
-    assert.equal(firstSession.engine.home, path.join(store.robotPath(robot.id), 'home'));
+    assert.ok(firstSession.engine.home.startsWith(path.join(workspace, '.roboteam-homes') + path.sep));
     assert.equal(firstSession.cwd, workspace);
     const second = await run('Follow up', true);
     assert.equal(second.output.resumed, true);

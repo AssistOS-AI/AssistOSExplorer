@@ -1,8 +1,8 @@
+import { requireWorkspaceRoot } from '../../../server/workspace-root.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const DATA_DIRECTORY_NAME = '.data';
-const ACHILLES_PRIVATE_DIRECTORY_NAME = 'achilles-cli';
+const ACHILLES_PRIVATE_DIRECTORY_NAME = '.achilles-cli';
 
 function isInside(root, candidate) {
     const relative = path.relative(root, candidate);
@@ -35,12 +35,7 @@ function unsafePrivatePath(label) {
 export function resolveAchillesWorkspaceRoot(workingDir = process.cwd(), env = process.env) {
     const selectedPath = path.resolve(workingDir);
     const selectedWorkspace = realDirectory(selectedPath, 'Selected AchillesCLI workspace') ?? selectedPath;
-    const configuredRoot = String(env?.PLOINKY_WORKSPACE_ROOT || '').trim();
-    if (!configuredRoot) return selectedWorkspace;
-    if (!path.isAbsolute(configuredRoot)) {
-        throw new Error('PLOINKY_WORKSPACE_ROOT must be an absolute directory.');
-    }
-    const workspaceRoot = fs.realpathSync(configuredRoot);
+    const workspaceRoot = requireWorkspaceRoot(env);
     if (!isInside(workspaceRoot, selectedWorkspace)) {
         throw new Error('The selected AchillesCLI directory is outside PLOINKY_WORKSPACE_ROOT.');
     }
@@ -48,31 +43,17 @@ export function resolveAchillesWorkspaceRoot(workingDir = process.cwd(), env = p
 }
 
 export function resolveAchillesPrivateDataRoot(workingDir = process.cwd(), options = {}) {
-    const robotRoot = (options.env ?? process.env).ROBOTEAM_COPILOT_ROOT;
-    if (robotRoot) {
-        if (!path.isAbsolute(robotRoot)) throw new Error('Robot copilot root must be absolute.');
-        const expected = realDirectory(robotRoot, 'Robot copilot root');
-        if (!expected || expected !== path.resolve(robotRoot)) throw unsafePrivatePath('Robot copilot root');
-        if (options.privateDataRoot && path.resolve(options.privateDataRoot) !== expected) throw unsafePrivatePath('Robot copilot root');
-        resolveAchillesWorkspaceRoot(workingDir, options.env ?? process.env);
-        return expected;
-    }
-    const workspaceRoot = resolveAchillesWorkspaceRoot(workingDir, options.env ?? process.env);
-    const expectedRoot = path.join(workspaceRoot, DATA_DIRECTORY_NAME, ACHILLES_PRIVATE_DIRECTORY_NAME);
-    const privateDataRoot = options.privateDataRoot
-        ? path.resolve(options.privateDataRoot)
-        : expectedRoot;
+    resolveAchillesWorkspaceRoot(workingDir, options.env ?? process.env);
+    const project = realDirectory(workingDir, 'Selected AchillesCLI directory');
+    if (!project) throw new Error('Selected AchillesCLI directory does not exist.');
+    const expectedRoot = path.join(project, ACHILLES_PRIVATE_DIRECTORY_NAME);
+    const privateDataRoot = options.privateDataRoot ? path.resolve(options.privateDataRoot) : expectedRoot;
     if (privateDataRoot !== expectedRoot) {
         throw new Error(`AchillesCLI private data root must be ${expectedRoot}.`);
     }
-    const dataRoot = path.dirname(privateDataRoot);
-    const realDataRoot = realDirectory(dataRoot, 'Workspace .data root');
-    if (realDataRoot && !isInside(workspaceRoot, realDataRoot)) {
-        throw new Error('Workspace .data root escapes the selected workspace.');
-    }
     const realPrivateRoot = realDirectory(privateDataRoot, 'AchillesCLI private data root');
-    if (realPrivateRoot && !isInside(realDataRoot ?? dataRoot, realPrivateRoot)) {
-        throw new Error('AchillesCLI private data root escapes the workspace .data root.');
+    if (realPrivateRoot && !isInside(project, realPrivateRoot)) {
+        throw unsafePrivatePath('AchillesCLI private data root');
     }
     return privateDataRoot;
 }

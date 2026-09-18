@@ -1,3 +1,4 @@
+import { findProjectRecord } from './project-storage.mjs';
 import { availableRepositories, availableSkillsets, resolveSkillsetSelector } from './copilot-skillset.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -180,7 +181,9 @@ export class SkillPolicies {
         if (existing) return existing;
         // The saved conversation outranks a copied terminal-task request during lazy migration.
         try {
-            const handle = await fs.open(path.join(this.service.robotStore.robotPath(robot.id), 'copilot', 'sessions', `${id}.json`), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+            const file = /^[a-f0-9-]{36}$/.test(id) && findProjectRecord({ dataDir: this.service.robotStore.dataDir, workspaceRoot: this.service.workspaceRoot }, 'session', id);
+            if (!file) throw Object.assign(new Error('Conversation not found'), { code: 'ENOENT' });
+            const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
             try { const session = JSON.parse(await handle.readFile('utf8')); legacy = session.skillSelection || session.legacySkillSelection || legacy; }
             finally { await handle.close(); }
         } catch (error) { if (error.code !== 'ENOENT') throw error; }

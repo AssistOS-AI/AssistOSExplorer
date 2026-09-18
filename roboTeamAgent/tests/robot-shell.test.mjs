@@ -20,8 +20,9 @@ test('new robots have shell configuration, repeated preparation preserves user c
     assert.equal(profile.split('. "$HOME/.roboteam-env.sh"').length, 2);
     assert.match(profile, /user configuration/);
     const environment = JSON.parse(execFileSync('/bin/bash', ['--noprofile', '--norc', '-c',
-        '. "$HOME/.bashrc"; node -e \'console.log(JSON.stringify({home:process.env.HOME,codex:process.env.CODEX_HOME,pi:process.env.PI_CODING_AGENT_DIR,path:process.env.PATH,config:process.env.XDG_CONFIG_HOME}))\''],
-    { env: { ...process.env, HOME: home }, encoding: 'utf8' }));
+        '. "$HOME/.bashrc"; node -e \'console.log(JSON.stringify({cwd:process.cwd(),home:process.env.HOME,codex:process.env.CODEX_HOME,pi:process.env.PI_CODING_AGENT_DIR,path:process.env.PATH,config:process.env.XDG_CONFIG_HOME}))\''],
+    { cwd: home, env: { ...process.env, HOME: home, ROBOTEAM_WORKING_DIRECTORY: store.robotPath(robot.id) }, encoding: 'utf8' }));
+    assert.equal(environment.cwd, store.robotPath(robot.id));
     assert.equal(environment.codex, path.join(home, '.codex'));
     assert.equal(environment.pi, path.join(home, '.pi/agent'));
     assert.equal(environment.config, path.join(home, '.config'));
@@ -34,16 +35,18 @@ test('new robots have shell configuration, repeated preparation preserves user c
 test('WebTTY agent hook sets robot HOME even when profiles are disabled', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-webtty-env-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const store = new RobotStore({ dataDir: root });
+    const store = new RobotStore({ dataDir: path.join(root, '.data/roboTeamAgent') });
     const robot = await store.create({ name: 'analyst' });
     const home = path.join(store.robotPath(robot.id), 'home');
     const source = await fs.readFile(new URL('../scripts/webtty-env.sh', import.meta.url), 'utf8');
     const hook = path.join(root, 'hook.sh');
-    await fs.writeFile(hook, source.replaceAll('/data/robots/', root + '/robots/'));
-    const output = execFileSync('/bin/bash', ['--noprofile', '--norc', '-p', '-c',
-        '. "$1"; printf "%s\\n%s" "$HOME" "$CODEX_HOME"', 'test', hook],
-    { cwd: home, env: { ...process.env, HOME: '/wrong' }, encoding: 'utf8' });
-    assert.equal(output, home + '\n' + home + '/.codex');
+    await fs.writeFile(hook, source);
+    for (const cwd of [home, store.robotPath(robot.id)]) {
+        const output = execFileSync('/bin/bash', ['--noprofile', '--norc', '-p', '-c',
+            '. "$1"; printf "%s\\n%s\\n%s" "$HOME" "$CODEX_HOME" "$PWD"', 'test', hook],
+        { cwd, env: { ...process.env, HOME: '/wrong', PLOINKY_WORKSPACE_ROOT: root }, encoding: 'utf8' });
+        assert.equal(output, home + '\n' + home + '/.codex' + '\n' + store.robotPath(robot.id));
+    }
 });
 
 test('shared shell bin resolves all three installations without copying packages and survives relocation', async t => {

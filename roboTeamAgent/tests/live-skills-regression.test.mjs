@@ -1,3 +1,5 @@
+import { registerProject } from '../server/project-storage.mjs';
+import { installRepositoryLinks, removeRepositoryLinks } from '../../../ploinky/cli/utils/repositoryInstall.mjs';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -36,6 +38,13 @@ async function fixture(t, { name = 'default', narrow = false } = {}) {
     const robot = name === 'default' ? await store.ensureDefaultRobot() : await store.create({ name });
     const service = new RobotSkillsets({ robotStore: store, workspaceRoot, scopeRoot,
         ...(process.env.LIVE_SKILLS_ALA_ROOT ? { alaCommand: path.join(process.env.LIVE_SKILLS_ALA_ROOT, 'bin/ala.mjs') } : {}) });
+    const repository = { name: 'fixture', source: workspaceRoot, origin: 'workspace' };
+    const options = { workspaceRoot, resolveRepository: () => repository };
+    service.repositoriesClient = {
+        listRepositories: async () => [repository],
+        install: async input => installRepositoryLinks(input, options),
+        remove: async paths => removeRepositoryLinks(paths, options),
+    };
     const releases = [];
     t.after(async () => { for (const release of releases) await release(); await fs.rm(root, { recursive: true, force: true }); });
     const policy = async (input = { skillSets: ['workspace'] }, legacy) => {
@@ -60,7 +69,7 @@ function conversation(f, id) {
         sessionStore, workingDir: f.scopeRoot, initialSessionId: id });
 }
 
-test('submission retains intent and the actual execution boundary captures edits made during queue wait', async (t) => {
+test('execution uses current source links without capturing bytes', async (t) => {
     const f = await fixture(t);
     const source = await skill(f.scopeRoot, '.agents/skills/local');
     const reference = await f.service.start(f.robot, { skillSets: ['workspace'] }, (_robot, selection) => selection);
@@ -71,13 +80,14 @@ test('submission retains intent and the actual execution boundary captures edits
     await assert.rejects(fs.readdir(f.service.live.root(f.robot.id)), { code: 'ENOENT' }, 'inventory must not create an execution snapshot');
     const active = await catalog.refresh(reference.policyId, { execution: true });
     f.releases.push(active.release);
-    assert.equal(await fs.readFile(path.join(active.catalogPath, 'local/helper.txt'), 'utf8'), 'edited-after-submission');
+    assert.equal(await fs.readFile(path.join(active.skills[0].skillDir, 'helper.txt'), 'utf8'), 'edited-after-submission');
     await fs.writeFile(path.join(source, 'helper.txt'), 'edited-while-running');
-    assert.equal(await fs.readFile(path.join(active.catalogPath, 'local/helper.txt'), 'utf8'), 'edited-after-submission');
+    assert.equal(await fs.readFile(path.join(active.skills[0].skillDir, 'helper.txt'), 'utf8'), 'edited-while-running');
+    assert.equal(active.catalogPath, undefined);
     await active.release();
     const next = await catalog.refresh(reference.policyId, { execution: true });
     f.releases.push(next.release);
-    assert.equal(await fs.readFile(path.join(next.catalogPath, 'local/helper.txt'), 'utf8'), 'edited-while-running');
+    assert.equal(await fs.readFile(path.join(next.skills[0].skillDir, 'helper.txt'), 'utf8'), 'edited-while-running');
 });
 
 test('live capture hashes helper bytes despite equal size/restored mtime, assets, descriptors, and executable modes', async (t) => {
@@ -592,12 +602,9 @@ test('logical name exclusions cover future identities while a single identity ex
 
 test('declared local replacement remains a tombstone after deletion and cannot silently revive a remote distribution', async (t) => {
     const f = await fixture(t, { name: 'Analyst' });
-    const remote = path.join(f.root, 'remote-fixture');
+    const remote = path.join(f.workspaceRoot, 'remote-fixture');
     await skill(remote, 'shared', 'shared', 'Remote distribution');
-    f.service.execImpl = async (_command, args) => {
-        if (args.includes('clone')) await fs.cp(remote, args.at(-1), { recursive: true });
-        return { stdout: 'fixture-commit\n' };
-    };
+    f.service.repositoriesClient.listRepositories = async () => [{ name: 'remote', source: remote, origin: 'installed', url: 'https://example.test/skills.git' }];
     await f.service.add(f.robot.id, { name: 'distribution', source: 'https://example.test/skills.git' });
     const local = await skill(f.scopeRoot, '.agents/skills/shared', 'shared', 'Local replacement');
     const id = await f.policy({ skillSets: ['distribution'] });
@@ -646,22 +653,15 @@ test('imported source-qualified identity follows the descriptor name when its di
     assert.deepEqual(names(await f.capture(id)), ['descriptor-name']);
 });
 
-test('an explicit empty catalog can be pinned and later returned to live selection', async (t) => {
+test('live execution rejects historical pinned policies and supports returning to live', async t => {
     const f = await fixture(t);
     const id = await f.policy({ skillSets: [], skills: [] });
+    const captured = await f.capture(id);
+    await updatePolicy(f, id, policy => { policy.mode = 'pinned'; policy.pinnedCatalog = captured; });
     const catalog = conversation(f, id);
-    const empty = await catalog.refresh(id, { execution: true });
-    f.releases.push(empty.release);
-    await empty.release();
-    await updatePolicy(f, id, policy => { policy.mode = 'pinned'; policy.pinnedCatalog = empty; });
-    await skill(f.scopeRoot, '.agents/skills/new-local');
-    assert.deepEqual((await catalog.refresh(id)).skills, []);
-    const pinned = await catalog.refresh(id, { execution: true });
-    f.releases.push(pinned.release);
-    assert.deepEqual(names(pinned), []);
-    assert.equal(pinned.catalogPath, empty.catalogPath);
-    await pinned.release();
+    await assert.rejects(catalog.refresh(id, { execution: true }), /Pinned snapshots/);
     await updatePolicy(f, id, policy => { policy.mode = 'live'; policy.pinnedCatalog = null; });
+    await skill(f.scopeRoot, '.agents/skills/new-local');
     await updatePolicy(f, id, policy => { policy.selectors = { skillSets: ['workspace'], skills: [] }; });
     const live = await catalog.refresh(id, { execution: true });
     f.releases.push(live.release);
@@ -730,7 +730,8 @@ test('terminal task continuation uses the latest conversation policy and preserv
 test('saved session selection outranks stale legacy task request during first migration', async (t) => {
     const f = await fixture(t);
     const id = crypto.randomUUID();
-    await write(path.join(f.store.robotPath(f.robot.id), 'copilot/sessions', `${id}.json`), JSON.stringify({ sessionId: id, skillSelection: { skillSets: [], skills: [] } }));
+    registerProject({ dataDir: f.store.dataDir, workspaceRoot: f.service.workspaceRoot }, f.service.workspaceRoot);
+    await write(path.join(f.service.workspaceRoot, '.achilles-cli/sessions', `${id}.json`), JSON.stringify({ sessionId: id, skillSelection: { skillSets: [], skills: [] } }));
     const policy = await f.service.policies.ensure(f.robot, id, { legacy: { skillSets: ['copilot'], skills: [] } });
     assert.deepEqual(policy.selectors, { skillSets: [], skills: [] });
 });
@@ -740,7 +741,8 @@ test('catalog API agrees on conversation saved cwd, empty selection, active revi
     await skill(f.scopeRoot, '.agents/skills/local');
     const id = await f.policy();
     const active = await f.capture(id);
-    await write(path.join(f.store.robotPath(f.robot.id), 'copilot/sessions', `${id}.json`), JSON.stringify({ sessionId: id, skillPolicyRef: id,
+    registerProject({ dataDir: f.store.dataDir, workspaceRoot: f.service.workspaceRoot }, f.service.workspaceRoot);
+    await write(path.join(f.service.workspaceRoot, '.achilles-cli/sessions', `${id}.json`), JSON.stringify({ sessionId: id, skillPolicyRef: id,
         engine: { cwd: f.scopeRoot }, skillExecution: { active: true, catalogId: active.catalogId, revision: active.revision, policyVersion: active.policyVersion } }));
     const input = { sessionId: id, dir: '/this-browser-cwd-is-ignored' };
     const before = await skillCatalogRequest({ skillsets: f.service, robot: f.robot, input });
@@ -868,4 +870,24 @@ test('dead preparing owners permit cleanup of their staging and unreferenced cat
         owner: { pid: 1, start: '0', boot: crypto.randomUUID() } }));
     await f.service.live.collect(f.robot.id, { maxAgeMs: -1, keep: 0 });
     assert.deepEqual(await fs.readdir(root), []);
+});
+
+
+test('manual terminal and workstation preparation uses the saved scoped defaults, not the robot ID', async t => {
+    const f = await fixture(t, { name: 'analyst' });
+    const cwd = path.join(f.workspaceRoot, 'project');
+    await fs.mkdir(cwd);
+    await skill(f.workspaceRoot, 'skills/report');
+    const { policyId } = await f.service.defaults(f.robot);
+    await f.service.policies.ensure(f.robot, policyId, { input: { skillSets: ['workspace'] }, useDefaults: false });
+    const manager = new RuntimeManager({ workspaceRoot: f.workspaceRoot, dataDir: path.join(f.root, 'private'), skillsets: f.service });
+    await manager.prepareRobotSkills(f.robot, cwd);
+    assert.match(await fs.readFile(path.join(cwd, '.agents/skills/report/SKILL.md'), 'utf8'), /name: report/);
+    const policy = await f.service.policies.read(f.robot.id, policyId);
+    await f.service.policies.update(f.robot.id, policyId, policy.policyVersion, current => ({ ...current,
+        selectors: { skillSets: [], skills: [] } }));
+    await manager.prepareRobotSkills(f.robot, cwd);
+    await assert.rejects(fs.lstat(path.join(cwd, '.agents/skills/report')), { code: 'ENOENT' });
+    assert.equal((await f.service.policies.read(f.robot.id, policyId)).policyVersion, policy.policyVersion + 1);
+    assert.throws(() => f.service.policies.file(f.robot.id, f.robot.id), /invalid skill policy reference/);
 });

@@ -17,14 +17,25 @@ test('queued native input permits another final event and returns the last execu
     assert.equal(events.filter((event) => event.type === 'coding-agent-final').length, 2);
     assert.equal(JSON.parse(result.outputText).prompt.includes('QUEUED_FOLLOWUP'), true);
 });
+
+test('the workspace root itself is a valid robot working directory', async (t) => {
+    const h = await harness(t, {}, { workspaceAtRoot: true });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'ROOT_WORKSPACE' });
+    const output = JSON.parse(result.outputText);
+    assert.equal(output.prompt.includes('ROOT_WORKSPACE'), true);
+    assert.equal(output.resumed, false);
+});
 function deferred() {
     let resolve;
     const promise = new Promise((done) => { resolve = done; });
     return { promise, resolve };
 }
 
-async function harness(t, interactions = {}) {
+async function harness(t, interactions = {}, { workspaceAtRoot = false } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-engine-'));
+    const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
+    process.env.PLOINKY_WORKSPACE_ROOT = workspaceAtRoot ? workingDir : path.dirname(workingDir);
+    t.after(() => { if (oldRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT; else process.env.PLOINKY_WORKSPACE_ROOT = oldRoot; });
     const store = new ConversationSessionStore({ workingDir });
     const session = await store.createSession();
     let records = [{ name: 'bash', description: 'Run commands', skillDir: workingDir, enabled: true }];
@@ -61,7 +72,7 @@ test('a competing turn is rejected before placeholders, while native approval is
     assert.equal(result.session.messages.at(-1).status, 'completed');
 });
 
-test('stderr final and stdout produce one persisted answer; snapshots update only at the next turn', async (t) => {
+test('stderr final and stdout produce one persisted answer; live selection is prepared for the next turn', async (t) => {
     const originalSecret = process.env.PLOINKY_AGENT_SECRET;
     process.env.PLOINKY_AGENT_SECRET = 'parent-only-credential';
     t.after(() => {
@@ -115,7 +126,8 @@ test('UI history is never replayed and subsequent turns resume the native conver
     const previous = await h.store.beginTurn({ sessionId: h.sessionId, text: 'LEGACY_MARKER' });
     await h.store.completeTurn(h.sessionId, previous.assistantMessageId, 'Legacy reply');
     const first = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Now' })).outputText);
-    assert.equal(first.prompt, 'Now');
+    assert.match(first.prompt, /^Task skills are available in \.agents\/skills\./);
+    assert.ok(first.prompt.endsWith('\n\nNow'));
     assert.equal(first.prompt.includes('EXCLUDED_COMMAND_RESULT'), false);
     const second = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Again' })).outputText);
     assert.equal(second.prompt, 'Again');
@@ -155,7 +167,7 @@ test('coding provider names remain ordinary prompts without removed launcher rou
         { name: 'bash', skillDir: h.workingDir, enabled: true },
     ]);
     const delegated = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Ask codex to review this project' })).outputText);
-    assert.equal(delegated.prompt, 'Ask codex to review this project');
+    assert.ok(delegated.prompt.endsWith('\n\nAsk codex to review this project'));
     const mentioned = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'What is Codex?' })).outputText);
     assert.equal(mentioned.prompt, 'What is Codex?');
 });
@@ -174,12 +186,13 @@ test('the default robot receives description-based delegation choices in its nat
 });
 
 
-test('explicit skill selection is an ALA argument, without a RoboTeam prompt wrapper', async t => {
+test('explicit skill selection stays in the caller prompt without ALA skill options', async t => {
     const h = await harness(t);
     const output = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId,
         prompt: 'Inspect the project', skillName: 'bash' })).outputText);
-    assert.equal(output.prompt, 'Inspect the project');
-    assert.equal(output.skill, 'bash');
+    assert.match(output.prompt, /Inspect the project/);
+    assert.match(output.prompt, /Use the selected skill at \.agents\/skills\/bash\/SKILL\.md/);
+    assert.equal(output.skill, null);
     await assert.rejects(h.engine.executeTurn({ sessionId: h.sessionId,
         prompt: 'Inspect', skillName: 'missing' }), /missing or disabled/);
 });

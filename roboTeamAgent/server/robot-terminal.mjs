@@ -1,9 +1,10 @@
+import { requireWorkspaceRoot } from './workspace-root.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export async function robotTerminalDirectory(store, robotId, workspaceRoot = '/workspace') {
-    const home = path.join(store.robotPath(robotId), 'home');
-    const directory = `.data/roboTeamAgent/robots/${robotId}/home`;
+export async function robotTerminalDirectory(store, robotId, workspaceRoot = requireWorkspaceRoot()) {
+    const home = store.robotPath(robotId);
+    const directory = `.data/roboTeamAgent/robots/${robotId}`;
     const workspaceHome = path.join(workspaceRoot, directory);
     const [actual, projected] = await Promise.all([fs.lstat(home), fs.lstat(workspaceHome)]);
     if (!actual.isDirectory() || actual.isSymbolicLink() || !projected.isDirectory() || projected.isSymbolicLink()

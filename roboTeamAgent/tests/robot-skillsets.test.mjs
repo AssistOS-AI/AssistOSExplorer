@@ -122,8 +122,8 @@ test('registration rejects duplicate names and canonical local sources without p
         { name: 'canonical-again', source: `${f.source}/` },
     ]) await assert.rejects(f.skillsets.add(f.robot.id, input), /already exists/);
     assert.deepEqual((await f.store.get(f.robot.id)).skillsets, [original]);
-    assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')), [original.generation]);
-    assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')), []);
+    assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')).catch(error => { if (error.code === 'ENOENT') return []; throw error; }), []);
+    assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')).catch(error => { if (error.code === 'ENOENT') return []; throw error; }), []);
 });
 
 test('concurrent registrations reserve one repository identity under the robot lock', async t => {
@@ -136,8 +136,8 @@ test('concurrent registrations reserve one repository identity under the robot l
     assert.match(results.find(result => result.status === 'rejected').reason.message, /already exists/);
     const saved = (await f.store.get(f.robot.id)).skillsets;
     assert.equal(saved.length, 1);
-    assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')), [saved[0].generation]);
-    assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')), []);
+    assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')).catch(error => { if (error.code === 'ENOENT') return []; throw error; }), []);
+    assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')).catch(error => { if (error.code === 'ENOENT') return []; throw error; }), []);
 });
 
 for (const names of [['documents', 'documents-set-1'], ['documents-set-1', 'documents']]) {
@@ -148,8 +148,8 @@ for (const names of [['documents', 'documents-set-1'], ['documents-set-1', 'docu
         const original = await f.skillsets.add(f.robot.id, { name: names[0], source: f.source });
         await assert.rejects(f.skillsets.add(f.robot.id, { name: names[1], source: second }), /ambiguous skillset selector/);
         assert.deepEqual((await f.store.get(f.robot.id)).skillsets, [original]);
-        assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')), [original.generation]);
-        assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')), []);
+        assert.deepEqual(await fs.readdir(path.join(f.store.robotPath(f.robot.id), 'skillsets')).catch(error => { if (error.code === 'ENOENT') return []; throw error; }), []);
+        assert.deepEqual(await fs.readdir(path.join(f.dataDir, 'skillset-imports')).catch(error => { if (error.code === 'ENOENT') return []; throw error; }), []);
     });
 }
 
@@ -400,6 +400,11 @@ test('remote and managed registrations use workspace skills during import and la
     await fs.mkdir(path.join(cached, 'skills'), { recursive: true });
     await fs.cp(f.source, path.join(cached, 'skills'), { recursive: true });
     // Keep the existing registration, then introduce a preferred workspace checkout.
+    f.skillsets.repositoriesClient = { listRepositories: async () => {
+        const local = path.join(workspace, 'WorkspaceSkills');
+        const source = await fs.stat(local).then(() => local).catch(() => cached);
+        return [{ name: 'WorkspaceSkills', source, origin: 'workspace', url: 'https://example.invalid/WorkspaceSkills.git' }];
+    } };
     const registration = await f.skillsets.add(f.robot.id, { name: 'local', source: cached });
     const local = path.join(workspace, 'WorkspaceSkills');
     await fs.mkdir(path.join(local, '.git'), { recursive: true });

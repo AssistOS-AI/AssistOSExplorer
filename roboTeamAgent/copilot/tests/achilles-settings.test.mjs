@@ -62,7 +62,7 @@ test('native backend model selections never reinterpret or destroy a legacy mode
 test('malformed settings reads do not destroy persisted evidence', (t) => {
     const dir = workspace(t);
     const file = getAchillesSettingsPath(dir);
-    fs.mkdirSync(join(dir, '.data', 'achilles-cli'), { recursive: true });
+    fs.mkdirSync(join(dir, '.achilles-cli'), { recursive: true });
     fs.writeFileSync(file, '{invalid');
     assert.equal(getSelectedModel(dir), null);
     assert.equal(getPermissionMode(dir), 'full-access');

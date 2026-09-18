@@ -42,8 +42,8 @@ test('AchillesCLI creates and restores workspace conversation sessions', async (
     assert.equal(restored.messages[0].role, 'user');
     assert.deepEqual(restored.messages[1].progress, ['Reading files']);
     assert.deepEqual(restored.messages[2], { type: 'task', taskId: 'task_1234567890abcdef12345678' });
-    assert.equal(fs.existsSync(path.join(workingDir, '.data', 'achilles-cli', 'sessions', `${created.sessionId}.json`)), true);
-    assert.equal(fs.existsSync(path.join(workingDir, '.achilles-cli')), false);
+    assert.equal(fs.existsSync(path.join(workingDir, '.achilles-cli', 'sessions', `${created.sessionId}.json`)), true);
+    assert.equal(fs.existsSync(path.join(workingDir, '.data')), false);
     assert.equal(fs.existsSync(path.join(workingDir, '.copilot_history')), false);
 
     assert.deepEqual(buildConversationInitialHistory(restored), [
@@ -59,8 +59,8 @@ test('conversation storage rejects a symlinked owned sessions directory', (t) =>
     const workingDir = workspace(t);
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-sessions-outside-'));
     t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
-    fs.mkdirSync(path.join(workingDir, '.data', 'achilles-cli'), { recursive: true });
-    fs.symlinkSync(outside, path.join(workingDir, '.data', 'achilles-cli', 'sessions'), 'dir');
+    fs.mkdirSync(path.join(workingDir, '.achilles-cli'), { recursive: true });
+    fs.symlinkSync(outside, path.join(workingDir, '.achilles-cli', 'sessions'), 'dir');
 
     assert.throws(
         () => new ConversationSessionStore({ workingDir }),
@@ -75,7 +75,7 @@ test('conversation storage revalidates sessions after construction', async (t) =
     t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
     const store = new ConversationSessionStore({ workingDir });
     await store.ensureCurrentSession();
-    const sessionsDirectory = path.join(workingDir, '.data', 'achilles-cli', 'sessions');
+    const sessionsDirectory = path.join(workingDir, '.achilles-cli', 'sessions');
 
     fs.rmSync(sessionsDirectory, { recursive: true, force: true });
     fs.symlinkSync(outside, sessionsDirectory, 'dir');
@@ -357,4 +357,17 @@ test('separate processes merge progress and deduplicate task cards without shift
     expectedTasks.push('task_ffffffffffffffffffffffff');
     assert.deepEqual(restored.messages.filter((message) => message.type === 'task').map((message) => message.taskId).sort(), expectedTasks.sort());
     assert.equal(restored.messages.find((message) => message.id === second.assistantMessageId).text, 'second answer');
+});
+
+
+test('native continuation stays bound to its robot while project history remains readable', async t => {
+    const workingDir = workspace(t);
+    const home = path.join(workingDir, 'native-home');
+    fs.mkdirSync(home);
+    const store = new ConversationSessionStore({ workingDir });
+    const session = await store.createSession();
+    await store.bindEngine(session.sessionId, { home, cwd: workingDir, backend: 'codex', robotId: 'first-123456' });
+    await assert.rejects(store.bindEngine(session.sessionId, { home, cwd: workingDir,
+        backend: 'codex', robotId: 'second-123456' }), /robot_mismatch/);
+    assert.equal(store.loadSession(session.sessionId).engine.robotId, 'first-123456');
 });

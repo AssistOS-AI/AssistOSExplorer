@@ -1,47 +1,21 @@
-import { workspaceSkillSource } from './skill-repository-source.mjs';
+import { requireWorkspaceRoot } from './workspace-root.mjs';
+import { repositoryClient } from './repository-client.mjs';
+import { discoverTaskSkills } from './skill-descriptor.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
 import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector } from './copilot-skillset.mjs';
 import { skillsetMDParser } from './skillsetMDParser.mjs';
 import { resolveAlaCommand } from './ala-command.mjs';
 import { SkillPolicies, selectorNames } from './skill-policy.mjs';
 import { LiveSkillCatalog } from './live-skill-catalog.mjs';
-import { catalogDigest, hashValue } from './skill-files.mjs';
+import { readSkillTree, catalogDigest, hashValue } from './skill-files.mjs';
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const UUID = /^[a-f0-9-]{36}$/;
-const exec = promisify(execFile);
 const invalid = (message) => Object.assign(new Error(message), { statusCode: 400 });
 
 export const selectionNames = selectorNames;
-
-// Copy only regular files and directories. Never follow a repository's symbolic links.
-async function copyTree(source, target, budget = { bytes: 0, files: 0 }, depth = 0) {
-    if (depth > 32) throw invalid('skillset directory nesting is too deep');
-    const entry = await fs.lstat(source);
-    if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory())) throw invalid('skillsets cannot contain symbolic links or special files');
-    if (entry.isDirectory()) {
-        await fs.mkdir(target, { mode: 0o700 });
-        for (const name of (await fs.readdir(source)).sort()) {
-            if (name === '.git' || name === 'node_modules') continue;
-            await copyTree(path.join(source, name), path.join(target, name), budget, depth + 1);
-        }
-    } else {
-        budget.bytes += entry.size;
-        budget.files += 1;
-        if (budget.bytes > 64 * 1024 * 1024 || budget.files > 5000) throw invalid('skillset exceeds 64 MiB or 5000 files');
-        const input = await fs.open(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-        try {
-            const stat = await input.stat();
-            if (!stat.isFile() || stat.size !== entry.size) throw invalid('skillset changed during import');
-            await fs.writeFile(target, await input.readFile(), { flag: 'wx', mode: entry.mode & 0o111 ? 0o500 : 0o400 });
-        } finally { await input.close(); }
-    }
-}
 
 async function treeDigest(root) {
     const hash = crypto.createHash('sha256');
@@ -68,17 +42,15 @@ export async function readSkillsetDefinitions(directory, skills) {
 }
 
 export class RobotSkillsets {
-    constructor({ robotStore, workspaceRoot = '/workspace', scopeRoot = process.env.PLOINKY_SKILL_SCOPE, alaCommand = resolveAlaCommand(), discoverSkills, execImpl = exec }) {
-        Object.assign(this, { robotStore, workspaceRoot, scopeRoot, alaCommand, discoverSkills, execImpl });
+    constructor({ robotStore, workspaceRoot = requireWorkspaceRoot(), scopeRoot = process.env.PLOINKY_SKILL_SCOPE, alaCommand = resolveAlaCommand(), discoverSkills, repositoriesClient = null }) {
+        Object.assign(this, { robotStore, workspaceRoot, scopeRoot, alaCommand, discoverSkills });
+        this.repositoriesClient = repositoriesClient;
         this.policies = new SkillPolicies(this);
         this.live = new LiveSkillCatalog(this);
     }
 
     async discover(directory) {
-        if (!this.discoverSkills) {
-            const entry = await fs.realpath(this.alaCommand);
-            this.discoverSkills = (await import(pathToFileURL(path.resolve(path.dirname(entry), '../src/repositories.mjs')).href)).discoverTaskSkills;
-        }
+        if (!this.discoverSkills) this.discoverSkills = discoverTaskSkills;
         try { return await this.discoverSkills([directory]); }
         catch { throw invalid('skillset must contain valid, uniquely named Anthropic SKILL.md descriptors'); }
     }
@@ -88,60 +60,55 @@ export class RobotSkillsets {
         if (!NAME.test(name) || name === 'copilot' || name === 'workspace') throw invalid('invalid or reserved skill source name');
         const description = String(input.description || '').trim();
         const requestedSource = String(input.source || '').trim();
-        const source = await workspaceSkillSource(requestedSource, this.workspaceRoot);
+        const source = requestedSource;
         if (!source || source.length > 2048) throw invalid('invalid skillset source or description');
-        const stagingRoot = path.join(this.robotStore.dataDir, 'skillset-imports');
-        await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });
-        const stage = await fs.mkdtemp(path.join(stagingRoot, 'import-'));
-        let revision = null;
-        try {
-            let local;
-            if (source.startsWith('https://')) {
-                const url = new URL(source);
-                if (url.username || url.password || url.hash || url.search) throw invalid('use a credential-free HTTPS Git URL');
-                local = path.join(stage, 'clone');
-                const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
-                delete env.NODE_OPTIONS;
-                try {
-                    await this.execImpl('git', ['-c', 'protocol.file.allow=never', '-c', 'core.hooksPath=/dev/null', 'clone', '--depth=1', '--', source, local], { env, timeout: 120000, maxBuffer: 1024 * 1024 });
-                    revision = (await this.execImpl('git', ['-C', local, 'rev-parse', 'HEAD'], { env, timeout: 10000 })).stdout.trim();
-                } catch { throw invalid('could not clone skillset repository'); }
-            } else {
-                if (!path.isAbsolute(source)) throw invalid('source must be an HTTPS Git URL or an absolute workspace directory');
-                local = await fs.realpath(source);
-                const workspace = await fs.realpath(this.workspaceRoot);
-                if (!local.startsWith(`${workspace}${path.sep}`)) throw invalid('skillset source must be inside the workspace');
-                const dataRoot = await fs.realpath(this.robotStore.dataDir);
-                if (local === dataRoot || local.startsWith(`${dataRoot}${path.sep}`) || dataRoot.startsWith(`${local}${path.sep}`)) {
-                    throw invalid('skillset source cannot contain robot private data');
-                }
+        const local = await this.resolveLiveRepository(source);
+        const workspace = await fs.realpath(this.workspaceRoot);
+        if (!local.startsWith(`${workspace}${path.sep}`)) throw invalid('skillset source must be inside the workspace');
+        const dataRoot = await fs.realpath(this.robotStore.dataDir);
+        if (local === dataRoot || local.startsWith(`${dataRoot}${path.sep}`) || dataRoot.startsWith(`${local}${path.sep}`)) throw invalid('skillset source cannot contain robot private data');
+        await readSkillTree(local, { skipDependencies: true });
+        const records = await this.discover(local);
+        if (!records.length || records.length > 100) throw invalid('skillset must contain 1 to 100 skills');
+        const skills = records.map(skill => ({ name: skill.name, description: skill.description,
+            directory: path.relative(local, skill.directoryPath) }));
+        const definitions = await readSkillsetDefinitions(local, skills);
+        return this.robotStore.withRobot(robotId, async (robot, save) => {
+            const available = robot.skillsets || [];
+            if (available.some(set => set.name === name || set.source === local)) throw invalid('repository already exists');
+            if (available.length >= 32) throw invalid('robot allows at most 32 skillsets');
+            const record = { name, description, source: local, revision: null, digest: null,
+                generation: crypto.randomUUID(), skills, definitions };
+            const candidate = { ...robot, skillsets: [...available, record] };
+            const repositories = availableRepositories(candidate);
+            for (const repository of repositories) resolveSkillsetSelector(repositories, availableSkillsets(candidate), repository.name);
+            await save(candidate);
+            return record;
+        });
+    }
+
+    async resolveLiveRepository(source) {
+        if (path.isAbsolute(source)) {
+            if (path.dirname(source) === path.join(this.workspaceRoot, '.ploinky', 'repos')) {
+                const client = this.repositoriesClient || await repositoryClient();
+                const repo = (await client.listRepositories()).find(entry => entry.name === path.basename(source));
+                if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
+                return fs.realpath(repo.source);
             }
-            const imported = path.join(await fs.realpath(stage), 'source');
-            await copyTree(local, imported);
-            const records = await this.discover(imported);
-            if (!records.length || records.length > 100) throw invalid('skillset must contain 1 to 100 skills');
-            const skills = records.map((skill) => ({ name: skill.name, description: skill.description,
-                directory: path.relative(imported, skill.directoryPath) }));
-            const definitions = await readSkillsetDefinitions(imported, skills);
-            const digest = await treeDigest(imported);
-            const registeredSource = path.isAbsolute(source) ? local : source;
-            return await this.robotStore.withRobot(robotId, async (robot, save) => {
-                const available = robot.skillsets || [];
-                if (available.some((set) => set.name === name || set.source === registeredSource)) throw invalid('repository already exists');
-                if (available.length >= 32) throw invalid('robot allows at most 32 skillsets');
-                const generation = crypto.randomUUID();
-                const record = { name, description, source: registeredSource, revision, digest, generation, skills, definitions };
-                const candidate = { ...robot, skillsets: [...available, record] };
-                const repositories = availableRepositories(candidate);
-                const selectors = availableSkillsets(candidate);
-                for (const repository of repositories) resolveSkillsetSelector(repositories, selectors, repository.name);
-                const parent = path.join(this.robotStore.robotPath(robotId), 'skillsets');
-                await fs.mkdir(parent, { recursive: true, mode: 0o700 });
-                await fs.rename(imported, path.join(parent, generation));
-                await save(candidate);
-                return record;
-            });
-        } finally { await fs.rm(stage, { recursive: true, force: true }); }
+            return fs.realpath(source);
+        }
+        const url = new URL(source);
+        if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) throw invalid('use a credential-free HTTPS Git URL');
+        const client = this.repositoriesClient || await repositoryClient();
+        let repositories = await client.listRepositories();
+        const matches = entry => entry.url?.replace(/\.git$/, '') === source.replace(/\.git$/, '');
+        let repo = repositories.find(matches);
+        if (!repo || repo.origin === 'remote') {
+            repositories = await client.prepareRepository({ url: source, name: path.basename(url.pathname).replace(/\.git$/, '') });
+            repo = repositories.find(matches);
+        }
+        if (!repo || repo.origin === 'remote') throw invalid('repository is unavailable');
+        return fs.realpath(repo.source);
     }
 
     async setSkillsetEnabled(robotId, { id, enabled }) {

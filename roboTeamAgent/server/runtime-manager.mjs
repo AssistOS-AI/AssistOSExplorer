@@ -1,3 +1,8 @@
+import { registerProject, executionDirectory, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
+import { requireWorkspaceRoot } from './workspace-root.mjs';
+import { workspaceDataPath } from './workspace-paths.mjs';
+import { prepareWorkingHome } from './working-home.mjs';
+import { installLiveSkills } from './live-skill-install.mjs';
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -135,7 +140,7 @@ function mappedPort(output) {
     return Number(match[1]);
 }
 
-export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, shellTools }) {
+export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images, timezone, cwd, toolsPath, shellTools, workspaceRoot = requireWorkspaceRoot(), homePath = path.join(path.resolve(dataDir), 'robots', robot.id, 'home') }) {
     if (!GUI_MODES.has(mode)) throw new Error('mode must be desktop or browser');
     if (!path.isAbsolute(String(toolsPath || ''))) throw new Error('toolsPath must be an absolute prepared cache path');
     const robotRoot = path.join(path.resolve(dataDir), 'robots', robot.id);
@@ -153,6 +158,7 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
             '-p', '127.0.0.1::3000', '-p', '127.0.0.1::8100',
             '-e', 'PUID=0', '-e', 'PGID=0', '-e', `TZ=${timezone}`,
             '-e', `SUBFOLDER=${subfolder}`, '-e', `TITLE=${robot.name}`,
+            '-e', `ROBOTEAM_WORKING_DIRECTORY=${cwd}`,
             '-e', 'START_DOCKER=false', '-e', 'DISABLE_IPV6=true', '-e', 'PELORUS=true',
             ...(mode === 'browser' ? ['-e', 'CHROME_CLI=--remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --force-renderer-accessibility'] : []),
             ...(shellTools ? [
@@ -163,8 +169,14 @@ export function buildRobotRunArgs({ robot, mode, dataDir, publicBasePath, images
                 '-e', 'XDG_DATA_HOME=/config/.local/share', '-e', 'XDG_STATE_HOME=/config/.local/state',
                 '-e', 'PI_CODING_AGENT_DIR=/config/.pi/agent',
             ] : []),
-            '-v', `${path.join(robotRoot, 'home')}:/config`,
-            '-v', `${cwd}:/workspace`,
+            '-v', `${homePath}:/config`,
+            // The opened folder may be the workspace root itself. Mounting the
+            // same path twice (read-only parent plus writable cwd) conflicts, so
+            // keep only the writable grant in that case.
+            ...(path.resolve(workspaceRoot) === path.resolve(cwd)
+                ? ['-v', `${cwd}:${cwd}:rw`]
+                : ['-v', `${workspaceRoot}:${workspaceRoot}:ro`, '-v', `${cwd}:${cwd}:rw`]),
+            '-w', cwd,
             '-v', `${toolsPath}:/opt/roboteam-tools:ro`,
             ...(shellTools ? [
                 '-v', `${shellTools.path}:${path.dirname(shellTools.binPath)}:ro`,
@@ -181,7 +193,7 @@ export class RuntimeManager {
         this.publicBasePath = normalizeBasePath(options.publicBasePath);
         this.podmanCommand = options.podmanCommand || '/usr/bin/podman';
         this.alaCommand = resolveAlaCommand(options.alaCommand);
-        this.workspaceRoot = path.resolve(options.workspaceRoot || '/workspace');
+        this.workspaceRoot = path.resolve(options.workspaceRoot ?? requireWorkspaceRoot());
         this.hostWorkspaceRoot = options.hostWorkspaceRoot ? path.resolve(options.hostWorkspaceRoot) : null;
         this.maxActive = Math.max(1, Math.min(32, Number(options.maxActive) || MAX_ACTIVE_GUI_ROBOTS));
         this.images = {
@@ -211,6 +223,13 @@ export class RuntimeManager {
         this.deletedRobots = new Set();
         this.skillsets = options.skillsets || null;
         this.soulGateway = options.soulGateway || createSoulGatewayService();
+    }
+
+    async prepareRobotSkills(robot, cwd) {
+        if (!this.skillsets) return;
+        const { policyId } = await this.skillsets.defaults(robot);
+        await this.skillsets.policies.ensure(robot, policyId, { useDefaults: false });
+        await installLiveSkills({ service: this.skillsets, robot, policyId, cwd });
     }
 
     async prepareOpenCode(robotId) {
@@ -273,12 +292,18 @@ export class RuntimeManager {
 
     async ensureContainer(robot, mode, cwdValue, options = {}) {
         return this._serialize(robot.id, async () => {
-            const cwd = cwdValue
-                ? await this.resolveCwd(cwdValue)
-                : path.join(this.dataDir, 'robots', robot.id, 'workspace');
-            const robotHome = path.join(this.dataDir, 'robots', robot.id, 'home');
-            await this._prepareRobotAgentState(robotHome);
+            const defaultCwd = path.join(this.dataDir, 'robots', robot.id);
+            if (!cwdValue) await fs.mkdir(defaultCwd, { recursive: true });
+            const cwd = cwdValue ? await this.resolveCwd(cwdValue) : await workspaceDataPath(defaultCwd, this.workspaceRoot);
+            await fs.mkdir(cwd, { recursive: true });
+            await this.prepareRobotSkills(robot, cwd);
+            await fs.mkdir(cwd, { recursive: true });
+            const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
+            await this._prepareRobotAgentState(originalHome);
             await this.prepareOpenCode(robot.id);
+            const robotHome = await prepareWorkingHome(cwd, await workspaceDataPath(originalHome, this.workspaceRoot), { workspaceRoot: this.workspaceRoot });
+            await this._prepareRobotAgentState(robotHome);
+            await prepareRobotShell(robotHome);
             const existing = this.sessions.get(robot.id);
             const codingAgents = robotCodingAgents(robot);
             const codingAgentsKey = codingAgents.join(',');
@@ -300,7 +325,7 @@ export class RuntimeManager {
                 this.toolCache.prepareShellTools(codingAgents),
             ]);
             await prepareRobotShell(robotHome, { codingAgents, binPath: shellTools.binPath, cacheRoot: this.toolCache.root });
-            const plan = buildRobotRunArgs({ robot, mode, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools });
+            const plan = buildRobotRunArgs({ robot, mode, homePath: robotHome, workspaceRoot: this.workspaceRoot, dataDir: this.dataDir, publicBasePath: this.publicBasePath, images: this.images, timezone: this.timezone, cwd, toolsPath: tools.path, shellTools });
             const session = { robotId: robot.id, mode, cwd, codingAgentsKey, state: 'starting', containerName: plan.containerName, startedAt: new Date().toISOString(), sessionUrl: plan.subfolder, sessionPort: null, mcpPort: null };
             this.sessions.set(robot.id, session);
             try {
@@ -425,6 +450,7 @@ export class RuntimeManager {
             task.state = 'starting';
             task.startedAt = new Date().toISOString();
             const cwd = await this.resolveCwd(task.request.cwd);
+            task.request.cwd = registerProject(this, cwd);
             if (task.cancelRequested) throw new Error('task was stopped');
             const codingAgent = task.request.ca || 'auto';
             const selectedAgents = robotCodingAgents(robot);
@@ -443,10 +469,14 @@ export class RuntimeManager {
                 await codingAgentsPromise;
             }
             if (task.cancelRequested) throw new Error('task was stopped');
-            const robotHome = path.join(this.dataDir, 'robots', robot.id, 'home');
-            const runtimeDir = path.join(this.dataDir, 'robots', robot.id, 'runtime');
-            await this._prepareRobotAgentState(robotHome);
+            await fs.mkdir(cwd, { recursive: true });
+            const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
+            await this._prepareRobotAgentState(originalHome);
             await this.prepareOpenCode(robot.id);
+            const robotHome = await prepareWorkingHome(cwd, await workspaceDataPath(originalHome, this.workspaceRoot), { workspaceRoot: this.workspaceRoot });
+            const runtimeDir = executionDirectory(this, cwd, task.alaSessionId || task.taskId);
+            await this._prepareRobotAgentState(robotHome);
+            await prepareRobotShell(robotHome);
             await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
             await this._saveTask(task);
             const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
@@ -531,14 +561,10 @@ export class RuntimeManager {
 
     async _saveTask(task) {
         if (!['desktop', 'browser', 'simple'].includes(task.type)) return;
-        const directory = path.join(this.dataDir, 'robots', task.robotId, 'runtime');
-        await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-        const file = path.join(directory, `${task.taskId}.task.json`);
-        const temporary = `${file}.${crypto.randomUUID()}.tmp`;
-        const record = { taskId: task.taskId, robotId: task.robotId, type: task.type,
-            state: task.state, request: task.request, alaSessionId: task.alaSessionId, skillExecution: task.skillExecution, legacySkillSelection: task.legacySkillSelection };
-        await fs.writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-        await fs.rename(temporary, file);
+        if (!task.request?.cwd) return;
+        const cwd = await this.resolveCwd(task.request.cwd);
+        registerProject(this, cwd);
+        saveTaskExecution(this, { ...task, request: { ...task.request, cwd } });
     }
 
     async sendTaskMessage(robot, taskId, prompt) {
@@ -621,8 +647,11 @@ export class RuntimeManager {
         if (!/^[0-9a-f-]{36}$/u.test(String(taskId))) throw new Error('Invalid task id.');
         let internal = this.tasks.get(taskId);
         if (!internal) {
-            internal = JSON.parse(await fs.readFile(path.join(this.dataDir, 'robots', robot.id,
-                'runtime', `${taskId}.task.json`), 'utf8'));
+            const file = findProjectRecord(this, 'task', taskId);
+            if (!file) throw new Error('Task execution record is unavailable in registered projects.');
+            const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+            try { internal = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
+            if (internal.taskId !== taskId) throw new Error('Task execution record identity mismatch.');
             if (['starting', 'running'].includes(internal.state)) internal.state = 'stopped';
         }
         if (internal.robotId !== robot.id || !['desktop', 'browser', 'simple'].includes(internal.type)

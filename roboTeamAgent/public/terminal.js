@@ -49,6 +49,7 @@ export async function openRobotTerminal(robot, api, { windowRef = window, discov
         anchor.click();
     } catch (error) {
         await launch?.cancel();
+        console.error('Robot terminal failed:', error);
         if (!popup.closed) {
             try {
                 popup.document.title = 'Robot terminal could not open';

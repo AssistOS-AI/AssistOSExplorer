@@ -54,7 +54,8 @@ export async function prepareRobotShell(home, options) {
             if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size > 1024 * 1024) throw new Error('Unsafe robot shell profile');
             const previous = await handle.readFile('utf8');
             if (name === '.roboteam-env.sh') {
-                const environment = (options || !previous) ? shellEnvironment(options) : previous;
+                const directorySetup = '\nif [ -n "${ROBOTEAM_WORKING_DIRECTORY:-}" ] && [ "$PWD" = "$HOME" ]; then cd -- "$ROBOTEAM_WORKING_DIRECTORY"; fi\n';
+                const environment = (options || !previous) ? shellEnvironment(options) + directorySetup : previous;
                 if (previous !== environment) {
                     await handle.truncate(0);
                     await handle.write(environment, 0, 'utf8');

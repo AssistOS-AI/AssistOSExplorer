@@ -1,6 +1,6 @@
 # AchillesCLI runtime
 
-AchillesCLI provides a workspace copilot through a terminal or Ploinky WebChat. All model-backed work runs through Advanced Language Agent (ALA); the host owns UI state, durable conversations, scoped launcher capabilities and task journals. See the [repository setup guide](../../README.md) and [HTML documentation](../docs/index.html).
+AchillesCLI provides a workspace copilot through a terminal or Ploinky WebChat. All model-backed work runs through Advanced Language Agent (ALA); the host owns UI state, durable conversations, scoped launcher capabilities and task records. See the [repository setup guide](../../README.md) and [HTML documentation](../docs/index.html).
 
 ## Setup
 
@@ -49,7 +49,7 @@ Bash preserves argv/glob semantics without interpreting shell operators. Coding 
 
 ## Sessions and tasks
 
-Conversations, settings, input history and task journals remain workspace-scoped under `.data/achilles-cli`. In Ploinky, the validated workspace root owns this state even for a nested project. Every connection pins its own selection while all authenticated workspace users can inspect saved sessions. Different sessions can run concurrently; the same session's execution lease prevents duplicate turns.
+Conversations, settings, input history and delegated task records belong to the opened folder under `.achilles-cli/`. Opening a folder creates it, and each folder has its own session list. Robots own native accounts and ALA homes, not conversation or task records; the shared registry keeps project locations only, so records survive robot deletion. Every connection pins its own selection while all authenticated workspace users can inspect saved sessions. Different sessions can run concurrently; the same session's execution lease prevents duplicate turns.
 
 Stable message IDs retain task/progress placement. UI transcripts restore presentation, while native continuation restores conversational context. UI transcripts are never replayed as native prompt context, including legacy transcripts. ALA alone constructs skill instructions from its mounted catalog. Missing native continuation or changed home/cwd/backend fails without replacing history.
 

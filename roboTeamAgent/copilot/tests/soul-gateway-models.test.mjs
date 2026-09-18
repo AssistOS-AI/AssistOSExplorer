@@ -13,13 +13,18 @@ import { createSoulGatewayOpenCode } from '../../server/soul-gateway-opencode.mj
 test('webchat autocomplete and robot execution receive the same dynamic OpenCode provider', async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-soul-models-'));
     const home = path.join(dir, 'home');
+    const workspaceRoot = path.dirname(dir);
     await fs.mkdir(home);
     await prepareRobotShell(home);
-    const previous = process.env.ACHILLES_ALA_HOME;
+    const previousHome = process.env.ACHILLES_ALA_HOME;
+    const previousRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.ACHILLES_ALA_HOME = home;
+    process.env.PLOINKY_WORKSPACE_ROOT = workspaceRoot;
     t.after(() => {
-        if (previous === undefined) delete process.env.ACHILLES_ALA_HOME;
-        else process.env.ACHILLES_ALA_HOME = previous;
+        if (previousHome === undefined) delete process.env.ACHILLES_ALA_HOME;
+        else process.env.ACHILLES_ALA_HOME = previousHome;
+        if (previousRoot === undefined) delete process.env.PLOINKY_WORKSPACE_ROOT;
+        else process.env.PLOINKY_WORKSPACE_ROOT = previousRoot;
     });
     const sessions = new ConversationSessionStore({ workingDir: dir });
     const session = await sessions.createSession();
@@ -34,7 +39,10 @@ test('webchat autocomplete and robot execution receive the same dynamic OpenCode
     const installation = {
         entryPath: fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url)),
         async discoverCodingAgents() { return [{ name: 'opencode', binary: '/unused/opencode', available: true }]; },
-        createCodingAgentService({ env }) {
+        createCodingAgentService({ env, workspace }) {
+            // Model discovery mounts the canonical cwd and home, so the working-home
+            // Soul Gateway socket link resolves inside the sandbox.
+            assert.equal(workspace, dir);
             assert.equal(env.PLOINKY_AGENT_API_KEY, undefined);
             assert.equal(env.OPENCODE_CONFIG_CONTENT, undefined);
             let plugin;

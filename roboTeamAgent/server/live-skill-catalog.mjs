@@ -1,4 +1,4 @@
-import { workspaceSkillSource } from './skill-repository-source.mjs';
+import { projectDirectories } from './project-storage.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -91,7 +91,7 @@ export class LiveSkillCatalog {
                 throw skillError(`Original source for ${set.name} is unavailable; explicit reselection is required`);
             }
             try {
-                const source = set.builtin ? set.source : await workspaceSkillSource(set.source, this.service.workspaceRoot);
+                const source = set.builtin ? set.source : await this.service.resolveLiveRepository(set.source);
                 const local = !set.builtin && path.isAbsolute(source);
                 const root = await fs.realpath(set.builtin ? copilotSkillsRoot : local ? source
                     : path.join(this.service.robotStore.robotPath(robot.id), 'skillsets', set.generation));
@@ -305,12 +305,14 @@ export class LiveSkillCatalog {
                 for (const catalog of [policy.pinnedCatalog, policy.legacyRecovery]) if (catalog?.catalogId) protectedIds.add(catalog.catalogId);
             }
             // Keep the last two revisions of every conversation, including the one /skills pin would select.
-            const sessions = path.join(this.service.robotStore.robotPath(robotId), 'copilot', 'sessions');
-            for (const file of await fs.readdir(sessions).catch((error) => { if (error.code === 'ENOENT') return []; throw error; })) {
-                if (!/^[a-f0-9-]{36}\.json$/.test(file)) continue;
-                let session;
-                try { session = JSON.parse(await fs.readFile(path.join(sessions, file), 'utf8')); } catch { return; }
-                for (const value of [session.skillExecution, session.previousSkillExecution, session.skillSelection, session.legacySkillSelection]) if (value?.catalogId) protectedIds.add(value.catalogId);
+            for (const cwd of projectDirectories({ dataDir: this.service.robotStore.dataDir, workspaceRoot: this.service.workspaceRoot })) {
+                const sessions = path.join(cwd, '.achilles-cli', 'sessions');
+                for (const file of await fs.readdir(sessions).catch((error) => { if (error.code === 'ENOENT') return []; throw error; })) {
+                    if (!/^[a-f0-9-]{36}\.json$/.test(file)) continue;
+                    let session;
+                    try { session = JSON.parse(await fs.readFile(path.join(sessions, file), 'utf8')); } catch { return; }
+                    for (const value of [session.skillExecution, session.previousSkillExecution, session.skillSelection, session.legacySkillSelection]) if (value?.catalogId) protectedIds.add(value.catalogId);
+                }
             }
             const candidates = [];
             for (const entry of entries) {

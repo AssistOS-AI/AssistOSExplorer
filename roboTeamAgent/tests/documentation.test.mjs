@@ -101,7 +101,7 @@ test('documentation introduces ALA execution and AchillesCLI integration', async
     const combined = `${overview}\n${operations}`;
 
     for (const backend of ['Codex', 'OpenCode', 'Pi']) assert.match(combined, new RegExp(backend, 'u'));
-    for (const option of ['--home', '--cwd', '--taskFile', '--ca', '--MCPServers', '--skillSets', '--model']) {
+    for (const option of ['--home', '--cwd', '--folder', '--taskFile', '--ca', '--MCPServers', '--model']) {
         assert.match(operations, new RegExp(option, 'u'));
     }
     assert.match(combined, /scripts\/list\.mjs/u);

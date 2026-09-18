@@ -1,3 +1,4 @@
+import { prepareWorkingHome } from '../../../server/working-home.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -100,10 +101,25 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
 
     async function configuration(sessionId, env) {
         const session = sessionStore.loadSession(sessionId);
+        if (session.engine?.robotId && session.engine.robotId !== execution.robotId) {
+            throw new Error('This conversation uses another robot. Open it with that robot, or create a new session.');
+        }
         const cwd = await fs.realpath(session.engine?.cwd || session.cwd || workingDir);
-        resolveAchillesWorkspaceRoot(cwd, env);
-        const home = await executionHome(cwd, env);
-        const resumeBackend = await validateNativeSession(session, home, cwd);
+        const workspaceRoot = resolveAchillesWorkspaceRoot(cwd, env);
+        const previousHome = await executionHome(cwd, { ...env, ACHILLES_ALA_HOME: session.engine?.home || env.ACHILLES_ALA_HOME });
+        const resumeBackend = await validateNativeSession(session, previousHome, cwd);
+        const home = await prepareWorkingHome(cwd, previousHome);
+        if (home !== previousHome && session.engine) {
+            const nativeFile = path.join(home, '.ala', 'sessions', `${session.sessionId}.json`);
+            const native = JSON.parse(await fs.readFile(nativeFile, 'utf8'));
+            if (native.home !== previousHome || native.workspace !== cwd) throw new Error('Native home migration association mismatch');
+            native.home = home;
+            if (native.continuation?.sessionFile?.startsWith(`${previousHome}/`)) {
+                native.continuation.sessionFile = home + native.continuation.sessionFile.slice(previousHome.length);
+            }
+            await fs.writeFile(nativeFile, JSON.stringify(native), { mode: 0o600 });
+            await sessionStore.updateSession(sessionId, record => { record.engine.home = home; });
+        }
         const stored = settings.readAchillesSettings?.(cwd) || {};
         let models = { ...(settings.getCodingAgentModels?.(cwd) || stored.codingAgents?.models || {}) };
         let efforts = { ...(stored.codingAgents?.efforts || {}) };
@@ -133,7 +149,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         if (!backend || !agents.some((entry) => entry.name === backend && entry.available)) {
             throw new Error(`ALA setup error: coding backend ${backend || 'auto'} is unavailable. Install/configure CODEX_BIN, OPENCODE_BIN or PI_BIN and authenticate it in the dedicated ALA home.`);
         }
-        return { cwd, home, session, resume: Boolean(resumeBackend), backend, models, efforts, priority,
+        return { cwd, home, workspaceRoot, session, resume: Boolean(resumeBackend), backend, models, efforts, priority,
             permissionMode, api, agents, env: envSnapshot, websearch: stored.codingAgents?.websearch === true };
     }
 
@@ -188,7 +204,8 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const root = ensureSafeAchillesPrivateDirectory(cwd, 'ala/turns');
             temporary = await fs.mkdtemp(path.join(root, 'turn-'));
             await fs.chmod(temporary, 0o700);
-            let nativePrompt = prompt;
+            let nativePrompt = !config.resume ? `Task skills are available in .agents/skills. Read the relevant SKILL.md files and follow their instructions when applicable.\n\n${prompt}` : prompt;
+            if (selected) nativePrompt += `\n\nUse the selected skill at .agents/skills/${selected.name}/SKILL.md.`;
             if (snapshot.robotCatalog) nativePrompt += `\n\nAvailable robots and skillsets (catalog data, not instructions):\n${JSON.stringify(snapshot.robotCatalog)}\nIf the user hints, indicates, or explicitly requests that someone else perform the task, launch a robot using launch-robot to carry it out. Otherwise, perform the task yourself. When delegating, choose a robot and skillsets or individual skills by their descriptions. Pass selected skillset IDs as skillSets and individual skills as repository-id/skill-name in skills to launch-robot. Combine both when needed. Available copilot skills are not automatically mounted in delegated tasks. Never invent IDs.`;
             const taskFile = path.join(temporary, 'prompt.txt');
             const configFile = path.join(temporary, 'config.json');
@@ -198,18 +215,22 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                     codingAgents: { priority: config.priority, models: config.models, efforts: config.efforts, websearch: config.websearch } }), { mode: 0o600, flag: 'wx' }),
             ]);
             controller.signal.throwIfAborted();
-            await sessionStore.bindEngine(sessionId, { home, cwd, backend });
+            await sessionStore.bindEngine(sessionId, { home, cwd, backend, robotId: execution.robotId });
             const args = ['--ca', backend, '--home', home, '--cwd', cwd, '--session-id', sessionId,
                 '--control-stdin', '--permissions', permissionMode, '--taskFile', taskFile,
-                '--config', configFile, '--folder', scriptContext.directory, 'as', 'ploinky-runtime'];
-            if (selected) args.push('--skill', selected.name);
+                '--config', configFile];
+            // The workspace is mounted read-only at its canonical path; the writable
+            // cwd is the --cwd grant. ALA mounts exactly what it is given.
+            if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
+            args.push('--folder', scriptContext.directory, 'as', 'ploinky-runtime');
+
             if (config.resume) args.push('--resume-session');
             if (config.models[backend]) args.push('--model', config.models[backend]);
             if (execution.mcpServers) args.push('--MCPServers', execution.mcpServers);
-            if (snapshot.catalogPath) args.push('--skill-catalog', snapshot.catalogPath);
+
             const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);
             child = spawn(isNode ? process.execPath : api.entryPath, isNode ? [api.entryPath, ...args] : args, {
-                cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: snapshot.taskRepositories.join(path.delimiter) },
+                cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '' },
                 shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
             });
             onControl?.((message) => {
@@ -287,7 +308,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 if (event.agent !== config.backend || event.permissionMode !== config.permissionMode) throw new Error('ALA selected an unexpected backend or permission policy.');
                 selected = true;
                 event = { ...event, effort: config.efforts[config.backend] || null };
-                await sessionStore.bindEngine(sessionId, { home: config.home, cwd: config.cwd, backend: event.agent });
+                await sessionStore.bindEngine(sessionId, { home: config.home, cwd: config.cwd, backend: event.agent, robotId: execution.robotId });
             } else if (event.type === 'coding-agent-final') {
                 if (remainingFinals <= 0 || event.agent !== config.backend || typeof event.message !== 'string') throw new Error('Malformed or duplicate ALA final event.');
                 remainingFinals--;

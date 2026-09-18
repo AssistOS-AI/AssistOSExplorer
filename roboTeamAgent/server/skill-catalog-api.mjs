@@ -1,12 +1,13 @@
+import { findProjectRecord } from './project-storage.mjs';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { skillError } from './skill-files.mjs';
 
 export async function skillCatalogRequest({ skillsets, robot, input = {}, mutate = false }) {
     let session, policyId, policy, result;
     if (input.sessionId) {
         if (!/^[a-f0-9-]{36}$/.test(input.sessionId)) throw skillError('invalid conversation id');
-        const file = path.join(skillsets.robotStore.robotPath(robot.id), 'copilot', 'sessions', `${input.sessionId}.json`);
+        const file = findProjectRecord({ dataDir: skillsets.robotStore.dataDir, workspaceRoot: skillsets.workspaceRoot }, 'session', input.sessionId);
+        if (!file) throw skillError('Conversation is unavailable in registered projects');
         const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
         try { session = JSON.parse(await handle.readFile('utf8')); } finally { await handle.close(); }
         if (session.sessionId !== input.sessionId) throw skillError('invalid conversation record');

@@ -1,3 +1,4 @@
+import { requireWorkspaceRoot } from './workspace-root.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { RobotStore } from './robot-store.mjs';
@@ -11,6 +12,7 @@ import { robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
 // One CLI process owns one robot context; browser input cannot change its home.
 export async function prepareCopilotContext(robotName = 'default', { prepareTools = true, holdUsage = false,
     dataDir = DATA_DIR, alaCommand, toolCache } = {}) {
+    const workspaceRoot = requireWorkspaceRoot();
     const store = new RobotStore({ dataDir });
     await store.initialize();
     const robot = await store.getByName(robotName);
@@ -19,14 +21,11 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
     try {
         const robotRoot = store.robotPath(robot.id);
         const home = path.join(robotRoot, 'home');
-        const stateRoot = path.join(robotRoot, 'copilot');
         for (const directory of [robotRoot, home]) {
             const stat = await fs.lstat(directory);
             if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe robot home.');
         }
-        await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
-        if ((await fs.lstat(stateRoot)).isSymbolicLink()) throw new Error('Unsafe robot copilot state.');
-        process.env.ROBOTEAM_COPILOT_ROOT = await fs.realpath(stateRoot);
+        delete process.env.ROBOTEAM_COPILOT_ROOT;
         process.env.ROBOTEAM_COPILOT_ROBOT_ID = robot.id;
         process.env.ROBOTEAM_COPILOT_ROBOT_NAME = robot.name;
         process.env.ACHILLES_ALA_HOME = await fs.realpath(home);
@@ -49,7 +48,7 @@ export async function prepareCopilotContext(robotName = 'default', { prepareTool
             await prepareRobotShell(home, { codingAgents, binPath: tools.binPath, cacheRoot: cache.root });
         }
         const skillsets = new RobotSkillsets({ robotStore: store,
-            workspaceRoot: process.env.PLOINKY_WORKSPACE_ROOT || '/workspace', alaCommand: process.env.ACHILLES_ALA_COMMAND });
+            workspaceRoot, alaCommand: process.env.ACHILLES_ALA_COMMAND });
         return { robot, store, skillsets, releaseUsage };
     } catch (error) {
         await releaseUsage?.();

@@ -113,7 +113,9 @@ function normalizeEngine(raw, sessionId) {
         || (raw.backend !== null && !['codex', 'opencode', 'pi'].includes(raw.backend))) {
         throw new Error('invalid_session_engine');
     }
-    return { type: 'ala', version: 1, sessionId, home: raw.home, cwd: raw.cwd, backend: raw.backend };
+    if (raw.robotId !== undefined && !/^[a-z0-9][a-z0-9-]{2,63}$/.test(raw.robotId)) throw new Error('invalid_session_robot');
+    return { type: 'ala', version: 1, sessionId, home: raw.home, cwd: raw.cwd, backend: raw.backend,
+        ...(raw.robotId ? { robotId: raw.robotId } : {}) };
 }
 
 function normalizeSession(raw, expectedId = '') {
@@ -341,7 +343,7 @@ export class ConversationSessionStore {
         });
     }
 
-    async bindEngine(sessionId, { home, cwd, backend = null } = {}) {
+    async bindEngine(sessionId, { home, cwd, backend = null, robotId } = {}) {
         const canonicalDirectory = (directory) => {
             if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new Error('invalid_engine_directory');
             const real = fs.realpathSync(directory);
@@ -350,7 +352,7 @@ export class ConversationSessionStore {
         };
         const engine = normalizeEngine({
             type: 'ala', version: 1, sessionId,
-            home: canonicalDirectory(home), cwd: canonicalDirectory(cwd), backend,
+            home: canonicalDirectory(home), cwd: canonicalDirectory(cwd), backend, ...(robotId ? { robotId } : {}),
         }, assertSessionId(sessionId));
         return withWorkspaceMutation(this.workingDir, () => {
             const session = this.loadSession(sessionId);
@@ -361,6 +363,7 @@ export class ConversationSessionStore {
                 if (session.engine.backend && engine.backend && session.engine.backend !== engine.backend) {
                     throw new Error('session_engine_backend_mismatch');
                 }
+                if (session.engine.robotId && session.engine.robotId !== robotId) throw new Error('session_engine_robot_mismatch');
                 engine.backend = session.engine.backend || engine.backend;
             }
             return this.updateSession(sessionId, (record) => { record.engine = engine; });

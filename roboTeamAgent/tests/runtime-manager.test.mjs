@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
+// Tests explicitly provision the workspace normally supplied by Ploinky.
+process.env.PLOINKY_WORKSPACE_ROOT = os.tmpdir();
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
@@ -30,6 +32,7 @@ test('builds browser and desktop containers around the persistent robot director
         images: { browser: 'browser:image', desktop: 'desktop:image' },
         timezone: 'Europe/Bucharest',
         cwd: '/workspace/project',
+        workspaceRoot: '/workspace',
         toolsPath: '/cache/browser',
     });
     assert.equal(plan.image, 'browser:image');
@@ -37,7 +40,9 @@ test('builds browser and desktop containers around the persistent robot director
     assert.ok(plan.args.includes('/data/robots/research-a1b2c3/home:/config'));
     assert.ok(plan.args.includes('127.0.0.1::3000'));
     assert.ok(plan.args.includes('127.0.0.1::8100'));
-    assert.ok(plan.args.includes('/workspace/project:/workspace'));
+    assert.ok(plan.args.includes('/workspace:/workspace:ro'));
+    assert.ok(plan.args.includes('/workspace/project:/workspace/project:rw'));
+    assert.equal(plan.args[plan.args.indexOf('-w') + 1], '/workspace/project');
     assert.ok(plan.args.includes('/cache/browser:/opt/roboteam-tools:ro'));
     assert.ok(plan.args.some((value) => value.includes('--remote-debugging-port=9222')));
     assert.equal(plan.args.includes('--privileged'), false);
@@ -51,6 +56,7 @@ test('builds browser and desktop containers around the persistent robot director
         images: { browser: 'browser:image', desktop: 'desktop:image' },
         timezone: 'Europe/Bucharest',
         cwd: '/workspace/project',
+        workspaceRoot: '/workspace',
         toolsPath: '/cache/desktop',
         shellTools: { root: '/cache', path: '/cache/shell-generations/test', binPath: '/cache/shell-generations/test/bin',
             agents: { codex: { path: '/cache/codex' } } },
@@ -61,6 +67,24 @@ test('builds browser and desktop containers around the persistent robot director
     assert.ok(desktop.args.includes('CODEX_HOME=/config/.codex'));
     assert.ok(desktop.args.includes('PATH=/cache/shell-generations/test/bin:/lsiopy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'));
     assert.deepEqual(desktop.args.slice(2, 4), ['--log-driver', 'k8s-file']);
+});
+
+test('mounts the opened workspace root once and writable when cwd is the root', () => {
+    const plan = buildRobotRunArgs({
+        robot: { id: 'research-a1b2c3', name: 'Research' },
+        mode: 'browser',
+        dataDir: '/data',
+        publicBasePath: '/base/',
+        images: { browser: 'browser:image', desktop: 'desktop:image' },
+        timezone: 'Europe/Bucharest',
+        cwd: '/workspace',
+        workspaceRoot: '/workspace',
+        toolsPath: '/cache/browser',
+    });
+    assert.ok(plan.args.includes('/workspace:/workspace:rw'));
+    assert.equal(plan.args.includes('/workspace:/workspace:ro'), false);
+    assert.equal(plan.args.filter((value) => value === '/workspace:/workspace:rw').length, 1);
+    assert.equal(plan.args[plan.args.indexOf('-w') + 1], '/workspace');
 });
 
 test('reads only the active GUI container log', async () => {
@@ -106,7 +130,7 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
         children.push(child);
         return child;
     };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: workspace, spawnImpl, execFileImpl: async () => ({ stdout: '[]', stderr: '' }), toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, execFileImpl: async () => ({ stdout: '[]', stderr: '' }), toolCache: preparedToolCache });
     const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', model: 'gpt-test' });
     const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second', ca: 'codex' });
     assert.match(first.taskId, /^[0-9a-f-]{36}$/);
@@ -132,7 +156,9 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
     while (manager.taskStatus(robot.id, second.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(firstInvocation.command, process.execPath);
     assert.match(firstInvocation.args[0], /robot-task.mjs$/);
-    assert.deepEqual(firstInvocation.args.slice(3, 7), ['--home', path.join(dataDir, 'robots', robot.id, 'home'), '--cwd', workspace]);
+    assert.equal(firstInvocation.args[3], '--home');
+    assert.ok(firstInvocation.args[4].startsWith(path.join(workspace, '.roboteam-homes') + path.sep));
+    assert.deepEqual(firstInvocation.args.slice(5, 7), ['--cwd', workspace]);
     assert.ok(firstInvocation.args.includes('--taskFile'));
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--ca') + 1], 'codex');
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--session-id') + 1], first.taskId);
@@ -158,7 +184,7 @@ test('places the selected OpenCode and Pi caches on the ALA path', async (t) => 
     const invocations = [];
     const manager = new RuntimeManager({
         dataDir,
-        workspaceRoot: workspace,
+        workspaceRoot: root,
         toolCache: preparedToolCache,
         spawnImpl: (_command, args, options) => {
             invocations.push({ args, options });
@@ -188,6 +214,8 @@ test('extracts visible coding-agent messages from the ALA event stream', () => {
 test('automatic MCP tasks expose only the robot selection and cannot prepare a disabled backend', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-selected-task-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const cwd = path.join(root, 'project');
+    await fs.mkdir(cwd);
     const robot = { id: 'selected-abc123', name: 'Selected', codingAgents: ['opencode'] };
     const invocations = [];
     const manager = new RuntimeManager({ dataDir: root, workspaceRoot: root,
@@ -201,7 +229,8 @@ test('automatic MCP tasks expose only the robot selection and cannot prepare a d
         },
     });
     t.after(() => manager.stopAll());
-    const task = manager._newTask(robot, 'simple', { cwd: root, task: 'Read the project' });
+    assert.equal(await manager.resolveCwd(root), await fs.realpath(root));
+    const task = manager._newTask(robot, 'simple', { cwd, task: 'Read the project' });
     await manager._runTask(robot, task);
     assert.equal(task.state, 'completed', task.error);
     assert.equal(invocations.length, 1);
@@ -210,7 +239,7 @@ test('automatic MCP tasks expose only the robot selection and cannot prepare a d
     assert.equal(env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
     assert.equal(env.CODEX_BIN, undefined);
     assert.equal(env.PI_BIN, undefined);
-    const disabled = manager._newTask(robot, 'simple', { cwd: root, task: 'Read the project', ca: 'codex' });
+    const disabled = manager._newTask(robot, 'simple', { cwd, task: 'Read the project', ca: 'codex' });
     await manager._runTask(robot, disabled);
     assert.equal(disabled.state, 'failed');
     assert.match(disabled.error, /not enabled/);
@@ -239,7 +268,7 @@ test('keeps task prompts private and rejects a mismatched stop operation', async
         child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => { queueMicrotask(() => child.emit('close', null, 'SIGTERM')); return true; };
         return child;
     };
-    const manager = new RuntimeManager({ dataDir, workspaceRoot: workspace, spawnImpl, toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, toolCache: preparedToolCache });
     let execution;
     const runTask = manager._runTask.bind(manager);
     t.mock.method(manager, '_runTask', (...args) => { execution = runTask(...args); return execution; });
@@ -268,7 +297,7 @@ test('can stop one parallel CLI task without interrupting another', async (t) =>
     const children = [];
     const manager = new RuntimeManager({
         dataDir,
-        workspaceRoot: workspace,
+        workspaceRoot: root,
         toolCache: preparedToolCache,
         spawnImpl: () => {
             const child = new EventEmitter();
@@ -350,21 +379,25 @@ test('restores a completed Simple conversation after restart without repeating i
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-resume-record-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const robot = { id: 'resume-a1b2c3', name: 'Resume' };
+    const project = path.join(root, 'project');
+    await fs.mkdir(project);
     const first = new RuntimeManager({ dataDir: root, toolCache: preparedToolCache });
     const taskId = '12345678-1234-4123-8123-123456789abc';
     await first._saveTask({ taskId, robotId: robot.id, type: 'simple', state: 'completed',
-        alaSessionId: taskId, request: { cwd: '/workspace/project', task: 'original task', ca: 'pi' } });
+        alaSessionId: taskId, request: { cwd: project, task: 'original task', ca: 'pi' } });
     const second = new RuntimeManager({ dataDir: root, toolCache: preparedToolCache });
     second._drainTaskQueue = async () => {};
+    second.shuttingDown = true;
     const continued = await second.resumeTask(robot, taskId, 'now add tests');
     const request = second.tasks.get(continued.taskId).request;
     assert.equal(request.task, 'now add tests');
     assert.equal(request.alaSessionId, taskId);
     assert.equal(request.resumeSession, true);
     assert.equal(request.ca, 'pi');
+    second.tasks.get(continued.taskId).state = 'completed';
     const resumed = await second.resumeTask(robot, taskId);
     assert.equal(second.tasks.get(resumed.taskId).request.task, 'Continue.');
-    await assert.rejects(second.resumeTask({ id: 'another-robot' }, taskId), /ENOENT/);
+    await assert.rejects(second.resumeTask({ id: 'another-robot' }, taskId), /no matching task/);
 });
 
 test('active message delivery waits for an ALA receipt and starting tasks queue input', async () => {
@@ -439,10 +472,18 @@ test('allows exactly one active mode per robot and removes only its exact contai
         if (args[0] === 'inspect') return { stdout: 'true\n', stderr: '' };
         return { stdout: '', stderr: '' };
     };
-    const manager = new RuntimeManager({ dataDir, publicBasePath: '/rt/', execFileImpl, toolCache: preparedToolCache });
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, publicBasePath: '/rt/', execFileImpl, toolCache: preparedToolCache });
     await manager.initialize();
     const running = await manager.start(robot, 'desktop');
     assert.equal(running.mode, 'desktop');
+    const robotRoot = path.join(dataDir, 'robots', robot.id);
+    assert.equal(manager.sessions.get(robot.id).cwd, robotRoot);
+    const launch = calls.find(args => args[0] === 'run');
+    assert.ok(launch.includes(`${robotRoot}:${robotRoot}:rw`));
+    assert.ok(launch.includes(`${root}:${root}:ro`));
+    assert.ok(launch.includes(`ROBOTEAM_WORKING_DIRECTORY=${robotRoot}`));
+    assert.equal(launch[launch.indexOf('-w') + 1], robotRoot);
+    await assert.rejects(fs.stat(path.join(robotRoot, '.roboteam-homes')), { code: 'ENOENT' });
     await assert.rejects(() => manager.start(robot, 'browser'), /occupied by its desktop container/);
     await manager.stop(robot.id);
     assert.deepEqual(manager.status(robot.id), { state: 'stopped', task: null, queueDepth: 0 });
@@ -452,7 +493,7 @@ test('allows exactly one active mode per robot and removes only its exact contai
 test('recreates a reused desktop when an Achilles task requests a different cwd', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-remount-test-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const dataDir = path.join(root, 'data');
+    const dataDir = path.join(root, 'workspace', '.data', 'roboTeamAgent');
     const workspaceRoot = path.join(root, 'workspace');
     const firstCwd = path.join(workspaceRoot, 'configured-home');
     const secondCwd = path.join(workspaceRoot, 'achilles-project');
@@ -506,8 +547,8 @@ test('recreates a reused desktop when an Achilles task requests a different cwd'
     assert.equal(manager.sessions.get(robot.id).cwd, secondCwd);
     const runCalls = podmanCalls.filter((args) => args[0] === 'run');
     assert.equal(runCalls.length, 2);
-    assert.ok(runCalls[0].includes(`${firstCwd}:/workspace`));
-    assert.ok(runCalls[1].includes(`${secondCwd}:/workspace`));
+    assert.ok(runCalls[0].includes(`${firstCwd}:${firstCwd}:rw`));
+    assert.ok(runCalls[1].includes(`${secondCwd}:${secondCwd}:rw`));
     assert.ok(podmanCalls.some((args) => (
         args[0] === 'rm'
         && args[1] === '-f'
@@ -558,7 +599,7 @@ test('replaces the retained GUI container when the next queued task needs anothe
     const children = [];
     const manager = new RuntimeManager({
         dataDir,
-        workspaceRoot: workspace,
+        workspaceRoot: root,
         execFileImpl: async (_command, args) => {
             podmanCalls.push(args);
             if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };

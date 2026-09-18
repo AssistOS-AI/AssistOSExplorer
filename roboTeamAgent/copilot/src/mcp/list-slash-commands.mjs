@@ -7,6 +7,7 @@ import { buildSlashCommandCatalog } from '../repl/SlashCommandHandler.mjs';
 import { createAnthropicSkillCatalog } from '../lib/anthropicSkillCatalog.mjs';
 import { resolveAlaInstallation } from '../lib/alaInstallation.mjs';
 import { resolveSkillCatalogRoots } from '../lib/cliSkillRoots.mjs';
+import { discoverTaskSkills } from '../../../server/skill-descriptor.mjs';
 import { createAlaEngine } from '../lib/alaEngine.mjs';
 import * as settings from '../lib/achillesSettings.mjs';
 import { ConversationSessionStore } from '../lib/conversationSessionStore.mjs';
@@ -20,9 +21,8 @@ const permissionCompletions = [
 async function discoverCatalog(dir, options = {}) {
     if (options.skillCatalog) return options.skillCatalog;
     const workingDir = dir || process.env.WORKSPACE_PATH || process.cwd();
-    const installation = options.installation || await resolveAlaInstallation();
     return createAnthropicSkillCatalog({ workingDir,
-        roots: resolveSkillCatalogRoots(workingDir), discoverTaskSkills: installation.discoverTaskSkills });
+        roots: await resolveSkillCatalogRoots(workingDir), discoverTaskSkills });
 }
 
 export async function buildAchillesSkillCatalog(dir, options = {}) {

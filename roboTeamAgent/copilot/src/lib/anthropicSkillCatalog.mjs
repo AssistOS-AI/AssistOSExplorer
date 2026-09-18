@@ -30,10 +30,10 @@ function assertRealPath(candidate, root, type) {
     return canonical;
 }
 
-/** The caller supplies ALA's discoverTaskSkills from its resolved installation. */
+/** The caller supplies RoboTeam's SKILL.md discovery implementation. */
 export async function createAnthropicSkillCatalog({ workingDir, roots, discoverTaskSkills } = {}) {
     if (typeof discoverTaskSkills !== 'function') {
-        throw new TypeError('ALA discoverTaskSkills is required; resolve the ALA installation before creating the catalog.');
+        throw new TypeError('A SKILL.md discovery function is required before creating the catalog.');
     }
     if (!Array.isArray(roots)) throw new TypeError('Ordered skill roots must be an array.');
     const workspaceRoot = resolveAchillesWorkspaceRoot(workingDir);

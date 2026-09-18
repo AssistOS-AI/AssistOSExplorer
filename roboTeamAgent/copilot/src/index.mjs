@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import { registerProject } from '../../server/project-storage.mjs';
 
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseCliOptions, isWebchatRuntime } from './lib/cliOptions.mjs';
 import { resolveSkillCatalogRoots, builtInSkillsDir } from './lib/cliSkillRoots.mjs';
 import { createAnthropicSkillCatalog } from './lib/anthropicSkillCatalog.mjs';
+import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
 import { resolveAlaInstallation } from './lib/alaInstallation.mjs';
 import { createAlaEngine } from './lib/alaEngine.mjs';
 import * as settings from './lib/achillesSettings.mjs';
@@ -35,21 +37,23 @@ export { parseCliOptions } from './lib/cliOptions.mjs';
 export async function createCliRuntime(options, { webchat = false } = {}) {
     const { workingDir } = options;
     const installation = await resolveAlaInstallation();
+    const robotContext = getRobotContext();
+    if (robotContext) registerProject({ dataDir: robotContext.store.dataDir,
+        workspaceRoot: robotContext.skillsets.workspaceRoot }, workingDir);
     const sessionStore = new ConversationSessionStore({ workingDir });
     let initialSession;
     if (options.sessionId) {
         if (options.resumeSession) initialSession = sessionStore.loadSession(options.sessionId);
         else initialSession = await sessionStore.createSession({ sessionId: options.sessionId, select: false });
     } else initialSession = await sessionStore.ensureCurrentSession();
-    const robotContext = getRobotContext();
     const robotCatalog = robotContext ? createRobotSkillCatalog({ context: robotContext, sessionStore,
-        workingDir, initialSessionId: initialSession.sessionId, discoverTaskSkills: installation.discoverTaskSkills }) : null;
+        workingDir, initialSessionId: initialSession.sessionId, discoverTaskSkills }) : null;
     let catalog;
     const refresh = async () => {
         catalog = await createAnthropicSkillCatalog({
             workingDir,
-            roots: resolveSkillCatalogRoots(workingDir),
-            discoverTaskSkills: installation.discoverTaskSkills,
+            roots: await resolveSkillCatalogRoots(workingDir),
+            discoverTaskSkills,
         });
         return { skills: catalog.getSkills(), taskRepositories: catalog.getEnabledSkillDirectories() };
     };
@@ -78,7 +82,7 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
             onTaskStarted: (task, origin) => attachTaskToSession(sessionStore, task, origin, { webchat }),
         }) : null;
         const engine = createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, interactions, backgroundTasks, installation,
-            execution: options.execution });
+            execution: { ...options.execution, robotId: robotContext?.robot.id } });
         const historyManager = new HistoryManager({ workingDir });
         return {
             ...options, installation, skillCatalog, sessionStore, initialSession, engine,

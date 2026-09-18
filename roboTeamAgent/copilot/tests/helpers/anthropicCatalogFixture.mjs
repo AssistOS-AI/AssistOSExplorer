@@ -3,11 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createAnthropicSkillCatalog } from '../../src/lib/anthropicSkillCatalog.mjs';
-import { resolveAlaInstallation } from '../../src/lib/alaInstallation.mjs';
-
-async function loadDiscovery() {
-    return (await resolveAlaInstallation()).discoverTaskSkills;
-}
+import { discoverTaskSkills } from '../../../server/skill-descriptor.mjs';
 
 export function writeSkill(root, directory, name, description = `Use ${name} for a focused task.`) {
     const skillDir = path.join(root, directory);
@@ -23,7 +19,6 @@ export async function createCatalogFixture(t) {
     const builtIns = path.join(directory, 'builtins');
     fs.mkdirSync(workingDir);
     fs.mkdirSync(builtIns);
-    const discoverTaskSkills = await loadDiscovery();
     const createCatalog = (roots) => createAnthropicSkillCatalog({ workingDir, roots, discoverTaskSkills });
     return { directory, workingDir, builtIns, createCatalog };
 }

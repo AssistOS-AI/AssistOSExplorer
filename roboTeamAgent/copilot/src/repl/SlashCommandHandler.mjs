@@ -9,6 +9,10 @@
 import { formatSlashResult } from '../ui/ResultFormatter.mjs';
 import { showHelp } from '../ui/HelpSystem.mjs';
 
+function modelKey(model) {
+    return typeof model === 'string' ? model : model.id || model.name || model.key;
+}
+
 /**
  * Slash command definitions.
  *
@@ -278,6 +282,23 @@ export class SlashCommandHandler {
         this.loginTask = loginTask;
         this.getTaskCompletions = getTaskCompletions;
         this.availableModels = [];
+        this.modelEfforts = new Map();
+    }
+
+    _setAvailableModels(models) {
+        this.availableModels = ['default', ...models.map(modelKey)];
+        this.modelEfforts = new Map(models.map((model) => [modelKey(model), model.efforts || []]));
+    }
+
+    // OpenCode model IDs may contain spaces. Match the longest known ID so the
+    // remaining token is the optional effort instead of part of the ID.
+    _matchModel(requested, models) {
+        return models
+            .filter((model) => {
+                const id = modelKey(model);
+                return requested === id || requested.startsWith(`${id} `);
+            })
+            .sort((left, right) => modelKey(right).length - modelKey(left).length)[0];
     }
 
     /**
@@ -626,7 +647,7 @@ export class SlashCommandHandler {
     async getAvailableModels() {
         try {
             const { models } = await this.loadModels();
-            this.availableModels = ['default', ...models.map((model) => (typeof model === 'string' ? model : model.id || model.name || model.key))];
+            this._setAvailableModels(models);
             return this.availableModels.slice();
         } catch {
             return [];
@@ -639,11 +660,10 @@ export class SlashCommandHandler {
      * @private
      */
     async _handleModelCommand(args, options = {}) {
-        if (!args) {
+        if (!args?.trim()) {
             return { handled: true, showModelPicker: true };
         }
-        const [requested, effort = null, ...extra] = args.trim().split(/\s+/u);
-        if (extra.length) return { handled: true, error: 'Usage: /model <model-name> [effort|default]' };
+        const requested = args.trim();
         let catalog;
         try {
             catalog = await this.loadModels(options);
@@ -651,17 +671,23 @@ export class SlashCommandHandler {
             return { handled: true, error: error.message };
         }
         const { backend, models } = catalog;
-        this.availableModels = ['default', ...models.map((model) => (typeof model === 'string' ? model : model.id || model.name || model.key))];
-        if (requested === 'default' && effort) return { handled: true, error: 'Use /model default without an effort.' };
+        this._setAvailableModels(models);
         if (requested === 'default') return { handled: true, modelChange: null, backend };
-        const exactModel = models.find((model) => ((typeof model === 'string' ? model : model.id || model.name || model.key)) === requested);
+        if (requested.startsWith('default ')) return { handled: true, error: 'Use /model default without an effort.' };
+        // Model IDs may contain spaces, so resolve the longest known ID first and
+        // treat only a single remaining token as the optional effort.
+        const exactModel = this._matchModel(requested, models);
         if (!exactModel) {
             return { handled: true, error: `Unknown model "${requested}". Use /model to select a native model.` };
         }
+        const modelId = modelKey(exactModel);
+        const effortTokens = requested.slice(modelId.length).trim().split(/\s+/u).filter(Boolean);
+        if (effortTokens.length > 1) return { handled: true, error: 'Usage: /model <model-name> [effort|default]' };
+        const effort = effortTokens[0] || null;
         if (effort && effort !== 'default' && !exactModel.efforts?.includes(effort)) {
-            return { handled: true, error: `Unsupported effort "${effort}" for ${requested}. Available: ${(exactModel.efforts || []).join(', ') || 'none'}.` };
+            return { handled: true, error: `Unsupported effort "${effort}" for ${modelId}. Available: ${(exactModel.efforts || []).join(', ') || 'none'}.` };
         }
-        return { handled: true, effortChange: effort === 'default' ? null : effort, modelChange: typeof exactModel === 'string' ? exactModel : exactModel.id || exactModel.name || exactModel.key, backend };
+        return { handled: true, effortChange: effort === 'default' ? null : effort, modelChange: modelId, backend };
     }
 
     /**
@@ -747,6 +773,16 @@ export class SlashCommandHandler {
 
 
             if (command === 'model') {
+                const requested = (args || '').trim();
+                const modelId = [...this.modelEfforts.keys()]
+                    .filter((id) => requested === id || requested.startsWith(`${id} `))
+                    .sort((left, right) => right.length - left.length)[0];
+                if (modelId && requested === modelId) {
+                    const efforts = this.modelEfforts.get(modelId) || [];
+                    if (efforts.length) {
+                        return [['default', ...efforts].map((effort) => `/${command} ${modelId} ${effort}`), line];
+                    }
+                }
                 const matching = this.availableModels
                     .filter(m => m.toLowerCase().includes(argPrefix))
                     .map(m => `/${command} ${m}`);

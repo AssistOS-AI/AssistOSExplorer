@@ -8,7 +8,7 @@ import { RobotStore } from '../server/robot-store.mjs';
 import { RobotSkillsets } from '../server/robot-skillsets.mjs';
 import { recoverPathCatalog } from '../server/legacy-skill-catalog.mjs';
 import { createRobotSkillCatalog } from '../copilot/src/lib/robotSkillCatalog.mjs';
-import { resolveAlaInstallation } from '../copilot/src/lib/alaInstallation.mjs';
+import { discoverTaskSkills } from '../server/skill-descriptor.mjs';
 
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'legacy-skill-recovery-')));
@@ -22,10 +22,15 @@ async function fixture(t) {
         await fs.writeFile(path.join(source, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} procedure\n---\nRead helper.txt.\n`);
         await fs.writeFile(path.join(source, name, 'helper.txt'), 'original');
     }
-    const { discoverTaskSkills } = await resolveAlaInstallation();
     const service = new RobotSkillsets({ robotStore: store, workspaceRoot, discoverSkills: discoverTaskSkills });
     const repo = await service.add(robot.id, { source });
-    const paths = repo.skills.map(skill => path.join(store.robotPath(robot.id), 'skillsets', repo.generation, skill.directory));
+    const generationDirectory = path.join(store.robotPath(robot.id), 'skillsets', repo.generation);
+    const paths = [];
+    for (const skill of repo.skills) {
+        const directory = path.join(generationDirectory, skill.directory);
+        await fs.cp(path.join(source, skill.directory), directory, { recursive: true });
+        paths.push(directory);
+    }
     for (const directory of paths) {
         await fs.chmod(path.join(directory, 'SKILL.md'), 0o600);
         await fs.chmod(path.join(directory, 'helper.txt'), 0o600);

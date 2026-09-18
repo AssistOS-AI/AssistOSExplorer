@@ -27,57 +27,44 @@ const ERROR_ID = 'task_333333333333333333333333';
 
 function makeWorkspace(label) {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), `achilles-tasks-${label}-`));
-    const history = path.join(workspace, '.data', 'achilles-cli', 'tasks');
-    const logs = path.join(history, 'task_logs');
-    fs.mkdirSync(logs, { recursive: true });
-    return { workspace, history, logs };
+    const history = path.join(workspace, '.achilles-cli', 'tasks');
+    fs.mkdirSync(history, { recursive: true });
+    return { workspace, history };
 }
 
-function writeJournal(history, entries) {
-    fs.writeFileSync(path.join(history, 'agent_tasks'), `${entries.join('\n')}\n`);
+function writeTask(history, task) {
+    const directory = path.join(history, task.id);
+    fs.mkdirSync(path.join(directory, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(directory, 'task.json'), `${JSON.stringify(task)}\n`);
 }
 
-test('workspace task reader materializes latest safe state in update order', () => {
+function taskLogPath(history, taskId) {
+    return path.join(history, taskId, 'logs', 'output.log');
+}
+
+test('workspace task reader loads per-task records in update order', () => {
     const fixture = makeWorkspace('reader');
     try {
-        writeJournal(fixture.history, [
-            JSON.stringify({
-                id: FINISHED_ID,
-                targetAgent: 'opencodeAgent',
-                remoteTaskId: 'remote-1',
-                description: 'Build the project',
-                status: 'ongoing',
-                updatedAt: '2026-07-14T10:00:00.000Z',
-            }),
-            '{partial',
-            JSON.stringify({
-                id: FINISHED_ID,
-                targetAgent: 'opencodeAgent',
-                remoteTaskId: 'remote-1',
-                description: 'Build the project',
-                status: 'finished',
-                updatedAt: '2026-07-14T11:00:00.000Z',
-            }),
-            JSON.stringify({
-                id: FINISHED_ID,
-                targetAgent: 'opencodeAgent',
-                remoteTaskId: 'remote-1',
-                description: 'Build the project',
-                status: 'ongoing',
-                updatedAt: '2026-07-14T12:00:00.000Z',
-            }),
-            JSON.stringify({
-                id: ONGOING_ID,
-                targetAgent: 'GPTResearcher',
-                remoteTaskId: 'remote-2',
-                description: 'Research dependencies',
-                status: 'ongoing',
-                updatedAt: '2026-07-14T11:30:00.000Z',
-            }),
-        ]);
+        writeTask(fixture.history, {
+            id: FINISHED_ID,
+            targetAgent: 'opencodeAgent',
+            remoteTaskId: 'remote-1',
+            description: 'Build the project',
+            status: 'finished',
+            updatedAt: '2026-07-14T11:00:00.000Z',
+        });
+        writeTask(fixture.history, {
+            id: ONGOING_ID,
+            targetAgent: 'GPTResearcher',
+            remoteTaskId: 'remote-2',
+            description: 'Research dependencies',
+            status: 'ongoing',
+            updatedAt: '2026-07-14T11:30:00.000Z',
+        });
 
         const tasks = readWorkspaceTasks(fixture.workspace);
         assert.deepEqual(tasks.map((task) => task.id), [ONGOING_ID, FINISHED_ID]);
+        assert.equal(tasks[0].status, 'ongoing');
         assert.equal(tasks[1].status, 'finished');
         assert.deepEqual(readOngoingTasks(fixture.workspace).map((task) => task.id), [ONGOING_ID]);
     } finally {
@@ -85,52 +72,54 @@ test('workspace task reader materializes latest safe state in update order', () 
     }
 });
 
-test('workspace task reader accumulates legacy final-output ranges across continuations', () => {
-    const fixture = makeWorkspace('legacy-final-ranges');
+test('task ingestion accumulates final-output ranges across continuations', async () => {
+    const fixture = makeWorkspace('final-ranges');
     try {
-        writeJournal(fixture.history, [
-            JSON.stringify({
+        await ingestTaskEvent(fixture.workspace, {
+            task: {
                 id: FINISHED_ID,
                 targetAgent: 'opencodeAgent',
                 remoteTaskId: 'remote-1',
                 status: 'finished',
                 turn: 1,
-                finalOutputOffset: 20,
-                finalOutputLength: 12,
-            }),
-            JSON.stringify({
-                id: FINISHED_ID,
-                targetAgent: 'opencodeAgent',
-                remoteTaskId: 'remote-2',
-                status: 'ongoing',
-                turn: 2,
-                finalOutputOffset: null,
-                finalOutputLength: 0,
-            }),
-            JSON.stringify({
+                continuation: {
+                    version: 1,
+                    targetAgent: 'opencodeAgent',
+                    toolName: 'continue-task',
+                    handle: 'abcdefghijklmnop',
+                },
+            },
+            finalOutput: 'first result',
+        });
+        await beginTaskContinuation(fixture.workspace, FINISHED_ID, {
+            remoteTaskId: 'remote-2',
+            message: 'again',
+        });
+        await ingestTaskEvent(fixture.workspace, {
+            task: {
                 id: FINISHED_ID,
                 targetAgent: 'opencodeAgent',
                 remoteTaskId: 'remote-2',
                 status: 'finished',
                 turn: 2,
-                finalOutputOffset: 80,
-                finalOutputLength: 14,
-            }),
-        ]);
+            },
+            finalOutput: 'second result',
+        });
 
-        assert.deepEqual(getTask(fixture.workspace, FINISHED_ID).finalOutputRanges, [
-            { turn: 1, offset: 20, length: 12 },
-            { turn: 2, offset: 80, length: 14 },
-        ]);
+        const ranges = getTask(fixture.workspace, FINISHED_ID).finalOutputRanges;
+        assert.deepEqual(ranges.map((range) => range.turn), [1, 2]);
+        const text = readTaskLog(fixture.workspace, FINISHED_ID).text;
+        assert.equal(ranges.map(({ offset, length }) => text.slice(offset, offset + length)).join('|'),
+            'first result|second result');
     } finally {
         fs.rmSync(fixture.workspace, { recursive: true, force: true });
     }
 });
 
-test('task model override is appended to the task journal and survives continuation state', async () => {
+test('task model override persists on the task record and in its log', async () => {
     const fixture = makeWorkspace('task-model');
     try {
-        writeJournal(fixture.history, [JSON.stringify({
+        writeTask(fixture.history, {
             id: FINISHED_ID,
             targetAgent: 'piAgent',
             remoteTaskId: 'remote-1',
@@ -142,7 +131,7 @@ test('task model override is appended to the task journal and survives continuat
                 toolName: 'continue-task',
                 handle: 'opaque-task-handle',
             },
-        })]);
+        });
         const updated = await setTaskModel(fixture.workspace, FINISHED_ID, {
             key: 'openai/gpt-test',
             provider: 'openai',
@@ -167,12 +156,12 @@ test('task model override is appended to the task journal and survives continuat
 test('task control messages are appended to persistent task logs', async () => {
     const fixture = makeWorkspace('task-control-log');
     try {
-        writeJournal(fixture.history, [JSON.stringify({
+        writeTask(fixture.history, {
             id: FINISHED_ID,
             targetAgent: 'codexAgent',
             remoteTaskId: 'remote-1',
             status: 'finished',
-        })]);
+        });
         const updated = await appendTaskLogEntry(fixture.workspace,
         FINISHED_ID,
         'Authentication successful',);
@@ -187,34 +176,32 @@ test('task control messages are appended to persistent task logs', async () => {
 test('task summary defaults to ten, supports count and all, and shows only terminal log tails', () => {
     const fixture = makeWorkspace('summary');
     try {
-        writeJournal(fixture.history, [
-            JSON.stringify({
-                id: FINISHED_ID,
-                targetAgent: 'opencodeAgent',
-                remoteTaskId: 'remote-1',
-                description: 'Build **the** project',
-                status: 'finished',
-                updatedAt: '2026-07-14T12:00:00.000Z',
-            }),
-            JSON.stringify({
-                id: ONGOING_ID,
-                targetAgent: 'GPTResearcher',
-                remoteTaskId: 'remote-2',
-                description: 'Research dependencies',
-                status: 'ongoing',
-                updatedAt: '2026-07-14T13:00:00.000Z',
-            }),
-            JSON.stringify({
-                id: ERROR_ID,
-                targetAgent: 'piAgent',
-                remoteTaskId: 'remote-3',
-                toolName: 'execute-task',
-                status: 'error',
-                error: 'runner failed',
-                updatedAt: '2026-07-14T11:00:00.000Z',
-            }),
-        ]);
-        fs.writeFileSync(path.join(fixture.logs, `${FINISHED_ID}.log`), [
+        writeTask(fixture.history, {
+            id: FINISHED_ID,
+            targetAgent: 'opencodeAgent',
+            remoteTaskId: 'remote-1',
+            description: 'Build **the** project',
+            status: 'finished',
+            updatedAt: '2026-07-14T12:00:00.000Z',
+        });
+        writeTask(fixture.history, {
+            id: ONGOING_ID,
+            targetAgent: 'GPTResearcher',
+            remoteTaskId: 'remote-2',
+            description: 'Research dependencies',
+            status: 'ongoing',
+            updatedAt: '2026-07-14T13:00:00.000Z',
+        });
+        writeTask(fixture.history, {
+            id: ERROR_ID,
+            targetAgent: 'piAgent',
+            remoteTaskId: 'remote-3',
+            toolName: 'execute-task',
+            status: 'error',
+            error: 'runner failed',
+            updatedAt: '2026-07-14T11:00:00.000Z',
+        });
+        fs.writeFileSync(taskLogPath(fixture.history, FINISHED_ID), [
             'line 1',
             'line 2',
             'line 3',
@@ -224,7 +211,7 @@ test('task summary defaults to ten, supports count and all, and shows only termi
             'line 7',
             '',
         ].join('\n'));
-        fs.writeFileSync(path.join(fixture.logs, `${ONGOING_ID}.log`), 'live log must stay hidden\n');
+        fs.writeFileSync(taskLogPath(fixture.history, ONGOING_ID), 'live log must stay hidden\n');
 
         const summary = formatWorkspaceTaskSummary(fixture.workspace);
         assert.match(summary, /Showing all 3 tasks\./);
@@ -265,14 +252,14 @@ test('task summary is read-only for missing history and rejects symlinked task s
             formatWorkspaceTaskSummary(workspace),
             'No background tasks found for this workspace.',
         );
-        assert.equal(fs.existsSync(path.join(workspace, '.data', 'achilles-cli', 'tasks')), false);
+        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks')), false);
         const missingWorkspace = path.join(workspace, 'missing');
         assert.throws(
             () => formatWorkspaceTaskSummary(missingWorkspace),
             (error) => error.message === 'Unable to read task history (ENOENT).',
         );
-        fs.mkdirSync(path.join(workspace, '.data', 'achilles-cli'), { recursive: true });
-        fs.symlinkSync(outside, path.join(workspace, '.data', 'achilles-cli', 'tasks'), 'dir');
+        fs.mkdirSync(path.join(workspace, '.achilles-cli'), { recursive: true });
+        fs.symlinkSync(outside, path.join(workspace, '.achilles-cli', 'tasks'), 'dir');
         assert.throws(() => formatWorkspaceTaskSummary(workspace), /storage is unsafe/);
     } finally {
         fs.rmSync(workspace, { recursive: true, force: true });
@@ -284,16 +271,16 @@ test('terminal log reader rejects symlinked task log files', () => {
     const fixture = makeWorkspace('log-symlink');
     const outside = path.join(fixture.workspace, 'outside.log');
     try {
-        writeJournal(fixture.history, [JSON.stringify({
+        writeTask(fixture.history, {
             id: FINISHED_ID,
             targetAgent: 'opencodeAgent',
             remoteTaskId: 'remote-1',
             description: 'Build project',
             status: 'finished',
             updatedAt: '2026-07-14T12:00:00.000Z',
-        })]);
+        });
         fs.writeFileSync(outside, 'secret');
-        fs.symlinkSync(outside, path.join(fixture.logs, `${FINISHED_ID}.log`));
+        fs.symlinkSync(outside, taskLogPath(fixture.history, FINISHED_ID));
         assert.throws(() => formatWorkspaceTaskSummary(fixture.workspace), /storage is unsafe/);
     } finally {
         fs.rmSync(fixture.workspace, { recursive: true, force: true });
@@ -303,8 +290,8 @@ test('terminal log reader rejects symlinked task log files', () => {
 test('task log tails remain bounded even when the final line is large', () => {
     const fixture = makeWorkspace('bounded');
     try {
-        writeJournal(fixture.history, []);
-        fs.writeFileSync(path.join(fixture.logs, `${FINISHED_ID}.log`), 'x'.repeat(10_000));
+        fs.mkdirSync(path.join(fixture.history, FINISHED_ID, 'logs'), { recursive: true });
+        fs.writeFileSync(taskLogPath(fixture.history, FINISHED_ID), 'x'.repeat(10_000));
         const tail = __testables.readTaskLogTail(fixture.workspace, FINISHED_ID);
         assert.equal(tail.truncated, true);
         assert.ok(Buffer.byteLength(tail.text, 'utf8') <= __testables.LOG_TAIL_BYTES);
@@ -313,7 +300,7 @@ test('task log tails remain bounded even when the final line is large', () => {
     }
 });
 
-test('AchillesCLI persists task metadata and logs under .data/achilles-cli', async () => {
+test('AchillesCLI persists task metadata and logs under project .achilles-cli', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-owned-tasks-'));
     try {
         const update = await ingestTaskEvent(workspace, {
@@ -334,8 +321,11 @@ test('AchillesCLI persists task metadata and logs under .data/achilles-cli', asy
         assert.equal(getTask(workspace, ONGOING_ID).status, 'ongoing');
         assert.equal(readTaskLog(workspace, ONGOING_ID).text, '[runner stdout] queued\n');
         assert.equal(fs.existsSync(path.join(workspace, '.copilot_history')), false);
-        assert.equal(fs.existsSync(path.join(workspace, '.data', 'achilles-cli', 'tasks', 'agent_tasks')), true);
-        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli')), false);
+        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks', ONGOING_ID, 'task.json')), true);
+        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks', ONGOING_ID, 'logs', 'output.log')), true);
+        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks', 'agent_tasks')), false);
+        assert.equal(fs.existsSync(path.join(workspace, '.achilles-cli', 'tasks', 'task_logs')), false);
+        assert.equal(fs.existsSync(path.join(workspace, '.data')), false);
     } finally {
         fs.rmSync(workspace, { recursive: true, force: true });
     }
@@ -527,7 +517,8 @@ test('competing process pollers reject stale sources and never rewind log cursor
         assert.equal(log.split('line-4').length - 1, 1);
         assert.equal(log.split('SECOND').length - 1, 1);
         assert.equal(task.finalOutputRanges.map(({ offset, length }) => log.slice(offset, offset + length)).join('|'), 'FIRST|SECOND');
-        const cursor = JSON.parse(fs.readFileSync(path.join(fixture.logs, `${FINISHED_ID}.cursor.json`), 'utf8'));
+        const cursor = JSON.parse(fs.readFileSync(
+            path.join(fixture.history, FINISHED_ID, 'logs', 'cursor.json'), 'utf8'));
         assert.equal(cursor.seq, 4);
         assert.equal(cursor.sourceId, 'new');
         assert.equal(readWorkspaceTasks(fixture.workspace).length, 4);

@@ -222,6 +222,7 @@ export function createRoboTeamServer(options) {
                     codingAgents, binPath: tools.binPath, cacheRoot: runtimeManager.toolCache.root,
                 });
                 await runtimeManager.prepareOpenCode?.(terminalRobotId);
+                await runtimeManager.prepareRobotSkills?.(robot, path.join(runtimeManager.workspaceRoot, directory));
                 return sendJson(res, 200, { ok: true, directory });
             }
 
@@ -355,8 +356,13 @@ export function createRoboTeamServer(options) {
             const message = String(error?.message || '');
             const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop/.test(message);
             const conflict = /already running|active robot limit|occupied|active task|different cwd|stop the|interrupted GUI/.test(message);
-            sendError(res, error.statusCode === 400 ? 400 : badRequest ? 400 : conflict ? 409 : 500,
-                error.statusCode === 400 || badRequest || conflict ? message : 'request failed');
+            const status = error.statusCode === 400 ? 400 : badRequest ? 400 : conflict ? 409 : 500;
+            if (status >= 500) {
+                console.error(`[roboTeamAgent] ${req.method} ${req.url} failed:`, error?.stack || message);
+            } else {
+                console.warn(`[roboTeamAgent] ${req.method} ${req.url} rejected (${status}): ${message}`);
+            }
+            sendError(res, status, error.statusCode === 400 || badRequest || conflict ? message : 'request failed');
         }
     });
 

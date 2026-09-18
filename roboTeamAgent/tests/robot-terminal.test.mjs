@@ -12,7 +12,7 @@ test('terminal resolves the persistent robot home and rejects substituted mounts
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const store = new RobotStore({ dataDir: path.join(root, '.data/roboTeamAgent') });
     const robot = await store.create({ name: 'analyst' });
-    const expected = `.data/roboTeamAgent/robots/${robot.id}/home`;
+    const expected = `.data/roboTeamAgent/robots/${robot.id}`;
     assert.equal(await robotTerminalDirectory(store, robot.id, root), expected);
     const other = path.join(root, 'other');
     await fs.mkdir(other);

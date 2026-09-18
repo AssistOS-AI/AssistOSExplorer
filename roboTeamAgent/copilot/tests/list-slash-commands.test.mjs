@@ -80,7 +80,7 @@ test('malformed and duplicate descriptors fail public catalog discovery explicit
     const root = path.join(workingDir, 'skills');
     writeSkill(root, 'one', 'duplicate');
     writeSkill(root, 'two', 'duplicate');
-    await assert.rejects(buildAchillesSkillCatalog(workingDir), /Duplicate task-skill name/);
+    await assert.rejects(buildAchillesSkillCatalog(workingDir), /Duplicate skill name/);
     fs.rmSync(path.join(root, 'two'), { recursive: true });
     writeSkill(root, 'bad', 'bad', '');
     await assert.rejects(buildAchillesSkillCatalog(workingDir), /descriptor must define/);

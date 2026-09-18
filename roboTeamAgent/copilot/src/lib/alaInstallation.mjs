@@ -42,14 +42,12 @@ export async function resolveAlaInstallation({ env = process.env } = {}) {
             packageRoot = parent;
         }
         const load = (relative) => import(pathToFileURL(path.join(packageRoot, 'src', relative)).href);
-        const [repositories, discovery, service, config] = await Promise.all([
-            load('repositories.mjs'),
+        const [discovery, service, config] = await Promise.all([
             load('coding-agents/discovery.mjs'), load('coding-agents/service.mjs'), load('config.mjs'),
         ]);
         const api = {
             entryPath, packageRoot,
             loadConfig: config.loadConfig, saveConfig: config.saveConfig,
-            discoverTaskSkills: repositories.discoverTaskSkills,
             discoverCodingAgents: discovery.discoverCodingAgents,
             createCodingAgentService: service.createCodingAgentService,
         };

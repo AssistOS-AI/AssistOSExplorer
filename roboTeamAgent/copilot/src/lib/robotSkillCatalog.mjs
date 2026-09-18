@@ -1,3 +1,4 @@
+import { installLiveSkills } from '../../../server/live-skill-install.mjs';
 import { publicSkillsets, individualSkillRepositories } from '../../../server/robot-skillsets.mjs';
 import { readSkillTree } from '../../../server/skill-files.mjs';
 
@@ -34,9 +35,9 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
                 skillRepositories: individualSkillRepositories(robot),
             })) : undefined;
             if (!execution) return { ...snapshot, robotCatalog };
-            const captured = await context.skillsets.live.capture(resolved.robot, resolved.policyId, cwd || resolved.cwd);
+            const captured = await installLiveSkills({ service: context.skillsets, robot: resolved.robot, policyId: resolved.policyId, cwd: cwd || resolved.cwd });
             const skills = captured.entries.map((entry) => ({ ...entry, enabled: true, type: 'anthropic',
-                skillDir: `${captured.catalogPath}/${entry.name}`, skillFile: `${captured.catalogPath}/${entry.name}/SKILL.md` }));
+                skillDir: entry.sourcePath, skillFile: `${entry.sourcePath}/SKILL.md` }));
             const { release, ...record } = captured;
             await sessionStore.updateSession(sessionId, (session) => {
                 session.previousSkillExecution = session.skillExecution;
@@ -51,7 +52,7 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
                         });
                     } finally {
                         await release();
-                        await context.skillsets.live.collect(context.robot.id);
+
                     }
                 } };
         },

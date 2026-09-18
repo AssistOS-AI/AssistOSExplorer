@@ -27,8 +27,8 @@ describe('repoManager', () => {
 
     it('rejects a symlinked owned repositories directory before scanning or mutation', () => {
         const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-repos-outside-'));
-        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli'), { recursive: true });
-        fs.symlinkSync(outside, path.join(tempDir, '.data', 'achilles-cli', 'repos'), 'dir');
+        fs.mkdirSync(path.join(tempDir, '.achilles-cli'), { recursive: true });
+        fs.symlinkSync(outside, path.join(tempDir, '.achilles-cli', 'repos'), 'dir');
         try {
             assert.throws(
                 () => addRepo('https://example.invalid/blocked.git', 'blocked', tempDir),
@@ -41,7 +41,7 @@ describe('repoManager', () => {
     });
 
     it('keeps an existing repository and its dependencies unchanged without a legacy agent library', () => {
-        const repoPath = path.join(tempDir, '.data', 'achilles-cli', 'repos', 'Existing');
+        const repoPath = path.join(tempDir, '.achilles-cli', 'repos', 'Existing');
         fs.mkdirSync(path.join(repoPath, 'node_modules'), { recursive: true });
         fs.writeFileSync(path.join(repoPath, 'node_modules', 'keep.txt'), 'user dependency');
         const result = addRepo('file:///missing.git', 'Existing', tempDir);
@@ -75,8 +75,8 @@ describe('repoManager', () => {
         );
         process.env.PATH = `${fakeBin}${path.delimiter}${previousPath}`;
 
-        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoA'), { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoB'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoA'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoB'), { recursive: true });
 
         const result = updateRepos(tempDir);
 
@@ -102,9 +102,9 @@ describe('repoManager', () => {
         );
         process.env.PATH = `${fakeBin}${path.delimiter}${previousPath}`;
 
-        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoOk'), { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoFailA'), { recursive: true });
-        fs.mkdirSync(path.join(tempDir, '.data', 'achilles-cli', 'repos', 'RepoFailB'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoOk'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoFailA'), { recursive: true });
+        fs.mkdirSync(path.join(tempDir, '.achilles-cli', 'repos', 'RepoFailB'), { recursive: true });
 
         assert.throws(
             () => updateRepos(tempDir),

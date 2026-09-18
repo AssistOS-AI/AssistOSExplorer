@@ -16,8 +16,6 @@ const LOG_TAIL_LINES = 5;
 const LOG_TAIL_BYTES = 2 * 1024;
 const MAX_LOG_BYTES = 1024 * 1024;
 const MAX_FINAL_OUTPUT_RANGES = 1000;
-const JOURNAL_NAME = 'agent_tasks';
-const LOG_DIRECTORY_NAME = 'task_logs';
 const CONTINUATION_HANDLE_RE = /^[A-Za-z0-9_-]{16,200}$/;
 const TOOL_NAME_RE = /^[A-Za-z0-9._-]{1,160}$/;
 
@@ -61,46 +59,22 @@ function assertSafeFile(candidate, root) {
     return { path: real, stat };
 }
 
-function resolveTaskStorage(workingDir, { includeLogs = false } = {}) {
+function resolveTaskStorage(workingDir) {
     const workspace = fs.realpathSync(workingDir);
     const privateDataRoot = resolveAchillesPrivateDataRoot(workspace);
-    const achillesDirectory = assertSafeDirectory(privateDataRoot, path.dirname(privateDataRoot));
-    if (!achillesDirectory) return null;
-    const history = assertSafeDirectory(path.join(achillesDirectory, 'tasks'), achillesDirectory);
+    const root = assertSafeDirectory(privateDataRoot, path.dirname(privateDataRoot));
+    if (!root) return null;
+    const history = assertSafeDirectory(path.join(root, 'tasks'), root);
     if (!history) return null;
-    const journal = assertSafeFile(path.join(history, JOURNAL_NAME), history);
-    const logDirectory = includeLogs
-        ? assertSafeDirectory(path.join(history, LOG_DIRECTORY_NAME), history)
-        : null;
-    return {
-        history,
-        journalPath: journal?.path || '',
-        logDirectory,
-    };
+    return { history };
 }
 
 function ensureTaskStorage(workingDir) {
-    const workspace = fs.realpathSync(workingDir);
-    const achillesDirectory = ensureAchillesPrivateDataRoot(workspace);
-    const history = path.join(achillesDirectory, 'tasks');
-    const logDirectory = path.join(history, LOG_DIRECTORY_NAME);
-    for (const directory of [history, logDirectory]) {
-        let stat = lstatOptional(directory);
-        if (!stat) {
-            try { fs.mkdirSync(directory, { mode: 0o700 }); }
-            catch (error) { if (error?.code !== 'EEXIST') throw error; }
-            stat = lstatOptional(directory);
-        }
-        if (!stat?.isDirectory() || stat.isSymbolicLink()) {
-            throw new Error('Task history storage is unsafe.');
-        }
-        if (!isInside(achillesDirectory, fs.realpathSync(directory))) {
-            throw new Error('Task history storage is unsafe.');
-        }
-    }
-    const journalPath = path.join(history, JOURNAL_NAME);
-    assertSafeFile(journalPath, history);
-    return { history, journalPath, logDirectory };
+    const root = ensureAchillesPrivateDataRoot(fs.realpathSync(workingDir));
+    const history = path.join(root, 'tasks');
+    fs.mkdirSync(history, { recursive: true, mode: 0o700 });
+    assertSafeDirectory(history, root);
+    return { history };
 }
 
 function validTimestamp(value) {
@@ -237,37 +211,16 @@ function normalizeTask(raw) {
 
 export function readWorkspaceTasks(workingDir) {
     const storage = resolveTaskStorage(workingDir);
-    if (!storage?.journalPath) return [];
+    if (!storage) return [];
     const tasks = new Map();
-    const raw = fs.readFileSync(storage.journalPath, 'utf8');
-    for (const line of raw.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        try {
-            const task = normalizeTask(JSON.parse(line));
-            if (!task) continue;
-            const existing = tasks.get(task.id);
-            if (existing && task.turn < existing.turn) continue;
-            if (existing && task.turn === existing.turn && task.remoteTaskId && existing.remoteTaskId
-                && task.remoteTaskId !== existing.remoteTaskId) continue;
-            if (existing && TERMINAL_STATUSES.has(existing.status) && task.status === 'ongoing'
-                && task.turn <= existing.turn) {
-                continue;
-            }
-            const finalOutputRanges = mergeFinalOutputRanges(
-                existing?.finalOutputRanges,
-                task.finalOutputRanges,
-            );
-            tasks.set(task.id, {
-                ...existing,
-                ...task,
-                ...(finalOutputRanges.length ? { finalOutputRanges } : {}),
-                ...(existing?.continuation?.handle && !task.continuation?.handle
-                    ? { continuation: existing.continuation }
-                    : {}),
-            });
-        } catch (_) {
-            // Ignore malformed or incomplete append-only journal entries.
-        }
+    for (const name of fs.readdirSync(storage.history)) {
+        if (!TASK_ID_RE.test(name)) continue;
+        const directory = assertSafeDirectory(path.join(storage.history, name), storage.history);
+        const file = directory && assertSafeFile(path.join(directory, 'task.json'), directory);
+        if (!file) continue;
+        const task = normalizeTask(JSON.parse(fs.readFileSync(file.path, 'utf8')));
+        if (!task || task.id !== name) throw new Error('Invalid stored task identity');
+        tasks.set(name, task);
     }
     return [...tasks.values()].sort((left, right) => {
         return (Date.parse(right.updatedAt) || 0) - (Date.parse(left.updatedAt) || 0);
@@ -280,15 +233,25 @@ export function readOngoingTasks(workingDir) {
     });
 }
 
-function appendMetadata(journalPath, task) {
-    fs.appendFileSync(journalPath, `${JSON.stringify(task)}\n`, { encoding: 'utf8', mode: 0o600 });
+function appendMetadata(history, task) {
+    const paths = taskPaths(history, task.id, { create: true });
+    const executionId = `${task.turn}-${crypto.createHash('sha256').update(task.remoteTaskId).digest('hex').slice(0, 24)}`;
+    atomicWriteJson(path.join(paths.directory, 'executions', `${executionId}.json`), task);
+    atomicWriteJson(path.join(paths.directory, 'task.json'), task);
 }
 
-function taskPaths(logDirectory, taskId) {
+function taskPaths(history, taskId, { create = false } = {}) {
     if (!TASK_ID_RE.test(String(taskId || ''))) throw new Error('invalid_task_id');
+    const directory = path.join(history, taskId);
+    const logs = path.join(directory, 'logs');
+    for (const candidate of [directory, logs, path.join(directory, 'executions')]) {
+        if (create) fs.mkdirSync(candidate, { recursive: true, mode: 0o700 });
+        assertSafeDirectory(candidate, history);
+    }
     return {
-        logPath: path.join(logDirectory, `${taskId}.log`),
-        cursorPath: path.join(logDirectory, `${taskId}.cursor.json`),
+        directory,
+        logPath: path.join(logs, 'output.log'),
+        cursorPath: path.join(logs, 'cursor.json'),
     };
 }
 
@@ -338,8 +301,8 @@ function appendTaskLog(logPath, text, { retainFull = false } = {}) {
     return text;
 }
 
-function ingestLog(logDirectory, task, rawLog = {}) {
-    const { logPath, cursorPath } = taskPaths(logDirectory, task.id);
+function ingestLog(tasksRoot, task, rawLog = {}) {
+    const { logPath, cursorPath } = taskPaths(tasksRoot, task.id, { create: true });
     const cursor = readCursor(cursorPath);
     const tail = typeof rawLog.tail === 'string' ? rawLog.tail : '';
     const seq = rawLog.seq != null && Number.isFinite(Number(rawLog.seq)) ? Number(rawLog.seq) : null;
@@ -360,10 +323,10 @@ function ingestLog(logDirectory, task, rawLog = {}) {
     return { appended, nextOffset };
 }
 
-function locateFinalOutput(logDirectory, taskId, finalOutput, minimumOffset = 0) {
+function locateFinalOutput(tasksRoot, taskId, finalOutput, minimumOffset = 0) {
     if (typeof finalOutput !== 'string' || !finalOutput) return { offset: null, length: 0 };
-    const { logPath } = taskPaths(logDirectory, taskId);
-    const file = assertSafeFile(logPath, logDirectory);
+    const { logPath } = taskPaths(tasksRoot, taskId);
+    const file = assertSafeFile(logPath, tasksRoot);
     const text = file ? fs.readFileSync(file.path, 'utf8') : '';
     for (const candidate of [finalOutput, finalOutput.trim()].filter(Boolean)) {
         const offset = text.lastIndexOf(candidate);
@@ -372,7 +335,7 @@ function locateFinalOutput(logDirectory, taskId, finalOutput, minimumOffset = 0)
     return { offset: null, length: 0 };
 }
 
-function persistFinalOutput(logDirectory, task, finalOutput) {
+function persistFinalOutput(tasksRoot, task, finalOutput) {
     const currentRange = task.finalOutputRanges?.find((range) => range.turn === task.turn);
     if (currentRange) {
         return { output: currentRange, appended: '', nextOffset: null };
@@ -382,16 +345,16 @@ function persistFinalOutput(logDirectory, task, finalOutput) {
     const minimumOffset = (task.finalOutputRanges || [])
         .filter((range) => range.turn < task.turn)
         .reduce((maximum, range) => Math.max(maximum, range.offset + range.length), 0);
-    let output = locateFinalOutput(logDirectory, task.id, text, minimumOffset);
+    let output = locateFinalOutput(tasksRoot, task.id, text, minimumOffset);
     if (output.offset !== null) return { output, appended: '', nextOffset: null };
 
-    const { logPath } = taskPaths(logDirectory, task.id);
-    const file = assertSafeFile(logPath, logDirectory);
+    const { logPath } = taskPaths(tasksRoot, task.id, { create: true });
+    const file = assertSafeFile(logPath, tasksRoot);
     const existingLog = file ? fs.readFileSync(file.path, 'utf8') : '';
     const separator = existingLog ? (existingLog.endsWith('\n') ? '\n' : '\n\n') : '';
     const appended = `${separator}[task result]\n${text}\n`;
     appendTaskLog(logPath, appended, { retainFull: task.logRetention === 'full' });
-    output = locateFinalOutput(logDirectory, task.id, text, minimumOffset);
+    output = locateFinalOutput(tasksRoot, task.id, text, minimumOffset);
     return {
         output,
         appended,
@@ -401,7 +364,7 @@ function persistFinalOutput(logDirectory, task, finalOutput) {
 
 export async function ingestTaskEvent(workingDir, envelope) {
     return withWorkspaceMutation(workingDir, () => {
-    const { journalPath, logDirectory } = ensureTaskStorage(workingDir);
+    const { history } = ensureTaskStorage(workingDir);
     const incoming = normalizeTask(envelope?.task);
     if (!incoming) throw new Error('invalid_task_event');
     const existing = readWorkspaceTasks(workingDir).find((task) => task.id === incoming.id) || null;
@@ -417,7 +380,7 @@ export async function ingestTaskEvent(workingDir, envelope) {
         return { task: existing, logAppend: '', rejected: true };
     }
     if (envelope?.log) {
-        const cursor = readCursor(taskPaths(logDirectory, incoming.id).cursorPath);
+        const cursor = readCursor(taskPaths(history, incoming.id).cursorPath);
         const seq = envelope.log.seq;
         if (seq != null && Number.isFinite(Number(seq)) && cursor.seq !== null
             && cursor.sourceId === incoming.remoteTaskId && Number(seq) < cursor.seq) {
@@ -439,10 +402,10 @@ export async function ingestTaskEvent(workingDir, envelope) {
             : {}),
     };
     let logUpdate = envelope?.log
-        ? ingestLog(logDirectory, task, { ...envelope.log, sourceId: task.remoteTaskId })
+        ? ingestLog(history, task, { ...envelope.log, sourceId: task.remoteTaskId })
         : { appended: '', nextOffset: null };
     if (TERMINAL_STATUSES.has(task.status)) {
-        const persistedFinal = persistFinalOutput(logDirectory, task, envelope?.finalOutput);
+        const persistedFinal = persistFinalOutput(history, task, envelope?.finalOutput);
         const finalOutput = persistedFinal.output;
         if (persistedFinal.appended) {
             logUpdate = {
@@ -466,7 +429,7 @@ export async function ingestTaskEvent(workingDir, envelope) {
         };
     }
     const metadataChanged = !existing || JSON.stringify(existing) !== JSON.stringify(task);
-    if (metadataChanged) appendMetadata(journalPath, task);
+    if (metadataChanged) appendMetadata(history, task);
     return {
         task,
         logAppend: logUpdate.appended,
@@ -482,7 +445,7 @@ export function getTask(workingDir, taskId) {
 
 export async function setTaskModel(workingDir, taskId, modelSelection) {
     return withWorkspaceMutation(workingDir, () => {
-    const { journalPath, logDirectory } = ensureTaskStorage(workingDir);
+    const { history } = ensureTaskStorage(workingDir);
     const existing = getTask(workingDir, taskId);
     if (!existing) throw new Error('task_not_found');
     if (!TERMINAL_STATUSES.has(existing.status)) throw new Error('task_not_terminal');
@@ -495,14 +458,14 @@ export async function setTaskModel(workingDir, taskId, modelSelection) {
         execution: { model },
         updatedAt: new Date().toISOString(),
     };
-    appendMetadata(journalPath, updated);
+    appendMetadata(history, updated);
     const displayName = stripTerminalControls(model.label || model.key || model.model)
         .replace(/\s+/g, ' ')
         .trim();
     const existingLog = readTaskLog(workingDir, taskId).text;
     const separator = existingLog && !existingLog.endsWith('\n') ? '\n' : '';
     const logAppend = `${separator}switched model to: ${displayName}\n`;
-    const { logPath } = taskPaths(logDirectory, taskId);
+    const { logPath } = taskPaths(history, taskId, { create: true });
     appendTaskLog(logPath, logAppend, { retainFull: true });
     const logOffset = fs.readFileSync(logPath, 'utf8').length;
     return { ...updated, logAppend, logOffset };
@@ -511,7 +474,7 @@ export async function setTaskModel(workingDir, taskId, modelSelection) {
 
 export async function appendTaskLogEntry(workingDir, taskId, message) {
     return withWorkspaceMutation(workingDir, () => {
-    const { logDirectory } = ensureTaskStorage(workingDir);
+    const { history } = ensureTaskStorage(workingDir);
     const existing = getTask(workingDir, taskId);
     if (!existing) throw new Error('task_not_found');
     const text = stripTerminalControls(message).replace(/\s+/g, ' ').trim().slice(0, 500);
@@ -519,7 +482,7 @@ export async function appendTaskLogEntry(workingDir, taskId, message) {
     const existingLog = readTaskLog(workingDir, taskId).text;
     const separator = existingLog && !existingLog.endsWith('\n') ? '\n' : '';
     const logAppend = `${separator}${text}\n`;
-    const { logPath } = taskPaths(logDirectory, taskId);
+    const { logPath } = taskPaths(history, taskId, { create: true });
     appendTaskLog(logPath, logAppend, { retainFull: true });
     const logOffset = fs.readFileSync(logPath, 'utf8').length;
     return { ...existing, logAppend, logOffset };
@@ -528,9 +491,9 @@ export async function appendTaskLogEntry(workingDir, taskId, message) {
 
 export function readTaskLog(workingDir, taskId, offset = 0) {
     const storage = resolveTaskStorage(workingDir, { includeLogs: true });
-    if (!storage?.logDirectory) return { text: '', nextOffset: 0, reset: false };
-    const { logPath } = taskPaths(storage.logDirectory, taskId);
-    const file = assertSafeFile(logPath, storage.logDirectory);
+    if (!storage?.history) return { text: '', nextOffset: 0, reset: false };
+    const { logPath } = taskPaths(storage.history, taskId);
+    const file = assertSafeFile(logPath, storage.history);
     const text = file ? fs.readFileSync(file.path, 'utf8') : '';
     const requested = Math.max(0, Number.parseInt(offset, 10) || 0);
     const reset = requested > text.length;
@@ -540,7 +503,7 @@ export function readTaskLog(workingDir, taskId, offset = 0) {
 
 export async function beginTaskContinuation(workingDir, taskId, { remoteTaskId, message, updatedAt, attemptId } = {}) {
     return withWorkspaceMutation(workingDir, () => {
-    const { journalPath, logDirectory } = ensureTaskStorage(workingDir);
+    const { history } = ensureTaskStorage(workingDir);
     const existing = getTask(workingDir, taskId);
     if (!existing) throw new Error('task_not_found');
     if (!TERMINAL_STATUSES.has(existing.status)) throw new Error('task_not_terminal');
@@ -564,8 +527,8 @@ export async function beginTaskContinuation(workingDir, taskId, { remoteTaskId, 
         finalOutputLength: 0,
         logRetention: 'full',
     };
-    appendMetadata(journalPath, next);
-    const { logPath, cursorPath } = taskPaths(logDirectory, taskId);
+    appendMetadata(history, next);
+    const { logPath, cursorPath } = taskPaths(history, taskId);
     const prompt = stripTerminalControls(message).trim().split(/\r?\n/)
         .map((line) => `you> ${line}`)
         .join('\n');
@@ -577,7 +540,7 @@ export async function beginTaskContinuation(workingDir, taskId, { remoteTaskId, 
 
 export async function claimTaskContinuation(workingDir, taskId, attemptId, message) {
     return withWorkspaceMutation(workingDir, () => {
-        const { journalPath } = ensureTaskStorage(workingDir);
+        const { history } = ensureTaskStorage(workingDir);
         const task = getTask(workingDir, taskId);
         if (!task) throw new Error('task_not_found');
         if (['pending', 'uncertain'].includes(task.continuationAttempt?.status)) throw new Error('task_continuation_requires_reconciliation');
@@ -585,19 +548,19 @@ export async function claimTaskContinuation(workingDir, taskId, attemptId, messa
         if (!task.continuation?.handle) throw new Error('task_not_continuable');
         const next = { ...task, continuationAttempt: { id: attemptId, status: 'pending',
             startedAt: new Date().toISOString(), message: String(message || '').slice(0, 32768), error: '' } };
-        appendMetadata(journalPath, next);
+        appendMetadata(history, next);
         return next;
     });
 }
 
 export async function markTaskContinuationUncertain(workingDir, taskId, attemptId) {
     return withWorkspaceMutation(workingDir, () => {
-        const { journalPath } = ensureTaskStorage(workingDir);
+        const { history } = ensureTaskStorage(workingDir);
         const task = getTask(workingDir, taskId);
         if (task?.continuationAttempt?.id !== attemptId || task.continuationAttempt.status === 'committed') return task;
         const next = { ...task, continuationAttempt: { ...task.continuationAttempt, status: 'uncertain',
             error: 'Remote continuation outcome is unknown; reconcile the remote task before retrying.' } };
-        appendMetadata(journalPath, next);
+        appendMetadata(history, next);
         return next;
     });
 }
@@ -611,8 +574,8 @@ function stripTerminalControls(value) {
 function readTaskLogTail(workingDir, taskId) {
     if (!TASK_ID_RE.test(taskId)) return { text: '', truncated: false };
     const storage = resolveTaskStorage(workingDir, { includeLogs: true });
-    if (!storage?.logDirectory) return { text: '', truncated: false };
-    const log = assertSafeFile(path.join(storage.logDirectory, `${taskId}.log`), storage.logDirectory);
+    if (!storage?.history) return { text: '', truncated: false };
+    const log = assertSafeFile(taskPaths(storage.history, taskId).logPath, storage.history);
     if (!log) return { text: '', truncated: false };
 
     const bytesToRead = Math.min(log.stat.size, LOG_TAIL_BYTES);

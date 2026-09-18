@@ -35,7 +35,7 @@ test('ALA rejects duplicate names within a root, reserved names and malformed de
     const duplicateRoot = path.join(workingDir, 'duplicates');
     writeSkill(duplicateRoot, 'one', 'same-name');
     writeSkill(duplicateRoot, 'two', 'same-name');
-    await assert.rejects(createCatalog([duplicateRoot]), /Duplicate task-skill name/);
+    await assert.rejects(createCatalog([duplicateRoot]), /Duplicate skill name/);
     const reservedRoot = path.join(workingDir, 'reserved');
     writeSkill(reservedRoot, 'coding-agent', 'coding-agent');
     await assert.rejects(createCatalog([reservedRoot]), /reserved.*coding-agent/);
@@ -87,7 +87,7 @@ test('descriptor replacement by a symlink and managed repository escapes are ref
     fs.unlinkSync(path.join(skillDir, 'SKILL.md'));
     fs.symlinkSync(path.join(outside, 'SKILL.md'), path.join(skillDir, 'SKILL.md'));
     await assert.rejects(catalog.readSkill('safe'), /symbolic links/);
-    const privateRoot = path.join(workingDir, '.data', 'achilles-cli');
+    const privateRoot = path.join(workingDir, '.achilles-cli');
     fs.mkdirSync(privateRoot, { recursive: true });
     fs.symlinkSync(outside, path.join(privateRoot, 'repos'), 'dir');
     await assert.rejects(createCatalog([path.join(privateRoot, 'repos')]), /symbolic link/);
