@@ -396,7 +396,8 @@ export class MarketplaceModal {
     const active = button.dataset.active === 'true';
     const controls = button.closest?.('.marketplace-agent-controls');
     const modeSelect = controls?.querySelector?.('[data-enable-mode-for]');
-    const mode = String(modeSelect?.value || button.dataset.enableMode || 'isolated').trim() || 'isolated';
+    // An empty mode lets Ploinky apply the agent manifest's default mode.
+    const mode = String(modeSelect?.value || button.dataset.enableMode || '').trim();
 
     this.state.agentMutationBusyRef = agentRef;
     this.state.agentMutationVerb = active ? 'Disabling' : 'Enabling';
@@ -933,7 +934,7 @@ export class MarketplaceModal {
       const modes = Array.isArray(agent.enableModes) && agent.enableModes.length
         ? agent.enableModes
         : ['isolated', 'global', 'devel'];
-      const currentMode = modes.includes(agent.enableMode) ? agent.enableMode : 'isolated';
+      const currentMode = modes.includes(agent.enableMode) ? agent.enableMode : modes[0];
       const modeSelect = document.createElement('select');
       modeSelect.className = 'marketplace-enable-mode';
       modeSelect.dataset.enableModeFor = agent.ref;

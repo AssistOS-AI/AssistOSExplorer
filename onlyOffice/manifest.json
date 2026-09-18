@@ -3,6 +3,7 @@
   "entrypoint": "/bin/bash",
   "start": "-lc \"node /code/src/index.mjs\"",
   "about": "OnlyOffice decorator with authenticated control and narrowly public editor transport services.",
+  "enableModes": ["global"],
   "health": {
     "liveness": {
       "script": "liveness.sh",
