@@ -35,6 +35,7 @@ export function assertEmailToolAuthorized(toolName, authInfo = {}) {
         'email_send_text',
         'email_send_template',
         'email_send_auth_code',
+        'email_send_password_reset',
     ]);
     if (adminTools.has(toolName)) {
         const roles = Array.isArray(authInfo?.user?.roles) ? authInfo.user.roles.map(String) : [];

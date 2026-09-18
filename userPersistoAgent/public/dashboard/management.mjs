@@ -77,6 +77,8 @@ export class UserpersistoSettings {
             this.element.querySelector(`[data-auth-method="${method}"]`)
         ]));
         this.selfRegistrationInput = this.element.querySelector("#selfRegistrationEnabled");
+        this.signupVerificationInput = this.element.querySelector("#signupEmailVerificationRequired");
+        this.emailDeliveryStatusEl = this.element.querySelector("#emailDeliveryStatus");
         this.allowedRedirectOriginsInput = this.element.querySelector("#allowedRedirectOrigins");
         this.authPolicySourceEl = this.element.querySelector("#authPolicySource");
         this.managedOriginStatusEl = this.element.querySelector("#managedOriginStatus");
@@ -193,6 +195,8 @@ export class UserpersistoSettings {
                 if (input) input.checked = enabled.has(method);
             }
             if (this.selfRegistrationInput) this.selfRegistrationInput.checked = policy.selfRegistrationEnabled !== false;
+            if (this.signupVerificationInput) this.signupVerificationInput.checked = policy.signupEmailVerificationRequired === true;
+            this.renderEmailDelivery(policy);
             if (this.allowedRedirectOriginsInput) this.allowedRedirectOriginsInput.value = (policy.allowedRedirectOrigins || []).join("\n");
             if (this.authPolicySourceEl) this.authPolicySourceEl.textContent = policy.environmentOverrides?.length
                 ? `Effective environment overrides: ${policy.environmentOverrides.join(", ")}. Saved policy does not replace these operator settings.`
@@ -242,17 +246,44 @@ export class UserpersistoSettings {
         if (this.managedOriginsEl) this.managedOriginsEl.textContent = origins.join("\n");
     }
 
+    // Email delivery availability is derived from the EmailAgent readiness
+    // probe, never saved. The status explains why email-backed features are
+    // unavailable and, when sign-up verification is required, that email
+    // sign-up is unavailable too.
+    renderEmailDelivery(policy = {}) {
+        if (!this.emailDeliveryStatusEl) return;
+        const document = this.element.ownerDocument;
+        this.emailDeliveryStatusEl.replaceChildren();
+        if (policy.emailDeliveryAvailable === true) {
+            this.emailDeliveryStatusEl.textContent = "Email delivery is configured.";
+            return;
+        }
+        const unavailable = ["email codes", "password reset", ...(policy.signupEmailVerificationRequired === true ? ["email sign-up"] : [])];
+        this.emailDeliveryStatusEl.append(`Email delivery is not configured. Unavailable: ${unavailable.join(", ")}. `);
+        const link = document?.createElement?.("a");
+        if (link) {
+            link.href = "/admin/settings.html";
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = "Open Settings → Email Agent";
+            this.emailDeliveryStatusEl.append(link);
+        }
+    }
+
     clearAuthPolicy() {
         this.policyRequestId = (this.policyRequestId || 0) + 1;
         this.state.policyLoaded = false;
         if (this.policySaveButton) this.policySaveButton.disabled = true;
         if (this.googleStatusEl) this.googleStatusEl.textContent = "Google readiness is unavailable.";
         if (this.authPolicySourceEl) this.authPolicySourceEl.textContent = "";
+        if (this.emailDeliveryStatusEl) this.emailDeliveryStatusEl.textContent = "";
         if (this.managedOriginStatusEl) this.managedOriginStatusEl.textContent = "";
         if (this.managedOriginsEl) this.managedOriginsEl.textContent = "";
         for (const input of Object.values(this.authMethodInputs || {})) {
             if (input) input.checked = false;
         }
+        if (this.selfRegistrationInput) this.selfRegistrationInput.checked = false;
+        if (this.signupVerificationInput) this.signupVerificationInput.checked = false;
     }
 
     revokeAdministrativeAccess() {
@@ -291,6 +322,7 @@ export class UserpersistoSettings {
             await this.callTool("userpersisto_auth_policy_set", {
                 enabledAuthMethods,
                 selfRegistrationEnabled: this.selfRegistrationInput?.checked === true,
+                signupEmailVerificationRequired: this.signupVerificationInput?.checked === true,
                 allowedRedirectOrigins: String(this.allowedRedirectOriginsInput?.value || "")
                     .split(/\r?\n|,/)
                     .map((value) => value.trim())
@@ -412,7 +444,7 @@ export class UserpersistoSettings {
                 <section class="userpersisto-row user-editor" data-user-id="${escapeHtml(user.id)}" aria-label="${escapeHtml(user.email || user.id)}">
                     <div>
                         <h3 class="userpersisto-row-title">${escapeHtml(user.email || user.id)}</h3>
-                        <p class="userpersisto-row-meta">Roles: ${escapeHtml(roles.join(", ") || "none")} · Status: ${escapeHtml(user.status || "unknown")}</p>
+                        <p class="userpersisto-row-meta">Roles: ${escapeHtml(roles.join(", ") || "none")} · Status: ${escapeHtml(user.status || "unknown")} · Email: ${user.emailVerifiedAt ? "verified" : "unverified"}</p>
                     </div>
                     <div class="userpersisto-user-fields">
                         <div class="form-item"><span class="form-label">Email</span><span class="userpersisto-row-meta">${escapeHtml(user.email || "")}</span></div>

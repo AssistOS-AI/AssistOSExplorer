@@ -122,11 +122,20 @@ submit a sign-up or claim the first administrator.
 No account is pre-created. On an unclaimed installation, enter the owner's
 email, select **Next**, enter the literal password `admin`, and select **Log in**.
 This creates the first administrator without email delivery or a verification
-code; its email remains unverified. Google sign-in and ordinary verified signup
-can also claim the installation first. Ordinary signup uses **Sign up**, a
-password of at least 15 characters and the emailed code. The exception closes
-permanently after the first claim. Configure EmailAgent delivery to verify the
-initial administrator's email and enable normal email registration. Complete the selected owner's setup before inviting restricted users.
+code; its email remains unverified. Google sign-in and password signup (verified
+or direct) can also claim the installation first. By default **Sign up** creates
+the account immediately with an unverified mailbox, so ordinary QA and local
+deployments need no mail provider; setting
+`USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED=true` on an internet-facing
+host restores the emailed-code flow, and **Forgot password?** needs real
+delivery. The exception closes permanently after the first claim. Configure
+EmailAgent delivery to verify the initial administrator's email and enable
+email codes and password reset. Complete the selected owner's setup before inviting restricted users.
+When upgrading a running workspace to a release that adds the EmailAgent
+`email_send_password_reset` tool, restart the Router afterwards: it registers
+agent tools in its tool policy only at startup, so until it restarts
+**Forgot password?** answers "We could not send the email" (`502
+delivery_failed`). Fresh deployments and direct sign-up are unaffected.
 Subsequent public sign-ups receive `selfRegistered` and do not gain Explorer
 access automatically. Automated release gates sign in and sign up through the
 same screens with the smoke helper described in `tests/smoke/README.md`.

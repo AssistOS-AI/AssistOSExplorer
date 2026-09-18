@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { ensureSeedData } from '../lib/bootstrap.mjs';
 import { createLoginRequest, consumeAuthCode } from '../lib/sso.mjs';
 import { resetStoreForTests } from '../lib/store.mjs';
+import { updateAuthPolicy } from '../lib/policy.mjs';
 import { getUserByEmail } from '../lib/users.mjs';
 import { completeGoogleIdentity, GOOGLE_ISSUER } from '../lib/externalIdentities.mjs';
 import { startService } from '../service/index.mjs';
@@ -23,13 +24,16 @@ async function fixture(fn) {
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-wizard-sso-http-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
-    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']) delete process.env[name];
+    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED']) delete process.env[name];
     setup.resetAuthLimitsForTests();
     const mail = [];
     const delivery = { fail: 0 };
     let server;
     try {
         await ensureSeedData();
+        // These journeys exercise the verified code flow; the direct-signup
+        // default is covered by signup-direct-http and auth-ui tests.
+        await updateAuthPolicy({ signupEmailVerificationRequired: true }, { emailStatus: async () => ({ available: true }) });
         server = startService({ port: 0, host: '127.0.0.1' }, { deliverEmail: async (message) => {
             mail.push(message);
             if (delivery.fail > 0) {
@@ -328,4 +332,28 @@ test('a Google-created account sees the neutral unavailable password state and c
         return callbackFromNavigation(wizard.navigated, base, request.providerState);
     });
     assert.equal(consumed.user.id, user.id);
+}));
+
+test('the default policy signs an unknown address up without any code through the real wizard', () => fixture(async ({ base, mail }) => {
+    await updateAuthPolicy({ signupEmailVerificationRequired: false }, { emailStatus: async () => ({ available: true }) });
+    const password = setup.newTestPassword();
+    const consumed = await signIn(base, async (wizard, request) => {
+        await nextFromStart(wizard, 'direct-wizard@example.test');
+        await waitForHeading(wizard.root, /^(Create an account\?|Enter your password)$/);
+        const offer = wizard.root.querySelector('form.signup-offer-panel');
+        if (offer) offer.fire('submit');
+        else findButton(wizard.root, 'Sign up').fire('click');
+        await waitForHeading(wizard.root, /^Create your password$/);
+        assert.match(wizard.root.textContent, /No email verification is needed now\. You can verify your email later from My Account\./);
+        wizard.root.querySelector('[name="password"]').value = password;
+        wizard.root.querySelector('[name="passwordConfirmation"]').value = password;
+        wizard.root.querySelector('form.signup-password-panel').fire('submit');
+        await waitForHeading(wizard.root, /^Signing you in…$/);
+        await waitFor(() => wizard.navigated.length === 1);
+        return callbackFromNavigation(wizard.navigated, base, request.providerState);
+    });
+    assert.deepEqual([consumed.user.email, consumed.roles], ['direct-wizard@example.test', ['admin']]);
+    assert.equal(consumed.user.emailVerifiedAt, '');
+    assert.equal(mail.length, 0, 'the direct flow never sends mail');
+    assert.equal((await getUserByEmail('direct-wizard@example.test')).emailVerifiedAt, '');
 }));

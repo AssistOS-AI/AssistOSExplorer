@@ -24,6 +24,7 @@ beforeEach(async () => {
     process.env.USERPERSISTO_SETTINGS_KEY = 'initial-password-http-fixture-settings';
     delete process.env.USERPERSISTO_AUTH_METHODS;
     delete process.env.USERPERSISTO_SELF_REGISTRATION_ENABLED;
+    delete process.env.USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED;
     resetAuthLimitsForTests();
     await ensureSeedData();
     deliveries = 0;
@@ -58,6 +59,7 @@ async function login(browser, body = {}, requestId = undefined, origin = base) {
 }
 
 test('fresh SSO setup works without email delivery and produces an administrator session with an unverified email', async () => {
+    await updateAuthPolicy({ signupEmailVerificationRequired: true }, { emailStatus: async () => ({ available: true }) });
     const browser = new CookieBrowser();
     const id = await request();
     const opened = await browser.json(`${base}/service/auth/attempt`, { requestId: id, state: 'initial-router-state' });
@@ -65,6 +67,7 @@ test('fresh SSO setup works without email delivery and produces an administrator
     const configuration = await opened.json();
     assert.equal(configuration.initialPasswordSetup, true);
     assert.equal(configuration.signup.email, false, 'ordinary signup still requires email delivery');
+    assert.equal(configuration.signup.verification, 'required');
     const result = await login(browser, { email: ' First.Owner@Example.test ' }, id);
     assert.equal(result.status, 200, JSON.stringify(result.body));
     assert.deepEqual(Object.keys(result.body).sort(), ['code', 'ok', 'redirectUri', 'state']);
@@ -87,6 +90,17 @@ test('fresh SSO setup works without email delivery and produces an administrator
     assert.equal(normal.status, 200);
     assert.equal((await consumeAuthCode({ providerState: normal.requestId, code: normal.body.code })).user.id, signedIn.user.id);
     assert.equal(hashes, 1, 'ordinary subsequent login never creates or hashes a second credential');
+    assert.equal(deliveries, 0);
+});
+
+test('default policy advertises password signup without email delivery while first-owner setup is unchanged', async () => {
+    const browser = new CookieBrowser();
+    const id = await request();
+    const opened = await browser.json(`${base}/service/auth/attempt`, { requestId: id, state: 'initial-router-state' });
+    assert.equal(opened.status, 200);
+    const configuration = await opened.json();
+    assert.deepEqual([configuration.initialPasswordSetup, configuration.signup.email, configuration.signup.verification, configuration.passwordReset],
+        [true, true, 'none', false]);
     assert.equal(deliveries, 0);
 });
 

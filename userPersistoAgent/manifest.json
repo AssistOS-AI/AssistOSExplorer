@@ -98,6 +98,9 @@
         "USERPERSISTO_SELF_REGISTRATION_ENABLED": {
           "required": false
         },
+        "USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED": {
+          "required": false
+        },
         "PORT": {
           "required": false,
           "default": "7001"

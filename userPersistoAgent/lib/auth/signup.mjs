@@ -18,7 +18,9 @@ import {
     consumeMemoryBudget,
     deliverCode,
     developmentLogFallback,
+    discoveryBudget,
     issueChallenge,
+    prepareDirectCompletion,
     rateSourceKey,
     readAttempt,
     recordDelivery,
@@ -45,6 +47,7 @@ function signupError(code, statusCode) {
         account_exists: 'An account already uses this email. Log in instead.',
         registration_disabled: 'Registration is not available.',
         auth_method_disabled: 'This sign-in method is not available.',
+        signup_verification_required: 'Email verification is now required. Choose your password again to continue.',
     };
     return Object.assign(new Error(messages[code] || 'Unable to continue.'), { code, statusCode });
 }
@@ -171,6 +174,57 @@ export async function changeSignupEmail({ parent, browserProof, email, rateSourc
             if (current.signup?.verifierId !== pending.signup.verifierId) throw attemptError('signup_restart_required', 409);
         } });
     return deliverSignupCode({ parent, browserProof, issued, deliver });
+}
+
+// Direct password signup, used while the policy does not require a verified
+// mailbox. The account is created with an unverified email and no email work:
+// only the live parent, the registration rules, the chosen password and the
+// per-source hashing budget apply. On an unclaimed installation it claims the
+// same first-administrator authority as the initial-password exception.
+export async function createSignupAccount({ parent, browserProof, email, password, passwordConfirmation, rateSource = '', validateParent, prepareHandoff }) {
+    let normalizedEmail;
+    try { normalizedEmail = normalizeEmail(email); } catch { throw attemptError('invalid_email'); }
+    const { normalized } = validateNewPassword({ password, passwordConfirmation, email: normalizedEmail });
+    if (validateParent) await validateParent();
+    if (browserProof) {
+        const attempt = await readAttempt({ parent, browserProof });
+        if (attempt.status === 'completed' && attempt.completion?.method === 'passwordSignup'
+            && attempt.completion.email === normalizedEmail) {
+            return replayCompletion(attempt);
+        }
+    }
+    // A refusal reveals as much as discovery does and spends the same budget.
+    discoveryBudget({ parent, rateSource });
+    const precheck = async () => {
+        if ((await getAuthPolicy()).signupEmailVerificationRequired) throw signupError('signup_verification_required', 409);
+        await assertSignupAllowed(normalizedEmail);
+        if (browserProof) {
+            const attempt = await readAttempt({ parent, browserProof });
+            if (attempt.status === 'completed') throw attemptError('attempt_invalid', 409);
+        }
+    };
+    await withPersistenceScope(precheck);
+    spendSignupKdfBudget(rateSource);
+    const validateAdmission = async () => {
+        if (validateParent) await validateParent();
+        await withPersistenceScope(precheck);
+    };
+    const verifier = await hashSecret(normalized, { validateAdmission });
+    return serializePersisted('users', async () => {
+        await validateAdmission();
+        const store = await getStore();
+        const stageAccount = await prepareNewAccount({ email: normalizedEmail, emailVerified: false, method: 'passwordSignup' });
+        const stageCompletion = await prepareDirectCompletion({ parent, browserProof, email: normalizedEmail, method: 'passwordSignup' });
+        const stageHandoff = prepareHandoff ? await prepareHandoff() : null;
+        return commitStagedPersistence(async () => {
+            const account = await stageAccount();
+            await stagePasswordCredential(store, { userId: account.user.id, verifier });
+            const handoff = stageHandoff ? await stageHandoff(account.user.id) : null;
+            await stageCompletion({ userId: account.user.id, generation: authGenerationOf(account.user), handoff });
+            await recordAudit({ actorId: account.user.id, action: 'auth.password.register', target: account.user.id, reason: `${parent.flow}:unverified` }, { save: false });
+            return { ok: true, ...account, created: true, generation: authGenerationOf(account.user), handoff };
+        });
+    });
 }
 
 // Verifies the signup code and creates the account in one staged commit under

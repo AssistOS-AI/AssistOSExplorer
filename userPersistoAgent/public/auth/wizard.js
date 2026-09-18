@@ -23,7 +23,8 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
     let epoch = 0;
     let screen = 'loading';
     let email = '';
-    let config = { setupComplete: true, initialPasswordSetup: false, registration: false, signup: { email: false, google: false }, methods: {}, passwordPolicy: DEFAULT_PASSWORD_POLICY };
+    let config = { setupComplete: true, initialPasswordSetup: false, registration: false,
+        signup: { email: false, google: false, verification: 'required' }, passwordReset: false, methods: {}, passwordPolicy: DEFAULT_PASSWORD_POLICY };
     let expiresAt = 0;
     let discovery = null; // { email, exists, methods }
     let challenge = null; // pending login code
@@ -99,6 +100,7 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         access_denied: 'This sign-in method is not available.',
         authentication_failed: 'Unable to sign in. Check your details and try again.',
         signup_restart_required: 'Choose your password again to continue.',
+        signup_verification_required: 'Email verification is now required. Choose your password again to continue.',
         attempt_invalid: 'This sign-in attempt is no longer available. Start over.',
         invalid_redirect_uri: 'The sign-in callback address is invalid.',
         redirect_origin_not_allowed: 'Sign-in is not enabled for this address. Use a configured workspace address or contact the workspace administrator.',
@@ -287,6 +289,28 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         discovery = { email: address, exists: data.exists === true, methods: data.methods || {}, initialPasswordSetup: config.initialPasswordSetup };
     }
 
+    // Refresh only the advisory configuration after a policy change refusal.
+    // The server authorizes every step again, so a failed read leaves the
+    // previous advisory values in place.
+    async function reloadConfiguration() {
+        const result = await adapter.attempt();
+        if (result?.completed) return false;
+        config = {
+            ...config,
+            setupComplete: result.setupComplete === true,
+            initialPasswordSetup: result.initialPasswordSetup === true,
+            registration: result.registration === true,
+            signup: {
+                email: result.signup?.email === true,
+                verification: result.signup?.verification === 'none' ? 'none' : 'required',
+                google: result.signup?.google === true,
+            },
+            passwordReset: result.passwordReset === true,
+            methods: result.methods || config.methods,
+        };
+        return true;
+    }
+
     // Discovery for the current address, reused while it still applies.
     async function withDiscovery(then, onFailure) {
         if (discovery?.email === email && !discovery.initialPasswordSetup) return then();
@@ -321,7 +345,11 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
                 ? 'Password sign-in is not available for this account here. Choose Try another way.'
                 : 'Password sign-in is not available in this workspace.'));
         }
-        children.push(loginButton, errorNode);
+        children.push(loginButton);
+        if (usable && !initialSetup && config.passwordReset) {
+            children.push(h('button', { type: 'button', className: 'auth-link', text: 'Forgot password?', onClick: () => showForgotEmail() }));
+        }
+        children.push(errorNode);
         if (initialSetup && config.signup.email) children.push(h('button', { type: 'button', className: 'auth-link', text: 'Sign up', onClick: () => showSignupPassword() }));
         children.push(anotherWay, backButton(() => showStart()));
         form.append(...children);
@@ -417,16 +445,18 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         const confirmInput = h('input', { id: 'auth-confirm-password', name: 'passwordConfirmation', type: 'password', autocomplete: 'new-password', required: true });
         const createButton = h('button', { type: 'submit', text: 'Create account' });
         const back = backButton(() => { if (!createButton.disabled) showStart(); });
-        form.append(
+        const children = [
             heading('Create your password'),
             ...accountEmailField('auth-signup-email'),
             h('label', { for: 'auth-new-password', text: 'Password' }), passwordInput,
             h('label', { for: 'auth-confirm-password', text: 'Confirm password' }), confirmInput,
             h('p', { id: 'auth-password-hint', className: 'auth-copy auth-hint', text: `Use at least ${policy.minLength} characters.` }),
-            createButton,
-            errorNode,
-            back,
-        );
+        ];
+        if (config.signup?.verification !== 'required') {
+            children.push(status('No email verification is needed now. You can verify your email later from My Account.'));
+        }
+        children.push(createButton, errorNode, back);
+        form.append(...children);
         form.addEventListener('submit', (event) => {
             event.preventDefault();
             void submitSignup({ passwordInput, confirmInput, createButton, back, errorNode });
@@ -456,11 +486,15 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         confirmInput.disabled = true;
         createButton.disabled = true;
         back.disabled = true;
+        const direct = config.signup?.verification !== 'required';
         try {
-            const data = await adapter.startSignup({ email, password, passwordConfirmation });
+            const data = direct
+                ? await adapter.createSignup({ email, password, passwordConfirmation })
+                : await adapter.startSignup({ email, password, passwordConfirmation });
             passwordInput.value = '';
             confirmInput.value = '';
             if (stale(capturedEpoch)) return;
+            if (direct) { finish(capturedEpoch, data); return; }
             signup = data.challenge;
             locked = false;
             showSignupCode();
@@ -469,6 +503,14 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             confirmInput.value = '';
             if (stale(capturedEpoch)) return;
             if (await recoverUncertainSignup(error, capturedEpoch)) return;
+            if (error?.code === 'signup_verification_required') {
+                // The policy changed after this page loaded: refresh the
+                // advisory configuration and ask for the password again.
+                await reloadConfiguration().catch(() => {});
+                if (stale(capturedEpoch)) return;
+                showSignupPassword(errorMessage(error));
+                return;
+            }
             if (handleGlobalError(error)) return;
             // Nothing was staged: the password is chosen again.
             passwordInput.disabled = false;
@@ -692,6 +734,79 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         try { await adapter.cancel(); } catch { /* best effort */ }
         if (stale(capturedEpoch)) return;
         after();
+    }
+
+    // ---- S7 / S8 forgot password ------------------------------------------
+    function showForgotEmail(initialError = '') {
+        const form = h('form', { className: 'auth-panel forgot-email-panel', novalidate: true });
+        const errorNode = status(initialError, { error: true });
+        const sendButton = h('button', { type: 'submit', text: 'Send reset link' });
+        const back = backButton(() => showStart());
+        form.append(
+            heading('Reset your password'),
+            ...accountEmailField('auth-forgot-email'),
+            status('We will email a link to choose a new password.'),
+            sendButton,
+            errorNode,
+            back,
+        );
+        form.addEventListener('submit', (event) => {
+            event.preventDefault();
+            if (!sendButton.disabled) void submitForgot(sendButton, back, errorNode);
+        });
+        commit('forgotEmail', form);
+    }
+
+    async function submitForgot(sendButton, back, errorNode) {
+        const capturedEpoch = epoch;
+        sendButton.disabled = true;
+        back.disabled = true;
+        try {
+            await adapter.forgotPassword({ email });
+            if (stale(capturedEpoch)) return;
+            showForgotSent();
+        } catch (error) {
+            if (stale(capturedEpoch)) return;
+            if (error?.code === 'delivery_failed') { showForgotEmail('We could not send the email. Try again later.'); return; }
+            if (handleGlobalError(error)) return;
+            sendButton.disabled = false;
+            back.disabled = false;
+            showError(errorNode, errorMessage(error));
+        }
+    }
+
+    function showForgotSent() {
+        const form = h('form', { className: 'auth-panel forgot-sent-panel' });
+        const errorNode = status('', { error: true });
+        const sendAgain = h('button', { type: 'button', text: 'Send again', onClick: () => { if (!sendAgain.disabled) void resendForgot(sendAgain, errorNode); } });
+        form.append(
+            heading('Check your email'),
+            status(`If ${email} can reset its password here, a link is on its way. It expires in 30 minutes.`),
+            sendAgain,
+            errorNode,
+            h('button', { type: 'button', className: 'auth-link', text: 'Back to sign in', onClick: () => showStart() }),
+        );
+        commit('forgotSent', form);
+        resendState = { node: sendAgain, resendAt: ticker.now() + 60_000, label: 'Send again' };
+        onTick();
+    }
+
+    async function resendForgot(sendAgain, errorNode) {
+        const capturedEpoch = epoch;
+        sendAgain.disabled = true;
+        try {
+            await adapter.forgotPassword({ email });
+            if (stale(capturedEpoch)) return;
+            showForgotSent();
+        } catch (error) {
+            if (stale(capturedEpoch)) return;
+            if (error?.code === 'delivery_failed') { showForgotEmail('We could not send the email. Try again later.'); return; }
+            if (handleGlobalError(error)) return;
+            if (resendState) resendState.busy = false;
+            sendAgain.disabled = false;
+            onTick();
+            showError(errorNode, errorMessage(error));
+        }
     }
 
     // ---- S7 login code ----------------------------------------------------
@@ -964,6 +1079,12 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
         const live = attempt?.challenge || null;
         if (EXPIRY_CODES.has(failure.code)) return showExpired();
         if (failure.code === 'account_exists') return showCollision();
+        if (failure.action === 'signup-create') {
+            // The native direct-signup form failed: back to S5 with the
+            // attempted email kept and empty inputs.
+            if (failure.code === 'registration_disabled') return showStart(errorMessage(failure));
+            return showSignupPassword(errorMessage(failure));
+        }
         if (failure.action === 'signup-verify') {
             if (failure.code === 'signup_restart_required') return showSignupPassword(errorMessage(failure));
             if (failure.code === 'registration_disabled') return showStart(errorMessage(failure));
@@ -1017,7 +1138,12 @@ export function mountWizard({ root, document, adapter, storage = null, clock = n
             setupComplete: result.setupComplete,
             initialPasswordSetup: result.initialPasswordSetup === true,
             registration: result.registration === true,
-            signup: { email: result.signup?.email === true, google: result.signup?.google === true },
+            signup: {
+                email: result.signup?.email === true,
+                verification: result.signup?.verification === 'none' ? 'none' : 'required',
+                google: result.signup?.google === true,
+            },
+            passwordReset: result.passwordReset === true,
             methods: result.methods || {},
             passwordPolicy: { ...DEFAULT_PASSWORD_POLICY, ...(result.passwordPolicy || {}) },
         };

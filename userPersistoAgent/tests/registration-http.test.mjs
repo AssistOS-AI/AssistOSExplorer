@@ -9,6 +9,7 @@ import { getUserByEmail, listUsers } from '../lib/users.mjs';
 import { getInstallationSetup } from '../lib/setup.mjs';
 import { createLoginRequest, consumeAuthCode } from '../lib/sso.mjs';
 import { getStore, resetStoreForTests } from '../lib/store.mjs';
+import { updateAuthPolicy } from '../lib/policy.mjs';
 import { startService } from '../service/index.mjs';
 import { CookieBrowser } from './helpers/googleProvider.mjs';
 import * as setup from './helpers/setup.mjs';
@@ -18,7 +19,7 @@ async function fixture(fn) {
     const folder = await mkdtemp(join(tmpdir(), 'userpersisto-register-http-'));
     process.env.PERSISTENCE_FOLDER = folder;
     process.env.USERPERSISTO_SETTINGS_KEY = 'test-settings-key';
-    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED']) delete process.env[name];
+    for (const name of ['USERPERSISTO_AUTH_METHODS', 'USERPERSISTO_SELF_REGISTRATION_ENABLED', 'USERPERSISTO_SIGNUP_EMAIL_VERIFICATION_REQUIRED']) delete process.env[name];
     setup.resetAuthLimitsForTests();
     const mail = [];
     let server;
@@ -75,6 +76,7 @@ test('unclaimed setup rejects arbitrary passwords and ignores the retired passwo
 }));
 
 test('HTTP signup claims the first administrator through the browser-bound attempt and signs in automatically', () => fixture(async ({ base, mail, post }) => {
+    await updateAuthPolicy({ signupEmailVerificationRequired: true }, { emailStatus: async () => ({ available: true }) });
     const request = await createLoginRequest({ redirectUri: `${base}/auth/callback` });
     const browser = new CookieBrowser();
     const attempt = await post(browser, 'attempt', { requestId: request.providerState, state: 'router-core-state' });
@@ -84,7 +86,7 @@ test('HTTP signup claims the first administrator through the browser-bound attem
     assert.match(cookie, /SameSite=Strict/);
     assert.match(cookie, /Path=\/service\//);
     const state = await attempt.json();
-    assert.deepEqual([state.setupComplete, state.registration, state.signup, state.methods.password], [false, true, { email: true, google: true }, true]);
+    assert.deepEqual([state.setupComplete, state.registration, state.signup, state.methods.password], [false, true, { email: true, verification: 'required', google: true }, true]);
     assert.deepEqual(state.passwordPolicy, { minLength: 15, maxLength: 128, maxRawLength: 1024, normalization: 'NFKC' });
     assert.ok(state.expiresAt > Date.now());
     const discovered = await (await post(browser, 'discover', { requestId: request.providerState, email: 'owner@example.test' })).json();

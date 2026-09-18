@@ -264,6 +264,49 @@
       "env": {
         "TOOL_NAME": "email_send_auth_code"
       }
+    },
+    {
+      "name": "email_send_password_reset",
+      "title": "Send password reset link",
+      "description": "Agent-to-agent: sends a single-use password reset link without returning or logging it. The link must be an absolute http(s) URL without credentials.",
+      "command": "sh",
+      "args": [
+        "tools/email_tool.sh"
+      ],
+      "cwd": "/code",
+      "timeoutMs": 30000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "minLength": 3
+          },
+          "resetUrl": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "expiresInMinutes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "correlationId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "resetUrl"
+        ],
+        "additionalProperties": false
+      },
+      "tags": [
+        "internal"
+      ],
+      "env": {
+        "TOOL_NAME": "email_send_password_reset"
+      }
     }
   ]
 }

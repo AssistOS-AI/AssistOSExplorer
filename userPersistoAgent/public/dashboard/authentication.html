@@ -30,7 +30,7 @@
                         <div class="userpersisto-policy">
                             <h2 class="userpersisto-card-title">Workspace authentication policy</h2>
                             <div class="userpersisto-auth-methods-card">
-                                <div class="userpersisto-card-description">Administrator controls for everyone in this workspace. Choose the allowed sign-in methods and registration rules. The first completed verified sign-up or Google sign-in became the administrator; after that, self-registration governs public sign-up and new accounts receive the restricted selfRegistered role. Password sign-up also needs Password enabled and working email delivery for its verification code. Manage your own password, passkeys and authenticator app under Sign-in &amp; security on My Account.</div>
+                                <div class="userpersisto-card-description">Administrator controls for everyone in this workspace. Choose the allowed sign-in methods and registration rules. The first to complete the initial password admin, a password sign-up (verified or direct) or a Google sign-in became the administrator; after that, self-registration governs public sign-up and new accounts receive the restricted selfRegistered role. Password sign-up is available without email delivery by default; requiring email verification at sign-up restores the emailed-code step and needs working email delivery. Manage your own password, passkeys and authenticator app under Sign-in &amp; security on My Account.</div>
                                 <div class="userpersisto-grid">
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="password"> Password</span></label>
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="emailCode"> Email code</span></label>
@@ -38,11 +38,13 @@
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="totp"> TOTP</span></label>
                                     <label class="form-item"><span class="form-label"><input type="checkbox" data-auth-method="google"> Google</span></label>
                                     <label class="form-item"><span class="form-label"><input id="selfRegistrationEnabled" type="checkbox"> Self-registration enabled</span></label>
+                                    <label class="form-item"><span class="form-label"><input id="signupEmailVerificationRequired" type="checkbox"> Require email verification at sign-up</span></label>
                                     <label class="form-item">
                                         <span class="form-label">Additional allowed redirect origins (one per line)</span>
                                         <textarea id="allowedRedirectOrigins" class="form-input" rows="3" spellcheck="false"></textarea>
                                     </label>
                                 </div>
+                                <div id="emailDeliveryStatus" class="userpersisto-provider-status" role="status"></div>
                                 <div id="authPolicySource" class="userpersisto-card-description" role="status"></div>
                                 <div class="userpersisto-auth-methods-card" role="group" aria-labelledby="managedOriginsTitle">
                                     <div id="managedOriginsTitle" class="userpersisto-card-title">Workspace Router addresses</div>
