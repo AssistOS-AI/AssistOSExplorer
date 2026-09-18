@@ -4,6 +4,13 @@ import path from 'node:path';
 import { runGit } from './run-git.mjs';
 import { categorizeStatusEntries, parseStatusPorcelainV1Z } from './status-parser.mjs';
 
+// A detailed status intentionally enumerates every untracked and matching ignored
+// path. On large bind-mounted repositories this can take substantially longer
+// than ordinary Git metadata operations, so it must not inherit runGit's generic
+// 20-second deadline. The compact workspace overview retains its own 5-second
+// deadline below and therefore remains responsive.
+export const DETAILED_STATUS_TIMEOUT_MS = 120000;
+
 export function createStatusOps(ctx) {
   const { resolveRepoWorkTreePath, getGitBinary } = ctx;
 
@@ -43,7 +50,11 @@ export function createStatusOps(ctx) {
   async function gitStatus({ path: repoPathArg, includeAhead = false }) {
     const repoPath = await resolveRepoWorkTreePath(repoPathArg);
     const gitBinary = await getGitBinary(repoPath);
-    const { stdout } = await runGit(repoPath, [gitBinary, 'status', '--porcelain=v1', '-z', '-uall', '--ignored=matching']);
+    const { stdout } = await runGit(
+      repoPath,
+      [gitBinary, '--no-optional-locks', 'status', '--porcelain=v1', '-z', '-uall', '--ignored=matching'],
+      { timeoutMs: DETAILED_STATUS_TIMEOUT_MS }
+    );
     const entries = parseStatusPorcelainV1Z(stdout);
     const status = categorizeStatusEntries(entries);
     const { mergeInProgress, mergeMessage } = await readMergeState(repoPath, gitBinary);

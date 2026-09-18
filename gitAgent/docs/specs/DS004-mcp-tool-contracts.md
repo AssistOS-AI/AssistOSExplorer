@@ -67,6 +67,12 @@ Constraint M2: tools cannot execute operations outside validated repository path
 
 Constraint M2.1: repository discovery by recursive scan is allowed only for overview and listing contracts such as `git_repos_overview`; it is forbidden for mutating or remote-executing contracts such as branch checkout, branch create, branch merge, pull, push, commit, stash, restore, and identity writes.
 
+Constraint M2.2: `git_repos_overview` returns repository identity, branch state, aggregate change counts, and bounded samples. It does not embed complete file-change trees. Clients obtain the complete status of an expanded or selected repository through `git_status`.
+
+Constraint M2.3: a failed quick-status operation in `git_repos_overview` marks that repository's status as unavailable. It cannot report the repository as authoritatively clean, and clients must be able to retry through `git_status`.
+
+Constraint M2.4: the compact overview status has a 5-second subprocess deadline per repository. The detailed `git_status` operation has a separate 120-second deadline because it enumerates all untracked and matching ignored paths. The generic 20-second subprocess default does not apply to detailed status.
+
 Constraint M3: mixed output formats for the same contract are forbidden unless explicitly declared.
 
 ### Invariants
@@ -78,6 +84,8 @@ Invariant T2: lifecycle stages remain ordered as parse, validate, dispatch, exec
 Invariant T3: remote auth helpers may enrich payloads but do not redefine contract names.
 
 Invariant T4: a failed repository resolution remains a hard failure for execution contracts and cannot degrade into a best-effort operation on another repository.
+
+Invariant T5: loading the complete status of one repository cannot cause another repository to disappear from the workspace overview.
 
 ### Validation Criteria
 

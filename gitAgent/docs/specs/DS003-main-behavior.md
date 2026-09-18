@@ -69,6 +69,9 @@ The Git plugin owns:
 - menu action semantics such as `Add to .gitignore` and `Remove from .gitignore`
 - direct ignore actions in `git-commit-modal`, without a separate pattern-editing prompt
 - AI commit-message generation with a modal-local busy overlay that keeps the Git content visible, prevents duplicate generation requests, and clears after either success or failure
+- compact workspace repository discovery followed by per-repository status loading for dirty repositories whose change trees are expanded
+
+The commit modal may expand dirty repositories automatically. A repository whose quick overview status is unavailable is also expanded and verified through the detailed status path instead of being presented as clean. Expansion through either the disclosure control or repository name triggers a dedicated `git_status` request when the repository detail is not cached. At most four repository status requests run concurrently, repeated expansion reuses the cached result, Refresh invalidates that cache, and a repository-local loading or error state remains visible while its detail is unavailable.
 
 For ignore actions in Explorer context menus, the owning Git behavior is:
 

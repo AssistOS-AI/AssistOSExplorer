@@ -431,7 +431,7 @@ export class GitRepoTree {
         }
         const repo = this.findRepoOverview(repoPath);
         const counts = repo?.counts || {};
-        return Boolean(repo?.dirty || counts.staged || counts.unstaged || counts.untracked || counts.conflicted);
+        return Boolean(repo?.dirty || repo?.statusUnavailable || counts.staged || counts.unstaged || counts.untracked || counts.conflicted);
     }
 
     isTreeFolderExpanded(repoPath, prefix) {
@@ -590,6 +590,28 @@ export class GitRepoTree {
         });
     }
 
+    appendRepoChanges(repo, repoWrapper, activePath, activeRepo) {
+        if (repo?.changesError) {
+            const error = document.createElement('div');
+            error.className = 'git-empty error';
+            error.textContent = `Unable to load changes: ${repo.changesError}`;
+            repoWrapper.appendChild(error);
+            return;
+        }
+        if (repo?.changesLoading || repo?.changesLoaded === false) {
+            const loading = document.createElement('div');
+            loading.className = 'git-empty';
+            loading.textContent = 'Loading changes…';
+            repoWrapper.appendChild(loading);
+            return;
+        }
+        const changesTree = this.renderRepoChangesTree(repo);
+        if (changesTree) {
+            this.applyActiveStyles(changesTree, activePath, activeRepo);
+            repoWrapper.appendChild(changesTree);
+        }
+    }
+
     applyActiveStyles(root, activePath, activeRepo) {
         if (!root || !activePath) return;
         const items = root.querySelectorAll('.git-tree-file');
@@ -746,6 +768,9 @@ export class GitRepoTree {
                 const counts = repo.counts || { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 };
                 const label = document.createElement('div');
                 label.className = 'git-change-button git-repo-name-label';
+                label.dataset.repoPath = repo.path;
+                label.setAttribute('data-local-action', 'toggleRepoChanges');
+                label.setAttribute('aria-expanded', String(repoExpanded));
                 label.textContent = repo.name;
 
                 const info = document.createElement('div');
@@ -783,6 +808,7 @@ export class GitRepoTree {
                     : (Array.isArray(repo?.ignored) ? repo.ignored.length : 0);
                 const hasChanges = Boolean(
                     repo?.dirty
+                    || repo?.statusUnavailable
                     || counts.staged
                     || counts.unstaged
                     || counts.untracked
@@ -790,11 +816,7 @@ export class GitRepoTree {
                     || ignoredCount
                 );
                 if (hasChanges && this.isRepoChangesExpanded(repo.path)) {
-                    const changesTree = this.renderRepoChangesTree(repo);
-                    if (changesTree) {
-                        this.applyActiveStyles(changesTree, activePath, activeRepo);
-                        repoWrapper.appendChild(changesTree);
-                    }
+                    this.appendRepoChanges(repo, repoWrapper, activePath, activeRepo);
                 }
 
                 wrapper.appendChild(repoWrapper);
@@ -851,6 +873,9 @@ export class GitRepoTree {
             const counts = repo.counts || { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 };
             const label = document.createElement('div');
             label.className = 'git-change-button git-repo-name-label';
+            label.dataset.repoPath = repo.path;
+            label.setAttribute('data-local-action', 'toggleRepoChanges');
+            label.setAttribute('aria-expanded', String(repoExpanded));
             label.textContent = repo.name;
 
             const info = document.createElement('div');
@@ -888,6 +913,7 @@ export class GitRepoTree {
                 : (Array.isArray(repo?.ignored) ? repo.ignored.length : 0);
             const hasChanges = Boolean(
                 repo?.dirty
+                || repo?.statusUnavailable
                 || counts.staged
                 || counts.unstaged
                 || counts.untracked
@@ -895,11 +921,7 @@ export class GitRepoTree {
                 || ignoredCount
             );
             if (hasChanges && this.isRepoChangesExpanded(repo.path)) {
-                const changesTree = this.renderRepoChangesTree(repo);
-                if (changesTree) {
-                    this.applyActiveStyles(changesTree, activePath, activeRepo);
-                    repoWrapper.appendChild(changesTree);
-                }
+                this.appendRepoChanges(repo, repoWrapper, activePath, activeRepo);
             }
 
             this.list.appendChild(repoWrapper);

@@ -11,6 +11,7 @@ import {
     togglePrefixSelection as togglePrefixSelectionOnEntry
 } from "./git-commit-modal-selection.js";
 import { formatRepoSummary, renderRepoChangesTree as renderRepoChangesTreeInternal } from "./git-commit-modal-tree.js";
+import { mergeRepoOverviewWithStatus } from './git-commit-modal-status.js';
 
 export function createGitCommitRepo(ctx) {
     const {
@@ -27,6 +28,81 @@ export function createGitCommitRepo(ctx) {
 
     const getRepoTreePresenter = () => element.querySelector('git-repo-tree')?.webSkelPresenter || null;
     const internalReposRoot = getInternalReposRoot({ rootHint: state.reposRoot });
+    const repoStatusCache = new Map();
+    const repoStatusPromises = new Map();
+
+    const replaceRepoOverview = (repoPath, updater) => {
+        const updateList = (list) => (Array.isArray(list) ? list : []).map((repo) => {
+            if (!repo || repo.path !== repoPath) return repo;
+            return updater(repo);
+        });
+        state.repoOverviews = updateList(state.repoOverviews);
+        if (Array.isArray(repoOverviewCache.list)) {
+            repoOverviewCache.list = updateList(repoOverviewCache.list);
+        }
+        renderRepoOverviews(state.repoOverviews);
+    };
+
+    const loadRepoStatus = async (repoPath, { force = false } = {}) => {
+        if (!repoPath) return null;
+        if (!force && repoStatusCache.has(repoPath)) {
+            const cached = repoStatusCache.get(repoPath);
+            replaceRepoOverview(repoPath, (repo) => mergeRepoOverviewWithStatus(repo, cached));
+            return cached;
+        }
+        if (repoStatusPromises.has(repoPath)) {
+            return repoStatusPromises.get(repoPath);
+        }
+
+        replaceRepoOverview(repoPath, (repo) => ({
+            ...repo,
+            changesLoading: true,
+            changesError: null
+        }));
+        const pending = (async () => {
+            try {
+                const payload = parseJsonToolResult(await service.gitStatus(repoPath)) || {};
+                if (payload.ok === false) {
+                    throw new Error(String(payload.message || payload.error || 'Unable to load repository changes.'));
+                }
+                repoStatusCache.set(repoPath, payload);
+                replaceRepoOverview(repoPath, (repo) => mergeRepoOverviewWithStatus(repo, payload));
+                return payload;
+            } catch (error) {
+                replaceRepoOverview(repoPath, (repo) => ({
+                    ...repo,
+                    changesLoading: false,
+                    changesLoaded: false,
+                    changesError: normalizeErrorMessage(error)
+                }));
+                return null;
+            } finally {
+                repoStatusPromises.delete(repoPath);
+            }
+        })();
+        repoStatusPromises.set(repoPath, pending);
+        return pending;
+    };
+
+    const loadExpandedRepoStatuses = async ({ force = false } = {}) => {
+        const repoPaths = (Array.isArray(state.repoOverviews) ? state.repoOverviews : [])
+            .filter((repo) => {
+                if (!repo?.path) return false;
+                const counts = repo.counts || {};
+                const dirty = Boolean(repo.dirty || repo.statusUnavailable || counts.staged || counts.unstaged || counts.untracked || counts.conflicted);
+                return dirty && state.repoChangesExpanded?.[repo.path] !== false;
+            })
+            .map((repo) => repo.path);
+        let nextIndex = 0;
+        const worker = async () => {
+            while (nextIndex < repoPaths.length) {
+                const repoPath = repoPaths[nextIndex];
+                nextIndex += 1;
+                await loadRepoStatus(repoPath, { force });
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(4, repoPaths.length) }, () => worker()));
+    };
 
     const mergeRepoResults = (collections = []) => {
         const merged = [];
@@ -131,6 +207,9 @@ export function createGitCommitRepo(ctx) {
         expanded[repoPath] = !current;
         state.repoChangesExpanded = expanded;
         renderRepoOverviews(state.repoOverviews);
+        if (!current) {
+            void loadRepoStatus(repoPath);
+        }
     };
 
     const isRepoChangesExpanded = (repoPath) => {
@@ -174,6 +253,7 @@ export function createGitCommitRepo(ctx) {
                 : (Array.isArray(repo.ignored) ? repo.ignored.length : 0);
             return Boolean(
                 repo.dirty
+                || repo.statusUnavailable
                 || counts.staged
                 || counts.unstaged
                 || counts.untracked
@@ -222,7 +302,7 @@ export function createGitCommitRepo(ctx) {
         const repoChangesExpanded = { ...(state.repoChangesExpanded || {}) };
         for (const repo of repos) {
             const counts = repo?.counts || {};
-            const isDirty = Boolean(repo?.dirty || counts.staged || counts.unstaged || counts.untracked || counts.conflicted);
+            const isDirty = Boolean(repo?.dirty || repo?.statusUnavailable || counts.staged || counts.unstaged || counts.untracked || counts.conflicted);
             if (!isDirty) continue;
             repoChangesExpanded[repo.path] = true;
             const rel = String(repo.relativePath || repo.name || '').replace(/^\/+/, '');
@@ -263,6 +343,9 @@ export function createGitCommitRepo(ctx) {
 
     const loadRepoOverviews = async ({ force = false } = {}) => {
         const now = Date.now();
+        if (force) {
+            repoStatusCache.clear();
+        }
         if (!force && repoOverviewCache.list && now - repoOverviewCache.at < 1500) {
             state.repoOverviews = repoOverviewCache.list;
             state.repoOverviewsLoaded = true;
@@ -301,6 +384,7 @@ export function createGitCommitRepo(ctx) {
                 repoOverviewCache.list = merged;
                 applyDefaultRepoTreeExpansion();
                 renderRepoOverviews(merged);
+                void loadExpandedRepoStatuses({ force });
                 return merged;
             } catch (error) {
                 try {

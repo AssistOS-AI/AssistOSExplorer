@@ -2,6 +2,9 @@ export function formatRepoSummary(repo) {
     if (!repo || !repo.ok) {
         return 'Not a git repository.';
     }
+    if (repo.statusUnavailable) {
+        return 'Loading repository status.';
+    }
     const counts = repo.counts || { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 };
     const hasChanges = counts.staged || counts.unstaged || counts.untracked || counts.conflicted;
     const stashCount = Number.isFinite(repo.stashCount) ? repo.stashCount : 0;
