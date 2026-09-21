@@ -35,6 +35,11 @@
 
 import { compose, createKernelContext } from '../kernel/index.mjs';
 import { createRequestId } from '../../core/request-id.mjs';
+import { MiddlewareAbortError } from '../../core/errors.mjs';
+
+// Conventional status for a request the client abandoned (never sent,
+// because the client is gone; used for logs and audit records).
+const CLIENT_CLOSED_REQUEST_STATUS = 499;
 
 import { errorBoundaryMiddleware } from './error-boundary.mjs';
 import { auditLogMiddleware } from './audit-log.mjs';
@@ -98,6 +103,22 @@ export async function runRouteRequest({ req, res, appCtx, routeKind }) {
     // Propagate the request ID to the response headers
     res.setHeader('X-Request-Id', requestId);
 
+    // The request signal aborts upstream work when the client disconnects
+    // before the response is complete; every attempt links to it.
+    const clientAbort = new AbortController();
+    const onClientClose = () => {
+        if (!res.writableEnded && !clientAbort.signal.aborted) {
+            clientAbort.abort(
+                new MiddlewareAbortError(
+                    'client-disconnect',
+                    CLIENT_CLOSED_REQUEST_STATUS,
+                    'Client closed the request'
+                )
+            );
+        }
+    };
+    res.once?.('close', onClientClose);
+
     const ctx = createKernelContext({
         requestId,
         route: { kind: routeKind, format: routeKind },
@@ -105,6 +126,7 @@ export async function runRouteRequest({ req, res, appCtx, routeKind }) {
         log: appCtx.log,
         appCtx,
         http: { req, res },
+        signal: clientAbort.signal,
     });
 
     const chain = buildRouteChain();

@@ -261,6 +261,21 @@ export class ProviderModelNotFoundError extends GatewayError {
     }
 }
 
+// The upstream rejected the request itself (invalid parameters, payload too
+// large). Another model or another attempt would receive the same request, so
+// this is neither retryable nor a cascade trigger.
+export class ProviderBadRequestError extends GatewayError {
+    constructor(provider, upstreamMessage = null) {
+        super(`Provider rejected the request: ${provider}`, {
+            httpStatus: HTTP_STATUS.BAD_REQUEST,
+            errorType: ERROR_TYPES.PROVIDER_BAD_REQUEST,
+            detail: upstreamMessage
+                ? { provider, upstreamMessage: String(upstreamMessage).slice(0, 500) }
+                : { provider },
+        });
+    }
+}
+
 export class ProviderTimeoutError extends GatewayError {
     constructor(provider) {
         super(`Provider request timed out: ${provider}`, {

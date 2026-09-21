@@ -159,6 +159,19 @@ CREATE TABLE IF NOT EXISTS models (
 CREATE INDEX IF NOT EXISTS models_provider_enabled_idx ON models (provider_id, enabled);
 CREATE INDEX IF NOT EXISTS models_enabled_kind_idx ON models (enabled, execution_kind);
 
+-- ── model_tombstones ────────────────────────────────────────────────
+-- Provider-synced model keys an administrator deleted. Model rows are
+-- hard-deleted, so without this record the next catalog sync would recreate
+-- a deleted model. A catalog sync never creates a tombstoned key; creating
+-- the model manually clears its tombstone; deleting the provider removes its
+-- tombstones through the foreign key.
+CREATE TABLE IF NOT EXISTS model_tombstones (
+    provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    model_key   TEXT NOT NULL,
+    deleted_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (provider_id, model_key)
+);
+
 -- ── model_aliases ───────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS model_aliases (
     id          TEXT PRIMARY KEY,
@@ -371,3 +384,17 @@ CREATE INDEX IF NOT EXISTS audit_logs_requested_model_started_idx ON audit_logs 
 CREATE INDEX IF NOT EXISTS audit_logs_status_started_idx ON audit_logs (status, started_at DESC);
 CREATE INDEX IF NOT EXISTS audit_logs_error_started_idx ON audit_logs (error_type, started_at DESC);
 CREATE INDEX IF NOT EXISTS audit_logs_session_started_idx ON audit_logs (session_id, started_at DESC);
+
+-- ── gateway_bootstrap_state ─────────────────────────────────────────
+-- Durable completion evidence for one-time initialization steps (for
+-- example the first-start free model defaults). A step writes its row in
+-- the same transaction as the records it creates, so an interrupted start
+-- leaves neither the records nor the marker and the step runs again, while
+-- a completed step never re-runs and never resurrects records that an
+-- administrator later disabled or deleted.
+CREATE TABLE IF NOT EXISTS gateway_bootstrap_state (
+    bootstrap_key TEXT PRIMARY KEY,
+    version       INTEGER NOT NULL CHECK (version > 0),
+    completed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    metadata      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata))
+);

@@ -1,5 +1,6 @@
 import { normalizeProviderRecord } from './runtime-record-normalizer.mjs';
 import { requireBackendModuleForProvider } from './provider-composition-validator.mjs';
+import { admitDiscoveries } from './discovery-admission.mjs';
 
 export const PROVIDER_MODEL_REFRESH_REASON = 'provider.model-refresh';
 const PROVIDER_PAGE_SIZE = 200;
@@ -122,7 +123,6 @@ export async function refreshProviderModelCatalog(appCtx, options = {}) {
         discoverySource = 'synced',
         disableMissing = true,
         refreshReason = PROVIDER_MODEL_REFRESH_REASON,
-        skipEmptyExistingCatalog = true,
         discoveryTimeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS,
     } = options;
 
@@ -186,10 +186,10 @@ export async function refreshProviderModelCatalog(appCtx, options = {}) {
                 (row) => row.discovery_source !== 'manual'
             );
 
+            // Same rule syncProviderModels applies for every caller; checked
+            // here first so an uninformative catalog costs no sync work.
             if (
-                skipEmptyExistingCatalog &&
-                Array.isArray(discoveries) &&
-                discoveries.length === 0 &&
+                admitDiscoveries(normalizedProvider, discoveries).emptyDiscovery &&
                 existingDiscoveredRows.length > 0
             ) {
                 summary.emptySkipped++;
@@ -211,6 +211,10 @@ export async function refreshProviderModelCatalog(appCtx, options = {}) {
                     refreshReason,
                 }
             );
+            if (result.emptySkipped) {
+                summary.emptySkipped++;
+                continue;
+            }
             summary.refreshed++;
             summary.discovered += result.discovered;
             summary.created += result.created;

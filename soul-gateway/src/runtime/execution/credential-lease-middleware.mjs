@@ -17,8 +17,41 @@
  * middleware passes through without leasing anything.  The transport is
  * then responsible for handling a `null` lease.
  *
+ * An account-scoped quota failure with a known reset instant marks that
+ * account exhausted until the reset, so later requests stop spending the
+ * shared quota and the quota-reset sweep reactivates the account.
+ *
  * @module runtime/execution/credential-lease-middleware
  */
+
+import { ProviderAccountsExhaustedError } from '../../core/errors.mjs';
+import { markAccountScoped } from '../backends/error-helpers.mjs';
+
+function providerRequiresCredential(provider) {
+    if (!provider) return false;
+    const strategy = String(provider.authStrategy || '').toLowerCase();
+    return strategy !== '' && strategy !== 'none';
+}
+
+async function recordAccountExhaustion(ctx, providerId, lease, err) {
+    if (!lease?.accountId) return;
+    if (err?.failureScope !== 'provider-account') return;
+    if (!Number.isFinite(err?.quotaResetAt)) return;
+    const accountPool = ctx.appCtx?.services?.accountPool;
+    if (typeof accountPool?.markExhausted !== 'function') return;
+    try {
+        await accountPool.markExhausted(
+            providerId,
+            lease.accountId,
+            new Date(err.quotaResetAt)
+        );
+    } catch (markErr) {
+        ctx.log?.warn?.('account exhaustion record failed', {
+            providerId,
+            error: markErr.message,
+        });
+    }
+}
 
 /**
  * @returns {(ctx: object, next: () => Promise<void>) => Promise<void>}
@@ -46,11 +79,24 @@ export function credentialLeaseMiddleware() {
         }
 
         const lease = await credentialManager.getCredentials(providerId);
+        if (!lease && providerRequiresCredential(ctx.target.provider)) {
+            // Every account is exhausted, disabled, or missing. Failing here
+            // keeps a cascade from sending unauthenticated or quota-burning
+            // requests to sibling models that share the same provider.
+            throw markAccountScoped(
+                new ProviderAccountsExhaustedError(
+                    ctx.target.provider.providerKey || providerId
+                )
+            );
+        }
         const previousLease = ctx.target.credentialLease;
         ctx.target = { ...ctx.target, credentialLease: lease };
 
         try {
             await next();
+        } catch (err) {
+            await recordAccountExhaustion(ctx, providerId, lease, err);
+            throw err;
         } finally {
             if (lease) credentialManager.release(lease);
             ctx.target = { ...ctx.target, credentialLease: previousLease };

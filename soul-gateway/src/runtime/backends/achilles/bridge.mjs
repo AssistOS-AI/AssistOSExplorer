@@ -1,4 +1,10 @@
 import { normalizeUsage } from '../normalize-usage.mjs';
+import { LIVENESS_EVENT_TYPE } from '../../kernel/canonical-stream.mjs';
+
+const REASONING_LIVENESS_EVENT = Object.freeze({
+    type: LIVENESS_EVENT_TYPE,
+    data: Object.freeze({ kind: 'reasoning' }),
+});
 
 export function getCredentialToken(credentialLease) {
     return credentialLease?.secret || credentialLease?.oauth?.accessToken || '';
@@ -72,6 +78,11 @@ export async function* toGatewayNormalizedStream(source, meta = {}) {
             }
 
             case 'thinking_delta': {
+                // Reasoning proves the upstream is alive before its answer
+                // starts. Only the liveness signal crosses the bridge; the
+                // reasoning text is not forwarded, and the execution layer
+                // consumes the event so clients never see it.
+                yield REASONING_LIVENESS_EVENT;
                 break;
             }
 

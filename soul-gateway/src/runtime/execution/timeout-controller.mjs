@@ -1,4 +1,5 @@
 import { ProviderTimeoutError } from '../../core/errors.mjs';
+import { clampTimerDelay } from './timer-delay.mjs';
 
 /**
  * Create an AbortSignal that fires after timeoutMs.
@@ -8,7 +9,7 @@ export function withExecutionTimeout(timeoutMs, providerKey = 'unknown') {
     const controller = new AbortController();
     const timer = setTimeout(() => {
         controller.abort(new ProviderTimeoutError(providerKey));
-    }, timeoutMs);
+    }, clampTimerDelay(timeoutMs));
 
     return {
         signal: controller.signal,

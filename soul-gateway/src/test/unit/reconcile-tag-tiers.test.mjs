@@ -1,3 +1,4 @@
+import { PUBLIC_TIER_KEYS } from '../../bootstrap/free-model-catalog.mjs';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -9,15 +10,12 @@ import { PREDEFINED_MODEL_TAGS } from '../../runtime/policy/model-metadata-class
 
 const DEFAULT_MODEL = {
     id: 'local-default',
-    model_key: 'proxies/default-local-llm',
-    display_name: 'Default Local LLM',
+    model_key: 'provider/untagged-model',
+    display_name: 'Untagged model',
     enabled: true,
     strategy_kind: 'direct',
     tags: [],
-    metadata: {
-        discoverySource: 'ploinky-agent-discovery',
-        agent: 'default-local-llm',
-    },
+    metadata: {},
 };
 
 function tier(key) {
@@ -137,9 +135,7 @@ function makeAppCtx() {
     return {
         pool: {},
         config: {
-            env: {
-                LLM_DEFAULT_AGENT: 'default-local-llm',
-            },
+            env: {},
         },
         log: {
             info() {},
@@ -148,41 +144,58 @@ function makeAppCtx() {
 }
 
 describe('bootstrapInitialTagTiers', () => {
-    it('creates missing tag tiers and uses default-local-llm as fallback', async () => {
-        const daos = makeDaos([DEFAULT_MODEL, tier('fast')]);
+    it('creates missing tag tiers and leaves tiers without tagged models empty', async () => {
+        const daos = makeDaos([DEFAULT_MODEL, tier('chat')]);
 
         const summary = await bootstrapInitialTagTiers({
             appCtx: makeAppCtx(),
             daos,
         });
 
-        assert.equal(summary.created, PREDEFINED_MODEL_TAGS.length - 1);
-        assert.equal(summary.scanned, PREDEFINED_MODEL_TAGS.length);
-        assert.equal(summary.updated, PREDEFINED_MODEL_TAGS.length);
-        assert.equal(summary.fallbackUsed, PREDEFINED_MODEL_TAGS.length);
-        const fastReplacement = daos.replacements.find(
-            (replacement) => replacement.parentModelId === 'tier-fast'
-        );
-        assert.deepEqual(fastReplacement, {
-            parentModelId: 'tier-fast',
-            children: [
-                {
-                    childModelId: 'local-default',
-                    priority: 1,
-                    enabled: true,
-                },
-            ],
+        const autoTags = PREDEFINED_MODEL_TAGS.filter((tag) => !PUBLIC_TIER_KEYS.includes(tag));
+        assert.equal(summary.created, autoTags.length - 1);
+        assert.equal(summary.scanned, autoTags.length);
+        assert.equal(summary.updated, 0);
+        assert.equal(summary.empty, autoTags.length);
+        assert.deepEqual(daos.replacements, [], 'an untagged model is never used as a generic fallback');
+    });
+
+    it('leaves a compatibility or operator cascade that shares a tag name untouched', async () => {
+        const fastModel = directModel({
+            id: 'openai-chat',
+            key: 'openai/gpt-4o-mini',
+            providerId: 'provider-openai',
+            tags: ['chat'],
         });
+        const compatibilityFast = {
+            ...tier('chat'),
+            metadata: { seededBy: 'free-model-defaults', tierKey: 'chat' },
+        };
+        const daos = makeDaos([fastModel, compatibilityFast]);
+
+        const summary = await bootstrapInitialTagTiers({ appCtx: makeAppCtx(), daos });
+        assert.equal(summary.skippedOwned, 1);
+        assert.equal(
+            daos.replacements.some((replacement) => replacement.parentModelId === 'tier-chat'),
+            false
+        );
+
+        const appended = await appendNewModelsToTagTiers({
+            appCtx: makeAppCtx(),
+            daos,
+            models: [fastModel],
+        });
+        assert.equal(appended.appended, 0);
     });
 
     it('populates a tag tier with matching models instead of fallback', async () => {
         const fastModel = directModel({
-            id: 'openai-fast',
+            id: 'openai-chat',
             key: 'openai/gpt-4o-mini',
             providerId: 'provider-openai',
-            tags: ['fast', 'chat'],
+            tags: ['chat'],
         });
-        const daos = makeDaos([DEFAULT_MODEL, fastModel, tier('fast')]);
+        const daos = makeDaos([DEFAULT_MODEL, fastModel, tier('chat')]);
 
         await bootstrapInitialTagTiers({
             appCtx: makeAppCtx(),
@@ -190,11 +203,11 @@ describe('bootstrapInitialTagTiers', () => {
         });
 
         const fastReplacement = daos.replacements.find(
-            (replacement) => replacement.parentModelId === 'tier-fast'
+            (replacement) => replacement.parentModelId === 'tier-chat'
         );
         assert.deepEqual(
             fastReplacement.children.map((child) => child.childModelId),
-            ['openai-fast']
+            ['openai-chat']
         );
     });
 
@@ -223,10 +236,10 @@ describe('bootstrapInitialTagTiers', () => {
 
     it('does not overwrite a direct model whose key matches a tag', async () => {
         const directFast = directModel({
-            id: 'direct-fast-key',
-            key: 'fast',
+            id: 'direct-chat-key',
+            key: 'chat',
             providerId: 'provider-1',
-            tags: ['fast'],
+            tags: ['chat'],
         });
         const daos = makeDaos([DEFAULT_MODEL, directFast]);
 
@@ -237,13 +250,35 @@ describe('bootstrapInitialTagTiers', () => {
 
         assert.equal(summary.skippedConflicts, 1);
         assert.equal(
-            daos.createdCascade.some((created) => created.modelKey === 'fast'),
+            daos.createdCascade.some((created) => created.modelKey === 'chat'),
             false
         );
     });
 });
 
 describe('appendNewModelsToTagTiers', () => {
+    it('never creates an auto tag tier under a public compatibility tier name', async () => {
+        const fastTagged = directModel({
+            id: 'tagged-fast',
+            key: 'provider/tagged-fast',
+            providerId: 'provider-1',
+            tags: ['fast'],
+        });
+        const daos = makeDaos([fastTagged]);
+        await bootstrapInitialTagTiers({ appCtx: makeAppCtx(), daos });
+        assert.ok(PREDEFINED_MODEL_TAGS.includes('fast'));
+        for (const key of PUBLIC_TIER_KEYS) {
+            assert.equal(daos.createdCascade.some((created) => created.modelKey === key), false, key);
+        }
+        const appended = await appendNewModelsToTagTiers({
+            appCtx: makeAppCtx(),
+            daos,
+            models: [fastTagged],
+            createMissingTiers: true,
+        });
+        assert.equal(appended.createdTiers, 0);
+    });
+
     it('appends newly-created provider models to matching existing tiers at the tail', async () => {
         const codingModel = directModel({
             id: 'new-coding',
@@ -306,47 +341,6 @@ describe('appendNewModelsToTagTiers', () => {
             daos.createdBindings.map((binding) => binding.parentModelId).sort(),
             ['tier-coding', 'tier-reasoning']
         );
-    });
-
-    it('removes fallback when appending the first real matching model', async () => {
-        const model = directModel({
-            id: 'new-fast',
-            key: 'provider/new-fast',
-            providerId: 'provider-new',
-            tags: ['fast'],
-        });
-        const daos = makeDaos(
-            [DEFAULT_MODEL, model, tier('fast')],
-            {
-                'tier-fast': [
-                    {
-                        child_model_id: 'local-default',
-                        priority: 1,
-                        enabled: true,
-                    },
-                ],
-            }
-        );
-
-        const summary = await appendNewModelsToTagTiers({
-            appCtx: makeAppCtx(),
-            daos,
-            models: [model],
-        });
-
-        assert.equal(summary.fallbackRemoved, 1);
-        assert.deepEqual(daos.replacements, [
-            {
-                parentModelId: 'tier-fast',
-                children: [
-                    {
-                        childModelId: 'new-fast',
-                        priority: 1,
-                        enabled: true,
-                    },
-                ],
-            },
-        ]);
     });
 
     it('does not re-add an existing or manually removed old model on restart-like calls', async () => {

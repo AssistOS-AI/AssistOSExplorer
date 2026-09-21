@@ -116,7 +116,6 @@ describe('background scheduler provider model refresh', () => {
             discoverySource: 'synced',
             disableMissing: true,
             refreshReason: 'provider.model-refresh',
-            skipEmptyExistingCatalog: true,
         });
         scheduler.stop();
     });

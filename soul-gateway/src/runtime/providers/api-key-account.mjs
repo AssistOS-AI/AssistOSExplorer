@@ -35,9 +35,13 @@ export async function upsertProviderApiKeyAccount({
 
     if (existing) {
         await appCtx.pool.query(
+            // A replaced key is no longer the bundled first-start key, so its
+            // bundled marker and upstream expiry no longer describe it.
             `UPDATE provider_accounts
        SET secret_ciphertext = $2, secret_iv = $3, secret_auth_tag = $4,
-           secret_hint = $5, status = 'active', updated_at = now()
+           secret_hint = $5, status = 'active', quota_resets_at = NULL,
+           metadata = json_remove(metadata, '$.bundled', '$.expiresAt'),
+           updated_at = now()
        WHERE id = $1 AND deleted_at IS NULL`,
             [
                 existing.id,
@@ -48,6 +52,9 @@ export async function upsertProviderApiKeyAccount({
             ]
         );
 
+        // The new key must be usable immediately, not after the old key's
+        // in-memory exhaustion window.
+        appCtx.services.accountPool?.clearExhaustions?.([existing.id]);
         return { ...existing, secret_hint: secretHint, status: 'active' };
     }
 

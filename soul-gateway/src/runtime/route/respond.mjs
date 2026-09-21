@@ -132,6 +132,7 @@ async function streamSseResponse(
     };
     res.once('close', onClose);
     let captured = null;
+    let streamFailed = false;
 
     try {
         for await (const chunk of canonicalStreamToSse(
@@ -152,6 +153,9 @@ async function streamSseResponse(
             }
         }
         finishedNaturally = !clientAborted;
+    } catch (err) {
+        streamFailed = true;
+        throw err;
     } finally {
         res.off?.('close', onClose);
         if (capture) {
@@ -159,7 +163,12 @@ async function streamSseResponse(
             ctx.metadata.responseCapture = captured;
             ctx.metadata.aborted = clientAborted && !finishedNaturally;
         }
-        if (!res.writableEnded) res.end();
+        // A committed stream that fails is left open so the error boundary
+        // can terminate it with a route-specific SSE error event instead of
+        // a silently truncated body.
+        if (!res.writableEnded && !(streamFailed && !clientAborted)) {
+            res.end();
+        }
     }
 
     if (captured?.error) {

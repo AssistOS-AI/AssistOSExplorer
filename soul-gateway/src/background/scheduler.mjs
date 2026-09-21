@@ -143,7 +143,6 @@ export function startBackgroundJobs(appCtx) {
                         discoverySource: 'synced',
                         disableMissing: true,
                         refreshReason: 'provider.model-refresh',
-                        skipEmptyExistingCatalog: true,
                     });
                 } catch (err) {
                     log.warn('provider model refresh failed', {

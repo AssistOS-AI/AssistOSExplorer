@@ -40,6 +40,9 @@ describe('bootstrap auth environment', () => {
                 PLOINKY_AGENT_API_KEY: 'agent:proxies/soul-gateway|sig',
                 PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_KEY: 'generated',
                 PLOINKY_ENV_SOURCE_PLOINKY_AGENT_API_PUBLIC_KEY: 'generated',
+                // Keep this auth fixture offline: the free defaults and their
+                // catalog refresh have dedicated tests.
+                FREE_MODELS_ENABLED: 'false',
             });
             delete process.env.PLOINKY_DERIVED_MASTER_KEY;
 

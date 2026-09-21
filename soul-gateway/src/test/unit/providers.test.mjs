@@ -273,6 +273,84 @@ describe('OpenAI error classification', () => {
         assert.equal(err.errorType, 'provider_unavailable');
     });
 
+    it('scopes 401 to the provider account without retry', () => {
+        const err = openaiPlugin.classifyError({ status: 401, body: {} });
+        assert.equal(err.failureScope, 'provider-account');
+        assert.equal(err.retryable, false);
+    });
+
+    it('scopes 402 insufficient credit to the account without retry or cooldown', () => {
+        const err = openaiPlugin.classifyError({ status: 402, body: {} });
+        assert.equal(err.errorType, 'provider_quota_exhausted');
+        assert.equal(err.failureScope, 'provider-account');
+        assert.equal(err.retryable, false);
+        assert.equal(err.cooldown, false);
+    });
+
+    it('treats 403 as model-specific: cascade without retry', () => {
+        const err = openaiPlugin.classifyError({ status: 403, body: { error: { message: 'blocked by guardrail' } } });
+        assert.equal(err.cascade, true);
+        assert.equal(err.retryable, false);
+        assert.equal(err.failureScope, undefined);
+    });
+
+    it('lets an upstream 404 cascade but never retry', () => {
+        const err = openaiPlugin.classifyError({ status: 404, body: {} });
+        assert.equal(err.cascade, true);
+        assert.equal(err.retryable, false);
+    });
+
+    it('separates a daily account quota 429 from model capacity', () => {
+        const now = Date.now();
+        const daily = openaiPlugin.classifyError({
+            status: 429,
+            body: { error: { message: 'Rate limit exceeded: free-models-per-day.' } },
+            headers: { 'x-ratelimit-reset': String(now + 2 * 3600_000) },
+        });
+        assert.equal(daily.errorType, 'provider_quota_exhausted');
+        assert.equal(daily.failureScope, 'provider-account');
+        assert.ok(Math.abs(daily.quotaResetAt - (now + 2 * 3600_000)) < 1000);
+
+        const capacity = openaiPlugin.classifyError({
+            status: 429,
+            body: { error: { message: 'Provider returned error', metadata: { raw: 'temporarily rate-limited upstream' } } },
+            headers: { 'retry-after': '12' },
+        });
+        assert.equal(capacity.errorType, 'provider_rate_limited');
+        assert.equal(capacity.failureScope, undefined);
+        assert.equal(capacity.cooldownMs, 12_000);
+    });
+
+    it('keeps per-minute and generic quota wording model-scoped', () => {
+        for (const message of [
+            'Rate limit exceeded: free-models-per-min.',
+            'Resource has been exhausted (e.g. check quota).',
+            'Provider returned error',
+        ]) {
+            const err = openaiPlugin.classifyError({ status: 429, body: { error: { message } } });
+            assert.equal(err.errorType, 'provider_rate_limited', message);
+            assert.equal(err.failureScope, undefined, message);
+        }
+    });
+
+    it('bounds an account lock to 15 minutes when no reset time is known', () => {
+        const before = Date.now();
+        const err = openaiPlugin.classifyError({
+            status: 429,
+            body: { error: { message: 'Rate limit exceeded: free-models-per-day.' } },
+        });
+        assert.equal(err.failureScope, 'provider-account');
+        assert.ok(err.quotaResetAt - before <= 15 * 60_000 + 1000);
+        assert.ok(err.quotaResetAt - before >= 60_000);
+    });
+
+    it('does not retry or cascade an upstream request validation failure', () => {
+        const err = openaiPlugin.classifyError({ status: 400, body: { error: { message: 'bad messages' } } });
+        assert.equal(err.errorType, 'provider_bad_request');
+        assert.equal(err.retryable, false);
+        assert.equal(err.cascade, false);
+    });
+
     it('manifest has correct shape', () => {
         assert.equal(openaiPlugin.manifest.key, 'openai-api');
         assert.equal(openaiPlugin.manifest.kind, 'external_api');

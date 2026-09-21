@@ -1,8 +1,23 @@
 import * as modelsDao from '../db/dao/models-dao.mjs';
 import * as modelChildrenDao from '../db/dao/model-children-dao.mjs';
 import { PREDEFINED_MODEL_TAGS } from '../runtime/policy/model-metadata-classifier.mjs';
+import * as bootstrapStateDao from '../db/dao/bootstrap-state-dao.mjs';
+import { PUBLIC_TIER_KEYS } from './free-model-catalog.mjs';
 
-const DISCOVERY_MARKER = 'ploinky-agent-discovery';
+// Tags that can become auto tag tiers: every predefined tag except the public
+// compatibility tier names, which only the free defaults or an administrator
+// create.
+function autoTagSet() {
+    const reserved = new Set(PUBLIC_TIER_KEYS);
+    return new Set(PREDEFINED_MODEL_TAGS.filter((tag) => !reserved.has(tag)));
+}
+
+export const TAG_TIERS_BOOTSTRAP_KEY = 'initial-tag-tiers';
+
+// Model metadata flag: a model carrying it never joins an auto tag tier,
+// whatever its tags. Catalog syncs set it; this module only reads it.
+export const EXCLUDED_FROM_TAG_TIERS_METADATA_KEY = 'excludeFromTagTiers';
+
 const REFRESH_REASON = 'tag-tier-bootstrap';
 const MODEL_PAGE_SIZE = 500;
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -51,6 +66,14 @@ function isDirectModel(row) {
     return (row?.strategy_kind || row?.strategyKind || 'direct') === 'direct';
 }
 
+function isTagTierCandidate(row) {
+    return (
+        isEnabled(row) &&
+        isDirectModel(row) &&
+        readMetadata(row)[EXCLUDED_FROM_TAG_TIERS_METADATA_KEY] !== true
+    );
+}
+
 function isCascadeModel(row) {
     return (row?.strategy_kind || row?.strategyKind) === 'cascade';
 }
@@ -79,19 +102,6 @@ async function listAllModels(pool, dao) {
     }
 }
 
-function findDefaultAgentModel(rows, defaultAgent) {
-    if (!defaultAgent) return null;
-    return rows.find((row) => {
-        const metadata = readMetadata(row);
-        return (
-            isEnabled(row) &&
-            isDirectModel(row) &&
-            metadata.discoverySource === DISCOVERY_MARKER &&
-            metadata.agent === defaultAgent
-        );
-    }) || null;
-}
-
 function makeChildren(models) {
     return models.map((model, index) => ({
         childModelId: model.id,
@@ -117,14 +127,6 @@ function childIdsMatch(existingChildren, expectedModels) {
         if (child.priority !== i + 1) return false;
     }
     return true;
-}
-
-function isFallbackOnly(children, defaultModel) {
-    return (
-        defaultModel &&
-        children.length === 1 &&
-        children[0].child_model_id === defaultModel.id
-    );
 }
 
 function childModelIds(children) {
@@ -185,19 +187,15 @@ export async function bootstrapInitialTagTiers({
         scanned: 0,
         created: 0,
         updated: 0,
-        fallbackUsed: 0,
         empty: 0,
         skippedConflicts: 0,
+        skippedOwned: 0,
     };
     const pool = appCtx?.pool;
     if (!pool) return summary;
 
     const allModels = await listAllModels(pool, daos.modelsDao);
-    const defaultAgent = String(
-        appCtx?.config?.env?.LLM_DEFAULT_AGENT || ''
-    ).trim();
-    const defaultModel = findDefaultAgentModel(allModels, defaultAgent);
-    const tagSet = new Set(PREDEFINED_MODEL_TAGS);
+    const tagSet = autoTagSet();
     const tiers = await ensureTagTiers({
         pool,
         dao: daos.modelsDao,
@@ -205,25 +203,25 @@ export async function bootstrapInitialTagTiers({
         tagSet,
         summary,
     });
-    const directEnabledModels = allModels.filter((row) => (
-        isEnabled(row) && isDirectModel(row)
-    ));
+    const directEnabledModels = allModels.filter(isTagTierCandidate);
 
     for (const tier of tiers) {
         const tag = modelKeyOf(tier);
         summary.scanned += 1;
-
-        const taggedModels = directEnabledModels.filter((model) => (
-            model.id !== defaultModel?.id && readTags(model).includes(tag)
-        ));
-        const expectedModels =
-            taggedModels.length > 0
-                ? taggedModels
-                : (defaultModel ? [defaultModel] : []);
-
-        if (taggedModels.length === 0 && defaultModel) {
-            summary.fallbackUsed += 1;
+        // Only auto-generated tag tiers are rewritten. A cascade that shares
+        // a tag name but was created by an operator or by the compatibility
+        // tier defaults (for example `fast`) keeps its own children and order.
+        if (!isAutoTagTier(tier)) {
+            summary.skippedOwned += 1;
+            continue;
         }
+
+        // A tag tier contains exactly the enabled direct models carrying the
+        // tag and not excluded from tag tiers; there is no generic fallback
+        // child.
+        const expectedModels = directEnabledModels.filter((model) =>
+            readTags(model).includes(tag)
+        );
         if (expectedModels.length === 0) {
             summary.empty += 1;
         }
@@ -251,10 +249,20 @@ export async function bootstrapInitialTagTiers({
     return summary;
 }
 
+/**
+ * Reconcile auto tag tiers after a catalog sync.
+ *
+ * `models` are the rows to append. `syncedModels` are all rows the sync
+ * wrote: any of them that now carries the exclusion flag leaves every auto
+ * tag tier, so a model an exclusion list reaches only after its row exists
+ * stops backing a public cascade. Seeded compatibility tiers and operator
+ * cascades are never touched.
+ */
 export async function appendNewModelsToTagTiers({
     appCtx,
     models = [],
     previousModels = [],
+    syncedModels = [],
     createMissingTiers = false,
     daos = DEFAULT_DAOS,
 } = {}) {
@@ -264,20 +272,21 @@ export async function appendNewModelsToTagTiers({
         appended: 0,
         removed: 0,
         createdTiers: 0,
-        fallbackRemoved: 0,
     };
     const pool = appCtx?.pool;
-    if (!pool || !Array.isArray(models) || models.length === 0) {
+    const appendCandidates = Array.isArray(models) ? models : [];
+    const excludedModels = (Array.isArray(syncedModels) ? syncedModels : []).filter(
+        (model) =>
+            model?.id != null &&
+            readMetadata(model)[EXCLUDED_FROM_TAG_TIERS_METADATA_KEY] === true
+    );
+    if (!pool || (appendCandidates.length === 0 && excludedModels.length === 0)) {
         return summary;
     }
 
-    const tagSet = new Set(PREDEFINED_MODEL_TAGS);
+    const tagSet = autoTagSet();
     const { allModels, tiers } = await loadTagTiers(pool, daos.modelsDao, tagSet);
 
-    const defaultAgent = String(
-        appCtx?.config?.env?.LLM_DEFAULT_AGENT || ''
-    ).trim();
-    const defaultModel = findDefaultAgentModel(allModels, defaultAgent);
     const appendsByTag = new Map();
     const currentModels = [];
     const requestedTags = new Set();
@@ -287,8 +296,8 @@ export async function appendNewModelsToTagTiers({
             .map((model) => [model.id, model])
     );
 
-    for (const model of models) {
-        if (!isEnabled(model) || !isDirectModel(model)) continue;
+    for (const model of appendCandidates) {
+        if (!isTagTierCandidate(model)) continue;
         summary.scannedModels += 1;
         currentModels.push(model);
         for (const tag of readTags(model)) {
@@ -333,6 +342,38 @@ export async function appendNewModelsToTagTiers({
     }
     const changedTierIds = new Set();
 
+    async function detachFromAutoTagTier(tier, model, reason) {
+        if (!isAutoTagTier(tier)) return;
+        const children = await childrenFor(tier);
+        if (!children.some((child) => child.child_model_id === model.id)) return;
+        const removed = await daos.modelChildrenDao.removeChild(
+            pool,
+            tier.id,
+            model.id
+        );
+        if (!removed) return;
+        childrenByTierId.set(
+            tier.id,
+            children.filter((child) => child.child_model_id !== model.id)
+        );
+        summary.removed += 1;
+        changedTierIds.add(tier.id);
+        appCtx.log?.info?.(reason, {
+            tier: modelKeyOf(tier),
+            child: modelKeyOf(model),
+        });
+    }
+
+    for (const model of excludedModels) {
+        for (const tier of tiers.values()) {
+            await detachFromAutoTagTier(
+                tier,
+                model,
+                'tag-tier removed excluded model'
+            );
+        }
+    }
+
     for (const model of currentModels) {
         const previous = previousById.get(model.id);
         if (!previous) continue;
@@ -340,33 +381,18 @@ export async function appendNewModelsToTagTiers({
         for (const oldTag of readTags(previous)) {
             if (currentTags.has(oldTag) || !tagSet.has(oldTag)) continue;
             const tier = tiers.get(oldTag);
-            if (!tier || !isAutoTagTier(tier)) continue;
-            const children = await childrenFor(tier);
-            if (!children.some((child) => child.child_model_id === model.id)) {
-                continue;
-            }
-            const removed = await daos.modelChildrenDao.removeChild(
-                pool,
-                tier.id,
-                model.id
+            if (!tier) continue;
+            await detachFromAutoTagTier(
+                tier,
+                model,
+                'tag-tier removed retagged model'
             );
-            if (!removed) continue;
-            childrenByTierId.set(
-                tier.id,
-                children.filter((child) => child.child_model_id !== model.id)
-            );
-            summary.removed += 1;
-            changedTierIds.add(tier.id);
-            appCtx.log?.info?.('tag-tier removed retagged model', {
-                tier: oldTag,
-                child: modelKeyOf(model),
-            });
         }
     }
 
     for (const [tag, newModels] of appendsByTag) {
         const tier = tiers.get(tag);
-        if (!tier) continue;
+        if (!tier || !isAutoTagTier(tier)) continue;
         const existingChildren = await childrenFor(tier);
         const existingIds = childModelIds(existingChildren);
         const uniqueNewModels = [];
@@ -380,39 +406,22 @@ export async function appendNewModelsToTagTiers({
         }
         if (uniqueNewModels.length === 0) continue;
 
-        if (isFallbackOnly(existingChildren, defaultModel)) {
-            await daos.modelChildrenDao.replaceChildren(
-                pool,
-                tier.id,
-                makeChildren(uniqueNewModels)
-            );
-            childrenByTierId.set(
-                tier.id,
-                makeChildren(uniqueNewModels).map((child) => ({
-                    child_model_id: child.childModelId,
-                    priority: child.priority,
-                    enabled: child.enabled,
-                }))
-            );
-            summary.fallbackRemoved += 1;
-        } else {
-            const maxPriority = existingChildren.reduce(
-                (max, child) => Math.max(max, Number(child.priority) || 0),
-                0
-            );
-            for (let index = 0; index < uniqueNewModels.length; index++) {
-                await daos.modelChildrenDao.create(pool, {
-                    parentModelId: tier.id,
-                    childModelId: uniqueNewModels[index].id,
-                    priority: maxPriority + index + 1,
-                    enabled: true,
-                });
-                existingChildren.push({
-                    child_model_id: uniqueNewModels[index].id,
-                    priority: maxPriority + index + 1,
-                    enabled: true,
-                });
-            }
+        const maxPriority = existingChildren.reduce(
+            (max, child) => Math.max(max, Number(child.priority) || 0),
+            0
+        );
+        for (let index = 0; index < uniqueNewModels.length; index++) {
+            await daos.modelChildrenDao.create(pool, {
+                parentModelId: tier.id,
+                childModelId: uniqueNewModels[index].id,
+                priority: maxPriority + index + 1,
+                enabled: true,
+            });
+            existingChildren.push({
+                child_model_id: uniqueNewModels[index].id,
+                priority: maxPriority + index + 1,
+                enabled: true,
+            });
         }
 
         changedTierIds.add(tier.id);
@@ -428,7 +437,25 @@ export async function appendNewModelsToTagTiers({
     return summary;
 }
 
+/**
+ * Create and fill the auto tag tiers once. The completion marker is written
+ * after the tiers exist, so a start interrupted before that point runs the
+ * (idempotent) bootstrap again, and later starts never rewrite tag tiers an
+ * administrator has since edited.
+ */
+export async function bootstrapInitialTagTiersOnce({ appCtx, daos } = {}) {
+    const pool = appCtx?.pool;
+    if (!pool) return { status: 'skipped' };
+    if (await bootstrapStateDao.isComplete(pool, TAG_TIERS_BOOTSTRAP_KEY)) {
+        return { status: 'already-complete' };
+    }
+    const summary = await bootstrapInitialTagTiers({ appCtx, ...(daos ? { daos } : {}) });
+    await bootstrapStateDao.markComplete(pool, { bootstrapKey: TAG_TIERS_BOOTSTRAP_KEY });
+    return { status: 'installed', ...summary };
+}
+
 export default {
     bootstrapInitialTagTiers,
+    bootstrapInitialTagTiersOnce,
     appendNewModelsToTagTiers,
 };

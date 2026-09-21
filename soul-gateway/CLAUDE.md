@@ -39,7 +39,7 @@ Soul Gateway does not implement or distribute agent skills as product artifacts.
 - Management uses `/management/*` and requires a verified Ploinky administrator identity and protected-route invocation.
 - Health uses `/healthz/` and is public through the Router.
 - The managed manifest supplies `DATA_DIR=/data`, `CREDENTIALS_DIR=/data/credentials`, and `SQLITE_PATH=/data/soul-gateway.sqlite3`; direct starts require all three explicitly and have no relative persistence default.
-- The standard compatibility tiers are `fast`, `plan`, and `deep`, seeded from `LLM_DEFAULT_AGENT` when the required discovered model exists.
+- The standard compatibility tiers are `fast`, `code`, `plan`, `write`, `deep`, `ultra`, and `web-assist` (`LLM_DEFAULT_TIERS`). On first start, unless `FREE_MODELS_ENABLED=false`, they are installed once as cascades of free OpenRouter models on the free-only `openrouter-free` provider with a bundled restricted key whose daily quota is shared and which expires. No local model agent is enabled by the manifest.
 - Explorer exposes the admin-only `soul-gateway-settings` settings entry and the `soul-gateway-tool-button` toolbar button; both ensure the agent runs and open the Router-prefixed `/management/` dashboard, and neither may be replaced by a separate settings modal.
 
 ## Key Paths

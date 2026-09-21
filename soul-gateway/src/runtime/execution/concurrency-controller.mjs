@@ -1,4 +1,5 @@
 import { ModelQueueTimeoutError, ConfigurationError } from '../../core/errors.mjs';
+import { clampTimerDelay } from './timer-delay.mjs';
 
 /**
  * Per-model concurrency controller using semaphores with queueing.
@@ -55,7 +56,7 @@ export class ConcurrencyController {
                 const idx = state.queue.indexOf(entry);
                 if (idx >= 0) state.queue.splice(idx, 1);
                 reject(new ModelQueueTimeoutError(modelKey));
-            }, timeoutMs);
+            }, clampTimerDelay(timeoutMs));
 
             state.queue.push(entry);
         });

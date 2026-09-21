@@ -23,6 +23,7 @@ import {
     ProviderQuotaError,
     ProviderContentPolicyError,
     ProviderModelNotFoundError,
+    ProviderBadRequestError,
     ProviderTimeoutError,
     ProviderUnavailableError,
     ProviderServerError,
@@ -178,6 +179,15 @@ describe('Error taxonomy', () => {
             false,
         ],
         [
+            ProviderBadRequestError,
+            ['openai', 'invalid parameter'],
+            400,
+            'provider_bad_request',
+            false,
+            false,
+            false,
+        ],
+        [
             ProviderTimeoutError,
             ['openai'],
             504,
@@ -271,8 +281,8 @@ describe('Error taxonomy', () => {
         });
     }
 
-    it('covers all 28 error types from the design doc', () => {
-        assert.equal(errorSpecs.length, 28, 'should have 28 error classes');
+    it('covers all 29 error types', () => {
+        assert.equal(errorSpecs.length, 29, 'should have 29 error classes');
     });
 });
 

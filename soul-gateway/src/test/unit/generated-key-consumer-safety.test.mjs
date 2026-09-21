@@ -61,6 +61,22 @@ const DISPOSITIONS = Object.freeze({
         signals: ['direct-router-env', 'generated-router-key', 'generated-source-marker'],
         disposition: 'Startup fixture proves generated runtime configuration is accepted only with provenance.',
     },
+    'soul-gateway/src/test/unit/upstream-failover.test.mjs': {
+        signals: ['direct-router-env', 'generated-router-key', 'generated-source-marker'],
+        disposition: 'Startup fixture boots the gateway with generated runtime configuration and provenance; the key is only a test signer.',
+    },
+    'soul-gateway/src/test/unit/free-defaults-offline-boot.test.mjs': {
+        signals: ['direct-router-env', 'generated-router-key', 'generated-source-marker'],
+        disposition: 'Offline startup fixture boots the gateway with generated runtime configuration and provenance; the key is only a test signer.',
+    },
+    'soul-gateway/src/test/fixtures/fresh-gateway-boot.mjs': {
+        signals: ['direct-router-env', 'generated-router-key', 'generated-source-marker'],
+        disposition: 'Shared startup fixture builds generated runtime configuration with provenance for isolated test gateways; the key is only a test signer.',
+    },
+    'soul-gateway/src/test/unit/free-defaults-enable-later.test.mjs': {
+        signals: ['direct-router-env', 'generated-router-key', 'generated-source-marker'],
+        disposition: 'Offline two-boot fixture boots the gateway with generated runtime configuration and provenance; the key is only a test signer.',
+    },
     'soul-gateway/src/test/unit/config.test.mjs': {
         signals: ['direct-router-env', 'generated-router-key', 'generated-source-marker'],
         disposition: 'Configuration receiver fixture covers present and missing generated runtime fields.',

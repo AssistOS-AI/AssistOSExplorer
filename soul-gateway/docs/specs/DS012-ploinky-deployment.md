@@ -17,6 +17,8 @@ The manifest must pin the shared Ploinky Node image by digest. It provides Node 
 
 The agent must listen on port <code>7000</code> by default. The manifest must supply <code>DATA_DIR=/data</code>, <code>CREDENTIALS_DIR=/data/credentials</code>, and <code>SQLITE_PATH=/data/soul-gateway.sqlite3</code>. <code>startup.sh</code> must bind <code>HOST=0.0.0.0</code> unless configured otherwise and start <code>src/index.mjs</code> from the mounted source tree. Direct starts must explicitly configure all three persistence paths and must not fall back to a relative data directory.
 
+The manifest enables no companion agent. It declares <code>FREE_MODELS_ENABLED</code> (default <code>true</code>), <code>OPENROUTER_API_KEY</code> (default empty), and <code>LLM_DEFAULT_TIERS</code> (default <code>fast,code,plan,write,deep,ultra,web-assist</code>) among its profile environment values. <code>STREAM_IDLE_TIMEOUT_MS</code> is read by <code>src/config/env.mjs</code> with a default of 300000 ms and is not declared in the manifest. <code>PRICING_DIRECTORY_TIMEOUT_MS</code> (default 5000 ms, clamped to the range 1 ms to 2147483647 ms because a timer takes no larger delay) bounds each load of the external pricing directory; it is read by <code>src/config/env.mjs</code> and is not yet declared in the manifest.
+
 ### Router paths
 
 The [Ploinky Router](../wiki.html#definition-ploinky-router) must publish these [agent-port paths](../wiki.html#definition-agent-port-path):
@@ -41,9 +43,15 @@ At startup, Soul Gateway must use the Router discovery client to reconcile eligi
 
 Reconciliation may create or update [Ploinky agent model](../wiki.html#definition-ploinky-agent-model) provider and model records within its ownership scope, disable stale discovered records according to the reconciliation contract, and request snapshot refresh after changes. It must not overwrite unrelated manually managed providers or models.
 
-### Standard local hub behavior
+### Default model hub behavior
 
-The deployed Soul Gateway is the local LLM hub. The discovered model named by <code>LLM_DEFAULT_AGENT</code> may seed <code>fast</code>, <code>plan</code>, and <code>deep</code> according to <code>LLM_DEFAULT_TIERS</code>. Public callers reach these tiers through Soul Gateway; vendor-backed children use AchillesAgentLib and discovered Ploinky-agent children use signed Router capability calls. The local gateway must not delegate its tier policy to a second remote Soul Gateway.
+The deployed Soul Gateway is the model hub for its workspace. Public callers reach the [compatibility tiers](../wiki.html#definition-compatibility-tier) <code>fast</code>, <code>code</code>, <code>plan</code>, <code>write</code>, <code>deep</code>, <code>ultra</code>, and <code>web-assist</code> through Soul Gateway; vendor-backed children use AchillesAgentLib and discovered Ploinky-agent children use signed Router capability calls. The local gateway must not delegate its tier policy to a second remote Soul Gateway.
+
+On first start, the free model defaults back every tier with free OpenRouter models through the [free-only provider](../wiki.html#definition-free-only-provider) <code>openrouter-free</code> and its bundled restricted key, as specified in DS002 and DS005. The gateway starts and serves its management interface and model list without internet access, because the tier records and baseline models are written before any catalog request and a failed catalog refresh leaves them in place. A network that accepts connections and then stalls does not hold startup either: model discovery is bounded by its discovery timeout (10 s per provider, and the startup refresh walks providers serially) and the pricing-directory load, which a non-empty catalog sync awaits, by <code>PRICING_DIRECTORY_TIMEOUT_MS</code>; a timeout degrades like any other directory failure, with a warning and no directory metadata, and is remembered for a backoff window so the next callers do not pay it again.
+
+The one-time install runs on every database that lacks the <code>free-model-defaults</code> [bootstrap marker](../wiki.html#definition-bootstrap-marker), not only on a new deployment. An existing gateway that already has its own providers and tiers, for example a production deployment, installs the free provider and any missing tier names on its first start with this version unless it starts with <code>FREE_MODELS_ENABLED=false</code>. Set that value before the upgrade when the free provider and tiers are not wanted there. Answering a request on these tiers requires outbound HTTPS access to <code>openrouter.ai</code>. Soul Gateway performs no local inference by default; the bundled key's shared daily quota and expiry limit the free service.
+
+An administrator who wants other models behind a tier, including a discovered Ploinky agent model, edits the tier's children through the management interface.
 
 ### Explorer and CLI
 

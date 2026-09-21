@@ -486,6 +486,10 @@ export async function handleSyncModels(ctx) {
             created: result.created,
             updated: result.updated,
             disabled: result.disabled,
+            // True when the upstream catalog was empty and the provider has
+            // synced rows, so all-zero counters mean "nothing was touched"
+            // rather than "nothing changed".
+            emptySkipped: result.emptySkipped === true,
             models: result.models,
         });
     } catch (err) {

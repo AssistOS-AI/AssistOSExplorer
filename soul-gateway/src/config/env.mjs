@@ -55,6 +55,11 @@ export function readEnv(processEnv = process.env) {
             processEnv.DEFAULT_REQUEST_TIMEOUT_MS,
             120_000
         ),
+        // Maximum silence between events of a committed upstream stream.
+        STREAM_IDLE_TIMEOUT_MS: int(
+            processEnv.STREAM_IDLE_TIMEOUT_MS,
+            300_000
+        ),
 
         // Execution / retry
         HTTP_RETRY_MAX_ATTEMPTS: int(processEnv.HTTP_RETRY_MAX_ATTEMPTS, 3),
@@ -89,6 +94,10 @@ export function readEnv(processEnv = process.env) {
 
         // Pricing
         PRICING_DIRECTORY_URL: str(processEnv.PRICING_DIRECTORY_URL, null),
+        PRICING_DIRECTORY_TIMEOUT_MS: int(
+            processEnv.PRICING_DIRECTORY_TIMEOUT_MS,
+            5_000
+        ),
         PRICING_REFRESH_INTERVAL_MS: int(
             processEnv.PRICING_REFRESH_INTERVAL_MS,
             21_600_000
@@ -144,11 +153,14 @@ export function readEnv(processEnv = process.env) {
             false
         ),
         OAUTH_ADAPTERS_ENABLED: str(processEnv.OAUTH_ADAPTERS_ENABLED, null),
-        LLM_DEFAULT_AGENT: str(processEnv.LLM_DEFAULT_AGENT, null),
         LLM_DEFAULT_TIERS: str(
             processEnv.LLM_DEFAULT_TIERS,
-            'fast,plan,deep'
+            'fast,code,plan,write,deep,ultra,web-assist'
         ),
+        // First-start restricted free provider and tiers. OPENROUTER_API_KEY
+        // replaces the bundled free-only key when the defaults are installed.
+        FREE_MODELS_ENABLED: bool(processEnv.FREE_MODELS_ENABLED, true),
+        OPENROUTER_API_KEY: str(processEnv.OPENROUTER_API_KEY, null),
 
         // Ploinky signed-subject auth (production path). Injected by the
         // Ploinky router/agent runtime. When ALLOW_UNAUTHENTICATED is not

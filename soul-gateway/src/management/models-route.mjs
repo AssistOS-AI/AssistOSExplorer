@@ -15,6 +15,7 @@ import { sendJson } from '../core/responses.mjs';
 import { BadRequestError } from '../core/errors.mjs';
 import * as modelsDao from '../db/dao/models-dao.mjs';
 import * as providersDao from '../db/dao/providers-dao.mjs';
+import * as modelTombstonesDao from '../db/dao/model-tombstones-dao.mjs';
 import { requestRuntimeRefresh } from '../runtime/registry/runtime-refresh.mjs';
 import { PREDEFINED_MODEL_TAGS } from '../runtime/policy/model-metadata-classifier.mjs';
 import { sendNotFound } from './route-response-helpers.mjs';
@@ -79,6 +80,13 @@ export async function handleCreateModel(ctx) {
         tags: body.tags ?? [],
         capabilities: body.capabilities ?? {},
         metadata: body.metadata ?? {},
+    });
+    // A manual create is the administrator's way to bring back a synced
+    // model they deleted earlier. The stored row, not the request body,
+    // decides which tombstone is cleared.
+    await modelTombstonesDao.clear(pool, {
+        providerId: row.provider_id,
+        modelKey: row.model_key,
     });
 
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'model.create' });
@@ -151,6 +159,10 @@ export async function handleUpdateModel(ctx) {
         sendNotFound(res, 'Model');
         return;
     }
+    // An update never clears a tombstone. While this row holds a tombstoned
+    // key the sync leaves it alone anyway, and clearing here would let a
+    // rename onto the key and back off it undo an administrator's deletion
+    // without them asking for it. Only a manual create takes a key back.
 
     requestRuntimeRefresh(appCtx, { snapshot: true, reason: 'model.update' });
 
@@ -159,12 +171,19 @@ export async function handleUpdateModel(ctx) {
 
 /**
  * DELETE /management/models/:modelId
+ *
+ * Deleting a model that a catalog sync created records a tombstone, so the
+ * next sync does not recreate it.
  */
 export async function handleDeleteModel(ctx) {
     const { res, params, appCtx } = ctx;
     const { pool } = appCtx;
 
-    const ok = await modelsDao.del(pool, params.modelId);
+    const { deleted: ok } =
+        await modelTombstonesDao.deleteModelRecordingTombstone(
+            pool,
+            params.modelId
+        );
     if (!ok) {
         sendNotFound(res, 'Model');
         return;

@@ -21,18 +21,26 @@
  */
 
 import { compose } from '../kernel/index.mjs';
-import { InternalServerError } from '../../core/errors.mjs';
+import {
+    InternalServerError,
+    ProviderTimeoutError,
+} from '../../core/errors.mjs';
 import { compileProviderBindingsChain } from '../middleware/compile-provider-bindings.mjs';
 import { bindDirectTargetMiddleware } from './bind-direct-target-middleware.mjs';
+import { clampTimerDelay } from './timer-delay.mjs';
 import { concurrencyMiddleware } from './concurrency-middleware.mjs';
 import { retryMiddleware } from './retry-middleware.mjs';
 import { attemptContextMiddleware } from './attempt-context-middleware.mjs';
 import { timeoutMiddleware } from './timeout-middleware.mjs';
 import { credentialLeaseMiddleware } from './credential-lease-middleware.mjs';
 import { backendDispatchMiddleware } from './backend-dispatch-middleware.mjs';
+import { primeStreamMiddleware } from './prime-stream-middleware.mjs';
 import { finalizeDirectResultMiddleware } from './finalize-direct-result-middleware.mjs';
 import { invokeModelCapabilityMiddleware } from './invoke-model-capability-middleware.mjs';
-import { cascadeMiddleware } from './cascade-middleware.mjs';
+import {
+    cascadeMiddleware,
+    providerRefOf,
+} from './cascade-middleware.mjs';
 import { bufferingMiddleware } from '../kernel/index.mjs';
 
 /**
@@ -143,13 +151,21 @@ function providerBindingsMiddleware() {
         const wantStream = ctx.metadata?.wantStream === true;
         const responseExcerptChars =
             ctx.appCtx?.config?.defaults?.responseExcerptChars;
+        // primeStream sits next to the backend so upstream failures that
+        // happen before the first content event surface inside this
+        // attempt, where retry and cascade can still act on them.
         const chainEntries = wantStream
-            ? [...providerMiddlewares, backendDispatchMiddleware()]
+            ? [
+                  ...providerMiddlewares,
+                  primeStreamMiddleware(),
+                  backendDispatchMiddleware(),
+              ]
             : [
                   bufferingMiddleware({
                       maxExcerptChars: responseExcerptChars,
                   }),
                   ...providerMiddlewares,
+                  primeStreamMiddleware(),
                   backendDispatchMiddleware(),
               ];
 
@@ -181,11 +197,13 @@ function cascadeAdapterMiddleware() {
             env.DEFAULT_MODEL_ATTEMPTS ||
             (model.children?.length ?? 5);
         const onCooldown = ctx.metadata?.onCooldown || null;
+        const requirements = requestRequirements(ctx.request);
 
         const cascade = cascadeMiddleware({
             model,
-            resolveCandidates: (excludeModels) => {
-                return (model.children || [])
+            resolveCandidates: (excludeModels, options = {}) => {
+                const excludeProviders = options.excludeProviders || new Set();
+                const available = (model.children || [])
                     .filter((child) => !excludeModels.has(child.modelKey))
                     .filter(
                         (child) => !ctx.snapshot?.cooldowns?.has?.(child.modelKey)
@@ -195,15 +213,119 @@ function cascadeAdapterMiddleware() {
                             child.modelKey
                         );
                         return childModel && childModel.enabled !== false
-                            ? { model: childModel }
+                            ? { model: withChildOverrides(childModel, child.settings) }
                             : null;
                     })
-                    .filter(Boolean);
+                    .filter(Boolean)
+                    .filter(
+                        ({ model: childModel }) =>
+                            !excludeProviders.has(providerRefOf(childModel))
+                    );
+                return preferCapableCandidates(available, requirements);
             },
             maxAttempts,
             onCooldown,
         });
 
-        await cascade(ctx);
+        const budgetMs = Number(model.metadata?.cascadeBudgetMs);
+        if (!Number.isFinite(budgetMs) || budgetMs <= 0) {
+            await cascade(ctx);
+            return;
+        }
+
+        // A tier budget bounds the whole fallback walk so a slow child
+        // cannot consume the caller's deadline before a faster sibling runs.
+        // The budget stops once a child has produced a committed response.
+        const previousSignal = ctx.signal;
+        const budget = new AbortController();
+        const timer = setTimeout(() => {
+            budget.abort(new ProviderTimeoutError(model.modelKey));
+        }, clampTimerDelay(budgetMs));
+        timer.unref?.();
+        ctx.signal = previousSignal
+            ? AbortSignal.any([previousSignal, budget.signal])
+            : budget.signal;
+        try {
+            await cascade(ctx);
+        } finally {
+            clearTimeout(timer);
+            ctx.signal = previousSignal;
+        }
+    };
+}
+
+/**
+ * Capability needs that a request places on a cascade child.
+ *
+ * @param {object} request
+ * @returns {{ images: boolean, tools: boolean }}
+ */
+export function requestRequirements(request) {
+    const messages = Array.isArray(request?.messages) ? request.messages : [];
+    const images = messages.some((message) => (
+        Array.isArray(message?.content) &&
+        message.content.some((part) => (
+            part?.type === 'image_url' ||
+            part?.type === 'input_image' ||
+            part?.type === 'image'
+        ))
+    ));
+    const tools = Array.isArray(request?.tools) && request.tools.length > 0;
+    return { images, tools };
+}
+
+/**
+ * Drop children whose recorded capabilities explicitly exclude what the
+ * request needs (image input or function tools). Unknown capabilities are
+ * kept. When filtering would leave nothing, the original list is returned so
+ * an operator-configured tier still reaches its upstream and reports the
+ * provider's own error.
+ */
+export function preferCapableCandidates(candidates, requirements) {
+    if (!requirements.images && !requirements.tools) return candidates;
+    const capable = candidates.filter(({ model: childModel }) => {
+        const capabilities = childModel?.capabilities || {};
+        if (requirements.images && capabilities.supportsVision === false) {
+            return false;
+        }
+        if (requirements.tools && capabilities.supportsTools === false) {
+            return false;
+        }
+        return true;
+    });
+    return capable.length > 0 ? capable : candidates;
+}
+
+/**
+ * Apply a cascade child's per-tier settings to its model record. A tier can
+ * give the same upstream model a tighter deadline or different reasoning
+ * parameters than another tier does, without duplicating model rows.
+ * Only execution tuning keys are honored; identity, provider, and pricing
+ * always come from the model record.
+ *
+ * @param {object} childModel  snapshot model record
+ * @param {object} settings    `model_children.settings`
+ * @returns {object}
+ */
+export function withChildOverrides(childModel, settings) {
+    if (!settings || typeof settings !== 'object') return childModel;
+    const requestTimeoutMs = Number(settings.requestTimeoutMs);
+    const hasTimeout = Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0;
+    const retryPolicy =
+        settings.retryPolicy && typeof settings.retryPolicy === 'object'
+            ? settings.retryPolicy
+            : null;
+    const requestParams =
+        settings.requestParams && typeof settings.requestParams === 'object'
+            ? settings.requestParams
+            : null;
+    if (!hasTimeout && !retryPolicy && !requestParams) return childModel;
+    return {
+        ...childModel,
+        ...(hasTimeout ? { requestTimeoutMs } : {}),
+        ...(retryPolicy
+            ? { retryPolicy: { ...(childModel.retryPolicy || {}), ...retryPolicy } }
+            : {}),
+        ...(requestParams ? { requestParams } : {}),
     };
 }
