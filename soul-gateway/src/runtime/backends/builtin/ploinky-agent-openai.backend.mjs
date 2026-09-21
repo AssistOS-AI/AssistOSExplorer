@@ -764,9 +764,12 @@ function sseField(line, name) {
 
 async function* parseSSE(res) {
     let buffer = '';
+    // One streaming decoder for the whole response, so a multi-byte UTF-8
+    // character split across two network chunks is not corrupted.
+    const decoder = new TextDecoder('utf-8');
 
     for await (const chunk of res) {
-        buffer += chunk.toString('utf8');
+        buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
 
         const lines = buffer.split('\n');
         buffer = lines.pop(); // keep incomplete line
@@ -793,6 +796,7 @@ async function* parseSSE(res) {
         }
     }
 
+    buffer += decoder.decode();
     const data = sseField(withoutCarriageReturn(buffer), 'data');
     if (data !== null) {
         yield { data };

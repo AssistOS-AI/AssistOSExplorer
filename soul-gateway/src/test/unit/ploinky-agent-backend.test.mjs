@@ -674,6 +674,21 @@ describe('ploinky-agent-openai backend execute()', () => {
         assert.equal(events[1].data.text, 'no space');
     });
 
+    it('keeps a multi-byte character that arrives split across two network chunks', async () => {
+        const text = 'ăîșț ok';
+        const body = Buffer.from(`data: ${textChunk(text)}\n\ndata: [DONE]\n\n`, 'utf8');
+        // Split inside the two bytes of the first character.
+        const splitAt = body.indexOf(Buffer.from('ă', 'utf8')) + 1;
+        const { error, events } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            res.write(body.subarray(0, splitAt));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            res.end(body.subarray(splitAt));
+        });
+        assert.equal(error, null);
+        assert.equal(events[1].data.text, text);
+    });
+
     it('does not treat a completion that also carries choices as an in-band error', async () => {
         const { error, types } = await runAgainst(jsonReply({
             id: 'x',
