@@ -458,6 +458,63 @@ function normalizeModelDescriptor(row, meta) {
 
 // ── OpenAI response streaming ────────────────────────────────────────
 
+/**
+ * An agent can only report a failure in-band once HTTP 200 has been sent:
+ * AgentServer flushes the SSE headers before a command handler starts, and a
+ * handler that exits cleanly may still print an error body. Such a payload has
+ * an `error` member and no `choices`. It must surface as a thrown, classifiable
+ * error rather than as a completion without content.
+ *
+ * @param {*} parsed
+ * @returns {boolean}
+ */
+function isInBandError(parsed) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    if (parsed.error === undefined || parsed.error === null || parsed.error === false) return false;
+    return !Array.isArray(parsed.choices) || parsed.choices.length === 0;
+}
+
+/**
+ * Build the error thrown for an in-band agent failure. The shape matches the
+ * HTTP error branch (`status` plus the parsed `body`), so `classifyError` maps
+ * it the same way. A numeric `error.status` or `error.code` in the HTTP error
+ * range selects the status; anything else is a bad-gateway failure.
+ *
+ * @param {object} parsed
+ * @returns {Error}
+ */
+function inBandAgentError(parsed) {
+    const detail = parsed.error;
+    const info = detail && typeof detail === 'object' ? detail : { message: String(detail) };
+    const declared = [info.status, info.code, parsed.status].find(
+        (value) => Number.isInteger(value) && value >= 400 && value <= 599
+    );
+    const message = typeof info.message === 'string' && info.message ? info.message : 'unspecified agent error';
+    const err = new Error(`Ploinky agent OpenAI in-band error: ${message}`);
+    err.status = declared || HTTP_STATUS.BAD_GATEWAY;
+    err.body = { ...parsed, error: info };
+    return err;
+}
+
+/**
+ * Error for an SSE response that ended without `[DONE]` and without any
+ * `finish_reason`: the agent stopped mid-answer, so the text received so far
+ * is not a completed response.
+ *
+ * @returns {Error}
+ */
+function truncatedStreamError() {
+    const err = new Error('Ploinky agent OpenAI stream ended before completion');
+    err.status = HTTP_STATUS.BAD_GATEWAY;
+    err.body = {
+        error: {
+            type: 'stream_truncated',
+            message: 'The agent stream ended without [DONE] or a finish_reason',
+        },
+    };
+    return err;
+}
+
 async function* makeOpenAiCompletionStream(url, headers, payload, signal, meta) {
     const response = await doRequest(url, 'POST', headers, payload, signal);
 
@@ -491,6 +548,7 @@ async function* makeOpenAiCompletionStream(url, headers, payload, signal, meta) 
             parseError.body = {};
             throw parseError;
         }
+        if (isInBandError(parsed)) throw inBandAgentError(parsed);
         yield* completionJsonToEvents(parsed, meta);
         return;
     }
@@ -515,6 +573,10 @@ async function* makeOpenAiCompletionStream(url, headers, payload, signal, meta) 
         } catch {
             continue;
         }
+
+        // Checked before `message_start`, so a failure reported as the first
+        // frame never looks like the beginning of an answer.
+        if (isInBandError(parsed)) throw inBandAgentError(parsed);
 
         if (!state.started) {
             state.started = true;
@@ -566,6 +628,19 @@ async function* makeOpenAiCompletionStream(url, headers, payload, signal, meta) 
             };
         }
     }
+
+    // The response ended without `[DONE]`. A `finish_reason` means the answer
+    // itself completed and only the terminator is missing, so it still counts.
+    // Without one the agent stopped mid-answer (for example a command handler
+    // that died after writing partial output), which must not pass as success.
+    if (!state.lastFinishReason) throw truncatedStreamError();
+    yield {
+        type: 'done',
+        data: {
+            finish_reason: state.lastFinishReason,
+            model: state.model || meta.model || null,
+        },
+    };
 }
 
 function* completionJsonToEvents(parsed, meta) {
