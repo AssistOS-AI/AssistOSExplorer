@@ -750,6 +750,18 @@ function collectBody(res) {
     });
 }
 
+// Server-sent event lines end with LF or CRLF, and one space after a field
+// name is optional: `data: [DONE]` and `data:[DONE]` are the same field.
+function withoutCarriageReturn(line) {
+    return line.endsWith('\r') ? line.slice(0, -1) : line;
+}
+
+function sseField(line, name) {
+    if (!line.startsWith(`${name}:`)) return null;
+    const value = line.slice(name.length + 1);
+    return value.startsWith(' ') ? value.slice(1) : value;
+}
+
 async function* parseSSE(res) {
     let buffer = '';
 
@@ -760,13 +772,18 @@ async function* parseSSE(res) {
         buffer = lines.pop(); // keep incomplete line
 
         let currentEvent = {};
-        for (const line of lines) {
-            if (line.startsWith('data: ')) {
-                currentEvent.data = line.slice(6);
+        for (const rawLine of lines) {
+            const line = withoutCarriageReturn(rawLine);
+            const data = sseField(line, 'data');
+            if (data !== null) {
+                currentEvent.data = data;
                 yield currentEvent;
                 currentEvent = {};
-            } else if (line.startsWith('event: ')) {
-                currentEvent.event = line.slice(7);
+                continue;
+            }
+            const event = sseField(line, 'event');
+            if (event !== null) {
+                currentEvent.event = event;
             } else if (line === '') {
                 if (currentEvent.data != null) {
                     yield currentEvent;
@@ -776,8 +793,9 @@ async function* parseSSE(res) {
         }
     }
 
-    if (buffer.startsWith('data: ')) {
-        yield { data: buffer.slice(6) };
+    const data = sseField(withoutCarriageReturn(buffer), 'data');
+    if (data !== null) {
+        yield { data };
     }
 }
 

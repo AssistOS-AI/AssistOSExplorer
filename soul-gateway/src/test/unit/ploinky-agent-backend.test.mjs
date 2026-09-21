@@ -649,6 +649,31 @@ describe('ploinky-agent-openai backend execute()', () => {
         assert.equal(events[2].data.finish_reason, 'length');
     });
 
+    // SSE lines may end with CRLF, and the space after `data:` is optional,
+    // so a stream that does end with [DONE] in either form is complete.
+    const rawSseReply = (body) => (res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        res.end(body);
+    };
+
+    it('completes a CRLF stream that ends with [DONE] and no finish_reason', async () => {
+        const { error, events, types } = await runAgainst(rawSseReply(
+            `data: ${textChunk('crlf answer')}\r\n\r\ndata: [DONE]\r\n\r\n`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'crlf answer');
+    });
+
+    it('completes a stream whose data fields omit the optional space', async () => {
+        const { error, events, types } = await runAgainst(rawSseReply(
+            `data:${textChunk('no space')}\n\ndata:[DONE]\n\n`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'no space');
+    });
+
     it('does not treat a completion that also carries choices as an in-band error', async () => {
         const { error, types } = await runAgainst(jsonReply({
             id: 'x',
