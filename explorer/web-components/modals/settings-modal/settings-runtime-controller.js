@@ -12,10 +12,7 @@ import {
     buildAgentSettingsItems,
     normalizeAgentRuntimeStatus
 } from "./settings-agent-model.js";
-import {
-    ensureSettingsComponentRegistered,
-    openPluginSettingsUrl
-} from "./settings-component-loader.js";
+import { launchAgentSettings } from "./settings-agent-launcher.js";
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -285,42 +282,11 @@ export const runtimeSettingsController = {
         this.renderAgentSettings();
 
         try {
-            const module = await import("/MCPBrowserClient.js");
-            if (typeof module?.ensureAgentRunning !== "function") {
-                throw new Error("Agent runtime lifecycle is unavailable.");
-            }
-            const runtime = await module.ensureAgentRunning(item.agentRef || item.ownerAgent);
+            const runtime = await launchAgentSettings(item);
             item.agentRef = String(runtime?.ref || item.agentRef || "").trim();
             item.runtimeAvailable = true;
             item.runtimeStatus = normalizeAgentRuntimeStatus(runtime);
-            this.state.agentSettingsStatus = `Opening settings for ${key}...`;
-            this.renderAgentSettings();
-
-            if (item.settingsUrl) {
-                if (!openPluginSettingsUrl(item)) {
-                    throw new Error(`Invalid settings URL for ${key}.`);
-                }
-                this.state.agentSettingsStatus = `${item.label || item.component} settings opened.`;
-                this.state.agentSettingsStatusType = "";
-                return;
-            }
-
-            await ensureSettingsComponentRegistered({
-                ...item.sourcePlugin,
-                settingsComponent: item.settingsComponent
-            });
-            await assistOS.UI.createReactiveModal(item.settingsComponent, {
-                agentSettings: {
-                    key: item.key,
-                    label: item.label,
-                    ownerAgent: item.ownerAgent,
-                    scope: item.scope,
-                    settingsComponent: item.settingsComponent,
-                    settingsUrl: item.settingsUrl,
-                    assetRootPath: item.assetRootPath
-                }
-            }, true);
-            this.state.agentSettingsStatus = `${item.label} settings opened.`;
+            this.state.agentSettingsStatus = `${item.label || item.component} settings opened.`;
             this.state.agentSettingsStatusType = "";
         } catch (error) {
             item.runtimeStatus = "failed";
