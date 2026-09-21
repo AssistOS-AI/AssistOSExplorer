@@ -17,6 +17,10 @@ function readManifest() {
     return JSON.parse(fs.readFileSync(path.join(repoRoot, 'manifest.json'), 'utf8'));
 }
 
+function readPluginConfig(pluginDir) {
+    return JSON.parse(fs.readFileSync(path.join(repoRoot, 'IDE-plugins', pluginDir, 'config.json'), 'utf8'));
+}
+
 test('Ploinky uses only the Router agent-port convention', () => {
     const manifest = readManifest();
     assert.equal(Object.prototype.hasOwnProperty.call(manifest, 'httpServices'), false);
@@ -87,4 +91,37 @@ test('Ploinky manifest supplies the complete managed persistence contract', () =
     assert.equal(env.DATA_DIR?.default, '/data');
     assert.equal(env.CREDENTIALS_DIR?.default, '/data/credentials');
     assert.equal(env.SQLITE_PATH?.default, '/data/soul-gateway.sqlite3');
+});
+
+test('Soul Gateway ships an admin-only settings entry and toolbar button', () => {
+    const manifest = readManifest();
+    const settings = readPluginConfig('soul-gateway-settings');
+    const toolbar = readPluginConfig('soul-gateway-tool-button');
+
+    const settingsEntry = (manifest.ideSettings || []).find((entry) => entry.key === 'soul-gateway');
+    assert.ok(settingsEntry);
+    assert.equal(settingsEntry.pluginKey, 'soul-gateway/soul-gateway');
+    assert.equal(settingsEntry.adminOnly, true);
+    assert.equal(settingsEntry.settingsUrl, '/base-agent-additional-server/soul-gateway/7000/management/');
+
+    assert.equal(settings.id, 'soul-gateway');
+    assert.equal(settings.adminOnly, true);
+    assert.equal(settings.settingsUrl, settingsEntry.settingsUrl);
+
+    assert.equal(toolbar.pluginCategory, 'application');
+    assert.equal(toolbar.id, 'soul-gateway-configure');
+    assert.notEqual(toolbar.id, settings.id);
+    assert.equal(toolbar.type, 'embedded');
+    assert.equal(toolbar.adminOnly, true);
+    assert.deepEqual(toolbar.location, ['file-exp:toolbar']);
+    assert.equal(toolbar.locationOrder, 290);
+    assert.equal(toolbar.component, 'soul-gateway-tool-button');
+    assert.equal(toolbar.presenter, 'SoulGatewayToolButton');
+
+    const presenterSource = fs.readFileSync(
+        path.join(repoRoot, 'IDE-plugins', 'soul-gateway-tool-button', 'soul-gateway-tool-button.js'),
+        'utf8'
+    );
+    assert.match(presenterSource, /launchAgentSettings/);
+    assert.match(presenterSource, /getCachedRuntimePlugins/);
 });

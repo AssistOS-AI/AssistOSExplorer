@@ -5,7 +5,7 @@ summary: Defines the Ploinky-managed deployment, Router paths, startup and shutd
 
 ## Introduction
 
-Soul Gateway runs as one Ploinky-managed agent. Ploinky supplies the container runtime, dependency cache, persistent data mount, signed identity material, external Router paths, and Explorer settings entry that form the production environment.
+Soul Gateway runs as one Ploinky-managed agent. Ploinky supplies the container runtime, dependency cache, persistent data mount, signed identity material, external Router paths, and the Explorer settings and toolbar entries that form the production environment.
 
 ## Core Content
 
@@ -47,7 +47,7 @@ The deployed Soul Gateway is the local LLM hub. The discovered model named by <c
 
 ### Explorer and CLI
 
-The Explorer <code>soul-gateway-settings</code> entry must point to the Router-prefixed management dashboard and remain administrator-only. The CLI must expose health and status without a management cookie and must require <code>PLOINKY_AUTH_COOKIE</code> for keys, models, and logs.
+The Explorer <code>soul-gateway-settings</code> settings entry and the admin-only <code>soul-gateway-tool-button</code> toolbar button must point to the Router-prefixed management dashboard and remain administrator-only. The CLI must expose health and status without a management cookie and must require <code>PLOINKY_AUTH_COOKIE</code> for keys, models, and logs.
 
 ### Operational verification
 

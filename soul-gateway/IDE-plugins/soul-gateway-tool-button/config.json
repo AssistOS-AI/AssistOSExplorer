@@ -1,0 +1,15 @@
+{
+    "pluginCategory": "application",
+    "id": "soul-gateway-configure",
+    "component": "soul-gateway-tool-button",
+    "location": ["file-exp:toolbar"],
+    "locationOrder": 290,
+    "label": "Soul Gateway",
+    "tooltip": "Configure Soul Gateway",
+    "icon": "./icon.svg",
+    "presenter": "SoulGatewayToolButton",
+    "type": "embedded",
+    "autoPin": false,
+    "adminOnly": true,
+    "dependencies": []
+}

@@ -39,7 +39,7 @@ Soul Gateway must load the enabled catalog into an immutable [runtime snapshot](
 
 ### Router-protected management
 
-Ploinky administrators need one control plane for provider accounts, public subjects, models, tiers, middleware, safety rules, cooldowns, logs, metrics, sessions, and exports. An administrator triggers this behavior by opening <code>/management/</code>, using the Explorer <code>soul-gateway-settings</code> entry, or calling a <code>/management/*</code> route.
+Ploinky administrators need one control plane for provider accounts, public subjects, models, tiers, middleware, safety rules, cooldowns, logs, metrics, sessions, and exports. An administrator triggers this behavior by opening <code>/management/</code>, using the Explorer <code>soul-gateway-settings</code> settings entry or <code>soul-gateway-tool-button</code> toolbar button, or calling a <code>/management/*</code> route.
 
 Soul Gateway must accept management identity only from a Ploinky protected-route invocation that verifies the request method, path, query, and body hash, passes replay protection, and names a user with the <code>admin</code> role. A management mutation must persist through the relevant DAO and request runtime refresh when it changes hot-path configuration. The dashboard and management API share this boundary; no legacy password or independent dashboard session may bypass Router verification.
 

@@ -39,4 +39,4 @@ Administrators must be able to list and inspect audit logs, sessions, and agent 
 
 ### Dashboard and Explorer
 
-The dashboard at <code>/management/</code> must consume the management API and must not embed a second authoritative configuration store. The Ploinky Explorer <code>soul-gateway-settings</code> entry must open the Router-prefixed dashboard URL and must remain administrator-only. A separate settings modal would create an unsupported parallel management path and must not be introduced.
+The dashboard at <code>/management/</code> must consume the management API and must not embed a second authoritative configuration store. The Ploinky Explorer <code>soul-gateway-settings</code> settings entry and the admin-only <code>soul-gateway-tool-button</code> toolbar button must open the Router-prefixed dashboard URL and must remain administrator-only. A separate settings modal would create an unsupported parallel management path and must not be introduced.

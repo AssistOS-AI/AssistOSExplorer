@@ -40,6 +40,7 @@ Soul Gateway does not implement or distribute agent skills as product artifacts.
 - Health uses `/healthz/` and is public through the Router.
 - The managed manifest supplies `DATA_DIR=/data`, `CREDENTIALS_DIR=/data/credentials`, and `SQLITE_PATH=/data/soul-gateway.sqlite3`; direct starts require all three explicitly and have no relative persistence default.
 - The standard compatibility tiers are `fast`, `plan`, and `deep`, seeded from `LLM_DEFAULT_AGENT` when the required discovered model exists.
+- Explorer exposes the admin-only `soul-gateway-settings` settings entry and the `soul-gateway-tool-button` toolbar button; both ensure the agent runs and open the Router-prefixed `/management/` dashboard, and neither may be replaced by a separate settings modal.
 
 ## Key Paths
 
@@ -57,6 +58,8 @@ Soul Gateway does not implement or distribute agent skills as product artifacts.
 - `docs/wiki.html` — canonical terminology.
 - `docs/specs/` — normative design specifications.
 - `docs/specs/DS001-coding-style.md` — canonical coding and test organization rules.
+- `IDE-plugins/soul-gateway-settings/` — admin-only Explorer settings entry for the management dashboard.
+- `IDE-plugins/soul-gateway-tool-button/` — admin-only Explorer toolbar button for the management dashboard.
 
 ## Provider Source
 
