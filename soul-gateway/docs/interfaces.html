@@ -45,7 +45,7 @@
       <li>Policy state: manage blacklist rules and clear model cooldowns.</li>
       <li>Observability: inspect logs, sessions, agent trees, usage and cost metrics, export JSON or CSV, and subscribe to live logs over SSE or WebSocket.</li>
     </ul>
-    <p>The Explorer integration exposes the admin-only <code>soul-gateway-settings</code> settings entry and the <code>soul-gateway-tool-button</code> toolbar button, and both open the same Router-protected dashboard. It does not create an independent settings store or authentication flow.</p>
+    <p>The Explorer integration exposes the admin-only <code>soul-gateway-settings</code> settings entry and the <code>soul-gateway-tool-button</code> toolbar button, and both open the agent-served dashboard in a maximized Explorer modal that embeds the Router-prefixed <code>/management/</code> URL in an iframe. The dashboard reuses Explorer's shared UI styles and light or dark theme. It does not create an independent settings store, theme store, or authentication flow.</p>
 
     <h2>Connect a SuperGrok subscription</h2>
     <p>Administrators can connect an eligible SuperGrok subscription from <code>Providers → Add Provider</code> by choosing <code>xAI SuperGrok</code> and creating the provider. Open <code>Manage → Add Account</code>, follow the verification link, and enter the displayed code if requested. Sign in using the account that owns the subscription, including Google sign-in when applicable, and approve access. The browser can run on another computer; no localhost callback or port forwarding is needed.</p>

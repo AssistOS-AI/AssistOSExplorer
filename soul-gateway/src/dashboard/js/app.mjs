@@ -574,6 +574,19 @@ const CHART_COLORS = [
     '#7bc8a4',
 ];
 
+function chartTheme() {
+    const styles =
+        typeof getComputedStyle === 'function'
+            ? getComputedStyle(document.documentElement)
+            : null;
+    const text =
+        styles?.getPropertyValue('--text-soft')?.trim() || '#9FA2A8';
+    const border =
+        styles?.getPropertyValue('--border')?.trim() ||
+        'rgba(148, 163, 184, 0.35)';
+    return { text, border };
+}
+
 // ---- Main App ----
 function app() {
     return {
@@ -1895,6 +1908,7 @@ function costsPage() {
                 );
             }
             const days = [...daySet].sort();
+            const theme = chartTheme();
 
             this._chart = new Chart(canvas, {
                 type: 'bar',
@@ -1923,13 +1937,26 @@ function costsPage() {
                     maintainAspectRatio: false,
                     animation: false,
                     scales: {
-                        x: { stacked: true },
+                        x: {
+                            stacked: true,
+                            ticks: { color: theme.text },
+                            grid: { color: theme.border },
+                        },
                         y: {
                             stacked: true,
-                            ticks: { callback: (v) => '$' + v.toFixed(4) },
+                            ticks: {
+                                color: theme.text,
+                                callback: (v) => '$' + v.toFixed(4),
+                            },
+                            grid: { color: theme.border },
                         },
                     },
-                    plugins: { legend: { position: 'bottom' } },
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: { color: theme.text },
+                        },
+                    },
                 },
             });
         },
@@ -2156,6 +2183,7 @@ function errorsPage() {
                 const rates = this.rates;
                 const models = [...new Set(rates.map((r) => r.resolved_model))];
                 const periods = [...new Set(rates.map((r) => r.period))].sort();
+                const theme = chartTheme();
 
                 this._chart = new Chart(ctx, {
                     type: 'line',
@@ -2181,7 +2209,22 @@ function errorsPage() {
                             tension: 0.3,
                         })),
                     },
-                    options: { responsive: true },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            x: {
+                                ticks: { color: theme.text },
+                                grid: { color: theme.border },
+                            },
+                            y: {
+                                ticks: { color: theme.text },
+                                grid: { color: theme.border },
+                            },
+                        },
+                        plugins: {
+                            legend: { labels: { color: theme.text } },
+                        },
+                    },
                 });
             });
         },

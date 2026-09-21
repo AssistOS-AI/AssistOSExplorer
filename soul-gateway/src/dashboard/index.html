@@ -1,9 +1,13 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Soul Gateway</title>
+        <script src="./js/theme-boot.js"></script>
+        <link rel="stylesheet" href="/explorer/shared/ui/ui-common.css" />
+        <link rel="stylesheet" href="/explorer/assets/fonts/Inter/inter.css" />
+        <link rel="stylesheet" href="/explorer/assets/fonts/JetBrainsMono/jetbrains-mono.css" />
         <link
             href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css"
             rel="stylesheet"
@@ -14,7 +18,9 @@
             src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"
         ></script>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+        <link rel="stylesheet" href="./css/theme.css" />
         <link rel="stylesheet" href="./css/app.css" />
+        <script type="module" src="./js/theme.mjs"></script>
     </head>
     <body class="min-h-screen bg-base-200">
         <div x-data="app()" x-init="init()">
@@ -57,11 +63,6 @@
                                     </template>
                                 </ul>
                             </div>
-                            <a
-                                class="btn btn-ghost text-xl"
-                                @click="navigate('providers')"
-                                >Soul Gateway</a
-                            >
                         </div>
                         <div class="navbar-center hidden lg:flex">
                             <ul class="menu menu-horizontal px-1">
@@ -82,14 +83,14 @@
                     </div>
 
                     <!-- Main content -->
-                    <div class="container mx-auto p-4">
+                    <div class="w-full p-2 soul-gateway-content">
                         <!-- Logs Page -->
                         <div x-show="page === 'logs'" x-cloak>
                             <div x-data="logsPage()" x-init="init()">
-                                <div class="flex gap-4 h-[calc(100vh-10rem)]">
+                                <div class="flex flex-col lg:flex-row gap-4 min-h-0 lg:h-[calc(100vh-10rem)]">
                                     <!-- Keys Panel -->
                                     <div
-                                        class="w-64 flex-shrink-0 flex flex-col"
+                                        class="w-full lg:w-64 flex-shrink-0 flex flex-col min-h-0"
                                     >
                                         <div
                                             class="card bg-base-100 shadow flex-1 overflow-y-auto"
@@ -133,7 +134,7 @@
                                     </div>
 
                                     <!-- Log Detail Panel -->
-                                    <div class="flex-1 flex flex-col">
+                                    <div class="flex-1 flex flex-col min-w-0 min-h-0">
                                         <div
                                             class="card bg-base-100 shadow flex-1 overflow-hidden"
                                         >
@@ -475,7 +476,7 @@
                                                                                     ></span>
                                                                                 </div>
                                                                                 <div
-                                                                                    class="pl-2 flex-shrink-0"
+                                                                                    class="pl-2 flex-shrink-0 sg-log-status"
                                                                                     :style="{width: cw('status')}"
                                                                                 >
                                                                                     <span
@@ -1345,6 +1346,7 @@
                                 x-data="costsPage()"
                                 x-init="init()"
                                 @costs-visible.window="$nextTick(() => renderChart())"
+                                @sg-theme-change.window="$nextTick(() => renderChart())"
                             >
                                 <!-- Header -->
                                 <div
@@ -1583,7 +1585,7 @@
 
                         <!-- Errors Page -->
                         <div x-show="page === 'errors'" x-cloak>
-                            <div x-data="errorsPage()" x-init="init()">
+                            <div x-data="errorsPage()" x-init="init()" @sg-theme-change.window="showChart && openChart()">
                                 <!-- Summary Stats -->
                                 <div class="stats shadow mb-4 w-full">
                                     <div class="stat">
@@ -2307,62 +2309,63 @@
                                                         <td
                                                             x-show="row.rowType === 'leaf'"
                                                         >
-                                                            <div
-                                                                class="flex gap-1"
+                                                            <details
+                                                                class="dropdown dropdown-end"
                                                             >
-                                                                <button
+                                                                <summary
                                                                     class="btn btn-ghost btn-xs"
-                                                                    @click="testConnection(row.item)"
-                                                                    :disabled="testing === row.item?.id"
+                                                                    aria-label="Actions"
                                                                 >
-                                                                    <span
-                                                                        x-show="testing !== row.item?.id"
-                                                                        >Test</span
+                                                                    <svg
+                                                                        xmlns="http://www.w3.org/2000/svg"
+                                                                        viewBox="0 0 24 24"
+                                                                        fill="currentColor"
+                                                                        class="h-4 w-4"
+                                                                        aria-hidden="true"
                                                                     >
-                                                                    <span
-                                                                        x-show="testing === row.item?.id"
-                                                                        class="loading loading-spinner loading-xs"
-                                                                    ></span>
-                                                                </button>
-                                                                <button
-                                                                    class="btn btn-ghost btn-xs"
-                                                                    @click="syncModels(row.item)"
-                                                                    :disabled="syncing === row.item?.id"
+                                                                        <circle cx="12" cy="5" r="1.8" />
+                                                                        <circle cx="12" cy="12" r="1.8" />
+                                                                        <circle cx="12" cy="19" r="1.8" />
+                                                                    </svg>
+                                                                </summary>
+                                                                <ul
+                                                                    class="dropdown-content menu bg-base-100 rounded-box z-[1] w-40 p-1 shadow"
+                                                                    @click="if ($event.target.closest('button')) $el.closest('details').removeAttribute('open')"
                                                                 >
-                                                                    <span
-                                                                        x-show="syncing !== row.item?.id"
-                                                                        >Sync</span
-                                                                    >
-                                                                    <span
-                                                                        x-show="syncing === row.item?.id"
-                                                                        class="loading loading-spinner loading-xs"
-                                                                    ></span>
-                                                                </button>
-                                                                <button
-                                                                    class="btn btn-ghost btn-xs"
-                                                                    @click="discoverModels(row.item)"
-                                                                >
-                                                                    View
-                                                                </button>
-                                                                <button
-                                                                    class="btn btn-ghost btn-xs"
-                                                                    @click="openComposer(row.item)"
-                                                                >
-                                                                    Pipeline
-                                                                </button>
-                                                                <button
-                                                                    class="btn btn-ghost btn-xs"
-                                                                    @click="edit(row.item)"
-                                                                >
-                                                                    Edit
-                                                                </button>
-                                                                <button
-                                                                    class="btn btn-error btn-xs"
-                                                                    @click="remove(row.item)"
-                                                                >
-                                                                    Delete
-                                                                </button>
-                                                            </div>
+                                                                    <li>
+                                                                        <button
+                                                                            type="button"
+                                                                            @click="testConnection(row.item)"
+                                                                            :disabled="testing === row.item?.id"
+                                                                        >
+                                                                            <span x-show="testing !== row.item?.id">Test</span>
+                                                                            <span x-show="testing === row.item?.id" class="loading loading-spinner loading-xs"></span>
+                                                                        </button>
+                                                                    </li>
+                                                                    <li>
+                                                                        <button
+                                                                            type="button"
+                                                                            @click="syncModels(row.item)"
+                                                                            :disabled="syncing === row.item?.id"
+                                                                        >
+                                                                            <span x-show="syncing !== row.item?.id">Sync</span>
+                                                                            <span x-show="syncing === row.item?.id" class="loading loading-spinner loading-xs"></span>
+                                                                        </button>
+                                                                    </li>
+                                                                    <li>
+                                                                        <button type="button" @click="discoverModels(row.item)">View</button>
+                                                                    </li>
+                                                                    <li>
+                                                                        <button type="button" @click="openComposer(row.item)">Pipeline</button>
+                                                                    </li>
+                                                                    <li>
+                                                                        <button type="button" @click="edit(row.item)">Edit</button>
+                                                                    </li>
+                                                                    <li>
+                                                                        <button type="button" class="text-error" @click="remove(row.item)">Delete</button>
+                                                                    </li>
+                                                                </ul>
+                                                            </details>
                                                         </td>
                                                     </tr>
                                                 </template>
