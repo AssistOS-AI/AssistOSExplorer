@@ -230,6 +230,84 @@ describe('administrator records created while the defaults are disabled', () => 
         assert.equal(summary.providerCreated, false);
         assert.equal(await count(pool, 'SELECT COUNT(*) FROM provider_accounts'), 0);
         assert.equal(await count(pool, 'SELECT COUNT(*) FROM models WHERE provider_id = $1', [providerId]), 0);
+        // That provider has no enabled model, so no tier can have a child:
+        // no empty cascade is created, and every tier stays pending.
+        assert.deepEqual(summary.tiersCreated, []);
+        assert.deepEqual(summary.tiersPending, ALL_TIERS.split(','));
+        assert.equal(await count(pool, "SELECT COUNT(*) FROM models WHERE strategy_kind = 'cascade'"), 0);
+    });
+
+    it('creates a pending tier on a later start once the free provider has an enabled child', async () => {
+        const providerId = randomUUID();
+        await pool.query(
+            "INSERT INTO providers (id, provider_key, display_name, kind, adapter_key, auth_strategy, base_url) VALUES ($1, $2, 'Mine', 'external_api', 'openai-api', 'api_key', 'https://openrouter.ai/api/v1')",
+            [providerId, FREE_PROVIDER_KEY]
+        );
+        const first = await installFreeModelDefaults({ appCtx: appCtxFor(pool), apiKey: DUMMY_KEY });
+        assert.equal(first.status, 'installed');
+        assert.equal(await count(pool, 'SELECT COUNT(*) FROM gateway_bootstrap_state WHERE bootstrap_key = $1', [FREE_DEFAULTS_BOOTSTRAP_KEY]), 1);
+
+        // Nothing changed: the tiers are still pending and nothing is written.
+        const idle = await installFreeModelDefaults({ appCtx: appCtxFor(pool), apiKey: DUMMY_KEY });
+        assert.equal(idle.status, 'pending');
+        assert.equal(await count(pool, "SELECT COUNT(*) FROM models WHERE strategy_kind = 'cascade'"), 0);
+
+        // The administrator's provider gains one enabled model that `fast`
+        // lists first; only the tiers that list it can be created.
+        const firstFastChild = FREE_TIER_SPECS.fast.children[0].providerModelId;
+        await pool.query(
+            "INSERT INTO models (id, model_key, display_name, provider_id, provider_model_id) VALUES ($1, $2, 'mine', $3, $4)",
+            [randomUUID(), `mine/${firstFastChild}`, providerId, firstFastChild]
+        );
+        const later = await installFreeModelDefaults({ appCtx: appCtxFor(pool), apiKey: DUMMY_KEY });
+        assert.equal(later.status, 'updated');
+        const listing = ALL_TIERS.split(',').filter((tier) =>
+            FREE_TIER_SPECS[tier].children.some((entry) => entry.providerModelId === firstFastChild));
+        assert.ok(listing.includes('fast'));
+        assert.deepEqual(later.tiersCreated, listing);
+        assert.deepEqual((await tierChildren(pool, 'fast')).map((row) => row.provider_model_id), [firstFastChild]);
+        const { rows: [fastTier] } = await pool.query("SELECT max_attempts FROM models WHERE model_key = 'fast'");
+        assert.equal(fastTier.max_attempts, 1, 'a cascade never tries more children than it has');
+        assert.deepEqual(later.tiersPending.sort(), ALL_TIERS.split(',').filter((tier) => !listing.includes(tier)).sort());
+
+        // A created tier is handled: deleting it keeps it deleted.
+        await pool.query("DELETE FROM models WHERE model_key = 'fast'");
+        const after = await installFreeModelDefaults({ appCtx: appCtxFor(pool), apiKey: DUMMY_KEY });
+        assert.ok(['pending', 'updated'].includes(after.status));
+        assert.equal(await count(pool, "SELECT COUNT(*) FROM models WHERE model_key = 'fast'"), 0);
+    });
+});
+
+describe('tiers requested after the first start', () => {
+    it('creates tiers added to LLM_DEFAULT_TIERS later and never recreates a deleted one', async () => {
+        const first = await installFreeModelDefaults({ appCtx: appCtxFor(pool, { LLM_DEFAULT_TIERS: 'fast,code' }), apiKey: DUMMY_KEY });
+        assert.equal(first.status, 'installed');
+        assert.deepEqual(first.tiersCreated, ['fast', 'code']);
+        await pool.query("DELETE FROM models WHERE model_key = 'code'");
+
+        const widened = await installFreeModelDefaults({ appCtx: appCtxFor(pool), apiKey: DUMMY_KEY });
+        assert.equal(widened.status, 'updated');
+        assert.deepEqual(widened.tiersCreated, ['plan', 'write', 'deep', 'ultra', 'web-assist']);
+        assert.equal(widened.providerCreated, false, 'the provider step never runs twice');
+        assert.equal(await count(pool, 'SELECT COUNT(*) FROM providers'), 1);
+        assert.equal(await count(pool, 'SELECT COUNT(*) FROM provider_accounts'), 1);
+        assert.equal(await count(pool, "SELECT COUNT(*) FROM models WHERE model_key = 'code'"), 0);
+        for (const tier of widened.tiersCreated) {
+            assert.equal((await tierChildren(pool, tier)).length, FREE_TIER_SPECS[tier].children.length, tier);
+        }
+
+        const again = await installFreeModelDefaults({ appCtx: appCtxFor(pool), apiKey: DUMMY_KEY });
+        assert.equal(again.status, 'already-complete');
+        assert.equal(await count(pool, "SELECT COUNT(*) FROM models WHERE strategy_kind = 'cascade'"), 6);
+    });
+
+    it('creates the tiers requested after a first start with an empty tier list', async () => {
+        const empty = await installFreeModelDefaults({ appCtx: appCtxFor(pool, { LLM_DEFAULT_TIERS: '' }), apiKey: DUMMY_KEY });
+        assert.equal(empty.status, 'installed');
+        assert.equal(await count(pool, "SELECT COUNT(*) FROM models WHERE strategy_kind = 'cascade'"), 0);
+        const later = await installFreeModelDefaults({ appCtx: appCtxFor(pool), apiKey: DUMMY_KEY });
+        assert.deepEqual(later.tiersCreated, ALL_TIERS.split(','));
+        assert.equal(await count(pool, 'SELECT COUNT(*) FROM providers'), 1);
     });
 });
 

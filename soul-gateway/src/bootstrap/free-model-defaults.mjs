@@ -12,9 +12,15 @@
  *
  *   - Everything is written in one `BEGIN IMMEDIATE` transaction together
  *     with a `gateway_bootstrap_state` row.  An interrupted start leaves no
- *     partial records and no marker, so the next start retries; a completed
- *     install never runs again, so providers, accounts, models, or tiers an
- *     administrator later disables, edits, or deletes are never recreated.
+ *     partial records and no marker, so the next start retries.  The
+ *     provider, account, and baseline models are installed at most once.
+ *   - The marker records every tier the install has handled: created, or
+ *     kept because a record already held its name.  A handled tier is never
+ *     created again, so tiers an administrator later disables, edits, or
+ *     deletes stay that way.  A tier with no usable child is not created
+ *     and stays pending, and a tier added to `LLM_DEFAULT_TIERS` after the
+ *     first start is pending too: a later start creates a pending tier once
+ *     the free provider has an enabled model among its children.
  *   - Existing records are never overwritten.  A provider, model, alias, or
  *     tier that an administrator created under a default key (for example
  *     while `FREE_MODELS_ENABLED=false`) is left untouched.
@@ -62,6 +68,10 @@ function parseTierList(value) {
         .filter(Boolean);
 }
 
+function stringList(value) {
+    return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
+}
+
 function secretHint(apiKey) {
     return apiKey.length <= 10 ? '********' : `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}`;
 }
@@ -96,24 +106,159 @@ async function insertModel(client, providerId, spec) {
     return id;
 }
 
-async function insertChildren(client, tierId, children, modelIdsByProviderModelId) {
+/**
+ * Create the free provider, its encrypted account, and the baseline models.
+ *
+ * @returns {Promise<Map<string, string>>} model id by provider model id
+ */
+async function installProvider(client, { credential, bundled, encryptionKey, summary }) {
+    const modelIdsByProviderModelId = new Map();
+    const providerId = randomUUID();
+    await client.query(
+        `INSERT INTO providers
+           (id, provider_key, display_name, kind, adapter_key,
+            auth_strategy, base_url, enabled, supports_streaming,
+            supports_tools, settings, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 1, 1, $8, $9)`,
+        [
+            providerId,
+            FREE_PROVIDER_SPEC.providerKey,
+            FREE_PROVIDER_SPEC.displayName,
+            FREE_PROVIDER_SPEC.kind,
+            FREE_PROVIDER_SPEC.adapterKey,
+            FREE_PROVIDER_SPEC.authStrategy,
+            FREE_PROVIDER_SPEC.baseUrl,
+            JSON.stringify(FREE_PROVIDER_SPEC.settings),
+            JSON.stringify({ seededBy: FREE_DEFAULTS_SEEDED_BY }),
+        ]
+    );
+    summary.providerCreated = true;
+
+    const encrypted = encrypt(credential, encryptionKey);
+    await client.query(
+        `INSERT INTO provider_accounts
+           (id, provider_id, account_label, auth_type, status,
+            secret_ciphertext, secret_iv, secret_auth_tag,
+            secret_hint, metadata)
+         VALUES ($1, $2, $3, 'api_key', 'active', $4, $5, $6, $7, $8)`,
+        [
+            randomUUID(),
+            providerId,
+            bundled ? 'Bundled free-tier key (shared quota)' : 'OpenRouter API key',
+            encrypted.ciphertext,
+            encrypted.iv,
+            encrypted.authTag,
+            secretHint(credential),
+            JSON.stringify({
+                seededBy: FREE_DEFAULTS_SEEDED_BY,
+                bundled,
+                ...(bundled ? { expiresAt: BUNDLED_OPENROUTER_FREE_KEY_EXPIRES_AT } : {}),
+            }),
+        ]
+    );
+    summary.accountCreated = true;
+
+    for (const spec of FREE_BASELINE_MODELS) {
+        const taken = await one(
+            client,
+            'SELECT id FROM models WHERE model_key = $1',
+            [freeModelKey(spec.providerModelId)]
+        );
+        if (taken) continue;
+        const id = await insertModel(client, providerId, spec);
+        modelIdsByProviderModelId.set(spec.providerModelId, id);
+        summary.modelsCreated += 1;
+    }
+    return modelIdsByProviderModelId;
+}
+
+/**
+ * The enabled models a provider stored under the free provider key has now:
+ * an administrator's provider under that key before the first install, or
+ * the installed one on a later start. Rows are never added to it here.
+ *
+ * @returns {Promise<Map<string, string>>} model id by provider model id
+ */
+async function enabledFreeProviderModels(client, providerId) {
+    const modelIdsByProviderModelId = new Map();
+    if (!providerId) return modelIdsByProviderModelId;
+    const { rows } = await client.query(
+        'SELECT id, provider_model_id FROM models WHERE provider_id = $1 AND enabled = 1',
+        [providerId]
+    );
+    for (const row of rows) {
+        modelIdsByProviderModelId.set(row.provider_model_id, row.id);
+    }
+    return modelIdsByProviderModelId;
+}
+
+/**
+ * Create one tier with the children it can have now. A tier whose children
+ * are all unavailable is not created: an empty cascade would answer every
+ * request with `tier_exhausted` and, being handled, would never be filled.
+ *
+ * @returns {Promise<'created'|'kept'|'pending'>}
+ */
+async function installTier(client, tierKey, modelIdsByProviderModelId) {
+    const alias = await one(
+        client,
+        'SELECT id FROM model_aliases WHERE alias = $1',
+        [tierKey]
+    );
+    if (alias) return 'kept';
+    const existingTier = await one(
+        client,
+        'SELECT id FROM models WHERE model_key = $1',
+        [tierKey]
+    );
+    if (existingTier) return 'kept';
+
+    const spec = FREE_TIER_SPECS[tierKey];
+    const children = spec.children.filter((entry) =>
+        modelIdsByProviderModelId.has(entry.providerModelId)
+    );
+    if (children.length === 0) return 'pending';
+
+    const tierId = randomUUID();
+    await client.query(
+        `INSERT INTO models
+           (id, model_key, display_name, enabled, strategy_kind,
+            max_attempts, discovery_source, metadata)
+         VALUES ($1, $2, $3, 1, 'cascade', $4, 'manual', $5)`,
+        [
+            tierId,
+            tierKey,
+            tierKey,
+            Math.min(spec.maxAttempts, children.length),
+            JSON.stringify({
+                seededBy: FREE_DEFAULTS_SEEDED_BY,
+                tierKey,
+                cascadeBudgetMs: spec.cascadeBudgetMs,
+            }),
+        ]
+    );
     let priority = 0;
     for (const entry of children) {
-        const childId = modelIdsByProviderModelId.get(entry.providerModelId);
-        if (!childId) continue;
         priority += 1;
         await client.query(
             `INSERT INTO model_children
                (id, parent_model_id, child_model_id, priority, enabled, settings)
              VALUES ($1, $2, $3, $4, 1, $5)`,
-            [randomUUID(), tierId, childId, priority, JSON.stringify(entry.settings)]
+            [
+                randomUUID(),
+                tierId,
+                modelIdsByProviderModelId.get(entry.providerModelId),
+                priority,
+                JSON.stringify(entry.settings),
+            ]
         );
     }
-    return priority;
+    return 'created';
 }
 
 /**
- * Install the free provider, account, baseline models, and tiers once.
+ * Install the free provider, account, and baseline models once, and every
+ * requested tier that is not handled yet.
  *
  * @param {object} args
  * @param {object} args.appCtx  needs `pool`, `services.encryptionKey`,
@@ -136,6 +281,7 @@ export async function installFreeModelDefaults({
         modelsCreated: 0,
         tiersCreated: [],
         tiersKept: [],
+        tiersPending: [],
     };
     if (!pool) return summary;
     if (env.FREE_MODELS_ENABLED === false) {
@@ -156,154 +302,82 @@ export async function installFreeModelDefaults({
     const client = await pool.connect();
     try {
         await client.query('BEGIN IMMEDIATE');
-        const marker = await bootstrapStateDao.isComplete(
+        const marker = await bootstrapStateDao.getState(
             client,
             FREE_DEFAULTS_BOOTSTRAP_KEY
         );
-        if (marker) {
+        const previouslyCreated = stringList(marker?.metadata?.tiersCreated);
+        const previouslyKept = stringList(marker?.metadata?.tiersKept);
+        const handled = new Set([...previouslyCreated, ...previouslyKept]);
+        const unhandledTiers = requestedTiers.filter((tier) => !handled.has(tier));
+        if (marker && unhandledTiers.length === 0) {
             await client.query('COMMIT');
             summary.status = 'already-complete';
             return summary;
         }
 
-        const modelIdsByProviderModelId = new Map();
         const existingProvider = await one(
             client,
             'SELECT id FROM providers WHERE provider_key = $1',
             [FREE_PROVIDER_SPEC.providerKey]
         );
-        if (!existingProvider) {
-            const providerId = randomUUID();
-            await client.query(
-                `INSERT INTO providers
-                   (id, provider_key, display_name, kind, adapter_key,
-                    auth_strategy, base_url, enabled, supports_streaming,
-                    supports_tools, settings, metadata)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 1, 1, $8, $9)`,
-                [
-                    providerId,
-                    FREE_PROVIDER_SPEC.providerKey,
-                    FREE_PROVIDER_SPEC.displayName,
-                    FREE_PROVIDER_SPEC.kind,
-                    FREE_PROVIDER_SPEC.adapterKey,
-                    FREE_PROVIDER_SPEC.authStrategy,
-                    FREE_PROVIDER_SPEC.baseUrl,
-                    JSON.stringify(FREE_PROVIDER_SPEC.settings),
-                    JSON.stringify({ seededBy: FREE_DEFAULTS_SEEDED_BY }),
-                ]
-            );
-            summary.providerCreated = true;
+        const modelIdsByProviderModelId =
+            marker || existingProvider
+                ? await enabledFreeProviderModels(client, existingProvider?.id)
+                : await installProvider(client, {
+                    credential,
+                    bundled,
+                    encryptionKey,
+                    summary,
+                });
 
-            const encrypted = encrypt(credential, encryptionKey);
-            await client.query(
-                `INSERT INTO provider_accounts
-                   (id, provider_id, account_label, auth_type, status,
-                    secret_ciphertext, secret_iv, secret_auth_tag,
-                    secret_hint, metadata)
-                 VALUES ($1, $2, $3, 'api_key', 'active', $4, $5, $6, $7, $8)`,
-                [
-                    randomUUID(),
-                    providerId,
-                    bundled ? 'Bundled free-tier key (shared quota)' : 'OpenRouter API key',
-                    encrypted.ciphertext,
-                    encrypted.iv,
-                    encrypted.authTag,
-                    secretHint(credential),
-                    JSON.stringify({
-                        seededBy: FREE_DEFAULTS_SEEDED_BY,
-                        bundled,
-                        ...(bundled ? { expiresAt: BUNDLED_OPENROUTER_FREE_KEY_EXPIRES_AT } : {}),
-                    }),
-                ]
-            );
-            summary.accountCreated = true;
-
-            for (const spec of FREE_BASELINE_MODELS) {
-                const taken = await one(
-                    client,
-                    'SELECT id FROM models WHERE model_key = $1',
-                    [freeModelKey(spec.providerModelId)]
-                );
-                if (taken) continue;
-                const id = await insertModel(client, providerId, spec);
-                modelIdsByProviderModelId.set(spec.providerModelId, id);
-                summary.modelsCreated += 1;
-            }
-        } else {
-            // An operator-owned provider under this key: reuse its enabled
-            // models for tiers, but never add rows or credentials to it.
-            const { rows } = await client.query(
-                'SELECT id, provider_model_id FROM models WHERE provider_id = $1 AND enabled = 1',
-                [existingProvider.id]
-            );
-            for (const row of rows) {
-                modelIdsByProviderModelId.set(row.provider_model_id, row.id);
-            }
+        for (const tierKey of unhandledTiers) {
+            const outcome = await installTier(client, tierKey, modelIdsByProviderModelId);
+            if (outcome === 'created') summary.tiersCreated.push(tierKey);
+            else if (outcome === 'kept') summary.tiersKept.push(tierKey);
+            else summary.tiersPending.push(tierKey);
         }
 
-        for (const tierKey of requestedTiers) {
-            const spec = FREE_TIER_SPECS[tierKey];
-            const alias = await one(
-                client,
-                'SELECT id FROM model_aliases WHERE alias = $1',
-                [tierKey]
-            );
-            if (alias) {
-                summary.tiersKept.push(tierKey);
-                continue;
-            }
-            const existingTier = await one(
-                client,
-                'SELECT id FROM models WHERE model_key = $1',
-                [tierKey]
-            );
-            if (existingTier) {
-                summary.tiersKept.push(tierKey);
-                continue;
-            }
-            const tierId = randomUUID();
-            await client.query(
-                `INSERT INTO models
-                   (id, model_key, display_name, enabled, strategy_kind,
-                    max_attempts, discovery_source, metadata)
-                 VALUES ($1, $2, $3, 1, 'cascade', $4, 'manual', $5)`,
-                [
-                    tierId,
-                    tierKey,
-                    tierKey,
-                    spec.maxAttempts,
-                    JSON.stringify({
-                        seededBy: FREE_DEFAULTS_SEEDED_BY,
-                        tierKey,
-                        cascadeBudgetMs: spec.cascadeBudgetMs,
-                    }),
-                ]
-            );
-            await insertChildren(client, tierId, spec.children, modelIdsByProviderModelId);
-            summary.tiersCreated.push(tierKey);
+        const progressed = summary.tiersCreated.length + summary.tiersKept.length > 0;
+        if (!marker) {
+            await bootstrapStateDao.markComplete(client, {
+                bootstrapKey: FREE_DEFAULTS_BOOTSTRAP_KEY,
+                version: FREE_DEFAULTS_VERSION,
+                metadata: {
+                    providerCreated: summary.providerCreated,
+                    bundledCredential: summary.accountCreated ? bundled : null,
+                    modelsCreated: summary.modelsCreated,
+                    tiersCreated: summary.tiersCreated,
+                    tiersKept: summary.tiersKept,
+                },
+            });
+        } else if (progressed) {
+            await bootstrapStateDao.updateMetadata(client, FREE_DEFAULTS_BOOTSTRAP_KEY, {
+                ...marker.metadata,
+                tiersCreated: [...previouslyCreated, ...summary.tiersCreated],
+                tiersKept: [...previouslyKept, ...summary.tiersKept],
+            });
         }
-
-        await bootstrapStateDao.markComplete(client, {
-            bootstrapKey: FREE_DEFAULTS_BOOTSTRAP_KEY,
-            version: FREE_DEFAULTS_VERSION,
-            metadata: {
-                providerCreated: summary.providerCreated,
-                bundledCredential: summary.accountCreated ? bundled : null,
-                modelsCreated: summary.modelsCreated,
-                tiersCreated: summary.tiersCreated,
-                tiersKept: summary.tiersKept,
-            },
-        });
         if (typeof beforeCommit === 'function') await beforeCommit();
         await client.query('COMMIT');
-        summary.status = 'installed';
-        appCtx.log?.info?.('free model defaults installed', {
+        summary.status = marker ? (progressed ? 'updated' : 'pending') : 'installed';
+        const details = {
             providerCreated: summary.providerCreated,
             modelsCreated: summary.modelsCreated,
             tiersCreated: summary.tiersCreated,
             tiersKept: summary.tiersKept,
+            tiersPending: summary.tiersPending,
             bundledCredential: summary.accountCreated ? bundled : null,
-        });
+        };
+        if (summary.status !== 'pending') {
+            appCtx.log?.info?.('free model defaults installed', details);
+        }
+        if (summary.tiersPending.length > 0) {
+            appCtx.log?.warn?.(
+                'free model default tiers pending: no enabled free provider model among their children',
+                { tiersPending: summary.tiersPending }
+            );
+        }
         return summary;
     } catch (err) {
         await client.query('ROLLBACK').catch(() => {});

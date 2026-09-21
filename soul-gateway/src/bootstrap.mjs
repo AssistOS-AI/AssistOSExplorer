@@ -162,7 +162,11 @@ export async function bootstrap() {
  * auto tag tiers once. This also covers tag tiers created before the install
  * (a start with the free defaults disabled). The step has its own marker, so
  * a start interrupted between the install and this step redoes it, and later
- * starts never re-add models an administrator removed from a tag tier.
+ * starts never re-add models an administrator removed from a tag tier. The
+ * marker is written only after models actually joined: while the free
+ * provider has no enabled model (for example after a catalog that disabled
+ * every row), the step stays pending and a later start joins the re-enabled
+ * models.
  */
 async function joinFreeModelsToTagTiersOnce(appCtx) {
     const bootstrapStateDao = await import('./db/dao/bootstrap-state-dao.mjs');
@@ -179,6 +183,7 @@ async function joinFreeModelsToTagTiersOnce(appCtx) {
             AND m.enabled = 1`,
         [FREE_PROVIDER_KEY]
     );
+    if (rows.length === 0) return;
     await appendNewModelsToTagTiers({ appCtx, models: rows });
     await bootstrapStateDao.markComplete(pool, { bootstrapKey: FREE_TAG_JOIN_BOOTSTRAP_KEY });
 }

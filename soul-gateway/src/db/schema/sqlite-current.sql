@@ -391,7 +391,9 @@ CREATE INDEX IF NOT EXISTS audit_logs_session_started_idx ON audit_logs (session
 -- the same transaction as the records it creates, so an interrupted start
 -- leaves neither the records nor the marker and the step runs again, while
 -- a completed step never re-runs and never resurrects records that an
--- administrator later disabled or deleted.
+-- administrator later disabled or deleted. The free model defaults also list
+-- the tiers they handled in `metadata`, so a later start creates only the
+-- tiers still pending and never one it created or kept before.
 CREATE TABLE IF NOT EXISTS gateway_bootstrap_state (
     bootstrap_key TEXT PRIMARY KEY,
     version       INTEGER NOT NULL CHECK (version > 0),

@@ -11,7 +11,7 @@
  *   1. Catalog admission (`isStrictlyFreeCatalogEntry`): a discovered entry
  *      needs an approved free ID form, explicit zero prompt and completion
  *      prices, zero for every other billable dimension that is present, and
- *      text chat input and output.
+ *      declared text chat input and output modalities.
  *   2. Execution admission (`assertFreeOnlyExecution`): the model ID sent
  *      upstream must still have an approved free form, whatever a model row
  *      or operator override says.
@@ -32,7 +32,10 @@ import { ProviderAuthError } from '../../core/errors.mjs';
 export const FREE_ONLY_SETTING = 'free_only';
 
 const FREE_ROUTER_MODEL_ID = 'openrouter/free';
-const FREE_ID_RE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*:free$/i;
+// One vendor segment, one model segment, and the `:free` variant as the only
+// suffix: a second variant (`vendor/model:online:free`) could select paid
+// behaviour, so an identifier with another colon is not a free form.
+const FREE_ID_RE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*:free$/i;
 const ZERO_STRING_RE = /^0+(?:\.0+)?$/;
 const REQUIRED_PRICE_KEYS = Object.freeze(['prompt', 'completion']);
 const PAID_ROUTING_FIELDS = Object.freeze([
@@ -42,6 +45,8 @@ const PAID_ROUTING_FIELDS = Object.freeze([
     'route',
     'plugins',
     'transforms',
+    // Paid web search; `max_price` has no dimension that bounds it.
+    'web_search_options',
 ]);
 const ZERO_PRICE_CEILING = Object.freeze({
     prompt: 0,
@@ -70,7 +75,10 @@ const NON_CHAT_ID_RE =
  * committed stream ends one idle deadline after its last event and, whatever
  * liveness it keeps producing, `max(streamIdleTimeoutMs,
  * firstContentTimeoutMs)` after its last content event; the cooldown is
- * short because free capacity recovers quickly. Row fields and tier child
+ * short because free capacity recovers quickly. A reply the token limit cut
+ * off before any content fails over like an empty one
+ * (`lengthWithoutContentFails`), because the gateway chose the model and the
+ * next child may answer within the caller's limit. Row fields and tier child
  * settings win.
  */
 export const FREE_MODEL_EXECUTION_POLICY = Object.freeze({
@@ -79,6 +87,7 @@ export const FREE_MODEL_EXECUTION_POLICY = Object.freeze({
     firstContentTimeoutMs: 120_000,
     streamIdleTimeoutMs: 60_000,
     cooldownMs: 60_000,
+    lengthWithoutContentFails: true,
 });
 
 export function isFreeOnlyProvider(providerRecord) {
@@ -112,9 +121,12 @@ export function isExplicitZeroPrice(value) {
     return false;
 }
 
+// A nested price dimension must itself state its prices: an empty object
+// states none, so it is not proof of a zero price.
 function allLeavesZero(value) {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-        return Object.values(value).every(allLeavesZero);
+        const leaves = Object.values(value);
+        return leaves.length > 0 && leaves.every(allLeavesZero);
     }
     return isExplicitZeroPrice(value);
 }
@@ -143,18 +155,21 @@ export function isStrictlyFreeCatalogEntry(entry) {
             return { ok: false, reason: `pricing-${key}-not-zero` };
         }
     }
+    // The modalities are the only evidence that the endpoint is chat, so an
+    // entry without them is not admitted.
     const architecture = entry?.architecture;
-    if (architecture && typeof architecture === 'object') {
-        const input = Array.isArray(architecture.input_modalities)
-            ? architecture.input_modalities
-            : [];
-        const output = Array.isArray(architecture.output_modalities)
-            ? architecture.output_modalities
-            : [];
-        if (!input.includes('text')) return { ok: false, reason: 'no-text-input' };
-        if (!output.includes('text')) return { ok: false, reason: 'no-text-output' };
-        if (output.includes('embeddings')) return { ok: false, reason: 'embeddings' };
+    if (!architecture || typeof architecture !== 'object' || Array.isArray(architecture)) {
+        return { ok: false, reason: 'architecture-missing' };
     }
+    const input = Array.isArray(architecture.input_modalities)
+        ? architecture.input_modalities
+        : [];
+    const output = Array.isArray(architecture.output_modalities)
+        ? architecture.output_modalities
+        : [];
+    if (!input.includes('text')) return { ok: false, reason: 'no-text-input' };
+    if (!output.includes('text')) return { ok: false, reason: 'no-text-output' };
+    if (output.includes('embeddings')) return { ok: false, reason: 'embeddings' };
     return { ok: true, reason: null };
 }
 

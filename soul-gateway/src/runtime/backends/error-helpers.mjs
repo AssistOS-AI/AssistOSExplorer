@@ -76,8 +76,12 @@ const MAX_COOLDOWN_MS = 10 * 60_000;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000;
 const MIN_ACCOUNT_RESET_MS = 60_000;
 const MAX_ACCOUNT_RESET_MS = 26 * 60 * 60_000;
-// Only explicit daily or billing wording marks the whole account. Generic
-// capacity text ("check quota", per-minute limits) stays model-scoped.
+// Daily or billing wording in a 429 message. It marks the whole account only
+// where every model draws on one account allowance (a free-only provider);
+// elsewhere the same words also describe one model's own limit, for example
+// a per-model "requests per day" limit, so an ordinary provider needs an
+// explicit error type or rate-limit headers. Generic capacity text ("check
+// quota", per-minute limits) never marks the account.
 const ACCOUNT_QUOTA_MESSAGE_RE =
     /free-models-per-day|per[- ]day|daily (?:limit|quota)|insufficient[_ ]credits|billing/i;
 // Without an upstream reset instant, an account lock is short and re-probed
@@ -148,9 +152,18 @@ function nextUtcMidnight(now) {
  * Decide whether a 429 exhausted the whole provider account (daily or
  * billing quota) rather than one model's momentary capacity.
  *
+ * @param {object} error
+ * @param {object} [options]
+ * @param {number} [options.now]
+ * @param {boolean} [options.messageHeuristics] also trust daily or billing
+ *   wording in the message; only for a provider whose models share one
+ *   account allowance
  * @returns {{ accountScoped: boolean, resetAt: number|null }}
  */
-export function describeProviderRateLimit(error, now = Date.now()) {
+export function describeProviderRateLimit(
+    error,
+    { now = Date.now(), messageHeuristics = false } = {}
+) {
     const headers = getProviderRateLimitHeaders(error);
     const errorType = getProviderErrorType(error);
     const message = getProviderMessage(error);
@@ -160,7 +173,7 @@ export function describeProviderRateLimit(error, now = Date.now()) {
     const accountScoped =
         errorType === 'insufficient_quota' ||
         errorType === 'billing_hard_limit_reached' ||
-        ACCOUNT_QUOTA_MESSAGE_RE.test(message) ||
+        (messageHeuristics && ACCOUNT_QUOTA_MESSAGE_RE.test(message)) ||
         (remainingZero && longReset);
     if (!accountScoped) return { accountScoped: false, resetAt: null, headers };
     const fallbackReset = Math.min(nextUtcMidnight(now), now + UNKNOWN_RESET_LOCK_MS);

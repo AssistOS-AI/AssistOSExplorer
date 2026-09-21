@@ -45,6 +45,13 @@ describe('free-only model identifiers', () => {
         }
     });
 
+    it('rejects an id that carries another variant besides :free', () => {
+        for (const id of ['openai/gpt-4o:online:free', 'vendor/model:thinking:free', 'vendor/model:free:free']) {
+            assert.equal(isApprovedFreeModelId(id), false, id);
+            assert.equal(isStrictlyFreeCatalogEntry(entry({ id })).reason, 'id-not-free-form', id);
+        }
+    });
+
     it('keeps moderation classifiers out of general chat use', () => {
         assert.equal(isGeneralChatModelId('nvidia/nemotron-3.5-content-safety:free'), false);
         assert.equal(isGeneralChatModelId('meta/llama-guard-4:free'), false);
@@ -153,6 +160,22 @@ describe('catalog admission', () => {
         );
     });
 
+    it('rejects a secondary dimension that states no price at all', () => {
+        for (const pricing of [
+            { prompt: '0', completion: '0', web_search: {} },
+            { prompt: '0', completion: '0', overrides: { long: {} } },
+        ]) {
+            assert.equal(isStrictlyFreeCatalogEntry(entry({ pricing })).ok, false, JSON.stringify(pricing));
+        }
+        assert.equal(isStrictlyFreeCatalogEntry(entry({ pricing: { prompt: '0', completion: '0', web_search: '0' } })).ok, true);
+    });
+
+    it('rejects an entry that declares no modalities', () => {
+        for (const architecture of [undefined, null, [], 'text->text']) {
+            assert.equal(isStrictlyFreeCatalogEntry(entry({ architecture })).reason, 'architecture-missing', String(architecture));
+        }
+    });
+
     it('rejects zero-priced entries with a paid id form', () => {
         assert.equal(isStrictlyFreeCatalogEntry(entry({ id: 'openai/gpt-4o' })).reason, 'id-not-free-form');
         assert.equal(isStrictlyFreeCatalogEntry(entry({ id: 'openrouter/auto' })).ok, false);
@@ -196,14 +219,17 @@ describe('execution admission and request hardening', () => {
             route: 'fallback',
             plugins: [{ id: 'web' }],
             transforms: ['middle-out'],
+            web_search_options: { search_context_size: 'high' },
+            tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }],
             provider: { max_price: { prompt: 10, completion: 10 }, sort: 'price' },
         });
         assert.deepEqual(hardened.provider.max_price, { prompt: 0, completion: 0, request: 0, image: 0 });
         assert.equal(hardened.provider.sort, 'price');
-        for (const field of ['model', 'messages', 'models', 'route', 'plugins', 'transforms']) {
+        for (const field of ['model', 'messages', 'models', 'route', 'plugins', 'transforms', 'web_search_options']) {
             assert.equal(Object.hasOwn(hardened, field), false, field);
         }
         assert.equal(hardened.max_tokens, 64);
+        assert.equal(hardened.tools.length, 1, 'client function tools are not paid routing');
     });
 
     it('lets tier children tune reasoning only', () => {

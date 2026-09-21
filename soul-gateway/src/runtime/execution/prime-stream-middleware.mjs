@@ -9,7 +9,8 @@
  *
  * This middleware pulls events from the backend stream inside the attempt,
  * until the first content-bearing event (`text_delta` or `tool_call_delta`).
- * A stream that ends first is an empty answer and fails the attempt.  Failures before that point
+ * A stream that ends first is an empty answer and fails the attempt, unless
+ * the token limit cut it off (see below).  Failures before that point
  * propagate as ordinary attempt errors, so retry and cascade handle them.
  * The pulled events are replayed at the head of the returned stream.  Once
  * the first content-bearing event exists the response is committed:
@@ -53,9 +54,21 @@ import { clampTimerDelay } from './timer-delay.mjs';
 
 // Only real output commits an attempt: `isContentEvent`, the definition the
 // stream lease also uses. A stream that reaches `done` (or its end) without
-// any text or tool call is an empty answer, for example a reasoning-only
-// reply cut off by the token limit, and fails before commit so a cascade can
-// try the next model instead of returning nothing.
+// any text or tool call is an empty answer and fails before commit so a
+// cascade can try the next model instead of returning nothing.
+//
+// One exception: a reply that the token limit cut off before any text or
+// tool call (finish reason `length`, typically a model that spent its budget
+// reasoning) is returned as a completion, because its finish reason tells
+// the caller to raise its token limit. A row whose policy sets
+// `lengthWithoutContentFails` treats it as an empty answer instead; the
+// free-model execution policy does, because there the gateway, not the
+// caller, chose the model and the next child may answer within the limit.
+
+function endsCutOffByLength(head) {
+    const last = head[head.length - 1];
+    return last?.type === 'done' && last.data?.finish_reason === 'length';
+}
 
 function emptyResponseError(providerKey) {
     const error = new ProviderServerError(providerKey, 'empty');
@@ -167,7 +180,11 @@ export function primeStreamMiddleware() {
                     break;
                 }
             }
-            if (!head.some(isContentEvent)) {
+            const answerable =
+                head.some(isContentEvent) ||
+                (endsCutOffByLength(head) &&
+                    retryPolicy.lengthWithoutContentFails !== true);
+            if (!answerable) {
                 throw emptyResponseError(providerKey);
             }
         } catch (err) {

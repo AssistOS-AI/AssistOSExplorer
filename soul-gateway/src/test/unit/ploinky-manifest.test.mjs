@@ -59,6 +59,7 @@ test('Manifest does not declare runtime-injected agent identity keys', () => {
     );
     assert.equal(env.FREE_MODELS_ENABLED?.default, 'true');
     assert.equal(env.OPENROUTER_API_KEY?.default, '');
+    assert.equal(env.PRICING_DIRECTORY_TIMEOUT_MS?.default, '5000');
 
     for (const name of Object.keys(env)) {
         assert.ok(

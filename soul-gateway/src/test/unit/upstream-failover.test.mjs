@@ -155,14 +155,17 @@ async function seed(appCtx) {
         ['midfail', fake, {}],
         ['textonly', fake, {}],
         ['empty', fake, {}],
-        ['reasoning-only', fake, {}],
+        // A cut-off reply fails over only under the failover policy; the
+        // same upstream answer on a row without it keeps its length finish.
+        ['reasoning-only', fake, { lengthWithoutContentFails: true }],
+        ['length-only', fake, {}],
     ];
     for (const [name, provider, extraPolicy] of modelSpec) {
         const row = await modelsDao.create(pool, {
             modelKey: `${provider.provider_key}/${name}`,
             displayName: name,
             providerId: provider.id,
-            providerModelId: name === 'textonly' ? 'ok' : name,
+            providerModelId: { textonly: 'ok', 'length-only': 'reasoning-only' }[name] || name,
             requestTimeoutMs: 400,
             retryPolicy: { maxAttempts: 1, ...extraPolicy },
             pricingMode: 'free',
@@ -335,6 +338,13 @@ describe('upstream failover through the real cascade', () => {
             assert.equal(result.status, 200, result.text);
             assert.match(result.text, /Hello/);
             assert.deepEqual(upstreamModels(), ['empty', 'reasoning-only', 'ok']);
+        });
+
+        it(`${mode}: a reply cut off by the token limit keeps its length finish without the failover policy`, async () => {
+            const result = await chat('fake/length-only', { stream });
+            assert.equal(result.status, 200, result.text);
+            assert.match(result.text, /"finish_reason":"length"/);
+            assert.deepEqual(upstreamModels(), ['reasoning-only']);
         });
 
         it(`${mode}: a stalled or hung child is bounded and falls back`, async () => {

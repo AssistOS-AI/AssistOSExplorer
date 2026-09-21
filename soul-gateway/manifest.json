@@ -91,6 +91,11 @@
                     "default": "true",
                     "description": "Seed the restricted free OpenRouter provider and tiers on first start"
                 },
+                "PRICING_DIRECTORY_TIMEOUT_MS": {
+                    "required": false,
+                    "default": "5000",
+                    "description": "Upper bound in milliseconds for one load of the external pricing directory"
+                },
                 "AXIOLOGIC_PROXY_API_KEY": {
                     "required": false,
                     "default": "",

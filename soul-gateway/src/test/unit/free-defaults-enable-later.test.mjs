@@ -139,4 +139,31 @@ describe('enabling the free defaults after a disabled first start', () => {
         const restarted = await bootOnce({ FREE_MODELS_ENABLED: 'true' });
         assert.deepEqual(restarted.tiers.free, []);
     });
+
+    it('keeps the tag join pending while no free model is enabled, and joins once one is', async () => {
+        const { openDatabase } = await import('../../db/sqlite-db.mjs');
+        const dbFile = join(dataDir, 'gateway.sqlite3');
+        const freeRows = "provider_id = (SELECT id FROM providers WHERE provider_key = 'openrouter-free')";
+        const joinMarkers = "SELECT COUNT(*) AS n FROM gateway_bootstrap_state WHERE bootstrap_key = 'free-model-defaults-tag-tiers'";
+        const freeTierChildren = "SELECT COUNT(*) AS n FROM model_children WHERE parent_model_id = (SELECT id FROM models WHERE model_key = 'free')";
+        // A start where the join has not run yet and every free row is
+        // disabled, as a catalog that filtered out every model leaves them.
+        let db = await openDatabase({ SQLITE_PATH: dbFile });
+        await db.query("DELETE FROM gateway_bootstrap_state WHERE bootstrap_key = 'free-model-defaults-tag-tiers'");
+        await db.query(`UPDATE models SET enabled = 0 WHERE ${freeRows}`);
+        await db.end();
+
+        await bootOnce({ FREE_MODELS_ENABLED: 'true' });
+        db = await openDatabase({ SQLITE_PATH: dbFile });
+        assert.equal(Number((await db.query(joinMarkers)).rows[0].n), 0, 'nothing joined, so the step stays pending');
+        assert.equal(Number((await db.query(freeTierChildren)).rows[0].n), 0);
+        await db.query(`UPDATE models SET enabled = 1 WHERE ${freeRows}`);
+        await db.end();
+
+        const restarted = await bootOnce({ FREE_MODELS_ENABLED: 'true' });
+        assert.equal(restarted.tiers.free.length, 9, 'the re-enabled models joined on the next start');
+        db = await openDatabase({ SQLITE_PATH: dbFile });
+        assert.equal(Number((await db.query(joinMarkers)).rows[0].n), 1);
+        await db.end();
+    });
 });

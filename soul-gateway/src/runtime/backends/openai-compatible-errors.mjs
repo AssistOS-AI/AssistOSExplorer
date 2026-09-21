@@ -24,6 +24,7 @@ import {
     markAccountScoped,
     rateLimitCooldownMs,
 } from './error-helpers.mjs';
+import { isFreeOnlyProvider } from '../providers/free-model-policy.mjs';
 
 /**
  * Classify an upstream OpenAI-compatible failure.
@@ -35,6 +36,8 @@ import {
  * - 404 means the model or its endpoints are gone: cascade, never retry.
  * - 429 separates account quota (daily/billing, marked until its reset)
  *   from one model's momentary capacity (short cooldown from Retry-After).
+ *   Daily or billing wording alone marks the account only on a free-only
+ *   provider; elsewhere it needs an explicit error type or headers.
  * - Other 4xx are caller-request failures and neither retry nor cascade.
  */
 export function classifyOpenAiCompatibleError(error, ctx) {
@@ -65,7 +68,9 @@ export function classifyOpenAiCompatibleError(error, ctx) {
         return new ProviderTimeoutError(provider);
     }
     if (status === HTTP_STATUS.TOO_MANY_REQUESTS) {
-        const rateLimit = describeProviderRateLimit(error);
+        const rateLimit = describeProviderRateLimit(error, {
+            messageHeuristics: isFreeOnlyProvider(ctx?.providerRecord),
+        });
         if (rateLimit.accountScoped) {
             return markAccountScoped(new ProviderQuotaError(provider), {
                 quotaResetAt: rateLimit.resetAt,

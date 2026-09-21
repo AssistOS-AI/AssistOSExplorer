@@ -300,13 +300,17 @@ describe('OpenAI error classification', () => {
         assert.equal(err.retryable, false);
     });
 
-    it('separates a daily account quota 429 from model capacity', () => {
+    // Daily wording alone marks the account only where every model shares
+    // one account allowance: a free-only provider.
+    const FREE_ONLY_CTX = { providerRecord: { providerKey: 'openrouter-free', settings: { free_only: true } } };
+
+    it('separates a daily account quota 429 from model capacity on a free-only provider', () => {
         const now = Date.now();
         const daily = openaiPlugin.classifyError({
             status: 429,
             body: { error: { message: 'Rate limit exceeded: free-models-per-day.' } },
             headers: { 'x-ratelimit-reset': String(now + 2 * 3600_000) },
-        });
+        }, FREE_ONLY_CTX);
         assert.equal(daily.errorType, 'provider_quota_exhausted');
         assert.equal(daily.failureScope, 'provider-account');
         assert.ok(Math.abs(daily.quotaResetAt - (now + 2 * 3600_000)) < 1000);
@@ -315,21 +319,23 @@ describe('OpenAI error classification', () => {
             status: 429,
             body: { error: { message: 'Provider returned error', metadata: { raw: 'temporarily rate-limited upstream' } } },
             headers: { 'retry-after': '12' },
-        });
+        }, FREE_ONLY_CTX);
         assert.equal(capacity.errorType, 'provider_rate_limited');
         assert.equal(capacity.failureScope, undefined);
         assert.equal(capacity.cooldownMs, 12_000);
     });
 
-    it('keeps per-minute and generic quota wording model-scoped', () => {
-        for (const message of [
-            'Rate limit exceeded: free-models-per-min.',
-            'Resource has been exhausted (e.g. check quota).',
-            'Provider returned error',
-        ]) {
-            const err = openaiPlugin.classifyError({ status: 429, body: { error: { message } } });
-            assert.equal(err.errorType, 'provider_rate_limited', message);
-            assert.equal(err.failureScope, undefined, message);
+    it('keeps per-minute and generic quota wording model-scoped on every provider', () => {
+        for (const ctx of [undefined, FREE_ONLY_CTX]) {
+            for (const message of [
+                'Rate limit exceeded: free-models-per-min.',
+                'Resource has been exhausted (e.g. check quota).',
+                'Provider returned error',
+            ]) {
+                const err = openaiPlugin.classifyError({ status: 429, body: { error: { message } } }, ctx);
+                assert.equal(err.errorType, 'provider_rate_limited', message);
+                assert.equal(err.failureScope, undefined, message);
+            }
         }
     });
 
@@ -338,7 +344,7 @@ describe('OpenAI error classification', () => {
         const err = openaiPlugin.classifyError({
             status: 429,
             body: { error: { message: 'Rate limit exceeded: free-models-per-day.' } },
-        });
+        }, FREE_ONLY_CTX);
         assert.equal(err.failureScope, 'provider-account');
         assert.ok(err.quotaResetAt - before <= 15 * 60_000 + 1000);
         assert.ok(err.quotaResetAt - before >= 60_000);
