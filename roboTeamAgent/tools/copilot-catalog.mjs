@@ -18,6 +18,7 @@ try {
     const result = process.argv.includes('--skills') || process.argv.includes('--set-skill') ? { ...inventory, skillsets: sets }
         : await loadAutocompleteCatalog({ dir: workingDir, skillCatalog: catalog,
             sessionId: input.sessionId, freshSession: true, signal: AbortSignal.timeout(20000),
+            execution: { robotId: context.robot.id },
             sessionCompletions: buildSessionCompletions(workingDir),
             taskCompletions: Object.fromEntries(['view', 'continue', 'stop', 'model', 'login'].map((action) =>
                 [action, buildTaskActionCompletions(workingDir, action)])) });

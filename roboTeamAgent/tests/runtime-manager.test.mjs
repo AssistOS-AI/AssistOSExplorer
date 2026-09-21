@@ -157,7 +157,7 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
     assert.equal(firstInvocation.command, process.execPath);
     assert.match(firstInvocation.args[0], /robot-task.mjs$/);
     assert.equal(firstInvocation.args[3], '--home');
-    assert.ok(firstInvocation.args[4].startsWith(path.join(workspace, '.roboteam-homes') + path.sep));
+    assert.equal(firstInvocation.args[4], await fs.realpath(path.join(dataDir, 'robots', robot.id, 'home')));
     assert.deepEqual(firstInvocation.args.slice(5, 7), ['--cwd', workspace]);
     assert.ok(firstInvocation.args.includes('--taskFile'));
     assert.equal(firstInvocation.args[firstInvocation.args.indexOf('--ca') + 1], 'codex');

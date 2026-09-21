@@ -131,7 +131,7 @@ export const createRepositoryClient = () => ({
     assert.match(first.stderr, /session-ready/);
     const sessionPath = path.join(workspace, '.achilles-cli/sessions', `${sessionId}.json`);
     const firstSession = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
-    assert.ok(firstSession.engine.home.startsWith(path.join(workspace, '.roboteam-homes') + path.sep));
+    assert.equal(firstSession.engine.home, await fs.realpath(path.join(dataDir, 'robots', robot.id, 'home')));
     assert.equal(firstSession.cwd, workspace);
     const second = await run('Follow up', true);
     assert.equal(second.output.resumed, true);

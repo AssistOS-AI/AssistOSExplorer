@@ -80,7 +80,8 @@ export async function loadAutocompleteCatalog(options = {}) {
     const sessionStore = preview ? { loadSession: () => preview } : storedSessions;
     const modelSubCommands = [{ name: 'default', description: 'Use the native backend default', argCompletions: [] }];
     let modelError;
-    const engine = options.engine || createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, installation });
+    const execution = options.execution || (options.robotId ? { robotId: options.robotId } : {});
+    const engine = options.engine || createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, installation, execution });
     try {
         const current = options.sessionId ? storedSessions.loadSession(options.sessionId)
             : preview || await storedSessions.ensureCurrentSession();
@@ -113,7 +114,8 @@ async function main() {
     for await (const chunk of process.stdin) raw += chunk;
     const payload = raw.trim() ? JSON.parse(raw) : {};
     const input = payload.input || payload.arguments || payload.params?.arguments || {};
-    process.stdout.write(`${JSON.stringify(await loadAutocompleteCatalog({ dir: input.dir }))}\n`);
+    const robotId = typeof input.robotId === 'string' && input.robotId.trim() ? input.robotId.trim() : undefined;
+    process.stdout.write(`${JSON.stringify(await loadAutocompleteCatalog({ dir: input.dir, robotId }))}\n`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await main();

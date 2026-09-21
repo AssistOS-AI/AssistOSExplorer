@@ -40,8 +40,8 @@ test('webchat autocomplete and robot execution receive the same dynamic OpenCode
         entryPath: fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url)),
         async discoverCodingAgents() { return [{ name: 'opencode', binary: '/unused/opencode', available: true }]; },
         createCodingAgentService({ env, workspace }) {
-            // Model discovery mounts the canonical cwd and home, so the working-home
-            // Soul Gateway socket link resolves inside the sandbox.
+            // Model discovery mounts the canonical cwd and the robot home, so the
+            // robot-home Soul Gateway socket resolves inside the sandbox.
             assert.equal(workspace, dir);
             assert.equal(env.PLOINKY_AGENT_API_KEY, undefined);
             assert.equal(env.OPENCODE_CONFIG_CONTENT, undefined);

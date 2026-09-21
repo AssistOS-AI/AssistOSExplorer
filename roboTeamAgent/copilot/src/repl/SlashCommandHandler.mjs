@@ -8,6 +8,7 @@
 
 import { formatSlashResult } from '../ui/ResultFormatter.mjs';
 import { showHelp } from '../ui/HelpSystem.mjs';
+import { PUBLIC_BASE_PATH } from '../../../server/constants.mjs';
 
 function modelKey(model) {
     return typeof model === 'string' ? model : model.id || model.name || model.key;
@@ -63,6 +64,12 @@ export const COMMAND_DEFINITIONS = {
     'tasks': {
         usage: '/tasks [count|all]',
         description: 'Show background task status and bounded final log tails',
+        args: 'optional',
+        needsSkillArg: false,
+    },
+    'roboflow': {
+        usage: '/roboflow',
+        description: 'Open the RoboFlow task flow monitor',
         args: 'optional',
         needsSkillArg: false,
     },
@@ -471,6 +478,10 @@ export class SlashCommandHandler {
             } catch (error) {
                 return { handled: true, error: error.message };
             }
+        }
+
+        if (command === 'roboflow') {
+            return { handled: true, result: `RoboFlow task flow monitor: [Open RoboFlow](${PUBLIC_BASE_PATH}roboflow)` };
         }
 
         if (command === 'session') {

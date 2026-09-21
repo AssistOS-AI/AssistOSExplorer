@@ -31,6 +31,9 @@
   <h2>Tasks in WebChat</h2>
   <p>The chat header identifies the current robot. Task cards identify the executing robot and show status and duration. Cards always show <strong>View Task Details</strong>, which opens logs and the continuation composer in the right pane. Graphical tasks also expose <strong>Open live browser</strong> or <strong>Open live desktop</strong>. Logs and continuation inputs are not embedded in the conversation.</p>
 
+  <h2>RoboFlow team workflows</h2>
+  <p>Administrators create workflow types from the dashboard's <strong>Workflow types</strong> panel or with <code>roboflow_create_workflow</code>. Each member line is <code>robot | executionType | role | skillsets | skills</code>; execution type is <code>terminal</code>, <code>desktop</code> or <code>browser</code>. A desktop or browser member runs a visible GUI task, and RoboTeam's current GUI automation uses Codex, so its robot needs Codex enabled when the task runs. The manager copilot creates a task flow with <code>roboflow_create_flow</code>, invokes a member with <code>roboflow_invoke_member</code>, reads that run's final summary, and closes the flow with <code>roboflow_finish_flow</code>. RoboFlow rejects any robot, execution type or skill outside the flow's captured workflow type. Full logs stay on the read-only RoboFlow page opened by <code>/roboflow</code> or the Markdown link the copilot returns; the side panel renders it through the normal embedded-link handling. <code>roboflow_stop_flow</code> stops the flow and cancels its active runtime task.</p>
+
   <h2>MCP tools</h2>
   <table>
     <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
@@ -56,6 +59,15 @@
       <tr><td><code>getSessionUrlForRobotBrowser</code></td><td>Returns the authenticated Selkies URL for a running Browser container.</td></tr>
       <tr><td><code>stopDesktopContainerForRobot</code></td><td>Stops and removes the Desktop container and its MCP bridge after its task has stopped.</td></tr>
       <tr><td><code>stopBrowserContainerForRobot</code></td><td>Stops and removes the Browser container and its MCP bridge after its task has stopped.</td></tr>
+      <tr><td><code>roboflow_list_workflows</code></td><td>Lists the RoboFlow workflow types: reusable team configurations that declare which robots participate, their skillsets/skills and their terminal, desktop or browser execution type.</td></tr>
+      <tr><td><code>roboflow_create_workflow</code></td><td>Creates a RoboFlow workflow type. Only an authenticated administrator may call it; member robots are validated. A desktop or browser member needs its robot to have Codex enabled when the task runs.</td></tr>
+      <tr><td><code>roboflow_delete_workflow</code></td><td>Deletes a workflow type. Existing task flows keep the configuration they captured at creation. Only an authenticated administrator may call it.</td></tr>
+      <tr><td><code>roboflow_create_flow</code></td><td>Creates a task flow for one objective from a workflow type inside a workspace folder, capturing the workflow members at that moment.</td></tr>
+      <tr><td><code>roboflow_list_flows</code></td><td>Lists task flows, optionally filtered to one workspace folder.</td></tr>
+      <tr><td><code>roboflow_get_flow</code></td><td>Returns one task flow with each robot run's final summary, status, timestamps and runtime task id. The full logs stay on the monitoring page.</td></tr>
+      <tr><td><code>roboflow_invoke_member</code></td><td>Invokes a configured workflow member with an instruction, waits for the robot run to finish, and returns only that run's final summary. It preserves the native async task contract and accepts no member outside the workflow type.</td></tr>
+      <tr><td><code>roboflow_finish_flow</code></td><td>Marks a task flow done with an optional result. Only the managing copilot decides when a flow is complete.</td></tr>
+      <tr><td><code>roboflow_stop_flow</code></td><td>Stops a task flow and cancels its active robot run.</td></tr>
     </tbody>
   </table>
 
@@ -67,7 +79,7 @@
   <p>ALA introduces mounted skills in <code>.agents/skills</code> once at the start of the native conversation. Continued turns do not repeat that instruction. Conversation commands do not change skill selection.</p>
 <h2 id="robot-commands">Commands available in every robot</h2>
   <p>WebChat autocomplete passes the selected robot and conversation id to the command catalog. <code>/model </code> lists native models through ALA for that conversation's saved backend. Before the first turn, discovery previews the available backend without creating or selecting a saved conversation. The menu refreshes on conversation or backend changes and reports model-discovery failures instead of silently showing no options.</p>
-  <p>The bundled copilot skillset contains <code>bash</code>, <code>launch-gpt-researcher</code>, and <code>launch-robot</code>. Codex, OpenCode, and Pi are ALA execution backends, not separate Ploinky workers or launcher skills. Use <code>launch-robot</code> for delegated robot work.</p>
+  <p>The bundled copilot skillset contains <code>bash</code>, <code>launch-gpt-researcher</code>, <code>launch-robot</code>, and <code>roboflow</code>. Codex, OpenCode, and Pi are ALA execution backends, not separate Ploinky workers or launcher skills. Use <code>launch-robot</code> for delegated robot work and <code>roboflow</code> to run a configured team on one objective.</p>
   <p>Every <a href="wiki.html#definition-robot">robot</a>, including default, uses the same conversational wrapper. Commands select a conversation, inspect delegated tasks, choose skills, or configure subsequent executions. The robot's allowed skillsets and saved accounts determine which work it can execute; having the same command interface does not grant every robot the same skills.</p>
   <table>
     <thead><tr><th scope="col">Command</th><th scope="col">Behavior</th></tr></thead>
@@ -144,7 +156,7 @@ Continue with the tests.</code></pre>
   </table>
   <p><code>--home</code> supplies saved state; it does not contain a private copy of a coding-agent executable. RoboTeam resolves and caches the current Codex, OpenCode, and Pi npm packages. A concrete <code>--ca</code> selection places that CLI on ALA's <code>PATH</code>; <code>auto</code> prepares the robot's configured agents and lets ALA apply its priority. The Desktop mounts only those shared generations so a user can authenticate the selected CLI against the robot's persistent <code>/config</code> home. Use Codex for Desktop and Browser automation because task-local MCP URL injection is currently implemented only by the Codex adapter. OpenCode and Pi can run Simple tasks.</p>
 
-  <p>The shared <code>server/robot-task.mjs</code> wrapper prepares a conversation and starts the ALA command above. Chat uses the same engine through <code>server/robot-cli.mjs</code>. The engine also passes <code>--session-id</code>, <code>--control-stdin</code>, <code>--permissions</code>, a private <code>--config</code>, and <code>--folder &lt;runtime-directory&gt; as ploinky-runtime</code> for direct SDK scripts. Conversation state is stored in <code>&lt;cwd&gt;/.achilles-cli/sessions/</code>; ALA native metadata stays in a persistent home beneath the writable working folder. Existing native state is migrated without deleting its original files.</p>
+  <p>The shared <code>server/robot-task.mjs</code> wrapper prepares a conversation and starts the ALA command above. Chat uses the same engine through <code>server/robot-cli.mjs</code>. The engine also passes <code>--session-id</code>, <code>--control-stdin</code>, <code>--permissions</code>, a private <code>--config</code>, and <code>--folder &lt;runtime-directory&gt; as ploinky-runtime</code> for direct SDK scripts. Conversation state is stored in <code>&lt;cwd&gt;/.achilles-cli/sessions/</code>; ALA native metadata stays in the robot home, mounted writable for execution. The same robot home is used by WebChat, Desktop, Browser and Terminal, so credentials and native sessions never diverge.</p>
   <h2 id="robot-runtime-diagram">Robot runtime and task delegation</h2>
   <figure class="diagram">
     <pre class="mermaid">flowchart LR

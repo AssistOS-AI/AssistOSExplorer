@@ -10,6 +10,22 @@ const robotCount = document.querySelector('#robotCount');
 const createForm = document.querySelector('#createForm');
 const formMessage = document.querySelector('#formMessage');
 const refreshButton = document.querySelector('#refreshButton');
+const workflowForm = document.querySelector('#workflowForm');
+const workflowMessage = document.querySelector('#workflowMessage');
+const workflowListMessage = document.querySelector('#workflowListMessage');
+const workflowsList = document.querySelector('#workflowsList');
+const workflowCount = document.querySelector('#workflowCount');
+const robotToAdd = document.querySelector('#robotToAdd');
+const addMemberButton = document.querySelector('#addMemberButton');
+const membersEditor = document.querySelector('#membersEditor');
+const membersHint = document.querySelector('#membersHint');
+const addWorkflowButton = document.querySelector('#addWorkflowButton');
+const workflowDialog = document.querySelector('#workflowDialog');
+const workflowBackButton = document.querySelector('#workflowBackButton');
+const workflowNextButton = document.querySelector('#workflowNextButton');
+const workflowCreateButton = document.querySelector('#workflowCreateButton');
+const workflowCancelButton = document.querySelector('#workflowCancelButton');
+const workflowDialogClose = document.querySelector('#workflowDialogClose');
 const logPollers = new Set();
 
 function closeOpenMenus(except) {
@@ -301,6 +317,9 @@ async function loadRobots() {
         const result = await api('api/robots');
         renderRobots(result.robots || [], result.canAdmin === true);
         for (const field of createForm.elements) field.disabled = result.canAdmin !== true;
+        workflowState.robots = result.robots || [];
+        populateRobotPicker();
+        await loadWorkflows(result.canAdmin === true);
     } catch (error) {
         robotsList.textContent = `Robots unavailable: ${error.message}`;
     } finally {
@@ -327,4 +346,354 @@ createForm.addEventListener('submit', async (event) => {
 });
 
 refreshButton.addEventListener('click', loadRobots);
+
+function setWorkflowMessage(text, kind) {
+    workflowMessage.textContent = text || '';
+    workflowMessage.className = `message ${kind}`.trim();
+}
+
+function setWorkflowListMessage(text, kind) {
+    if (!workflowListMessage) return;
+    workflowListMessage.textContent = text || '';
+    workflowListMessage.className = `message ${kind}`.trim();
+}
+
+const EXECUTION_TYPES = [
+    { value: 'terminal', label: 'Terminal', hint: 'Non-GUI CLI work in the member cwd' },
+    { value: 'desktop', label: 'Desktop', hint: 'Visible Linux desktop with computer use' },
+    { value: 'browser', label: 'Browser', hint: 'Visible Chromium with browser use' },
+];
+
+const workflowState = { robots: [], members: [], canAdmin: false };
+let memberSequence = 0;
+
+function robotByName(name) {
+    return workflowState.robots.find((robot) => robot.name === name) || null;
+}
+
+function populateRobotPicker() {
+    if (!robotToAdd) return;
+    robotToAdd.replaceChildren();
+    if (!workflowState.robots.length) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = 'No robots available';
+        robotToAdd.appendChild(option);
+        robotToAdd.disabled = true;
+        return;
+    }
+    for (const robot of workflowState.robots) {
+        const option = document.createElement('option');
+        option.value = robot.name;
+        option.textContent = robot.specialization ? `${robot.name} — ${robot.specialization}` : robot.name;
+        robotToAdd.appendChild(option);
+    }
+    robotToAdd.disabled = workflowState.canAdmin !== true;
+}
+
+function memberSupportsExecution(robot, executionType) {
+    if (executionType === 'terminal') return true;
+    return Array.isArray(robot?.codingAgents) && robot.codingAgents.includes('codex');
+}
+
+function addWorkflowMember() {
+    const robotName = robotToAdd?.value;
+    if (!robotName) return;
+    workflowState.members.push({ key: ++memberSequence, robotName, role: '', executionType: 'terminal', skillSets: new Set() });
+    renderMembersEditor();
+}
+
+function removeWorkflowMember(key) {
+    workflowState.members = workflowState.members.filter((member) => member.key !== key);
+    renderMembersEditor();
+}
+
+function renderMembersEditor() {
+    if (!membersEditor) return;
+    membersEditor.replaceChildren();
+    if (membersHint) membersHint.hidden = workflowState.members.length > 0;
+    workflowState.members.forEach((member, index) => membersEditor.appendChild(memberCard(member, index)));
+}
+
+function memberCard(member, index) {
+    const robot = robotByName(member.robotName);
+    const card = document.createElement('article');
+    card.className = 'member-card';
+
+    const header = document.createElement('div');
+    header.className = 'member-card-header';
+    const title = document.createElement('div');
+    title.className = 'member-card-title';
+    const name = document.createElement('strong');
+    name.textContent = member.robotName;
+    title.appendChild(name);
+    if (robot?.specialization) {
+        const specialization = document.createElement('span');
+        specialization.textContent = robot.specialization;
+        title.appendChild(specialization);
+    }
+    header.appendChild(title);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'button danger';
+    remove.textContent = 'Remove';
+    remove.disabled = workflowState.canAdmin !== true;
+    remove.addEventListener('click', () => removeWorkflowMember(member.key));
+    header.appendChild(remove);
+    card.appendChild(header);
+
+    const role = document.createElement('label');
+    role.className = 'field';
+    const roleLabel = document.createElement('span');
+    roleLabel.textContent = 'Role (optional)';
+    const roleInput = document.createElement('input');
+    roleInput.type = 'text';
+    roleInput.maxLength = 500;
+    roleInput.placeholder = 'What this robot does in the team';
+    roleInput.value = member.role;
+    roleInput.disabled = workflowState.canAdmin !== true;
+    roleInput.addEventListener('input', () => { member.role = roleInput.value; });
+    role.appendChild(roleLabel);
+    role.appendChild(roleInput);
+    card.appendChild(role);
+
+    const execution = document.createElement('div');
+    execution.className = 'field';
+    const executionLabel = document.createElement('span');
+    executionLabel.textContent = 'Execution type';
+    execution.appendChild(executionLabel);
+    const options = document.createElement('div');
+    options.className = 'member-execution';
+    for (const type of EXECUTION_TYPES) {
+        const option = document.createElement('label');
+        option.className = `execution-option${member.executionType === type.value ? ' selected' : ''}`;
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = `execution-${member.key}`;
+        input.value = type.value;
+        input.checked = member.executionType === type.value;
+        input.disabled = workflowState.canAdmin !== true;
+        input.addEventListener('change', () => {
+            if (!input.checked) return;
+            member.executionType = type.value;
+            renderMembersEditor();
+        });
+        const text = document.createElement('span');
+        text.className = 'execution-option-text';
+        const strong = document.createElement('strong');
+        strong.textContent = type.label;
+        const small = document.createElement('small');
+        small.textContent = type.hint;
+        text.appendChild(strong);
+        text.appendChild(small);
+        option.appendChild(input);
+        option.appendChild(text);
+        options.appendChild(option);
+    }
+    execution.appendChild(options);
+    if (member.executionType !== 'terminal' && !memberSupportsExecution(robot, member.executionType)) {
+        const warning = document.createElement('p');
+        warning.className = 'hint';
+        warning.textContent = `Robot ${member.robotName} has no Codex enabled; ${member.executionType} tasks need Codex at execution time.`;
+        execution.appendChild(warning);
+    }
+    card.appendChild(execution);
+
+    const skillsets = document.createElement('div');
+    skillsets.className = 'field';
+    const skillsetsLabel = document.createElement('span');
+    skillsetsLabel.textContent = 'Skillsets';
+    skillsets.appendChild(skillsetsLabel);
+    const available = Array.isArray(robot?.skillsets) ? robot.skillsets : [];
+    if (!available.length) {
+        const hint = document.createElement('p');
+        hint.className = 'hint';
+        hint.textContent = 'This robot has no skillsets registered. The member will run with no skills.';
+        skillsets.appendChild(hint);
+    } else {
+        const boxes = document.createElement('div');
+        boxes.className = 'skillset-options';
+        for (const set of available) {
+            const option = document.createElement('label');
+            option.className = 'skillset-option';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.value = set.id;
+            input.checked = member.skillSets.has(set.id);
+            input.disabled = workflowState.canAdmin !== true;
+            input.addEventListener('change', () => {
+                if (input.checked) member.skillSets.add(set.id);
+                else member.skillSets.delete(set.id);
+            });
+            const text = document.createElement('span');
+            text.className = 'skillset-option-text';
+            const strong = document.createElement('strong');
+            strong.textContent = set.name;
+            text.appendChild(strong);
+            if (set.description) {
+                const small = document.createElement('small');
+                small.textContent = set.description;
+                text.appendChild(small);
+            }
+            option.appendChild(input);
+            option.appendChild(text);
+            boxes.appendChild(option);
+        }
+        skillsets.appendChild(boxes);
+    }
+    card.appendChild(skillsets);
+
+    card.dataset.index = String(index);
+    return card;
+}
+
+function collectWorkflowMembers() {
+    if (!workflowState.members.length) throw new Error('Add at least one robot to the workflow.');
+    return workflowState.members.map((member) => ({
+        robotName: member.robotName,
+        role: member.role.trim(),
+        executionType: member.executionType,
+        skillSets: [...member.skillSets],
+        skills: [],
+    }));
+}
+
+function showWorkflowStep(step) {
+    if (!workflowForm) return;
+    for (const panel of workflowForm.querySelectorAll('[data-step]')) {
+        panel.hidden = Number(panel.dataset.step) !== step;
+    }
+    if (workflowBackButton) workflowBackButton.hidden = step !== 2;
+    if (workflowNextButton) workflowNextButton.hidden = step !== 1;
+    if (workflowCreateButton) workflowCreateButton.hidden = step !== 2;
+    setWorkflowMessage('');
+}
+
+function workflowDetailsValid() {
+    const nameInput = workflowForm?.querySelector('input[name="name"]');
+    return nameInput ? nameInput.reportValidity() : true;
+}
+
+function openWorkflowDialog() {
+    if (!workflowDialog || !workflowForm) return;
+    workflowForm.reset();
+    workflowState.members = [];
+    renderMembersEditor();
+    showWorkflowStep(1);
+    setWorkflowListMessage('');
+    if (typeof workflowDialog.showModal === 'function') workflowDialog.showModal();
+    else workflowDialog.setAttribute('open', '');
+}
+
+function closeWorkflowDialog() {
+    if (!workflowDialog) return;
+    if (workflowDialog.open && typeof workflowDialog.close === 'function') workflowDialog.close();
+    else workflowDialog.removeAttribute('open');
+}
+
+function renderWorkflows(workflows, canAdmin) {
+    workflowCount.textContent = `${workflows.length} workflow${workflows.length === 1 ? '' : 's'}`;
+    workflowsList.replaceChildren();
+    if (!workflows.length) {
+        const empty = document.createElement('p');
+        empty.className = 'lede';
+        empty.textContent = 'No workflow types yet.';
+        workflowsList.appendChild(empty);
+    }
+    for (const workflow of workflows) {
+        const card = document.createElement('article');
+        card.className = 'workflow-card';
+        const title = document.createElement('h3');
+        title.textContent = workflow.name;
+        card.appendChild(title);
+        if (workflow.description) {
+            const description = document.createElement('p');
+            description.textContent = workflow.description;
+            card.appendChild(description);
+        }
+        const list = document.createElement('ul');
+        for (const member of workflow.members) {
+            const item = document.createElement('li');
+            const parts = [`${member.robotName} · ${member.executionType}`];
+            if (member.role) parts.push(member.role);
+            if (Array.isArray(member.skillSets) && member.skillSets.length) parts.push(`skillsets: ${member.skillSets.join(', ')}`);
+            if (Array.isArray(member.skills) && member.skills.length) parts.push(`skills: ${member.skills.join(', ')}`);
+            item.textContent = parts.join(' · ');
+            list.appendChild(item);
+        }
+        card.appendChild(list);
+        if (canAdmin) {
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'button danger';
+            remove.textContent = 'Delete workflow';
+            remove.addEventListener('click', async () => {
+                remove.disabled = true;
+                try {
+                    await api(`api/roboflow/workflows/${workflow.id}`, { method: 'DELETE' });
+                    await loadWorkflows(workflowState.canAdmin);
+                } catch (error) {
+                    setWorkflowListMessage(error.message, 'error');
+                } finally {
+                    remove.disabled = false;
+                }
+            });
+            card.appendChild(remove);
+        }
+        workflowsList.appendChild(card);
+    }
+}
+
+async function loadWorkflows(canAdmin) {
+    workflowState.canAdmin = canAdmin === true;
+    try {
+        const result = await api('api/roboflow/workflows');
+        renderWorkflows(result.workflows || [], workflowState.canAdmin);
+    } catch (error) {
+        workflowsList.textContent = `Workflows unavailable: ${error.message}`;
+    }
+    if (workflowForm) {
+        for (const field of workflowForm.querySelectorAll('input, textarea, select, button')) field.disabled = !workflowState.canAdmin;
+        populateRobotPicker();
+        renderMembersEditor();
+    }
+    if (addWorkflowButton) addWorkflowButton.disabled = !workflowState.canAdmin;
+}
+
+if (workflowForm) {
+    addMemberButton?.addEventListener('click', addWorkflowMember);
+    addWorkflowButton?.addEventListener('click', openWorkflowDialog);
+    workflowNextButton?.addEventListener('click', () => { if (workflowDetailsValid()) showWorkflowStep(2); });
+    workflowBackButton?.addEventListener('click', () => showWorkflowStep(1));
+    workflowCancelButton?.addEventListener('click', closeWorkflowDialog);
+    workflowDialogClose?.addEventListener('click', closeWorkflowDialog);
+    workflowDialog?.addEventListener('close', () => {
+        workflowForm.reset();
+        workflowState.members = [];
+        renderMembersEditor();
+        setWorkflowMessage('');
+    });
+    workflowForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const submit = workflowCreateButton || workflowForm.querySelector('button[type="submit"]');
+        if (submit) submit.disabled = true;
+        const data = new FormData(workflowForm);
+        try {
+            const members = collectWorkflowMembers();
+            await api('api/roboflow/workflows', { method: 'POST', body: {
+                name: data.get('name'),
+                description: data.get('description'),
+                members,
+            } });
+            closeWorkflowDialog();
+            setWorkflowListMessage('Workflow type created.', 'success');
+            await loadWorkflows(workflowState.canAdmin);
+        } catch (error) {
+            setWorkflowMessage(error.message, 'error');
+        } finally {
+            if (submit) submit.disabled = !workflowState.canAdmin;
+        }
+    });
+}
+
 await loadRobots();

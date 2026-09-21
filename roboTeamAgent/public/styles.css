@@ -359,3 +359,65 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .active-coding-agent { margin: 8px 0 0; font-size: 0.875rem; color: var(--text-soft); }
 
 .skill-repository-warning { color: var(--warning, #b7791f); overflow-wrap: anywhere; }
+
+/* RoboFlow workflow builder */
+.workflow-builder { display: grid; gap: 16px; margin-top: 8px; }
+.builder-panel { padding: 16px; background: color-mix(in srgb, var(--bg) 55%, var(--surface)); border: 1px solid var(--border); border-radius: var(--radius-lg, 12px); }
+.builder-step { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.builder-step h3 { margin: 0; font-size: var(--font-md, 1rem); }
+.builder-step-index { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 0.8rem; font-weight: 600; }
+.builder-grid { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(240px, 2fr); gap: 16px; align-items: start; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field > span { font-size: var(--font-sm); font-weight: 500; color: var(--text-soft); }
+.field select { width: 100%; min-width: 0; padding: 10px 12px; color: var(--text); background: var(--input-bg); border: 1px solid var(--border-strong); border-radius: var(--radius-md); box-shadow: var(--input-shadow); outline: none; }
+.field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .14); }
+.member-adder { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; }
+.members-editor { display: grid; gap: 12px; margin-top: 14px; }
+.member-card { display: grid; gap: 14px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg, 12px); box-shadow: var(--shadow-sm); }
+.member-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.member-card-title { display: flex; flex-direction: column; min-width: 0; }
+.member-card-title strong { font-size: var(--font-md, 1rem); }
+.member-card-title span { color: var(--text-soft); font-size: var(--font-sm); }
+.member-execution { display: flex; flex-wrap: wrap; gap: 10px; }
+.execution-option { display: flex; align-items: flex-start; gap: 8px; flex: 1 1 150px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: border-color .15s ease, background-color .15s ease; }
+.execution-option:hover { border-color: var(--border-strong); }
+.execution-option.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.execution-option input { appearance: none; -webkit-appearance: none; flex: 0 0 auto; width: 18px; height: 18px; min-width: 0; margin: 1px 0 0; padding: 0; border: 2px solid var(--border-strong); border-radius: 50%; background: var(--input-bg); display: inline-block; position: relative; cursor: pointer; }
+.execution-option input:checked { border-color: var(--accent); }
+.execution-option input:checked::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--accent); }
+.execution-option input:disabled, .skillset-option input:disabled { opacity: .5; cursor: not-allowed; }
+.execution-option-text { display: flex; flex-direction: column; gap: 2px; }
+.execution-option-text small { color: var(--text-soft); font-size: var(--font-xs, 0.75rem); }
+.skillset-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.skillset-option { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; }
+.skillset-option:hover { border-color: var(--border-strong); }
+.skillset-option input { appearance: none; -webkit-appearance: none; flex: 0 0 auto; width: 20px; height: 20px; min-width: 0; margin: 0; padding: 0; border: 2px solid var(--border-strong); border-radius: 5px; background: var(--input-bg); display: inline-block; position: relative; cursor: pointer; }
+.skillset-option input:checked { background: var(--accent); border-color: var(--accent); }
+.skillset-option input:checked::after { content: ''; position: absolute; left: 5px; top: 1px; width: 5px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.skillset-option-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.skillset-option-text small { color: var(--text-soft); font-size: var(--font-xs, 0.75rem); }
+.hint { margin: 0; color: var(--text-soft); font-size: var(--font-sm); }
+.hint.error { color: var(--danger); }
+.builder-actions { display: flex; justify-content: flex-end; }
+.workflow-list { display: grid; gap: 12px; margin-top: 16px; }
+.workflow-card { padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg, 12px); }
+.workflow-card h3 { margin: 0 0 4px; }
+.workflow-card p { margin: 0 0 8px; color: var(--text-soft); }
+.workflow-card ul { margin: 0 0 10px; padding-left: 18px; }
+.workflow-card .button { margin-top: 4px; }
+@media (max-width: 640px) {
+    .builder-grid { grid-template-columns: 1fr; }
+    .member-adder { grid-template-columns: 1fr; }
+}
+
+/* RoboFlow workflow dialog */
+.workflow-dialog { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--border); border-radius: var(--radius-xl, 16px); background: var(--surface); color: var(--text); box-shadow: 0 24px 60px rgba(15, 23, 42, .3); }
+.workflow-dialog::backdrop { background: rgba(15, 23, 42, .55); }
+.workflow-dialog .workflow-builder { padding: 20px; }
+.dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dialog-header h2 { margin: 0; font-size: var(--font-md, 1.05rem); }
+.dialog-close { min-height: 32px; padding: 4px 10px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.builder-panel[hidden] { display: none; }
+.heading-main { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.execution-option input:focus-visible, .skillset-option input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

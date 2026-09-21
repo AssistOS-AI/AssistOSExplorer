@@ -167,9 +167,97 @@ function sessionRobotId(pathname) {
     return pathname.match(new RegExp(`^/api/robots/(${ROBOT_ID})/session(?:/|$)`))?.[1] || null;
 }
 
+const FLOW_PATH = '/api/roboflow/flows/(flow_[0-9a-f]{24})';
+const INVOCATION_PATH = `${FLOW_PATH}/invocations/(inv_[0-9a-f]{24})`;
+const WORKFLOW_PATH = '/api/roboflow/workflows/([a-z0-9][a-z0-9-]{2,63})';
+
+function sendText(res, status, body) {
+    const payload = Buffer.from(String(body ?? ''));
+    res.writeHead(status, {
+        'content-type': 'text/plain; charset=utf-8',
+        'content-length': payload.length,
+        'cache-control': 'no-store',
+    });
+    res.end(payload);
+}
+
+async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir }) {
+    if (!pathname.startsWith('/api/roboflow') && !['/roboflow', '/roboflow.js', '/roboflow.css'].includes(pathname)) {
+        return false;
+    }
+    if (pathname === '/roboflow' && req.method === 'GET') {
+        await serveFile(res, publicDir, 'roboflow.html');
+        return true;
+    }
+    if (pathname === '/roboflow.js' && req.method === 'GET') {
+        await serveFile(res, publicDir, 'roboflow.js');
+        return true;
+    }
+    if (pathname === '/roboflow.css' && req.method === 'GET') {
+        await serveFile(res, publicDir, 'roboflow.css');
+        return true;
+    }
+
+    if (pathname === '/api/roboflow/workflows' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, workflows: await roboflow.listWorkflows() });
+        return true;
+    }
+    if (pathname === '/api/roboflow/workflows' && req.method === 'POST') {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        sendJson(res, 201, { ok: true, workflow: await roboflow.createWorkflow(await readJsonBody(req)) });
+        return true;
+    }
+    const workflowId = pathname.match(new RegExp(`^${WORKFLOW_PATH}$`))?.[1];
+    if (workflowId && req.method === 'DELETE') {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        sendJson(res, 200, { ok: true, deleted: await roboflow.deleteWorkflow(workflowId) });
+        return true;
+    }
+    if (pathname === '/api/roboflow/flows' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, flows: await roboflow.listFlows({ folder: url.searchParams.get('folder') || undefined }) });
+        return true;
+    }
+    if (pathname === '/api/roboflow/flows' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        sendJson(res, 201, { ok: true, flow: await roboflow.createFlow({ ...body, createdBy: body.createdBy || actor.id }) });
+        return true;
+    }
+    const flowId = pathname.match(new RegExp(`^${FLOW_PATH}$`))?.[1];
+    if (flowId && req.method === 'GET') {
+        const requested = String(url.searchParams.get('logs') || 'tail');
+        const logMode = requested === 'full' ? 'full' : requested === 'none' ? 'none' : 'tail';
+        sendJson(res, 200, { ok: true, flow: await roboflow.getFlow(flowId, { logMode }) });
+        return true;
+    }
+    const invokeId = pathname.match(new RegExp(`^${FLOW_PATH}/invoke$`))?.[1];
+    if (invokeId && req.method === 'POST') {
+        sendJson(res, 202, { ok: true, ...await roboflow.invokeMember(invokeId, await readJsonBody(req)) });
+        return true;
+    }
+    const finishId = pathname.match(new RegExp(`^${FLOW_PATH}/finish$`))?.[1];
+    if (finishId && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        sendJson(res, 200, { ok: true, flow: await roboflow.finishFlow(finishId, body.result) });
+        return true;
+    }
+    const stopId = pathname.match(new RegExp(`^${FLOW_PATH}/stop$`))?.[1];
+    if (stopId && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, flow: await roboflow.stopFlow(stopId) });
+        return true;
+    }
+    const logMatch = pathname.match(new RegExp(`^${INVOCATION_PATH}/log$`));
+    if (logMatch && req.method === 'GET') {
+        const log = await roboflow.getInvocationLog(logMatch[1], logMatch[2]);
+        sendText(res, 200, log);
+        return true;
+    }
+    return false;
+}
+
 export function createRoboTeamServer(options) {
     const robotStore = options.robotStore;
     const runtimeManager = options.runtimeManager;
+    const roboflow = options.roboflow || null;
     const skillsets = options.skillsets || runtimeManager.skillsets || new RobotSkillsets({ robotStore,
         workspaceRoot: runtimeManager.workspaceRoot, alaCommand: runtimeManager.alaCommand });
     runtimeManager.skillsets = skillsets;
@@ -351,6 +439,7 @@ export function createRoboTeamServer(options) {
                 if (!robot) return sendError(res, 404, 'robot not found');
                 return sendJson(res, 200, { ok: true, logs: await runtimeManager.logs(robot.id, url.searchParams.get('tail')) });
             }
+            if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir })) return;
             sendError(res, 404, 'not found');
         } catch (error) {
             const message = String(error?.message || '');

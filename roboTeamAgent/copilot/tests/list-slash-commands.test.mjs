@@ -42,7 +42,7 @@ test('model completions use the explicit conversation and surface native discove
     assert.equal(failed.modelError, 'Native discovery failed');
 });
 
-const builtins = ['bash', 'launch-gpt-researcher', 'launch-robot'];
+const builtins = ['bash', 'launch-gpt-researcher', 'launch-robot', 'roboflow'];
 
 test('MCP automatically discovers exactly the packaged catalog without authoring directories', async (t) => {
     const { workingDir } = await createCatalogFixture(t);

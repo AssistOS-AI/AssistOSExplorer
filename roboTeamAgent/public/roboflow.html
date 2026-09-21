@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboFlow</title>
+  <link rel="stylesheet" href="roboflow.css">
+  <script>
+    (() => {
+      const keys = ['assistosExplorerTheme', 'webchat_theme'];
+      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const syncTheme = () => {
+        let preference;
+        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+        catch { /* Browser settings may disable storage. */ }
+        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+        const root = document.documentElement;
+        root.classList.toggle('theme-dark', dark);
+        root.classList.toggle('theme-light', !dark);
+        root.setAttribute('theme', dark ? 'dark' : 'light');
+      };
+      syncTheme();
+      browserTheme.addEventListener('change', syncTheme);
+      window.addEventListener('storage', event => { if (event.key === null || keys.includes(event.key)) syncTheme(); });
+      window.addEventListener('focus', syncTheme);
+      window.addEventListener('pageshow', syncTheme);
+    })();
+  </script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <h1>RoboFlow</h1>
+        <p class="lede">Monitor the task flows your robots execute.</p>
+      </div>
+      <button id="refreshButton" class="button secondary" type="button">Refresh</button>
+    </header>
+
+    <section id="overview" class="panel" aria-labelledby="flows-title">
+      <div class="section-heading"><h2 id="flows-title">Task flows</h2><span id="flowCount" class="count">0</span></div>
+      <div id="flowsList" class="flow-list" aria-live="polite"></div>
+    </section>
+
+    <section id="detail" class="panel" hidden aria-labelledby="detail-title">
+      <div class="section-heading">
+        <h2 id="detail-title">Flow detail</h2>
+        <button id="backButton" class="button secondary" type="button">All flows</button>
+      </div>
+      <div id="flowSummary" class="flow-summary"></div>
+      <div id="invocations" class="invocations"></div>
+    </section>
+
+    <section id="workflowsPanel" class="panel" aria-labelledby="workflows-title">
+      <div class="section-heading"><h2 id="workflows-title">Workflow types</h2><span id="workflowCount" class="count">0</span></div>
+      <div id="workflowsList" class="workflow-list"></div>
+    </section>
+
+    <p id="message" class="message" role="status"></p>
+  </main>
+  <script type="module" src="roboflow.js"></script>
+</body>
+</html>

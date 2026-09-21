@@ -11,7 +11,7 @@ export ACHILLES_ALA_COMMAND=/absolute/path/to/AdvancedLanguageAgent/bin/ala.mjs
 node src/cli.mjs --dir /absolute/path/to/project
 ```
 
-Run this command from `achilles-cli/`. The dedicated native home defaults to `<privateDataRoot>/ala/home`; `ACHILLES_ALA_HOME` may select an existing administrator-provisioned home. Configure native login there rather than copying credentials from another user or robot.
+Run this command from `achilles-cli/`. Under RoboTeam, `ACHILLES_ALA_HOME` is the robot home, mounted writable and shared by every conversation so credentials and native sessions stay with the robot. Standalone runs default to `<privateDataRoot>/ala/home`; `ACHILLES_ALA_HOME` may select an existing administrator-provisioned home. Configure native login there rather than copying credentials from another user or robot.
 
 ## Commands
 
@@ -43,7 +43,7 @@ node src/cli.mjs --dir /absolute/path/to/project "Explain this project's entry p
 
 ## Product skills
 
-The automatic catalog contains exactly `bash`, `launch-gpt-researcher`, `launch-robot`. Each folder owns Anthropic `SKILL.md`, `scripts/action.mjs`, `scripts/run.mjs` and local supporting material. Scripts import their local `scripts/ploinkyInvocation.mjs`, which imports Ploinky's `/Agent/client/AgentMcpClient.mjs`, never hidden host source.
+The automatic catalog contains exactly `bash`, `launch-gpt-researcher`, `launch-robot`, `roboflow`. Each folder owns Anthropic `SKILL.md`, `scripts/action.mjs`, `scripts/run.mjs` and local supporting material. Scripts import their local `scripts/ploinkyInvocation.mjs`, which imports Ploinky's `/Agent/client/AgentMcpClient.mjs`, never hidden host source.
 
 Bash preserves argv/glob semantics without interpreting shell operators. Coding launchers preserve literal prompts and their fixed worker payloads. Robot discovery is `launch-robot/scripts/list.mjs`; compact `/exec launch-robot desktop: <task>` selects the ordinary startup-created robot `default` only when a name is omitted.
 

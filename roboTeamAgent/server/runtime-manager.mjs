@@ -1,7 +1,6 @@
 import { registerProject, executionDirectory, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { workspaceDataPath } from './workspace-paths.mjs';
-import { prepareWorkingHome } from './working-home.mjs';
 import { installLiveSkills } from './live-skill-install.mjs';
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -223,6 +222,19 @@ export class RuntimeManager {
         this.deletedRobots = new Set();
         this.skillsets = options.skillsets || null;
         this.soulGateway = options.soulGateway || createSoulGatewayService();
+        // Optional observational hook used by RoboFlow. It never changes task
+        // storage or semantics; it only forwards progress and lifecycle events.
+        this.taskObserver = typeof options.taskObserver === 'function' ? options.taskObserver : null;
+    }
+
+    setTaskObserver(observer) {
+        this.taskObserver = typeof observer === 'function' ? observer : null;
+    }
+
+    _emitTaskEvent(event) {
+        if (!this.taskObserver) return;
+        try { this.taskObserver(event); }
+        catch (error) { console.error('[roboTeamAgent] task observer failed:', error?.message || error); }
     }
 
     async prepareRobotSkills(robot, cwd) {
@@ -301,7 +313,7 @@ export class RuntimeManager {
             const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             await this._prepareRobotAgentState(originalHome);
             await this.prepareOpenCode(robot.id);
-            const robotHome = await prepareWorkingHome(cwd, await workspaceDataPath(originalHome, this.workspaceRoot), { workspaceRoot: this.workspaceRoot });
+            const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
             await this._prepareRobotAgentState(robotHome);
             await prepareRobotShell(robotHome);
             const existing = this.sessions.get(robot.id);
@@ -445,10 +457,12 @@ export class RuntimeManager {
             task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
             if (task.logTail.length < previousLength + String(chunk).length) task.logTruncated = true;
             task.logSeq += 1;
+            this._emitTaskEvent({ kind: 'progress', robotId: robot.id, taskId: task.taskId, chunk: String(chunk) });
         };
         try {
             task.state = 'starting';
             task.startedAt = new Date().toISOString();
+            this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'starting' });
             const cwd = await this.resolveCwd(task.request.cwd);
             task.request.cwd = registerProject(this, cwd);
             if (task.cancelRequested) throw new Error('task was stopped');
@@ -473,7 +487,7 @@ export class RuntimeManager {
             const originalHome = path.join(this.dataDir, 'robots', robot.id, 'home');
             await this._prepareRobotAgentState(originalHome);
             await this.prepareOpenCode(robot.id);
-            const robotHome = await prepareWorkingHome(cwd, await workspaceDataPath(originalHome, this.workspaceRoot), { workspaceRoot: this.workspaceRoot });
+            const robotHome = await workspaceDataPath(originalHome, this.workspaceRoot);
             const runtimeDir = executionDirectory(this, cwd, task.alaSessionId || task.taskId);
             await this._prepareRobotAgentState(robotHome);
             await prepareRobotShell(robotHome);
@@ -497,6 +511,7 @@ export class RuntimeManager {
             if (task.request.model) args.push('--model', task.request.model);
             if (mcpAddress) args.push('--MCPServers', mcpAddress);
             task.state = 'running';
+            this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'running' });
             const codingAgents = await codingAgentsPromise;
             const childEnv = {
                 ...codingAgentEnvironment(codingAgents, process.env, this.toolCache.root),
@@ -556,6 +571,12 @@ export class RuntimeManager {
                 this.messageWaiters.delete(id);
             }
             await this._saveTask(task).catch(() => {});
+            if (['completed', 'failed', 'stopped'].includes(task.state)) {
+                this._emitTaskEvent({
+                    kind: 'terminal', robotId: robot.id, taskId: task.taskId, state: task.state,
+                    result: task.result, error: task.error,
+                });
+            }
         }
     }
 

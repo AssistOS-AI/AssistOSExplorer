@@ -39,3 +39,26 @@ test('workspace orchestration tools are internal while administrator mutations s
     assert.equal(tools.get('startBrowserTaskForRobot')?.continuationTool, 'resumeTaskForRobot');
     assert.equal(tools.get('resumeTaskForRobot')?.continuationTool, 'resumeTaskForRobot');
 });
+
+test('roboflow orchestration tools are internal while workflow mutations stay authenticated', async () => {
+    const config = JSON.parse(await fs.readFile(path.join(AGENT_ROOT, 'mcp-config.json'), 'utf8'));
+    const tools = new Map(config.tools.map((tool) => [tool.name, tool]));
+    for (const name of [
+        'roboflow_list_workflows',
+        'roboflow_create_flow',
+        'roboflow_list_flows',
+        'roboflow_get_flow',
+        'roboflow_invoke_member',
+        'roboflow_finish_flow',
+        'roboflow_stop_flow',
+    ]) {
+        assert.deepEqual(tools.get(name)?.tags, ['internal'], `${name} must be internal`);
+    }
+    for (const name of ['roboflow_create_workflow', 'roboflow_delete_workflow']) {
+        assert.deepEqual(tools.get(name)?.tags, ['admin'], `${name} must require administrator access`);
+        assert.match(tools.get(name)?.description || '', /administrator role/i);
+    }
+    assert.equal(tools.get('roboflow_invoke_member')?.async, true, 'roboflow_invoke_member must use the Ploinky task queue');
+    assert.equal(tools.get('roboflow_invoke_member')?.taskLogRetention, 'full');
+    assert.equal(tools.get('roboflow_invoke_member')?.timeoutMs, undefined);
+});

@@ -3,6 +3,7 @@ import { createRoboTeamServer } from './http-server.mjs';
 import { RobotStore } from './robot-store.mjs';
 import { RuntimeManager } from './runtime-manager.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
+import { RoboFlowService } from './roboflow/roboflow-service.mjs';
 import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
@@ -30,9 +31,19 @@ runtimeManager.skillsets = new RobotSkillsets({ robotStore,
 await runtimeManager.initialize();
 for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id);
 
+const roboflow = new RoboFlowService({
+    robotStore,
+    runtimeManager,
+    skillsets: runtimeManager.skillsets,
+    workspaceRoot,
+});
+await roboflow.initialize();
+runtimeManager.setTaskObserver((event) => roboflow.onRuntimeTaskEvent(event));
+
 const server = createRoboTeamServer({
     robotStore,
     runtimeManager,
+    roboflow,
     internalToken,
     mcpPort: process.env.ROBOTEAM_MCP_PORT,
     publicBasePath,
@@ -52,6 +63,7 @@ async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
     server.close();
+    await roboflow.close();
     await runtimeManager.stopAll();
     process.exit(0);
 }

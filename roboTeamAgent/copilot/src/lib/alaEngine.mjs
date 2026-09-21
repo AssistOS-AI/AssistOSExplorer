@@ -1,4 +1,3 @@
-import { prepareWorkingHome } from '../../../server/working-home.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -106,20 +105,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         }
         const cwd = await fs.realpath(session.engine?.cwd || session.cwd || workingDir);
         const workspaceRoot = resolveAchillesWorkspaceRoot(cwd, env);
-        const previousHome = await executionHome(cwd, { ...env, ACHILLES_ALA_HOME: session.engine?.home || env.ACHILLES_ALA_HOME });
-        const resumeBackend = await validateNativeSession(session, previousHome, cwd);
-        const home = await prepareWorkingHome(cwd, previousHome);
-        if (home !== previousHome && session.engine) {
-            const nativeFile = path.join(home, '.ala', 'sessions', `${session.sessionId}.json`);
-            const native = JSON.parse(await fs.readFile(nativeFile, 'utf8'));
-            if (native.home !== previousHome || native.workspace !== cwd) throw new Error('Native home migration association mismatch');
-            native.home = home;
-            if (native.continuation?.sessionFile?.startsWith(`${previousHome}/`)) {
-                native.continuation.sessionFile = home + native.continuation.sessionFile.slice(previousHome.length);
-            }
-            await fs.writeFile(nativeFile, JSON.stringify(native), { mode: 0o600 });
-            await sessionStore.updateSession(sessionId, record => { record.engine.home = home; });
-        }
+        // One persistent native home per robot. The robot home is mounted
+        // writable and used directly, so credentials and native sessions never
+        // diverge across a per-project copy.
+        const home = await executionHome(cwd, env);
+        const resumeBackend = await validateNativeSession(session, home, cwd);
         const stored = settings.readAchillesSettings?.(cwd) || {};
         let models = { ...(settings.getCodingAgentModels?.(cwd) || stored.codingAgents?.models || {}) };
         let efforts = { ...(stored.codingAgents?.efforts || {}) };
