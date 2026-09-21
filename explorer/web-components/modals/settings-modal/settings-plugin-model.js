@@ -37,6 +37,8 @@ export function flattenPluginsByKey(pluginBuckets) {
             locationOrder: getRuntimePluginOrder(plugin),
             settingsComponent: "",
             settingsUrl: "",
+            settingsEmbedded: false,
+            settingsEmbeddedFullscreen: false,
             assetRootPath: "",
             componentBaseUrl: "",
             adminOnly: false
@@ -62,6 +64,12 @@ export function flattenPluginsByKey(pluginBuckets) {
         existing.settingsUrl = typeof plugin?.settingsUrl === "string" && plugin.settingsUrl.trim()
             ? plugin.settingsUrl.trim()
             : existing.settingsUrl;
+        if (plugin?.settingsEmbedded === true) {
+            existing.settingsEmbedded = true;
+        }
+        if (plugin?.settingsEmbeddedFullscreen === true) {
+            existing.settingsEmbeddedFullscreen = true;
+        }
         existing.assetRootPath = typeof plugin?.assetRootPath === "string" && plugin.assetRootPath.trim()
             ? plugin.assetRootPath.trim()
             : existing.assetRootPath;

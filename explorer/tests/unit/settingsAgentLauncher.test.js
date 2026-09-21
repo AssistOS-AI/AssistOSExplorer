@@ -30,6 +30,37 @@ test('launchAgentSettings ensures the agent runs before opening a settings URL',
     ]);
 });
 
+test('launchAgentSettings opens the embedded settings popup when declared', async () => {
+    const runtime = { ref: 'soul-gateway-1' };
+    const calls = [];
+    const result = await launchAgentSettings({
+        key: 'soul-gateway',
+        ownerAgent: 'soul-gateway',
+        label: 'Soul Gateway',
+        settingsUrl: MANAGEMENT_URL,
+        settingsEmbedded: true,
+        settingsEmbeddedFullscreen: true
+    }, {
+        ensureRunning: async (ref) => {
+            calls.push(['ensure', ref]);
+            return runtime;
+        },
+        openSettingsUrl: () => {
+            calls.push(['url']);
+            return true;
+        },
+        openSettingsPopup: (item) => {
+            calls.push(['popup', item.settingsUrl, item.settingsEmbeddedFullscreen]);
+        }
+    });
+
+    assert.equal(result, runtime);
+    assert.deepEqual(calls, [
+        ['popup', MANAGEMENT_URL, true],
+        ['ensure', 'soul-gateway']
+    ]);
+});
+
 test('launchAgentSettings rejects an invalid settings URL', async () => {
     await assert.rejects(
         () => launchAgentSettings(
