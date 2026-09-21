@@ -212,8 +212,15 @@ function cascadeAdapterMiddleware() {
                         const childModel = ctx.snapshot?.models?.get?.(
                             child.modelKey
                         );
+                        // `cascadeChild` tells an attempt that another child can
+                        // still answer, which a direct request never has.
                         return childModel && childModel.enabled !== false
-                            ? { model: withChildOverrides(childModel, child.settings) }
+                            ? {
+                                model: {
+                                    ...withChildOverrides(childModel, child.settings),
+                                    cascadeChild: true,
+                                },
+                            }
                             : null;
                     })
                     .filter(Boolean)

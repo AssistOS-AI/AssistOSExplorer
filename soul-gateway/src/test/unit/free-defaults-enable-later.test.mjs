@@ -166,4 +166,30 @@ describe('enabling the free defaults after a disabled first start', () => {
         assert.equal(Number((await db.query(joinMarkers)).rows[0].n), 1);
         await db.end();
     });
+
+    it('keeps the tag join pending while every enabled free model is excluded from tag tiers', async () => {
+        const { openDatabase } = await import('../../db/sqlite-db.mjs');
+        const dbFile = join(dataDir, 'gateway.sqlite3');
+        const freeRows = "provider_id = (SELECT id FROM providers WHERE provider_key = 'openrouter-free')";
+        const joinMarkers = "SELECT COUNT(*) AS n FROM gateway_bootstrap_state WHERE bootstrap_key = 'free-model-defaults-tag-tiers'";
+        const freeTierChildren = "SELECT COUNT(*) AS n FROM model_children WHERE parent_model_id = (SELECT id FROM models WHERE model_key = 'free')";
+        let db = await openDatabase({ SQLITE_PATH: dbFile });
+        await db.query("DELETE FROM gateway_bootstrap_state WHERE bootstrap_key = 'free-model-defaults-tag-tiers'");
+        await db.query("DELETE FROM model_children WHERE parent_model_id = (SELECT id FROM models WHERE model_key = 'free')");
+        await db.query(`UPDATE models SET metadata = json_set(metadata, '$.excludeFromTagTiers', json('true')) WHERE ${freeRows}`);
+        await db.end();
+
+        await bootOnce({ FREE_MODELS_ENABLED: 'true' });
+        db = await openDatabase({ SQLITE_PATH: dbFile });
+        assert.equal(Number((await db.query(joinMarkers)).rows[0].n), 0, 'no eligible model joined, so the step stays pending');
+        assert.equal(Number((await db.query(freeTierChildren)).rows[0].n), 0);
+        await db.query(`UPDATE models SET metadata = json_remove(metadata, '$.excludeFromTagTiers') WHERE ${freeRows}`);
+        await db.end();
+
+        const restarted = await bootOnce({ FREE_MODELS_ENABLED: 'true' });
+        assert.equal(restarted.tiers.free.length, 9, 'the eligible models joined on the next start');
+        db = await openDatabase({ SQLITE_PATH: dbFile });
+        assert.equal(Number((await db.query(joinMarkers)).rows[0].n), 1);
+        await db.end();
+    });
 });

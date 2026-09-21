@@ -347,6 +347,15 @@ describe('upstream failover through the real cascade', () => {
             assert.deepEqual(upstreamModels(), ['reasoning-only']);
         });
 
+        it(`${mode}: a direct request keeps the length finish even under the failover policy`, async () => {
+            // The same row fails over inside tier-empty; requested directly,
+            // no other model would be tried, so the caller gets the signal.
+            const result = await chat('fake/reasoning-only', { stream });
+            assert.equal(result.status, 200, result.text);
+            assert.match(result.text, /"finish_reason":"length"/);
+            assert.deepEqual(upstreamModels(), ['reasoning-only']);
+        });
+
         it(`${mode}: a stalled or hung child is bounded and falls back`, async () => {
             for (const tier of ['tier-hang', 'tier-stall']) {
                 calls.length = 0;

@@ -75,11 +75,11 @@ const NON_CHAT_ID_RE =
  * committed stream ends one idle deadline after its last event and, whatever
  * liveness it keeps producing, `max(streamIdleTimeoutMs,
  * firstContentTimeoutMs)` after its last content event; the cooldown is
- * short because free capacity recovers quickly. A reply the token limit cut
- * off before any content fails over like an empty one
+ * short because free capacity recovers quickly. Inside a cascade, a reply the
+ * token limit cut off before any content fails over like an empty one
  * (`lengthWithoutContentFails`), because the gateway chose the model and the
- * next child may answer within the caller's limit. Row fields and tier child
- * settings win.
+ * next child may answer within the caller's limit; a direct request keeps the
+ * length finish. Row fields and tier child settings win.
  */
 export const FREE_MODEL_EXECUTION_POLICY = Object.freeze({
     maxAttempts: 1,

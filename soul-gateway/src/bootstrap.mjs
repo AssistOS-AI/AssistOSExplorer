@@ -163,10 +163,10 @@ export async function bootstrap() {
  * (a start with the free defaults disabled). The step has its own marker, so
  * a start interrupted between the install and this step redoes it, and later
  * starts never re-add models an administrator removed from a tag tier. The
- * marker is written only after models actually joined: while the free
- * provider has no enabled model (for example after a catalog that disabled
- * every row), the step stays pending and a later start joins the re-enabled
- * models.
+ * marker is written only after models eligible for tag tiers were joined:
+ * while the free provider has no such enabled model (for example after a
+ * catalog that disabled every row, or when every enabled row is excluded
+ * from tag tiers), the step stays pending and a later start joins them.
  */
 async function joinFreeModelsToTagTiersOnce(appCtx) {
     const bootstrapStateDao = await import('./db/dao/bootstrap-state-dao.mjs');
@@ -184,7 +184,8 @@ async function joinFreeModelsToTagTiersOnce(appCtx) {
         [FREE_PROVIDER_KEY]
     );
     if (rows.length === 0) return;
-    await appendNewModelsToTagTiers({ appCtx, models: rows });
+    const joined = await appendNewModelsToTagTiers({ appCtx, models: rows });
+    if (!(joined.scannedModels > 0)) return;
     await bootstrapStateDao.markComplete(pool, { bootstrapKey: FREE_TAG_JOIN_BOOTSTRAP_KEY });
 }
 

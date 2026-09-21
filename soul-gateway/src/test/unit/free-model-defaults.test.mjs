@@ -132,7 +132,7 @@ describe('first-start free defaults', () => {
         await other.end();
     });
 
-    it('is idempotent and safe under concurrent starts', async () => {
+    it('is idempotent and serializes two concurrent installs in one process', async () => {
         const appCtx = appCtxFor(pool);
         const results = await Promise.all([
             installFreeModelDefaults({ appCtx, apiKey: DUMMY_KEY }),
@@ -176,7 +176,7 @@ describe('first-start free defaults', () => {
         assert.equal(enabled.status, 'installed');
     });
 
-    it('never resurrects records an administrator disabled or deleted', async () => {
+    it('never resurrects records an administrator disabled or deleted when the install runs again', async () => {
         await installFreeModelDefaults({ appCtx: appCtxFor(pool), apiKey: DUMMY_KEY });
         await pool.query("UPDATE provider_accounts SET status = 'disabled'");
         await pool.query("DELETE FROM models WHERE model_key = 'ultra'");

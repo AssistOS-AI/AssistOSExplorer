@@ -60,10 +60,11 @@ import { clampTimerDelay } from './timer-delay.mjs';
 // One exception: a reply that the token limit cut off before any text or
 // tool call (finish reason `length`, typically a model that spent its budget
 // reasoning) is returned as a completion, because its finish reason tells
-// the caller to raise its token limit. A row whose policy sets
-// `lengthWithoutContentFails` treats it as an empty answer instead; the
-// free-model execution policy does, because there the gateway, not the
-// caller, chose the model and the next child may answer within the limit.
+// the caller to raise its token limit. A cascade child whose policy sets
+// `lengthWithoutContentFails` treats it as an empty answer instead, so the
+// next child may answer within the limit; the free-model execution policy
+// sets it because in a cascade the gateway, not the caller, chose the model.
+// A direct request always keeps the length finish: no other model is tried.
 
 function endsCutOffByLength(head) {
     const last = head[head.length - 1];
@@ -180,10 +181,12 @@ export function primeStreamMiddleware() {
                     break;
                 }
             }
+            const lengthFailsOver =
+                model.cascadeChild === true &&
+                retryPolicy.lengthWithoutContentFails === true;
             const answerable =
                 head.some(isContentEvent) ||
-                (endsCutOffByLength(head) &&
-                    retryPolicy.lengthWithoutContentFails !== true);
+                (endsCutOffByLength(head) && !lengthFailsOver);
             if (!answerable) {
                 throw emptyResponseError(providerKey);
             }
