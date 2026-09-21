@@ -270,7 +270,7 @@ async function chat(model, { stream = false, messages, signal } = {}) {
         signal,
     });
     const text = await res.text();
-    return { status: res.status, text, ms: Date.now() - started };
+    return { status: res.status, text, ms: Date.now() - started, requestId: res.headers.get('x-request-id') };
 }
 
 function upstreamModels() {
@@ -381,25 +381,22 @@ describe('upstream failover through the real cascade', () => {
 
     it('keeps the cascade-child marker out of the wire, the reply, the audit row, and the snapshot', async () => {
         const { pool, services } = gateway.appCtx;
-        const auditRows = async () => (await pool.query(
-            "SELECT * FROM audit_logs WHERE requested_model = 'tier-notfound'"
-        )).rows;
         for (const stream of [false, true]) {
             calls.length = 0;
-            const before = (await auditRows()).length;
             const result = await chat('tier-notfound', { stream });
             assert.equal(result.status, 200, result.text);
+            assert.ok(result.requestId, 'the reply names its request');
             assert.deepEqual(upstreamModels(), ['notfound', 'ok']);
             assert.doesNotMatch(result.text, /cascadeChild/);
             for (const call of calls) assert.doesNotMatch(JSON.stringify(call.body), /cascadeChild/);
             // The audit row is written just after the reply is sent.
-            let rows = await auditRows();
-            for (let wait = 0; rows.length === before && wait < 100; wait += 1) {
-                await new Promise((resolve) => setTimeout(resolve, 20));
-                rows = await auditRows();
+            let rows = [];
+            for (let wait = 0; rows.length === 0 && wait < 100; wait += 1) {
+                if (wait > 0) await new Promise((resolve) => setTimeout(resolve, 20));
+                ({ rows } = await pool.query('SELECT * FROM audit_logs WHERE request_id = $1', [result.requestId]));
             }
-            assert.equal(rows.length, before + 1);
-            assert.doesNotMatch(JSON.stringify(rows), /cascadeChild/);
+            assert.equal(rows.length, 1, `audit row for ${result.requestId}`);
+            assert.doesNotMatch(JSON.stringify(rows[0]), /cascadeChild/);
         }
         for (const key of ['fake/notfound', 'fake/ok']) {
             assert.equal('cascadeChild' in services.snapshot.models.get(key), false, key);
