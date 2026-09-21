@@ -163,8 +163,9 @@ export async function bootstrap() {
  * (a start with the free defaults disabled). The step has its own marker, so
  * a start interrupted between the install and this step redoes it, and later
  * starts never re-add models an administrator removed from a tag tier. The
- * marker is written only after models eligible for tag tiers were joined:
- * while the free provider has no such enabled model (for example after a
+ * marker is written once the join has run with at least one enabled model
+ * eligible for tag tiers, even when none of its tags names an existing auto
+ * tag tier. While the free provider has no such model (for example after a
  * catalog that disabled every row, or when every enabled row is excluded
  * from tag tiers), the step stays pending and a later start joins them.
  */

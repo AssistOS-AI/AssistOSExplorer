@@ -689,6 +689,48 @@ describe('ploinky-agent-openai backend execute()', () => {
         assert.equal(events[1].data.text, text);
     });
 
+    it('completes when the final [DONE] line ends with CR and no newline', async () => {
+        // Without a closing LF, only the end-of-response path reads this line.
+        const { error, types } = await runAgainst(rawSseReply(
+            `data: ${textChunk('last line')}\r\n\r\ndata: [DONE]\r`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+    });
+
+    it('completes a CRLF stream whose CR and LF arrive in different chunks', async () => {
+        const body = `data: ${textChunk('split crlf')}\r\n\r\ndata: [DONE]\r\n\r\n`;
+        const splitAt = body.indexOf('[DONE]\r') + '[DONE]\r'.length;
+        const { error, events, types } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            res.write(body.slice(0, splitAt));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            res.end(body.slice(splitAt));
+        });
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'split crlf');
+    });
+
+    it('keeps a four-byte character whose bytes arrive in separate chunks', async () => {
+        const text = 'smile 😀 done';
+        const body = Buffer.from(`data: ${textChunk(text)}\n\ndata: [DONE]\n\n`, 'utf8');
+        const start = body.indexOf(Buffer.from('😀', 'utf8'));
+        const { error, events } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            // A chunk ends after each of the character's first three bytes.
+            let from = 0;
+            for (const cut of [start + 1, start + 2, start + 3]) {
+                res.write(body.subarray(from, cut));
+                from = cut;
+                await new Promise((resolve) => setTimeout(resolve, 30));
+            }
+            res.end(body.subarray(from));
+        });
+        assert.equal(error, null);
+        assert.equal(events[1].data.text, text);
+    });
+
     it('does not treat a completion that also carries choices as an in-band error', async () => {
         const { error, types } = await runAgainst(jsonReply({
             id: 'x',

@@ -158,14 +158,16 @@ async function seed(appCtx) {
         // A cut-off reply fails over only under the failover policy; the
         // same upstream answer on a row without it keeps its length finish.
         ['reasoning-only', fake, { lengthWithoutContentFails: true }],
+        ['reasoning-only-b', fake, { lengthWithoutContentFails: true }],
         ['length-only', fake, {}],
     ];
+    const sharedUpstreamIds = { textonly: 'ok', 'length-only': 'reasoning-only', 'reasoning-only-b': 'reasoning-only' };
     for (const [name, provider, extraPolicy] of modelSpec) {
         const row = await modelsDao.create(pool, {
             modelKey: `${provider.provider_key}/${name}`,
             displayName: name,
             providerId: provider.id,
-            providerModelId: { textonly: 'ok', 'length-only': 'reasoning-only' }[name] || name,
+            providerModelId: sharedUpstreamIds[name] || name,
             requestTimeoutMs: 400,
             retryPolicy: { maxAttempts: 1, ...extraPolicy },
             pricingMode: 'free',
@@ -186,6 +188,7 @@ async function seed(appCtx) {
         'tier-midfail': ['midfail', 'ok'],
         'tier-vision': ['textonly', 'ok'],
         'tier-empty': ['empty', 'reasoning-only', 'ok'],
+        'tier-all-length': ['reasoning-only', 'reasoning-only-b'],
     };
     for (const [tierKey, children] of Object.entries(tiers)) {
         const tier = await modelsDao.createCascade(pool, { modelKey: tierKey, displayName: tierKey, maxAttempts: 3 });
@@ -356,6 +359,14 @@ describe('upstream failover through the real cascade', () => {
             assert.deepEqual(upstreamModels(), ['reasoning-only']);
         });
 
+        it(`${mode}: a tier whose every child is cut off by length ends with tier_exhausted`, async () => {
+            // The last child fails over too, so no length finish reaches the caller.
+            const result = await chat('tier-all-length', { stream });
+            assert.equal(result.status, 503, result.text);
+            assert.match(result.text, /tier_exhausted/);
+            assert.deepEqual(upstreamModels(), ['reasoning-only', 'reasoning-only']);
+        });
+
         it(`${mode}: a stalled or hung child is bounded and falls back`, async () => {
             for (const tier of ['tier-hang', 'tier-stall']) {
                 calls.length = 0;
@@ -367,6 +378,33 @@ describe('upstream failover through the real cascade', () => {
             }
         });
     }
+
+    it('keeps the cascade-child marker out of the wire, the reply, the audit row, and the snapshot', async () => {
+        const { pool, services } = gateway.appCtx;
+        const auditRows = async () => (await pool.query(
+            "SELECT * FROM audit_logs WHERE requested_model = 'tier-notfound'"
+        )).rows;
+        for (const stream of [false, true]) {
+            calls.length = 0;
+            const before = (await auditRows()).length;
+            const result = await chat('tier-notfound', { stream });
+            assert.equal(result.status, 200, result.text);
+            assert.deepEqual(upstreamModels(), ['notfound', 'ok']);
+            assert.doesNotMatch(result.text, /cascadeChild/);
+            for (const call of calls) assert.doesNotMatch(JSON.stringify(call.body), /cascadeChild/);
+            // The audit row is written just after the reply is sent.
+            let rows = await auditRows();
+            for (let wait = 0; rows.length === before && wait < 100; wait += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                rows = await auditRows();
+            }
+            assert.equal(rows.length, before + 1);
+            assert.doesNotMatch(JSON.stringify(rows), /cascadeChild/);
+        }
+        for (const key of ['fake/notfound', 'fake/ok']) {
+            assert.equal('cascadeChild' in services.snapshot.models.get(key), false, key);
+        }
+    });
 
     it('a daily account quota marks the shared account exhausted and stops sibling calls', async () => {
         const first = await chat('tier-dailylimit');

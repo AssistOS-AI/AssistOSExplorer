@@ -212,8 +212,11 @@ function cascadeAdapterMiddleware() {
                         const childModel = ctx.snapshot?.models?.get?.(
                             child.modelKey
                         );
-                        // `cascadeChild` tells an attempt that another child can
-                        // still answer, which a direct request never has.
+                        // `cascadeChild` marks an attempt made for a tier, which a
+                        // direct request never is. Under `lengthWithoutContentFails`
+                        // it turns a reply cut off by length before any content into
+                        // an empty response, so the walk moves on to the next child,
+                        // or ends with `tier_exhausted` after the last one.
                         return childModel && childModel.enabled !== false
                             ? {
                                 model: {
