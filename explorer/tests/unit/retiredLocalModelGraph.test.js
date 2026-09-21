@@ -12,6 +12,19 @@ const repoRoot = path.resolve(import.meta.dirname, '..', '..', '..');
 
 const enableTokens = (entry) => (typeof entry === 'string' ? entry : entry?.agent || '').trim().split(/\s+/);
 
+// The production resolver adds the enable list of the active profile (or of
+// the default profile) to `enable`. Any profile can be the active one, so
+// every profile's list is walked: a retired edge in any of them is a
+// violation. No manifest in the current graph declares a profile-level
+// enable list, so the runtime totals below still equal the resolver's.
+function enableEntries(manifest) {
+    const entries = [...(manifest.enable || [])];
+    for (const profile of Object.values(manifest.profiles || {})) {
+        if (Array.isArray(profile?.enable)) entries.push(...profile.enable);
+    }
+    return entries;
+}
+
 function readManifest(file, label) {
     try {
         return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -59,7 +72,7 @@ function resolveExplorerGraph({ explorerRepo = repoRoot, siblingsRoot = path.res
         }
         const manifest = readManifest(manifestFile, key);
         runtimes.set(key, { flags: new Set(flags), manifestFile });
-        for (const entry of manifest.enable || []) {
+        for (const entry of enableEntries(manifest)) {
             const [childRef, ...childFlags] = enableTokens(entry);
             assert.ok(childRef, `${key} has an empty enable entry`);
             if (isRetiredLocalModel(childRef)) {
@@ -128,6 +141,17 @@ for (const injected of [`${RETIRED_REPO}/${RETIRED_AGENT} no-wait`, RETIRED_AGEN
         assert.match(violations[0], /^ExternalRepo\/relay .* enables (proxies\/)?default-local-llm$/);
     });
 }
+
+test('negative control: a retired edge inside a profile enable list is detected', (t) => {
+    const explorerRepo = syntheticWorkspace(t, []);
+    writeManifest(path.dirname(explorerRepo), 'ExternalRepo/relay', {
+        enable: [{ agent: 'nested global' }],
+        profiles: { dev: { enable: [`${RETIRED_REPO}/${RETIRED_AGENT} no-wait`] } },
+    });
+    const { violations } = resolveExplorerGraph({ explorerRepo });
+    assert.equal(violations.length, 1);
+    assert.match(violations[0], /^ExternalRepo\/relay .* enables proxies\/default-local-llm$/);
+});
 
 test('negative control: a missing sibling repository fails with a clear message', (t) => {
     const explorerRepo = syntheticWorkspace(t, []);
