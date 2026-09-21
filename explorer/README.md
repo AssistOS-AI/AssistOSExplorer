@@ -84,6 +84,8 @@ ploinky status
 curl -I http://127.0.0.1:8080/dashboard
 ```
 
+A fresh `ploinky start explorer` does not download or start a local model. The local Soul Gateway seeds a restricted free OpenRouter provider on first start, with the tiers `fast`, `code`, `plan`, `write`, `deep`, `ultra`, and `web-assist`. Its bundled credential is guarded to free models only and shares one daily quota with every installation using it, so the service is not unlimited; it requires internet access and is not available offline. An administrator can replace the credential through the existing admin-only Soul Gateway settings dashboard. Native OpenCode execution remains available only through RoboTeam's installed OpenCode CLI and is not a Soul Gateway provider.
+
 
 <!-- {"achilles-ide-chapter":{"id":"chapter-d64db818-6438-4467-b356-34daf4b574de","title":"Why Global Mode Is Required","anchorId":"chapter-chapter-d64db818-6438-4467-b356-34daf4b574de"}} -->
 <a id="chapter-chapter-d64db818-6438-4467-b356-34daf4b574de"></a>

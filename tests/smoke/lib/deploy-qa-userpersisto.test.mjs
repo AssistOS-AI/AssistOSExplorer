@@ -146,15 +146,16 @@ test('QA config executes after durable preservation and before graph activation,
     assert.doesNotMatch(block('UserPersisto configuration'), /USERPERSISTO_DEV_BOOTSTRAP|USERPERSISTO_AUTH_METHODS|USERPERSISTO_SELF_REGISTRATION_ENABLED/);
 });
 
-test('QA readiness includes UserPersisto and its email dependency in the sixteen-runtime baseline', () => {
+test('QA readiness includes UserPersisto and its email dependency in the default graph baseline', () => {
     const explorer = JSON.parse(fs.readFileSync(new URL('../../../explorer/manifest.json', import.meta.url), 'utf8'));
     const provider = JSON.parse(fs.readFileSync(new URL('../../../userPersistoAgent/manifest.json', import.meta.url), 'utf8'));
     assert.equal(explorer.sso.providerAgent, 'userPersistoAgent');
     assert.ok(explorer.enable.includes('userPersistoAgent'));
     assert.ok(provider.enable.includes('emailAgent'));
-    assert.equal(workflow.match(/Tracked agents: 16/g)?.length, 2);
-    assert.equal(workflow.match(/Running agents: 16/g)?.length, 2);
-    assert.match(workflow, /16\/16 process admission and 10\/10 semantic readiness/);
-    assert.match(workflow, /EXPECTED_NO_WAIT_AGENTS=10/);
-    assert.doesNotMatch(workflow, /(?:Tracked|Running) agents: 14|14\/14 process admission/);
+    // The retired default-local-llm runtime left the graph: 15 runtimes, 9 no-wait completions.
+    assert.equal(workflow.match(/Tracked agents: 15/g)?.length, 2);
+    assert.equal(workflow.match(/Running agents: 15/g)?.length, 2);
+    assert.match(workflow, /15\/15 process admission and 9\/9 semantic readiness/);
+    assert.match(workflow, /EXPECTED_NO_WAIT_AGENTS=9\n/);
+    assert.doesNotMatch(workflow, /(?:Tracked|Running) agents: 1[46]|1[46]\/1[46] process admission|10\/10 semantic readiness|EXPECTED_NO_WAIT_AGENTS=10/);
 });

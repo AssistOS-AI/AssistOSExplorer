@@ -27,6 +27,12 @@ ploinky status
 curl -I http://127.0.0.1:8080/dashboard
 ```
 
+### Default language models
+
+A fresh `ploinky start explorer` does not download or start a local model. The workspace's local Soul Gateway seeds a restricted free OpenRouter provider on first start, with the tiers `fast`, `code`, `plan`, `write`, `deep`, `ultra`, and `web-assist`. The provider uses a bundled credential guarded to free models only. Its daily quota is shared by every installation that uses that bundled credential, so the free service is not unlimited. It requires internet access and is not available offline. An administrator can replace the credential through the existing admin-only Soul Gateway settings dashboard.
+
+Native OpenCode execution remains available only through RoboTeam's installed OpenCode CLI. OpenCode is not a Soul Gateway provider and does not back any Soul Gateway tier.
+
 ## Use Explorer
 
 Use Explorer to browse workspace files and virtual DPU resources. Normal Markdown uses source editing by default. Select Advanced edit only when the document requires SOPLang-aware structure such as metadata, commands, variables, or references.

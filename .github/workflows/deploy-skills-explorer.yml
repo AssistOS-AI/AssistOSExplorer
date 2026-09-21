@@ -112,7 +112,6 @@ jobs:
           WEBMEET_EGRESS_URL: ${{ vars.WEBMEET_EGRESS_URL }}
           WEBMEET_INFRA_IMAGE_TAG: ${{ inputs.webmeet_infra_image_tag || vars.WEBMEET_INFRA_IMAGE_TAG || 'webmeet-infra' }}
           PLOINKY_NODE_IMAGE_TAG: ${{ inputs.ploinky_node_image_tag || vars.PLOINKY_NODE_IMAGE_TAG || '24-bookworm-tools' }}
-          DEFAULT_LOCAL_LLM_IMAGE: docker.io/assistos/default-local-llm:cpu-qwen25-coder-1.5b
           WEBMEET_INFRA_HEALTH_PORT: ${{ vars.WEBMEET_INFRA_HEALTH_PORT }}
           WEBMEET_EGRESS_REDIS_ADDRESS: ${{ vars.WEBMEET_EGRESS_REDIS_ADDRESS }}
           WEBMEET_TLS_HTTPS_PORT: ${{ vars.WEBMEET_TLS_HTTPS_PORT }}
@@ -142,7 +141,6 @@ jobs:
             write_env WEBMEET_EGRESS_URL
             write_env WEBMEET_INFRA_IMAGE_TAG
             write_env PLOINKY_NODE_IMAGE_TAG
-            write_env DEFAULT_LOCAL_LLM_IMAGE
             write_env WEBMEET_INFRA_HEALTH_PORT
             write_env WEBMEET_EGRESS_REDIS_ADDRESS
             write_env WEBMEET_TLS_HTTPS_PORT
@@ -208,7 +206,6 @@ jobs:
 
           WEBMEET_INFRA_IMAGE_TAG="${WEBMEET_INFRA_IMAGE_TAG:-webmeet-infra}"
           PLOINKY_NODE_IMAGE_TAG="${PLOINKY_NODE_IMAGE_TAG:-24-bookworm-tools}"
-          DEFAULT_LOCAL_LLM_IMAGE="${DEFAULT_LOCAL_LLM_IMAGE:-docker.io/assistos/default-local-llm:cpu-qwen25-coder-1.5b}"
           WEBMEET_INFRA_HEALTH_PORT="${WEBMEET_INFRA_HEALTH_PORT:-17000}"
           if [ "${WEBMEET_EGRESS_URL:-}" = "http://webmeetLivekitEgress:7980" ]; then
             echo "[deploy] Ignoring retired split-agent WEBMEET_EGRESS_URL override."
@@ -469,10 +466,6 @@ jobs:
 
           echo "[deploy] Pulling liveKitServerAgent image docker.io/assistos/livekit-server-agent:${WEBMEET_INFRA_IMAGE_TAG}..."
           podman pull "docker.io/assistos/livekit-server-agent:${WEBMEET_INFRA_IMAGE_TAG}"
-
-          echo "[deploy] Pulling default local LLM image ${DEFAULT_LOCAL_LLM_IMAGE}..."
-          podman pull "${DEFAULT_LOCAL_LLM_IMAGE}"
-          podman image inspect "${DEFAULT_LOCAL_LLM_IMAGE}" --format '[deploy] default local LLM image architecture={{.Architecture}} os={{.Os}}'
 
           echo "[deploy] Starting Explorer..."
           nohup env PLOINKY_MASTER_KEY="$PLOINKY_MASTER_KEY" "$PLOINKY" start AchillesIDE/explorer "$ROUTER_PORT" \
