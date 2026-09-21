@@ -87,6 +87,7 @@ export class SoulGatewayToolButton {
             }
             await launchAgentSettings(item);
         } catch (error) {
+            console.error("[soul-gateway] Failed to open settings:", error);
             globalThis.assistOS?.showToast?.(error?.message || "Soul Gateway settings could not be opened.", "error", 4000);
         } finally {
             this.setBusy(false);

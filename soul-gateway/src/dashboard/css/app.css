@@ -3,7 +3,7 @@
 }
 
 .mockup-code {
-    background: oklch(0.2 0.01 260);
+    background: var(--surface-soft);
     border-radius: 0.5rem;
     padding: 1rem;
 }
@@ -22,33 +22,12 @@
 }
 
 .sg-tree-group-row:hover {
-    background: color-mix(in oklch, currentColor 8%, transparent);
-}
-
-.sg-tree-toggle {
-    min-height: 1.25rem;
-    height: 1.25rem;
-    width: 1.25rem;
-    padding: 0;
+    background: color-mix(in srgb, currentColor 8%, transparent);
 }
 
 .sg-tree-group-row td,
 .sg-tree-leaf-row td {
     white-space: nowrap;
-}
-
-.sg-tree-path-muted {
-    opacity: 0.55;
-}
-
-.log-row-error {
-    background: oklch(0.25 0.05 25) !important;
-}
-.log-row-blocked {
-    background: oklch(0.25 0.05 60) !important;
-}
-.log-row-slow {
-    background: oklch(0.25 0.03 85) !important;
 }
 
 /* Markdown rendered content */
@@ -82,18 +61,18 @@
     margin: 0.15em 0;
 }
 .sg-md blockquote {
-    border-left: 3px solid oklch(0.5 0.05 250);
+    border-left: 3px solid var(--accent-muted);
     padding-left: 0.75em;
     margin: 0.4em 0;
     opacity: 0.85;
 }
 .sg-md hr {
     border: none;
-    border-top: 1px solid oklch(0.4 0 0);
+    border-top: 1px solid var(--border);
     margin: 0.5em 0;
 }
 .sg-md pre.sg-md-code {
-    background: oklch(0.18 0.01 260);
+    background: var(--file-exp-code-bg);
     border-radius: 0.375rem;
     padding: 0.6em 0.8em;
     margin: 0.4em 0;
@@ -105,7 +84,7 @@
     word-break: break-word;
 }
 .sg-md code.sg-md-inline-code {
-    background: oklch(0.25 0.01 260);
+    background: var(--file-exp-inline-code-bg);
     padding: 0.1em 0.35em;
     border-radius: 0.25rem;
     font-size: 0.9em;
@@ -120,15 +99,15 @@
 }
 .sg-md .sg-md-table th,
 .sg-md .sg-md-table td {
-    border: 1px solid oklch(0.35 0 0);
+    border: 1px solid var(--border);
     padding: 0.3em 0.6em;
 }
 .sg-md .sg-md-table th {
-    background: oklch(0.22 0.01 260);
+    background: var(--surface-soft);
     font-weight: 600;
 }
 .sg-md a {
-    color: oklch(0.7 0.15 250);
+    color: var(--accent);
     text-decoration: underline;
 }
 
@@ -141,7 +120,7 @@
     width: 4px;
     cursor: col-resize;
     opacity: 0;
-    background: oklch(0.6 0.15 250);
+    background: var(--accent);
     transition: opacity 0.15s;
     z-index: 5;
 }
@@ -153,4 +132,85 @@
     position: relative;
     overflow: hidden;
     flex-shrink: 0;
+}
+
+/* Keep dashboard content inside the viewport and responsive. */
+.soul-gateway-content {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.soul-gateway-content > div {
+    min-width: 0;
+}
+
+.soul-gateway-content .card,
+.soul-gateway-content .card-body {
+    min-width: 0;
+}
+
+.soul-gateway-content .table {
+    width: 100%;
+}
+
+.soul-gateway-content .table :is(td, th) {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.soul-gateway-content .overflow-x-auto,
+.soul-gateway-content .overflow-auto {
+    max-width: 100%;
+}
+
+/* Ghost badges render as clean inline text. */
+.soul-gateway-content .badge.badge-ghost {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    height: auto;
+    padding: 0;
+    line-height: inherit;
+    font-weight: inherit;
+}
+
+/* The "no auth" success outline badge renders as clean inline text. */
+.soul-gateway-content .badge.badge-success.badge-outline {
+    background-color: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    color: inherit;
+    height: auto;
+    padding: 0;
+    line-height: inherit;
+    font-weight: inherit;
+}
+
+/* Let row action menus escape the table card bounds. */
+.soul-gateway-content .card:has(.table),
+.soul-gateway-content .card-body:has(.table) {
+    overflow: visible;
+}
+
+/* Log status badges wrap inside their column instead of spilling out. */
+.soul-gateway-content .sg-log-status .badge {
+    height: auto;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.15;
+    padding-top: 1px;
+    padding-bottom: 1px;
+}
+
+/* Log error status renders as colored text without the red background. */
+.soul-gateway-content .sg-log-status .badge.badge-error {
+    background-color: transparent;
+    border-color: transparent;
+    color: var(--danger);
+    padding-left: 0;
+    padding-right: 0;
+    font-weight: 600;
 }
