@@ -12,7 +12,7 @@ assert.match(expected.boxId, /^[a-f0-9]{64}$/);
 assert.match(expected.imageId, /^[a-f0-9]{64}$/);
 assert(Number.isSafeInteger(expected.minimumRunStartedAtMs) && expected.minimumRunStartedAtMs > 0);
 const sourcePaths = ['.runtime/ploinky', 'AdvancedLanguageAgent', ...[
-    'AchillesIDE', 'AchillesCLI', 'UmamiAgent', 'copilot-agents', 'proxies', 'container-image-builds',
+    'AchillesIDE', 'AchillesCLI', 'UmamiAgent', 'OnlyOfficeAgent', 'copilot-agents', 'proxies', 'container-image-builds',
 ].map(name => `.ploinky/repos/${name}`)];
 assert.deepEqual(Object.keys(expected.sources).sort(), [...sourcePaths].sort());
 const run = (command, args, options = {}) => execFileSync(command, args, {

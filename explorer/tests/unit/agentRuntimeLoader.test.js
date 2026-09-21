@@ -91,7 +91,7 @@ test('disabled runtime stops immediately without probing or polling, then works 
     let enabled = false;
     let attempts = 0;
     const config = {
-        agentRef: 'AchillesIDE/onlyOffice',
+        agentRef: 'OnlyOfficeAgent/onlyOffice',
         label: 'OnlyOffice',
         enableMode: 'global',
         readRuntime: async () => ({ active: enabled, running: enabled, status: enabled ? 'running' : 'disabled' }),
@@ -114,7 +114,7 @@ test('missing runtime evidence does not falsely declare an agent disabled', asyn
     for (const runtime of [null, {}, { active: true, running: false, status: 'starting' }]) {
         let reads = 0;
         assert.equal(await waitForAgentRuntimeAvailability({
-            agentRef: 'AchillesIDE/onlyOffice',
+            agentRef: 'OnlyOfficeAgent/onlyOffice',
             readRuntime: async () => ++reads === 1 ? runtime : { active: true, running: true, status: 'running' },
             wait: async () => {},
             operation: async () => 'ready'

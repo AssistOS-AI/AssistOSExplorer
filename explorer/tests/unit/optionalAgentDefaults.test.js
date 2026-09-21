@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
 const root = new URL('../../../', import.meta.url);
-const optionalAgents = ['onlyOffice', 'webmeetScribeAgent', 'webmeetStt'];
+const ONLY_OFFICE_REPO = {
+    name: 'OnlyOfficeAgent',
+    url: 'https://github.com/AssistOS-AI/OnlyOfficeAgent.git',
+};
+const localOptionalAgents = ['webmeetScribeAgent', 'webmeetStt'];
 const readManifest = async (agent) => JSON.parse(await fs.readFile(new URL(`${agent.replace(/^AchillesIDE\//, '')}/manifest.json`, root), 'utf8'));
 
 test('Explorer local dependency graph excludes optional agents while retaining their Marketplace manifests', async () => {
@@ -21,17 +25,32 @@ test('Explorer local dependency graph excludes optional agents while retaining t
         }
         for (const entry of manifest.enable || []) {
             const ref = (typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0];
-            assert.equal(optionalAgents.includes(ref.split('/').at(-1)), false, `${agent} must not auto-enable ${ref}`);
+            const shortName = ref.split('/').at(-1);
+            assert.equal(shortName === 'onlyOffice', false, `${agent} must not auto-enable ${ref}; the external OnlyOffice agent stays opt-in`);
+            assert.equal(localOptionalAgents.includes(shortName), false, `${agent} must not auto-enable ${ref}`);
             await visit(ref);
         }
     }
     await visit('explorer');
     assert.ok(visited.has('webmeetAgent'));
     assert.ok(visited.has('AchillesIDE/liveKitServerAgent'));
-    for (const agent of optionalAgents) {
+    for (const agent of localOptionalAgents) {
         const manifest = await readManifest(agent);
         assert.ok(manifest.container, `${agent} must remain discoverable and runnable through Marketplace`);
     }
+    const explorer = await readManifest('explorer');
+    assert.equal(
+        explorer.repos?.[ONLY_OFFICE_REPO.name],
+        ONLY_OFFICE_REPO.url,
+        'Explorer must install the extracted OnlyOffice repository so Marketplace can offer the agent'
+    );
+    assert.equal(
+        (explorer.enable || []).some((entry) => (
+            (typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0].endsWith('/onlyOffice')
+        )),
+        false,
+        'OnlyOffice must stay disabled by default'
+    );
     const scribe = await readManifest('webmeetScribeAgent');
     assert.ok(scribe.enable.some((ref) => ref.split(/\s+/)[0] === 'AchillesIDE/liveKitServerAgent'));
 });

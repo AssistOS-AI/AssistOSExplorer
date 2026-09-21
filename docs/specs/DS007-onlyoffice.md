@@ -1,17 +1,19 @@
 ---
 title: DS007-onlyoffice
-summary: Defines the Explorer and onlyOffice boundary for Office document sessions and protected callbacks.
+summary: Defines the Explorer boundary with the external OnlyOfficeAgent/onlyOffice agent for Office document sessions and protected callbacks.
 ---
 
 # DS007 OnlyOffice
 
 ## Introduction
 
-Explorer presents compatible Office documents while the onlyOffice agent owns the editor-session and callback lifecycle.
+Explorer presents compatible Office documents while the external `OnlyOfficeAgent/onlyOffice` agent owns the editor-session and callback lifecycle.
 
 ## Core Content
 
 OnlyOffice runs only in `global` runtime mode so the editor can access workspace files. The manifest declares `"enableModes": ["global"]`, so Marketplace offers only that mode and Ploinky rejects any other enable mode.
+
+The agent lives in the public `AssistOS-AI/OnlyOfficeAgent` repository and is declared by name and URL in `explorer/manifest.json` `repos`. Explorer installs the repository but must not enable the agent; the agent stays opt-in in `global` mode. The Marketplace ref is `OnlyOfficeAgent/onlyOffice` and the agent principal is `agent:OnlyOfficeAgent/onlyOffice`. Only the repository identity and container name change: the route prefix `/base-agent-additional-server/onlyOffice/*`, the `.data/onlyOffice/{log,data,lib}` workspace data paths, and the shared generated `ONLYOFFICE_JWT_SECRET` are unchanged.
 
 The `onlyOffice` agent must be disabled by default. An administrator may enable it from Marketplace, and Explorer retains its built-in Office preview integration. When runtime status verifies that the agent is disabled, Explorer must explain that Office editing requires Marketplace enablement instead of waiting for startup or repeatedly requesting an editor session. The loader must provide Retry so the user can resume opening the document after an administrator enables the agent.
 
@@ -19,10 +21,12 @@ Explorer must request an OnlyOffice session only for supported Office document t
 
 The onlyOffice agent must own session construction, signed editor transport, callback validation, and its persisted session metadata. Explorer must preserve the DPU authorization boundary before requesting a session for a DPU-backed document.
 
+The extracted agent keeps Confidential editing by naming the absolute Router delegation target `agent:AchillesIDE/dpuAgent`. A relative same-repository target (the `agent:./` prefix) resolves against the agent's own repository, which would become `agent:OnlyOfficeAgent/dpuAgent` and fail closed. The absolute target therefore assumes Explorer keeps its canonical installation name `AchillesIDE`.
+
 Secrets and other non-file DPU resources must remain outside the OnlyOffice flow.
 
 The editor transport admits only dictionary `.dic` and `.aff` files beneath validated language directories, in addition to its existing asset allowlist. Signed editor configuration disables third-party plugins, and the managed DocumentServer process disables its background plugin updater; the Office integration has no external AI-plugin feature. Explorer loads the native editor's immutable versioned status-icon asset while its route is active so the disconnect dialog remains complete during a targeted restart. Each mount snapshots its configuration before script loading can yield, keeping document identity, transport URL, and event handlers consistent when presenter state changes. Concurrent renders await the same preload; failed or superseded preloads cannot mark an editor ready or damage a newer session.
 
 ## Conclusion
 
-OnlyOffice integration provides Office editing without moving session security or protected storage behavior into Explorer.
+OnlyOffice integration provides Office editing across two repositories without moving session security or protected storage behavior into Explorer.

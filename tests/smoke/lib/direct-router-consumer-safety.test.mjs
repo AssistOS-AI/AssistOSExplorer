@@ -18,10 +18,6 @@ const DISPOSITIONS = Object.freeze({
     signals: ['verified-router-client'],
     disposition: 'Delegates transport to the mounted Ploinky AgentMcpClient descriptor verifier.',
   },
-  'onlyOffice/src/index.mjs': {
-    signals: ['verified-router-client'],
-    disposition: 'Loads the mounted Ploinky AgentMcpClient for DPU calls; it owns no Router socket.',
-  },
   'userPersistoAgent/lib/auth/managedRouterOrigins.mjs': {
     signals: ['generated-router-key'],
     disposition: 'Detects managed-runtime provenance and delegates fresh authenticated origin reads to the mounted Ploinky runtimeRouterOrigins helper.',
@@ -87,14 +83,12 @@ test('every executable Router consumer has one explicit safe disposition', () =>
   }
 });
 
-test('legacy multimedia and OnlyOffice fallbacks are absent from executable sources', () => {
+test('legacy multimedia fallbacks are absent from executable sources', () => {
   const multimedia = fs.readFileSync(path.join(
     REPOSITORY_ROOT,
     'multimedia/skills/ffmpegImageToVideo/src/ffmpegImageToVideo.mjs',
   ), 'utf8');
-  const onlyOffice = fs.readFileSync(path.join(REPOSITORY_ROOT, 'onlyOffice/src/edge-topology.mjs'), 'utf8');
   assert.doesNotMatch(multimedia, /host\.docker\.internal|HOST_LOOPBACK|PLOINKY_ROUTER_URL|PLOINKY_ROUTER_PORT/);
-  assert.doesNotMatch(onlyOffice, /PLOINKY_ROUTER_URL/);
 });
 
 test('gitAgent keeps the requested embedded profile without protected overrides', () => {

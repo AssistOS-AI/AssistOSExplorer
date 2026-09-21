@@ -361,10 +361,10 @@ test('missing, short and stale current IDs cannot select a candidate by guessed 
 });
 
 test('aliases use the supported CLI grammar and keep the prior auth policy', () => {
-    assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'onlyOffice', alias: 'documents', auth: 'local' }),
-        ['enable', 'agent', 'AchillesIDE/onlyOffice', 'isolated', '--auth', 'pwd', 'as', 'documents']);
-    assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'onlyOffice', alias: '', auth: 'none' }),
-        ['enable', 'agent', 'AchillesIDE/onlyOffice', 'isolated', '--auth', 'none']);
+    assert.deepEqual(enableArguments({ repo: 'OnlyOfficeAgent', agent: 'onlyOffice', alias: 'documents', auth: 'local' }),
+        ['enable', 'agent', 'OnlyOfficeAgent/onlyOffice', 'isolated', '--auth', 'pwd', 'as', 'documents']);
+    assert.deepEqual(enableArguments({ repo: 'OnlyOfficeAgent', agent: 'onlyOffice', alias: '', auth: 'none' }),
+        ['enable', 'agent', 'OnlyOfficeAgent/onlyOffice', 'isolated', '--auth', 'none']);
     assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'webmeetAgent', alias: '', auth: 'guest', runMode: 'global' }),
         ['enable', 'agent', 'AchillesIDE/webmeetAgent', 'global', '--auth', 'guest']);
     assert.deepEqual(enableArguments({ repo: 'AchillesIDE', agent: 'gitAgent', alias: '', auth: 'none', runMode: 'devel', develRepo: 'work' }),
@@ -433,7 +433,7 @@ test('Box admission requires the same-path host workspace mount, working directo
 });
 
 test('selection replay preserves existing choices and refreshes the registry after each real enable', async () => {
-    const selections = [{ name: 'office', repo: 'AchillesIDE', agent: 'onlyOffice', alias: '', auth: 'local', profile: 'default' },
+    const selections = [{ name: 'office', repo: 'OnlyOfficeAgent', agent: 'onlyOffice', alias: '', auth: 'local', profile: 'default' },
         { name: 'stats', repo: 'UmamiAgent', agent: 'umamiAgent', alias: 'analytics', auth: 'none', profile: 'default' }];
     const registry = {};
     const enabled = [];

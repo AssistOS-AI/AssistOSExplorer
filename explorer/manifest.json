@@ -28,6 +28,7 @@
     ],
     "repos": {
         "container-image-builds": "https://github.com/AssistOS-AI/container-image-builds.git",
+        "OnlyOfficeAgent": "https://github.com/AssistOS-AI/OnlyOfficeAgent.git",
         "UmamiAgent": "https://github.com/AssistOS-AI/UmamiAgent.git"
     },
     "applicationPlugins": {

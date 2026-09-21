@@ -36,15 +36,15 @@ test('legacy x-ploinky-caller-jwt does not create delegated user identity', () =
     typ: 'router-request',
     iss: 'ploinky-router',
     aud: 'agent:AssistOSExplorer/dpuAgent',
-    sub: 'agent:AssistOSExplorer/onlyOffice',
+    sub: 'agent:OnlyOfficeAgent/onlyOffice',
     actor: {
       kind: 'agent',
-      id: 'agent:AssistOSExplorer/onlyOffice',
+      id: 'agent:OnlyOfficeAgent/onlyOffice',
       roles: ['agent']
     },
     caller: {
       kind: 'agent',
-      id: 'agent:AssistOSExplorer/onlyOffice',
+      id: 'agent:OnlyOfficeAgent/onlyOffice',
       roles: ['agent']
     },
     headers: {
@@ -56,10 +56,10 @@ test('legacy x-ploinky-caller-jwt does not create delegated user identity', () =
   });
 
   assert.equal(authInfoWithoutUsr.user, undefined);
-  assert.equal(authInfoWithoutUsr.agent?.principalId, 'agent:AssistOSExplorer/onlyOffice');
+  assert.equal(authInfoWithoutUsr.agent?.principalId, 'agent:OnlyOfficeAgent/onlyOffice');
   assert.deepEqual(authInfoWithoutUsr.invocation?.caller, {
     kind: 'agent',
-    id: 'agent:AssistOSExplorer/onlyOffice',
+    id: 'agent:OnlyOfficeAgent/onlyOffice',
     roles: ['agent']
   });
 
@@ -67,15 +67,15 @@ test('legacy x-ploinky-caller-jwt does not create delegated user identity', () =
     typ: 'router-request',
     iss: 'ploinky-router',
     aud: 'agent:AssistOSExplorer/dpuAgent',
-    sub: 'agent:AssistOSExplorer/onlyOffice',
+    sub: 'agent:OnlyOfficeAgent/onlyOffice',
     actor: {
       kind: 'agent',
-      id: 'agent:AssistOSExplorer/onlyOffice',
+      id: 'agent:OnlyOfficeAgent/onlyOffice',
       roles: ['agent']
     },
     caller: {
       kind: 'agent',
-      id: 'agent:AssistOSExplorer/onlyOffice',
+      id: 'agent:OnlyOfficeAgent/onlyOffice',
       roles: ['agent']
     },
     headers: {
@@ -94,5 +94,5 @@ test('legacy x-ploinky-caller-jwt does not create delegated user identity', () =
   assert.equal(authInfoWithUsr.user?.id, 'local:alice');
   assert.equal(authInfoWithUsr.user?.username, 'alice');
   assert.deepEqual(authInfoWithUsr.user?.roles, ['user']);
-  assert.equal(authInfoWithUsr.agent?.principalId, 'agent:AssistOSExplorer/onlyOffice');
+  assert.equal(authInfoWithUsr.agent?.principalId, 'agent:OnlyOfficeAgent/onlyOffice');
 });
