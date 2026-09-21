@@ -2,6 +2,7 @@ import {
     ensureSettingsComponentRegistered,
     openPluginSettingsUrl
 } from "./settings-component-loader.js";
+import { openSettingsIframePopup } from "./settings-iframe-popup.js";
 
 export async function ensureAgentRunning(agentRef) {
     const ref = String(agentRef || "").trim();
@@ -15,17 +16,49 @@ export async function ensureAgentRunning(agentRef) {
     return module.ensureAgentRunning(ref);
 }
 
+function openEmbeddedSettingsPopup(item) {
+    return openSettingsIframePopup({
+        url: item.settingsUrl,
+        title: item.label || item.ownerAgent || "Settings",
+        readyTitle: item.label || "",
+        fullscreen: item.settingsEmbeddedFullscreen !== false
+    });
+}
+
 export async function launchAgentSettings(item, {
     ensureRunning = ensureAgentRunning,
     openSettingsUrl = openPluginSettingsUrl,
+    openSettingsPopup = openEmbeddedSettingsPopup,
     registerSettingsComponent = ensureSettingsComponentRegistered
 } = {}) {
     if (!item || typeof item !== "object") {
         throw new Error("Agent settings entry is unavailable.");
     }
     const key = String(item.key || item.ownerAgent || "").trim();
+    const agentRef = item.agentRef || item.ownerAgent;
 
-    const runtime = await ensureRunning(item.agentRef || item.ownerAgent);
+    if (item.settingsEmbedded) {
+        if (!item.settingsUrl) {
+            throw new Error(`Agent settings for ${key} has no embedded settings URL.`);
+        }
+        try {
+            const popupPromise = openSettingsPopup(item);
+            const runtime = await ensureRunning(agentRef).catch((error) => {
+                console.error(`[settings] Failed to start ${agentRef}:`, error);
+                return null;
+            });
+            await popupPromise;
+            return runtime;
+        } catch (error) {
+            console.error("[settings] Embedded settings popup failed:", error);
+            if (openSettingsUrl(item)) {
+                return null;
+            }
+            throw error;
+        }
+    }
+
+    const runtime = await ensureRunning(agentRef);
 
     if (item.settingsUrl) {
         if (!openSettingsUrl(item)) {

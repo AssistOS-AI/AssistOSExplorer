@@ -69,14 +69,17 @@ export function buildAgentSettingsItems(agentSettings = [], pluginItems = [], { 
             const sourcePlugin = pluginByKey.get(definition.pluginKey) || null;
             const settingsComponent = definition.settingsComponent || sourcePlugin?.settingsComponent || "";
             const settingsUrl = definition.settingsUrl || sourcePlugin?.settingsUrl || "";
+            const settingsEmbedded = definition.settingsEmbedded === true || sourcePlugin?.settingsEmbedded === true;
             return {
                 ...definition,
                 sourcePlugin,
                 component: sourcePlugin?.component || "",
                 pluginId: sourcePlugin?.pluginId || "",
-                available: Boolean(sourcePlugin) && Boolean(settingsUrl || settingsComponent),
+                available: Boolean(sourcePlugin) && Boolean(settingsUrl || settingsComponent || settingsEmbedded),
                 settingsComponent,
                 settingsUrl,
+                settingsEmbedded,
+                settingsEmbeddedFullscreen: definition.settingsEmbeddedFullscreen === true || sourcePlugin?.settingsEmbeddedFullscreen === true,
                 assetRootPath: sourcePlugin?.assetRootPath || "",
                 componentBaseUrl: sourcePlugin?.componentBaseUrl || "",
                 agentRef: "",
