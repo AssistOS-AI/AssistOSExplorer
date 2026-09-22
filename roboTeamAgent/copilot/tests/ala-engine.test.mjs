@@ -40,8 +40,8 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false } = {}) {
     const session = await store.createSession();
     let records = [{ name: 'bash', description: 'Run commands', skillDir: workingDir, enabled: true }];
     let models = { codex: 'native-first' };
-    let robotCatalog;
-    const catalog = { async refresh() { return { robotCatalog, skills: records.map((record) => ({ ...record })),
+    let workflowCatalog;
+    const catalog = { async refresh() { return { workflowCatalog, skills: records.map((record) => ({ ...record })),
         taskRepositories: records.filter((record) => record.enabled).map((record) => record.skillDir) }; } };
     const installation = {
         entryPath: childEntry,
@@ -52,7 +52,7 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false } = {}) {
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
     t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); });
     return { workingDir, engine, store, installation, sessionId: session.sessionId,
-        setRobotCatalog: next => { robotCatalog = next; },
+        setWorkflowCatalog: next => { workflowCatalog = next; },
         setSkills: (next) => { records = next; }, setModels: (next) => { models = next; } };
 }
 
@@ -173,16 +173,17 @@ test('coding provider names remain ordinary prompts without removed launcher rou
 });
 
 
-test('the default robot receives description-based delegation choices in its native prompt', async t => {
+test('the default robot receives the workflow catalog in its native prompt', async t => {
     const h = await harness(t);
-    h.setRobotCatalog([{ name: 'analyst', skillsets: [{ id: 'repo-a-set-1', description: 'Use for reviewing reports', skills: ['read-report'] }], skillRepositories: [{ id: 'repo-extra', skills: [{ name: 'verify', description: 'Verify report facts' }] }] }]);
+    h.setWorkflowCatalog([{ id: 'software-change', name: 'Software change', description: 'Use for reviewing reports',
+        decisionMemberId: 'impl', members: [{ id: 'impl', robotName: 'analyst', role: 'Implements', executionType: 'terminal', decisionMaker: true }] }]);
     const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Review the report' });
     const prompt = JSON.parse(result.outputText).prompt;
     assert.match(prompt, /Use for reviewing reports/);
-    assert.match(prompt, /repo-a-set-1/);
-    assert.match(prompt, /Verify report facts/);
-    assert.match(prompt, /repository-id\/skill-name in skills/);
-    assert.match(prompt, /When delegating, choose a robot and skillsets or individual skills by their descriptions/);
+    assert.match(prompt, /software-change/);
+    assert.match(prompt, /launch-workflow skill/);
+    assert.match(prompt, /You cannot run tasks yourself/);
+    assert.match(prompt, /Never invent a workflow id/);
 });
 
 

@@ -16,7 +16,7 @@ import { DATA_DIR, MAX_ACTIVE_GUI_ROBOTS, BROWSER_IMAGE, DESKTOP_IMAGE, TIMEZONE
 import { prepareRobotShell } from './robot-shell.mjs';
 import { createSoulGatewayService } from './soul-gateway-service.mjs';
 import { RESUME_REOBSERVE_INSTRUCTION } from './workstation-control-adapter.mjs';
-import { robotCodingAgents, codingAgentEnvironment } from './coding-agents.mjs';
+import { robotCodingAgents, codingAgentEnvironment, GUI_CODING_AGENTS } from './coding-agents.mjs';
 
 const execFileAsync = promisify(execFile);
 const MANAGED_LABEL = 'io.assistos.roboteam.robot=1';
@@ -466,10 +466,24 @@ export class RuntimeManager {
             const cwd = await this.resolveCwd(task.request.cwd);
             task.request.cwd = registerProject(this, cwd);
             if (task.cancelRequested) throw new Error('task was stopped');
-            const codingAgent = task.request.ca || 'auto';
+            const requestedAgent = task.request.ca || 'auto';
             const selectedAgents = robotCodingAgents(robot);
-            if (codingAgent !== 'auto' && !selectedAgents.includes(codingAgent)) {
-                throw new Error(`Coding agent ${codingAgent} is not enabled for this robot`);
+            if (requestedAgent !== 'auto' && !selectedAgents.includes(requestedAgent)) {
+                throw new Error(`Coding agent ${requestedAgent} is not enabled for this robot`);
+            }
+            let codingAgent = requestedAgent;
+            if (GUI_MODES.has(task.type)) {
+                // Desktop and Browser tasks need a backend ALA can give the MCP
+                // bridge URL to. Resolve an explicit GUI-capable agent so ALA's
+                // own priority never selects Pi for a GUI task.
+                codingAgent = requestedAgent === 'auto'
+                    ? GUI_CODING_AGENTS.find(name => selectedAgents.includes(name)) || ''
+                    : requestedAgent;
+                if (!GUI_CODING_AGENTS.includes(codingAgent)) {
+                    throw new Error(requestedAgent === 'auto'
+                        ? `GUI tasks require a coding agent with MCP support; enable ${GUI_CODING_AGENTS.join(' or ')} for this robot`
+                        : `GUI tasks require a coding agent with MCP support (${GUI_CODING_AGENTS.join(' or ')}); ${requestedAgent} is not supported`);
+                }
             }
             const codingAgentsPromise = this.toolCache.prepareCodingAgents(codingAgent === 'auto' ? selectedAgents : [codingAgent]);
             let mcpAddress = null;
@@ -509,7 +523,10 @@ export class RuntimeManager {
                 await this._saveTask(task);
             }
             if (task.request.model) args.push('--model', task.request.model);
-            if (mcpAddress) args.push('--MCPServers', mcpAddress);
+            const requestedMcp = Array.isArray(task.request.mcpServers)
+                ? task.request.mcpServers.join(',') : String(task.request.mcpServers || '');
+            const mcpServers = [requestedMcp, mcpAddress].filter(Boolean).join(',');
+            if (mcpServers) args.push('--MCPServers', mcpServers);
             task.state = 'running';
             this._emitTaskEvent({ kind: 'state', robotId: robot.id, taskId: task.taskId, state: 'running' });
             const codingAgents = await codingAgentsPromise;

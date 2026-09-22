@@ -5,7 +5,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { createPloinkyTaskContext } from '../src/lib/ploinkyTaskContext.mjs';
-import { sendTaskEvent } from '../src/skills/launch-robot/scripts/taskEventClient.mjs';
+import { sendTaskEvent } from '../src/skills/launch-workflow/scripts/taskEventClient.mjs';
 
 test('acknowledges after observation, deduplicates retries and accepts separate metadata updates', async t => {
     let release;

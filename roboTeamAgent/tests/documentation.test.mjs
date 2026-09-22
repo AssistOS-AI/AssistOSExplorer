@@ -104,8 +104,8 @@ test('documentation introduces ALA execution and AchillesCLI integration', async
     for (const option of ['--home', '--cwd', '--folder', '--taskFile', '--ca', '--MCPServers', '--model']) {
         assert.match(operations, new RegExp(option, 'u'));
     }
-    assert.match(combined, /scripts\/list\.mjs/u);
-    assert.match(combined, /launch-robot/u);
+    assert.match(combined, /launch-workflow/u);
+    assert.match(combined, /roboflow_start_flow/u);
     assert.match(combined, /Ploinky Router/u);
 });
 

@@ -21,11 +21,11 @@ const membersEditor = document.querySelector('#membersEditor');
 const membersHint = document.querySelector('#membersHint');
 const addWorkflowButton = document.querySelector('#addWorkflowButton');
 const workflowDialog = document.querySelector('#workflowDialog');
-const workflowBackButton = document.querySelector('#workflowBackButton');
-const workflowNextButton = document.querySelector('#workflowNextButton');
+const workflowDialogTitle = document.querySelector('#workflowDialogTitle');
 const workflowCreateButton = document.querySelector('#workflowCreateButton');
 const workflowCancelButton = document.querySelector('#workflowCancelButton');
 const workflowDialogClose = document.querySelector('#workflowDialogClose');
+const workflowReadonlyOverlay = document.querySelector('#workflowReadonlyOverlay');
 const logPollers = new Set();
 
 function closeOpenMenus(except) {
@@ -364,7 +364,11 @@ const EXECUTION_TYPES = [
     { value: 'browser', label: 'Browser', hint: 'Visible Chromium with browser use' },
 ];
 
-const workflowState = { robots: [], members: [], canAdmin: false };
+const workflowState = { robots: [], members: [], canAdmin: false, decisionMemberKey: null, editingId: null, readOnly: false };
+
+function workflowLocked() {
+    return workflowState.canAdmin !== true || workflowState.readOnly === true;
+}
 let memberSequence = 0;
 
 function robotByName(name) {
@@ -388,23 +392,29 @@ function populateRobotPicker() {
         option.textContent = robot.specialization ? `${robot.name} — ${robot.specialization}` : robot.name;
         robotToAdd.appendChild(option);
     }
-    robotToAdd.disabled = workflowState.canAdmin !== true;
+    robotToAdd.disabled = workflowLocked();
 }
 
 function memberSupportsExecution(robot, executionType) {
     if (executionType === 'terminal') return true;
-    return Array.isArray(robot?.codingAgents) && robot.codingAgents.includes('codex');
+    return Array.isArray(robot?.codingAgents)
+        && robot.codingAgents.some((name) => name === 'codex' || name === 'opencode');
 }
 
 function addWorkflowMember() {
     const robotName = robotToAdd?.value;
     if (!robotName) return;
-    workflowState.members.push({ key: ++memberSequence, robotName, role: '', executionType: 'terminal', skillSets: new Set() });
+    const member = { key: ++memberSequence, robotName, role: '', executionType: 'terminal', skillSets: new Set() };
+    workflowState.members.push(member);
+    if (workflowState.decisionMemberKey === null) workflowState.decisionMemberKey = member.key;
     renderMembersEditor();
 }
 
 function removeWorkflowMember(key) {
     workflowState.members = workflowState.members.filter((member) => member.key !== key);
+    if (workflowState.decisionMemberKey === key) {
+        workflowState.decisionMemberKey = workflowState.members[0]?.key ?? null;
+    }
     renderMembersEditor();
 }
 
@@ -437,7 +447,7 @@ function memberCard(member, index) {
     remove.type = 'button';
     remove.className = 'button danger';
     remove.textContent = 'Remove';
-    remove.disabled = workflowState.canAdmin !== true;
+    remove.disabled = workflowLocked();
     remove.addEventListener('click', () => removeWorkflowMember(member.key));
     header.appendChild(remove);
     card.appendChild(header);
@@ -451,7 +461,7 @@ function memberCard(member, index) {
     roleInput.maxLength = 500;
     roleInput.placeholder = 'What this robot does in the team';
     roleInput.value = member.role;
-    roleInput.disabled = workflowState.canAdmin !== true;
+    roleInput.disabled = workflowLocked();
     roleInput.addEventListener('input', () => { member.role = roleInput.value; });
     role.appendChild(roleLabel);
     role.appendChild(roleInput);
@@ -472,7 +482,7 @@ function memberCard(member, index) {
         input.name = `execution-${member.key}`;
         input.value = type.value;
         input.checked = member.executionType === type.value;
-        input.disabled = workflowState.canAdmin !== true;
+        input.disabled = workflowLocked();
         input.addEventListener('change', () => {
             if (!input.checked) return;
             member.executionType = type.value;
@@ -494,10 +504,29 @@ function memberCard(member, index) {
     if (member.executionType !== 'terminal' && !memberSupportsExecution(robot, member.executionType)) {
         const warning = document.createElement('p');
         warning.className = 'hint';
-        warning.textContent = `Robot ${member.robotName} has no Codex enabled; ${member.executionType} tasks need Codex at execution time.`;
+        warning.textContent = `Robot ${member.robotName} has no Codex or OpenCode enabled; ${member.executionType} tasks need Codex or OpenCode at execution time.`;
         execution.appendChild(warning);
     }
     card.appendChild(execution);
+
+    const isDecision = workflowState.decisionMemberKey === member.key;
+    const decision = document.createElement('label');
+    decision.className = `decision-option${isDecision ? ' selected' : ''}`;
+    const decisionInput = document.createElement('input');
+    decisionInput.type = 'radio';
+    decisionInput.name = 'workflow-decision';
+    decisionInput.checked = isDecision;
+    decisionInput.disabled = workflowLocked();
+    decisionInput.addEventListener('change', () => {
+        if (!decisionInput.checked) return;
+        workflowState.decisionMemberKey = member.key;
+        renderMembersEditor();
+    });
+    const decisionText = document.createElement('span');
+    decisionText.textContent = 'Use this robot to choose at each step which action to make(decision maker)';
+    decision.appendChild(decisionInput);
+    decision.appendChild(decisionText);
+    card.appendChild(decision);
 
     const skillsets = document.createElement('div');
     skillsets.className = 'field';
@@ -520,7 +549,7 @@ function memberCard(member, index) {
             input.type = 'checkbox';
             input.value = set.id;
             input.checked = member.skillSets.has(set.id);
-            input.disabled = workflowState.canAdmin !== true;
+            input.disabled = workflowLocked();
             input.addEventListener('change', () => {
                 if (input.checked) member.skillSets.add(set.id);
                 else member.skillSets.delete(set.id);
@@ -549,37 +578,56 @@ function memberCard(member, index) {
 
 function collectWorkflowMembers() {
     if (!workflowState.members.length) throw new Error('Add at least one robot to the workflow.');
+    if (workflowState.decisionMemberKey === null || !workflowState.members.some((member) => member.key === workflowState.decisionMemberKey)) {
+        throw new Error('Select one robot as the decision maker.');
+    }
     return workflowState.members.map((member) => ({
+        ...(member.serverId ? { id: member.serverId } : {}),
         robotName: member.robotName,
         role: member.role.trim(),
         executionType: member.executionType,
         skillSets: [...member.skillSets],
-        skills: [],
+        skills: Array.isArray(member.serverSkills) ? member.serverSkills : [],
+        decisionMaker: member.key === workflowState.decisionMemberKey,
     }));
 }
 
-function showWorkflowStep(step) {
-    if (!workflowForm) return;
-    for (const panel of workflowForm.querySelectorAll('[data-step]')) {
-        panel.hidden = Number(panel.dataset.step) !== step;
-    }
-    if (workflowBackButton) workflowBackButton.hidden = step !== 2;
-    if (workflowNextButton) workflowNextButton.hidden = step !== 1;
-    if (workflowCreateButton) workflowCreateButton.hidden = step !== 2;
-    setWorkflowMessage('');
-}
-
-function workflowDetailsValid() {
-    const nameInput = workflowForm?.querySelector('input[name="name"]');
-    return nameInput ? nameInput.reportValidity() : true;
-}
-
-function openWorkflowDialog() {
+function openWorkflowDialog(workflow = null) {
     if (!workflowDialog || !workflowForm) return;
     workflowForm.reset();
     workflowState.members = [];
+    workflowState.decisionMemberKey = null;
+    const readOnly = Boolean(workflow && workflow.id === 'default');
+    workflowState.readOnly = readOnly;
+    workflowState.editingId = workflow && !readOnly ? workflow.id : null;
+    if (workflow) {
+        const nameInput = workflowForm.querySelector('input[name="name"]');
+        const descriptionInput = workflowForm.querySelector('textarea[name="description"]');
+        if (nameInput) nameInput.value = workflow.name || '';
+        if (descriptionInput) descriptionInput.value = workflow.description || '';
+        workflowState.members = (workflow.members || []).map((member) => ({
+            key: ++memberSequence,
+            serverId: member.id,
+            serverSkills: Array.isArray(member.skills) ? member.skills : [],
+            robotName: member.robotName,
+            role: member.role || '',
+            executionType: member.executionType,
+            skillSets: new Set(Array.isArray(member.skillSets) ? member.skillSets : []),
+        }));
+        const decisionMember = workflowState.members.find((member) => member.serverId === workflow.decisionMemberId);
+        workflowState.decisionMemberKey = decisionMember ? decisionMember.key : (workflowState.members[0]?.key ?? null);
+    }
+    if (workflowDialogTitle) workflowDialogTitle.textContent = readOnly ? 'Default workflow type (read-only)'
+        : workflow ? 'Edit workflow type' : 'Add workflow type';
+    if (workflowCreateButton) {
+        workflowCreateButton.textContent = workflow ? 'Save workflow type' : 'Create workflow type';
+        workflowCreateButton.hidden = readOnly;
+    }
+    if (workflowReadonlyOverlay) workflowReadonlyOverlay.hidden = !readOnly;
     renderMembersEditor();
-    showWorkflowStep(1);
+    if (addMemberButton) addMemberButton.disabled = workflowLocked();
+    for (const field of workflowForm.querySelectorAll('input, textarea, select')) field.disabled = workflowLocked();
+    setWorkflowMessage('');
     setWorkflowListMessage('');
     if (typeof workflowDialog.showModal === 'function') workflowDialog.showModal();
     else workflowDialog.setAttribute('open', '');
@@ -615,6 +663,7 @@ function renderWorkflows(workflows, canAdmin) {
         for (const member of workflow.members) {
             const item = document.createElement('li');
             const parts = [`${member.robotName} · ${member.executionType}`];
+            if (member.id === workflow.decisionMemberId) parts.push('decision maker');
             if (member.role) parts.push(member.role);
             if (Array.isArray(member.skillSets) && member.skillSets.length) parts.push(`skillsets: ${member.skillSets.join(', ')}`);
             if (Array.isArray(member.skills) && member.skills.length) parts.push(`skills: ${member.skills.join(', ')}`);
@@ -623,22 +672,33 @@ function renderWorkflows(workflows, canAdmin) {
         }
         card.appendChild(list);
         if (canAdmin) {
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.className = 'button danger';
-            remove.textContent = 'Delete workflow';
-            remove.addEventListener('click', async () => {
-                remove.disabled = true;
-                try {
-                    await api(`api/roboflow/workflows/${workflow.id}`, { method: 'DELETE' });
-                    await loadWorkflows(workflowState.canAdmin);
-                } catch (error) {
-                    setWorkflowListMessage(error.message, 'error');
-                } finally {
-                    remove.disabled = false;
-                }
-            });
-            card.appendChild(remove);
+            const actions = document.createElement('div');
+            actions.className = 'workflow-actions';
+            const edit = document.createElement('button');
+            edit.type = 'button';
+            edit.className = 'button secondary';
+            edit.textContent = 'Edit workflow';
+            edit.addEventListener('click', () => openWorkflowDialog(workflow));
+            actions.appendChild(edit);
+            if (workflow.id !== 'default') {
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'button danger';
+                remove.textContent = 'Delete workflow';
+                remove.addEventListener('click', async () => {
+                    remove.disabled = true;
+                    try {
+                        await api(`api/roboflow/workflows/${workflow.id}`, { method: 'DELETE' });
+                        await loadWorkflows(workflowState.canAdmin);
+                    } catch (error) {
+                        setWorkflowListMessage(error.message, 'error');
+                    } finally {
+                        remove.disabled = false;
+                    }
+                });
+                actions.appendChild(remove);
+            }
+            card.appendChild(actions);
         }
         workflowsList.appendChild(card);
     }
@@ -653,7 +713,8 @@ async function loadWorkflows(canAdmin) {
         workflowsList.textContent = `Workflows unavailable: ${error.message}`;
     }
     if (workflowForm) {
-        for (const field of workflowForm.querySelectorAll('input, textarea, select, button')) field.disabled = !workflowState.canAdmin;
+        for (const field of workflowForm.querySelectorAll('input, textarea, select')) field.disabled = workflowLocked();
+        if (addMemberButton) addMemberButton.disabled = workflowLocked();
         populateRobotPicker();
         renderMembersEditor();
     }
@@ -662,31 +723,37 @@ async function loadWorkflows(canAdmin) {
 
 if (workflowForm) {
     addMemberButton?.addEventListener('click', addWorkflowMember);
-    addWorkflowButton?.addEventListener('click', openWorkflowDialog);
-    workflowNextButton?.addEventListener('click', () => { if (workflowDetailsValid()) showWorkflowStep(2); });
-    workflowBackButton?.addEventListener('click', () => showWorkflowStep(1));
+    addWorkflowButton?.addEventListener('click', () => openWorkflowDialog());
     workflowCancelButton?.addEventListener('click', closeWorkflowDialog);
     workflowDialogClose?.addEventListener('click', closeWorkflowDialog);
     workflowDialog?.addEventListener('close', () => {
         workflowForm.reset();
         workflowState.members = [];
+        workflowState.decisionMemberKey = null;
+        workflowState.editingId = null;
+        workflowState.readOnly = false;
+        if (workflowReadonlyOverlay) workflowReadonlyOverlay.hidden = true;
         renderMembersEditor();
         setWorkflowMessage('');
     });
     workflowForm.addEventListener('submit', async (event) => {
         event.preventDefault();
+        if (workflowState.readOnly) return;
         const submit = workflowCreateButton || workflowForm.querySelector('button[type="submit"]');
         if (submit) submit.disabled = true;
         const data = new FormData(workflowForm);
+        const editingId = workflowState.editingId;
         try {
             const members = collectWorkflowMembers();
-            await api('api/roboflow/workflows', { method: 'POST', body: {
+            const body = {
                 name: data.get('name'),
                 description: data.get('description'),
                 members,
-            } });
+            };
+            if (editingId) await api(`api/roboflow/workflows/${editingId}`, { method: 'PUT', body });
+            else await api('api/roboflow/workflows', { method: 'POST', body });
             closeWorkflowDialog();
-            setWorkflowListMessage('Workflow type created.', 'success');
+            setWorkflowListMessage(editingId ? 'Workflow type updated.' : 'Workflow type created.', 'success');
             await loadWorkflows(workflowState.canAdmin);
         } catch (error) {
             setWorkflowMessage(error.message, 'error');

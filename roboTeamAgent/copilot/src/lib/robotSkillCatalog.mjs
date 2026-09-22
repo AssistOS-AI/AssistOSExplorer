@@ -1,9 +1,17 @@
 import { installLiveSkills } from '../../../server/live-skill-install.mjs';
-import { publicSkillsets, individualSkillRepositories } from '../../../server/robot-skillsets.mjs';
+import { WorkflowRegistry, workflowCatalogEntry } from '../../../server/roboflow/workflow-registry.mjs';
 import { readSkillTree } from '../../../server/skill-files.mjs';
 
 export function createRobotSkillCatalog({ context, sessionStore, workingDir, initialSessionId }) {
     const catalogs = new Map();
+    const workflows = new WorkflowRegistry();
+    const workflowCatalog = async () => {
+        try {
+            return (await workflows.list()).map(workflowCatalogEntry);
+        } catch {
+            return [];
+        }
+    };
     async function policyFor(sessionId) {
         const session = sessionStore.loadSession(sessionId);
         const robot = await context.store.get(context.robot.id);
@@ -30,11 +38,8 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
                 snapshot = { skills: [], policy: resolved.policy, policyVersion: resolved.policy.policyVersion, diagnostics: [{ state: 'unavailable', message: error.message }] };
             }
             catalogs.set(sessionId, snapshot.skills);
-            const robotCatalog = context.robot.name === 'default' ? (await context.store.list()).map(robot => ({
-                name: robot.name, description: robot.specialization, skillsets: publicSkillsets(robot),
-                skillRepositories: individualSkillRepositories(robot),
-            })) : undefined;
-            if (!execution) return { ...snapshot, robotCatalog };
+            const workflowCatalogEntries = context.robot.name === 'default' ? await workflowCatalog() : undefined;
+            if (!execution) return { ...snapshot, workflowCatalog: workflowCatalogEntries };
             const captured = await installLiveSkills({ service: context.skillsets, robot: resolved.robot, policyId: resolved.policyId, cwd: cwd || resolved.cwd });
             const skills = captured.entries.map((entry) => ({ ...entry, enabled: true, type: 'anthropic',
                 skillDir: entry.sourcePath, skillFile: `${entry.sourcePath}/SKILL.md` }));
@@ -44,7 +49,7 @@ export function createRobotSkillCatalog({ context, sessionStore, workingDir, ini
                 session.skillExecution = { ...record, active: true };
             }).catch(async (error) => { await release(); throw error; });
             catalogs.set(sessionId, skills);
-            return { ...captured, skills, robotCatalog, taskRepositories: skills.map((entry) => entry.skillDir),
+            return { ...captured, skills, workflowCatalog: workflowCatalogEntries, taskRepositories: skills.map((entry) => entry.skillDir),
                 release: async () => {
                     try {
                         await sessionStore.updateSession(sessionId, (session) => {

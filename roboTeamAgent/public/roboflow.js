@@ -126,6 +126,28 @@ async function renderDetail(flowId) {
         summaryRow('Result', flow.result),
     );
     elements.invocations.replaceChildren();
+    for (const step of flow.steps || []) {
+        const card = document.createElement('article');
+        card.className = `invocation state-${step.state}`;
+        const header = document.createElement('div');
+        header.className = 'invocation-header';
+        header.innerHTML = `
+            <span class="invocation-robot"></span>
+            <span class="invocation-type"></span>
+            <span class="invocation-state"></span>`;
+        header.querySelector('.invocation-robot').textContent = `Decision ${step.index}`;
+        header.querySelector('.invocation-type').textContent = step.robotName || '';
+        header.querySelector('.invocation-state').textContent = step.state;
+        card.appendChild(header);
+        if (step.summary) {
+            const summary = document.createElement('pre');
+            summary.className = 'invocation-summary';
+            summary.textContent = step.summary;
+            card.appendChild(summary);
+        }
+        if (step.error) card.appendChild(summaryRow('Error', step.error));
+        elements.invocations.appendChild(card);
+    }
     if (!flow.invocations.length) {
         const empty = document.createElement('p');
         empty.className = 'empty';
@@ -170,7 +192,8 @@ async function renderOverview() {
         const list = document.createElement('ul');
         for (const member of workflow.members) {
             const item = document.createElement('li');
-            item.textContent = `${member.robotName} · ${member.executionType}${member.role ? ` · ${member.role}` : ''}`;
+            const decision = member.id === workflow.decisionMemberId ? ' · decision maker' : '';
+            item.textContent = `${member.robotName} · ${member.executionType}${member.role ? ` · ${member.role}` : ''}${decision}`;
             list.appendChild(item);
         }
         card.appendChild(list);

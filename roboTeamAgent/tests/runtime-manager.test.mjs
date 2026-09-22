@@ -132,7 +132,7 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
     };
     const manager = new RuntimeManager({ dataDir, workspaceRoot: root, spawnImpl, execFileImpl: async () => ({ stdout: '[]', stderr: '' }), toolCache: preparedToolCache });
     const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Do work', ca: 'codex', model: 'gpt-test' });
-    const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second', ca: 'codex' });
+    const second = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Second', ca: 'codex', mcpServers: 'roboTeamAgent=http://127.0.0.1:7000/mcp' });
     assert.match(first.taskId, /^[0-9a-f-]{36}$/);
     assert.equal(first.sessionUrl, undefined);
     assert.equal(first.queuePosition, 0);
@@ -144,6 +144,8 @@ test('runs independent CLI sessions for one robot concurrently', async (t) => {
     assert.throws(() => manager.stopTask(robot, 'simple'), /specify taskId/);
     const firstIndex = invocations.findIndex(({ args }) => args[args.indexOf('--session-id') + 1] === first.taskId);
     const firstInvocation = invocations[firstIndex];
+    const secondInvocation = invocations.find(({ args }) => args[args.indexOf('--session-id') + 1] === second.taskId);
+    assert.equal(secondInvocation.args[secondInvocation.args.indexOf('--MCPServers') + 1], 'roboTeamAgent=http://127.0.0.1:7000/mcp');
     children[firstIndex].stderr.write('working\n');
     children[firstIndex].stdout.write('first result\n');
     children[firstIndex].emit('close', 0, null);
@@ -200,6 +202,62 @@ test('places the selected OpenCode and Pi caches on the ALA path', async (t) => 
     while (manager.taskStatus(robot.id, pi.taskId).state !== 'completed') await new Promise((resolve) => setTimeout(resolve, 5));
     assert.ok(invocations[0].options.env.PATH.startsWith('/cache/opencode/bin:'));
     assert.ok(invocations[1].options.env.PATH.startsWith('/cache/pi/bin:'));
+});
+
+test('runs OpenCode GUI tasks with the MCP bridge and rejects Pi for GUI work', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboteam-gui-agent-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const dataDir = path.join(root, 'data');
+    const workspace = path.join(root, 'workspace');
+    await fs.mkdir(workspace, { recursive: true });
+    const listener = http.createServer((_request, response) => response.end());
+    await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve));
+    t.after(() => listener.close());
+    const port = listener.address().port;
+    const invocations = [];
+    const manager = new RuntimeManager({
+        dataDir,
+        workspaceRoot: root,
+        publicBasePath: '/rt/',
+        execFileImpl: async (_command, args) => {
+            if (args[0] === 'port') return { stdout: `127.0.0.1:${port}\n`, stderr: '' };
+            return { stdout: '', stderr: '' };
+        },
+        spawnImpl: (_command, args, options) => {
+            invocations.push({ args, env: options.env });
+            const child = new EventEmitter();
+            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+            setImmediate(() => child.emit('close', 0, null));
+            return child;
+        },
+        toolCache: preparedToolCache,
+    });
+    t.after(() => manager.stopAll());
+
+    const openCodeRobot = { id: 'gui-opencode-a1b2c3', name: 'OpenCode GUI', codingAgents: ['opencode'] };
+    const accepted = manager.startTask(openCodeRobot, 'desktop', { cwd: workspace, task: 'Show the desktop.', ca: 'opencode' });
+    while (!['completed', 'failed'].includes(manager.taskStatus(openCodeRobot.id, accepted.taskId).state)) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(manager.taskStatus(openCodeRobot.id, accepted.taskId).state, 'completed',
+        manager.taskStatus(openCodeRobot.id, accepted.taskId).error);
+    assert.equal(invocations.length, 1);
+    assert.equal(invocations[0].args[invocations[0].args.indexOf('--ca') + 1], 'opencode');
+    assert.equal(invocations[0].args[invocations[0].args.indexOf('--MCPServers') + 1], `desktop=http://127.0.0.1:${port}/mcp`);
+    assert.equal(invocations[0].env.OPENCODE_BIN, '/cache/opencode/bin/opencode');
+
+    const piRobot = { id: 'gui-pi-a1b2c3', name: 'Pi GUI', codingAgents: ['pi'] };
+    const rejected = manager._newTask(piRobot, 'browser', { cwd: workspace, task: 'Browse.', ca: 'pi' });
+    await manager._runTask(piRobot, rejected);
+    assert.equal(rejected.state, 'failed');
+    assert.match(rejected.error, /GUI tasks require a coding agent with MCP support/u);
+    assert.equal(invocations.length, 1);
+
+    const autoRobot = { id: 'gui-auto-a1b2c3', name: 'Auto GUI', codingAgents: ['codex', 'opencode'] };
+    const auto = manager._newTask(autoRobot, 'desktop', { cwd: workspace, task: 'Auto.', ca: 'auto' });
+    await manager._runTask(autoRobot, auto);
+    assert.equal(auto.state, 'completed', auto.error);
+    assert.equal(invocations[1].args[invocations[1].args.indexOf('--ca') + 1], 'codex');
 });
 
 test('extracts visible coding-agent messages from the ALA event stream', () => {

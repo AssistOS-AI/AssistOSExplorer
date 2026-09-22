@@ -2,11 +2,19 @@
 
 ## Description
 
-Use for workspace assistance, shell operations, research, RoboFlow teamwork and delegating tasks to the available robots.
+Use in a workflow member robot for shell operations and research.
 
 ## Skills
 
 - bash
 - launch-gpt-researcher
-- launch-robot
-- roboflow
+
+# launch-workflow
+
+## Description
+
+Use for the front copilot that only chooses and starts a RoboFlow task flow.
+
+## Skills
+
+- launch-workflow

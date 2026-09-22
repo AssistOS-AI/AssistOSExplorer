@@ -168,7 +168,6 @@ function sessionRobotId(pathname) {
 }
 
 const FLOW_PATH = '/api/roboflow/flows/(flow_[0-9a-f]{24})';
-const INVOCATION_PATH = `${FLOW_PATH}/invocations/(inv_[0-9a-f]{24})`;
 const WORKFLOW_PATH = '/api/roboflow/workflows/([a-z0-9][a-z0-9-]{2,63})';
 
 function sendText(res, status, body) {
@@ -208,6 +207,11 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         return true;
     }
     const workflowId = pathname.match(new RegExp(`^${WORKFLOW_PATH}$`))?.[1];
+    if (workflowId && req.method === 'PUT') {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        sendJson(res, 200, { ok: true, workflow: await roboflow.updateWorkflow(workflowId, await readJsonBody(req)) });
+        return true;
+    }
     if (workflowId && req.method === 'DELETE') {
         if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
         sendJson(res, 200, { ok: true, deleted: await roboflow.deleteWorkflow(workflowId) });
@@ -219,7 +223,7 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     }
     if (pathname === '/api/roboflow/flows' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        sendJson(res, 201, { ok: true, flow: await roboflow.createFlow({ ...body, createdBy: body.createdBy || actor.id }) });
+        sendJson(res, 201, { ok: true, flow: await roboflow.startFlow({ ...body, createdBy: body.createdBy || actor.id }) });
         return true;
     }
     const flowId = pathname.match(new RegExp(`^${FLOW_PATH}$`))?.[1];
@@ -229,9 +233,9 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 200, { ok: true, flow: await roboflow.getFlow(flowId, { logMode }) });
         return true;
     }
-    const invokeId = pathname.match(new RegExp(`^${FLOW_PATH}/invoke$`))?.[1];
-    if (invokeId && req.method === 'POST') {
-        sendJson(res, 202, { ok: true, ...await roboflow.invokeMember(invokeId, await readJsonBody(req)) });
+    const launchId = pathname.match(new RegExp(`^${FLOW_PATH}/launch$`))?.[1];
+    if (launchId && req.method === 'POST') {
+        sendJson(res, 202, { ok: true, ...await roboflow.launchMember(launchId, await readJsonBody(req)) });
         return true;
     }
     const finishId = pathname.match(new RegExp(`^${FLOW_PATH}/finish$`))?.[1];
@@ -245,7 +249,8 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 200, { ok: true, flow: await roboflow.stopFlow(stopId) });
         return true;
     }
-    const logMatch = pathname.match(new RegExp(`^${INVOCATION_PATH}/log$`));
+    const logMatch = pathname.match(new RegExp(`^${FLOW_PATH}/logs/(inv_[0-9a-f]{24}|step-\\d{1,6})$`))
+        || pathname.match(new RegExp(`^${FLOW_PATH}/invocations/(inv_[0-9a-f]{24}|step-\\d{1,6})/log$`));
     if (logMatch && req.method === 'GET') {
         const log = await roboflow.getInvocationLog(logMatch[1], logMatch[2]);
         sendText(res, 200, log);
@@ -445,13 +450,14 @@ export function createRoboTeamServer(options) {
             const message = String(error?.message || '');
             const badRequest = error instanceof SyntaxError || /required|invalid|at most|too large|must be browser or desktop/.test(message);
             const conflict = /already running|active robot limit|occupied|active task|different cwd|stop the|interrupted GUI/.test(message);
-            const status = error.statusCode === 400 ? 400 : badRequest ? 400 : conflict ? 409 : 500;
+            const explicit = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode < 500;
+            const status = explicit ? error.statusCode : badRequest ? 400 : conflict ? 409 : 500;
             if (status >= 500) {
                 console.error(`[roboTeamAgent] ${req.method} ${req.url} failed:`, error?.stack || message);
             } else {
                 console.warn(`[roboTeamAgent] ${req.method} ${req.url} rejected (${status}): ${message}`);
             }
-            sendError(res, status, error.statusCode === 400 || badRequest || conflict ? message : 'request failed');
+            sendError(res, status, status < 500 ? message : 'request failed');
         }
     });
 

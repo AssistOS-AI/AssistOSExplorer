@@ -7,7 +7,7 @@ const HELP_TOPICS = {
     },
     skills: {
         title: 'Anthropic skills',
-        content: 'Skills use SKILL.md and directly executable scripts. The three built-ins are bash, launch-gpt-researcher, launch-robot. /exec runs an enabled skill through ALA. Manage repositories and skill selection in RoboTeam or Explorer. The CLI loads configured skills automatically and does not manage them.',
+        content: 'Skills use SKILL.md and directly executable scripts. The built-ins are bash, launch-gpt-researcher and launch-workflow. /exec runs an enabled skill through ALA. Manage repositories and skill selection in RoboTeam or Explorer. The CLI loads configured skills automatically and does not manage them.',
     },
     sessions: {
         title: 'Workspace conversations',
@@ -23,7 +23,7 @@ const HELP_TOPICS = {
     },
     tasks: {
         title: 'Persistent delegated tasks',
-        content: '/tasks shows durable worker status. /task view <id> opens stored log output; /task continue <id> <prompt> continues the same worker; /task stop <id> explicitly stops it. /task model and /task login configure its worker. Stopping a copilot turn or switching sessions does not stop delegated tasks. launch-robot uses the ordinary workspace robot named default when the name is omitted.',
+        content: '/tasks shows durable worker status. /task view <id> opens stored log output; /task continue <id> <prompt> continues the same worker; /task stop <id> explicitly stops it. /task model and /task login configure its worker. Stopping a copilot turn or switching sessions does not stop delegated tasks. Workflow teams are started through RoboFlow; the copilot only chooses and starts a workflow.',
     },
     keyboard: {
         title: 'Keyboard controls',

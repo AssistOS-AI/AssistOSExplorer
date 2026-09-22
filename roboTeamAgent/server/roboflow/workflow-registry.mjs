@@ -1,7 +1,6 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
 import {
-    EXECUTION_TYPES, MAX_DESCRIPTION_LENGTH, MAX_MEMBERS, MAX_NAME_LENGTH,
+    DEFAULT_WORKFLOW_ID, EXECUTION_TYPES, MAX_DESCRIPTION_LENGTH, MAX_MEMBERS, MAX_NAME_LENGTH,
     MAX_SELECTION_LENGTH, MEMBER_ID_PATTERN, WORKFLOW_ID_PATTERN, WORKFLOWS_DIR,
 } from './constants.mjs';
 import { ensureDirectory, listFiles, readJson, removePath, withLock, writeJsonAtomic } from './storage.mjs';
@@ -62,6 +61,7 @@ function normalizeMember(raw, index) {
         executionType,
         skillSets: normalizeSelection(raw.skillSets ?? raw.skillsets, 'member skillSets'),
         skills: normalizeSelection(raw.skills, 'member skills'),
+        decisionMaker: raw.decisionMaker === true || raw.decision === true,
     };
 }
 
@@ -80,7 +80,36 @@ export function normalizeWorkflow(input, { id } = {}) {
         if (ids.has(member.id)) throw invalid(`duplicate workflow member id: ${member.id}`);
         ids.add(member.id);
     }
-    return { id: workflowId, name, description, members };
+    const requestedDecision = String(input?.decisionMemberId ?? '').trim();
+    const flagged = members.filter((member) => member.decisionMaker);
+    let decisionMemberId = requestedDecision;
+    if (!decisionMemberId) {
+        if (flagged.length > 1) throw invalid('workflow must select exactly one decision member');
+        decisionMemberId = flagged[0]?.id || '';
+    }
+    if (!decisionMemberId) throw invalid('workflow must select a decision member');
+    if (!ids.has(decisionMemberId)) throw invalid(`decision member is not part of this workflow: ${decisionMemberId}`);
+    return { id: workflowId, name, description, decisionMemberId,
+        members: members.map(({ decisionMaker, ...member }) => member) };
+}
+
+/** Public catalog projection handed to the front copilot instead of robot discovery. */
+export function workflowCatalogEntry(workflow) {
+    return {
+        id: workflow.id,
+        name: workflow.name,
+        description: workflow.description || '',
+        decisionMemberId: workflow.decisionMemberId
+            || workflow.members?.find((member) => member.decisionMaker)?.id
+            || workflow.members?.[0]?.id || '',
+        members: (workflow.members || []).map((member) => ({
+            id: member.id,
+            robotName: member.robotName,
+            role: member.role || '',
+            executionType: member.executionType,
+            decisionMaker: member.id === workflow.decisionMemberId,
+        })),
+    };
 }
 
 export class WorkflowRegistry {
@@ -138,12 +167,47 @@ export class WorkflowRegistry {
         });
     }
 
+    /** Idempotently installs a workflow record only when the id is absent. */
+    async ensure(input) {
+        await this.initialize();
+        const normalized = normalizeWorkflow(input);
+        return withLock(`workflow:${normalized.id}`, async () => {
+            const existing = await this._read(normalized.id);
+            if (existing) return existing;
+            const now = new Date().toISOString();
+            const record = { schema: SCHEMA, ...normalized, createdAt: now, updatedAt: now };
+            await writeJsonAtomic(this.file(normalized.id), record);
+            return record;
+        });
+    }
+
     async remove(workflowId) {
         await this.initialize();
+        if (workflowId === DEFAULT_WORKFLOW_ID) {
+            throw Object.assign(invalid('the default workflow cannot be deleted'), { statusCode: 409 });
+        }
         const record = await this._read(workflowId);
         if (!record) return false;
         await withLock(`workflow:${workflowId}`, () => removePath(this.file(workflowId)));
         return true;
+    }
+
+    // Replaces a workflow record in place with a new normalized definition.
+    // Identity and creation time are preserved; the caller owns the not-found check.
+    async update(workflowId, input) {
+        await this.initialize();
+        if (workflowId === DEFAULT_WORKFLOW_ID) {
+            throw Object.assign(invalid('the default workflow cannot be edited'), { statusCode: 409 });
+        }
+        const normalized = normalizeWorkflow(input, { id: workflowId });
+        return withLock(`workflow:${workflowId}`, async () => {
+            const existing = await this._read(workflowId);
+            if (!existing) return null;
+            const record = { schema: SCHEMA, ...normalized, id: workflowId,
+                createdAt: existing.createdAt, updatedAt: new Date().toISOString() };
+            await writeJsonAtomic(this.file(workflowId), record);
+            return record;
+        });
     }
 }
 

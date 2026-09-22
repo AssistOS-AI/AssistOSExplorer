@@ -138,7 +138,7 @@ export class SkillPolicies {
         sets = [...new Set([...sets, ...selectorNames(input.skillset)])];
         const skills = selectorNames(legacy?.skills ?? input.skills, true);
         const diagnostics = [];
-        if (!legacy && !explicit && robot.name === 'default') sets = ['copilot', 'workspace'];
+        if (!legacy && !explicit && robot.name === 'default') sets = ['launch-workflow'];
         if (legacy && robot.name === 'default' && sets.length === 1 && sets[0] === 'copilot' && skills.length === 0) {
             sets.push('workspace');
             diagnostics.push({ state: 'migration', message: 'Legacy nonempty copilot-only selection now includes workspace skills. Implicit and explicit bundled-only intent were historically identical; use /skills use copilot to opt out.' });

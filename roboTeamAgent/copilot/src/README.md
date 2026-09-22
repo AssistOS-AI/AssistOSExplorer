@@ -43,9 +43,9 @@ node src/cli.mjs --dir /absolute/path/to/project "Explain this project's entry p
 
 ## Product skills
 
-The automatic catalog contains exactly `bash`, `launch-gpt-researcher`, `launch-robot`, `roboflow`. Each folder owns Anthropic `SKILL.md`, `scripts/action.mjs`, `scripts/run.mjs` and local supporting material. Scripts import their local `scripts/ploinkyInvocation.mjs`, which imports Ploinky's `/Agent/client/AgentMcpClient.mjs`, never hidden host source.
+The automatic catalog contains exactly `bash`, `launch-gpt-researcher`, `launch-workflow`. Each folder owns Anthropic `SKILL.md`, `scripts/action.mjs`, `scripts/run.mjs` and local supporting material. Scripts import their local `scripts/ploinkyInvocation.mjs`, which imports Ploinky's `/Agent/client/AgentMcpClient.mjs`, never hidden host source.
 
-Bash preserves argv/glob semantics without interpreting shell operators. Coding launchers preserve literal prompts and their fixed worker payloads. Robot discovery is `launch-robot/scripts/list.mjs`; compact `/exec launch-robot desktop: <task>` selects the ordinary startup-created robot `default` only when a name is omitted.
+Bash preserves argv/glob semantics without interpreting shell operators. Coding launchers preserve literal prompts and their fixed worker payloads. The front copilot uses `launch-workflow` to start a RoboFlow task flow. `/exec launch-workflow default :: <task>` starts the startup-created default workflow. The RoboFlow decision tools are an MCP capability injected only into the decision robot's task, not a skill.
 
 ## Sessions and tasks
 
