@@ -760,13 +760,14 @@ test('catalog API agrees on conversation saved cwd, empty selection, active revi
     assert.equal(idle.lastRevision, active.revision);
 });
 
-test('robot defaults remain bounded to their launch scope and new conversations inherit the accepted defaults', async (t) => {
+test('robot defaults select the launch workflow skill and remain bounded to their launch scope', async (t) => {
     const f = await fixture(t, { narrow: true });
     await skill(f.scopeRoot, '.agents/skills/local');
     const before = await skillCatalogRequest({ skillsets: f.service, robot: f.robot });
     assert.equal(before.scope, 'defaults');
     assert.equal(before.sessionId, null);
     assert.equal(before.activeRevision, null);
+    assert.equal(before.skills.find((entry) => entry.name === 'launch-workflow').enabled, true);
     const disabled = await skillCatalogRequest({ skillsets: f.service, robot: f.robot, mutate: true,
         input: { identity: 'workspace:.agents/skills/local', enabled: false, policyVersion: before.policyVersion } });
     assert.equal(disabled.skills.find((entry) => entry.name === 'local').enabled, false);
@@ -776,10 +777,11 @@ test('robot defaults remain bounded to their launch scope and new conversations 
     await skill(sibling, '.agents/skills/local');
     const otherScope = new RobotSkillsets({ robotStore: f.store, workspaceRoot: f.workspaceRoot, scopeRoot: sibling,
         alaCommand: f.service.alaCommand });
-    const independent = await skillCatalogRequest({ skillsets: otherScope, robot: f.robot });
+    const siblingPolicyId = crypto.randomUUID();
+    await otherScope.policies.ensure(f.robot, siblingPolicyId, { input: { skillSets: ['launch-workflow', 'workspace'], skills: [] }, useDefaults: false });
+    const independent = await otherScope.inventory(f.robot, { policyId: siblingPolicyId });
     assert.equal(independent.scopeRoot, sibling);
     assert.equal(independent.skills.find((entry) => entry.name === 'local').enabled, true);
-    assert.equal(independent.policyVersion, 1);
 });
 
 test('active and pinned catalog leases survive collection; released unreferenced revisions are reclaimed', async (t) => {

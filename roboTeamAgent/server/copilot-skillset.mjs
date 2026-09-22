@@ -11,7 +11,7 @@ export function copilotSkillset() {
         return { name: entry.name, directory: entry.name,
             description: text.match(/^description:\s*(.+)$/m)?.[1] || entry.name };
     });
-    return { name: 'copilot', description: 'Workspace shell, research and robot delegation.',
+    return { name: 'copilot', description: 'Workspace shell, research and RoboFlow workflow skills.',
         source: 'builtin:copilot', builtin: true, revision: 'bundled', skills };
 }
 
@@ -25,7 +25,7 @@ export function availableRepositories(robot) {
 
 export function availableSkillsets(robot) {
     return availableRepositories(robot).flatMap(repo => (repo.definitions || []).map((definition, index) => ({
-        id: repo.builtin ? 'copilot' : `${repo.name}-set-${index + 1}`,
+        id: repo.builtin ? definition.name : `${repo.name}-set-${index + 1}`,
         name: definition.name || `set-${index + 1}`,
         description: definition.description,
         repository: repo,

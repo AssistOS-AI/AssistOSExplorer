@@ -10,7 +10,7 @@ try {
     });
     if (values.input === undefined) throw new Error('Usage: node scripts/run.mjs --input <string>');
     const { createSkillInvocation } = await import('./ploinkyInvocation.mjs');
-    invocation = await createSkillInvocation({ skillName: 'launch-robot', input: values.input });
+    invocation = await createSkillInvocation({ skillName: 'launch-workflow', input: values.input });
     const result = await action(invocation);
     console.log(typeof result === 'string' ? result : JSON.stringify(result));
 } catch (error) {

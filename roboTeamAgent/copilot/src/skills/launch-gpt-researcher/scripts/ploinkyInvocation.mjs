@@ -7,7 +7,6 @@ import { spawn } from 'node:child_process';
 const MAX_BYTES = 1024 * 1024;
 const TARGETS = {
     'launch-gpt-researcher': 'GPTResearcher',
-    'launch-robot': 'roboTeamAgent',
 };
 
 export async function createSkillInvocation({ skillName, input, contextDirectory = '/workspace/ploinky-runtime', sdk } = {}) {

@@ -72,33 +72,37 @@
         <button id="workflowDialogClose" class="button dialog-close" type="button" aria-label="Close">✕</button>
       </header>
 
-      <section class="builder-panel" data-step="1" aria-labelledby="builder-details-title">
-        <div class="builder-step"><span class="builder-step-index">1</span><h3 id="builder-details-title">Details</h3></div>
-        <div class="builder-grid">
-          <label class="field"><span>Name</span><input name="name" maxlength="120" required placeholder="Software change"></label>
-          <label class="field"><span>Description</span><textarea name="description" maxlength="2000" rows="2" placeholder="Implement, review and ship a change"></textarea></label>
-        </div>
-      </section>
+      <div class="builder-body">
+        <section class="builder-panel">
+          <h3>Details</h3>
+          <div class="builder-grid">
+            <label class="field"><span>Name</span><input name="name" maxlength="120" required placeholder="Software change"></label>
+            <label class="field"><span>Description</span><textarea name="description" maxlength="2000" rows="2" placeholder="Implement, review and ship a change"></textarea></label>
+          </div>
+        </section>
 
-      <section class="builder-panel" data-step="2" hidden aria-labelledby="builder-team-title">
-        <div class="builder-step"><span class="builder-step-index">2</span><h3 id="builder-team-title">Team</h3></div>
-        <div class="member-adder">
-          <label class="field"><span>Add a robot</span>
-            <select id="robotToAdd" aria-label="Robots available to add"></select>
-          </label>
-          <button type="button" id="addMemberButton" class="button">Add robot</button>
-        </div>
-        <p id="membersHint" class="hint">Add at least one robot. Each member keeps its own skillsets and execution type.</p>
-        <div id="membersEditor" class="members-editor" aria-live="polite"></div>
-      </section>
+        <section class="builder-panel">
+          <h3>Team</h3>
+          <div class="member-adder">
+            <label class="field"><span>Add a robot</span>
+              <select id="robotToAdd" aria-label="Robots available to add"></select>
+            </label>
+            <button type="button" id="addMemberButton" class="button">Add robot</button>
+          </div>
+          <p id="membersHint" class="hint">Add at least one robot. Each member keeps its own skillsets and execution type, and exactly one robot is the decision maker.</p>
+          <div id="membersEditor" class="members-editor" aria-live="polite"></div>
+        </section>
 
-      <p id="workflowMessage" class="message" role="status"></p>
+        <p id="workflowMessage" class="message" role="status"></p>
+      </div>
+
+      <div id="workflowReadonlyOverlay" class="workflow-readonly-overlay" role="note" hidden>
+        <p>Read-only: the default workflow provides the copilot fallback and cannot be changed.</p>
+      </div>
 
       <footer class="dialog-actions">
         <button type="button" id="workflowCancelButton" class="button">Cancel</button>
-        <button type="button" id="workflowBackButton" class="button" hidden>Back</button>
-        <button type="button" id="workflowNextButton" class="button primary">Next</button>
-        <button type="submit" id="workflowCreateButton" class="button primary" hidden>Create workflow type</button>
+        <button type="submit" id="workflowCreateButton" class="button primary">Create workflow type</button>
       </footer>
     </form>
   </dialog>

@@ -189,9 +189,9 @@ export class RobotSkillsets {
             if (policy.excludedNames.includes(entry.name)) throw invalid('legacy name exclusion applies; remove it explicitly with /skills allow-name');
             if ((entry.state === 'conflict' || entry.state === 'shadowed' || (!policy.selectors.skillSets.includes(entry.source) && !policy.selectors.skillSets.includes(entry.sourceId)))
                 && !policy.selectors.skills.includes(identity)) policy.selectors.skills.push(identity);
-            if (entry.source !== 'workspace' && entry.source !== 'copilot') {
+            if (!entry.builtin && entry.source !== 'workspace' && entry.source !== 'copilot') {
                 const set = robot.skillsets.find((item) => item.name === entry.source);
-                policy.bindings[entry.source] = { source: set.source, generation: set.generation };
+                if (set) policy.bindings[entry.source] = { source: set.source, generation: set.generation };
             }
         }
         // Resolve the proposed selection before committing it. Discovery and hashing

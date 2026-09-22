@@ -13,6 +13,15 @@ function authHeader(userId, roles = ['user']) {
     return JSON.stringify({ user: { id: userId, username: userId, roles } });
 }
 
+async function waitFor(predicate, { attempts = 3000 } = {}) {
+    for (let index = 0; index < attempts; index += 1) {
+        const value = await predicate();
+        if (value) return value;
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+    throw new Error('condition was not met');
+}
+
 async function startFixture() {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-http-'));
     const dataDir = path.join(root, 'private');
@@ -26,7 +35,7 @@ async function startFixture() {
         workspaceRoot,
         status: () => ({ state: 'stopped' }),
         async resolveCwd(value) { return path.resolve(String(value || workspaceRoot)); },
-        startTask(robot, type, request) { counter += 1; started.push({ robot, type, request }); return { taskId: `task-${counter}`, state: 'queued' }; },
+        startTask(robot, type, request) { counter += 1; started.push({ taskId: `task-${counter}`, robot, type, request }); return { taskId: `task-${counter}`, state: 'queued' }; },
         stopTask() { return {}; },
         activePort: () => null,
         hasUnfinishedTasks: () => false,
@@ -54,39 +63,47 @@ const json = (roles, body, method = 'POST') => ({
     body: body === undefined ? undefined : JSON.stringify(body),
 });
 
+const WORKFLOW = { id: 'software-change', name: 'Software change', decisionMemberId: 'impl', members: [{ id: 'impl', robotName: 'worker', executionType: 'terminal' }] };
+
 test('workflow creation requires an administrator and lists for members', async (t) => {
     const f = await startFixture();
     t.after(f.close);
     await f.robotStore.create({ name: 'worker' });
-    const workflow = { id: 'software-change', name: 'Software change', members: [{ id: 'impl', robotName: 'worker', executionType: 'terminal' }] };
 
-    assert.equal((await fetch(`${f.baseUrl}/api/roboflow/workflows`, json(['user'], workflow))).status, 403);
-    const created = await fetch(`${f.baseUrl}/api/roboflow/workflows`, json(['admin'], workflow));
+    assert.equal((await fetch(`${f.baseUrl}/api/roboflow/workflows`, json(['user'], WORKFLOW))).status, 403);
+    const created = await fetch(`${f.baseUrl}/api/roboflow/workflows`, json(['admin'], WORKFLOW));
     assert.equal(created.status, 201);
     const listed = await fetch(`${f.baseUrl}/api/roboflow/workflows`, { headers: { 'x-ploinky-auth-info': authHeader('user') } });
     assert.equal(listed.status, 200);
     assert.equal((await listed.json()).workflows.length, 1);
 });
 
-test('task flow lifecycle over HTTP exposes summaries and full logs', async (t) => {
+test('task flow lifecycle over HTTP starts, launches, logs and finishes', async (t) => {
     const f = await startFixture();
     t.after(f.close);
     await f.robotStore.create({ name: 'worker' });
-    await f.roboflow.createWorkflow({ id: 'software-change', name: 'Software change', members: [{ id: 'impl', robotName: 'worker', executionType: 'terminal' }] });
+    await f.roboflow.createWorkflow(WORKFLOW);
 
     const created = await fetch(`${f.baseUrl}/api/roboflow/flows`, json(['user'], { workflowTypeId: 'software-change', objective: 'Add OAuth', folder: f.root }));
     assert.equal(created.status, 201);
     const { flow } = await created.json();
+    assert.equal(flow.status, 'running');
 
-    const invoked = await fetch(`${f.baseUrl}/api/roboflow/flows/${flow.id}/invoke`, json(['user'], { member: 'impl', instruction: 'Implement' }));
-    assert.equal(invoked.status, 202);
-    const { invocationId, runtimeTaskId } = await invoked.json();
-    assert.equal(f.started.length, 1);
-    assert.equal(f.started[0].type, 'simple');
+    const decision = await waitFor(() => f.started.find((entry) => entry.request.task.includes('Flow id')));
+    assert.equal(decision.type, 'simple');
+
+    const launched = await fetch(`${f.baseUrl}/api/roboflow/flows/${flow.id}/launch`, json(['user'], { member: 'impl', instruction: 'Implement' }));
+    assert.equal(launched.status, 202);
+    const { invocationId, runtimeTaskId } = await launched.json();
+    assert.equal(f.started.find((entry) => entry.taskId === runtimeTaskId).type, 'simple');
 
     f.roboflow.onRuntimeTaskEvent({ kind: 'progress', taskId: runtimeTaskId, chunk: 'hello log\n' });
     f.roboflow.onRuntimeTaskEvent({ kind: 'terminal', taskId: runtimeTaskId, state: 'completed', result: 'finished', error: null });
-    await f.roboflow.waitForInvocation(flow.id, invocationId);
+    f.roboflow.onRuntimeTaskEvent({ kind: 'terminal', taskId: decision.taskId, state: 'completed', result: 'step done', error: null });
+    await waitFor(async () => {
+        const snapshot = await f.roboflow.getFlow(flow.id, { logMode: 'none' });
+        return snapshot.invocations[0]?.state === 'completed';
+    });
 
     const details = await fetch(`${f.baseUrl}/api/roboflow/flows/${flow.id}`, { headers: { 'x-ploinky-auth-info': authHeader('user') } });
     const body = await details.json();
@@ -98,7 +115,29 @@ test('task flow lifecycle over HTTP exposes summaries and full logs', async (t) 
 
     const finished = await fetch(`${f.baseUrl}/api/roboflow/flows/${flow.id}/finish`, json(['user'], { result: 'done' }));
     assert.equal(finished.status, 200);
-    assert.equal((await finished.json()).flow.status, 'done');
+    assert.equal((await finished.json()).flow.status, 'completed');
+});
+
+test('workflow update requires an administrator and the default workflow cannot be edited or deleted', async (t) => {
+    const f = await startFixture();
+    t.after(f.close);
+    await f.robotStore.create({ name: 'worker' });
+    await f.roboflow.createWorkflow({ id: 'custom', name: 'Custom', decisionMemberId: 'm', members: [{ id: 'm', robotName: 'worker', executionType: 'terminal' }] });
+    await f.roboflow.createWorkflow({ id: 'default', name: 'Default', decisionMemberId: 'm', members: [{ id: 'm', robotName: 'worker', executionType: 'terminal' }] });
+    const edit = { name: 'Custom v2', decisionMemberId: 'm', members: [{ id: 'm', robotName: 'worker', executionType: 'browser' }] };
+
+    assert.equal((await fetch(`${f.baseUrl}/api/roboflow/workflows/custom`, json(['user'], edit, 'PUT'))).status, 403);
+    const updated = await fetch(`${f.baseUrl}/api/roboflow/workflows/custom`, json(['admin'], edit, 'PUT'));
+    assert.equal(updated.status, 200);
+    assert.equal((await updated.json()).workflow.members[0].executionType, 'browser');
+
+    const editedDefault = await fetch(`${f.baseUrl}/api/roboflow/workflows/default`, json(['admin'], edit, 'PUT'));
+    assert.equal(editedDefault.status, 409);
+    assert.match((await editedDefault.json()).error, /default workflow cannot be edited/);
+
+    const deleted = await fetch(`${f.baseUrl}/api/roboflow/workflows/default`, json(['admin'], undefined, 'DELETE'));
+    assert.equal(deleted.status, 409);
+    assert.match((await deleted.json()).error, /default workflow cannot be deleted/);
 });
 
 test('roboflow view is served and requires authentication', async (t) => {

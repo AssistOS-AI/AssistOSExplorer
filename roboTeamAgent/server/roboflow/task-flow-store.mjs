@@ -34,7 +34,9 @@ export class TaskFlowStore {
     }
 
     logFile(flowId, invocationId) {
-        if (!INVOCATION_ID_PATTERN.test(String(invocationId || ''))) throw invalid('invalid invocation id');
+        if (!INVOCATION_ID_PATTERN.test(String(invocationId || '')) && !/^step-\d{1,6}$/.test(String(invocationId || ''))) {
+            throw invalid('invalid invocation id');
+        }
         return path.join(this.flowDirectory(flowId), 'logs', `${invocationId}.log`);
     }
 
@@ -68,16 +70,23 @@ export class TaskFlowStore {
                 id: record.id,
                 workflowTypeId: record.workflowTypeId,
                 workflowName: record.workflowName,
+                decisionMemberId: record.decisionMemberId || '',
+                decisionRobotName: record.decisionRobotName || '',
                 folder: record.folder,
                 objective: record.objective,
-                status: 'active',
+                status: 'start',
                 version: 0,
                 createdBy: record.createdBy || '',
                 createdAt: now,
                 updatedAt: now,
                 finishedAt: null,
                 result: null,
+                error: null,
+                currentStep: 0,
+                awaitingStep: null,
+                idleTurns: 0,
                 members: record.members,
+                steps: [],
                 invocations: [],
             };
             await writeJsonAtomic(this.flowFile(value.id), value);
