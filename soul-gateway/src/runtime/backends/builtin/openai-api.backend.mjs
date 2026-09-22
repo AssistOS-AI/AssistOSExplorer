@@ -9,26 +9,22 @@ import { request as httpsRequest } from 'node:https';
 import { request as httpRequest } from 'node:http';
 import {
     ProviderAuthError,
-    ProviderRateLimitError,
-    ProviderQuotaError,
-    ProviderContentPolicyError,
-    ProviderModelNotFoundError,
-    ProviderTimeoutError,
-    ProviderUnavailableError,
-    ProviderServerError,
+    ProviderBadRequestError,
 } from '../../../core/errors.mjs';
-import { HTTP_STATUS } from '../../../core/constants.mjs';
-import {
-    classifyTransportOrServerError,
-    getProviderErrorType,
-    getProviderStatus,
-} from '../error-helpers.mjs';
+import { classifyOpenAiCompatibleError } from '../openai-compatible-errors.mjs';
+import { applyModelRequestParams } from '../model-request-params.mjs';
 import * as achillesOpenAI from 'achillesAgentLib/utils/LLMProviders/providers/openai.mjs';
 import * as achillesResponses from 'achillesAgentLib/utils/LLMProviders/providers/openaiResponses.mjs';
 import {
     createAchillesExecutionHandle,
     getCredentialToken,
 } from '../achilles/bridge.mjs';
+import {
+    assertFreeOnlyExecution,
+    hardenFreeOnlyParams,
+    isFreeOnlyProvider,
+    isStrictlyFreeCatalogEntry,
+} from '../../providers/free-model-policy.mjs';
 
 // ── Manifest ────────────────────────────────────────────────────────
 
@@ -321,16 +317,35 @@ export const backendModule = {
             );
         }
 
+        const freeOnly = isFreeOnlyProvider(ctx?.providerRecord);
+        const discoveryPath =
+            ctx?.providerRecord?.settings?.discovery_path || '/models';
         try {
-            const body = await httpGet(baseUrl + '/models', authHeaders, {
+            const body = await httpGet(baseUrl + discoveryPath, authHeaders, {
                 signal: ctx?.signal,
             });
             const parsed = JSON.parse(body);
-            return (parsed.data || [])
-                .filter((model) => Boolean(model?.id))
+            const entries = (parsed.data || []).filter((model) =>
+                Boolean(model?.id)
+            );
+            if (!freeOnly) return entries.map(normalizeDiscoveredModel);
+            const admitted = entries
+                .filter((model) => isStrictlyFreeCatalogEntry(model).ok)
                 .map(normalizeDiscoveredModel);
+            // An upstream catalog that lists models but none that pass the
+            // free-only policy must disable previously synced models, unlike
+            // an empty (possibly failed) upstream response.
+            if (admitted.length === 0 && entries.length > 0) {
+                Object.defineProperty(admitted, 'policyFiltered', {
+                    value: true,
+                    enumerable: false,
+                });
+            }
+            return admitted;
         } catch (err) {
-            if (err.status !== 404) {
+            // A free-only provider's catalog is its admission source, so a
+            // missing discovery path is a failure, not an empty catalog.
+            if (err.status !== 404 || freeOnly) {
                 throw err;
             }
 
@@ -443,9 +458,17 @@ export const backendModule = {
         const modelId = resolvedModel.providerModelId || resolvedModel.modelKey;
         const settings = providerRecord.settings || {};
         const useResponsesApi = providerUsesOpenAiResponsesApi(providerRecord);
-        const params = useResponsesApi
+        assertFreeOnlyExecution(providerRecord, modelId);
+        const builtParams = useResponsesApi
             ? buildOpenAiResponsesParams(normalizedReq, settings)
             : buildOpenAiChatParams(normalizedReq, providerRecord, settings);
+        const tunedParams = applyModelRequestParams(
+            builtParams,
+            resolvedModel.requestParams
+        );
+        const params = isFreeOnlyProvider(providerRecord)
+            ? hardenFreeOnlyParams(tunedParams)
+            : tunedParams;
 
         const headers = {};
         // OpenRouter-specific headers
@@ -489,6 +512,12 @@ export const backendModule = {
         const baseUrl = providerRecord.baseUrl || 'https://api.openai.com/v1';
         const modelId = resolvedModel.providerModelId || resolvedModel.modelKey;
         const settings = providerRecord.settings || {};
+        if (isFreeOnlyProvider(providerRecord)) {
+            throw new ProviderBadRequestError(
+                providerRecord.providerKey || 'free-only',
+                'Free-only providers do not serve embeddings'
+            );
+        }
         const token = getCredentialToken(credentialLease);
         const authHeaders = buildOptionalAuthHeaders(
             token,
@@ -544,41 +573,8 @@ export const backendModule = {
         return parsed;
     },
 
-    classifyError(error, _ctx) {
-        const status = getProviderStatus(error);
-        const body = error.body || {};
-        const errorType = getProviderErrorType(error);
-
-        if (status === HTTP_STATUS.UNAUTHORIZED) {
-            return new ProviderAuthError('openai', 'Invalid API key');
-        }
-        if (status === HTTP_STATUS.FORBIDDEN) {
-            return new ProviderAuthError('openai', 'Access denied');
-        }
-        if (status === HTTP_STATUS.NOT_FOUND) {
-            const model =
-                body.error?.param === 'model' ? body.error?.message : 'unknown';
-            return new ProviderModelNotFoundError('openai', model);
-        }
-        if (status === HTTP_STATUS.TOO_MANY_REQUESTS) {
-            if (
-                errorType === 'insufficient_quota' ||
-                errorType === 'billing_hard_limit_reached'
-            ) {
-                return new ProviderQuotaError('openai');
-            }
-            return new ProviderRateLimitError('openai');
-        }
-        if (status === HTTP_STATUS.BAD_REQUEST) {
-            if (errorType === 'content_policy_violation') {
-                return new ProviderContentPolicyError('openai');
-            }
-        }
-        if (status >= HTTP_STATUS.INTERNAL_SERVER_ERROR && status < 600) {
-            return classifyTransportOrServerError('openai', error, status);
-        }
-
-        return classifyTransportOrServerError('openai', error);
+    classifyError(error, ctx) {
+        return classifyOpenAiCompatibleError(error, ctx);
     },
 };
 

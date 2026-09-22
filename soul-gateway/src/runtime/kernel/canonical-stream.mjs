@@ -12,6 +12,12 @@
  *   - `usage`
  *   - `done`
  *   - `error`
+ *   - `activity` — upstream liveness before or between output (for example
+ *     model reasoning). It carries no client-visible content: the direct
+ *     attempt chain consumes it for its deadlines and never forwards it.
+ *
+ * Of those, `text_delta` and `tool_call_delta` are the content events
+ * (`CONTENT_EVENT_TYPES`): the execution deadlines are defined against them.
  *
  * This module deliberately stays small.  It does not own protocol parsing
  * (that lives in transports) or buffering (that lives in `response-buffer.mjs`,
@@ -26,6 +32,36 @@
  */
 
 const CANONICAL_STREAM = Symbol('soulgw.kernel.canonicalStream');
+
+export const LIVENESS_EVENT_TYPE = 'activity';
+
+// The only events that carry answer content. They decide both when an
+// attempt is committed and when a committed stream is still producing an
+// answer, so the two layers share one definition: a stream that reaches its
+// end without one of these is an empty answer, and a committed stream that
+// stops producing them is finished for the caller whatever else it emits.
+export const CONTENT_EVENT_TYPES = Object.freeze([
+    'text_delta',
+    'tool_call_delta',
+]);
+
+const CONTENT_EVENT_TYPE_SET = new Set(CONTENT_EVENT_TYPES);
+
+/**
+ * @param {object} event
+ * @returns {boolean} true for an upstream liveness event (never client-visible)
+ */
+export function isLivenessEvent(event) {
+    return event?.type === LIVENESS_EVENT_TYPE;
+}
+
+/**
+ * @param {object} event
+ * @returns {boolean} true for an event carrying answer content
+ */
+export function isContentEvent(event) {
+    return CONTENT_EVENT_TYPE_SET.has(event?.type);
+}
 
 /**
  * Wrap an async iterable of canonical events as a `CanonicalStream`.

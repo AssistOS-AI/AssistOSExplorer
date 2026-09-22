@@ -41,6 +41,7 @@ export const ERROR_TYPES = Object.freeze({
     PROVIDER_UNAVAILABLE: 'provider_unavailable',
     PROVIDER_SERVER_ERROR: 'provider_server_error',
     PROVIDER_ACCOUNTS_EXHAUSTED: 'provider_accounts_exhausted',
+    PROVIDER_BAD_REQUEST: 'provider_bad_request',
     MIDDLEWARE_ABORT_ERROR: 'middleware_abort_error',
     CONFIGURATION_ERROR: 'configuration_error',
     INTERNAL_ERROR: 'internal_error',

@@ -67,8 +67,19 @@ describe('readEnv', () => {
         assert.equal(env.DEFAULT_RPM_LIMIT, 60);
         assert.equal(env.DEFAULT_DAILY_BUDGET_USD, 2.0);
         assert.equal(env.SHUTDOWN_GRACE_MS, 30_000);
-        assert.equal(env.LLM_DEFAULT_AGENT, null);
-        assert.equal(env.LLM_DEFAULT_TIERS, 'fast,plan,deep');
+        assert.equal(Object.hasOwn(env, 'LLM_DEFAULT_AGENT'), false);
+        assert.equal(
+            env.LLM_DEFAULT_TIERS,
+            'fast,code,plan,write,deep,ultra,web-assist'
+        );
+        assert.equal(env.FREE_MODELS_ENABLED, true);
+        assert.equal(env.OPENROUTER_API_KEY, null);
+        assert.equal(env.STREAM_IDLE_TIMEOUT_MS, 300_000);
+    });
+
+    it('lets operators opt out of the first-start free defaults', () => {
+        const env = readTestEnv({ FREE_MODELS_ENABLED: 'false' });
+        assert.equal(env.FREE_MODELS_ENABLED, false);
     });
 
     it('reads overrides from env', () => {
@@ -77,14 +88,12 @@ describe('readEnv', () => {
             HOST: '0.0.0.0',
             DEFAULT_RPM_LIMIT: '120',
             HTTP_RETRY_JITTER_PCT: '0.15',
-            LLM_DEFAULT_AGENT: 'base-local',
             LLM_DEFAULT_TIERS: 'fast,deep',
         });
         assert.equal(env.PORT, 9000);
         assert.equal(env.HOST, '0.0.0.0');
         assert.equal(env.DEFAULT_RPM_LIMIT, 120);
         assert.equal(env.HTTP_RETRY_JITTER_PCT, 0.15);
-        assert.equal(env.LLM_DEFAULT_AGENT, 'base-local');
         assert.equal(env.LLM_DEFAULT_TIERS, 'fast,deep');
     });
 

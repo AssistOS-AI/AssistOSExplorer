@@ -8,6 +8,10 @@ import { modelExecutionMiddleware } from '../../runtime/execution/model-executio
 import { createBackendTerminal } from '../../runtime/backends/backend-terminal.mjs';
 import { withExecutionTimeout } from '../../runtime/execution/timeout-controller.mjs';
 import {
+    MAX_TIMER_DELAY_MS,
+    clampTimerDelay,
+} from '../../runtime/execution/timer-delay.mjs';
+import {
     ModelQueueTimeoutError,
     ProviderTimeoutError,
 } from '../../core/errors.mjs';
@@ -115,6 +119,25 @@ describe('ConcurrencyController', () => {
         );
 
         r1();
+    });
+
+    it('waits for its slot when the queue timeout is too large for a timer', async () => {
+        const cc = new ConcurrencyController();
+        cc.configure('model-a', 1);
+
+        const r1 = await cc.acquire('model-a', 5000);
+        // A queue timeout beyond what a timer can represent means the caller
+        // is willing to wait; it must not reject almost immediately.
+        const queued = cc.acquire('model-a', 2 ** 31);
+        assert.equal(cc.queueDepth('model-a'), 1);
+
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        assert.equal(cc.queueDepth('model-a'), 1, 'the queued request was rejected');
+
+        r1();
+        const r2 = await queued;
+        assert.equal(cc.activeCount('model-a'), 1);
+        r2();
     });
 
     it('provides snapshot', () => {
@@ -823,6 +846,33 @@ describe('modelExecutionMiddleware (direct model)', () => {
 
         assert.ok(executed);
         assert.equal(ctx.response.choices[0].message.content, 'custom');
+    });
+});
+
+describe('clampTimerDelay', () => {
+    it('passes ordinary delays through unchanged', () => {
+        for (const ms of [1, 50, 120_000, MAX_TIMER_DELAY_MS]) {
+            assert.equal(clampTimerDelay(ms), ms);
+        }
+    });
+
+    it('caps a delay a timer cannot represent', () => {
+        assert.equal(clampTimerDelay(MAX_TIMER_DELAY_MS + 1), MAX_TIMER_DELAY_MS);
+        assert.equal(clampTimerDelay(2 ** 31), MAX_TIMER_DELAY_MS);
+        assert.equal(clampTimerDelay(1e21), MAX_TIMER_DELAY_MS);
+        assert.equal(clampTimerDelay(Infinity), MAX_TIMER_DELAY_MS);
+    });
+
+    it('reads Infinity as a configured never, not as no delay', () => {
+        assert.equal(clampTimerDelay(Infinity), MAX_TIMER_DELAY_MS);
+    });
+
+    it('turns a delay that is not a number, or is not positive, into zero', () => {
+        // Reachable through a model row whose retry policy holds a
+        // non-numeric backoff, which the retry middleware passes through.
+        for (const value of [NaN, -1, 0, undefined, null, 'soon']) {
+            assert.equal(clampTimerDelay(value), 0, String(value));
+        }
     });
 });
 

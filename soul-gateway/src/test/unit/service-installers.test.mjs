@@ -237,7 +237,6 @@ describe('reconcileProvidersOnStartup', () => {
             discoverySource: 'synced',
             disableMissing: true,
             refreshReason: 'provider.startup-refresh',
-            skipEmptyExistingCatalog: true,
         });
         assert.deepEqual(summary, refreshSummary);
     });

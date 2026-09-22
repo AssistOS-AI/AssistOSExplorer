@@ -71,6 +71,7 @@ export function retryMiddleware(options = {}) {
                 attemptCtx.services = ctx.services;
                 attemptCtx.signal = ctx.signal;
 
+                if (ctx.signal?.aborted) throw ctx.signal.reason;
                 await dispatch(attemptCtx);
 
                 return {
@@ -78,7 +79,8 @@ export function retryMiddleware(options = {}) {
                     accountId: attemptCtx.metadata?.backendAccountId || null,
                     metadata: attemptCtx.metadata || {},
                 };
-            }
+            },
+            { signal: ctx.signal }
         );
 
         ctx.metadata.retryTrace = trace || [];

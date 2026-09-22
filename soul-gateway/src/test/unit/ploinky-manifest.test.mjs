@@ -52,8 +52,14 @@ test('Manifest does not declare runtime-injected agent identity keys', () => {
         }
     }
 
-    assert.equal(env.LLM_DEFAULT_AGENT?.default, 'default-local-llm');
-    assert.equal(env.LLM_DEFAULT_TIERS?.default, 'fast,plan,deep');
+    assert.equal(env.LLM_DEFAULT_AGENT, undefined, 'the retired default-agent override is not configurable');
+    assert.equal(
+        env.LLM_DEFAULT_TIERS?.default,
+        'fast,code,plan,write,deep,ultra,web-assist'
+    );
+    assert.equal(env.FREE_MODELS_ENABLED?.default, 'true');
+    assert.equal(env.OPENROUTER_API_KEY?.default, '');
+    assert.equal(env.PRICING_DIRECTORY_TIMEOUT_MS?.default, '5000');
 
     for (const name of Object.keys(env)) {
         assert.ok(
@@ -127,4 +133,17 @@ test('Soul Gateway ships an admin-only settings entry and toolbar button', () =>
     assert.equal(toolbar.toolbarModal.url, settingsEntry.settingsUrl);
     assert.equal(toolbar.toolbarModal.agentRef, 'proxies/soul-gateway');
     assert.equal(toolbar.toolbarModal.mode, 'iframe');
+});
+
+test('Manifest no longer enables or defaults to the retired local model runtime', () => {
+    const manifest = readManifest();
+    const serialized = JSON.stringify(manifest);
+    const enabled = Array.isArray(manifest.enable) ? manifest.enable : [];
+    assert.equal(
+        enabled.some((entry) => /default-local-llm/.test(String(entry))),
+        false,
+        'Soul Gateway must not enable default-local-llm'
+    );
+    assert.doesNotMatch(serialized, /default-local-llm/);
+    assert.doesNotMatch(serialized, /sk-or-v1-/, 'no credential material in the manifest');
 });

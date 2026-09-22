@@ -316,7 +316,6 @@ describe('auto-provisioner.autoProvisionModels', () => {
                     scannedModels: models.length,
                     updatedTiers: 1,
                     appended: 1,
-                    fallbackRemoved: 0,
                 };
             },
         };
@@ -496,7 +495,6 @@ describe('auto-provisioner.autoProvisionModels', () => {
                     appended: 1,
                     removed: 2,
                     createdTiers: 1,
-                    fallbackRemoved: 0,
                 };
             },
         };
@@ -729,7 +727,14 @@ describe('auto-provisioner.autoProvisionModels', () => {
     it('does not mark a missing row sync-disabled when an operator disabled it after the sync snapshot', async () => {
         const backendModule = {
             async discoverModels() {
-                return [];
+                // A policy-filtered catalog is informative (unlike a plain
+                // empty one), so it still disables missing rows.
+                const filtered = [];
+                Object.defineProperty(filtered, 'policyFiltered', {
+                    value: true,
+                    enumerable: false,
+                });
+                return filtered;
             },
         };
 
@@ -839,7 +844,6 @@ describe('auto-provisioner.autoProvisionModels', () => {
                 secret: 'sk-test',
             }),
             log,
-            pool: {},
         });
         appCtx.services.pricingDirectory = {
             async refreshIfNeeded() {},

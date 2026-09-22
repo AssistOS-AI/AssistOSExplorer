@@ -20,7 +20,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 const JSON_COLUMNS = new Set([
@@ -53,7 +53,6 @@ export async function openDatabase(env) {
     if (typeof sqlitePath !== 'string' || sqlitePath.length === 0) {
         throw new Error('SQLITE_PATH is required; no implicit database path is permitted');
     }
-    const isNewDatabase = await databaseFileIsMissing(sqlitePath);
     await mkdir(dirname(sqlitePath), { recursive: true });
     const raw = new DatabaseSync(sqlitePath, { timeout: 5000 });
     raw.exec('PRAGMA foreign_keys = ON');
@@ -65,7 +64,7 @@ export async function openDatabase(env) {
     // with the schema's strftime ISO defaults and application-supplied
     // (new Date().toISOString()) timestamps so comparisons and sorts agree.
     raw.function('now', () => new Date().toISOString());
-    return new SqliteDb(raw, { isNewDatabase, path: sqlitePath });
+    return new SqliteDb(raw, { path: sqlitePath });
 }
 
 export async function initializeSchema(db) {
@@ -137,9 +136,8 @@ async function disableRetiredSearchProviders(db) {
 }
 
 export class SqliteDb {
-    constructor(raw, { isNewDatabase = false, path = null } = {}) {
+    constructor(raw, { path = null } = {}) {
         this.raw = raw;
-        this.isNewDatabase = isNewDatabase;
         this.path = path;
         // Promise-chain mutex serializing all access to the single connection.
         this._lock = Promise.resolve();
@@ -209,17 +207,6 @@ export class SqliteDb {
         } finally {
             release();
         }
-    }
-}
-
-async function databaseFileIsMissing(sqlitePath) {
-    if (sqlitePath === ':memory:') return true;
-    try {
-        await stat(sqlitePath);
-        return false;
-    } catch (err) {
-        if (err?.code === 'ENOENT') return true;
-        throw err;
     }
 }
 

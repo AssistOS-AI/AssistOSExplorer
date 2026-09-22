@@ -71,6 +71,10 @@ async function startCaptureServer(options = {}) {
             captured.url = req.url;
             captured.headers = req.headers;
             captured.bodyBytes = Buffer.concat(chunks);
+            if (typeof options.reply === 'function') {
+                options.reply(res);
+                return;
+            }
             const body = Buffer.from(JSON.stringify({
                 id: 'x',
                 object: 'chat.completion',
@@ -515,6 +519,227 @@ describe('ploinky-agent-openai backend execute()', () => {
             server.close();
             await once(server, 'close');
         }
+    });
+
+    // ── Failures an agent can only report after HTTP 200 ─────────────
+    //
+    // AgentServer flushes the SSE headers before a command handler starts and
+    // reports a handler failure as `data: {"error":…}` followed by `[DONE]`.
+
+    const sseReply = (frames) => (res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        for (const frame of frames) res.write(`data: ${frame}\n\n`);
+        res.end();
+    };
+    const jsonReply = (payload) => (res) => {
+        const body = Buffer.from(JSON.stringify(payload));
+        res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Content-Length': body.length,
+        });
+        res.end(body);
+    };
+    const textChunk = (text, finishReason = null) => JSON.stringify({
+        id: 'c1',
+        object: 'chat.completion.chunk',
+        model: 'm',
+        choices: [{
+            index: 0,
+            delta: text === null ? {} : { content: text },
+            finish_reason: finishReason,
+        }],
+    });
+
+    async function runAgainst(reply, { supportsStreaming = true } = {}) {
+        const { server, baseUrl } = await startCaptureServer({ reply });
+        const events = [];
+        let error = null;
+        try {
+            const ctx = makeCtx({
+                baseUrl,
+                messages: [{ role: 'user', content: 'hi' }],
+                env: ctxEnv,
+                supportsStreaming,
+            });
+            const handle = await backendModule.execute(ctx);
+            try {
+                for await (const event of handle.stream) events.push(event);
+            } catch (err) {
+                error = err;
+            }
+        } finally {
+            server.close();
+            await once(server, 'close');
+        }
+        return { events, error, types: events.map((e) => e.type) };
+    }
+
+    it('throws on an in-band SSE error frame instead of completing without content', async () => {
+        const { error, types } = await runAgainst(sseReply([
+            JSON.stringify({ error: { message: 'handler failed: upstream refused', type: 'server_error' } }),
+            '[DONE]',
+        ]));
+        assert.ok(error, 'the stream must reject');
+        assert.match(error.message, /in-band error: handler failed: upstream refused/);
+        assert.equal(error.status, 502);
+        assert.equal(error.body.error.type, 'server_error');
+        assert.deepEqual(types, [], 'no message_start and no done for an error frame');
+        const classified = backendModule.classifyError(error, {});
+        assert.equal(classified.constructor.name, 'ProviderServerError');
+    });
+
+    it('honours a numeric status carried by an in-band error', async () => {
+        const { error } = await runAgainst(sseReply([
+            JSON.stringify({ error: { message: 'busy', type: 'rate_limit_error', status: 429 } }),
+            '[DONE]',
+        ]));
+        assert.equal(error.status, 429);
+        assert.equal(backendModule.classifyError(error, {}).constructor.name, 'ProviderRateLimitError');
+    });
+
+    it('ignores a non-numeric or out-of-range in-band status', async () => {
+        for (const status of ['429', 200, 700, null]) {
+            const { error } = await runAgainst(sseReply([
+                JSON.stringify({ error: { message: 'odd', status } }),
+                '[DONE]',
+            ]));
+            assert.equal(error.status, 502, `status ${JSON.stringify(status)} must fall back to 502`);
+        }
+    });
+
+    it('throws on an HTTP 200 JSON body that carries only an error', async () => {
+        const { error, types } = await runAgainst(
+            jsonReply({ error: { message: 'no model loaded', type: 'server_error' } }),
+            { supportsStreaming: false }
+        );
+        assert.ok(error, 'the stream must reject');
+        assert.match(error.message, /in-band error: no model loaded/);
+        assert.equal(error.status, 502);
+        assert.deepEqual(types, []);
+    });
+
+    it('accepts a string-valued in-band error', async () => {
+        const { error } = await runAgainst(jsonReply({ error: 'plain failure' }), { supportsStreaming: false });
+        assert.match(error.message, /in-band error: plain failure/);
+        assert.equal(error.body.error.message, 'plain failure');
+    });
+
+    it('throws after partial text when the stream ends without [DONE] or a finish_reason', async () => {
+        const { error, events, types } = await runAgainst(sseReply([textChunk('partial ans')]));
+        assert.deepEqual(types, ['message_start', 'text_delta']);
+        assert.equal(events[1].data.text, 'partial ans');
+        assert.ok(error, 'a truncated stream must reject');
+        assert.equal(error.status, 502);
+        assert.equal(error.body.error.type, 'stream_truncated');
+    });
+
+    it('throws on an SSE response with no events at all', async () => {
+        const { error, types } = await runAgainst(sseReply([]));
+        assert.deepEqual(types, []);
+        assert.equal(error?.body?.error?.type, 'stream_truncated');
+    });
+
+    it('completes when [DONE] is missing but a finish_reason was received', async () => {
+        const { error, events, types } = await runAgainst(sseReply([
+            textChunk('whole answer'),
+            textChunk(null, 'length'),
+        ]));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[2].data.finish_reason, 'length');
+    });
+
+    // SSE lines may end with CRLF, and the space after `data:` is optional,
+    // so a stream that does end with [DONE] in either form is complete.
+    const rawSseReply = (body) => (res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+        res.end(body);
+    };
+
+    it('completes a CRLF stream that ends with [DONE] and no finish_reason', async () => {
+        const { error, events, types } = await runAgainst(rawSseReply(
+            `data: ${textChunk('crlf answer')}\r\n\r\ndata: [DONE]\r\n\r\n`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'crlf answer');
+    });
+
+    it('completes a stream whose data fields omit the optional space', async () => {
+        const { error, events, types } = await runAgainst(rawSseReply(
+            `data:${textChunk('no space')}\n\ndata:[DONE]\n\n`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'no space');
+    });
+
+    it('keeps a multi-byte character that arrives split across two network chunks', async () => {
+        const text = 'ăîșț ok';
+        const body = Buffer.from(`data: ${textChunk(text)}\n\ndata: [DONE]\n\n`, 'utf8');
+        // Split inside the two bytes of the first character.
+        const splitAt = body.indexOf(Buffer.from('ă', 'utf8')) + 1;
+        const { error, events } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            res.write(body.subarray(0, splitAt));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            res.end(body.subarray(splitAt));
+        });
+        assert.equal(error, null);
+        assert.equal(events[1].data.text, text);
+    });
+
+    it('completes when the final [DONE] line ends with CR and no newline', async () => {
+        // Without a closing LF, only the end-of-response path reads this line.
+        const { error, types } = await runAgainst(rawSseReply(
+            `data: ${textChunk('last line')}\r\n\r\ndata: [DONE]\r`
+        ));
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+    });
+
+    it('completes a CRLF stream whose CR and LF arrive in different chunks', async () => {
+        const body = `data: ${textChunk('split crlf')}\r\n\r\ndata: [DONE]\r\n\r\n`;
+        const splitAt = body.indexOf('[DONE]\r') + '[DONE]\r'.length;
+        const { error, events, types } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            res.write(body.slice(0, splitAt));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            res.end(body.slice(splitAt));
+        });
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
+        assert.equal(events[1].data.text, 'split crlf');
+    });
+
+    it('keeps a four-byte character whose bytes arrive in separate chunks', async () => {
+        const text = 'smile 😀 done';
+        const body = Buffer.from(`data: ${textChunk(text)}\n\ndata: [DONE]\n\n`, 'utf8');
+        const start = body.indexOf(Buffer.from('😀', 'utf8'));
+        const { error, events } = await runAgainst(async (res) => {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+            // A chunk ends after each of the character's first three bytes.
+            let from = 0;
+            for (const cut of [start + 1, start + 2, start + 3]) {
+                res.write(body.subarray(from, cut));
+                from = cut;
+                await new Promise((resolve) => setTimeout(resolve, 30));
+            }
+            res.end(body.subarray(from));
+        });
+        assert.equal(error, null);
+        assert.equal(events[1].data.text, text);
+    });
+
+    it('does not treat a completion that also carries choices as an in-band error', async () => {
+        const { error, types } = await runAgainst(jsonReply({
+            id: 'x',
+            model: 'm',
+            error: null,
+            choices: [{ index: 0, message: { role: 'assistant', content: 'fine' }, finish_reason: 'stop' }],
+        }), { supportsStreaming: false });
+        assert.equal(error, null);
+        assert.deepEqual(types, ['message_start', 'text_delta', 'done']);
     });
 
     it('throws a clear error when PLOINKY_AGENT_SECRET is missing/non-hex', async () => {

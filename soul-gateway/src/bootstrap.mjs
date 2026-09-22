@@ -24,9 +24,18 @@ import {
     runInitialPloinkyReconcile,
     startPloinkyDiscoveryTimer,
 } from './ploinky/discovery-scheduler.mjs';
-import { seedDefaultTiers } from './bootstrap/seed-default-tiers.mjs';
-import { bootstrapInitialTagTiers } from './bootstrap/reconcile-tag-tiers.mjs';
+import {
+    appendNewModelsToTagTiers,
+    bootstrapInitialTagTiersOnce,
+} from './bootstrap/reconcile-tag-tiers.mjs';
 import { reconcileCompatibilityAliases } from './bootstrap/reconcile-compatibility-aliases.mjs';
+import {
+    FREE_DEFAULTS_BOOTSTRAP_KEY,
+    FREE_PROVIDER_KEY,
+    installFreeModelDefaults,
+} from './bootstrap/free-model-defaults.mjs';
+
+const FREE_TAG_JOIN_BOOTSTRAP_KEY = 'free-model-defaults-tag-tiers';
 
 /**
  * Full boot sequence.
@@ -76,11 +85,27 @@ export async function bootstrap() {
     // BEFORE installSnapshotServices so the initial snapshot includes them.
     // No-ops cleanly outside Ploinky mode; never crashes startup on failure.
     await runInitialPloinkyReconcile(appCtx);
+    // Free defaults are written before the catalog refresh and the first
+    // snapshot, so an offline start still has every tier. A failure leaves
+    // no partial records and no completion marker; the next start retries.
+    try {
+        await installFreeModelDefaults({ appCtx });
+    } catch (err) {
+        log.warn('free model defaults install failed; will retry next start', {
+            error: err.message,
+        });
+    }
     await reconcileProvidersOnStartup(appCtx);
-    if (pool.isNewDatabase) {
-        await seedDefaultTiers({ appCtx });
-        await bootstrapInitialTagTiers({ appCtx });
-        log.info('initial tier bootstrap completed');
+    try {
+        const tagTiers = await bootstrapInitialTagTiersOnce({ appCtx });
+        if (tagTiers.status === 'installed') {
+            log.info('initial tag-tier bootstrap completed');
+        }
+        await joinFreeModelsToTagTiersOnce(appCtx);
+    } catch (err) {
+        log.warn('tag-tier bootstrap failed; will retry next start', {
+            error: err.message,
+        });
     }
     await reconcileCompatibilityAliases({ appCtx });
     await installSnapshotServices(appCtx);
@@ -130,6 +155,39 @@ export async function bootstrap() {
     const server = createHttpServer(appCtx, httpRouter, wsRouter);
 
     return { appCtx, server, httpRouter, wsRouter };
+}
+
+/**
+ * Baseline models written directly by the free-defaults installer join the
+ * auto tag tiers once. This also covers tag tiers created before the install
+ * (a start with the free defaults disabled). The step has its own marker, so
+ * a start interrupted between the install and this step redoes it, and later
+ * starts never re-add models an administrator removed from a tag tier. The
+ * marker is written once the join has run with at least one enabled model
+ * eligible for tag tiers, even when none of its tags names an existing auto
+ * tag tier. While the free provider has no such model (for example after a
+ * catalog that disabled every row, or when every enabled row is excluded
+ * from tag tiers), the step stays pending and a later start joins them.
+ */
+async function joinFreeModelsToTagTiersOnce(appCtx) {
+    const bootstrapStateDao = await import('./db/dao/bootstrap-state-dao.mjs');
+    const pool = appCtx.pool;
+    if (!(await bootstrapStateDao.isComplete(pool, FREE_DEFAULTS_BOOTSTRAP_KEY))) return;
+    if (await bootstrapStateDao.isComplete(pool, FREE_TAG_JOIN_BOOTSTRAP_KEY)) return;
+    // Select by provider: the startup catalog sync may already have replaced
+    // the baseline rows' metadata.
+    const { rows } = await pool.query(
+        `SELECT m.* FROM models m
+           JOIN providers p ON p.id = m.provider_id
+          WHERE p.provider_key = $1
+            AND m.strategy_kind = 'direct'
+            AND m.enabled = 1`,
+        [FREE_PROVIDER_KEY]
+    );
+    if (rows.length === 0) return;
+    const joined = await appendNewModelsToTagTiers({ appCtx, models: rows });
+    if (!(joined.scannedModels > 0)) return;
+    await bootstrapStateDao.markComplete(pool, { bootstrapKey: FREE_TAG_JOIN_BOOTSTRAP_KEY });
 }
 
 /**

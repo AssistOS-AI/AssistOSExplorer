@@ -6,6 +6,12 @@ import {
 import { performRuntimeRefresh } from '../registry/runtime-refresh.mjs';
 import { enrichModelMetadata } from '../policy/model-metadata-classifier.mjs';
 import { appendNewModelsToTagTiers } from '../../bootstrap/reconcile-tag-tiers.mjs';
+import {
+    admitDiscoveries,
+    blockedTombstonedKeys,
+    emptySkippedSyncResult,
+    withTagTierEligibility,
+} from './discovery-admission.mjs';
 
 const MAX_DB_NUMERIC_14_8_ABS = 1_000_000;
 const SYNC_DISABLED_METADATA_KEY = 'syncDisabled';
@@ -514,17 +520,55 @@ export async function syncProviderModels(
     } = {}
 ) {
     const normalizedProvider = normalizeProviderRecord(provider);
-    const enrichedDiscoveries = await enrichDiscoveryDescriptors(
-        appCtx,
+    const modelsDao = await import('../../db/dao/models-dao.mjs');
+    const modelTombstonesDao = await import('../../db/dao/model-tombstones-dao.mjs');
+    const existingRows = await modelsDao.listByProvider(
+        appCtx.pool,
+        normalizedProvider.id
+    );
+    const { admitted, emptyDiscovery } = admitDiscoveries(
         normalizedProvider,
         discoveries
     );
+    // An empty catalog says nothing about the models already stored, so it
+    // never disables them, whichever path asked for the sync.
+    if (
+        emptyDiscovery &&
+        existingRows.some((row) => row.discovery_source !== 'manual')
+    ) {
+        appCtx.log.warn('provider model sync skipped empty catalog', {
+            provider: normalizedProvider.providerKey,
+            discoverySource,
+            existingModels: existingRows.length,
+        });
+        return emptySkippedSyncResult(existingRows);
+    }
+    const enrichedDiscoveries = await enrichDiscoveryDescriptors(
+        appCtx,
+        normalizedProvider,
+        admitted
+    );
+    // Tombstones are applied after admission: a model an administrator
+    // deleted is still an admissible upstream entry and must not make an
+    // otherwise healthy catalog look policy-filtered.
+    const tombstonedKeys = blockedTombstonedKeys(
+        await modelTombstonesDao.listKeysForProvider(
+            appCtx.pool,
+            normalizedProvider.id
+        ),
+        existingRows
+    );
     const uniqueDiscoveriesByModelKey = new Map();
+    let tombstonedSkipped = 0;
     for (const discovery of enrichedDiscoveries) {
-        const normalizedDiscovery = normalizeDiscoveryDescriptor(
+        const normalizedDiscovery = withTagTierEligibility(
             normalizedProvider,
-            discovery
+            normalizeDiscoveryDescriptor(normalizedProvider, discovery)
         );
+        if (tombstonedKeys.has(normalizedDiscovery.modelKey)) {
+            tombstonedSkipped++;
+            continue;
+        }
         uniqueDiscoveriesByModelKey.set(
             normalizedDiscovery.modelKey,
             normalizedDiscovery
@@ -532,12 +576,9 @@ export async function syncProviderModels(
     }
     const normalizedDiscoveries = [...uniqueDiscoveriesByModelKey.values()];
     const duplicateDiscoveriesDropped =
-        enrichedDiscoveries.length - normalizedDiscoveries.length;
-    const modelsDao = await import('../../db/dao/models-dao.mjs');
-    const existingRows = await modelsDao.listByProvider(
-        appCtx.pool,
-        normalizedProvider.id
-    );
+        enrichedDiscoveries.length -
+        tombstonedSkipped -
+        normalizedDiscoveries.length;
     const existingByModelKey = new Map(
         existingRows.map((row) => [row.model_key, row])
     );
@@ -663,6 +704,7 @@ export async function syncProviderModels(
             ? [...createdModels, ...updatedAgentModels]
             : createdModels,
         previousModels: previousAgentModels,
+        syncedModels,
         createMissingTiers: isPloinkyAgentProvider,
     });
 
@@ -683,6 +725,7 @@ export async function syncProviderModels(
         discoverySource,
         discovered: normalizedDiscoveries.length,
         duplicateDiscoveriesDropped,
+        tombstonedSkipped,
         created,
         updated,
         disabled,
@@ -697,6 +740,7 @@ export async function syncProviderModels(
         created,
         updated,
         disabled,
+        emptySkipped: false,
         tagTierModelsAppended: tagTierResult.appended,
         tagTierModelsRemoved: tagTierResult.removed,
         tagTiersCreated: tagTierResult.createdTiers,

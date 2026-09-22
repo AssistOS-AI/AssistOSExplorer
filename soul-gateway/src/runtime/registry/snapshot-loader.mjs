@@ -20,6 +20,7 @@
  */
 
 import { validateProviderCompositionSnapshot } from '../providers/provider-composition-validator.mjs';
+import { withFreeOnlyExecutionDefaults } from '../providers/free-model-policy.mjs';
 
 let _generation = 0;
 
@@ -98,10 +99,17 @@ export async function loadRuntimeSnapshot(appCtx) {
         });
     }
 
+    // Execution defaults owned by a provider (the free-only policy) are
+    // resolved once here, so retry, deadlines, and cooldowns all read the
+    // same effective policy for every direct model.
+    const providerRowsById = new Map(
+        providersResult.rows.map((row) => [row.id, row])
+    );
     const models = new Map();
     for (const row of modelsResult.rows) {
         const children = childrenByParentId.get(row.id) || [];
-        models.set(row.model_key, freezeModelRecord(row, children));
+        const providerRow = providerRowsById.get(row.provider_id) || null;
+        models.set(row.model_key, freezeModelRecord(row, children, providerRow));
     }
 
     const aliases = new Map();
@@ -214,7 +222,7 @@ export async function loadRuntimeSnapshot(appCtx) {
 
 // ── Record freezers ─────────────────────────────────────────────────
 
-function freezeModelRecord(row, children) {
+function freezeModelRecord(row, children, providerRow = null) {
     const strategyKind = row.strategy_kind || 'direct';
     // Direct models carry children = null; cascade models carry an
     // ordered frozen array of { modelKey, modelId, priority, settings }.
@@ -266,7 +274,10 @@ function freezeModelRecord(row, children) {
         budgetOverride: row.budget_override || {},
         loopOverride: row.loop_override || {},
         responseFilterOverride: row.response_filter_override || {},
-        retryPolicy: row.retry_policy || {},
+        retryPolicy:
+            strategyKind === 'direct'
+                ? withFreeOnlyExecutionDefaults(row.retry_policy, providerRow)
+                : row.retry_policy || {},
         capabilities: row.capabilities || {},
         tags: row.tags || [],
         isFree: row.is_free,

@@ -14,6 +14,18 @@ export const DEFAULT_PRICING_DIRECTORY_URL =
     'https://openrouter.ai/api/v1/models';
 
 const DEFAULT_REFRESH_MS = 21_600_000; // 6 hours
+// Bounds one directory load, headers and body together. Catalog syncs await
+// the load, and startup awaits a sync before it listens, so an unbounded
+// fetch of a stalled public URL would keep the gateway from ever serving.
+export const DEFAULT_PRICING_DIRECTORY_TIMEOUT_MS = 5_000;
+// Node timers and `AbortSignal.timeout` take a signed 32-bit millisecond
+// delay: a larger configured value would silently collapse to one tick or
+// throw, so the effective timeout is clamped into this range.
+export const MAX_PRICING_DIRECTORY_TIMEOUT_MS = 2_147_483_647;
+// After a failed load, callers inside this window get the directory as it is
+// instead of paying the timeout again. A success clears it, and `force`
+// ignores it.
+const DEFAULT_FAILURE_BACKOFF_MS = 60_000;
 
 /**
  * Curated rewrite rules for provider model ids whose namespace differs
@@ -275,12 +287,30 @@ function buildDirectoryEntry(model) {
 
 export class PricingDirectory {
     /**
-     * @param {{ url?: string|null, refreshIntervalMs?: number, log?: object }} [opts]
+     * `timeoutMs` bounds one load and is clamped to the largest delay Node
+     * timers accept. `failureBackoffMs` is how long a failed load is
+     * remembered; it defaults to the refresh interval capped at a minute.
+     *
+     * @param {{ url?: string|null, refreshIntervalMs?: number,
+     *   timeoutMs?: number, failureBackoffMs?: number, log?: object }} [opts]
      */
     constructor(opts = {}) {
         this._refreshMs = opts.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
         this._log = opts.log ?? null;
         this._url = opts.url ?? null;
+        const requestedTimeoutMs =
+            Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+                ? opts.timeoutMs
+                : DEFAULT_PRICING_DIRECTORY_TIMEOUT_MS;
+        this._timeoutMs = Math.min(
+            Math.max(1, Math.floor(requestedTimeoutMs)),
+            MAX_PRICING_DIRECTORY_TIMEOUT_MS
+        );
+        this._failureBackoffMs =
+            Number.isFinite(opts.failureBackoffMs) && opts.failureBackoffMs >= 0
+                ? opts.failureBackoffMs
+                : Math.min(this._refreshMs, DEFAULT_FAILURE_BACKOFF_MS);
+        this._failedAt = 0;
         this._entries = new Map();
         this._entriesById = new Map();
         this._entriesByCanonicalSlug = new Map();
@@ -307,16 +337,23 @@ export class PricingDirectory {
      * }
      * ```
      *
+     * The whole load, headers and body, is bounded by the directory timeout;
+     * a timeout fails like any other fetch failure.
+     *
      * @param {string} url
      */
     async load(url, log = null) {
         this._url = url;
         const logger = log || this._log;
         const isInitial = this._entries.size === 0;
+        const timeoutMs = this._timeoutMs;
         try {
-            const res = await fetch(url);
+            const res = await fetch(url, {
+                signal: AbortSignal.timeout(timeoutMs),
+            });
             if (!res.ok) {
                 const msg = `pricing directory fetch failed: HTTP ${res.status}`;
+                this._failedAt = Date.now();
                 if (isInitial) {
                     throw new Error(msg);
                 }
@@ -362,7 +399,15 @@ export class PricingDirectory {
             this._entriesByUniqueName = nameIndex;
             this._entriesByUniqueLeafSlug = leafSlugIndex;
             this._lastFetchedAt = Date.now();
-        } catch (err) {
+            this._failedAt = 0;
+        } catch (caught) {
+            const err =
+                caught?.name === 'TimeoutError'
+                    ? new Error(
+                          `pricing directory fetch timed out after ${timeoutMs}ms`
+                      )
+                    : caught;
+            this._failedAt = Date.now();
             if (isInitial) {
                 throw err;
             }
@@ -380,6 +425,17 @@ export class PricingDirectory {
             return this;
         }
         if (!force && this._entries.size > 0 && !this.isStale) {
+            return this;
+        }
+        // A load that failed is remembered: callers inside the backoff window
+        // get the directory as it stands instead of paying the timeout again,
+        // which is what a stalled catalog would otherwise cost every model
+        // listing and every catalog sync.
+        if (
+            !force &&
+            this._failedAt > 0 &&
+            Date.now() - this._failedAt < this._failureBackoffMs
+        ) {
             return this;
         }
         if (this._refreshPromise) {

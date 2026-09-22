@@ -11,6 +11,11 @@
  *   - Errors with `cascade=true`: try the next candidate.
  *   - Errors with `cascade=false`: fail without cascading.
  *   - Unclassified errors: fail without cascading.
+ *   - Errors with `failureScope='provider-account'` (bad key, exhausted
+ *     account quota): the remaining children on that same provider are
+ *     skipped for this request, because they share the failed account.
+ *   - An aborted `ctx.signal` (client disconnect or cascade budget) stops
+ *     the loop before the next child is tried.
  *
  * The cascade re-resolves its candidate list against the snapshot on
  * each iteration so newly cooled-down models are excluded.
@@ -25,7 +30,34 @@
  * @module runtime/execution/cascade-middleware
  */
 
-import { TierExhaustedError, InternalServerError } from '../../core/errors.mjs';
+import {
+    GatewayError,
+    TierExhaustedError,
+    InternalServerError,
+} from '../../core/errors.mjs';
+
+/**
+ * Stable identity of the provider account a model runs on.
+ *
+ * @param {object} model
+ * @returns {string|null}
+ */
+export function providerRefOf(model) {
+    return (
+        model?.providerId ||
+        model?.provider_id ||
+        model?.providerKey ||
+        model?.provider_key ||
+        null
+    );
+}
+
+function abortReason(signal, lastError, modelKey) {
+    const reason = signal?.reason;
+    if (reason instanceof GatewayError) return reason;
+    if (lastError instanceof GatewayError && !lastError.cascade) return lastError;
+    return new TierExhaustedError(modelKey);
+}
 
 /**
  * Build a cascade middleware for a tier resolution.
@@ -58,11 +90,24 @@ export function cascadeMiddleware(options) {
         }
 
         const failedModels = new Set();
+        const failedProviders = new Set();
         const trace = [];
+        let lastError = null;
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            const candidates = resolveCandidates(failedModels);
+            if (ctx.signal?.aborted) {
+                throw abortReason(ctx.signal, lastError, modelKey);
+            }
+            const candidates = resolveCandidates(failedModels, {
+                excludeProviders: failedProviders,
+            });
             if (!candidates || candidates.length === 0) {
+                // When the walk ended because a provider account failed
+                // (bad key, exhausted shared quota), report that cause
+                // instead of a generic exhausted tier.
+                if (lastError?.failureScope === 'provider-account') {
+                    throw lastError;
+                }
                 throw new TierExhaustedError(modelKey);
             }
 
@@ -109,8 +154,13 @@ export function cascadeMiddleware(options) {
                     timestamp: new Date().toISOString(),
                 });
 
+                lastError = err;
                 if (err.cooldown && typeof onCooldown === 'function') {
                     onCooldown(failedModelKey, err);
+                }
+                if (err.failureScope === 'provider-account') {
+                    const providerRef = providerRefOf(model);
+                    if (providerRef) failedProviders.add(providerRef);
                 }
 
                 // Only cascade if the error is classified and allows it

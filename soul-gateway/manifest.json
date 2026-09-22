@@ -2,7 +2,7 @@
     "container": "docker.io/assistos/ploinky-node@sha256:accd925fcbf460c1f4c7a5cd9e2d46539c615bbfad2e896cabb7556d8050a669",
     "agent": "bash /code/startup.sh",
     "cli": "bash /code/cli.sh",
-    "about": "Soul Gateway — Ploinky-managed LLM proxy with Soul Family policies, full content logging, and AchillesIDE settings",
+    "about": "Soul Gateway \u2014 Ploinky-managed LLM proxy with Soul Family policies, full content logging, and AchillesIDE settings",
     "volumes": {
         ".data/soul-gateway": "/data"
     },
@@ -34,9 +34,6 @@
             "settingsUrl": "/base-agent-additional-server/soul-gateway/7000/management/",
             "adminOnly": true
         }
-    ],
-    "enable": [
-        "default-local-llm no-wait"
     ],
     "profiles": {
         "default": {
@@ -84,15 +81,20 @@
                     "default": "false",
                     "description": "Development-only switch that disables /v1/* API key auth"
                 },
-                "LLM_DEFAULT_AGENT": {
-                    "required": false,
-                    "default": "default-local-llm",
-                    "description": "Local Ploinky agent whose discovered model seeds the basic tiers"
-                },
                 "LLM_DEFAULT_TIERS": {
                     "required": false,
-                    "default": "fast,plan,deep",
-                    "description": "Comma-separated tier aliases seeded to LLM_DEFAULT_AGENT's model"
+                    "default": "fast,code,plan,write,deep,ultra,web-assist",
+                    "description": "Comma-separated public tier names the first-start defaults create"
+                },
+                "FREE_MODELS_ENABLED": {
+                    "required": false,
+                    "default": "true",
+                    "description": "Seed the restricted free OpenRouter provider and tiers on first start"
+                },
+                "PRICING_DIRECTORY_TIMEOUT_MS": {
+                    "required": false,
+                    "default": "5000",
+                    "description": "Upper bound in milliseconds for one load of the external pricing directory"
                 },
                 "AXIOLOGIC_PROXY_API_KEY": {
                     "required": false,

@@ -63,6 +63,7 @@ export async function installExecutionServices(appCtx) {
     appCtx.services.pricingDirectory = new PricingDirectory({
         url: pricingDirectoryUrl,
         refreshIntervalMs: env.PRICING_REFRESH_INTERVAL_MS,
+        timeoutMs: env.PRICING_DIRECTORY_TIMEOUT_MS,
         log,
     });
 
@@ -182,7 +183,6 @@ export async function reconcileProvidersOnStartup(appCtx) {
         discoverySource: 'synced',
         disableMissing: true,
         refreshReason: 'provider.startup-refresh',
-        skipEmptyExistingCatalog: true,
     });
 }
 
