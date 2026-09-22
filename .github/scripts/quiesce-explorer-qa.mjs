@@ -14,14 +14,15 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const WATCHDOG = `${PLOINKY}/cli/server/Watchdog.js`;
 const ROUTER = `${PLOINKY}/cli/server/RoutingServer.js`;
-const PROVIDER_ORDER = new Map([
+// Providers of the current Explorer graph stop after their consumers.
+export const PROVIDER_ORDER = new Map([
     ['webmeetScribeAgent', 20],
     ['webmeetStt', 30],
     ['liveKitServerAgent', 40],
     ['dpuAgent', 50],
     ['soul-gateway', 60],
-    ['default-local-llm', 70],
 ]);
+const stopRank = (agent) => PROVIDER_ORDER.get(agent) ?? 10;
 
 function refuse(code) {
     const error = new Error(code);
@@ -224,7 +225,7 @@ export async function quiesceExplorerQa(adapters) {
                 revalidate();
                 const onlyOffice = bindings.find((binding) => binding.agent === 'onlyOffice');
                 const ordered = [...bindings].sort((a, b) => {
-                    const rank = (binding) => binding.agent === 'onlyOffice' ? 0 : PROVIDER_ORDER.get(binding.agent) ?? 10;
+                    const rank = (binding) => binding.agent === 'onlyOffice' ? 0 : stopRank(binding.agent);
                     return rank(a) - rank(b) || a.name.localeCompare(b.name);
                 });
                 for (const binding of ordered) {

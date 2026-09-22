@@ -95,16 +95,16 @@ const WORKFLOWS = [
       'Cloudflare management: api-managed',
       'Cloudflare publication: ready',
       'Cloudflare connector: running',
-      'Tracked agents: 16',
-      'Running agents: 16',
-      'EXPECTED_NO_WAIT_AGENTS=10',
+      'Tracked agents: 15',
+      'Running agents: 15',
+      'EXPECTED_NO_WAIT_AGENTS=9',
       'QA_DEPLOY_STARTED_AT_MS="$(node -p \'Date.now()\')"',
       'check-no-wait-readiness.mjs',
       'QA_READY_STREAK',
       'QA_TERMINAL_FAILURE',
       'for _ in $(seq 1 180); do',
       'current-run no-wait readiness evidence failed',
-      'timed out waiting for stable 16/16 process admission and 10/10 semantic readiness',
+      'timed out waiting for stable 15/15 process admission and 9/9 semantic readiness',
       'dedicated persistent `%s` tunnel `%s`, ingress, and DNS API-managed by Ploinky',
       '"${PUBLIC_URL%/}/auth/login?agent=explorer"',
       '"${PUBLIC_URL%/}/auth/login?agent=webAssist"',
@@ -147,9 +147,7 @@ const WORKFLOWS = [
     file: '.github/workflows/deploy-skills-explorer.yml',
     name: 'Deploy Skills Explorer',
     expected: [
-      'DEFAULT_LOCAL_LLM_IMAGE:',
       'public-services/soul-gateway-health/',
-      'default local LLM image architecture=',
       'Provision Skills Explorer Host workflow first',
       'https://github.com/AssistOS-AI/ploinky.git',
       'https://github.com/AssistOS-AI/AchillesAgentLib.git',
@@ -216,6 +214,15 @@ test('Explorer workflows omit retired stack repositories outside the explicit Li
             ? source.replace(/^          # BEGIN LiveKit repository migration\n[\s\S]*?^          # END LiveKit repository migration$/gm, '')
             : source;
         assert.doesNotMatch(activeSource, retiredRepositoryPattern, `${file} must not manage a retired stack repository outside migration`);
+    }
+});
+
+test('Explorer deployment workflows neither provision nor inspect the retired local model runtime', () => {
+    for (const workflow of WORKFLOWS) {
+        const source = fs.readFileSync(path.join(ROOT, workflow.file), 'utf8');
+        assert.doesNotMatch(source, /DEFAULT_LOCAL_LLM/, `${workflow.file} must not define or forward a local model image`);
+        assert.doesNotMatch(source, /default-local-llm/i, `${workflow.file} must not pull, start, or inspect the retired local model agent`);
+        assert.doesNotMatch(source, /default local LLM image/i, `${workflow.file} must not inspect a local model image`);
     }
 });
 

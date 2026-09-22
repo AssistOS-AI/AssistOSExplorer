@@ -157,7 +157,14 @@
             <h3>Explorer-Owned and External Entries</h3>
             <p>The <code>help</code> plugin is owned by Explorer and is covered by the <a href="plugins.html">runtime
                 plugins guide</a>. The manifest also enables RoboTeam, Soul Gateway, and Umami as
-                supporting dependencies. Ploinky core supplies the administrator-only WebTTY surface through the
+                supporting dependencies. A fresh <code>ploinky start explorer</code> does not download or start a
+                local model: the local Soul Gateway seeds a restricted free OpenRouter provider with the tiers
+                <code>fast</code>, <code>code</code>, <code>plan</code>, <code>write</code>, <code>deep</code>,
+                <code>ultra</code>, and <code>web-assist</code>. It uses a bundled free-only credential whose daily
+                quota is shared by every installation using it, requires internet access, and is not available
+                offline. Administrators can replace the credential in the admin-only Soul Gateway settings
+                dashboard. Native OpenCode execution remains available only through RoboTeam's installed OpenCode
+                CLI and is not a Soul Gateway provider. Ploinky core supplies the administrator-only WebTTY surface through the
                 selected Explorer host. Explorer owns its folder target chooser, while Ploinky supplies safe Box and
                 live-agent choices and remains authoritative for runtime identity, mount access, translated working
                 directory, and launch authorization. This checkout does not provide local documentation entry pages
