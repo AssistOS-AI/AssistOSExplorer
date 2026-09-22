@@ -726,6 +726,65 @@ Allow known browser noise temporarily while triaging:
 SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 ```
 
+## Sibling checkouts for the Explorer graph helper
+
+`lib/explorer-graph.mjs` walks every manifest reachable from
+`explorer/manifest.json`. Qualified enable refs (`repo/agent`) resolve to
+checkouts placed **next to** this repository, except `AchillesIDE/...`, which
+names this repository itself. The known siblings are `AchillesCLI`, `proxies`
+and `UmamiAgent` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
+repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
+`explorer/tests/unit/retiredLocalModelGraph.test.js` (which runs under
+`cd explorer && npm test`) both use the helper.
+
+Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
+the helper):
+
+| Enabled agent ref | Enabled by | Minimum revision | Why |
+| --- | --- | --- | --- |
+| `proxies/opencode-free` | `explorer/manifest.json` (`"proxies/opencode-free no-wait"`) | `22dc0cc` | first `proxies` revision with the published `opencode-free/manifest.json`; `2a95a2e` (the current `opencode-free` agent tip) or later is recommended |
+
+The helper always walks the whole graph and sorts every finding into one of
+three groups:
+
+| Finding | Group |
+| --- | --- |
+| A qualified ref whose repository is not a known sibling (and not `AchillesIDE`), for example the typo `proxy/soul-gateway` | defect |
+| A known sibling absent from the parent directory | environment gap |
+| A present sibling lacking the manifest of an agent whose recorded minimum revision the checkout provably does not contain: the checkout is not shallow (`git -C <sibling> rev-parse --is-shallow-repository` prints `false`), and `git -C <sibling> merge-base --is-ancestor <revision> HEAD` exits 1 or the checkout does not have the revision object | environment gap |
+| A present sibling lacking the manifest in any other case: no minimum recorded for that ref (for example the typo `proxies/soul-gatewy`, or an agent renamed or removed in its sibling), the checkout contains the recorded revision, or containment cannot be determined (the sibling is not the top level of a git checkout, the checkout is shallow or `--is-shallow-repository` fails, or git fails). A shallow checkout cannot prove that a revision is absent: a missing object or a failed ancestry check may only mean the revision lies beyond the shallow boundary | defect |
+| A manifest missing inside the Explorer repository, an unsupported ref, an empty enable entry or an unreadable manifest | defect |
+| An enable edge to a retired runtime (for the retired-runtime test, `proxies/default-local-llm`) | retired-runtime violation |
+
+The git check removes inherited location variables (`GIT_DIR`, `GIT_WORK_TREE`
+and similar) before it runs, so running the tests from a git hook cannot make
+another repository answer for a sibling. A shallow clone (for example
+`git clone --depth 1`) of a sibling that lacks a recorded agent is therefore a
+defect; unshallow it (`git -C <sibling> fetch --unshallow`) to let the helper
+tell an outdated checkout from a removed agent.
+
+A gap stops only the branch below it, never the rest of the walk. A retired
+edge is recorded and not followed, and the walk finds it before the branch
+below it would be resolved, so violations are known even when gaps hide part
+of the graph. At the end, any defect, or any retired-runtime violation together
+with any gap, makes the helper throw a plain `Error` (no `code`) listing every
+defect, every violation and, for context, every gap; `defects`, `violations`
+and `gaps` are attached to it. Otherwise any gap makes it throw an `Error`
+whose `code` is `EXPLORER_GRAPH_SIBLING_MISSING` and whose single-line message
+names each gap: the repository and expected path, or the agent ref, its path
+and the minimum revision. Otherwise the helper returns `{ runtimes, violations }`,
+and the retired-runtime test asserts that `violations` is empty. Both test
+files call the helper through `resolveExplorerGraphOrSkip(t)`, which turns only
+the gap code into a `t.skip(...)` carrying the same message: a checkout
+without the siblings, or with a sibling that provably predates a recorded
+minimum, reports a skipped test explaining what to check out, not a stack trace. A defect or a retired-runtime
+violation is never skipped, even when gaps were found too.
+
+When the graph gains an edge to a new sibling repository, add the repository to
+`KNOWN_SIBLINGS`. When it gains an edge to an agent that older sibling
+checkouts do not have, record the agent ref and the first revision that has it
+in `MINIMUM_REVISIONS`. Update the tables above in the same change.
+
 ## Maintenance Rules
 
 - Prefer stable IDs and data attributes already present in the UI.

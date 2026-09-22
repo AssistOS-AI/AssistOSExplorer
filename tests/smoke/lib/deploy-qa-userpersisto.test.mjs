@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { noWaitRuntimes, resolveExplorerGraph } from './explorer-graph.mjs';
+import { noWaitRuntimes, resolveExplorerGraphOrSkip } from './explorer-graph.mjs';
 
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/deploy-explorer-qa.yml', import.meta.url), 'utf8');
 const publicUrl = 'https://explorer-qa.axiologic.dev';
@@ -148,7 +148,7 @@ test('QA config executes after durable preservation and before graph activation,
     assert.doesNotMatch(block('UserPersisto configuration'), /USERPERSISTO_DEV_BOOTSTRAP|USERPERSISTO_AUTH_METHODS|USERPERSISTO_SELF_REGISTRATION_ENABLED/);
 });
 
-test('QA readiness includes UserPersisto and its email dependency in the default graph baseline', () => {
+test('QA readiness includes UserPersisto and its email dependency in the default graph baseline', t => {
     const explorer = JSON.parse(fs.readFileSync(new URL('../../../explorer/manifest.json', import.meta.url), 'utf8'));
     const provider = JSON.parse(fs.readFileSync(new URL('../../../userPersistoAgent/manifest.json', import.meta.url), 'utf8'));
     assert.equal(explorer.sso.providerAgent, 'userPersistoAgent');
@@ -156,7 +156,11 @@ test('QA readiness includes UserPersisto and its email dependency in the default
     assert.ok(provider.enable.includes('emailAgent'));
     // The workflow's readiness literals are the recursive Explorer graph's totals,
     // and neither the total nor the no-wait count may drift by one either way.
-    const { runtimes } = resolveExplorerGraph();
+    // The walk needs the sibling checkouts this repository is deployed beside;
+    // without them the helper skips the test with an actionable message.
+    const graph = resolveExplorerGraphOrSkip(t);
+    if (!graph) return;
+    const { runtimes } = graph;
     const total = runtimes.size;
     const noWait = noWaitRuntimes(runtimes).length;
     assert.equal(workflow.match(new RegExp(`Tracked agents: ${total}\\b`, 'g'))?.length, 2);
