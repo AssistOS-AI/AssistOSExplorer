@@ -117,9 +117,11 @@ export function createSoulGatewayOpenCode({ connect = soulGatewayConnection } = 
                 await restrictSocket(socketPath);
             } catch (error) {
                 // The server unlinks its socket through the directory handle,
-                // so close it before that handle.
+                // so close it before that handle, and drop accepted
+                // connections so the close does not wait for their requests.
                 const listener = server;
                 server = null;
+                listener.closeAllConnections();
                 await new Promise((resolve) => listener.close(resolve));
                 await directory.close();
                 directory = null;

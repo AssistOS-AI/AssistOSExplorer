@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -193,8 +194,15 @@ test('the listener starts where the filesystem cannot set the socket mode', asyn
     } finally { await plugin.dispose(); }
 });
 
+// Descriptors this process holds on a directory, read from /proc.
+async function openHandlesOn(directory) {
+    const descriptors = await fs.readdir('/proc/self/fd');
+    const targets = await Promise.all(descriptors.map(fd => fs.readlink(`/proc/self/fd/${fd}`).catch(() => null)));
+    return targets.filter(target => target === directory).length;
+}
+
 for (const code of ['EPERM', 'EACCES']) {
-    test(`a ${code} failure to restrict the socket stops the listener`, async t => {
+    test(`an ${code} failure to restrict the socket stops the listener`, async t => {
         const home = await fs.mkdtemp(path.join(os.tmpdir(), 'soul-socket-mode-'));
         await prepareRobotShell(home);
         const socket = path.join(home, '.config/opencode/soul-gateway.sock');
@@ -203,6 +211,42 @@ for (const code of ['EPERM', 'EACCES']) {
         t.after(async () => { await adapter.close(); await fs.rm(home, { recursive: true, force: true }); });
         await assert.rejects(adapter.listen(socket), { code });
         await assert.rejects(fs.lstat(socket), { code: 'ENOENT' });
+        assert.equal(await openHandlesOn(path.dirname(socket)), 0);
         await assert.rejects(adapter.listen(socket), { code });
     });
 }
+
+// The timeout turns a listener that never reaches chmod into a failure, not a hang.
+test('a failed restriction does not wait for a request the listener already accepted', { timeout: 10000 }, async t => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'soul-socket-mode-'));
+    await prepareRobotShell(home);
+    const socket = path.join(home, '.config/opencode/soul-gateway.sock');
+    let releaseChmod, chmodReached, requestReached;
+    const release = new Promise(resolve => { releaseChmod = resolve; });
+    const reachedChmod = new Promise(resolve => { chmodReached = resolve; });
+    const reachedRequest = new Promise(resolve => { requestReached = resolve; });
+    const chmod = fs.chmod;
+    t.mock.method(fs, 'chmod', async (target, mode) => {
+        if (target !== socket) return chmod(target, mode);
+        chmodReached();
+        await release;
+        throw Object.assign(new Error(`EPERM: chmod '${target}'`), { code: 'EPERM' });
+    });
+    const upstream = { scope: 'mode', request: (operation, payload, signal) => {
+        requestReached();
+        return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+    } };
+    const adapter = createSoulGatewayOpenCode({ connect: async () => upstream });
+    let client = null;
+    t.after(async () => { client?.destroy(); await adapter.close(); await fs.rm(home, { recursive: true, force: true }); });
+    const listening = adapter.listen(socket).then(() => 'resolved', error => error.code);
+    await reachedChmod;
+    client = http.get({ socketPath: socket, path: '/v1/models' });
+    client.on('error', () => {});
+    await reachedRequest;
+    releaseChmod();
+    let timer;
+    const outcome = await Promise.race([listening, new Promise(resolve => { timer = setTimeout(resolve, 2000, 'still waiting'); })]);
+    clearTimeout(timer);
+    assert.equal(outcome, 'EPERM');
+});
