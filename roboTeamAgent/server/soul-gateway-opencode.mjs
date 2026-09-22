@@ -27,6 +27,18 @@ function sendCompletion(res, response) {
     res.end('data: [DONE]\n\n');
 }
 
+// A mount shared from a macOS host (virtiofs) cannot store a socket's mode:
+// chmod fails with EINVAL and the socket stays 0666. Only that failure is
+// tolerated, because socket access already follows robot-home access.
+async function restrictSocket(socketPath) {
+    try {
+        await fs.chmod(socketPath, 0o600);
+    } catch (error) {
+        if (error.code !== 'EINVAL') throw error;
+        console.warn('[roboTeamAgent] Soul Gateway socket permissions cannot be set on this filesystem; the socket is not owner-only.');
+    }
+}
+
 export function createSoulGatewayOpenCode({ connect = soulGatewayConnection } = {}) {
     let server, starting, connection, directory;
     let closed = false;
@@ -101,7 +113,7 @@ export function createSoulGatewayOpenCode({ connect = soulGatewayConnection } = 
                 server.once('error', reject);
                 server.listen(address, resolve);
             });
-            await fs.chmod(socketPath, 0o600);
+            await restrictSocket(socketPath);
         })();
         try { await starting; } finally { starting = null; }
     }

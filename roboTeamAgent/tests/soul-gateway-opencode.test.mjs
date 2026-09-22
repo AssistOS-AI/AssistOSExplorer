@@ -163,3 +163,41 @@ test('service shares preparation, supports long mounted homes and closes robot s
     await service.close();
     await assert.rejects(service.prepare(home), /service is closed/);
 });
+
+// A mount shared from a macOS host rejects chmod on a socket with EINVAL.
+function failSocketChmod(t, socket, code) {
+    const chmod = fs.chmod;
+    t.mock.method(fs, 'chmod', async (target, mode) => {
+        if (target === socket) throw Object.assign(new Error(`${code}: chmod '${target}'`), { code });
+        return chmod(target, mode);
+    });
+}
+
+test('the listener starts where the filesystem cannot set the socket mode', async t => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'soul-socket-mode-'));
+    await prepareRobotShell(home);
+    const socket = path.join(home, '.config/opencode/soul-gateway.sock');
+    failSocketChmod(t, socket, 'EINVAL');
+    const warn = t.mock.method(console, 'warn', () => {});
+    const adapter = createSoulGatewayOpenCode({ connect: async () => ({ scope: 'mode', request: async () => listing() }) });
+    t.after(async () => { await adapter.close(); await fs.rm(home, { recursive: true, force: true }); });
+    assert.equal(await adapter.listen(socket), true);
+    assert.match(warn.mock.calls[0].arguments[0], /socket permissions cannot be set/);
+    const { SoulGateway } = await import(pathToFileURL(path.join(home, '.config/opencode/plugins/soul-gateway.js')));
+    const plugin = await SoulGateway();
+    try {
+        const config = {};
+        await plugin.config(config);
+        assert.ok(config.provider['soul-gateway'].models['vendor/model-a']);
+    } finally { await plugin.dispose(); }
+});
+
+test('any other failure to restrict the socket stops the listener', async t => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'soul-socket-mode-'));
+    await prepareRobotShell(home);
+    const socket = path.join(home, '.config/opencode/soul-gateway.sock');
+    failSocketChmod(t, socket, 'EPERM');
+    const adapter = createSoulGatewayOpenCode({ connect: async () => ({ scope: 'mode', request: async () => listing() }) });
+    t.after(async () => { await adapter.close(); await fs.rm(home, { recursive: true, force: true }); });
+    await assert.rejects(adapter.listen(socket), { code: 'EPERM' });
+});
