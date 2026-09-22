@@ -35,7 +35,7 @@ async function restrictSocket(socketPath) {
         await fs.chmod(socketPath, 0o600);
     } catch (error) {
         if (error.code !== 'EINVAL') throw error;
-        console.warn('[roboTeamAgent] Soul Gateway socket permissions cannot be set on this filesystem; the socket is not owner-only.');
+        console.warn(`[roboTeamAgent] Soul Gateway socket permissions cannot be set on this filesystem; the socket is not owner-only: ${socketPath}`);
     }
 }
 
@@ -113,7 +113,18 @@ export function createSoulGatewayOpenCode({ connect = soulGatewayConnection } = 
                 server.once('error', reject);
                 server.listen(address, resolve);
             });
-            await restrictSocket(socketPath);
+            try {
+                await restrictSocket(socketPath);
+            } catch (error) {
+                // The server unlinks its socket through the directory handle,
+                // so close it before that handle.
+                const listener = server;
+                server = null;
+                await new Promise((resolve) => listener.close(resolve));
+                await directory.close();
+                directory = null;
+                throw error;
+            }
         })();
         try { await starting; } finally { starting = null; }
     }
