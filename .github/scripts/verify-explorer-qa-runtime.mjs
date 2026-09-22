@@ -48,14 +48,14 @@ try {
     const prefix = ['container', 'exec', '--user', 'podman', '--workdir', QA_SCOPE.workspace, current.box.id];
     const noWait = run(current.engine, [...prefix, 'node',
         path.join(QA_SCOPE.workspace, '.ploinky/repos/AchillesIDE/.github/scripts/check-no-wait-readiness.mjs'),
-        path.join(QA_SCOPE.workspace, '.ploinky/running/no-wait'), '9', String(expected.minimumRunStartedAtMs)]).trim();
+        path.join(QA_SCOPE.workspace, '.ploinky/running/no-wait'), '10', String(expected.minimumRunStartedAtMs)]).trim();
     const runtime = JSON.parse(run(current.engine, [...prefix, 'node', '--input-type=module', '-e', `
         import assert from 'node:assert/strict';
         import fs from 'node:fs';
         import { execFileSync } from 'node:child_process';
         const registry = JSON.parse(fs.readFileSync(${JSON.stringify(path.join(QA_SCOPE.workspace, '.ploinky/agents.json'))}));
         const records = Object.entries(registry).filter(([, value]) => value?.type === 'agent');
-        assert.equal(records.length, 15);
+        assert.equal(records.length, 16);
         const agents = records.map(([name, value]) => {
             assert.match(value.containerId, /^[a-f0-9]{64}$/);
             const [container] = JSON.parse(execFileSync('podman', ['container', 'inspect', value.containerId], {encoding:'utf8'}));

@@ -100,7 +100,7 @@
                 globally so its default robot can use that workspace checkout for Copilot.</p>
             <p>The QA workflow installs ALA from its default branch, verifies its exact clean revision,
                 and binds it to the same Ploinky-selected AgentLib used by the agents. Its preflight exercises
-                the ALA loader and required CLI options before starting the fourteen-agent runtime graph.</p>
+                the ALA loader and required CLI options before starting the Explorer runtime graph.</p>
 
             <p>OnlyOffice, WebMeet Scribe (Meeting Secretary), and WebMeet STT are disabled by default.
                 An administrator can enable each from Marketplace. Office editing requires OnlyOffice; automatic
@@ -163,8 +163,8 @@
                 <code>ultra</code>, and <code>web-assist</code>. It uses a bundled free-only credential whose daily
                 quota is shared by every installation using it, requires internet access, and is not available
                 offline. Administrators can replace the credential in the admin-only Soul Gateway settings
-                dashboard. Native OpenCode execution remains available only through RoboTeam's installed OpenCode
-                CLI and is not a Soul Gateway provider. Ploinky core supplies the administrator-only WebTTY surface through the
+                dashboard. OpenCode's free models are available through the <code>proxies/opencode-free</code> agent, a wrapper around the unmodified OpenCode CLI that Soul Gateway discovers like any other agent and adds to no tier by default: plain-text chat only, no tool calls and no images, one answer per request delivered as a single chunk after several seconds, a free quota shared by every installation that uses the bundled key, and prompts subject to the free models' data-use terms. Native OpenCode execution through RoboTeam's installed OpenCode CLI is unchanged.
+                Ploinky core supplies the administrator-only WebTTY surface through the
                 selected Explorer host. Explorer owns its folder target chooser, while Ploinky supplies safe Box and
                 live-agent choices and remains authoritative for runtime identity, mount access, translated working
                 directory, and launch authorization. This checkout does not provide local documentation entry pages
