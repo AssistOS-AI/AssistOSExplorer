@@ -1,4 +1,4 @@
-import { normalizeErrorMessage } from "./git-commit-modal-utils.js";
+import { normalizeErrorMessage } from "./git-panel-utils.js";
 
 const escapeHtml = (value) => String(value || '')
     .replace(/&/g, '&amp;')

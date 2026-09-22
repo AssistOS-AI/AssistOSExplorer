@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
     buildPrefilledGitIdentityState,
     getEffectiveGitIdentity
-} from '../../IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-utils.js';
+} from '../../IDE-plugins/git-tool-button/components/git-panel/git-panel-utils.js';
 
 test('buildPrefilledGitIdentityState uses GitHub identity even without an explicit repo path', () => {
     const result = buildPrefilledGitIdentityState({

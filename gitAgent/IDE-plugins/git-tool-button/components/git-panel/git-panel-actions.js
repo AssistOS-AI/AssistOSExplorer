@@ -3,16 +3,16 @@ import {
     parseJsonToolResult,
     getConflictAutoresolveSetting,
     normalizeGitStatusPayload
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 import { restoreStashFlow } from "../../utils/git-auto-stash-flow.js";
-import { createCredentialsActions } from "./git-commit-modal-actions-credentials.js";
-import { createCommitMessageActions } from "./git-commit-modal-actions-commit-message.js";
-import { createConflictActions } from "./git-commit-modal-actions-conflicts.js";
-import { createGitOpsActions } from "./git-commit-modal-actions-gitops.js";
-import { createStashActions } from "./git-commit-modal-actions-stash.js";
-import { createRepoActions } from "./git-commit-modal-actions-repo.js";
-import { createAutoStashActions } from "./git-commit-modal-actions-autostash.js";
-import { createBranchActions } from "./git-commit-modal-actions-branches.js";
+import { createCredentialsActions } from "./git-panel-actions-credentials.js";
+import { createCommitMessageActions } from "./git-panel-actions-commit-message.js";
+import { createConflictActions } from "./git-panel-actions-conflicts.js";
+import { createGitOpsActions } from "./git-panel-actions-gitops.js";
+import { createStashActions } from "./git-panel-actions-stash.js";
+import { createRepoActions } from "./git-panel-actions-repo.js";
+import { createAutoStashActions } from "./git-panel-actions-autostash.js";
+import { createBranchActions } from "./git-panel-actions-branches.js";
 import { AUTOCOMMIT_STOP_EVENT, AUTOCOMMIT_RESET_EVENT } from "/explorer/utils/appEvents.js";
 
 export function createGitCommitActions(ctx) {
@@ -31,7 +31,7 @@ export function createGitCommitActions(ctx) {
         getPathsForCommitInRepo,
         setCommitMessage,
         setCommitMessageBusy,
-        withModalLoader,
+        withPanelLoader,
         clearCommitMessageInput,
         clearDiffCache,
         loadRepoInfo,
@@ -455,7 +455,7 @@ export function createGitCommitActions(ctx) {
         selectStashRef,
         restoreStash,
         getSelectedReposForBatch,
-        withModalLoader
+        withPanelLoader
     });
     const { stashSelectedRepos, unstashSelectedRepos } = stashActions;
 
@@ -484,7 +484,7 @@ export function createGitCommitActions(ctx) {
         handlePullConflicts,
         restoreStash,
         applyState,
-        withModalLoader
+        withPanelLoader
     });
     const {
         checkoutBranchFromRepoRow,
@@ -546,7 +546,7 @@ export function createGitCommitActions(ctx) {
         promptForFallbackCommitMessage,
         stashSelectedRepos,
         unstashSelectedRepos,
-        withModalLoader
+        withPanelLoader
     });
     ({
         gitPushWithToken,

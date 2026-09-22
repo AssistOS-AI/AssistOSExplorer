@@ -7,7 +7,7 @@ import {
     isLlmUnavailableError,
     buildFallbackCommitMessage,
     buildEditableFallbackCommitMessage
-} from '../../IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-utils.js';
+} from '../../IDE-plugins/git-tool-button/components/git-panel/git-panel-utils.js';
 
 test('isLlmUnavailableError matches missing model configuration failures', () => {
     assert.equal(

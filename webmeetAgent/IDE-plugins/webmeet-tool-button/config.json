@@ -10,6 +10,12 @@
     "presenter": "WebMeetToolButton",
     "type": "embedded",
     "autoPin": false,
+    "toolbarModal": {
+        "mode": "iframe",
+        "url": "/webmeetAgent/roomLoader.html",
+        "agentRef": "AchillesIDE/webmeetAgent",
+        "fullscreen": true
+    },
     "dependencies": [
         {
             "component": "webmeet-dashboard",

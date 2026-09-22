@@ -1,10 +1,10 @@
-import { formatRepoSummary, renderRepoChangesTree as renderRepoChangesTreeInternal } from "../git-commit-modal/git-commit-modal-tree.js";
+import { formatRepoSummary, renderRepoChangesTree as renderRepoChangesTreeInternal } from "../git-panel/git-panel-tree.js";
 import {
     peekSelectionEntry,
     isPathSelected,
     getCoveringPrefix,
     getAncestorCoveringPrefix
-} from "../git-commit-modal/git-commit-modal-selection.js";
+} from "../git-panel/git-panel-selection.js";
 
 const GIT_TOOL_BUTTON_ICON_URL = new URL('../../icon.svg', import.meta.url).href;
 
@@ -396,7 +396,7 @@ export class GitRepoTree {
     }
 
     getParentPresenter() {
-        return this.element.closest('git-commit-modal')?.webSkelPresenter || null;
+        return this.element.closest('git-panel')?.webSkelPresenter || null;
     }
 
     getSelectionEntry(repoPath) {

@@ -1,10 +1,9 @@
-import { createGitCommitActions } from "./git-commit-modal-actions.js";
-import { createGitCommitDialog } from "./git-commit-modal-dialog.js";
-import { createGitCommitDiff } from "./git-commit-modal-diff.js";
-import { createGitCommitRepo } from "./git-commit-modal-repo.js";
-import { createGitCommitService } from "./git-commit-modal-service.js";
-import { createGitCommitState } from "./git-commit-modal-state.js";
-import { createGitCommitUI } from "./git-commit-modal-ui.js";
+import { createGitCommitActions } from "./git-panel-actions.js";
+import { createGitCommitDiff } from "./git-panel-diff.js";
+import { createGitCommitRepo } from "./git-panel-repo.js";
+import { createGitCommitService } from "./git-panel-service.js";
+import { createGitCommitState } from "./git-panel-state.js";
+import { createGitCommitUI } from "./git-panel-ui.js";
 import { callExplorerTool, callAgentTool } from "/explorer/services/infrastructure/explorerApi.js";
 import { joinPath } from "/explorer/web-components/pages/file-exp/file-exp-utils.js";
 import {
@@ -20,11 +19,11 @@ import {
     normalizeGitAuthMethod,
     setGitErrorFlag,
     setShowAgentReposSetting
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 import { FILE_EXP_REFRESH_EVENT } from "/explorer/utils/appEvents.js";
-import { GIT_MODAL_CLOSED_EVENT } from "../../git-tool-button-events.js";
+import { GIT_PANEL_CLOSED_EVENT } from "../../git-tool-button-events.js";
 
-export class GitCommitModal {
+export class GitPanel {
     constructor(element, invalidate, props = {}) {
         this.element = element;
         this.invalidate = invalidate;
@@ -32,12 +31,12 @@ export class GitCommitModal {
         this.statusCache = { at: 0, payload: null };
         this.diffCache = new Map();
         this.repoOverviewCache = { at: 0, list: [] };
-        this.dialogState = { isFullscreen: false, prev: null };
+        this.unloaded = false;
         this.githubPollTimer = null;
         this.githubStartPromise = null;
         this.menuAbortController = null;
         this.commitMessageBusy = false;
-        this.modalBusyMessages = [];
+        this.panelBusyMessages = [];
         this.stateStore = createGitCommitState(props);
         this.state = this.stateStore.state;
         this.service = createGitCommitService({
@@ -60,10 +59,6 @@ export class GitCommitModal {
             state: this.state,
             service: this.service,
             diffCache: this.diffCache
-        });
-        this.dialog = createGitCommitDialog({
-            element: this.element,
-            dialogState: this.dialogState
         });
         this.ui = createGitCommitUI({
             element: this.element,
@@ -96,7 +91,6 @@ export class GitCommitModal {
             applyConflictChoice: this.applyConflictChoice.bind(this),
             saveConflictResolution: this.saveConflictResolution.bind(this),
             openConflictHelper: this.openConflictHelper.bind(this),
-            closeModal: this.closeModal.bind(this),
             cancelConflictResolution: this.cancelConflictResolution.bind(this)
         });
         this.actions = createGitCommitActions({
@@ -116,7 +110,7 @@ export class GitCommitModal {
             getPathsForCommitInRepo: this.getPathsForCommitInRepo.bind(this),
             setCommitMessage: this.setCommitMessage.bind(this),
             setCommitMessageBusy: this.setCommitMessageBusy.bind(this),
-            withModalLoader: this.withModalLoader.bind(this),
+            withPanelLoader: this.withPanelLoader.bind(this),
             clearCommitMessageInput: this.clearCommitMessageInput.bind(this),
             clearDiffCache: () => this.diffCache.clear(),
             loadRepoInfo: this.loadRepoInfo.bind(this),
@@ -266,9 +260,11 @@ export class GitCommitModal {
     }
 
     afterUnload() {
+        this.unloaded = true;
         this.clearGithubPollTimer();
         this.menuAbortController?.abort();
         this.menuAbortController = null;
+        window.dispatchEvent(new CustomEvent(GIT_PANEL_CLOSED_EVENT));
     }
 
     peekSelectedFilesEntry(repoPath) {
@@ -276,15 +272,16 @@ export class GitCommitModal {
     }
 
     afterRender() {
+        if (!this.element.isConnected) return;
         this.bindEvents();
-        this.dialog.ensureDialogResizable();
-        this.dialog.toggleFullscreen();
-        (async () => {
-            await this.withModalLoader(async () => {
+        this.initialLoad = (async () => {
+            await this.withPanelLoader(async () => {
                 await this.refreshGithubAuthStatus({ silent: true }).catch(() => {});
 
+                if (this.unloaded) return;
                 this.syncStaticUI();
                 const gateActive = await this.ensureCredentialsGate();
+                if (this.unloaded) return;
                 if (!gateActive) {
                     // On open: force-load repos overview so the user immediately sees changes across all repos.
                     this.setState({ suppressInlineLoading: true }, { silent: true });
@@ -311,16 +308,19 @@ export class GitCommitModal {
         });
     }
 
-    toggleFullscreen() {
-        return this.dialog.toggleFullscreen();
+    async updateModalProps(props) {
+        await this.initialLoad;
+        if (this.unloaded) return;
+        this.props = { ...this.props, ...props };
+        const patch = {};
+        if (props.repoPath) patch.repoPath = props.repoPath;
+        if (props.selectedRepoPath) patch.selectedRepoPath = props.selectedRepoPath;
+        this.setState(patch);
+        if (props.openConflictHelper) await this.openConflictHelper();
     }
 
     bindEvents() {
         return this.ui.bindEvents();
-    }
-
-    closeModalAction() {
-        this.closeModal();
     }
 
     async resolveIdentityRepoPath() {
@@ -402,7 +402,7 @@ export class GitCommitModal {
     }
 
     async refreshAction() {
-        await this.withModalLoader(() => this.refreshAfterGitOperation(), 'Refreshing Git status…');
+        await this.withPanelLoader(() => this.refreshAfterGitOperation(), 'Refreshing Git status…');
     }
 
     clearGithubPollTimer() {
@@ -413,6 +413,7 @@ export class GitCommitModal {
     }
 
     scheduleGithubPoll(intervalSeconds = 5) {
+        if (this.unloaded) return;
         this.clearGithubPollTimer();
         const delayMs = Math.max(3, Number(intervalSeconds || 5)) * 1000;
         this.githubPollTimer = setTimeout(() => {
@@ -991,11 +992,17 @@ export class GitCommitModal {
     }
 
     async callTool(name, args) {
-        return callExplorerTool(name, args);
+        if (this.unloaded) throw new DOMException('Panel closed', 'AbortError');
+        const result = await callExplorerTool(name, args);
+        if (this.unloaded) throw new DOMException('Panel closed', 'AbortError');
+        return result;
     }
 
     async callAgentTool(agentName, name, args) {
-        return callAgentTool(agentName, name, args);
+        if (this.unloaded) throw new DOMException('Panel closed', 'AbortError');
+        const result = await callAgentTool(agentName, name, args);
+        if (this.unloaded) throw new DOMException('Panel closed', 'AbortError');
+        return result;
     }
 
     async generateCommitMessage() {
@@ -1008,27 +1015,27 @@ export class GitCommitModal {
         this.commitMessageBusy = busy;
 
         this.renderModalBusyState({
-            busy: busy || this.modalBusyMessages.length > 0,
-            message: busy ? 'Generating commit message…' : this.modalBusyMessages.at(-1)
+            busy: busy || this.panelBusyMessages.length > 0,
+            message: busy ? 'Generating commit message…' : this.panelBusyMessages.at(-1)
         });
     }
 
     renderModalBusyState({ busy, message = '' }) {
         const active = Boolean(busy);
 
-        const modal = this.element.querySelector('.git-modal');
-        modal?.classList.toggle('git-modal-busy', active);
+        const modal = this.element.querySelector('.git-panel');
+        modal?.classList.toggle('git-panel-busy', active);
         if (active) {
             modal?.setAttribute('aria-busy', 'true');
         } else {
             modal?.removeAttribute('aria-busy');
         }
 
-        const overlay = this.element.querySelector('[data-role="git-modal-loader"]');
+        const overlay = this.element.querySelector('[data-role="git-panel-loader"]');
         if (overlay) {
             overlay.hidden = !active;
             overlay.setAttribute('aria-hidden', active ? 'false' : 'true');
-            const label = overlay.querySelector('[data-role="git-modal-loader-label"]');
+            const label = overlay.querySelector('[data-role="git-panel-loader-label"]');
             if (label) label.textContent = String(message || 'Working…');
         }
 
@@ -1039,17 +1046,17 @@ export class GitCommitModal {
         }
     }
 
-    async withModalLoader(operation, message = '') {
+    async withPanelLoader(operation, message = '') {
         const busyMessage = String(message || this.state.lastStatusLine || 'Working…');
-        this.modalBusyMessages.push(busyMessage);
+        this.panelBusyMessages.push(busyMessage);
         this.renderModalBusyState({ busy: true, message: busyMessage });
         try {
             return await operation();
         } finally {
-            this.modalBusyMessages.pop();
+            this.panelBusyMessages.pop();
             this.renderModalBusyState({
-                busy: this.commitMessageBusy || this.modalBusyMessages.length > 0,
-                message: this.commitMessageBusy ? 'Generating commit message…' : this.modalBusyMessages.at(-1)
+                busy: this.commitMessageBusy || this.panelBusyMessages.length > 0,
+                message: this.commitMessageBusy ? 'Generating commit message…' : this.panelBusyMessages.at(-1)
             });
         }
     }
@@ -1283,8 +1290,4 @@ export class GitCommitModal {
         return this.actions.pullSelectedRepos();
     }
 
-    closeModal(payload) {
-        assistOS.UI.closeModal(this.element, payload);
-        window.dispatchEvent(new CustomEvent(GIT_MODAL_CLOSED_EVENT));
-    }
 }

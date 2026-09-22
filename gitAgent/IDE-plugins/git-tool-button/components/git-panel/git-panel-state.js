@@ -5,7 +5,7 @@ import {
     getRememberedGithubConnection,
     getAutocommitSettings,
     getShowAgentReposSetting
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 import { getReposRoot } from "/explorer/utils/reposRoot.js";
 
 export function createGitCommitState(props = {}) {

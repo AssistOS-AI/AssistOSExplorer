@@ -12,7 +12,7 @@ import {
     getRememberedGitAuthMethod,
     normalizeGitAuthMethod,
     normalizeGitStatusPayload
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 import {
     getGithubRepositoryApiUrl,
     getGithubRepositoryCreateUrl,
@@ -50,7 +50,7 @@ export function createGitOpsActions(ctx) {
         dispatchAutocommitReset,
         generateCommitMessageForSelections,
         promptForFallbackCommitMessage,
-        withModalLoader
+        withPanelLoader
     } = ctx;
 
     const formatCount = (count, singular, plural = `${singular}s`) => {
@@ -501,7 +501,7 @@ export function createGitOpsActions(ctx) {
             return;
         }
         setStatusLine('Pulling latest changes before commit...');
-        return withModalLoader(async () => {
+        return withPanelLoader(async () => {
             try {
                 const pullResult = await pullRepos(selected, {
                     pendingAction: { type: 'sync', mode: 'batch', repoPaths: selected },
@@ -699,7 +699,7 @@ export function createGitOpsActions(ctx) {
             dispatchAutocommitReset();
         };
 
-        const prepareResult = await withModalLoader(async () => {
+        const prepareResult = await withPanelLoader(async () => {
             try {
                 const pullResult = await pullRepos(selected, {
                     pendingAction: { type: 'sync', mode: 'batch', repoPaths: selected },
@@ -763,7 +763,7 @@ export function createGitOpsActions(ctx) {
 
         const message = await promptForFallbackCommitMessage(prepareResult.stagedSelections);
         if (!message) {
-            await withModalLoader(async () => {
+            await withPanelLoader(async () => {
                 await restoreStagedSnapshots(prepareResult.initialStagedByRepo);
                 applyState({ pendingAction: null }, { silent: true });
                 await refreshAfterGitOperation({ keepStatus: true });
@@ -773,7 +773,7 @@ export function createGitOpsActions(ctx) {
             return;
         }
 
-        return withModalLoader(async () => {
+        return withPanelLoader(async () => {
             try {
                 await finishSyncWithMessage({
                     pullResult: prepareResult.pullResult,
@@ -798,7 +798,7 @@ export function createGitOpsActions(ctx) {
             return;
         }
         setStatusLine('Pushing...');
-        return withModalLoader(async () => {
+        return withPanelLoader(async () => {
             try {
                 const pushSummary = await pushRepos([state.repoPath], { token });
                 if (!pushSummary?.ok) return;
@@ -828,7 +828,7 @@ export function createGitOpsActions(ctx) {
             return;
         }
         setStatusLine(`Pushing ${list.length} repo(s)…`);
-        return withModalLoader(async () => {
+        return withPanelLoader(async () => {
             try {
                 const pushSummary = await pushRepos(list);
                 if (!pushSummary?.ok) return;
@@ -862,7 +862,7 @@ export function createGitOpsActions(ctx) {
             }
         }
         setStatusLine(`Pulling ${selected.length} repo(s)…`);
-        return withModalLoader(async () => {
+        return withPanelLoader(async () => {
             try {
                 const pullResult = await pullRepos(selected);
                 if (!pullResult?.ok) return;

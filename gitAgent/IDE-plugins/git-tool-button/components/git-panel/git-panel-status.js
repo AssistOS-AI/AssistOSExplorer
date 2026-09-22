@@ -1,4 +1,4 @@
-import { normalizeGitStatusPayload } from './git-commit-modal-utils.js';
+import { normalizeGitStatusPayload } from './git-panel-utils.js';
 
 export function toChangeRows(status, limit = 800) {
     const map = new Map();

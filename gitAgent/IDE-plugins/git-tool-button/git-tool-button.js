@@ -13,6 +13,7 @@ export class GitToolButton {
     beforeRender() {}
 
     afterRender() {
+        if (!this.element.isConnected) return;
         this.button = this.element.querySelector('#gitButton');
         this.iconImageEl = this.element.querySelector('.git-tool-button-icon-image');
         this.labelEl = this.element.querySelector('.git-tool-button-label');
@@ -21,8 +22,8 @@ export class GitToolButton {
         this.syncButtonMetadata();
     }
 
-    openGitModal() {
-        this.controllerHost?.openGitModal?.();
+    openGitPanel() {
+        this.controllerHost?.openGitPanel?.();
     }
 
     afterUnload() {
@@ -115,8 +116,12 @@ export class GitToolButton {
             return cleanup;
         };
 
+        const presenter = this;
         return {
             element: this.element,
+            get toolbarModal() {
+                return presenter.hostContext?.pluginToolbarModal;
+            },
             get state() {
                 return getHostFileExp()?.state || {};
             },

@@ -47,15 +47,17 @@ export class MarketplaceToolButton {
     }
   }
 
-  openMarketplace = async (event) => {
+  openMarketplace = (event) => {
     event?.preventDefault?.();
     event?.stopPropagation?.();
-    try {
-      const targetUrl = new URL(window.location.href);
-      targetUrl.hash = 'marketplace-modal';
-      window.open(targetUrl.toString(), '_blank', 'noopener,noreferrer');
-    } catch (_) {
-      await assistOS.UI.changeToDynamicPage('marketplace-modal', 'marketplace-modal');
+    const descriptor = this.hostContext?.pluginToolbarModal;
+    const openExpandedModal = globalThis.assistOS?.UI?.openExpandedModal;
+    if (!descriptor || typeof openExpandedModal !== 'function') {
+      return;
     }
+    void openExpandedModal({
+      ...descriptor,
+      title: this.hostContext?.pluginLabel || descriptor.title
+    });
   };
 }

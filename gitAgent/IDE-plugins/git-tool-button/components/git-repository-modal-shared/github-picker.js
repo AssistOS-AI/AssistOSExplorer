@@ -1,5 +1,5 @@
 import { callAgentTool, parseToolResult } from "/explorer/services/infrastructure/explorerApi.js";
-import { createGitCommitService } from "../git-commit-modal/git-commit-modal-service.js";
+import { createGitCommitService } from "../git-panel/git-panel-service.js";
 
 export async function callGitTool(name, args = {}) {
     const raw = await callAgentTool('gitAgent', name, args, { raw: true });

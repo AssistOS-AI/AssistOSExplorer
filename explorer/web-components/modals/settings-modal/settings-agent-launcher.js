@@ -2,23 +2,20 @@ import {
     ensureSettingsComponentRegistered,
     openPluginSettingsUrl
 } from "./settings-component-loader.js";
-import { openSettingsIframePopup } from "./settings-iframe-popup.js";
+import { openExpandedModal } from "../../../shared/ui/expanded-modal.js";
+import { ensureMarketplaceAgentRunning } from "../../../services/infrastructure/marketplaceAgentRuntime.js";
 
 export async function ensureAgentRunning(agentRef) {
     const ref = String(agentRef || "").trim();
     if (!ref) {
         throw new Error("Agent settings entry is missing an owner agent.");
     }
-    const module = await import("/MCPBrowserClient.js");
-    if (typeof module?.ensureAgentRunning !== "function") {
-        throw new Error("Agent runtime lifecycle is unavailable.");
-    }
-    return module.ensureAgentRunning(ref);
+    return ensureMarketplaceAgentRunning(ref);
 }
 
 function openEmbeddedSettingsPopup(item) {
-    return openSettingsIframePopup({
-        url: item.settingsUrl,
+    return openExpandedModal({
+        iframeUrl: item.settingsUrl,
         title: item.label || item.ownerAgent || "Settings",
         readyTitle: item.label || "",
         fullscreen: item.settingsEmbeddedFullscreen !== false

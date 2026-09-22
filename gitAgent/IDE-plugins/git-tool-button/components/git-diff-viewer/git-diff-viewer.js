@@ -1,4 +1,4 @@
-import { unifiedToSplitHtml, stripUnifiedDiffHeaders, stripUnifiedDiffFileHeaders, summarizeUnifiedDiffMeta } from "../git-commit-modal/git-commit-modal-diff.js";
+import { unifiedToSplitHtml, stripUnifiedDiffHeaders, stripUnifiedDiffFileHeaders, summarizeUnifiedDiffMeta } from "../git-panel/git-panel-diff.js";
 
 export class GitDiffViewer {
     constructor(element, invalidate, props = {}) {
@@ -138,6 +138,6 @@ export class GitDiffViewer {
     }
 
     getParentPresenter() {
-        return this.element.closest('git-commit-modal')?.webSkelPresenter || null;
+        return this.element.closest('git-panel')?.webSkelPresenter || null;
     }
 }

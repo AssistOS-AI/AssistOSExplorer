@@ -1,96 +1,102 @@
 {
-    "pluginCategory": "application",
-    "id": "git",
-    "component": "git-tool-button",
-    "location": ["file-exp:toolbar"],
-    "locationOrder": 100,
-    "label": "Git",
-    "tooltip": "Git",
-    "icon": "./icon.svg",
-    "presenter": "GitToolButton",
-    "type": "embedded",
-    "autoPin": false,
-    "dependencies": [
-        {
-            "component": "git-commit-modal",
-            "presenter": "GitCommitModal",
-            "type": "modal"
-        },
-        {
-            "component": "git-stash-select-modal",
-            "presenter": "GitStashSelectModal",
-            "type": "modal"
-        },
-        {
-            "component": "git-commit-message-fallback-modal",
-            "presenter": "GitCommitMessageFallbackModal",
-            "type": "modal"
-        },
-        {
-            "component": "git-branch-select-modal",
-            "presenter": "GitBranchSelectModal",
-            "type": "modal"
-        },
-        {
-            "component": "git-branch-create-modal",
-            "presenter": "GitBranchCreateModal",
-            "type": "modal"
-        },
-        {
-            "component": "git-branch-dirty-modal",
-            "presenter": "GitBranchDirtyModal",
-            "type": "modal"
-        },
-        {
-            "component": "git-add-repository-modal",
-            "presenter": "GitAddRepositoryModal",
-            "type": "modal"
-        },
-        {
-            "component": "git-clone-repository-modal",
-            "presenter": "GitCloneRepositoryModal",
-            "type": "modal"
-        },
-        {
-            "component": "git-credentials-prompt",
-            "presenter": "GitCredentialsPrompt"
-        },
-        {
-            "component": "git-diff-viewer",
-            "presenter": "GitDiffViewer"
-        },
-        {
-            "component": "git-conflict-helper",
-            "presenter": "GitConflictHelper"
-        },
-        {
-            "component": "git-conflict-banner",
-            "presenter": "GitConflictBanner"
-        },
-        {
-            "component": "git-status-bar",
-            "presenter": "GitStatusBar"
-        },
-        {
-            "component": "git-pull-blocked-panel",
-            "presenter": "GitPullBlockedPanel"
-        },
-        {
-            "component": "git-repo-tree",
-            "presenter": "GitRepoTree"
-        },
-        {
-            "component": "git-commit-actions",
-            "presenter": "GitCommitActions"
-        },
-        {
-            "component": "git-commit-body",
-            "presenter": "GitCommitBody"
-        },
-        {
-            "component": "custom-select",
-            "presenter": "CustomSelect",
-            "path": "explorer/web-components/components/custom-select/custom-select"
-        }
-    ]
+  "pluginCategory": "application",
+  "id": "git",
+  "component": "git-tool-button",
+  "location": [
+    "file-exp:toolbar"
+  ],
+  "locationOrder": 100,
+  "label": "Git",
+  "tooltip": "Git",
+  "icon": "./icon.svg",
+  "presenter": "GitToolButton",
+  "type": "embedded",
+  "autoPin": false,
+  "dependencies": [
+    {
+      "component": "git-panel",
+      "presenter": "GitPanel",
+      "type": "embedded"
+    },
+    {
+      "component": "git-stash-select-modal",
+      "presenter": "GitStashSelectModal",
+      "type": "modal"
+    },
+    {
+      "component": "git-commit-message-fallback-modal",
+      "presenter": "GitCommitMessageFallbackModal",
+      "type": "modal"
+    },
+    {
+      "component": "git-branch-select-modal",
+      "presenter": "GitBranchSelectModal",
+      "type": "modal"
+    },
+    {
+      "component": "git-branch-create-modal",
+      "presenter": "GitBranchCreateModal",
+      "type": "modal"
+    },
+    {
+      "component": "git-branch-dirty-modal",
+      "presenter": "GitBranchDirtyModal",
+      "type": "modal"
+    },
+    {
+      "component": "git-add-repository-modal",
+      "presenter": "GitAddRepositoryModal",
+      "type": "modal"
+    },
+    {
+      "component": "git-clone-repository-modal",
+      "presenter": "GitCloneRepositoryModal",
+      "type": "modal"
+    },
+    {
+      "component": "git-credentials-prompt",
+      "presenter": "GitCredentialsPrompt"
+    },
+    {
+      "component": "git-diff-viewer",
+      "presenter": "GitDiffViewer"
+    },
+    {
+      "component": "git-conflict-helper",
+      "presenter": "GitConflictHelper"
+    },
+    {
+      "component": "git-conflict-banner",
+      "presenter": "GitConflictBanner"
+    },
+    {
+      "component": "git-status-bar",
+      "presenter": "GitStatusBar"
+    },
+    {
+      "component": "git-pull-blocked-panel",
+      "presenter": "GitPullBlockedPanel"
+    },
+    {
+      "component": "git-repo-tree",
+      "presenter": "GitRepoTree"
+    },
+    {
+      "component": "git-commit-actions",
+      "presenter": "GitCommitActions"
+    },
+    {
+      "component": "git-commit-body",
+      "presenter": "GitCommitBody"
+    },
+    {
+      "component": "custom-select",
+      "presenter": "CustomSelect",
+      "path": "explorer/web-components/components/custom-select/custom-select"
+    }
+  ],
+  "toolbarModal": {
+    "mode": "component",
+    "component": "git-panel"
+  }
 }

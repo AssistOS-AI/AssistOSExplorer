@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { createGitService } from '../../lib/git-service.mjs';
 import { createOverviewOps } from '../../lib/git/overview-ops.mjs';
 import { DETAILED_STATUS_TIMEOUT_MS } from '../../lib/git/status-ops.mjs';
-import { mergeRepoOverviewWithStatus } from '../../IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-status.js';
+import { mergeRepoOverviewWithStatus } from '../../IDE-plugins/git-tool-button/components/git-panel/git-panel-status.js';
 
 function runGit(args, cwd) {
     const result = spawnSync('git', args, { cwd, encoding: 'utf8' });

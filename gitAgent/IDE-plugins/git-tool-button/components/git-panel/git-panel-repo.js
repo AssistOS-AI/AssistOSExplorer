@@ -1,5 +1,5 @@
 import { parseDetailedDirectoryListing, joinPath } from "/explorer/web-components/pages/file-exp/file-exp-utils.js";
-import { parseJsonToolResult, isReposRootPath, normalizeErrorMessage, getVisibleRepoOverviews } from "./git-commit-modal-utils.js";
+import { parseJsonToolResult, isReposRootPath, normalizeErrorMessage, getVisibleRepoOverviews } from "./git-panel-utils.js";
 import { getRepoScanPaths, getInternalReposRoot } from "/explorer/utils/reposRoot.js";
 import {
     ensureSelectionEntry,
@@ -9,9 +9,9 @@ import {
     getAncestorCoveringPrefix as getAncestorCoveringPrefixFromEntry,
     toggleFileSelection as toggleFileSelectionOnEntry,
     togglePrefixSelection as togglePrefixSelectionOnEntry
-} from "./git-commit-modal-selection.js";
-import { formatRepoSummary, renderRepoChangesTree as renderRepoChangesTreeInternal } from "./git-commit-modal-tree.js";
-import { mergeRepoOverviewWithStatus } from './git-commit-modal-status.js';
+} from "./git-panel-selection.js";
+import { formatRepoSummary, renderRepoChangesTree as renderRepoChangesTreeInternal } from "./git-panel-tree.js";
+import { mergeRepoOverviewWithStatus } from './git-panel-status.js';
 
 export function createGitCommitRepo(ctx) {
     const {

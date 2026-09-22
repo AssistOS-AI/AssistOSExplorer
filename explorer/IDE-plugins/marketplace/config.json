@@ -10,6 +10,10 @@
   "presenter": "MarketplaceToolButton",
   "type": "embedded",
   "autoPin": false,
+  "toolbarModal": {
+    "mode": "component",
+    "component": "marketplace-modal"
+  },
   "dependencies": [
     {
       "component": "marketplace-modal",

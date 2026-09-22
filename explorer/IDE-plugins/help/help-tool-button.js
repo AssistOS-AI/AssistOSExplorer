@@ -47,15 +47,19 @@ export class HelpToolButton {
         }
     }
 
-    openHelp = async (event) => {
+    openHelp = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
-        try {
-            await assistOS.UI.createReactiveModal('help-modal', {}, true);
-        } catch (_) {
+        const descriptor = this.hostContext?.pluginToolbarModal;
+        const openExpandedModal = globalThis.assistOS?.UI?.openExpandedModal;
+        if (!descriptor || typeof openExpandedModal !== 'function') {
             globalThis.assistOS?.showToast?.('Help could not be opened.', 'error', 3000);
-        } finally {
-            this.button?.focus?.();
+            return;
         }
+        void openExpandedModal({
+            ...descriptor,
+            title: this.hostContext?.pluginLabel || descriptor.title
+        });
+        this.button?.focus?.();
     };
 }

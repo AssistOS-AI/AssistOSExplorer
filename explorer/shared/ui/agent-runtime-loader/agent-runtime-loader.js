@@ -16,13 +16,13 @@ function isPermanentRequestError(error) {
     return [400, 401, 403, 422].includes(status);
 }
 
-export async function readMarketplaceAgent(agentRef) {
+export async function readMarketplaceAgent(agentRef, { signal } = {}) {
     try {
         const response = await fetch('/api/marketplace', {
             credentials: 'same-origin',
             headers: { accept: 'application/json' },
             cache: 'no-store',
-            signal: AbortSignal.timeout(5000)
+            signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000)
         });
         if (!response.ok) return null;
         const payload = await response.json();

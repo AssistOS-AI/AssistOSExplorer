@@ -15,7 +15,7 @@ import {
     setGitErrorFlag,
     normalizeGitStatusPayload,
     normalizeSlashes
-} from "./components/git-commit-modal/git-commit-modal-utils.js";
+} from "./components/git-panel/git-panel-utils.js";
 import { callAgentTool } from "/explorer/services/infrastructure/explorerApi.js";
 import { getReposRoot, getRepoScanPaths } from "/explorer/utils/reposRoot.js";
 import { pullWithAutoStashFlow, restoreStashFlow } from "./utils/git-auto-stash-flow.js";
@@ -26,7 +26,7 @@ import {
     AUTOCOMMIT_STOP_EVENT,
     FILE_EXP_REFRESH_EVENT
 } from "/explorer/utils/appEvents.js";
-import { GIT_MODAL_CLOSED_EVENT } from "./git-tool-button-events.js";
+import { GIT_PANEL_CLOSED_EVENT } from "./git-tool-button-events.js";
 
 export function attachGitController(fileExp) {
     const reposRoot = getReposRoot();
@@ -65,8 +65,8 @@ export function attachGitController(fileExp) {
         updateGitButtonIndicator();
     };
 
-    const refreshOpenGitModals = async () => {
-        const modals = Array.from(document.querySelectorAll('git-commit-modal'));
+    const refreshOpenGitPanels = async () => {
+        const modals = Array.from(document.querySelectorAll('git-panel'));
         if (!modals.length) return;
         for (const modal of modals) {
             const presenter = modal?.webSkelPresenter || modal?.presenter || modal;
@@ -86,7 +86,7 @@ export function attachGitController(fileExp) {
         } catch {
             // ignore dispatch failures
         }
-        await refreshOpenGitModals();
+        await refreshOpenGitPanels();
     };
 
     const autocommit = {
@@ -214,7 +214,7 @@ export function attachGitController(fileExp) {
         setConflictFlag(true);
         updateGitButtonIndicator();
         showAutocommitStopped(message || 'Merge conflicts detected.');
-        void openGitModal({
+        void openGitPanel({
             openConflictHelper: true,
             selectedRepoPath: repoPath || null
         });
@@ -545,7 +545,7 @@ export function attachGitController(fileExp) {
                 if (typeof fileExp.refresh === 'function') {
                     await fileExp.refresh();
                 }
-                await refreshOpenGitModals();
+                await refreshOpenGitPanels();
                 fileExp.showStatus('AutoSync complete.');
             }
         } catch {
@@ -575,16 +575,22 @@ export function attachGitController(fileExp) {
         }
     };
 
-    async function openGitModal(options = {}) {
+    async function openGitPanel(options = {}) {
         const repoPath = reposRoot;
         ensureAutocommitTimer();
         const conflictSyncPromise = syncConflictFlagFromRepos();
-        await assistOS.UI.createReactiveModal('git-commit-modal', {
-            repoPath,
-            openConflictHelper: Boolean(options.openConflictHelper),
-            selectedRepoPath: options.selectedRepoPath || null
+        const closed = assistOS.UI.openExpandedModal({
+            title: 'Git',
+            component: fileExp.toolbarModal?.component || 'git-panel',
+            fullscreen: true,
+            props: {
+                repoPath,
+                openConflictHelper: Boolean(options.openConflictHelper),
+                selectedRepoPath: options.selectedRepoPath || null
+            }
         });
         await conflictSyncPromise;
+        await closed;
     }
 
     updateGitButtonIndicator();
@@ -626,7 +632,7 @@ export function attachGitController(fileExp) {
         await syncConflictFlagFromRepos();
         ensureAutocommitTimer();
     };
-    const handleGitModalClosed = () => {
+    const handleGitPanelClosed = () => {
         updateGitButtonIndicator();
         syncConflictFlagFromRepos()
             .catch(() => {})
@@ -640,13 +646,13 @@ export function attachGitController(fileExp) {
     setWindowListener('git-autocommit-reset', AUTOCOMMIT_RESET_EVENT, handleAutocommitReset);
     setWindowListener('git-autocommit-stop', AUTOCOMMIT_STOP_EVENT, handleAutocommitStop);
     setWindowListener('git-file-exp-refresh', FILE_EXP_REFRESH_EVENT, handleFileExpRefresh);
-    setWindowListener('git-modal-closed', GIT_MODAL_CLOSED_EVENT, handleGitModalClosed);
+    setWindowListener('git-panel-closed', GIT_PANEL_CLOSED_EVENT, handleGitPanelClosed);
     fileExp.registerCleanup?.(() => {
         clearAutocommitTimer();
     });
 
     Object.assign(fileExp, {
-        openGitModal,
+        openGitPanel,
         updateGitButtonIndicator,
         ensureAutocommitTimer
     });
