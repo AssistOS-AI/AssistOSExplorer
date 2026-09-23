@@ -4,6 +4,14 @@ import {
     getMediaQualityProfile
 } from '../../controllers/media-quality-profiles.js';
 
+export const AUDIO_PUBLISH_DEFAULTS = Object.freeze({
+    audioPreset: Object.freeze({ maxBitrate: 32000 }),
+    dtx: true,
+    red: true,
+    forceStereo: false,
+    stopMicTrackOnMute: true
+});
+
 export class WebMeetRoomLiveKit {
     constructor(options = {}) {
         this.ensureLiveKitClient = options.ensureLiveKitClient;
@@ -38,10 +46,18 @@ export class WebMeetRoomLiveKit {
         };
     }
 
+    getAudioPublishDefaults() {
+        return {
+            ...AUDIO_PUBLISH_DEFAULTS,
+            audioPreset: { ...AUDIO_PUBLISH_DEFAULTS.audioPreset }
+        };
+    }
+
     getPublishDefaults() {
         const settings = this.getMediaQualitySettings();
         const profile = this.getQualityProfile('camera', settings.cameraQuality);
         return {
+            ...this.getAudioPublishDefaults(),
             videoEncoding: { ...profile.encoding }
         };
     }

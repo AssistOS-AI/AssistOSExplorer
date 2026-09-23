@@ -1,8 +1,15 @@
+import {
+    readWebMeetResume,
+    writeWebMeetResume
+} from './components/webmeet-dashboard/services/webmeet-session-store.js';
+
 export class WebMeetToolButton {
     constructor(element, invalidate) {
         this.element = element;
         this.invalidate = invalidate;
         this.hostContext = {};
+        this.pageUnloading = false;
+        this.handlePageTeardown = () => { this.pageUnloading = true; };
         this.invalidate();
     }
 
@@ -16,12 +23,16 @@ export class WebMeetToolButton {
         this.button?.addEventListener('click', this.openDashboard);
         window.addEventListener('focus', this.clearPendingInitialTabLoader);
         document.addEventListener('visibilitychange', this.clearPendingInitialTabLoader);
+        window.addEventListener('pagehide', this.handlePageTeardown);
+        window.addEventListener('beforeunload', this.handlePageTeardown);
     }
 
     afterUnload() {
         this.button?.removeEventListener('click', this.openDashboard);
         window.removeEventListener('focus', this.clearPendingInitialTabLoader);
         document.removeEventListener('visibilitychange', this.clearPendingInitialTabLoader);
+        window.removeEventListener('pagehide', this.handlePageTeardown);
+        window.removeEventListener('beforeunload', this.handlePageTeardown);
     }
 
     updateHostContext(context = {}) {
@@ -94,24 +105,49 @@ export class WebMeetToolButton {
         ).trim() || 'webmeetAgent';
     }
 
-    buildRoomLoaderUrl() {
+    buildRoomLoaderUrl(roomId = '') {
         const agentName = this.getWebMeetAgentName();
-        return new URL(`/${encodeURIComponent(agentName)}/roomLoader.html`, window.location.origin);
+        const url = new URL(`/${encodeURIComponent(agentName)}/roomLoader.html`, window.location.origin);
+        const id = String(roomId || '').trim();
+        if (id) {
+            url.searchParams.set('roomId', id);
+        }
+        return url;
     }
 
     openDashboard = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
+        return this.openWebMeetPanel({ allowFallback: true });
+    };
+
+    async openWebMeetPanel({ allowFallback = true } = {}) {
+        const resume = readWebMeetResume();
+        const roomId = String(resume?.roomId || '').trim();
         const descriptor = this.hostContext?.pluginToolbarModal;
         const openExpandedModal = globalThis.assistOS?.UI?.openExpandedModal;
         if (openExpandedModal && descriptor) {
-            void openExpandedModal({
+            const closed = openExpandedModal({
                 ...descriptor,
+                ...(roomId ? { url: this.buildRoomLoaderUrl(roomId).toString() } : {}),
                 title: this.hostContext?.pluginLabel || descriptor.title
             });
-            return;
+            const opened = closed && typeof closed.then === 'function' ? closed.opened : null;
+            if (opened && typeof opened.then === 'function') {
+                await opened.catch(() => {});
+                await closed.catch(() => {});
+                // Reaching here means WebMeet was opened and then closed by the user. A browser
+                // refresh tears the dialog down without resolving, so the resume record survives
+                // and WebMeet reopens in the same state on the next load.
+                if (!this.pageUnloading && globalThis.document?.visibilityState !== 'hidden') {
+                    writeWebMeetResume({ open: false });
+                }
+            }
+            return closed;
         }
-        window.open(this.buildRoomLoaderUrl().toString(), '_blank', 'noopener');
+        if (!allowFallback) return null;
+        window.open(this.buildRoomLoaderUrl(roomId).toString(), '_blank', 'noopener');
         this.scheduleInitialTabLoaderCleanup();
-    };
+        return null;
+    }
 }

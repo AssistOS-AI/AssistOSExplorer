@@ -4,48 +4,25 @@ import {
     normalizeVoiceProcessingMode
 } from './settings.js';
 import {
-    AdaptiveGainController,
-    createAudioLevelMonitor
+    buildMicrophoneAudioConstraints,
+    getAudioContextConstructor,
+    isAdvancedVoiceProcessingSupported,
+    resolveMicrophoneProfile
+} from './capture-constraints.js';
+import {
+    createAudioLevelMonitor,
+    createAudioLevelWorkletMonitor
 } from './audio-level-analyzer.js';
 
 const WORKLET_MODULE_URL = new URL('./rnnoise-worklet.js', import.meta.url).href;
 let workletPreloadPromise = null;
 
-function clamp(value, min, max) {
-    return Math.min(max, Math.max(min, value));
-}
-
-function getAudioContextConstructor() {
-    return globalThis.AudioContext || globalThis.webkitAudioContext || null;
+function getAudioContextCtor() {
+    return getAudioContextConstructor();
 }
 
 export function isEnhancedVoiceProcessingSupported() {
-    const browserNavigator = globalThis.navigator;
-    return Boolean(
-        browserNavigator?.mediaDevices?.getUserMedia
-        && getAudioContextConstructor()
-        && globalThis.AudioWorkletNode
-    );
-}
-
-function buildCaptureConstraints(settings = {}, overrides = {}) {
-    const audioDeviceId = String(settings.audioInputDeviceId || '').trim();
-    const deviceId = audioDeviceId ? { exact: audioDeviceId } : undefined;
-    const automaticCleanup = normalizeVoiceProcessingMode(settings.voiceProcessingMode) === 'auto';
-    return {
-        deviceId,
-        channelCount: 1,
-        sampleRate: 48000,
-        echoCancellation: automaticCleanup
-            ? true
-            : overrides.echoCancellation,
-        noiseSuppression: automaticCleanup
-            ? true
-            : overrides.noiseSuppression,
-        autoGainControl: automaticCleanup
-            ? true
-            : overrides.autoGainControl
-    };
+    return isAdvancedVoiceProcessingSupported();
 }
 
 function connectIfPresent(sourceNode, targetNode) {
@@ -66,7 +43,7 @@ function createBiquad(audioContext, type, frequency, q = null) {
 
 export async function preloadVoiceProcessingWorklet() {
     if (workletPreloadPromise) return workletPreloadPromise;
-    const AudioContextRef = getAudioContextConstructor();
+    const AudioContextRef = getAudioContextCtor();
     if (!AudioContextRef) {
         return Promise.resolve(false);
     }
@@ -136,49 +113,24 @@ function waitForWorkletReady(node, timeoutMs = 1500) {
     });
 }
 
-function createNoiseGateController(audioContext, gainNode) {
-    let currentGain = 1;
-    return {
-        update(metrics = {}) {
-            const rmsDb = Number(metrics.rmsDb);
-            const noiseFloorDb = Number(metrics.noiseFloorDb);
-            const floor = Number.isFinite(noiseFloorDb) ? noiseFloorDb : -60;
-            const thresholdDb = clamp(floor + 10, -58, -38);
-            const open = metrics.speaking === true || (Number.isFinite(rmsDb) && rmsDb > thresholdDb);
-            const distanceBelowThreshold = Number.isFinite(rmsDb)
-                ? clamp((thresholdDb - rmsDb) / 18, 0, 1)
-                : 1;
-            const targetGain = open ? 1 : clamp(1 - (distanceBelowThreshold * 0.72), 0.28, 1);
-            const timeConstant = targetGain > currentGain ? 0.035 : 0.16;
-            currentGain = targetGain;
-            gainNode.gain.setTargetAtTime(targetGain, audioContext.currentTime, timeConstant);
-            return targetGain;
-        }
-    };
-}
-
 export async function createProcessedMicrophoneTrack(settings = {}) {
     const browserNavigator = globalThis.navigator;
     if (!browserNavigator?.mediaDevices?.getUserMedia) {
         throw new Error('Microphone capture is not supported in this browser.');
     }
-    const AudioContextRef = getAudioContextConstructor();
+    const AudioContextRef = getAudioContextCtor();
     if (!AudioContextRef) {
         throw new Error('Audio processing is not supported in this browser.');
     }
 
     const mode = normalizeVoiceProcessingMode(settings.voiceProcessingMode);
-    const automatic = mode === 'auto';
+    const profile = resolveMicrophoneProfile(settings);
+    const enhanced = profile === 'advanced';
     const humFilter = normalizeHumFilter(settings.humFilter);
-    const enhanced = automatic || mode === 'enhanced';
     const configuredGain = normalizeMicrophoneGain(settings.microphoneGain);
-    const browserAudioCleanup = automatic || mode === 'standard' || mode === 'custom';
+
     const sourceStream = await browserNavigator.mediaDevices.getUserMedia({
-        audio: buildCaptureConstraints(settings, {
-            echoCancellation: browserAudioCleanup && (automatic || settings.echoCancellation !== false),
-            noiseSuppression: browserAudioCleanup && (automatic || settings.noiseSuppression !== false),
-            autoGainControl: browserAudioCleanup && (automatic || settings.autoGainControl === true)
-        }),
+        audio: buildMicrophoneAudioConstraints(settings, { profile }),
         video: false
     });
     const audioContext = new AudioContextRef({ sampleRate: 48000 });
@@ -189,14 +141,12 @@ export async function createProcessedMicrophoneTrack(settings = {}) {
     const nodes = [];
     let rnnoiseNode = null;
     let levelMonitor = null;
-    let adaptiveGainController = null;
     let processedTrack = null;
     let destination = null;
     try {
         const sourceNode = audioContext.createMediaStreamSource(sourceStream);
         nodes.push(sourceNode);
         let currentNode = sourceNode;
-        let automaticHumNode = null;
 
         if (enhanced) {
             const highPassNode = createBiquad(audioContext, 'highpass', 90, 0.707);
@@ -213,62 +163,30 @@ export async function createProcessedMicrophoneTrack(settings = {}) {
             const humNode = createBiquad(audioContext, 'notch', humFrequency, 18);
             nodes.push(humNode);
             currentNode = connectIfPresent(currentNode, humNode);
-        } else if (humFilter === 'auto') {
-            automaticHumNode = createBiquad(audioContext, 'notch', 10, 1);
-            nodes.push(automaticHumNode);
-            currentNode = connectIfPresent(currentNode, automaticHumNode);
         }
-
-        const gateGainNode = audioContext.createGain();
-        gateGainNode.gain.value = 1;
-        nodes.push(gateGainNode);
-        currentNode = connectIfPresent(currentNode, gateGainNode);
 
         const gainNode = audioContext.createGain();
         gainNode.gain.value = configuredGain;
         nodes.push(gainNode);
         currentNode = connectIfPresent(currentNode, gainNode);
 
-        if (automatic || automaticHumNode) {
-            adaptiveGainController = new AdaptiveGainController();
-            const noiseGateController = createNoiseGateController(audioContext, gateGainNode);
+        const handleMetrics = (metrics) => {
+            settings.onMetrics?.({
+                ...metrics,
+                adaptiveGain: 1,
+                gateGain: 1,
+                profile,
+                mode
+            });
+        };
+        levelMonitor = await createAudioLevelWorkletMonitor(audioContext, sourceNode, {
+            onMetrics: handleMetrics
+        }).catch(() => null);
+        if (!levelMonitor) {
             levelMonitor = createAudioLevelMonitor(audioContext, sourceNode, {
-                onMetrics(metrics) {
-                    const gateGain = noiseGateController.update(metrics);
-                    const adaptiveGain = automatic ? adaptiveGainController.update(metrics) : 1;
-                    if (automatic) {
-                        gainNode.gain.setTargetAtTime(
-                            configuredGain * adaptiveGain,
-                            audioContext.currentTime,
-                            adaptiveGain < 1 ? 0.08 : 0.4
-                        );
-                    }
-                    if (automaticHumNode) {
-                        const frequency = metrics.humFrequency === '60' ? 60
-                            : metrics.humFrequency === '50' ? 50
-                                : 10;
-                        const q = metrics.humFrequency === 'off' ? 1 : 18;
-                        automaticHumNode.frequency.setTargetAtTime(frequency, audioContext.currentTime, 0.4);
-                        automaticHumNode.Q.setTargetAtTime(q, audioContext.currentTime, 0.4);
-                    }
-                    settings.onMetrics?.({
-                        ...metrics,
-                        adaptiveGain,
-                        gateGain,
-                        mode
-                    });
-                }
+                onMetrics: handleMetrics
             });
         }
-
-        const compressorNode = audioContext.createDynamicsCompressor();
-        compressorNode.threshold.value = -10;
-        compressorNode.knee.value = 12;
-        compressorNode.ratio.value = 8;
-        compressorNode.attack.value = 0.004;
-        compressorNode.release.value = 0.12;
-        nodes.push(compressorNode);
-        currentNode = connectIfPresent(currentNode, compressorNode);
 
         destination = audioContext.createMediaStreamDestination();
         currentNode.connect(destination);
@@ -301,8 +219,9 @@ export async function createProcessedMicrophoneTrack(settings = {}) {
             cleanup,
             status: {
                 mode,
+                profile,
                 rnnoise: Boolean(rnnoiseNode),
-                adaptiveGain: automatic
+                adaptiveGain: false
             },
             getMetrics: () => levelMonitor?.getMetrics?.() || null
         };

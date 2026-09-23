@@ -159,6 +159,68 @@ export function summarizeAudioWebRtcStats(stats = []) {
     return summary;
 }
 
+export function summarizeAudioSettings(settings = {}) {
+    return {
+        profile: safeString(settings.profile || ''),
+        voiceProcessingMode: safeString(settings.voiceProcessingMode || ''),
+        humFilter: safeString(settings.humFilter || ''),
+        microphoneGain: roundedNumber(settings.microphoneGain, 2),
+        outputVolume: roundedNumber(settings.outputVolume, 2),
+        automaticParticipantVolume: settings.automaticParticipantVolume !== false,
+        echoCancellation: settings.echoCancellation !== false,
+        noiseSuppression: settings.noiseSuppression !== false,
+        autoGainControl: settings.autoGainControl === true,
+        voiceIsolation: settings.voiceIsolation === true
+    };
+}
+
+const RELAY_CANDIDATE_TYPES = new Set(['relay']);
+
+export function summarizeIceTransport(stats = []) {
+    const byId = new Map();
+    const reports = [];
+    for (const item of stats || []) {
+        const report = Array.isArray(item) && item.length === 2 ? item[1] : item;
+        if (!report || typeof report !== 'object') continue;
+        reports.push(report);
+        if (report.id) byId.set(report.id, report);
+    }
+    const summary = {
+        iceState: undefined,
+        dtlsState: undefined,
+        selected: 'unknown',
+        localCandidateType: undefined,
+        remoteCandidateType: undefined,
+        protocol: undefined,
+        relay: false
+    };
+    for (const report of reports) {
+        if (report.type === 'transport') {
+            if (report.iceState) summary.iceState = safeString(report.iceState);
+            if (report.dtlsState) summary.dtlsState = safeString(report.dtlsState);
+        }
+    }
+    let selectedPair = null;
+    for (const report of reports) {
+        if (report.type !== 'candidate-pair') continue;
+        if (report.state !== 'succeeded') continue;
+        if (report.nominated === false) continue;
+        selectedPair = report;
+        if (report.nominated === true) break;
+    }
+    if (selectedPair) {
+        const local = byId.get(selectedPair.localCandidateId) || null;
+        const remote = byId.get(selectedPair.remoteCandidateId) || null;
+        summary.localCandidateType = safeString(local?.candidateType || '');
+        summary.remoteCandidateType = safeString(remote?.candidateType || '');
+        summary.protocol = safeString(local?.protocol || remote?.protocol || '');
+        summary.relay = RELAY_CANDIDATE_TYPES.has(summary.localCandidateType)
+            || RELAY_CANDIDATE_TYPES.has(summary.remoteCandidateType);
+        summary.selected = summary.relay ? 'relay' : 'direct';
+    }
+    return summary;
+}
+
 function redactSensitive(value) {
     if (Array.isArray(value)) {
         return value.map((item) => redactSensitive(item));

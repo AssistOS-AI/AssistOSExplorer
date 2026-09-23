@@ -73,16 +73,16 @@ test('automatic voice processing falls back without overwriting the automatic pr
     const dashboardTemplate = await fs.readFile(dashboardHtmlPath, 'utf8');
     const settingsTemplate = await fs.readFile(settingsModalHtmlPath, 'utf8');
 
-    assert.match(factorySource, /const automatic = mode === 'auto'/);
+    assert.match(factorySource, /resolveMicrophoneProfile/);
+    assert.match(factorySource, /buildMicrophoneAudioConstraints/);
+    assert.match(factorySource, /const enhanced = profile === 'advanced'/);
     assert.match(factorySource, /const humFilter = normalizeHumFilter\(settings\.humFilter\)/);
     assert.match(factorySource, /const configuredGain = normalizeMicrophoneGain\(settings\.microphoneGain\)/);
-    assert.match(factorySource, /const automaticCleanup = normalizeVoiceProcessingMode\(settings\.voiceProcessingMode\) === 'auto'/);
-    assert.match(factorySource, /autoGainControl: automaticCleanup\s*\?\s*true/);
-    assert.match(factorySource, /noiseSuppression: automaticCleanup\s*\?\s*true/);
-    assert.match(factorySource, /createNoiseGateController/);
-    assert.match(factorySource, /adaptiveGainController = new AdaptiveGainController/);
-    assert.ok(factorySource.indexOf('currentNode = connectIfPresent(currentNode, gateGainNode)') < factorySource.indexOf('currentNode = connectIfPresent(currentNode, gainNode)'));
-    assert.ok(factorySource.indexOf('currentNode = connectIfPresent(currentNode, gainNode)') < factorySource.indexOf('createDynamicsCompressor'));
+    assert.doesNotMatch(factorySource, /createNoiseGateController/);
+    assert.doesNotMatch(factorySource, /AdaptiveGainController/);
+    assert.doesNotMatch(factorySource, /createDynamicsCompressor/);
+    assert.doesNotMatch(factorySource, /automaticHumNode/);
+    assert.ok(factorySource.indexOf('createRnnoiseNode(audioContext)') < factorySource.indexOf('humFilter ==='));
     assert.match(controllerSource, /if \(mode === 'auto'\)/);
     assert.match(controllerSource, /await preloadVoiceProcessingWorklet\(\)/);
     assert.match(controllerSource, /await this\.enableProcessedMicrophone\(room/);
@@ -118,7 +118,7 @@ test('manual audio controls switch automatic voice processing to custom instead 
     assert.match(mediaSettingsSource, /switchAutomaticVoiceProcessingToCustom/);
     assert.match(mediaSettingsSource, /this\.voiceProcessingModeSelect\.value = 'custom'/);
     assert.doesNotMatch(mediaSettingsSource, /control\.disabled = automaticVoiceProcessing/);
-    assert.match(factorySource, /const browserAudioCleanup = automatic \|\| mode === 'standard' \|\| mode === 'custom'/);
+    assert.match(factorySource, /const enhanced = profile === 'advanced'/);
 });
 
 test('dashboard defaults microphone and output volume to eighty percent', async () => {

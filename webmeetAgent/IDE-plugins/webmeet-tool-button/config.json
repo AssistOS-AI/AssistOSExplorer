@@ -14,7 +14,8 @@
         "mode": "iframe",
         "url": "/webmeetAgent/roomLoader.html",
         "agentRef": "AchillesIDE/webmeetAgent",
-        "fullscreen": true
+        "fullscreen": true,
+        "resume": true
     },
     "dependencies": [
         {

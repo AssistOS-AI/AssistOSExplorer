@@ -74,24 +74,23 @@ dialog.modal.webmeet-settings-modal-dialog.is-fullscreen {
 }
 
 .webmeet-settings-modal .webmeet-icon-button {
-    background: var(--gray-button-background);
-    border: 1px solid var(--gray-button-border);
-    border-radius: 6px;
-    width: 40px;
-    height: 40px;
-    display: flex;
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text);
     cursor: pointer;
-    transition: all 0.2s ease;
-    color: var(--gray-button-text);
+    transition: background-color var(--transition-base) ease, color var(--transition-base) ease;
     position: relative;
 }
 
 .webmeet-settings-modal .webmeet-icon-button:hover {
     background: var(--option-hover);
-    border-color: var(--accent);
-    color: var(--accent);
 }
 
 .webmeet-settings-modal .webmeet-icon-button:disabled {
@@ -99,9 +98,10 @@ dialog.modal.webmeet-settings-modal-dialog.is-fullscreen {
     opacity: 0.68;
 }
 
+.webmeet-settings-modal .webmeet-icon-button img,
 .webmeet-settings-modal .webmeet-icon-button svg {
-    width: 20px;
-    height: 20px;
+    width: 16px;
+    height: 16px;
 }
 
 .webmeet-settings-modal.webmeet-media-settings .modal-header {

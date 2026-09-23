@@ -893,11 +893,17 @@ export const mediaSettingsMethods = {
         const seen = new Set();
         for (const [index, device] of (Array.isArray(devices) ? devices : []).entries()) {
             if (!device || this.isDefaultDevice(device)) continue;
-            if (this.isVirtualDevice(device)) continue;
+            // Permission-gated entries expose an empty deviceId and label; they are not selectable
+            // until the browser grants device access, so they must not appear as concrete options.
+            if (!String(device.deviceId || '').trim()) continue;
             const key = this.getMediaDeviceDedupeKey(device, index);
             if (seen.has(key)) continue;
             seen.add(key);
-            normalized.push(device);
+            // Keep virtual and aggregate devices selectable; flag them instead of hiding them.
+            normalized.push({
+                ...device,
+                virtual: this.isVirtualDevice(device)
+            });
         }
         return normalized;
     },
@@ -972,7 +978,7 @@ export const mediaSettingsMethods = {
             && typeof HTMLMediaElement.prototype?.setSinkId === 'function';
     
         if (!audioInputs.length) {
-            warnings.push('No microphone was detected by the browser.');
+            warnings.push('No selectable microphone was detected. Allow microphone access in the browser to choose a specific device.');
         } else if (selectedInputId && !selectedInput) {
             warnings.push('The selected microphone is no longer available. Select another microphone.');
         } else if ((!selectedInputId || this.isDefaultDevice(selectedInput)) && concreteInputCount > 1) {
@@ -980,6 +986,9 @@ export const mediaSettingsMethods = {
         }
         if (this.hasAmbiguousAudioDevices(audioInputs)) {
             warnings.push('Some microphones have matching labels. Test the selected input before speaking.');
+        }
+        if (selectedInput?.virtual) {
+            warnings.push('The selected microphone is a virtual or aggregate device. Verify the routed input before speaking.');
         }
         if (microphoneGain === 0) {
             warnings.push('Microphone volume is set to 0% in WebMeet.');
@@ -996,6 +1005,9 @@ export const mediaSettingsMethods = {
             warnings.push('The selected speaker is no longer available. Select another speaker.');
         } else if (canSelectOutput && (!selectedOutputId || this.isDefaultDevice(selectedOutput)) && concreteOutputCount > 1) {
             warnings.push('Multiple speakers are available. Select the exact output to avoid using the wrong device.');
+        }
+        if (canSelectOutput && selectedOutput?.virtual) {
+            warnings.push('The selected speaker is a virtual or aggregate device.');
         }
         if (outputVolume === 0) {
             warnings.push('Speaker volume is set to 0% in WebMeet.');
@@ -1144,29 +1156,23 @@ export const mediaSettingsMethods = {
         }
     },
 
-    renderMediaDeviceOptions(selectElement, devices, selectedId, emptyLabel) {
+    renderMediaDeviceOptions(selectElement, devices, selectedId) {
         if (!selectElement) return;
         const safeDevices = Array.isArray(devices) ? devices : [];
         const options = [{ value: '', label: 'System default' }];
         for (const device of safeDevices) {
-            options.push({
-                value: String(device.deviceId || '').trim(),
-                label: this.getMediaDeviceDisplayLabel(device, emptyLabel, safeDevices.indexOf(device))
-            });
+            const value = String(device?.deviceId || '').trim();
+            const label = String(device?.label || '').trim();
+            // Only expose concrete, identifiable devices. Permission-gated browser entries carry
+            // no deviceId and no label and must never appear as selectable placeholders.
+            if (!value || !label) continue;
+            options.push({ value, label });
         }
         const selected = String(selectedId || '');
         selectElement.setAttribute('data-options', encodeURIComponent(JSON.stringify(options)));
         selectElement.setAttribute('data-selected', selected);
         selectElement.webSkelPresenter?.setOptions?.(options, selected);
         selectElement.value = selected;
-    },
-
-    getMediaDeviceDisplayLabel(device, fallbackType, index) {
-        const label = String(device.label || '').trim();
-        if (label) return label;
-        const kind = String(device.kind || '').replace('input', '').replace('output', '').trim();
-        const deviceIndex = index + 1;
-        return `${fallbackType} ${deviceIndex} — allow microphone access to see device names`;
     },
 
     setSettingsTab(target) {

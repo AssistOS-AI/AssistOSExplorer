@@ -28,6 +28,8 @@ import {
 import { createRoomNotificationSoundService } from './services/room-notification-sounds.js';
 import { createBrowserMeetingNotesTranscription } from './services/browser-meeting-notes-transcription.js';
 import { RemoteAudioNormalizer } from './services/audio-processing/remote-audio-normalizer.js';
+import { resumeRemoteAudioPlayback } from './services/audio-playback-recovery.js';
+import { writeWebMeetResume } from './services/webmeet-session-store.js';
 import { VoiceResponsiveAvatarController } from './services/audio-processing/voice-responsive-avatar.js';
 import {
     logMediaDiagnostic,
@@ -187,6 +189,7 @@ export class WebmeetDashboard {
             audioHealth: 'Good',
             audioCleanupStatus: 'voice-focus',
             audioNetworkUnstable: false,
+            audioPlaybackBlocked: false,
             participants: [],
             activeSpeakerIds: new Set(),
             chatSidebarVisible: true,
@@ -258,6 +261,12 @@ export class WebmeetDashboard {
         this.element.addEventListener('avatar-settings-change', this.handleWebMeetAvatarSettingsChangeEvent);
         window.addEventListener('webmeet:participant-audio-preview', this.handleParticipantAudioPreviewEvent);
         window.addEventListener('assistOS:avatar-settings-updated', this.handleAvatarSettingsUpdatedEvent);
+        this.handleAudioRecoveryGesture = () => { void this.handleAudioRecoveryGestureEvent?.(); };
+        this.handleAudioRecoveryResume = () => { void this.handleAudioRecoveryResumeEvent?.(); };
+        this.element.addEventListener('pointerdown', this.handleAudioRecoveryGesture, { passive: true });
+        this.element.addEventListener('keydown', this.handleAudioRecoveryGesture);
+        globalThis.document?.addEventListener?.('visibilitychange', this.handleAudioRecoveryResume);
+        window.addEventListener('focus', this.handleAudioRecoveryResume);
         this.lastAudioMetricsDiagnosticAt = 0;
         this.roomNotificationSoundService = createRoomNotificationSoundService({
             isEnabled: () => this.state.mediaSettings?.roomNotificationSounds !== false
@@ -338,6 +347,7 @@ export class WebmeetDashboard {
             getBackgroundEffectsAssetPaths,
             onMediaStateChange: (next, localParticipantId) => {
                 this.state.media = next;
+                writeWebMeetResume({ media: next });
                 this.meetingNotesTranscription?.sync?.();
                 if (localParticipantId) {
                     this.setParticipantMicState(localParticipantId, next.microphone);
@@ -473,6 +483,8 @@ export class WebmeetDashboard {
     }
 
     async afterRender() {
+        writeWebMeetResume({ open: true });
+        globalThis.__onExpandedModalClose = () => this.handleExpandedModalUserClose();
         this.cacheElements();
         this.registerChatSidebarResizer();
         this.ensureHelpTooltipPositioning();
@@ -553,6 +565,7 @@ export class WebmeetDashboard {
                 'leaveMeeting',
                 'toggleMicrophone',
                 'toggleDeafen',
+                'enableSoundPlayback',
                 'toggleCamera',
                 'toggleScreenShare',
                 'toggleVideoGridFullscreen',
@@ -710,6 +723,7 @@ export class WebmeetDashboard {
         this.avatarQuickMenu = this.element.querySelector('#webmeetAvatarQuickMenu');
         this.audioHealthIndicator = this.element.querySelector('#webmeetAudioHealthIndicator');
         this.audioCleanupIndicator = this.element.querySelector('#webmeetAudioCleanupIndicator');
+        this.enableSoundButton = this.element.querySelector('#webmeetEnableSoundButton');
         this.welcomeScreen = this.element.querySelector('#webmeetWelcomeScreen');
         this.meetingBar = this.element.querySelector('.webmeet-meeting-bar');
         this.mainContent = this.element.querySelector('.webmeet-main-content');
@@ -742,6 +756,9 @@ export class WebmeetDashboard {
     }
 
     afterUnload() {
+        if (globalThis.__onExpandedModalClose) {
+            try { delete globalThis.__onExpandedModalClose; } catch (_) { globalThis.__onExpandedModalClose = null; }
+        }
         this.element.removeEventListener('webmeet-blackboard-panel-ready', this.handleBlackboardPanelReadyEvent);
         this.element.removeEventListener('webmeet-blackboard-attachment-upload', this.handleBlackboardAttachmentUploadEvent);
         this.element.removeEventListener('click', this.handleClick);
@@ -770,6 +787,10 @@ export class WebmeetDashboard {
         this.participantLayoutController?.dispose?.();
         this.roomNotificationSoundService?.teardown?.();
         window.removeEventListener('webmeet:participant-audio-preview', this.handleParticipantAudioPreviewEvent);
+        this.element.removeEventListener('pointerdown', this.handleAudioRecoveryGesture);
+        this.element.removeEventListener('keydown', this.handleAudioRecoveryGesture);
+        globalThis.document?.removeEventListener?.('visibilitychange', this.handleAudioRecoveryResume);
+        window.removeEventListener('focus', this.handleAudioRecoveryResume);
         this.presenceController.teardown();
         if (this.state.session?.participantIdentity) {
             void this.unjoinCurrentSession({ preserveDisplayName: false });
@@ -792,6 +813,11 @@ export class WebmeetDashboard {
         }
         if (this.audioCleanupIndicator) {
             this.audioCleanupIndicator.classList.toggle('webmeet-hidden', !usingBrowserCleanup);
+        }
+        if (this.enableSoundButton) {
+            const blocked = Boolean(this.state.audioPlaybackBlocked);
+            this.enableSoundButton.classList.toggle('webmeet-hidden', !blocked);
+            this.enableSoundButton.setAttribute('aria-hidden', blocked ? 'false' : 'true');
         }
         if (this.micButton) {
             const cleanupLabel = usingBrowserCleanup ? ' - Using browser audio cleanup' : '';

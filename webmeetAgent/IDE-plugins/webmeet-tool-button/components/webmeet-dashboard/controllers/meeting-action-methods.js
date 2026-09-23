@@ -1,4 +1,5 @@
 import { getCurrentActorDisplayName, requestGuestDisplayName, syncBrowserRoomUrl } from '../services/dashboard-utils.js';
+import { readWebMeetResume, writeWebMeetResume } from '../services/webmeet-session-store.js';
 import { runWebMeetTool } from '../services/webmeet-api-client.js';
 import {
     getCurrentProfileAvatar,
@@ -212,12 +213,14 @@ export const meetingActionMethods = {
                 }
             }
             syncBrowserRoomUrl(meeting.id);
+            writeWebMeetResume({ open: true, roomId: meeting.id });
             await this.primeCurrentParticipantAvatarProjection({ force: true });
             this.state.skipConnectedAvatarRepublishOnce = true;
             await this.webMeetRoom.connectLiveKit();
             if (!this.isGuestSession()) {
                 this.startWorkspaceEvents();
             }
+            await this.restorePersistedMediaState();
             try {
                 const details = await this.webMeetRoom.refreshState();
                 if (Array.isArray(details?.agents)) {
@@ -248,6 +251,17 @@ export const meetingActionMethods = {
         } finally {
             this.clearRoomTransitionMessage({ render: false });
             this.renderMeetingSummary();
+        }
+    },
+
+    async restorePersistedMediaState() {
+        const resume = readWebMeetResume();
+        if (!resume) return;
+        if (resume.media.microphone && !this.state.media.microphone) {
+            await this.runMediaToggleWithLoading('microphone', () => this.mediaController.toggleMicrophone()).catch(() => {});
+        }
+        if (resume.media.camera && !this.state.media.camera) {
+            await this.runMediaToggleWithLoading('camera', () => this.mediaController.toggleCamera()).catch(() => {});
         }
     },
 
@@ -650,6 +664,8 @@ export const meetingActionMethods = {
         this.renderAll();
         try {
             await this.unjoinCurrentSession({ preserveDisplayName: false, manageTransition: false });
+            // An explicit leave must not rejoin the room after a refresh, but WebMeet stays open.
+            writeWebMeetResume({ roomId: '', media: { microphone: false, camera: false } });
             if (wasGuestSession && typeof this.hostContext?.onGuestExit === 'function') {
                 this.hostContext.onGuestExit();
             }
@@ -658,6 +674,36 @@ export const meetingActionMethods = {
             this.clearRoomTransitionMessage({ render: false });
             this.renderAll();
         }
+    },
+
+    async handleExpandedModalUserClose() {
+        // Close is an explicit leave. It stops local media and disconnects before the frame is
+        // removed. The server-side leave is best-effort and never blocks closing; the presence
+        // keepalive also reports the leave during frame teardown.
+        try {
+            writeWebMeetResume({ roomId: '', media: { microphone: false, camera: false } });
+        } catch (_) {
+            // Resume cleanup is best-effort while the panel is torn down.
+        }
+        const meetingId = String(this.state.session?.meeting?.id || this.selectedMeetingId || '').trim();
+        const participantId = String(this.state.session?.participantIdentity || '').trim();
+        try {
+            this.mediaController?.hardStopMicrophoneTracks?.();
+            this.mediaController?.hardStopAllLocalPublishedTracks?.();
+            await this.webMeetRoom?.disconnectLiveKit?.();
+        } catch (_) {
+            // Continue clearing local state even when LiveKit teardown reports an error.
+        }
+        try {
+            void this.webMeetRoom?.leaveCurrentSession?.();
+        } catch (_) {
+            // The server reconciles membership from the LiveKit disconnect.
+        }
+        if (meetingId && participantId) {
+            this.removeParticipantFromMeetingList(meetingId, participantId);
+        }
+        this.state.session = null;
+        this.state.media = { microphone: false, camera: false, screen: false };
     },
 
     async unjoinCurrentSession(options = {}) {

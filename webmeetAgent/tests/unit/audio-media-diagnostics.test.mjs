@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import {
     summarizeAudioMetrics,
-    summarizeAudioWebRtcStats
+    summarizeAudioSettings,
+    summarizeAudioWebRtcStats,
+    summarizeIceTransport
 } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/services/media-diagnostics.js';
 
 test('audio diagnostics expose only rounded aggregate metrics', () => {
@@ -52,4 +54,51 @@ test('audio WebRTC diagnostics accept RTCStatsReport map entries', () => {
         ['inbound-audio', { type: 'inbound-rtp', kind: 'audio', packetsLost: 2, concealedSamples: 4 }]
     ]);
     assert.equal(summarizeAudioWebRtcStats(reports).packetsLost, 2);
+});
+
+test('audio settings diagnostics summarize the effective capture profile', () => {
+    assert.deepEqual(summarizeAudioSettings({
+        profile: 'advanced',
+        voiceProcessingMode: 'auto',
+        echoCancellation: true,
+        noiseSuppression: false,
+        autoGainControl: true,
+        voiceIsolation: false,
+        microphoneGain: 0.8,
+        outputVolume: 0.8
+    }), {
+        profile: 'advanced',
+        voiceProcessingMode: 'auto',
+        humFilter: '',
+        microphoneGain: 0.8,
+        outputVolume: 0.8,
+        automaticParticipantVolume: true,
+        echoCancellation: true,
+        noiseSuppression: false,
+        autoGainControl: true,
+        voiceIsolation: false
+    });
+});
+
+test('ICE transport diagnostics distinguish direct and relay media paths', () => {
+    const direct = summarizeIceTransport([
+        { id: 'transport', type: 'transport', iceState: 'connected', dtlsState: 'connected' },
+        { id: 'pair', type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'local', remoteCandidateId: 'remote' },
+        { id: 'local', type: 'local-candidate', candidateType: 'host', protocol: 'udp' },
+        { id: 'remote', type: 'remote-candidate', candidateType: 'srflx', protocol: 'udp' }
+    ]);
+    assert.equal(direct.selected, 'direct');
+    assert.equal(direct.relay, false);
+    assert.equal(direct.localCandidateType, 'host');
+    assert.equal(direct.iceState, 'connected');
+
+    const relay = summarizeIceTransport([
+        { id: 'pair', type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'local', remoteCandidateId: 'remote' },
+        { id: 'local', type: 'local-candidate', candidateType: 'relay', protocol: 'udp' },
+        { id: 'remote', type: 'remote-candidate', candidateType: 'relay', protocol: 'udp' }
+    ]);
+    assert.equal(relay.selected, 'relay');
+    assert.equal(relay.relay, true);
+
+    assert.equal(summarizeIceTransport([]).selected, 'unknown');
 });

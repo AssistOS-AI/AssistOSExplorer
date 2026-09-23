@@ -1,7 +1,9 @@
 import {
     isMediaDiagnosticsEnabled,
     logMediaDiagnostic,
+    summarizeAudioSettings,
     summarizeAudioWebRtcStats,
+    summarizeIceTransport,
     summarizeParticipant,
     summarizePublication,
     summarizeTrack,
@@ -195,6 +197,7 @@ export const roomSessionMethods = {
                     void this.applyAudioOutputDeviceToElement(mediaElement);
                     this.attachAudioTrack(participantId, trackId, mediaElement);
                     this.applyOutputVolumePreviewToElement(mediaElement);
+                    void this.ensureRemoteAudioPlayback?.(mediaElement);
                 }
                 if (this.isMicrophonePublication(publication, Track, participant)) {
                     this.setParticipantMicState(participantId, !publication.isMuted);
@@ -403,7 +406,10 @@ export const roomSessionMethods = {
                     // A track may disappear while diagnostics are being collected.
                 }
             }
-            logMediaDiagnostic('audio-webrtc-stats', summarizeAudioWebRtcStats(reports));
+            logMediaDiagnostic('audio-webrtc-stats', {
+                ...summarizeAudioWebRtcStats(reports),
+                transport: summarizeIceTransport(reports)
+            });
         };
 
         await this.roomLiveKit.connect(this.state.session, {
@@ -631,6 +637,7 @@ export const roomSessionMethods = {
                 this.meetingNotesTranscription?.sync?.();
                 this.syncParticipantsFromRoom(this.room, Track);
                 this.syncVoiceResponsiveAvatar?.(Track);
+                this.logAudioCaptureDiagnostics();
                 const skipConnectedAvatarRepublishOnce = Boolean(this.state.skipConnectedAvatarRepublishOnce);
                 this.state.skipConnectedAvatarRepublishOnce = false;
                 void (async () => {
@@ -655,6 +662,18 @@ export const roomSessionMethods = {
                 this.renderMeetingSummary();
             }
         });
+    },
+
+    logAudioCaptureDiagnostics() {
+        const settings = this.mediaController?.getSettings?.() || this.state.mediaSettings || {};
+        logMediaDiagnostic('audio-settings', summarizeAudioSettings({
+            ...settings,
+            profile: this.mediaController?.getMicrophoneProfile?.()
+        }));
+        const appliedTrack = this.mediaController?.getActiveMicrophoneMediaStreamTrack?.() || null;
+        if (appliedTrack && typeof this.mediaController?.summarizeAppliedMicrophoneSettings === 'function') {
+            logMediaDiagnostic('audio-capture-applied', this.mediaController.summarizeAppliedMicrophoneSettings(appliedTrack));
+        }
     },
 
     async handleExternalRoomDisconnect() {

@@ -9,6 +9,7 @@ import {
     syncBrowserRoomUrl
 } from '../services/dashboard-utils.js';
 import { runWebMeetTool } from '../services/webmeet-api-client.js';
+import { readWebMeetResume, writeWebMeetResume } from '../services/webmeet-session-store.js';
 
 function normalizeRoomPayload(payload = null) {
     if (!payload || typeof payload !== 'object') {
@@ -24,7 +25,13 @@ function normalizeRoomPayload(payload = null) {
 
 export const dashboardSessionMethods = {
     prepareInitialRouteState() {
-        const initialRoomId = String(globalThis.__WEBMEET_INITIAL_ROOM_ID__ || readRoomIdFromUrl() || '').trim();
+        const resume = readWebMeetResume();
+        const initialRoomId = String(
+            globalThis.__WEBMEET_INITIAL_ROOM_ID__
+            || readRoomIdFromUrl()
+            || (resume?.open ? resume.roomId : '')
+            || ''
+        ).trim();
         this.initialRoomId = initialRoomId;
         if (globalThis.__WEBMEET_GUEST_ENTRY__ && initialRoomId) {
             this.state.guestEntry = {
@@ -152,6 +159,7 @@ export const dashboardSessionMethods = {
             guest: Boolean(session?.participant?.guest)
         };
         syncBrowserRoomUrl(roomId, { replace: true });
+        writeWebMeetResume({ open: true, roomId });
         await this.loadParticipantsForMeetings();
         await this.loadMeetingDetails({ expectedMeetingId: normalizedMeeting.id });
         this.setConnectingRoomTransition(normalizedMeeting.title || 'room', { render: false });
@@ -159,6 +167,7 @@ export const dashboardSessionMethods = {
         try {
             this.state.skipConnectedAvatarRepublishOnce = true;
             await this.connectRoom();
+            await this.restorePersistedMediaState?.();
             try {
                 await this.publishCurrentParticipantAvatar({ force: true });
             } catch (error) {

@@ -1,5 +1,6 @@
 import { isMicrophonePublication } from '../services/microphone-publication.js';
 import { buildWebMeetAvatarSource } from '../services/webmeet-avatar-override.js';
+import { resumeRemoteAudioPlayback } from '../services/audio-playback-recovery.js';
 
 function getParticipantUserIdFromParticipant(participant = null) {
     return String(
@@ -779,6 +780,52 @@ export const participantViewMethods = {
             [mediaType]: Boolean(value)
         };
         this.renderMeetingSummary();
+    },
+
+    async attemptAudioPlaybackRecovery() {
+        const result = await resumeRemoteAudioPlayback(this.element);
+        const blocked = result.total > 0 && result.blocked;
+        if (this.state.audioPlaybackBlocked !== blocked) {
+            this.state.audioPlaybackBlocked = blocked;
+            this.updateAudioHealthIndicator();
+        }
+        return !blocked;
+    },
+
+    async enableSoundPlayback() {
+        const recovered = await this.attemptAudioPlaybackRecovery();
+        if (!recovered) {
+            this.setError('Sound is blocked until you interact with the page. Press Enable sound again.');
+        }
+        return recovered;
+    },
+
+    async ensureRemoteAudioPlayback(mediaElement) {
+        if (!mediaElement || typeof mediaElement.play !== 'function') return;
+        try {
+            await mediaElement.play();
+            if (this.state.audioPlaybackBlocked) {
+                this.state.audioPlaybackBlocked = false;
+                this.updateAudioHealthIndicator();
+            }
+        } catch (_) {
+            if (!this.state.audioPlaybackBlocked) {
+                this.state.audioPlaybackBlocked = true;
+                this.updateAudioHealthIndicator();
+            }
+        }
+    },
+
+    handleAudioRecoveryGestureEvent() {
+        if (!this.state.audioPlaybackBlocked) return null;
+        return this.attemptAudioPlaybackRecovery();
+    },
+
+    async handleAudioRecoveryResumeEvent() {
+        if (globalThis.document?.visibilityState === 'hidden') return;
+        await this.applyAudioOutputDeviceToAllTracks?.();
+        await this.attemptAudioPlaybackRecovery();
+        this.remoteAudioNormalizer?.resume?.();
     }
 
 };

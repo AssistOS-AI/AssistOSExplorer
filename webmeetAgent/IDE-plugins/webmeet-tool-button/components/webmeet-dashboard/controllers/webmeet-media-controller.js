@@ -3,10 +3,15 @@ import {
     summarizePublication
 } from '../services/media-diagnostics.js';
 import {
-    createProcessedMicrophoneTrack,
     isEnhancedVoiceProcessingSupported,
     preloadVoiceProcessingWorklet
 } from '../services/audio-processing/microphone-track-factory.js';
+import {
+    buildMicrophoneAudioConstraints,
+    resolveMicrophoneProfile,
+    summarizeAppliedAudioSettings
+} from '../services/audio-processing/capture-constraints.js';
+import { MicrophoneCaptureSession } from '../services/audio-processing/microphone-capture-session.js';
 import {
     DEFAULT_HUM_FILTER,
     DEFAULT_MICROPHONE_GAIN,
@@ -59,7 +64,9 @@ export class WebmeetMediaController {
             backgroundImageName: ''
         };
         this.inFlight = false;
-        this.activeMicrophoneCapture = null;
+        this.captureSession = new MicrophoneCaptureSession({
+            onError: (message) => this.onError(message)
+        });
         this.audioCleanupStatus = 'voice-focus';
         this.backgroundProcessor = null;
         this.backgroundProcessorTrack = null;
@@ -92,6 +99,10 @@ export class WebmeetMediaController {
 
     getSettings() {
         return { ...this.settings };
+    }
+
+    get activeMicrophoneCapture() {
+        return this.captureSession?.activeCapture || null;
     }
 
     async preloadVoiceProcessing() {
@@ -235,33 +246,24 @@ export class WebmeetMediaController {
         return this.backgroundSyncPromise;
     }
 
+    getMicrophoneProfile(overrides = {}) {
+        return resolveMicrophoneProfile({
+            ...this.settings,
+            voiceProcessingMode: overrides.voiceProcessingMode || this.settings.voiceProcessingMode
+        });
+    }
+
     getMicrophoneEnableOptions(overrides = {}) {
-        const audioDeviceId = String(this.settings.audioInputDeviceId || '').trim();
-        const deviceId = audioDeviceId
-            ? ({ exact: audioDeviceId })
-            : undefined;
-        const mode = normalizeVoiceProcessingMode(overrides.voiceProcessingMode || this.settings.voiceProcessingMode);
-        const audioProcessingEnabled = mode !== 'off';
-        return {
-            deviceId,
-            channelCount: 1,
-            sampleRate: 48000,
-            echoCancellation: mode === 'auto'
-                ? true
-                : audioProcessingEnabled && (overrides.echoCancellation === undefined
-                    ? Boolean(this.settings.echoCancellation)
-                    : Boolean(overrides.echoCancellation)),
-            noiseSuppression: mode === 'auto'
-                ? true
-                : audioProcessingEnabled && (overrides.noiseSuppression === undefined
-                    ? Boolean(this.settings.noiseSuppression)
-                    : Boolean(overrides.noiseSuppression)),
-            autoGainControl: mode === 'auto'
-                ? true
-                : overrides.autoGainControl === undefined
-                    ? Boolean(this.settings.autoGainControl)
-                    : Boolean(overrides.autoGainControl)
+        const settings = {
+            ...this.settings,
+            ...overrides,
+            voiceProcessingMode: overrides.voiceProcessingMode || this.settings.voiceProcessingMode
         };
+        return buildMicrophoneAudioConstraints(settings, overrides);
+    }
+
+    summarizeAppliedMicrophoneSettings(mediaStreamTrack) {
+        return summarizeAppliedAudioSettings(mediaStreamTrack);
     }
 
     getMicrophoneGain() {
@@ -304,23 +306,16 @@ export class WebmeetMediaController {
     }
 
     async stopProcessedMicrophoneCapture() {
-        const current = this.activeMicrophoneCapture;
-        this.activeMicrophoneCapture = null;
-        const room = this.getRoom();
-        if (current?.track && room?.localParticipant?.unpublishTrack) {
-            try {
-                await room.localParticipant.unpublishTrack(current.track, true);
-            } catch (_) {
-                // continue with local cleanup
-            }
-        }
-        if (typeof current?.cleanup === 'function') {
-            await current.cleanup();
+        const session = this.captureSession;
+        if (!session) {
             return;
         }
-        for (const track of [current?.track, ...(current?.sourceStream?.getTracks?.() || [])]) {
-            try { track?.stop?.(); } catch (_) {}
-        }
+        const room = this.getRoom();
+        await session.stop(async (capture) => {
+            if (capture?.track && room?.localParticipant?.unpublishTrack) {
+                await room.localParticipant.unpublishTrack(capture.track, true);
+            }
+        });
     }
 
     async enableDefaultMicrophone(
@@ -341,16 +336,19 @@ export class WebmeetMediaController {
     async enableProcessedMicrophone(room, settings = this.settings) {
         await room.localParticipant.setMicrophoneEnabled(false);
         await this.stopProcessedMicrophoneCapture();
-        const capture = await createProcessedMicrophoneTrack({
+        const capture = await this.captureSession.start({
             ...settings,
             onMetrics: (metrics) => this.onAudioMetrics(metrics)
         });
+        if (!capture) {
+            return;
+        }
         const Track = this.getTrack();
         const publishOptions = Track?.Source?.Microphone
             ? { source: Track.Source.Microphone, name: 'microphone' }
             : { name: 'microphone' };
         await room.localParticipant.publishTrack(capture.track, publishOptions);
-        this.activeMicrophoneCapture = capture;
+        this.captureSession.markPublished();
         this.setAudioCleanupStatus('voice-focus');
     }
 

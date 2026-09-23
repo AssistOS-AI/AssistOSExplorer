@@ -96,6 +96,39 @@ export class AdaptiveGainController {
     }
 }
 
+const AUDIO_LEVEL_WORKLET_URL = new URL('./audio-level-worklet.js', import.meta.url).href;
+
+export async function createAudioLevelWorkletMonitor(audioContext, sourceNode, options = {}) {
+    if (!globalThis.AudioWorkletNode || typeof audioContext?.audioWorklet?.addModule !== 'function') {
+        throw new Error('Audio worklet analysis is not supported.');
+    }
+    await audioContext.audioWorklet.addModule(AUDIO_LEVEL_WORKLET_URL);
+    const node = new globalThis.AudioWorkletNode(audioContext, 'webmeet-audio-level-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 0,
+        processorOptions: {
+            intervalMs: Number.isFinite(Number(options.intervalMs)) ? Number(options.intervalMs) : 200
+        }
+    });
+    let latest = null;
+    node.port.onmessage = (event) => {
+        if (event.data?.type !== 'metrics' || !event.data.metrics) return;
+        latest = event.data.metrics;
+        options.onMetrics?.({ ...latest });
+    };
+    sourceNode.connect(node);
+    return {
+        node,
+        getMetrics: () => (latest ? { ...latest } : null),
+        stop() {
+            try { node.port.onmessage = null; } catch (_) {}
+            try { node.port.postMessage({ type: 'dispose' }); } catch (_) {}
+            try { sourceNode.disconnect(node); } catch (_) {}
+            try { node.disconnect(); } catch (_) {}
+        }
+    };
+}
+
 export function createAudioLevelMonitor(audioContext, sourceNode, options = {}) {
     const analyser = audioContext.createAnalyser();
     analyser.fftSize = 8192;

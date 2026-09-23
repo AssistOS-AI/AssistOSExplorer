@@ -68,8 +68,12 @@ test('remote audio normalization adjusts quiet playback, respects manual overrid
         normalizer.stop(mediaElement);
         await Promise.resolve();
         assert.equal(normalizer.entries.size, 0);
-        assert.equal(closed, true);
+        assert.equal(closed, false, 'stopping one participant keeps the shared audio context');
         assert.equal(disconnected, 2);
+
+        normalizer.stopAll();
+        await Promise.resolve();
+        assert.equal(closed, true, 'stopping all participants releases the shared audio context');
     } finally {
         globalThis.AudioContext = originalAudioContext;
         globalThis.setInterval = originalSetInterval;

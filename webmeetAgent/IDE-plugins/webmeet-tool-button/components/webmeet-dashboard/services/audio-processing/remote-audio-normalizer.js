@@ -10,36 +10,46 @@ export class RemoteAudioNormalizer {
         this.hasManualOverride = typeof options.hasManualOverride === 'function' ? options.hasManualOverride : (() => false);
         this.onMultiplierChange = typeof options.onMultiplierChange === 'function' ? options.onMultiplierChange : (() => {});
         this.entries = new Map();
+        this.audioContext = null;
+    }
+
+    getAudioContext() {
+        if (this.audioContext) return this.audioContext;
+        const AudioContextRef = globalThis.AudioContext || globalThis.webkitAudioContext || null;
+        if (!AudioContextRef) return null;
+        try {
+            this.audioContext = new AudioContextRef({ sampleRate: 48000 });
+        } catch (_) {
+            this.audioContext = null;
+        }
+        return this.audioContext;
     }
 
     start(mediaElement, participantId) {
         if (!mediaElement || this.entries.has(mediaElement)) return;
-        const AudioContextRef = globalThis.AudioContext || globalThis.webkitAudioContext || null;
         const stream = mediaElement.srcObject;
-        if (!AudioContextRef || !stream?.getAudioTracks?.().length) return;
-        let audioContext = null;
+        const audioContext = this.getAudioContext();
+        if (!audioContext || !stream?.getAudioTracks?.().length) return;
         let source = null;
         let analyser = null;
         try {
-            audioContext = new AudioContextRef({ sampleRate: 48000 });
             source = audioContext.createMediaStreamSource(stream);
             analyser = audioContext.createAnalyser();
             analyser.fftSize = 2048;
             analyser.smoothingTimeConstant = 0.85;
             source.connect(analyser);
             if (audioContext.state === 'suspended') {
-                void audioContext.resume().catch(() => {});
+                void audioContext.resume?.().catch?.(() => {});
             }
         } catch (_) {
             try { source?.disconnect?.(); } catch (_) {}
-            void audioContext?.close?.().catch?.(() => {});
+            try { analyser?.disconnect?.(); } catch (_) {}
             return;
         }
         const samples = new Float32Array(analyser.fftSize);
         const entry = {
             participantId: String(participantId || '').trim(),
             mediaElement,
-            audioContext,
             source,
             analyser,
             samples,
@@ -79,6 +89,13 @@ export class RemoteAudioNormalizer {
         return this.entries.get(mediaElement)?.multiplier || 1;
     }
 
+    resume() {
+        const audioContext = this.audioContext;
+        if (!audioContext || audioContext.state !== 'suspended') return false;
+        void audioContext.resume?.().catch?.(() => {});
+        return true;
+    }
+
     refreshParticipant(participantId) {
         const id = String(participantId || '').trim();
         for (const entry of this.entries.values()) {
@@ -96,7 +113,6 @@ export class RemoteAudioNormalizer {
         globalThis.clearInterval(entry.timer);
         try { entry.source.disconnect(); } catch (_) {}
         try { entry.analyser.disconnect(); } catch (_) {}
-        void entry.audioContext.close().catch(() => {});
     }
 
     stopParticipant(participantId) {
@@ -110,5 +126,8 @@ export class RemoteAudioNormalizer {
         for (const mediaElement of [...this.entries.keys()]) {
             this.stop(mediaElement);
         }
+        const audioContext = this.audioContext;
+        this.audioContext = null;
+        try { void audioContext?.close?.(); } catch (_) {}
     }
 }

@@ -74,6 +74,66 @@ test('media device normalization removes browser virtual defaults and concrete d
     );
 });
 
+test('device options render only concrete identifiable devices plus the system default', () => {
+    const harness = createHarness();
+    let rendered = null;
+    const selectElement = {
+        setAttribute() {},
+        webSkelPresenter: { setOptions: (options) => { rendered = options; } },
+        value: ''
+    };
+    harness.renderMediaDeviceOptions(selectElement, [
+        { kind: 'audioinput', deviceId: '', label: '' },
+        { kind: 'audioinput', deviceId: 'mic-1', label: '' },
+        { kind: 'audioinput', deviceId: 'mic-2', label: 'USB Microphone' }
+    ], '', 'Microphone');
+
+    assert.deepEqual(rendered, [
+        { value: '', label: 'System default' },
+        { value: 'mic-2', label: 'USB Microphone' }
+    ]);
+});
+
+test('permission-gated device placeholders are not selectable', () => {
+    const harness = createHarness();
+    const devices = harness.normalizeEnumeratedMediaDevices([
+        { kind: 'audioinput', deviceId: '', groupId: '', label: '' },
+        { kind: 'audioinput', deviceId: '', groupId: '', label: '' },
+        { kind: 'audioinput', deviceId: '', groupId: '', label: '' },
+        { kind: 'audioinput', deviceId: 'mic-1', groupId: 'g1', label: 'USB Microphone' }
+    ]);
+
+    assert.deepEqual(devices.audioInput.map((device) => device.deviceId), ['mic-1']);
+});
+
+test('virtual and aggregate devices stay selectable and are flagged', () => {
+    const harness = createHarness();
+    const devices = harness.normalizeEnumeratedMediaDevices([
+        { kind: 'audioinput', deviceId: 'blackhole', groupId: 'g1', label: 'BlackHole 2ch' },
+        { kind: 'audioinput', deviceId: 'mic-1', groupId: 'g2', label: 'USB Microphone' }
+    ]);
+
+    assert.deepEqual(devices.audioInput.map((device) => device.deviceId), ['blackhole', 'mic-1']);
+    assert.equal(devices.audioInput[0].virtual, true);
+    assert.equal(devices.audioInput[1].virtual, false);
+});
+
+test('a selected virtual microphone raises a routing warning', () => {
+    const harness = createHarness();
+    harness.mediaDevices = {
+        audioInput: [{ kind: 'audioinput', deviceId: 'blackhole', label: 'BlackHole 2ch', virtual: true }],
+        audioOutput: []
+    };
+    const warnings = harness.getStaticMediaDeviceWarnings({
+        audioInputDeviceId: 'blackhole',
+        audioOutputDeviceId: '',
+        microphoneGain: 0.8,
+        outputVolume: 0.8,
+        voiceProcessingMode: 'auto'
+    });
+    assert.ok(warnings.some((warning) => /virtual or aggregate/i.test(warning)));
+});
+
 test('media setting normalization treats saved default device ids as browser default selection', () => {
     const harness = createHarness();
     const settings = harness.normalizeMediaSettings({

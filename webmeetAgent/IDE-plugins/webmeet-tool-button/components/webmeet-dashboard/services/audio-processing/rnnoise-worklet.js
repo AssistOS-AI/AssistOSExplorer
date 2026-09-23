@@ -3,13 +3,58 @@ import createRNNWasmModuleSync from '../../../../vendor/rnnoise/rnnoise-sync.js'
 const RNNOISE_PCM_SCALE = 32768;
 const RNNOISE_FRAME_SIZE = 480;
 const F32_BYTES = 4;
+const RING_CAPACITY = RNNOISE_FRAME_SIZE * 2;
+
+class FloatRingBuffer {
+    constructor(capacity) {
+        this.buffer = new Float32Array(capacity);
+        this.readIndex = 0;
+        this.writeIndex = 0;
+        this.size = 0;
+    }
+
+    get available() {
+        return this.size;
+    }
+
+    get free() {
+        return this.buffer.length - this.size;
+    }
+
+    push(value) {
+        if (this.free <= 0) return false;
+        this.buffer[this.writeIndex] = value;
+        this.writeIndex = (this.writeIndex + 1) % this.buffer.length;
+        this.size += 1;
+        return true;
+    }
+
+    shift() {
+        if (this.size <= 0) return 0;
+        const value = this.buffer[this.readIndex];
+        this.readIndex = (this.readIndex + 1) % this.buffer.length;
+        this.size -= 1;
+        return value;
+    }
+
+    clear() {
+        this.readIndex = 0;
+        this.writeIndex = 0;
+        this.size = 0;
+    }
+}
+
+function clampSample(value) {
+    return Math.max(-1, Math.min(1, value));
+}
 
 class RnnoiseProcessor extends AudioWorkletProcessor {
     constructor(options = {}) {
         super();
-        this.inputQueue = [];
-        this.outputQueue = [];
         this.frameSize = RNNOISE_FRAME_SIZE;
+        this.inputRing = new FloatRingBuffer(RING_CAPACITY);
+        this.outputRing = new FloatRingBuffer(RING_CAPACITY);
+        this.frameScratch = new Float32Array(this.frameSize);
         this.rnnoiseModule = null;
         this.denoiseState = 0;
         this.inputPtr = 0;
@@ -56,8 +101,8 @@ class RnnoiseProcessor extends AudioWorkletProcessor {
         this.disposed = true;
         this.ready = false;
         this.failed = true;
-        this.inputQueue = [];
-        this.outputQueue = [];
+        this.inputRing.clear();
+        this.outputRing.clear();
         try {
             if (this.rnnoiseModule && this.denoiseState) {
                 this.rnnoiseModule._rnnoise_destroy(this.denoiseState);
@@ -90,27 +135,25 @@ class RnnoiseProcessor extends AudioWorkletProcessor {
         }
 
         for (let i = 0; i < input.length; i += 1) {
-            this.inputQueue.push(input[i]);
+            if (!this.inputRing.push(clampSample(input[i]))) break;
         }
 
-        while (this.inputQueue.length >= this.frameSize) {
-            const frame = new Float32Array(this.frameSize);
+        const inputIndex = this.inputPtr / F32_BYTES;
+        const outputIndex = this.outputPtr / F32_BYTES;
+        while (this.inputRing.available >= this.frameSize) {
             for (let i = 0; i < this.frameSize; i += 1) {
-                const sample = Math.max(-1, Math.min(1, this.inputQueue.shift() || 0));
-                frame[i] = sample * RNNOISE_PCM_SCALE;
+                this.frameScratch[i] = this.inputRing.shift() * RNNOISE_PCM_SCALE;
             }
-            const inputIndex = this.inputPtr / F32_BYTES;
-            const outputIndex = this.outputPtr / F32_BYTES;
-            this.rnnoiseModule.HEAPF32.set(frame, inputIndex);
+            this.rnnoiseModule.HEAPF32.set(this.frameScratch, inputIndex);
             this.rnnoiseModule._rnnoise_process_frame(this.denoiseState, this.outputPtr, this.inputPtr);
-            frame.set(this.rnnoiseModule.HEAPF32.subarray(outputIndex, outputIndex + this.frameSize));
-            for (let i = 0; i < frame.length; i += 1) {
-                this.outputQueue.push(Math.max(-1, Math.min(1, frame[i] / RNNOISE_PCM_SCALE)));
+            const denoised = this.rnnoiseModule.HEAPF32.subarray(outputIndex, outputIndex + this.frameSize);
+            for (let i = 0; i < this.frameSize; i += 1) {
+                if (!this.outputRing.push(clampSample(denoised[i] / RNNOISE_PCM_SCALE))) break;
             }
         }
 
         for (let i = 0; i < output.length; i += 1) {
-            output[i] = this.outputQueue.length ? this.outputQueue.shift() : input[i] || 0;
+            output[i] = this.outputRing.available > 0 ? this.outputRing.shift() : 0;
         }
         return true;
     }

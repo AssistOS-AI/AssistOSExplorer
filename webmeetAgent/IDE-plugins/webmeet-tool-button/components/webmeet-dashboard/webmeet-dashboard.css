@@ -2176,6 +2176,27 @@ textarea.form-input {
     text-overflow: ellipsis;
 }
 
+.webmeet-enable-sound-button {
+    padding: 6px 12px;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--white);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+}
+
+.webmeet-enable-sound-button:hover {
+    filter: brightness(1.05);
+}
+
+.webmeet-enable-sound-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .webmeet-icon-button.active {
     background: var(--accent);
     border-color: var(--accent);
