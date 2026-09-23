@@ -22,7 +22,10 @@ import {
 } from '../../bootstrap/free-model-defaults.mjs';
 import { upsertProviderApiKeyAccount } from '../../runtime/providers/api-key-account.mjs';
 import { bootstrapInitialTagTiersOnce } from '../../bootstrap/reconcile-tag-tiers.mjs';
-import { BUNDLED_OPENROUTER_FREE_KEY } from '../../bootstrap/free-provider-credential.mjs';
+import {
+    BUNDLED_OPENROUTER_FREE_KEY,
+    BUNDLED_OPENROUTER_FREE_KEY_EXPIRES_AT,
+} from '../../bootstrap/free-provider-credential.mjs';
 import { isGeneralChatModelId } from '../../runtime/providers/free-model-policy.mjs';
 
 const ALL_TIERS = 'fast,code,plan,write,deep,ultra,web-assist';
@@ -122,7 +125,7 @@ describe('first-start free defaults', () => {
         let { rows: [account] } = await pool.query('SELECT * FROM provider_accounts');
         assert.equal(decrypt(account.secret_ciphertext, account.secret_iv, account.secret_auth_tag, key), BUNDLED_OPENROUTER_FREE_KEY);
         assert.equal(account.metadata.bundled, true);
-        assert.match(account.metadata.expiresAt, /^2027-03-20T/);
+        assert.equal(account.metadata.expiresAt, BUNDLED_OPENROUTER_FREE_KEY_EXPIRES_AT);
 
         const other = await openPool('override.sqlite3');
         await installFreeModelDefaults({ appCtx: appCtxFor(other, { OPENROUTER_API_KEY: DUMMY_KEY }) });
