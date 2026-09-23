@@ -40,3 +40,21 @@ test('cancelling MCP generation closes the HTTP request that owns its robot task
     await started.promise; f.child.kill('SIGTERM'); await closed.promise;
     const [code] = await f.exited; assert.equal(code, 1);
 });
+
+test('the start tool publishes a flow-page details link on stderr', { timeout: 10000 }, async t => {
+    const id = 'flow_123456789012345678901234';
+    const f = await fixture(t, 'start-flow', (req, res) => {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ flow: { id, status: 'running' } }));
+    });
+    let stderr = '';
+    f.child.stderr.on('data', chunk => { stderr += chunk; });
+    const link = `/base-agent-additional-server/roboTeamAgent/3001/roboflow?flowId=${id}`;
+    const deadline = Date.now() + 5000;
+    while (!stderr.includes(link) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    const line = stderr.split('\n').find(entry => entry.startsWith('@@PLOINKY_TASK_CONTROL@@'));
+    assert.ok(line, `stderr did not contain a task control line: ${stderr}`);
+    assert.deepEqual(JSON.parse(line.slice('@@PLOINKY_TASK_CONTROL@@'.length)), {
+        details: { url: link, label: 'Open workflow page', logsLabel: 'View workflow logs' },
+    });
+});

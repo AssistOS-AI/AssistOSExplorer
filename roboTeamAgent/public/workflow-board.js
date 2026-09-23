@@ -87,6 +87,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         nodeElements.set(task.id, node);
         node.setAttribute('aria-label', `${task.name}. ${readOnly ? '' : 'Arrow keys move this task.'}`);
         if (task.id === graph.entryTaskId) node.classList.add('graph-entry');
+        if (states[task.id]) node.classList.add(`graph-state-${states[task.id]}`);
         const label = document.createElement('strong'); label.textContent = task.name;
         const detail = document.createElement('span'); detail.textContent = `${task.executionType || 'terminal / desktop / browser'}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
         node.append(label, detail);

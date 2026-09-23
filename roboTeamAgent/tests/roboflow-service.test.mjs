@@ -87,6 +87,18 @@ test('invalid route fails without dispatch; stop prevents late completion', asyn
     assert.equal((await f.service.getFlow(second.id)).status, 'stopped'); assert.equal(f.started.length, 2);
 });
 
+test('stopping a single phase cancels its runtime task and stops the whole flow', async t => {
+    const f = await fixture(t); await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    const instanceId = flow.instances[0].id;
+    const stopped = await f.service.stopInstance(flow.id, instanceId);
+    assert.equal(stopped.status, 'stopped');
+    assert.equal(stopped.instances[0].state, 'stopped');
+    assert.deepEqual(f.stopped, [f.started[0].taskId]);
+    assert.equal((await f.service.getFlow(flow.id)).status, 'stopped');
+    await assert.rejects(() => f.service.stopInstance(flow.id, 'inv_000000000000000000000000'), { statusCode: 404 });
+});
+
 test('default requires an execution mode and always uses the default robot', async t => {
     const f = await fixture(t);
     await assert.rejects(() => f.service.startFlow({ workflowTypeId: 'default', objective: 'Work' }), /executionType/);

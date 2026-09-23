@@ -1,6 +1,6 @@
 ---
 name: launch-workflow
-description: Start one RoboFlow task flow for a user objective on the workspace workflow types, and return its final result. Use when the user asks for work that a workflow team should carry out.
+description: Start one RoboFlow task flow for a user objective on the workspace workflow types, and return immediately. Use when the user asks for work that a workflow team should carry out.
 ---
 
 # Launch Workflow
@@ -19,7 +19,7 @@ Pass one JSON object, or a short command line, through `--input`:
 Command lines: `list-workflows`, `start <workflowTypeId> :: <objective>` for ordinary graphs. Use JSON with executionType for default.
 
 ## Output Format
-`start` returns the task flow's final result and a Markdown link to the monitoring page, which opens in the WebChat side panel. The whole run appears as a background task in the conversation.
+`start` starts the flow and returns immediately; it never waits for the flow to finish. The run keeps running as a background task in the conversation. That task carries the link to the flow page, which opens in the WebChat side panel and shows the graph, the phases and their live logs.
 
 ## Constraints
 - Match the user's request to one workflow from the catalog; prefer the `default` workflow when nothing more specific fits.
@@ -30,4 +30,4 @@ Command lines: `list-workflows`, `start <workflowTypeId> :: <objective>` for ord
 ## Example
 1. The catalog lists `default` as a single-node graph supporting terminal, browser and desktop.
 2. `{"action":"start","workflowTypeId":"default","executionType":"terminal","objective":"Summarize the repository README into a new file","folder":"/workspace/project"}` starts the flow.
-3. The tool returns the final result and the monitoring link.
+3. The tool acknowledges that the flow started and returns; the link to the flow page lives on the background task.

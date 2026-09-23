@@ -5,6 +5,11 @@ const FLOW_TERMINAL = new Set(['completed', 'failed', 'stopped']);
 const lifetime = new AbortController();
 process.once('SIGTERM', () => lifetime.abort());
 const FLOW_ID = /^flow_[0-9a-f]{24}$/;
+const MONITOR_BASE = String(process.env.ROBOTEAM_MONITOR_BASE || '/base-agent-additional-server/roboTeamAgent/3001/roboflow');
+
+function monitorUrl(flowId) {
+    return `${MONITOR_BASE}?flowId=${encodeURIComponent(flowId)}`;
+}
 
 async function readPayload() {
     let raw = '';
@@ -51,6 +56,8 @@ async function startFlowUntilTerminal({ body, user }) {
     const started = await request('/api/roboflow/flows', { method: 'POST', body, user, ignoreCancellation: true });
     const flowId = String(started.flow?.id || '');
     if (!FLOW_ID.test(flowId)) throw new Error('RoboFlow did not return a task flow id');
+    const link = monitorUrl(flowId);
+    process.stderr.write(`@@PLOINKY_TASK_CONTROL@@${JSON.stringify({ details: { url: link, label: 'Open workflow page', logsLabel: 'View workflow logs' } })}\n`);
     process.stderr.write(`RoboFlow task flow ${flowId} started.\n`);
 
     let terminating = false;

@@ -64,7 +64,7 @@
       <tr><td><code>roboflow_create_workflow</code></td><td>Creates a graph with tasks, directed edges, entryTaskId and layout. Administrator only.</td></tr>
       <tr><td><code>roboflow_update_workflow</code></td><td>Replaces a graph using its current revision counter; stale saves fail. Default is read-only. Administrator only.</td></tr>
       <tr><td><code>roboflow_delete_workflow</code></td><td>Deletes a graph definition while preserving run snapshots. Default cannot be deleted. Administrator only.</td></tr>
-      <tr><td><code>roboflow_start_flow</code></td><td>Runs a saved graph for an objective and working folder. Only default requires executionType. Returns the final result through a native asynchronous task.</td></tr>
+      <tr><td><code>roboflow_start_flow</code></td><td>Runs a saved graph for an objective and working folder. Only default requires executionType. Returns immediately through a native asynchronous task and publishes the flow-page link on the task log.</td></tr>
       <tr><td><code>roboflow_flow_state</code></td><td>Returns captured graph, run state and distinct task visits, including final responses.</td></tr>
       <tr><td><code>roboflow_stop_flow</code></td><td>Stops a run, cancels its active task and prevents further graph traversal.</td></tr>
     </tbody>

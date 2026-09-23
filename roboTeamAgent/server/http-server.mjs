@@ -252,6 +252,11 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 200, { ok: true, flow: await roboflow.stopFlow(stopId) });
         return true;
     }
+    const instanceStop = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/stop$`));
+    if (instanceStop && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, flow: await roboflow.stopInstance(instanceStop[1], instanceStop[2]) });
+        return true;
+    }
     const logMatch = pathname.match(new RegExp(`^${FLOW_PATH}/logs/(inv_[0-9a-f]{24}|step-\\d{1,6})$`))
         || pathname.match(new RegExp(`^${FLOW_PATH}/invocations/(inv_[0-9a-f]{24}|step-\\d{1,6})/log$`));
     if (logMatch && req.method === 'GET') {

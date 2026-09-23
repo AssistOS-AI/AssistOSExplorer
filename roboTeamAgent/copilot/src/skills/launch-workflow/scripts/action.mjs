@@ -1,34 +1,7 @@
 import { createRoboTeamClient } from './roboTeamClient.mjs';
 
-const MONITOR_BASE = '/base-agent-additional-server/roboTeamAgent/3001/roboflow';
-const FLOW_TERMINAL = new Set(['completed', 'failed', 'cancelled']);
-
 function trim(value) {
     return typeof value === 'string' ? value.trim() : '';
-}
-
-function monitorLink(flowId) {
-    return `${MONITOR_BASE}?flow=${encodeURIComponent(flowId)}`;
-}
-
-function remoteTaskId(started) {
-    return trim(started?.metadata?.taskId || started?.result?.metadata?.taskId || started?.taskId);
-}
-
-function taskResultText(task) {
-    const content = task?.result?.content;
-    if (Array.isArray(content)) return content.map((entry) => trim(entry?.text)).filter(Boolean).join('\n');
-    return trim(task?.result?.outputText || task?.outputText);
-}
-
-async function waitForTask(client, taskId) {
-    const deadline = Date.now() + 24 * 60 * 60 * 1000;
-    while (Date.now() < deadline) {
-        const task = await client.getTaskStatus(taskId);
-        if (FLOW_TERMINAL.has(trim(task?.status).toLowerCase())) return task;
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    throw new Error('the RoboFlow task flow did not finish in time');
 }
 
 export function normalizeRequest(promptText) {
@@ -73,24 +46,13 @@ export async function action(invocation = {}) {
             if (!workflowTypeId) throw new Error('workflowTypeId is required');
             const objective = trim(request.objective);
             if (!objective) throw new Error('objective is required');
-            const started = await client.call('roboflow_start_flow', {
+            await client.call('roboflow_start_flow', {
                 workflowTypeId,
                 ...(request.executionType ? { executionType: request.executionType } : {}),
                 objective,
                 ...(trim(request.folder || invocation.workingDir) ? { folder: trim(request.folder || invocation.workingDir) } : {}),
             });
-            const taskId = remoteTaskId(started);
-            if (!taskId) throw new Error('RoboFlow did not return a task id');
-            const task = await waitForTask(client, taskId);
-            const status = trim(task?.status).toLowerCase();
-            if (status !== 'completed') throw new Error(trim(task?.error) || `RoboFlow task flow ${status}`);
-            const raw = taskResultText(task);
-            let payload = null;
-            try { payload = JSON.parse(raw); } catch { /* plain text result */ }
-            const summary = trim(payload?.outputText || raw);
-            const flowId = trim(payload?.flowId);
-            const link = flowId ? ` Monitor it at ${monitorLink(flowId)}.` : '';
-            return `RoboFlow task flow finished.${link}\n${summary || '(empty result)'}`;
+            return 'RoboFlow workflow started. It keeps running as a background task in this conversation; open that task to follow the workflow, its phases and their logs.';
         }
 
         throw new Error('unsupported workflow action');

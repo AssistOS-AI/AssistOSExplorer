@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { normalizeTaskLiveSession } from './taskLiveSession.mjs';
+import { normalizeTaskDetails } from './taskDetails.mjs';
 import { resolveAchillesPrivateDataRoot } from './privateDataRoot.mjs';
 import { acquireExecutionLease } from './workspaceStateLock.mjs';
 import { getSkillRuntimeOrigin, runWithSkillRuntimeOrigin } from './skillTaskOrigin.mjs';
@@ -213,6 +214,11 @@ export async function createWebchatBackgroundTaskManager({
             record.remoteStatus = remoteStatus;
             record.logSeq = logSeq;
             record.status = status;
+            const details = normalizeTaskDetails(task?.details);
+            if (details) {
+                changed ||= JSON.stringify(record.details) !== JSON.stringify(details);
+                record.details = details;
+            }
             const resultContinuation = normalizeContinuation(
                 task?.result?.metadata?.continuation || task?.liveContinuation,
                 record.targetAgent,
@@ -239,6 +245,7 @@ export async function createWebchatBackgroundTaskManager({
                         updatedAt: task?.updatedAt || new Date().toISOString(),
                         executionStartedAt: record.executionStartedAt,
                         liveSession: record.liveSession,
+                        ...(record.details ? { details: record.details } : {}),
                         turn: record.turn,
                         error: trim(task?.error),
                         ...(record.continuation ? { continuation: record.continuation } : {}),
@@ -321,6 +328,7 @@ export async function createWebchatBackgroundTaskManager({
             turn: existing?.turn || 1,
             logSeq: null,
             liveSession: normalizeTaskLiveSession(metadata?.liveSession || existing?.liveSession),
+            details: normalizeTaskDetails(existing?.details || metadata?.details),
             continuation,
             logRetention: metadata?.logRetention === 'full' || existing?.logRetention === 'full'
                 ? 'full'

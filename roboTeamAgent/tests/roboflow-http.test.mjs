@@ -46,3 +46,14 @@ test('HTTP runs return task instances and project logs; retired execution contro
     assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/launch`, 'user', { member: 'one' })).status, 404);
     assert.equal((await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'default', objective: 'Work' })).status, 400);
 });
+test('HTTP stops a single phase and stops the whole flow with it', async t => {
+    const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
+    const { flow } = await (await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', objective: 'Work' })).json();
+    const instanceId = flow.instances[0].id;
+    const stopped = await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/stop`, 'user', {});
+    assert.equal(stopped.status, 200);
+    const { flow: after } = await stopped.json();
+    assert.equal(after.status, 'stopped');
+    assert.equal(after.instances[0].state, 'stopped');
+    assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/instances/not-an-instance/stop`, 'user', {})).status, 404);
+});

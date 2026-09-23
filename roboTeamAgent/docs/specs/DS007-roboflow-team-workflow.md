@@ -72,13 +72,15 @@ Logs and final responses stay in the run's working folder under .achilles-cli/ro
 
 ### Restart and monitoring
 
-Startup marks unfinished runs failed and unfinished instances interrupted. It does not replay tasks. Completed records remain readable. The authenticated RoboFlow page shows the captured graph and each visit with its robot, mode, state and final response; full logs load on demand. It exposes repeated cycle visits separately.
+Startup marks unfinished runs failed and unfinished instances interrupted. It does not replay tasks. Completed records remain readable. The flow page at `/roboflow?flowId=<runId>` is separate from the workflow editor. It splits into a left phase list and a right stage: the phase list shows each visit with its robot, mode, state and duration, while the stage renders the captured graph on demand or the selected phase's log. Running graph nodes pulse; clicking a node opens that task's log. The phase log mirrors the WebChat task view: a phase header with robot, mode, status and duration, then a monospace log panel that follows new output and highlights the final response. The page stops the whole flow or one running phase. It exposes repeated cycle visits separately. The start tool declares this page as the background task's details link, so the conversation task opens it directly.
 
 ### HTTP and MCP
 
 The internal MCP tools are roboflow_list_workflows, roboflow_start_flow, roboflow_flow_state and roboflow_stop_flow. Create, update, delete and roboflow_generate_workflow require an authenticated administrator. Generation and start use native asynchronous Ploinky tasks. The retired roboflow_launch_robot and roboflow_finish_flow tools and HTTP routes are removed.
 
-HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, run start/state/stop and logs under /api/roboflow. Browser mutations require the existing Router CSRF proof. Generation uses the real MCP browser client, including task polling and cancellation. Credentials remain in the authenticated transport.
+The launch-workflow skill starts a flow and returns as soon as the native task is registered; it never waits for or processes the final result. The roboflow_start_flow tool process remains alive and owns the run until it reaches a terminal state, so stopping the native task stops the flow. Early in its standard error it emits a task control record that declares the flow page as the task's detail link, labelled Open workflow page, with the raw task log as a secondary View workflow logs link. The conversation's background task renders both from that metadata, so the model never receives the flow URL.
+
+HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, run start/state/stop, per-phase stop and logs under /api/roboflow. Browser mutations require the existing Router CSRF proof. Generation uses the real MCP browser client, including task polling and cancellation. Credentials remain in the authenticated transport.
 
 ## Decisions & Questions
 

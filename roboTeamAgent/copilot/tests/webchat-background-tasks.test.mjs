@@ -564,6 +564,50 @@ test('overlapping launches notify only their initiating turn and retain session 
     }
 });
 
+test('background task polling publishes and persists a declared details link', async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-task-details-'));
+    const remoteTaskId = 'remote-flow';
+    const url = '/base-agent-additional-server/roboTeamAgent/3001/roboflow?flowId=flow_603070ca4a29b08bff4a3141';
+    let observer = null;
+    const published = [];
+    const status = async () => ({
+        id: remoteTaskId,
+        status: 'running',
+        logSeq: 2,
+        logTail: 'started\n',
+        details: { url, label: 'Open workflow page' },
+    });
+    const manager = await createWebchatBackgroundTaskManager({
+        workingDir: workspace,
+        emitProtocol: false,
+        onPublish: (event) => published.push(event),
+        agentClientModule: {
+            setAgentTaskObserver(callback) { observer = callback; return () => { observer = null; }; },
+            async createAgentClient() { return { async ensureAgentRunning() {}, getTaskStatus: status }; },
+        },
+    });
+    try {
+        const record = await observer({
+            agentName: 'roboTeamAgent',
+            taskId: remoteTaskId,
+            toolName: 'roboflow_start_flow',
+            arguments: { objective: 'Work' },
+            metadata: { status: 'running', createdAt: new Date().toISOString() },
+            getTaskStatus: status,
+        });
+        const deadline = Date.now() + 1000;
+        while (!published.some((event) => event.task?.details) && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        const event = published.find((entry) => entry.task?.details);
+        assert.deepEqual(event.task.details, { url, label: 'Open workflow page' });
+        assert.deepEqual(getTask(workspace, record.id).details, { url, label: 'Open workflow page' });
+    } finally {
+        manager.close();
+        fs.rmSync(workspace, { recursive: true, force: true });
+    }
+});
+
 test('ambiguous remote continuation remains visible and cannot be automatically retried', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-task-uncertain-'));
     const taskId = 'task_555555555555555555555555';

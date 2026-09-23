@@ -156,6 +156,26 @@ export class RoboFlowService {
         });
     }
     async stopFlow(id) { return this._serialize(id, async () => { if (!await this.store.get(id)) throw missing(); await this._fail(id, 'Stopped by user', 'stopped'); return this.getFlow(id); }); }
+    async stopInstance(id, instanceId) {
+        return this._serialize(id, async () => {
+            const flow = await this.store.get(id);
+            if (!flow) throw missing();
+            const instance = flow.instances.find(item => item.id === instanceId);
+            if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
+            if (terminal(instance.state)) return this.getFlow(id);
+            if (instance.runtimeTaskId) {
+                this.bindings.delete(instance.runtimeTaskId);
+                const robot = await this.robotStore.getByName(instance.robotName);
+                if (robot) { try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId); } catch { /* Runtime may already be terminal. */ } }
+            }
+            await this.store.update(id, current => {
+                const visit = current.instances.find(item => item.id === instanceId);
+                visit.state = 'stopped'; visit.error = 'Stopped by user'; visit.endedAt = new Date().toISOString();
+            });
+            await this._fail(id, 'Stopped by user', 'stopped');
+            return this.getFlow(id);
+        });
+    }
     async _completed(binding, event) {
         const flow = await this.store.get(binding.flowId);
         if (!flow || terminal(flow.status)) return;

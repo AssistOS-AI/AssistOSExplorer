@@ -43,13 +43,32 @@
       <div id="flowsList" class="flow-list" aria-live="polite"></div>
     </section>
 
-    <section id="detail" class="panel" hidden aria-labelledby="detail-title">
-      <div class="section-heading">
-        <h2 id="detail-title">Flow detail</h2>
-        <button id="backButton" class="button secondary" type="button">All flows</button>
+    <section id="detail" class="flow-workspace" hidden aria-labelledby="detail-title">
+      <header class="flow-header">
+        <div class="flow-heading">
+          <h2 id="detail-title">Flow</h2>
+          <p id="flowObjective" class="flow-objective"></p>
+        </div>
+        <div class="flow-actions">
+          <span id="flowStatus" class="status-badge"></span>
+          <button id="stopFlowButton" class="button danger" type="button">Stop workflow</button>
+          <button id="backButton" class="button secondary" type="button">All flows</button>
+        </div>
+      </header>
+      <p id="flowError" class="message is-error" hidden></p>
+      <div class="flow-columns">
+        <aside class="phase-pane" aria-label="Workflow phases">
+          <div class="section-heading"><h3>Phases</h3><span id="phaseCount" class="count">0</span></div>
+          <ol id="phaseList" class="phase-list"></ol>
+        </aside>
+        <section class="stage-pane" aria-label="Phase detail">
+          <div class="stage-toolbar">
+            <button id="graphButton" class="button" type="button">Graph</button>
+            <span id="stageTitle" class="stage-title">Select a phase to view its log</span>
+          </div>
+          <div id="stageBody" class="stage-body"></div>
+        </section>
       </div>
-      <div id="flowSummary" class="flow-summary"></div>
-      <div id="invocations" class="invocations"></div>
     </section>
 
     <section id="workflowsPanel" class="panel" aria-labelledby="workflows-title">
