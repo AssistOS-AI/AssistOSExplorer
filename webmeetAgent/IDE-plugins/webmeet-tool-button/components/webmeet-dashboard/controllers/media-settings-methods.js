@@ -873,16 +873,12 @@ export const mediaSettingsMethods = {
     },
 
     isDefaultDevice(device) {
-        const id = String(device?.deviceId || '').toLowerCase();
-        const label = String(device?.label || '').toLowerCase();
-        return id === 'default' || id === 'communications' || /\b(default|communications)\b/.test(label);
+        const id = String(device?.deviceId || '').trim().toLowerCase();
+        return id === 'default' || id === 'communications';
     },
 
     getMediaDeviceDedupeKey(device, index) {
         const kind = String(device?.kind || '').trim();
-        const groupId = String(device?.groupId || '').trim();
-        const label = this.normalizeDeviceLabel(device?.label);
-        if (groupId && label) return `${kind}:group:${groupId}:label:${label}`;
         const id = String(device?.deviceId || '').trim();
         if (id) return `${kind}:id:${id}`;
         return `${kind}:index:${index}`;
@@ -893,17 +889,16 @@ export const mediaSettingsMethods = {
         const seen = new Set();
         for (const [index, device] of (Array.isArray(devices) ? devices : []).entries()) {
             if (!device || this.isDefaultDevice(device)) continue;
-            // Permission-gated entries expose an empty deviceId and label; they are not selectable
-            // until the browser grants device access, so they must not appear as concrete options.
+            // Only virtual or aggregate devices are dropped; every real device the browser exposes
+            // stays selectable.
+            if (this.isVirtualDevice(device)) continue;
+            // Permission-gated entries expose an empty deviceId; they are not selectable until the
+            // browser grants device access, so they must not appear as concrete options.
             if (!String(device.deviceId || '').trim()) continue;
             const key = this.getMediaDeviceDedupeKey(device, index);
             if (seen.has(key)) continue;
             seen.add(key);
-            // Keep virtual and aggregate devices selectable; flag them instead of hiding them.
-            normalized.push({
-                ...device,
-                virtual: this.isVirtualDevice(device)
-            });
+            normalized.push(device);
         }
         return normalized;
     },
@@ -987,9 +982,6 @@ export const mediaSettingsMethods = {
         if (this.hasAmbiguousAudioDevices(audioInputs)) {
             warnings.push('Some microphones have matching labels. Test the selected input before speaking.');
         }
-        if (selectedInput?.virtual) {
-            warnings.push('The selected microphone is a virtual or aggregate device. Verify the routed input before speaking.');
-        }
         if (microphoneGain === 0) {
             warnings.push('Microphone volume is set to 0% in WebMeet.');
         } else if (microphoneGain > 1.25) {
@@ -1005,9 +997,6 @@ export const mediaSettingsMethods = {
             warnings.push('The selected speaker is no longer available. Select another speaker.');
         } else if (canSelectOutput && (!selectedOutputId || this.isDefaultDevice(selectedOutput)) && concreteOutputCount > 1) {
             warnings.push('Multiple speakers are available. Select the exact output to avoid using the wrong device.');
-        }
-        if (canSelectOutput && selectedOutput?.virtual) {
-            warnings.push('The selected speaker is a virtual or aggregate device.');
         }
         if (outputVolume === 0) {
             warnings.push('Speaker volume is set to 0% in WebMeet.');
@@ -1156,16 +1145,19 @@ export const mediaSettingsMethods = {
         }
     },
 
-    renderMediaDeviceOptions(selectElement, devices, selectedId) {
+    renderMediaDeviceOptions(selectElement, devices, selectedId, emptyLabel) {
         if (!selectElement) return;
         const safeDevices = Array.isArray(devices) ? devices : [];
         const options = [{ value: '', label: 'System default' }];
+        let concreteIndex = 0;
         for (const device of safeDevices) {
             const value = String(device?.deviceId || '').trim();
-            const label = String(device?.label || '').trim();
-            // Only expose concrete, identifiable devices. Permission-gated browser entries carry
-            // no deviceId and no label and must never appear as selectable placeholders.
-            if (!value || !label) continue;
+            // A concrete deviceId makes the device selectable. The browser may still hide the label
+            // until device permission is granted, so fall back to a neutral name instead of hiding
+            // a usable device.
+            if (!value) continue;
+            concreteIndex += 1;
+            const label = String(device?.label || '').trim() || `${emptyLabel || 'Device'} ${concreteIndex}`;
             options.push({ value, label });
         }
         const selected = String(selectedId || '');

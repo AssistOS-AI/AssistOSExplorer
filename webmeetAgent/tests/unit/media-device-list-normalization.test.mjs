@@ -7,66 +7,30 @@ function createHarness() {
     return { ...mediaSettingsMethods };
 }
 
-test('media device normalization removes browser virtual defaults and concrete duplicates', () => {
+test('media device normalization removes only browser defaults, virtual devices, and exact duplicates', () => {
     const harness = createHarness();
     const devices = harness.normalizeEnumeratedMediaDevices([
-        {
-            kind: 'audioinput',
-            deviceId: 'default',
-            groupId: 'mic-group',
-            label: 'Default - Studio Microphone'
-        },
-        {
-            kind: 'audioinput',
-            deviceId: 'communications',
-            groupId: 'mic-group',
-            label: 'Communications - Studio Microphone'
-        },
-        {
-            kind: 'audioinput',
-            deviceId: 'mic-1',
-            groupId: 'mic-group',
-            label: 'Studio Microphone'
-        },
-        {
-            kind: 'audioinput',
-            deviceId: 'mic-1-copy',
-            groupId: 'mic-group',
-            label: 'Studio Microphone'
-        },
-        {
-            kind: 'audioinput',
-            deviceId: 'mic-2',
-            groupId: 'other-mic-group',
-            label: 'USB Microphone'
-        },
-        {
-            kind: 'audiooutput',
-            deviceId: 'default',
-            groupId: 'speaker-group',
-            label: 'Default - Studio Speakers'
-        },
-        {
-            kind: 'audiooutput',
-            deviceId: 'speaker-1',
-            groupId: 'speaker-group',
-            label: 'Studio Speakers'
-        },
-        {
-            kind: 'videoinput',
-            deviceId: 'camera-1',
-            groupId: 'camera-group',
-            label: 'HD Camera'
-        }
+        { kind: 'audioinput', deviceId: 'default', groupId: 'mic-group', label: 'Default - Studio Microphone' },
+        { kind: 'audioinput', deviceId: 'communications', groupId: 'mic-group', label: 'Communications - Studio Microphone' },
+        { kind: 'audioinput', deviceId: 'mic-1', groupId: 'mic-group', label: 'Studio Microphone' },
+        // A distinct deviceId with a matching label must stay; only exact duplicate ids are deduped.
+        { kind: 'audioinput', deviceId: 'mic-1-copy', groupId: 'mic-group', label: 'Studio Microphone' },
+        { kind: 'audioinput', deviceId: 'mic-1', groupId: 'mic-group', label: 'Studio Microphone' },
+        { kind: 'audioinput', deviceId: 'mic-2', groupId: 'other-mic-group', label: 'USB Microphone' },
+        { kind: 'audiooutput', deviceId: 'default', groupId: 'speaker-group', label: 'Default - Studio Speakers' },
+        // Headphones and speakers on the same audio group must both survive; labels are not collapsed.
+        { kind: 'audiooutput', deviceId: 'speaker-1', groupId: 'speaker-group', label: 'Speakers (Realtek Audio)' },
+        { kind: 'audiooutput', deviceId: 'headphones-1', groupId: 'speaker-group', label: 'Headphones (Realtek Audio)' },
+        { kind: 'videoinput', deviceId: 'camera-1', groupId: 'camera-group', label: 'HD Camera' }
     ]);
 
     assert.deepEqual(
         devices.audioInput.map((device) => device.deviceId),
-        ['mic-1', 'mic-2']
+        ['mic-1', 'mic-1-copy', 'mic-2']
     );
     assert.deepEqual(
         devices.audioOutput.map((device) => device.deviceId),
-        ['speaker-1']
+        ['speaker-1', 'headphones-1']
     );
     assert.deepEqual(
         devices.videoInput.map((device) => device.deviceId),
@@ -74,7 +38,7 @@ test('media device normalization removes browser virtual defaults and concrete d
     );
 });
 
-test('device options render only concrete identifiable devices plus the system default', () => {
+test('device options render every selectable device plus the system default', () => {
     const harness = createHarness();
     let rendered = null;
     const selectElement = {
@@ -90,6 +54,7 @@ test('device options render only concrete identifiable devices plus the system d
 
     assert.deepEqual(rendered, [
         { value: '', label: 'System default' },
+        { value: 'mic-1', label: 'Microphone 1' },
         { value: 'mic-2', label: 'USB Microphone' }
     ]);
 });
@@ -106,32 +71,14 @@ test('permission-gated device placeholders are not selectable', () => {
     assert.deepEqual(devices.audioInput.map((device) => device.deviceId), ['mic-1']);
 });
 
-test('virtual and aggregate devices stay selectable and are flagged', () => {
+test('virtual and aggregate devices are removed from the selectable list', () => {
     const harness = createHarness();
     const devices = harness.normalizeEnumeratedMediaDevices([
         { kind: 'audioinput', deviceId: 'blackhole', groupId: 'g1', label: 'BlackHole 2ch' },
         { kind: 'audioinput', deviceId: 'mic-1', groupId: 'g2', label: 'USB Microphone' }
     ]);
 
-    assert.deepEqual(devices.audioInput.map((device) => device.deviceId), ['blackhole', 'mic-1']);
-    assert.equal(devices.audioInput[0].virtual, true);
-    assert.equal(devices.audioInput[1].virtual, false);
-});
-
-test('a selected virtual microphone raises a routing warning', () => {
-    const harness = createHarness();
-    harness.mediaDevices = {
-        audioInput: [{ kind: 'audioinput', deviceId: 'blackhole', label: 'BlackHole 2ch', virtual: true }],
-        audioOutput: []
-    };
-    const warnings = harness.getStaticMediaDeviceWarnings({
-        audioInputDeviceId: 'blackhole',
-        audioOutputDeviceId: '',
-        microphoneGain: 0.8,
-        outputVolume: 0.8,
-        voiceProcessingMode: 'auto'
-    });
-    assert.ok(warnings.some((warning) => /virtual or aggregate/i.test(warning)));
+    assert.deepEqual(devices.audioInput.map((device) => device.deviceId), ['mic-1']);
 });
 
 test('media setting normalization treats saved default device ids as browser default selection', () => {

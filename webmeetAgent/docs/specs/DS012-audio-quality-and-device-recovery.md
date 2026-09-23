@@ -60,7 +60,7 @@ After a browser refresh, the WebMeet panel reopens when the record says it was o
 
 ### Device identification and recovery
 
-Virtual and aggregate devices remain selectable and are flagged instead of being hidden by name heuristics. A selected virtual microphone or speaker raises an explicit warning. Device-change handling refreshes the device list and surfaces a warning when the selected input or output is no longer available. When the selected microphone is gone, the participant is told to select another input rather than being left on a stale device.
+Only the browser pseudo-devices (`default` and `communications`) and virtual or aggregate devices are removed from the selectable list. Every real device the browser exposes stays selectable, keyed by its own device identifier, and distinct devices that share a label or audio group are not collapsed. A device is never hidden because its label contains common words. When the browser hides a device label until device permission is granted, the device still appears with a neutral name instead of being dropped. Device-change handling refreshes the device list and surfaces a warning when the selected input or output is no longer available. When the selected microphone is gone, the participant is told to select another input rather than being left on a stale device.
 
 ## Decisions & Questions
 
