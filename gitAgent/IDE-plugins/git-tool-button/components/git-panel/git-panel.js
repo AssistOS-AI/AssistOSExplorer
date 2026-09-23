@@ -1241,6 +1241,10 @@ export class GitPanel {
         return shouldClose;
     }
 
+    async clearGitCredentials() {
+        return this.actions.clearGitCredentials();
+    }
+
     async gitPushWithToken(repoPath, token) {
         return this.actions.gitPushWithToken(repoPath, token);
     }

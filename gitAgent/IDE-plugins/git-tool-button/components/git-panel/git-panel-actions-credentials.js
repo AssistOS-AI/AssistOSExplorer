@@ -332,6 +332,35 @@ export function createCredentialsActions(ctx) {
         }
     };
 
+    const clearGitCredentials = async () => {
+        const state = getState();
+        setStatusLine('Clearing stored credentials...');
+        try {
+            const response = await service.disconnectGithubAuth();
+            const github = response?.github || null;
+            applyState({
+                githubAuth: github
+                    ? { ...state.githubAuth, ...github, error: '' }
+                    : { ...state.githubAuth, tokenStored: false, connected: false, connection: null },
+                authPrompt: {
+                    ...state.authPrompt,
+                    visible: false,
+                    token: '',
+                    pendingAction: null
+                },
+                credentialsDirty: false
+            });
+            updateAuthPrompt();
+            updateCommitButtons();
+            await refreshAll({ force: true });
+            setStatusLine('Stored Git credentials cleared.');
+            return true;
+        } catch (error) {
+            setStatusLine(normalizeErrorMessage(error) || 'Unable to clear credentials.', true);
+            return false;
+        }
+    };
+
     const collectCredentialsDraft = (state, payload = {}) => {
         const authMethod = normalizeGitAuthMethod(payload.authMethod ?? getAuthMethod(state));
         return {
@@ -889,6 +918,7 @@ export function createCredentialsActions(ctx) {
         cancelGitToken,
         cancelGitIdentity,
         cancelGitCredentials,
+        clearGitCredentials,
         saveGitToken,
         saveGitCredentials,
         ensureGitIdentityOrPrompt,

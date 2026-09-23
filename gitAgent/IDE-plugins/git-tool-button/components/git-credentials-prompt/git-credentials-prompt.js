@@ -19,6 +19,7 @@ export class GitCredentialsPrompt {
             githubScope: '',
             githubHasRepoScope: false,
             githubPending: false,
+            githubContinueLoading: false,
             githubVerificationUri: '',
             githubUserCode: '',
             autocommitReposLoading: false,
@@ -64,12 +65,14 @@ export class GitCredentialsPrompt {
         this.showAgentReposInput = this.element.querySelector('#gitCredentialsShowAgentRepos');
         this.autoresolveInput = this.element.querySelector('#gitCredentialsAutoresolve');
         this.saveButton = this.element.querySelector('[data-local-action="saveGitCredentials"]');
+        this.clearButton = this.element.querySelector('[data-local-action="clearGitCredentials"]');
         this.attachDelegatedListeners();
         this.applyState(this.state);
     }
 
     afterUnload() {
         this.detachDelegatedListeners();
+        this.clearGithubVerificationWatch();
         if (this.validateTimer) {
             clearTimeout(this.validateTimer);
             this.validateTimer = null;
@@ -190,7 +193,14 @@ export class GitCredentialsPrompt {
     }
 
     cancelGitCredentials() {
+        this.state.githubContinueLoading = false;
+        this.clearGithubVerificationWatch();
+        this.updateContinueButtonState();
         this.getParentPresenter()?.cancelGitCredentials?.();
+    }
+
+    clearGitCredentials() {
+        this.getParentPresenter()?.clearGitCredentials?.();
     }
 
     switchCredentialsTab(_target, tab) {
@@ -204,23 +214,47 @@ export class GitCredentialsPrompt {
 
     async copyGithubCode() {
         const code = String(this.state.githubUserCode || '').trim();
-        if (!code) return false;
-        try {
-            if (globalThis.navigator?.clipboard?.writeText) {
+        if (!code) {
+            console.warn('[git-credentials] No GitHub device code available to copy.');
+            return false;
+        }
+
+        if (globalThis.navigator?.clipboard?.writeText) {
+            try {
                 await globalThis.navigator.clipboard.writeText(code);
-            } else {
-                const textarea = document.createElement('textarea');
-                textarea.value = code;
-                textarea.setAttribute('readonly', '');
-                textarea.style.position = 'fixed';
-                textarea.style.opacity = '0';
-                document.body.appendChild(textarea);
-                textarea.select();
-                document.execCommand('copy');
-                textarea.remove();
+                return true;
+            } catch (error) {
+                console.warn('[git-credentials] navigator.clipboard.writeText failed; trying legacy copy.', error);
+            }
+        } else {
+            console.warn('[git-credentials] navigator.clipboard is unavailable (insecure context or unsupported); trying legacy copy.');
+        }
+
+        try {
+            const textarea = document.createElement('textarea');
+            textarea.value = code;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-1000px';
+            textarea.style.left = '-1000px';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            try {
+                textarea.setSelectionRange(0, code.length);
+            } catch (_) {
+                // ignore
+            }
+            const copied = document.execCommand('copy');
+            textarea.remove();
+            if (!copied) {
+                console.error('[git-credentials] Clipboard copy failed: document.execCommand("copy") returned false.');
+                return false;
             }
             return true;
-        } catch {
+        } catch (error) {
+            console.error('[git-credentials] Clipboard copy failed.', error);
             return false;
         }
     }
@@ -228,26 +262,88 @@ export class GitCredentialsPrompt {
     openGithubVerification() {
         const url = String(this.state.githubVerificationUri || '').trim();
         if (!url) return false;
-        window.open(url, '_blank', 'noopener,noreferrer');
+        let handle = null;
+        try {
+            handle = window.open(url, '_blank');
+            if (handle) {
+                // Sever the opener link while keeping the handle so we can detect when the tab is closed.
+                try { handle.opener = null; } catch (_) { /* cross-origin */ }
+            }
+        } catch (_) {
+            handle = null;
+        }
+        this.watchGithubVerificationWindow(handle);
         return true;
     }
 
+    watchGithubVerificationWindow(handle) {
+        this.clearGithubVerificationWatch();
+        if (!handle) return;
+        this.githubVerificationTimer = setInterval(() => {
+            let closed = true;
+            try { closed = Boolean(handle.closed); } catch (_) { closed = true; }
+            if (!closed) return;
+            this.clearGithubVerificationWatch();
+            // The verification tab was closed; if the authorization is still pending, the process was interrupted.
+            if (this.state.githubPending && !this.state.githubConnected) {
+                this.state.githubContinueLoading = false;
+                this.updateContinueButtonState();
+            }
+        }, 1000);
+    }
+
+    clearGithubVerificationWatch() {
+        if (this.githubVerificationTimer) {
+            clearInterval(this.githubVerificationTimer);
+            this.githubVerificationTimer = null;
+        }
+    }
+
     async continueGithubAuth() {
-        const copied = await this.copyGithubCode();
-        const opened = this.openGithubVerification();
-        if (copied && opened) {
-            await globalThis.assistOS?.showToast?.('Code copied. GitHub verification opened in a new tab.', 'success', 2500);
-            return;
+        if (this.state.githubContinueLoading) return;
+        this.state.githubContinueLoading = true;
+        this.updateContinueButtonState();
+        let started = false;
+        try {
+            const copied = await this.copyGithubCode();
+            const opened = this.openGithubVerification();
+            started = copied || opened;
+            if (copied && opened) {
+                await globalThis.assistOS?.showToast?.('Code copied. GitHub verification opened in a new tab.', 'success', 2500);
+                return;
+            }
+            if (opened) {
+                await globalThis.assistOS?.showToast?.('Could not copy the code automatically. Select and copy the code above, then continue in GitHub.', 'warning', 5000);
+                return;
+            }
+            if (copied) {
+                await globalThis.assistOS?.showToast?.('Code copied, but GitHub could not be opened automatically. Open github.com/login/device and paste the code.', 'warning', 5000);
+                return;
+            }
+            await globalThis.assistOS?.showToast?.('Could not copy the code or open GitHub. Copy the code manually and open github.com/login/device.', 'error', 5000);
+        } catch (_) {
+            started = false;
+            await globalThis.assistOS?.showToast?.('Could not start GitHub verification. Please try again.', 'error', 3000);
+        } finally {
+            // Keep the spinner only while the authorization is actually pending; reset on failure,
+            // error, or once the flow ends (connected or no longer pending).
+            if (!started || this.state.githubConnected || !this.state.githubPending || this.state.githubError) {
+                this.state.githubContinueLoading = false;
+            }
+            this.updateContinueButtonState();
         }
-        if (opened) {
-            await globalThis.assistOS?.showToast?.('GitHub verification opened. Copy the code manually if needed.', 'info', 3000);
-            return;
+    }
+
+    updateContinueButtonState() {
+        const button = this.githubContinueButton;
+        if (!button) return;
+        const loading = Boolean(this.state.githubContinueLoading);
+        this.githubContinueSpinner ||= this.element.querySelector('.git-github-continue-spinner');
+        if (this.githubContinueSpinner) {
+            this.githubContinueSpinner.hidden = !loading;
         }
-        if (copied) {
-            await globalThis.assistOS?.showToast?.('Code copied. Open GitHub verification to continue.', 'info', 3000);
-            return;
-        }
-        await globalThis.assistOS?.showToast?.('Could not start GitHub verification. Please try again.', 'error', 3000);
+        button.setAttribute('aria-busy', loading ? 'true' : 'false');
+        button.disabled = loading || !this.state.githubUserCode || !this.state.githubVerificationUri;
     }
 
     setState(next = {}) {
@@ -546,6 +642,9 @@ export class GitCredentialsPrompt {
                 this.authAvailability.textContent = '';
             }
         }
+        if (this.clearButton) {
+            this.clearButton.hidden = !(this.state.tokenStored || this.state.githubConnected);
+        }
         if (this.githubStatus) {
             if (this.state.githubConnected) {
                 this.githubStatus.textContent = this.state.githubUserLabel
@@ -593,9 +692,11 @@ export class GitCredentialsPrompt {
         if (this.githubCode) {
             this.githubCode.textContent = this.state.githubUserCode || '';
         }
-        if (this.githubContinueButton) {
-            this.githubContinueButton.disabled = !this.state.githubUserCode || !this.state.githubVerificationUri;
+        if (this.state.githubConnected || !this.state.githubPending || this.state.githubError) {
+            this.state.githubContinueLoading = false;
+            this.clearGithubVerificationWatch();
         }
+        this.updateContinueButtonState();
         if (this.githubDisconnectButton) {
             this.githubDisconnectButton.hidden = !this.state.githubConnected;
         }
