@@ -285,6 +285,21 @@ test('capture records unsupported prior code, but plan/execute refuse before mut
     assert.deepEqual(fs.readdirSync(f.backup).sort(), ['prior-containers.txt', 'rollback-authority.json']);
 });
 
+test('capture accepts a recreated dedicated tunnel but refuses the shared proxies tunnel', t => {
+    const desiredFile = f => path.join(f.scope.workspace, '.ploinky/edge-desired.json');
+    const withTunnel = (f, tunnelId) => {
+        const desired = JSON.parse(fs.readFileSync(desiredFile(f), 'utf8'));
+        desired.cloudflare.tunnelId = tunnelId;
+        write(desiredFile(f), desired);
+    };
+    const recreated = fixture(t);
+    withTunnel(recreated, '11111111-2222-4333-8444-555555555555');
+    assert.equal(recreated.service.capture(recreated.backup).rollbackSupported, true);
+    const shared = fixture(t);
+    withTunnel(shared, '091c4096-d1c8-4dbc-bb12-0c6357431d96');
+    assert.throws(() => shared.service.capture(shared.backup), { code: 'QA_INTENT_NOT_DEDICATED' });
+});
+
 test('cold capture is supported, but no predecessor rollback is fabricated', async t => {
     const f = fixture(t, { predecessor: false });
     assert.equal(f.service.capture(f.backup).rollbackSupported, true);

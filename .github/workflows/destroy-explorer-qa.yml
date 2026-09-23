@@ -258,6 +258,23 @@ jobs:
             echo "[destroy-qa] ERROR: neither Podman nor Docker is installed."
             exit 1
           fi
+          # The shared host Node can be older than the Ploinky minimum, so prefer
+          # the QA-scoped Node that the deploy workflow installs and verifies.
+          case "$(uname -m)" in
+            x86_64) QA_NODE_ARCH=x64 ;;
+            aarch64|arm64) QA_NODE_ARCH=arm64 ;;
+            *) QA_NODE_ARCH='' ;;
+          esac
+          QA_NODE_HOME="/home/admin/.qa-deployment-tools/node-v24.19.0-linux-$QA_NODE_ARCH"
+          if [ -n "$QA_NODE_ARCH" ] && [ -f "$QA_NODE_HOME/bin/node" ] && [ ! -L "$QA_NODE_HOME/bin/node" ] &&
+            [ "$("$QA_NODE_HOME/bin/node" --version 2>/dev/null)" = 'v24.19.0' ]; then
+            export PATH="$QA_NODE_HOME/bin:$PATH"
+            echo '[destroy-qa] Using the QA-scoped Node v24.19.0 installed by the deploy workflow.'
+          fi
+          if [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
+            echo "[destroy-qa] ERROR: Ploinky needs Node.js 22 or newer; the QA-scoped Node is missing and the host has $(node --version)."
+            exit 1
+          fi
 
           WORK_DIR="$HOME/$WORKSPACE"
           if [ "$(id -un)" != 'admin' ] || [ "$HOME" != '/home/admin' ] ||

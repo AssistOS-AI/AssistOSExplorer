@@ -16,7 +16,6 @@ env:
   PUBLIC_HOST: 'explorer-qa.axiologic.dev'
   PUBLIC_URL: 'https://explorer-qa.axiologic.dev'
   CLOUDFLARE_TUNNEL_NAME: 'explorer-qa'
-  CLOUDFLARE_SELECTED_TUNNEL_ID: '89dd05b5-05a7-4bd4-9626-ec4343b07c67'
   CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID: '091c4096-d1c8-4dbc-bb12-0c6357431d96'
   CLOUDFLARE_TUNNEL_SECRET_HANDLE: 'publication/explorer-qa-tunnel'
   CLOUDFLARE_API_SECRET_HANDLE: 'publication/explorer-qa-api'
@@ -187,10 +186,9 @@ jobs:
           };
 
           const named = requireSuccess(parse(listPath), 'named tunnel');
-          if (!Array.isArray(named) || named.length !== 1
-            || named[0]?.id !== process.env.CLOUDFLARE_SELECTED_TUNNEL_ID
+          if (!Array.isArray(named) || named.length > 1
             || named.some((entry) => entry?.id === sharedTunnelId)) {
-            throw new Error('selected existing Explorer QA tunnel is missing, ambiguous, or has a different identity; deployment cannot create a tunnel');
+            throw new Error('active explorer-qa tunnel inventory is ambiguous or aliases the protected shared tunnel');
           }
           const records = requireSuccess(parse(dnsPath), 'Explorer QA DNS');
           if (!Array.isArray(records) || records.length > 1) {
@@ -314,6 +312,7 @@ jobs:
           umask 077
 
           TUNNEL_LIST_RESPONSE=''
+          TUNNEL_MUTATION_RESPONSE=''
           TUNNEL_TOKEN_RESPONSE=''
           TUNNEL_DETAIL_RESPONSE=''
           TUNNEL_CONFIG_RESPONSE=''
@@ -324,7 +323,8 @@ jobs:
           cleanup_local_files() {
             for target in \
               "$TUNNEL_LIST_RESPONSE" \
-                "$TUNNEL_TOKEN_RESPONSE" \
+              "$TUNNEL_MUTATION_RESPONSE" \
+              "$TUNNEL_TOKEN_RESPONSE" \
               "$TUNNEL_DETAIL_RESPONSE" \
               "$TUNNEL_CONFIG_RESPONSE" \
               "$TUNNEL_DNS_RESPONSE" \
@@ -348,6 +348,7 @@ jobs:
           trap cleanup_local_files EXIT
 
           TUNNEL_LIST_RESPONSE="$(mktemp /tmp/explorer_qa_provision_list.XXXXXX)"
+          TUNNEL_MUTATION_RESPONSE="$(mktemp /tmp/explorer_qa_provision_mutation.XXXXXX)"
           TUNNEL_TOKEN_RESPONSE="$(mktemp /tmp/explorer_qa_provision_token.XXXXXX)"
           TUNNEL_DETAIL_RESPONSE="$(mktemp /tmp/explorer_qa_provision_detail.XXXXXX)"
           TUNNEL_CONFIG_RESPONSE="$(mktemp /tmp/explorer_qa_provision_config.XXXXXX)"
@@ -367,18 +368,40 @@ jobs:
 
           const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
           const tunnels = payload?.success === true ? payload.result : null;
-          if (!Array.isArray(tunnels) || tunnels.length !== 1
-            || tunnels[0]?.id !== process.env.CLOUDFLARE_SELECTED_TUNNEL_ID
-            || tunnels[0]?.name !== process.env.CLOUDFLARE_TUNNEL_NAME
-            || tunnels[0]?.deleted_at != null) {
-            throw new Error('selected existing Explorer QA tunnel is missing or changed; deployment cannot create a tunnel');
+          if (!Array.isArray(tunnels) || tunnels.length > 1) {
+            throw new Error('dedicated Explorer QA tunnel inventory is ambiguous');
+          }
+          if (tunnels.length === 1 && (tunnels[0]?.name !== process.env.CLOUDFLARE_TUNNEL_NAME
+            || tunnels[0]?.deleted_at != null)) {
+            throw new Error('dedicated Explorer QA tunnel identity changed');
           }
           process.stdout.write(String(tunnels[0]?.id || ''));
           NODE
           )"
           CLOUDFLARE_TUNNEL_CREATED='false'
+          if [ -z "$CLOUDFLARE_TUNNEL_ID" ]; then
+            curl -fsS \
+              -X POST \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data '{"name":"explorer-qa","config_src":"cloudflare"}' \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/cfd_tunnel" \
+              > "$TUNNEL_MUTATION_RESPONSE"
+            CLOUDFLARE_TUNNEL_ID="$(
+              node --input-type=module - "$TUNNEL_MUTATION_RESPONSE" <<'NODE'
+          import fs from 'node:fs';
+
+          const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const tunnel = payload?.success === true ? payload.result : null;
+          if (!tunnel || tunnel.name !== 'explorer-qa' || tunnel.deleted_at != null) {
+            throw new Error('Cloudflare did not create the exact dedicated Explorer QA tunnel');
+          }
+          process.stdout.write(String(tunnel.id || ''));
+          NODE
+            )"
+            CLOUDFLARE_TUNNEL_CREATED='true'
+          fi
           if [[ ! "$CLOUDFLARE_TUNNEL_ID" =~ ^[a-f0-9-]{36}$ ]] ||
-            [ "$CLOUDFLARE_TUNNEL_ID" != "$CLOUDFLARE_SELECTED_TUNNEL_ID" ] ||
             [ "$CLOUDFLARE_TUNNEL_ID" = "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" ]; then
             echo "::error::Dedicated Explorer QA tunnel identity is malformed or aliases the protected shared tunnel"
             exit 1
@@ -434,12 +457,12 @@ jobs:
           const detail = parseResult(detailPath, 'dedicated tunnel detail');
           const config = parseResult(configPath, 'dedicated tunnel configuration');
           const records = parseResult(dnsPath, 'dedicated tunnel DNS');
-          if (selectedId !== process.env.CLOUDFLARE_SELECTED_TUNNEL_ID || created !== 'false'
+          if (!['true', 'false'].includes(created)
             || !Array.isArray(named) || named.length !== 1 || named[0]?.id !== selectedId
             || detail?.id !== selectedId || detail?.name !== 'explorer-qa'
             || detail?.deleted_at != null
             || (detail?.account_tag != null && detail.account_tag !== process.env.CLOUDFLARE_ACCOUNT_ID)) {
-            throw new Error('dedicated Explorer QA tunnel reuse did not converge to the selected existing identity');
+            throw new Error('dedicated Explorer QA tunnel create/reuse did not converge to one exact identity');
           }
           const ingress = config?.config?.ingress ?? config?.ingress ?? [];
           if (!Array.isArray(ingress) || ingress.length > 2) {
@@ -464,6 +487,9 @@ jobs:
             || records[0]?.content !== expectedTarget
             || records[0]?.proxied !== true)) {
             throw new Error('Explorer QA DNS does not target the selected dedicated tunnel');
+          }
+          if (created === 'true' && (ingress.length > 1 || records.length !== 0)) {
+            throw new Error('new dedicated tunnel was not empty at its create/reuse boundary');
           }
           NODE
           curl -fsS \
@@ -503,11 +529,13 @@ jobs:
           export CLOUDFLARE_TUNNEL_TOKEN
           rm -f \
             "$TUNNEL_LIST_RESPONSE" \
+            "$TUNNEL_MUTATION_RESPONSE" \
             "$TUNNEL_TOKEN_RESPONSE" \
             "$TUNNEL_DETAIL_RESPONSE" \
             "$TUNNEL_CONFIG_RESPONSE" \
             "$TUNNEL_DNS_RESPONSE"
           TUNNEL_LIST_RESPONSE=''
+          TUNNEL_MUTATION_RESPONSE=''
           TUNNEL_TOKEN_RESPONSE=''
           TUNNEL_DETAIL_RESPONSE=''
           TUNNEL_CONFIG_RESPONSE=''
@@ -533,7 +561,6 @@ jobs:
             write_shell_var PUBLIC_HOST
             write_shell_var PUBLIC_URL
             write_shell_var CLOUDFLARE_TUNNEL_NAME
-            write_shell_var CLOUDFLARE_SELECTED_TUNNEL_ID
             write_shell_var CLOUDFLARE_TUNNEL_ID
             write_shell_var CLOUDFLARE_TUNNEL_SECRET_HANDLE
             write_shell_var CLOUDFLARE_API_SECRET_HANDLE
@@ -685,9 +712,9 @@ jobs:
             echo "[deploy-qa] ERROR: Cloudflare account or zone identifiers are malformed."
             exit 1
           fi
-          if [ "$CLOUDFLARE_SELECTED_TUNNEL_ID" != '89dd05b5-05a7-4bd4-9626-ec4343b07c67' ] ||
-            [ "$CLOUDFLARE_TUNNEL_ID" != "$CLOUDFLARE_SELECTED_TUNNEL_ID" ]; then
-            echo "[deploy-qa] ERROR: the Cloudflare tunnel is not the exact authorized existing QA identity."
+          if [[ ! "$CLOUDFLARE_TUNNEL_ID" =~ ^[a-f0-9-]{36}$ ]] ||
+            [ "$CLOUDFLARE_TUNNEL_ID" = '091c4096-d1c8-4dbc-bb12-0c6357431d96' ]; then
+            echo "[deploy-qa] ERROR: the Cloudflare tunnel is not a dedicated QA tunnel identity."
             exit 1
           fi
           if [ -z "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]; then
@@ -939,7 +966,8 @@ jobs:
                       agent: 'AchillesIDE/explorer',
                       routerSurfaces: ['browser-auth', 'agent-mcp', 'user-admin', 'workspace-assets', 'blob-transfer', 'marketplace-ui', 'webchat', 'webtty'],
                   }, 'Unreviewed QA router surfaces');
-                  assert.equal(desired.cloudflare.tunnelId, '89dd05b5-05a7-4bd4-9626-ec4343b07c67', 'Unreviewed QA tunnel selection');
+                  assert(/^[a-f0-9-]{36}$/.test(String(desired.cloudflare.tunnelId || ''))
+                      && desired.cloudflare.tunnelId !== '091c4096-d1c8-4dbc-bb12-0c6357431d96', 'Unreviewed QA tunnel selection');
                   assert.equal(desired.cloudflare.tunnelTokenSecret, 'publication/explorer-qa-tunnel');
                   assert.equal(desired.cloudflare.apiTokenSecret, 'publication/explorer-qa-api');
                   assert.deepEqual(desired.media, { publicIPv4: '45.136.70.141', addressMode: 'direct' });
@@ -2004,7 +2032,7 @@ jobs:
           echo "[deploy-qa] Starting Explorer from each managed repository's configured default branch..."
           export PLOINKY_NO_WAIT_SEQUENCE_TERMINAL_GRACE_MS='300000'
           QA_DEPLOY_STARTED_AT_MS="$(node -p 'Date.now()')"
-          EXPECTED_NO_WAIT_AGENTS=10
+          EXPECTED_NO_WAIT_AGENTS=9
           "$PLOINKY" start explorer "${BRANCH_ARGS[@]}"
 
           QA_READY=0
@@ -2042,8 +2070,8 @@ jobs:
                 ;;
             esac
             if [[ "$BOX_STATUS" == *"Ploinky Box: running-initialized"* ]] &&
-              [[ "$BOX_STATUS" == *"Tracked agents: 16"* ]] &&
-              [[ "$BOX_STATUS" == *"Running agents: 16"* ]] &&
+              [[ "$BOX_STATUS" == *"Tracked agents: 15"* ]] &&
+              [[ "$BOX_STATUS" == *"Running agents: 15"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare mode: cloudflare"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare management: api-managed"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare publication: ready"* ]] &&
@@ -2066,7 +2094,7 @@ jobs:
             exit 1
           fi
           if [ "$QA_READY" != "1" ]; then
-            echo "[deploy-qa] ERROR: timed out waiting for stable 16/16 process admission and 10/10 semantic readiness."
+            echo "[deploy-qa] ERROR: timed out waiting for stable 15/15 process admission and 9/9 semantic readiness."
             exit 1
           fi
           case "$BOX_STATUS" in
@@ -2077,8 +2105,8 @@ jobs:
               ;;
           esac
           for expected_status in \
-            'Tracked agents: 16' \
-            'Running agents: 16' \
+            'Tracked agents: 15' \
+            'Running agents: 15' \
             'Cloudflare mode: cloudflare' \
             'Cloudflare management: api-managed' \
             'Cloudflare publication: ready' \

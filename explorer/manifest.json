@@ -22,7 +22,6 @@
         "webmeetAgent global no-wait",
         "multimedia global no-wait",
         "proxies/soul-gateway no-wait",
-        "proxies/opencode-free no-wait",
         "webAssist no-wait",
         "UmamiAgent/umamiAgent no-wait",
         "workspaceMonitorAgent no-wait"

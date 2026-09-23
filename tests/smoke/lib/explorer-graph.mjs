@@ -16,14 +16,12 @@ export const KNOWN_SIBLINGS = Object.freeze(['AchillesCLI', 'proxies', 'UmamiAge
 // that lacks the manifest of one of these agents is an environment gap only
 // when its checkout provably does not contain the recorded revision; every
 // other missing manifest in a present sibling is a defect. `advice` appears in
-// the message only and never widens what can be skipped.
-export const MINIMUM_REVISIONS = Object.freeze({
-    'proxies/opencode-free': Object.freeze({
-        revision: '22dc0cc90458e1b2e7a861c79b67782b64c0a755',
-        why: 'first revision with the published opencode-free/manifest.json',
-        advice: '2a95a2e (current opencode-free agent tip)',
-    }),
-});
+// the message only and never widens what can be skipped. No agent the current
+// graph enables needs a minimum sibling revision. resolveExplorerGraph takes
+// the table as `minimumRevisions` so the controls can exercise the rule; add an
+// entry when the graph gains an edge to an agent that older sibling checkouts
+// lack.
+export const MINIMUM_REVISIONS = Object.freeze({});
 
 // Every environment gap carries this code, so a caller can turn it into an
 // explicit skip. A defect is a plain Error without a code.
@@ -35,8 +33,7 @@ const DOC_POINTER = 'See AssistOSExplorer/tests/smoke/README.md, "Sibling checko
 const enableTokens = (entry) => (typeof entry === 'string' ? entry : entry?.agent || '').trim().split(/\s+/);
 const shortRevision = (revision) => revision.slice(0, 7);
 
-function revisionHint(ref) {
-    const minimum = MINIMUM_REVISIONS[ref];
+function revisionHint(minimum) {
     if (!minimum) return '';
     return ` The checkout must contain at least ${shortRevision(minimum.revision)} (${minimum.why}); `
         + `${minimum.advice} or later is recommended.`;
@@ -117,8 +114,9 @@ export function enableEntries(manifest) {
 // - an environment gap: a known sibling repository absent from the siblings
 //   root, or a present sibling that lacks the manifest of an agent whose
 //   recorded minimum revision its checkout provably does not contain
-//   (`containsRevision(dir, revision) === false`). A gap stops only the branch
-//   below it; or
+//   (`containsRevision(dir, revision) === false`). Minimum revisions are read
+//   from `minimumRevisions`, which defaults to `MINIMUM_REVISIONS`. A gap stops
+//   only the branch below it; or
 // - a defect: everything else. That includes a qualified ref to a repository
 //   that is not a known sibling, a manifest missing inside the Explorer
 //   repository, a manifest missing in a present sibling when no minimum is
@@ -141,6 +139,7 @@ export function resolveExplorerGraph({
     siblingsRoot = path.resolve(explorerRepo, '..'),
     isRetired = () => false,
     containsRevision = gitContainsRevision,
+    minimumRevisions = MINIMUM_REVISIONS,
 } = {}) {
     const runtimes = new Map();
     const violations = [];
@@ -175,7 +174,7 @@ export function resolveExplorerGraph({
             defects.push(missing);
             return;
         }
-        const minimum = MINIMUM_REVISIONS[key];
+        const minimum = minimumRevisions[key];
         if (!minimum) {
             defects.push(`${missing}; the sibling repository "${repo}" is checked out at ${dir} but has no "${key}" `
                 + 'agent and no minimum revision is recorded for it, so the enable edge is wrong or the agent was '
@@ -186,7 +185,7 @@ export function resolveExplorerGraph({
         const contains = containsRevision(dir, minimum.revision);
         if (contains === false) {
             addGap(`${missing}; the sibling repository "${repo}" is checked out at ${dir} but does not contain `
-                + `${short}, so it predates this enable edge.${revisionHint(key)}`);
+                + `${short}, so it predates this enable edge.${revisionHint(minimum)}`);
             return;
         }
         const reason = contains === true
