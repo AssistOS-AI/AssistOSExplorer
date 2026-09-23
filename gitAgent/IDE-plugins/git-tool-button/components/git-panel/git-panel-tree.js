@@ -39,7 +39,7 @@ export function formatRepoSummary(repo) {
     return parts.join(' | ');
 }
 
-import { normalizeRepoRelativePrefix } from './git-commit-modal-selection.js';
+import { normalizeRepoRelativePrefix } from './git-panel-selection.js';
 
 const toArray = (value) => {
     if (!value) return [];

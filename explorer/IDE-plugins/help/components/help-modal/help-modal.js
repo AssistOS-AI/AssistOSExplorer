@@ -31,27 +31,22 @@ export class HelpModal {
     beforeRender() {}
 
     afterRender() {
+        if (!this.element.isConnected) return;
         this.tabList = this.element.querySelector('[role="tablist"]');
         this.tabButtons = Array.from(this.element.querySelectorAll('[data-help-tab]'));
         this.tabPanels = Array.from(this.element.querySelectorAll('[data-help-panel]'));
         this.helpContent = this.element.querySelector('[data-help-content]');
-        this.fullscreenButton = this.element.querySelector('[data-help-fullscreen]');
-        this.closeButton = this.element.querySelector('[data-help-close]');
 
         this.tabList?.addEventListener('click', this.handleClick);
         this.tabList?.addEventListener('keydown', this.handleKeydown);
-        this.fullscreenButton?.addEventListener('click', this.toggleFullscreen);
-        this.closeButton?.addEventListener('click', this.closeModal);
         this.activateTab(this.activeTab);
-        void this.loadTabTemplates();
+        this.initialLoad = this.loadTabTemplates();
     }
 
     afterUnload() {
         this.tabLoadController?.abort();
         this.tabList?.removeEventListener('click', this.handleClick);
         this.tabList?.removeEventListener('keydown', this.handleKeydown);
-        this.fullscreenButton?.removeEventListener('click', this.toggleFullscreen);
-        this.closeButton?.removeEventListener('click', this.closeModal);
     }
 
     handleClick(event) {
@@ -127,33 +122,4 @@ export class HelpModal {
         this.helpContent?.setAttribute('aria-busy', 'false');
     }
 
-    getDialogElement() {
-        return this.element?.closest?.('dialog') || null;
-    }
-
-    ensureDialogPositioning() {
-        const dialog = this.getDialogElement();
-        if (!dialog) return null;
-        if (dialog.dataset.helpPositioned === 'true') return dialog;
-
-        const rect = dialog.getBoundingClientRect();
-        dialog.style.left = `${rect.left}px`;
-        dialog.style.top = `${rect.top}px`;
-        dialog.classList.add('help-positioned');
-        dialog.dataset.helpPositioned = 'true';
-        return dialog;
-    }
-
-    toggleFullscreen = () => {
-        const dialog = this.ensureDialogPositioning();
-        if (!dialog) return;
-
-        const isFullscreen = !dialog.classList.contains('is-fullscreen');
-        dialog.classList.toggle('is-fullscreen', isFullscreen);
-        this.fullscreenButton?.setAttribute('aria-pressed', isFullscreen ? 'true' : 'false');
-    };
-
-    closeModal = () => {
-        assistOS.UI.closeModal(this.element);
-    };
 }

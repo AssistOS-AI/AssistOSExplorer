@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
-import { createCommitMessageActions } from '../../IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-actions-commit-message.js';
+import { createCommitMessageActions } from '../../IDE-plugins/git-tool-button/components/git-panel/git-panel-actions-commit-message.js';
 
 const agentRoot = new URL('../../', import.meta.url);
 
@@ -131,20 +131,20 @@ test('AI commit generation sends every selected file without a global count limi
 
 test('Git commit modal uses one local loader for AI and Git operations', async () => {
     const [source, actions, branches, stash, gitOps, template, styles] = await Promise.all([
-        readAgentFile('IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-actions-commit-message.js'),
-        readAgentFile('IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-actions.js'),
-        readAgentFile('IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-actions-branches.js'),
-        readAgentFile('IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-actions-stash.js'),
-        readAgentFile('IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-actions-gitops.js'),
-        readAgentFile('IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal.html'),
-        readAgentFile('IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal.css')
+        readAgentFile('IDE-plugins/git-tool-button/components/git-panel/git-panel-actions-commit-message.js'),
+        readAgentFile('IDE-plugins/git-tool-button/components/git-panel/git-panel-actions.js'),
+        readAgentFile('IDE-plugins/git-tool-button/components/git-panel/git-panel-actions-branches.js'),
+        readAgentFile('IDE-plugins/git-tool-button/components/git-panel/git-panel-actions-stash.js'),
+        readAgentFile('IDE-plugins/git-tool-button/components/git-panel/git-panel-actions-gitops.js'),
+        readAgentFile('IDE-plugins/git-tool-button/components/git-panel/git-panel.html'),
+        readAgentFile('IDE-plugins/git-tool-button/components/git-panel/git-panel.css')
     ]);
 
     const modalSources = [source, actions, branches, stash, gitOps].join('\n');
     assert.doesNotMatch(modalSources, /withGlobalLoader|globalLoader\.js/);
-    assert.match(modalSources, /withModalLoader/);
-    assert.match(template, /data-role="git-modal-loader"/);
-    assert.match(template, /data-role="git-modal-loader-label"/);
-    assert.match(styles, /\.git-modal\.git-modal-busy \.git-modal-content\s*\{[^}]*filter:\s*blur/s);
-    assert.match(styles, /\.git-modal-loader\s*\{[^}]*position:\s*absolute/s);
+    assert.match(modalSources, /withPanelLoader/);
+    assert.match(template, /data-role="git-panel-loader"/);
+    assert.match(template, /data-role="git-panel-loader-label"/);
+    assert.match(styles, /\.git-panel\.git-panel-busy \.git-panel-content\s*\{[^}]*filter:\s*blur/s);
+    assert.match(styles, /\.git-panel-loader\s*\{[^}]*position:\s*absolute/s);
 });

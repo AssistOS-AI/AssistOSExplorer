@@ -41,7 +41,9 @@ Requirement U8: autosync/autocommit scheduling shall target only repositories ex
 
 Requirement U9: when an autosync push is explicitly rejected as non-fast-forward, the plugin shall synchronize the selected repository and retry the push at most once. It shall never force-push and shall stop when synchronization conflicts or the bounded retry fails.
 
-Requirement U10: repository status shall distinguish an active merge from unresolved conflict entries and expose Git's prepared merge message. Once all merge conflicts are resolved and staged, the commit modal shall pre-fill that message for an editable manual Commit or Commit & Push; Sync and AutoSync shall complete the merge with the prepared message before attempting another pull or push.
+Requirement U10: repository status shall distinguish an active merge from unresolved conflict entries and expose Git's prepared merge message. Once all merge conflicts are resolved and staged, the Git panel shall pre-fill that message for an editable manual Commit or Commit & Push; Sync and AutoSync shall complete the merge with the prepared message before attempting another pull or push.
+
+Requirement U11: the Git toolbar shall open `git-panel` as a reactive component in Explorer's shared expanded modal, initially fullscreen. The shell exclusively owns resizing, fullscreen, Escape and close controls. The panel receives typed repository and conflict-selection properties, releases listeners and polling on removal, and notifies toolbar state refresh. Branch, stash and credential dialogs remain secondary interactions above the panel. No standalone Git window component or compatibility alias is provided.
 
 ### Constraints
 
@@ -70,6 +72,12 @@ Invariant I6: clearing the conflicted-file list does not by itself mark a merge 
 ### Validation Criteria
 
 Validation is satisfied when Explorer-triggered plugin actions call `gitAgent` tools successfully, tool outcomes map to UI state transitions, repository targeting follows explicit selection rules, autosync runs only for explicitly configured repositories, non-fast-forward recovery remains bounded to one synchronize-and-push retry without force, and Git execution behavior remains isolated from frontend internals.
+
+Shared expanded panels serialize ownership across pending and visible launches. Reopening the same target retains its close promise and forwards updated properties; Git applies these through `updateModalProps` without recreating its panel or clearing drafts. Superseded launches are cancelled before display. Fullscreen restore preserves the previous dimensions within the viewport. Help delegates all window controls to the shared shell.
+
+Closing an expanded panel aborts its owned startup requests, polling and waits, removes iframe content, and prevents delayed registration from mounting content. Shared module imports and server operations already accepted are not rolled back; their late results must not continue the closed panel initialization.
+
+The modal owns cleanup directly: closing marks it closed, aborts HTTP probes, clears its retry and readiness timers, and removes hosted content. Component loading uses normal awaits followed by closed checks. Each presenter releases its own resources in `afterUnload`; no generic promise cancellation wrapper is used.
 
 ## Conclusion
 

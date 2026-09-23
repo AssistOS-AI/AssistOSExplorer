@@ -2,7 +2,7 @@ import {
     normalizeErrorMessage,
     parseJsonToolResult,
     setGitConflictFlag
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 import { AUTOCOMMIT_RESET_EVENT } from "/explorer/utils/appEvents.js";
 
 export function createConflictActions(ctx) {

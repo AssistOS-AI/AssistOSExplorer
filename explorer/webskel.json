@@ -162,6 +162,11 @@
       "presenterClassName": "SettingsModal"
     },
     {
+      "name": "expanded-modal",
+      "type": "modals",
+      "presenterClassName": "ExpandedModal"
+    },
+    {
       "name": "soul-gateway-settings",
       "type": "components",
       "presenterClassName": "SoulGatewaySettings"

@@ -16,7 +16,7 @@ import {
     setShowAgentReposSetting,
     getConflictAutoresolveSetting,
     setConflictAutoresolveSetting
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 import { AUTOCOMMIT_SETTINGS_CHANGED_EVENT } from "/explorer/utils/appEvents.js";
 
 export function createCredentialsActions(ctx) {

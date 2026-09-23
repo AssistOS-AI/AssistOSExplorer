@@ -81,41 +81,6 @@ test('Help modal exposes the six documented, accessible topics', async () => {
     assert.equal(normalizeHelpTab(null), 'explorer');
 });
 
-test('Help modal toggles fullscreen on its host dialog', () => {
-    const classes = new Set();
-    const attributes = new Map();
-    const dialog = {
-        dataset: {},
-        style: {},
-        getBoundingClientRect: () => ({ left: 18, top: 24 }),
-        classList: {
-            add: (name) => classes.add(name),
-            contains: (name) => classes.has(name),
-            toggle(name, force) {
-                if (force) classes.add(name);
-                else classes.delete(name);
-            }
-        }
-    };
-    const modal = new HelpModal({
-        closest: (selector) => selector === 'dialog' ? dialog : null
-    }, () => {});
-    modal.fullscreenButton = {
-        setAttribute: (name, value) => attributes.set(name, value)
-    };
-
-    modal.toggleFullscreen();
-    assert.equal(classes.has('help-positioned'), true);
-    assert.equal(classes.has('is-fullscreen'), true);
-    assert.equal(dialog.style.left, '18px');
-    assert.equal(dialog.style.top, '24px');
-    assert.equal(attributes.get('aria-pressed'), 'true');
-
-    modal.toggleFullscreen();
-    assert.equal(classes.has('is-fullscreen'), false);
-    assert.equal(attributes.get('aria-pressed'), 'false');
-});
-
 test('Help guidance identifies domain ownership without adding a backend dependency', async () => {
     const [template, modalSource, buttonSource, styles, ...tabTemplates] = await Promise.all([
         fs.readFile(path.join(helpRoot, 'components/help-modal/help-modal.html'), 'utf8'),
@@ -141,14 +106,11 @@ test('Help guidance identifies domain ownership without adding a backend depende
     assert.match(modalSource, /ArrowLeft/);
     assert.match(modalSource, /Home/);
     assert.match(modalSource, /End/);
-    assert.match(buttonSource, /createReactiveModal\('help-modal'/);
+    assert.match(buttonSource, /openExpandedModal/);
+    assert.match(buttonSource, /pluginToolbarModal/);
     assert.match(buttonSource, /this\.button\?\.focus/);
-    assert.match(template, /data-help-fullscreen/);
-    assert.match(template, /\/explorer\/assets\/icons\/fullscreen\.svg/);
-    assert.match(modalSource, /classList\.toggle\('is-fullscreen'/);
-    assert.match(modalSource, /aria-pressed/);
-    assert.match(styles, /help-modal-dialog\.is-fullscreen/);
-    assert.match(styles, /--help-panel-max-width:\s*1280px/);
-    assert.match(styles, /max-width:\s*var\(--help-panel-max-width\)/);
+    assert.doesNotMatch(template, /data-help-fullscreen|data-help-close|modal-header/);
+    assert.doesNotMatch(modalSource, /toggleFullscreen|ensureDialogPositioning|closeModal/);
+    assert.doesNotMatch(styles, /help-modal-dialog|help-modal-window-actions/);
     assert.match(styles, /@media \(max-width: 720px\)/);
 });

@@ -8,7 +8,7 @@ import {
     extractGitPullBlockedFiles,
     parseJsonToolResult,
     normalizeGitStatusPayload
-} from "../components/git-commit-modal/git-commit-modal-utils.js";
+} from "../components/git-panel/git-panel-utils.js";
 
 export async function restoreStashFlow({
     service,

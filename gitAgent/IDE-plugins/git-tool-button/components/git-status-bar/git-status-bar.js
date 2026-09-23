@@ -40,6 +40,6 @@ export class GitStatusBar {
     }
 
     getParentPresenter() {
-        return this.element.closest('git-commit-modal')?.webSkelPresenter || null;
+        return this.element.closest('git-panel')?.webSkelPresenter || null;
     }
 }

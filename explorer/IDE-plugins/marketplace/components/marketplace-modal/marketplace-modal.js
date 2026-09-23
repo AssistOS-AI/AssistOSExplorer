@@ -63,6 +63,7 @@ export class MarketplaceModal {
   beforeRender() {}
 
   afterRender() {
+        if (!this.element.isConnected) return;
     this.unloaded = false;
     this.repoNameInput = this.element.querySelector('#marketplaceRepoName');
     this.repoUrlInput = this.element.querySelector('#marketplaceRepoUrl');
@@ -88,7 +89,7 @@ export class MarketplaceModal {
     this.renderState();
     if (!this.state.marketplace && !this.loadingStarted) {
       this.loadingStarted = true;
-      this.loadMarketplace();
+      this.initialLoad = this.loadMarketplace();
     } else if (this.canManageMarketplace() && !this.state.agentSettingsDataLoaded) {
       this.loadAgentSettingsData()
         .then(() => {

@@ -3,7 +3,7 @@ import {
     normalizeSlashes,
     parseJsonToolResult,
     stripTrailingSlash
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 
 export function createCommitMessageActions(ctx) {
     const {

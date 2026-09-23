@@ -1,4 +1,4 @@
-import { extractGitPullBlockedFiles } from "./git-commit-modal-utils.js";
+import { extractGitPullBlockedFiles } from "./git-panel-utils.js";
 import { FILE_EXP_REFRESH_EVENT } from "/explorer/utils/appEvents.js";
 import { pullWithAutoStashFlow } from "../../utils/git-auto-stash-flow.js";
 

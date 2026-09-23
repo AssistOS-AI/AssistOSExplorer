@@ -2,7 +2,7 @@ import {
     normalizeErrorMessage,
     parseJsonToolResult,
     normalizeGitStatusPayload
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 
 const encodeBase64 = (value) => {
     const text = String(value ?? '');
@@ -48,7 +48,7 @@ export function createBranchActions(ctx) {
         handlePullConflicts,
         restoreStash,
         applyState,
-        withModalLoader
+        withPanelLoader
     } = ctx;
 
     const getBranchPayload = async (repoPath) => {
@@ -85,14 +85,14 @@ export function createBranchActions(ctx) {
     };
 
     const runWithOptionalStash = async (repoPath, actionLabel, runOperation) => {
-        const counts = await withModalLoader(() => getDirtyCounts(repoPath));
+        const counts = await withPanelLoader(() => getDirtyCounts(repoPath));
         const policy = await askDirtyPolicy(counts, actionLabel);
         if (policy === 'cancel') {
             setStatusLine(`${actionLabel} canceled.`);
             return null;
         }
 
-        return withModalLoader(async () => {
+        return withPanelLoader(async () => {
             let stashRef = null;
             let stashCreated = false;
             if (policy === 'stash') {
@@ -130,7 +130,7 @@ export function createBranchActions(ctx) {
         const repoPath = String(element?.dataset?.repoPath || '').trim();
         if (!repoPath) return;
         try {
-            const branchPayload = await withModalLoader(() => getBranchPayload(repoPath));
+            const branchPayload = await withPanelLoader(() => getBranchPayload(repoPath));
             const selected = await chooseBranch(branchPayload.branches, {
                 title: 'Checkout branch',
                 currentBranch: branchPayload.currentBranch || ''
@@ -147,7 +147,7 @@ export function createBranchActions(ctx) {
                 return payload;
             });
             if (!result) return;
-            await withModalLoader(() => refreshAfterGitOperation({ keepStatus: true }));
+            await withPanelLoader(() => refreshAfterGitOperation({ keepStatus: true }));
             setStatusLine(`Checked out ${result.branch || selected.name}.`);
         } catch (error) {
             setStatusLine(normalizeErrorMessage(error), true);
@@ -158,7 +158,7 @@ export function createBranchActions(ctx) {
         const repoPath = String(element?.dataset?.repoPath || '').trim();
         if (!repoPath) return;
         try {
-            const branchPayload = await withModalLoader(() => getBranchPayload(repoPath));
+            const branchPayload = await withPanelLoader(() => getBranchPayload(repoPath));
             const result = await assistOS.UI.showModal('git-branch-create-modal', {
                 currentBranch: branchPayload.currentBranch || '',
                 branches: encodeBase64(JSON.stringify(sortBranches(branchPayload.branches)))
@@ -171,7 +171,7 @@ export function createBranchActions(ctx) {
             const startPoint = String(result?.startPoint || '').trim();
             const checkout = Boolean(result?.checkout);
             setStatusLine(`Creating branch ${name}...`);
-            await withModalLoader(async () => {
+            await withPanelLoader(async () => {
                 const text = await service.gitBranchCreate({
                     path: repoPath,
                     name,
@@ -192,7 +192,7 @@ export function createBranchActions(ctx) {
         const repoPath = String(element?.dataset?.repoPath || '').trim();
         if (!repoPath) return;
         try {
-            const branchPayload = await withModalLoader(() => getBranchPayload(repoPath));
+            const branchPayload = await withPanelLoader(() => getBranchPayload(repoPath));
             const selected = await chooseBranch(branchPayload.branches, {
                 title: `Merge into ${branchPayload.currentBranch || 'current branch'}`,
                 excludeCurrent: true,
@@ -220,7 +220,7 @@ export function createBranchActions(ctx) {
                 return payload;
             });
             if (!result) return;
-            await withModalLoader(() => refreshAfterGitOperation({ keepStatus: true }));
+            await withPanelLoader(() => refreshAfterGitOperation({ keepStatus: true }));
             if (result.conflicts) {
                 setStatusLine(`Merge from ${selected.name} has conflicts.`, true);
             } else {

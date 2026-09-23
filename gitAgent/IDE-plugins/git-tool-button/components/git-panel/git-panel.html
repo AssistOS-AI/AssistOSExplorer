@@ -1,10 +1,7 @@
-<div class="git-modal" role="dialog" aria-label="Git commit and push">
-    <div class="git-modal-header">
-        <div class="git-modal-title-group">
-            <div class="git-modal-title">Git</div>
-            <div class="git-modal-subtitle" id="gitRepoSubtitle"></div>
-        </div>
-        <div class="git-modal-header-actions">
+<div class="git-panel" aria-label="Git repositories">
+    <div class="git-panel-header">
+        <div class="git-panel-subtitle" id="gitRepoSubtitle"></div>
+        <div class="git-panel-header-actions">
             <div class="git-commit-settings">
                 <div class="git-commit-split" id="gitSettingsSplit">
                     <button
@@ -20,33 +17,23 @@
                     </button>
                 </div>
             </div>
-            <div class="git-modal-window-actions">
-                <button type="button" class="icon-button" id="gitModalFullscreen" aria-label="Toggle fullscreen"
-                        data-local-action="toggleFullscreen">
-                    <img src="/explorer/assets/icons/fullscreen.svg" alt="" class="git-settings-icon" aria-hidden="true">
-                </button>
-                <button type="button" class="icon-button" id="gitModalClose" aria-label="Close"
-                        data-local-action="closeModalAction">
-                    <img src="/explorer/assets/icons/x-mark.svg" alt="" class="git-settings-icon" aria-hidden="true">
-                </button>
-            </div>
         </div>
     </div>
 
-    <div class="git-modal-body">
+    <div class="git-panel-body">
         <div class="git-credentials" id="gitCredentials">
             <git-credentials-prompt data-presenter="git-credentials-prompt"></git-credentials-prompt>
         </div>
-        <div class="git-modal-content">
+        <div class="git-panel-content">
             <git-conflict-banner data-presenter="git-conflict-banner"></git-conflict-banner>
             <git-pull-blocked-panel data-presenter="git-pull-blocked-panel"></git-pull-blocked-panel>
             <git-conflict-helper data-presenter="git-conflict-helper"></git-conflict-helper>
             <git-commit-body data-presenter="git-commit-body"></git-commit-body>
         </div>
-        <div class="git-modal-loader" data-role="git-modal-loader" role="status"
+        <div class="git-panel-loader" data-role="git-panel-loader" role="status"
              aria-live="polite" aria-hidden="true" hidden>
-            <span class="git-modal-loader-spinner" aria-hidden="true"></span>
-            <span data-role="git-modal-loader-label">Working…</span>
+            <span class="git-panel-loader-spinner" aria-hidden="true"></span>
+            <span data-role="git-panel-loader-label">Working…</span>
         </div>
     </div>
 </div>

@@ -5,7 +5,7 @@ import {
     getGithubRepositoryApiUrl,
     getGithubRepositoryCreateUrl,
     parseGithubRepositoryRemote
-} from '../../IDE-plugins/git-tool-button/components/git-commit-modal/github-remote-utils.js';
+} from '../../IDE-plugins/git-tool-button/components/git-panel/github-remote-utils.js';
 
 test('parseGithubRepositoryRemote returns canonical GitHub HTTPS remote details', () => {
     assert.deepEqual(

@@ -84,12 +84,12 @@ test('Explorer Git menus publish separate add and clone entries and lazy click a
 
 test('Git opens its modal without an Explorer-owned loader and keeps forced refresh local', async () => {
     const controllerSource = await readAgentFile('IDE-plugins/git-tool-button/git-tool-button-controller.js');
-    const modalSource = await readAgentFile('IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal.js');
-    const openModalBlock = controllerSource.match(/async function openGitModal[\s\S]*?\n    }/)?.[0] || '';
+    const modalSource = await readAgentFile('IDE-plugins/git-tool-button/components/git-panel/git-panel.js');
+    const openModalBlock = controllerSource.match(/async function openGitPanel[\s\S]*?\n    }/)?.[0] || '';
 
     assert.doesNotMatch(openModalBlock, /fileExp\.withLoader/);
     assert.doesNotMatch(openModalBlock, /suppressGlobalLoader/);
     assert.match(openModalBlock, /syncConflictFlagFromRepos\(\)/);
-    assert.match(modalSource, /withModalLoader\(async \(\) =>/);
+    assert.match(modalSource, /withPanelLoader\(async \(\) =>/);
     assert.match(modalSource, /refreshAll\(\{ force: true \}\)/);
 });

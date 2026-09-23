@@ -9,7 +9,7 @@ import {
     getRememberedGitAuthMethod,
     getRememberedGithubConnection,
     normalizeGitAuthMethod
-} from "./git-commit-modal-utils.js";
+} from "./git-panel-utils.js";
 
 export function createGitCommitUI(ctx) {
     const {
@@ -17,7 +17,6 @@ export function createGitCommitUI(ctx) {
         state,
         setMenuAbortController,
         selectConflictFile,
-        closeModal,
     } = ctx;
 
     const bindEvents = () => {
@@ -45,16 +44,6 @@ export function createGitCommitUI(ctx) {
             changesRoot.dataset.bound = 'true';
         }
 
-        if (!element.dataset.boundEscape) {
-            element.addEventListener('keydown', (event) => {
-                if (event.key === 'Escape') {
-                    event.stopPropagation();
-                    event.preventDefault();
-                    closeModal();
-                }
-            });
-            element.dataset.boundEscape = 'true';
-        }
     };
 
     const syncStaticUI = () => {
@@ -63,7 +52,7 @@ export function createGitCommitUI(ctx) {
             subtitle.textContent = `Repository: ${state.repoPath}`;
         }
 
-        const modalRoot = element.classList.contains('git-modal') ? element : element.querySelector('.git-modal');
+        const modalRoot = element.classList.contains('git-panel') ? element : element.querySelector('.git-panel');
         if (modalRoot) {
             const gateActive = Boolean(state.credentialsGate);
             const credentialsVisible = gateActive

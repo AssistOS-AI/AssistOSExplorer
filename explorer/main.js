@@ -5,6 +5,8 @@ import { createRuntimePluginLoader } from './services/runtime/runtimePluginLoade
 import { installExplorerResourceLoader } from './services/runtime/explorerResourceLoader.js';
 import { filterRuntimePluginsByPolicy, forEachRuntimePluginEntry } from './utils/pluginUtils.core.js';
 import { initializeTheme } from './shared/ui/theme.js';
+import { openExpandedModal } from './shared/ui/expanded-modal.js';
+import { installExpandedModalLoading } from './shared/ui/expanded-modal-loading.js';
 import { fetchAuthenticatedUser } from './services/infrastructure/authApi.js';
 import { isAdminUser } from './services/auth/adminUser.js';
 import {
@@ -383,15 +385,27 @@ async function start() {
             return dialog;
         };
 
-        const openRenderedModal = async (dialog) => {
+        const openRenderedModal = async (dialog, signal) => {
+            if (signal?.aborted) return;
+            const cancel = () => {
+                if (dialog.open) dialog.close();
+                dialog.remove();
+            };
+            signal?.addEventListener('abort', cancel, { once: true });
+            dialog.addEventListener('close', () => signal?.removeEventListener('abort', cancel), { once: true });
             document.body.appendChild(dialog);
             await waitForModalRender(dialog);
+            if (signal?.aborted) {
+                dialog.remove();
+                return;
+            }
             dialog.showModal();
             dialog.addEventListener('keydown', preventModalEscape);
         };
 
-        webSkel.showModal = async (componentName, payload = {}, expectResult = false) => {
+        webSkel.showModal = async (componentName, payload = {}, expectResult = false, { signal } = {}) => {
             await ensureComponentRegistered(componentName);
+            if (signal?.aborted) return null;
             const dialog = createHiddenModalDialog(componentName, payload);
             appendModalComponent(dialog, componentName, payload, false);
             const result = expectResult
@@ -399,9 +413,17 @@ async function start() {
                     dialog.addEventListener('close', (event) => resolve(event.data), { once: true });
                 })
                 : dialog;
-            await openRenderedModal(dialog);
-            return result;
+            try {
+                await openRenderedModal(dialog, signal);
+                if (signal?.aborted) return null;
+                return result;
+            } catch (error) {
+                dialog.remove();
+                throw error;
+            }
         };
+
+        webSkel.openExpandedModal = openExpandedModal;
 
         webSkel.createReactiveModal = async (componentName, payload = {}, expectResult = false) => {
             await ensureComponentRegistered(componentName);
@@ -432,6 +454,10 @@ async function start() {
     };
 
     installRuntimeComponentGuards();
+    installExpandedModalLoading(webSkel);
+    // The shared shell is ready before toolbar interaction; plugin content stays lazy.
+    const expandedModalConfig = webSkel.configs.components.find(component => component.name === 'expanded-modal');
+    await webSkel.ResourceManager.loadComponent(expandedModalConfig);
 
     if (typeof window !== 'undefined') {
         window.UI = webSkel;

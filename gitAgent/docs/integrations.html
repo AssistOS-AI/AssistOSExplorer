@@ -48,9 +48,10 @@
 
                 <section>
                     <h2>IDE-plugins Channel</h2>
-                    <p>The folder <code>gitAgent/IDE-plugins/git-tool-button/</code> provides user interface plugin bundles inserted in Explorer toolbar slot <code>file-exp:toolbar</code>. Plugin dependencies include commit modal components, repo tree, diff viewer, conflict helper, status bar, and auth prompt components.</p>
-                    <p>The commit modal first loads a compact repository overview with aggregate counts. Dirty repositories remain automatically expanded, and Explorer requests their complete <code>git_status</code> independently with bounded concurrency. Repository details are cached until Refresh, while loading and failure states are displayed inside the affected repository row. Quick overview checks use a five-second deadline, while complete status enumeration has a separate 120-second deadline for large repositories.</p>
-                    <p>Generating an AI commit message uses a busy overlay scoped to the commit modal. The Git content remains visible beneath the overlay, duplicate generation requests are disabled, and the modal returns to its interactive state when generation succeeds or fails.</p>
+                    <p>The folder <code>gitAgent/IDE-plugins/git-tool-button/</code> provides user interface plugin bundles inserted in Explorer toolbar slot <code>file-exp:toolbar</code>. Plugin dependencies include the Git panel, repo tree, diff viewer, conflict helper, status bar, and auth prompt components.</p>
+                    <p>The Git toolbar opens <code>git-panel</code> inside Explorer's shared expanded modal, initially fullscreen. Explorer owns resize, fullscreen, Escape and close controls. Reactive properties preserve repository and conflict selection; removal clears panel polling and listeners and refreshes toolbar indicators. Branch and stash dialogs open above the panel.</p>
+                    <p>The Git panel first loads a compact repository overview with aggregate counts. Dirty repositories remain automatically expanded, and Explorer requests their complete <code>git_status</code> independently with bounded concurrency. Repository details are cached until Refresh, while loading and failure states are displayed inside the affected repository row. Quick overview checks use a five-second deadline, while complete status enumeration has a separate 120-second deadline for large repositories.</p>
+                    <p>Generating an AI commit message uses a busy overlay scoped to the Git panel. The Git content remains visible beneath the overlay, duplicate generation requests are disabled, and the panel returns to its interactive state when generation succeeds or fails.</p>
                     <p>AutoSync pulls before committing and pushing. If a concurrent remote update causes an explicit non-fast-forward push rejection, it synchronizes through the existing Git tool contract and retries the push once. Conflicts or a second rejection stop AutoSync; the plugin never force-pushes.</p>
                     <p>A resolved merge remains an active Git operation until its merge commit is created. The Git status contract exposes both this state and Git's prepared merge message. Explorer pre-fills the commit field for manual Commit and Commit &amp; Push, preserving user edits, while Sync and AutoSync use the prepared message automatically.</p>
                     <table>
@@ -78,7 +79,10 @@
                 </section>
             </div>
         </div>
-    </main>
+    <p>Shared expanded panels cancel superseded launches, retain one close promise when reused, and forward updated properties without recreating the Git panel. Fullscreen restore preserves the previous size within the viewport; Help uses the shared window controls.</p>
+<p>Closing a loading panel cancels its startup requests, polling, timers and pending mount. Late shared imports or already submitted server operations cannot resume the closed panel.</p>
+<p>Modal cleanup is owned directly by the presenter. Close stops HTTP probes and timers; ordinary asynchronous component loading checks whether the modal is closed before continuing. Hosted components clean up in afterUnload.</p>
+</main>
 
     <footer id="site-footer" class="site-footer"></footer>
     <script src="partials-loader.js"></script>

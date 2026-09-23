@@ -1,3 +1,4 @@
+import { openToolbarPluginWithFeedback, isToolbarPluginOpening } from "../../../shared/ui/toolbar-plugin-feedback.js";
 const APP_PLUGIN_SLOTS = Object.freeze({
     toolbar: 'file-exp:toolbar',
     toolbarPluginsDropdown: 'file-exp:toolbar-plugins-dropdown',
@@ -13,6 +14,7 @@ import { sortRuntimePluginEntries, getRuntimePluginPolicyKey } from "../../../ut
 import { emitPluginMountedAudit } from "../../../services/audit/auditService.js";
 import { resolveExplorerPathToFilesystemPath } from "../../../services/infrastructure/explorerApi.js";
 import { isAdminUser } from "../../../services/auth/adminUser.js";
+import { openExpandedModal } from "../../../shared/ui/expanded-modal.js";
 
 function getPluginSettingsMap() {
     const settings = window.assistOS?.pluginSettings;
@@ -162,7 +164,10 @@ function updateMountedPluginElement(pluginElement, plugin, context) {
             pluginAgent: typeof plugin?.agent === 'string' ? plugin.agent : '',
             pluginLabel: label,
             pluginTooltip: tooltip,
-            pluginIcon: typeof plugin?.icon === 'string' ? plugin.icon : ''
+            pluginIcon: typeof plugin?.icon === 'string' ? plugin.icon : '',
+            pluginToolbarModal: plugin?.toolbarModal && typeof plugin.toolbarModal === 'object' && !Array.isArray(plugin.toolbarModal)
+                ? plugin.toolbarModal
+                : null
         });
     }
 }
@@ -196,6 +201,15 @@ function getPluginPresentation(plugin) {
         ? plugin.tooltip.trim()
         : label;
     return { label, tooltip };
+}
+
+function openPluginToolbarModal(plugin) {
+    const descriptor = plugin?.toolbarModal;
+    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+        return;
+    }
+    const { label } = getPluginPresentation(plugin);
+    return openExpandedModal({ ...descriptor, title: descriptor.title || label });
 }
 
 function markPluginLoadingFailed(mount, plugin, error) {
@@ -364,7 +378,7 @@ function stageApplicationPluginPlaceholders(fileExp) {
     stageSlotMounts(accountMenuContainer, APP_PLUGIN_SLOTS.accountMenu, accountMenuPlugins);
 }
 
-async function mountSlot(container, slot, plugins, context, { onlyKey = '', componentsReady = false } = {}) {
+async function mountSlot(container, slot, plugins, context, { onlyKey = '', componentsReady = false, cancelled = () => false, background = false } = {}) {
     if (!container) {
         return;
     }
@@ -404,18 +418,22 @@ async function mountSlot(container, slot, plugins, context, { onlyKey = '', comp
             stagedMounts.set(key, mount);
             container.appendChild(mount);
         }
+        if (cancelled()) throw new Error('Panel closed');
         pluginElement ||= document.createElement(plugin.component);
         if (!pluginElement.hasAttribute('data-presenter')) {
             pluginElement.setAttribute('data-presenter', plugin.component);
         }
         updateMountedPluginElement(pluginElement, plugin, contextWithOrientation);
         if (!pluginElement.isConnected) {
-            if (showLoadingPlaceholder) {
+            if (showLoadingPlaceholder && !background) {
                 pluginElement.classList.add(...loadingClasses, 'app-plugin-loading-state');
                 pluginElement.setAttribute('data-app-plugin-loading', '');
                 pluginElement.setAttribute('aria-busy', 'true');
             }
-            if (mount.querySelector('[data-app-plugin-trigger]')) {
+            if (background) {
+                pluginElement.style.setProperty('display', 'none', 'important');
+                mount.appendChild(pluginElement);
+            } else if (mount.querySelector('[data-app-plugin-trigger]')) {
                 mount.replaceChildren(pluginElement);
             } else {
                 mount.appendChild(pluginElement);
@@ -423,8 +441,9 @@ async function mountSlot(container, slot, plugins, context, { onlyKey = '', comp
         }
         try {
             const ownsLoadingState = pluginElement.hasAttribute('data-app-plugin-loading');
-            if (ownsLoadingState) {
+            if (ownsLoadingState || background) {
                 await waitForPluginPresenterRender(pluginElement);
+                if (cancelled()) throw new Error('Panel closed');
             }
             updateMountedPluginElement(pluginElement, plugin, contextWithOrientation);
             if (ownsLoadingState) {
@@ -435,8 +454,20 @@ async function mountSlot(container, slot, plugins, context, { onlyKey = '', comp
                 pluginElement.removeAttribute('aria-label');
                 pluginElement.removeAttribute('title');
             }
+            if (background) {
+                mount.querySelector('[data-app-plugin-trigger]')?.remove();
+                pluginElement.style.removeProperty('display');
+            }
             void emitPluginMountedAudit(key, contextWithOrientation);
         } catch (error) {
+            if (cancelled()) {
+                pluginElement.remove();
+                throw error;
+            }
+            if (background) {
+                pluginElement.remove();
+                throw error;
+            }
             markPluginLoadingFailed(mount, plugin, error);
             console.error(`[app-plugins] Failed to render ${key}:`, error);
         }
@@ -456,14 +487,19 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
     const plugin = plugins.find((entry) => getPluginKey(entry) === key);
     if (!plugin) return;
 
+    const opening = openToolbarPluginWithFeedback(trigger, () => openPluginToolbarModal(plugin));
+    if (opening?.opened && !await opening.opened) return;
+
+    const cancelled = () => opening?.isClosed?.() === true;
     fileExp.__toolbarPluginLoadPromises ||= new Map();
     let loadPromise = fileExp.__toolbarPluginLoadPromises.get(key);
     if (!loadPromise) {
-        trigger.classList.add('app-plugin-loading-state');
-        trigger.setAttribute('data-app-plugin-loading', '');
-        trigger.setAttribute('aria-busy', 'true');
-        trigger.setAttribute('aria-disabled', 'true');
-        trigger.disabled = true;
+        if (!plugin.toolbarModal) {
+            trigger.setAttribute('data-app-plugin-loading', '');
+            trigger.setAttribute('aria-busy', 'true');
+            trigger.setAttribute('aria-disabled', 'true');
+            trigger.disabled = true;
+        }
 
         loadPromise = (async () => {
             const currentPath = fileExp.normalizePath(fileExp.state.path || '/');
@@ -472,13 +508,16 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
                 resolveExplorerPathToFilesystemPath(currentPath),
                 resolveExplorerPathToFilesystemPath('/')
             ]);
+            if (cancelled()) throw new Error('Panel closed');
             const context = buildPluginContext(fileExp, APP_PLUGIN_SLOTS.toolbar, {
                 currentFsPath,
                 workspaceFsRoot
             });
             await mountSlot(toolbarContainer, APP_PLUGIN_SLOTS.toolbar, plugins, context, {
                 onlyKey: key,
-                componentsReady: true
+                componentsReady: true,
+                background: Boolean(plugin.toolbarModal),
+                cancelled
             });
             const mount = Array.from(toolbarContainer.querySelectorAll('[data-app-plugin-key]'))
                 .find((entry) => entry.getAttribute('data-app-plugin-key') === key);
@@ -488,7 +527,9 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
             }
             const actionTarget = pluginElement?.querySelector?.('button:not([disabled]), [role="button"]:not([aria-disabled="true"]), [data-local-action]')
                 || pluginElement;
-            actionTarget?.click?.();
+            // Descriptor panels are already open; replaying the click can reopen a
+            // panel the user closed while the toolbar presenter was loading.
+            if (!plugin.toolbarModal) actionTarget?.click?.();
         })().finally(() => {
             fileExp.__toolbarPluginLoadPromises?.delete(key);
         });
@@ -498,6 +539,12 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
     try {
         await loadPromise;
     } catch (error) {
+        if (cancelled()) {
+            const mount = Array.from(toolbarContainer.querySelectorAll('[data-app-plugin-key]'))
+                .find(entry => entry.getAttribute('data-app-plugin-key') === key);
+            mount?.replaceChildren(createLazyPluginButton(plugin, key));
+            return;
+        }
         console.error(`[app-plugins] Failed to activate ${key}:`, error);
         const mount = trigger.closest?.('[data-app-plugin-key]');
         if (mount) {
@@ -511,6 +558,24 @@ async function loadToolbarPluginOnDemand(fileExp, trigger) {
 
 function bindLazyToolbarPluginActions(fileExp, toolbarContainer) {
     if (!toolbarContainer || typeof fileExp?.setElementListener !== 'function') return;
+    fileExp.setElementListener('toolbar-plugin-opening-feedback', toolbarContainer, 'click', (event) => {
+        const button = event.target?.closest?.('button, [role="button"]');
+        if (!button || !toolbarContainer.contains(button)) return;
+        if (isToolbarPluginOpening(button)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+        }
+        // Lazy controls apply the same feedback in their activation handler.
+        if (button.hasAttribute('data-app-plugin-trigger')) return;
+        const mount = button.closest('[data-app-plugin-key]');
+        const key = mount?.getAttribute('data-app-plugin-key');
+        const plugin = getApplicationPluginsForSlot(APP_PLUGIN_SLOTS.toolbar, {
+            contributionType: MOUNT_CONTRIBUTION_TYPE
+        }).find(entry => getPluginKey(entry) === key);
+        if (!plugin?.toolbarModal) return;
+        openToolbarPluginWithFeedback(button, () => openPluginToolbarModal(plugin));
+    }, true);
     fileExp.setElementListener('lazy-toolbar-plugin-actions', toolbarContainer, 'click', (event) => {
         const trigger = event.target?.closest?.('[data-app-plugin-trigger]');
         if (!trigger || !toolbarContainer.contains(trigger)) return;

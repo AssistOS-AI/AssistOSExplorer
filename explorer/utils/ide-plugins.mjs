@@ -259,6 +259,19 @@ function validateAndNormalizePluginConfig(parsedConfig, pluginEntryName, configP
     return null;
   }
 
+  if (parsedConfig.toolbarModal !== undefined) {
+    const descriptor = parsedConfig.toolbarModal;
+    const mode = descriptor && typeof descriptor === 'object' && !Array.isArray(descriptor)
+      ? String(descriptor.mode || '').trim()
+      : '';
+    const valid = (mode === 'iframe' && isNonEmptyString(descriptor?.url))
+      || (mode === 'component' && isNonEmptyString(descriptor?.component));
+    if (!valid) {
+      console.warn(`[filesystem-http] Plugin ${configPath} has an invalid toolbarModal descriptor.`);
+      delete parsedConfig.toolbarModal;
+    }
+  }
+
   const normalizedLocations = [...new Set(locations)];
   const effectiveLocations = pluginCategory === APPLICATION_PLUGIN_CATEGORY && normalizedLocations.length === 0
     ? ['']

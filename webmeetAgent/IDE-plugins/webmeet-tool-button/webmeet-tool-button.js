@@ -102,8 +102,16 @@ export class WebMeetToolButton {
     openDashboard = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
-        const targetUrl = this.buildRoomLoaderUrl();
-        window.open(targetUrl.toString(), '_blank', 'noopener');
+        const descriptor = this.hostContext?.pluginToolbarModal;
+        const openExpandedModal = globalThis.assistOS?.UI?.openExpandedModal;
+        if (openExpandedModal && descriptor) {
+            void openExpandedModal({
+                ...descriptor,
+                title: this.hostContext?.pluginLabel || descriptor.title
+            });
+            return;
+        }
+        window.open(this.buildRoomLoaderUrl().toString(), '_blank', 'noopener');
         this.scheduleInitialTabLoaderCleanup();
     };
 }

@@ -1,1 +1,1 @@
-export const GIT_MODAL_CLOSED_EVENT = 'webskel-git-modal-closed';
+export const GIT_PANEL_CLOSED_EVENT = 'webskel-git-panel-closed';

@@ -6,8 +6,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { createGitService } from '../../lib/git-service.mjs';
-import { createGitOpsActions } from '../../IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-actions-gitops.js';
-import { createGitCommitUI } from '../../IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-ui.js';
+import { createGitOpsActions } from '../../IDE-plugins/git-tool-button/components/git-panel/git-panel-actions-gitops.js';
+import { createGitCommitUI } from '../../IDE-plugins/git-tool-button/components/git-panel/git-panel-ui.js';
 import { GitCommitActions } from '../../IDE-plugins/git-tool-button/components/git-commit-actions/git-commit-actions.js';
 
 function runGit(args, cwd, { allowFailure = false } = {}) {
@@ -83,7 +83,7 @@ test('gitStatus reports a resolved pending merge and gitCommit can complete it w
 
 test('Explorer completes merges without dropping remaining selected changes', async () => {
     const source = await fs.readFile(new URL(
-        '../../IDE-plugins/git-tool-button/components/git-commit-modal/git-commit-modal-actions-gitops.js',
+        '../../IDE-plugins/git-tool-button/components/git-panel/git-panel-actions-gitops.js',
         import.meta.url
     ), 'utf8');
 
@@ -205,7 +205,7 @@ test('manual Commit and Commit & Push use the merge message shown in the editabl
         loadRepoOverviews: async () => {},
         refreshAfterGitOperation: async () => {},
         clearCommitMessageInput() {},
-        withModalLoader: async (operation) => operation(),
+        withPanelLoader: async (operation) => operation(),
         ensureGitIdentityOrPrompt: async () => true,
         service: {
             async gitSetIdentity() {},

@@ -1,4 +1,4 @@
-import { parseJsonToolResult } from "./git-commit-modal-utils.js";
+import { parseJsonToolResult } from "./git-panel-utils.js";
 
 export function createGitCommitService({ callTool, callAgentTool }) {
     const extractToolText = (result) => {

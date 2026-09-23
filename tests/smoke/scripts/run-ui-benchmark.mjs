@@ -38,7 +38,7 @@ const scenarioSteps = Object.freeze([
   'open-confidential-my-space',
   'return-root-from-confidential',
   'open-workspace-file',
-  'open-git-modal',
+  'open-git-panel',
 ]);
 
 function printHelp() {
@@ -887,14 +887,14 @@ async function runIteration(browser, config, index) {
       return { path: config.filePath };
     });
 
-    await measureStep(state, 'open-git-modal', async () => {
+    await measureStep(state, 'open-git-panel', async () => {
       await page.locator('#gitButton').click();
-      await page.locator('git-commit-modal .git-modal').waitFor({
+      await page.locator('git-panel .git-panel').waitFor({
         state: 'visible',
         timeout: config.timeoutMs,
       });
       await page.waitForFunction(() => {
-        const modal = document.querySelector('git-commit-modal');
+        const modal = document.querySelector('git-panel');
         const presenter = modal?.webSkelPresenter;
         return Boolean(
           presenter
@@ -904,7 +904,7 @@ async function runIteration(browser, config, index) {
         );
       }, null, { timeout: config.timeoutMs });
       return {
-        readiness: await page.locator('git-commit-modal').evaluate((modal) => {
+        readiness: await page.locator('git-panel').evaluate((modal) => {
           const state = modal.webSkelPresenter?.state || {};
           return state.credentialsGate ? 'credentials-gate' : 'repository-overview';
         }),

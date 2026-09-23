@@ -1,5 +1,5 @@
-import { parseJsonToolResult, normalizeGitStatusPayload } from "./git-commit-modal-utils.js";
-import { mergeRepoOverviewWithStatus } from './git-commit-modal-status.js';
+import { parseJsonToolResult, normalizeGitStatusPayload } from "./git-panel-utils.js";
+import { mergeRepoOverviewWithStatus } from './git-panel-status.js';
 
 export function createRepoActions(ctx) {
     const {
