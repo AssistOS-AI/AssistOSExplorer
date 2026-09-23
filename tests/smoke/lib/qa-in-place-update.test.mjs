@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import { once } from 'node:events';
 import test from 'node:test';
-import { spawnSync } from 'node:child_process';
-import { classifyChanges, createUpdateService, EXPLORER_SOURCE, preSignalRestartFailure, recoverUnchangedAgentRoute,
+import { spawn, spawnSync } from 'node:child_process';
+import { classifyChanges, createUpdateService, EXPLORER_SOURCE, freshLoopbackHttpGet, preSignalRestartFailure, recoverUnchangedAgentRoute,
     updateProductionAdapters } from '../../../.github/scripts/update-explorer-qa.mjs';
 
 const OLD = 'a'.repeat(40), NEXT = 'b'.repeat(40), CORE = 'c'.repeat(40), LIB = 'd'.repeat(40);
@@ -462,6 +464,69 @@ test('production runtime probes select the deployed Router and media ports insid
     fs.chmodSync(engine, 0o700);
     const result = await updateProductionAdapters(scope).runtime({ engine, box: { id: BOX } });
     assert.deepEqual(result, { active: true, agents: [], scriptProvided: true });
+});
+
+test('fresh health connections survive synchronous probes after the server closes its idle socket', async t => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+        import http from 'node:http';
+        const server = http.createServer((req, res) => {
+            res.writeHead(401, {'Content-Type':'application/json', 'Connection':'keep-alive', 'Keep-Alive':'timeout=60'});
+            res.end(JSON.stringify({ok:false,error:{code:'AUTH_REQUIRED'}}));
+        });
+        server.keepAliveTimeout = 100; server.keepAliveTimeoutBuffer = 0;
+        server.listen(0, '127.0.0.1', () => process.stdout.write(String(server.address().port) + '\\n'));
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    t.after(async () => { if (child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'exit'); } });
+    const [portChunk] = await once(child.stdout, 'data');
+    const port = Number(portChunk.toString().trim());
+    const probe = get => new Promise((resolve, reject) => {
+        get({ hostname: '127.0.0.1', port, path: '/health' }, response => {
+            let body = ''; response.setEncoding('utf8'); response.on('data', chunk => { body += chunk; });
+            response.on('end', () => resolve({ status: response.statusCode, body }));
+        }).on('error', reject);
+    });
+    const blockEventLoop = () => {
+        const result = spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], { timeout: 3000 });
+        assert.equal(result.status, 0);
+    };
+    const pooledAgent = new http.Agent({ keepAlive: true });
+    t.after(() => pooledAgent.destroy());
+    const pooledGet = (options, callback) => http.get({ ...options, agent: pooledAgent }, callback);
+    assert.equal((await probe(pooledGet)).status, 401);
+    await new Promise(resolve => setImmediate(resolve));
+    blockEventLoop();
+    await assert.rejects(probe(pooledGet), error => ['ECONNRESET', 'EPIPE'].includes(error.code));
+    assert.equal((await probe(freshLoopbackHttpGet)).status, 401);
+    blockEventLoop();
+    assert.deepEqual(await probe(freshLoopbackHttpGet), { status: 401, body: '{"ok":false,"error":{"code":"AUTH_REQUIRED"}}' });
+});
+
+test('production health retains strict readiness and reports a safe loopback phase and runtime code', async t => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-update-health-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    write(path.join(root, '.runtime/ploinky/ploinky-box/supervisor.mjs'), `
+        import assert from 'node:assert/strict';
+        export async function checkBoxHealth(port, options) {
+            assert.equal(port, 8097); assert.equal(options.timeoutMs, 5000); assert.equal(options.readinessTimeoutMs, 0);
+            assert.equal(options.httpGet.name, 'freshLoopbackHttpGet');
+            throw Object.assign(new Error('private response body'), {code:'PLOINKY_BOX_SUPERVISOR_FAILED'});
+        }
+    `);
+    await assert.rejects(updateProductionAdapters({ workspace: root }).health(), error => {
+        assert.equal(error.code, 'PLOINKY_BOX_SUPERVISOR_FAILED'); assert.equal(error.operation, 'loopback-health');
+        assert.equal(error.message.includes('private response body'), false); return true;
+    });
+});
+
+test('post-update health failure preserves the safe runtime code through source rollback', async t => {
+    const f = fixture(t); let checks = 0;
+    f.adapters.health = async () => {
+        if (++checks === 2) throw Object.assign(Error('private runtime detail'), {
+            code: 'PLOINKY_BOX_SUPERVISOR_FAILED', operation: 'loopback-health',
+        });
+    };
+    await assert.rejects(f.service.execute(f.receipt), error => error.receipt.rollback === 'passed'
+        && error.receipt.code === 'PLOINKY_BOX_SUPERVISOR_FAILED' && error.receipt.operation === 'loopback-health');
 });
 
 test('Git adapter parses real additions, deletions and moves, fast-forwards, and restores with keep', t => {

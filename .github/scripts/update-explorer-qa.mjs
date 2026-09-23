@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { productionAdapters, QA_SCOPE } from './rollback-explorer-qa.mjs';
@@ -17,6 +18,13 @@ const PRE_SIGNAL_LIFECYCLE_SHA256 = '267a0cd6eec97568bf5f72eaee0c52243a2a96b7a19
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const present = file => { try { return fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
+const safeFailureCode = (error, fallback) => /^(?:QA_|PLOINKY_BOX_)[A-Z_]+$/.test(error?.code || '') ? error.code : fallback;
+
+export function freshLoopbackHttpGet(options, callback) {
+    // Synchronous identity probes can outlive the Router's keep-alive timeout
+    // while Node has not yet processed its pooled socket's close event.
+    return http.get({ ...options, agent: false }, callback);
+}
 
 function prove(condition, code) {
     if (!condition) throw Object.assign(new Error(code), { code });
@@ -341,7 +349,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         } catch (error) {
             if (!changed || !receipt) throw error;
             receipt.status = 'failed';
-            receipt.code = /^QA_[A-Z_]+$/.test(error.code || '') ? error.code : 'QA_UPDATE_FAILED';
+            receipt.code = safeFailureCode(error, 'QA_UPDATE_FAILED');
             if (/^[A-Za-z0-9_:/.-]{1,160}$/.test(error.operation || '')) receipt.operation = error.operation;
             try {
                 if (!lock) await acquire();
@@ -371,7 +379,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
                 receipt.rollback = 'passed';
             } catch (rollbackError) {
                 receipt.rollback = 'failed';
-                receipt.rollbackCode = /^QA_[A-Z_]+$/.test(rollbackError.code || '') ? rollbackError.code : 'QA_UPDATE_ROLLBACK_FAILED';
+                receipt.rollbackCode = safeFailureCode(rollbackError, 'QA_UPDATE_ROLLBACK_FAILED');
                 if (/^[A-Za-z0-9_:/.-]{1,160}$/.test(rollbackError.operation || '')) receipt.rollbackOperation = rollbackError.operation;
             }
             writeReceipt();
@@ -538,7 +546,12 @@ export function updateProductionAdapters(scope = QA_SCOPE) {
         },
         async health() {
             const { checkBoxHealth } = await import(pathToFileURL(path.join(scope.workspace, '.runtime/ploinky/ploinky-box/supervisor.mjs')).href);
-            await checkBoxHealth(8097, { timeoutMs: 5000, readinessTimeoutMs: 0 });
+            try {
+                await checkBoxHealth(8097, { timeoutMs: 5000, readinessTimeoutMs: 0, httpGet: freshLoopbackHttpGet });
+            } catch (error) {
+                throw Object.assign(new Error(safeFailureCode(error, 'QA_UPDATE_LOOPBACK_HEALTH_FAILED')),
+                    { code: safeFailureCode(error, 'QA_UPDATE_LOOPBACK_HEALTH_FAILED'), operation: 'loopback-health' });
+            }
         },
         async runtime(item) {
             const script = `
@@ -602,7 +615,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     try { await main(); }
     catch (error) {
         process.stdout.write(JSON.stringify(error.receipt || { result: 'failed', status: 'rejected',
-            code: /^QA_[A-Z_]+$/.test(error.code || '') ? error.code : 'QA_UPDATE_REJECTED' }) + '\n');
+            code: safeFailureCode(error, 'QA_UPDATE_REJECTED'),
+            ...(/^[A-Za-z0-9_:/.-]{1,160}$/.test(error.operation || '') ? { operation: error.operation } : {}) }) + '\n');
         process.exitCode = 1;
     }
 }
