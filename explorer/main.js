@@ -5,7 +5,7 @@ import { createRuntimePluginLoader } from './services/runtime/runtimePluginLoade
 import { installExplorerResourceLoader } from './services/runtime/explorerResourceLoader.js';
 import { filterRuntimePluginsByPolicy, forEachRuntimePluginEntry } from './utils/pluginUtils.core.js';
 import { initializeTheme } from './shared/ui/theme.js';
-import { openExpandedModal } from './shared/ui/expanded-modal.js';
+import { openExpandedModal, restoreExpandedModal } from './shared/ui/expanded-modal.js';
 import { installExpandedModalLoading } from './shared/ui/expanded-modal-loading.js';
 import { fetchAuthenticatedUser } from './services/infrastructure/authApi.js';
 import { isAdminUser } from './services/auth/adminUser.js';
@@ -462,6 +462,9 @@ async function start() {
     if (typeof window !== 'undefined') {
         window.UI = webSkel;
     }
+
+    // Reopen a resumable expanded panel (e.g. WebMeet) that was open before a browser refresh.
+    void restoreExpandedModal();
 
     webSkel.setLoading(`
         <div class="spinner-container">

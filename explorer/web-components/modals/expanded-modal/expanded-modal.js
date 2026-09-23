@@ -464,7 +464,22 @@ export class ExpandedModal {
         window.open(window.location.href, "_blank", "noopener,noreferrer");
     }
 
-    closeModal() {
+    async notifyFrameUserClose() {
+        try {
+            const frameWindow = this.frame?.contentWindow;
+            const hook = frameWindow?.__onExpandedModalClose;
+            if (typeof hook !== "function") return;
+            // The hook resolves after it stops local media and disconnects the room. It performs
+            // no unbounded network waits, so closing stays prompt.
+            await hook();
+        } catch (_) {
+            // Cross-origin, unloaded, or failing hooks must never block closing the panel.
+        }
+    }
+
+    async closeModal() {
+        // Disconnect and release embedded content (room, tracks) before the frame is removed.
+        await this.notifyFrameUserClose();
         this.closed = true;
         this.cancelLoading();
         assistOS.UI.closeModal(this.element);

@@ -51,6 +51,8 @@ test('expanded-modal is a registered WebSkel modal component', async () => {
     assert.match(presenter, /startDrag/);
     assert.match(presenter, /openInNewTab\(\)/);
     assert.match(presenter, /closeModal/);
+    assert.match(presenter, /notifyFrameUserClose/);
+    assert.match(presenter, /__onExpandedModalClose/);
 });
 
 test('Explorer exposes an open-in-new-tab action for the current path', async () => {
@@ -87,8 +89,18 @@ test('openExpandedModal is a thin host shell over assistOS.UI.showModal', async 
 test('Explorer exposes the expanded modal host API', async () => {
     const source = await readText('main.js');
 
-    assert.match(source, /import \{ openExpandedModal \} from '\.\/shared\/ui\/expanded-modal\.js'/);
+    assert.match(source, /import \{ openExpandedModal, restoreExpandedModal \} from '\.\/shared\/ui\/expanded-modal\.js'/);
     assert.match(source, /webSkel\.openExpandedModal = openExpandedModal/);
+    assert.match(source, /restoreExpandedModal\(\)/);
+});
+
+test('the expanded modal shell persists and restores resumable panels', async () => {
+    const source = await readText('shared/ui/expanded-modal.js');
+
+    assert.match(source, /export function restoreExpandedModal/);
+    assert.match(source, /function persistResume/);
+    assert.match(source, /descriptor\.resume === true/);
+    assert.match(source, /pageUnloading/);
 });
 
 test('toolbar plugins declare a toolbarModal descriptor', async () => {

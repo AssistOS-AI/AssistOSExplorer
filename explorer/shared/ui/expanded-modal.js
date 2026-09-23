@@ -22,6 +22,65 @@ function descriptorKey(descriptor = {}) {
 }
 
 let activePanel = null;
+let pageUnloading = false;
+const RESUME_STORAGE_KEY = "explorer.expandedModal.resume";
+
+if (typeof globalThis.window !== "undefined") {
+    const markPageUnloading = () => { pageUnloading = true; };
+    globalThis.window.addEventListener("pagehide", markPageUnloading, { once: true });
+    globalThis.window.addEventListener("beforeunload", markPageUnloading, { once: true });
+}
+
+function isResumableDescriptor(descriptor = {}) {
+    return descriptor.resume === true;
+}
+
+function persistResume(descriptor = {}, key = "") {
+    if (!isResumableDescriptor(descriptor)) return;
+    try {
+        globalThis.sessionStorage?.setItem(RESUME_STORAGE_KEY, JSON.stringify({
+            key,
+            resume: true,
+            mode: descriptor.mode || (descriptor.component ? "component" : "iframe"),
+            component: descriptor.component || "",
+            url: descriptor.url || descriptor.iframeUrl || "",
+            agentRef: descriptor.agentRef || "",
+            allow: descriptor.allow || "",
+            readyTitle: descriptor.readyTitle || "",
+            title: descriptor.title || "",
+            fullscreen: descriptor.fullscreen
+        }));
+    } catch (_) {
+        // Persisting the resume record is best-effort.
+    }
+}
+
+function clearResume(recordKey = "") {
+    try {
+        const raw = globalThis.sessionStorage?.getItem(RESUME_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (recordKey && parsed?.key && parsed.key !== recordKey) return;
+        globalThis.sessionStorage?.removeItem(RESUME_STORAGE_KEY);
+    } catch (_) {
+        // Ignore storage failures while clearing the resume record.
+    }
+}
+
+export function restoreExpandedModal() {
+    let descriptor = null;
+    try {
+        const raw = globalThis.sessionStorage?.getItem(RESUME_STORAGE_KEY);
+        if (!raw) return null;
+        descriptor = JSON.parse(raw);
+    } catch (_) {
+        descriptor = null;
+    }
+    if (!descriptor || typeof descriptor !== "object") return null;
+    if (!descriptor.component && !descriptor.url) return null;
+    const { key: _key, ...openDescriptor } = descriptor;
+    return openExpandedModal(openDescriptor);
+}
 
 function updatePanel(record) {
     if (!record.dialog || record.controller.signal.aborted) return;
@@ -39,6 +98,7 @@ export function openExpandedModal(descriptor = {}) {
             ...descriptor,
             props: { ...activePanel.descriptor.props, ...descriptor.props }
         };
+        persistResume(activePanel.descriptor, activePanel.key);
         updatePanel(activePanel);
         return activePanel.closed;
     }
@@ -54,6 +114,7 @@ export function openExpandedModal(descriptor = {}) {
         record.resolve();
     }, { once: true });
     activePanel = record;
+    persistResume(descriptor, key);
     const payload = { ...toModalPayload(descriptor), key };
     Promise.resolve().then(() => ui.showModal(EXPANDED_MODAL_COMPONENT, payload, false, {
         signal: record.controller.signal
@@ -69,6 +130,7 @@ export function openExpandedModal(descriptor = {}) {
         dialog.addEventListener("close", (event) => {
             dialog.remove();
             if (activePanel === record) activePanel = null;
+            if (!pageUnloading) clearResume(record.key);
             record.resolve(event.data);
             record.controller.abort();
         }, { once: true });

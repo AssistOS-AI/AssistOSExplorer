@@ -4,28 +4,62 @@ import fs from 'node:fs/promises';
 import vm from 'node:vm';
 
 const source = (await fs.readFile(new URL('../../shared/ui/expanded-modal.js', import.meta.url), 'utf8'))
-    .replace('export function openExpandedModal', 'function openExpandedModal');
+    .replace('export function openExpandedModal', 'function openExpandedModal')
+    .replace('export function restoreExpandedModal', 'function restoreExpandedModal');
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const RESUME_KEY = 'explorer.expandedModal.resume';
 
-function host() {
+function createHost(storage = new Map()) {
     const calls = [];
     const updates = [];
-    const context = vm.createContext({ AbortController, console, assistOS: { UI: {
-        showModal(name, payload, expectResult, { signal }) {
-            let finish;
-            const promise = new Promise(resolve => { finish = resolve; });
-            const dialog = new EventTarget();
-            dialog.removed = false;
-            dialog.close = () => dialog.dispatchEvent(new Event('close'));
-            dialog.remove = () => { dialog.removed = true; };
-            dialog.querySelector = () => ({ webSkelPresenter: { updateDescriptor: d => updates.push(d) } });
-            calls.push({ name, payload, expectResult, signal, dialog, finish: () => finish(signal.aborted ? null : dialog) });
-            return promise;
-        }
-    } } });
-    vm.runInContext(`${source}\nthis.open = openExpandedModal;`, context);
-    return { open: context.open, calls, updates };
+    const context = vm.createContext({
+        AbortController,
+        console,
+        sessionStorage: {
+            getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+            setItem: (key, value) => storage.set(key, String(value)),
+            removeItem: (key) => storage.delete(key)
+        },
+        assistOS: { UI: {
+            showModal(name, payload, expectResult, { signal }) {
+                let finish;
+                const promise = new Promise(resolve => { finish = resolve; });
+                const dialog = new EventTarget();
+                dialog.removed = false;
+                dialog.close = () => dialog.dispatchEvent(new Event('close'));
+                dialog.remove = () => { dialog.removed = true; };
+                dialog.querySelector = () => ({ webSkelPresenter: { updateDescriptor: d => updates.push(d) } });
+                calls.push({ name, payload, expectResult, signal, dialog, finish: () => finish(signal.aborted ? null : dialog) });
+                return promise;
+            }
+        } }
+    });
+    vm.runInContext(`${source}\nthis.open = openExpandedModal; this.restore = restoreExpandedModal;`, context);
+    return { open: context.open, restore: context.restore, calls, updates, storage };
 }
+
+function host() {
+    return createHost();
+}
+
+test('a resumable panel survives a reload but a non-resumable panel does not', async () => {
+    const storage = new Map();
+    const first = createHost(storage);
+    first.open({ mode: 'iframe', url: '/webmeetAgent/roomLoader.html', title: 'WebMeet', resume: true });
+    await tick();
+    assert.ok(storage.get(RESUME_KEY), 'resumable descriptors are persisted');
+
+    const second = createHost(storage);
+    second.restore();
+    await tick();
+    assert.equal(second.calls.length, 1);
+    assert.equal(second.calls[0].payload.url, '/webmeetAgent/roomLoader.html');
+
+    const nonResumable = createHost(new Map());
+    nonResumable.open({ mode: 'iframe', url: '/other/panel.html', title: 'Other' });
+    await tick();
+    assert.equal(nonResumable.storage.get(RESUME_KEY), undefined);
+});
 
 test('concurrent identical launches share a dialog and the close promise', async () => {
     const h = host();
