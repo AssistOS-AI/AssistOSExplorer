@@ -12,18 +12,12 @@ export class ToolError extends Error {
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 const EMPTY_TEXT_SENTINEL = '__ASSISTOS_EXPLORER_EMPTY_TEXT__';
-const MISSING_SESSION_TEXT = 'Missing or invalid MCP session';
 const MCP_ERROR_TEXT = /^MCP error(?:\s|$)/i;
 let sessionPromptActive = false;
 let cachedWorkspaceRootAbs = '';
 let workspaceRootPromise = null;
 
 const isAgentMcpReturnTo = (returnTo) => /^\/[^/]+\/mcp(?:$|[?#])/.test(returnTo);
-
-const isMissingSessionError = (error) => {
-    const message = error?.message || error?.toString?.() || '';
-    return typeof message === 'string' && message.includes(MISSING_SESSION_TEXT);
-};
 
 const extractAuthErrorPayload = (error) => {
     const message = error?.message || error?.toString?.() || '';
@@ -59,7 +53,6 @@ const normalizeLoginRedirectUrl = (candidate) => {
 };
 
 const isAuthenticationExpiredError = (error) => {
-    if (isMissingSessionError(error)) return true;
     const payload = extractAuthErrorPayload(error);
     return payload?.error === 'not_authenticated';
 };
