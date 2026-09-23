@@ -17,7 +17,6 @@
   "toolbarModal": {
     "mode": "iframe",
     "url": "/base-agent-additional-server/soul-gateway/7000/management/",
-    "agentRef": "proxies/soul-gateway",
     "readyTitle": "Soul Gateway",
     "fullscreen": true
   }
