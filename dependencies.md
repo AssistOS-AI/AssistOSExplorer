@@ -1,5 +1,13 @@
 # Deployment helper dependencies
 
+The QA in-place update helper adds no npm dependency. It uses Node.js built-ins,
+the existing QA-scoped Node 24.19.0 runtime, Git, the installed container engine,
+util-linux `flock`, and the exact already-deployed Ploinky targeted-restart CLI.
+These tools are inherited deployment prerequisites described below; the helper
+does not install tools, update dependencies, or pull images. Missing prerequisites
+or incompatible source/runtime state fail before the source checkout changes.
+The existing recovery helper supplies Box, AgentLib and workspace-lock checks.
+
 Explorer's browser UUID compatibility uses `createSecureUuid` from its existing
 WebSkel dependency. The implementation is maintained in the WebSkel source
 repository (`utils/uuid.mjs`, exported by `index.js`) and compiled with its

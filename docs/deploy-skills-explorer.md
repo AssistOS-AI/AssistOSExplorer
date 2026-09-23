@@ -15,7 +15,28 @@ implementation satisfies those requirements. If an explicit request forbids
 `--branch-fallback`, do not dispatch a workflow that injects that option; use an
 authorized direct channel or update and verify the workflow first.
 
-The Explorer QA deploy workflow has no mutable branch inputs. It resolves
+The Explorer QA deploy workflow has no inputs and never tears down an existing
+installation. When `/home/admin/explorerQaWorkspace` exists, deployment updates
+only its clean `AchillesIDE` checkout (AssistOSExplorer) from the remote's
+configured default branch, pinned to an exact commit. It fast-forwards the
+checkout under the workspace lock and restarts affected enabled agents through
+Ploinky's targeted restart command. The existing Box, image, AgentLib, other
+repositories, accounts, documents, and caches remain in place. Deployment does
+not copy the workspace or create a large rollback backup. An unchanged commit
+is a verified no-op.
+
+Dirty sources, a different branch, divergent history, ambiguous ownership, or
+changes to dependencies, manifests, or runtime installation configuration stop
+the in-place update before checkout. A failed restart restores the prior clean
+source commit and restarts the affected agents again; a failure is still
+reported. The workflow never falls through from an unsuccessful update into
+fresh installation. Its host operation lock covers the complete update and
+recovery, while each source mutation and targeted restart uses the workspace
+lock. Source and runtime identities are checked again after activation.
+
+Fresh installation runs only when both the QA workspace and its Box are absent,
+with absence checked again under the workspace lock. Removal remains a separate,
+explicit operation in `destroy-explorer-qa.yml`. For a fresh installation it resolves
 Ploinky and every managed application repository from each remote's configured
 default branch, while keeping explicit per-repository selections for the graph.
 It then reads the canonical achillesAgentLib URL and immutable commit from the
@@ -49,9 +70,18 @@ Rollback records retain image-backed source authority alongside the exact base
 image; only actual host sources become checkout pins. Recovery rejects a
 different bundle before initializing its fresh graph.
 
-An ordinary QA redeployment preserves workspace data. Before shutdown, the workflow rejects modified managed sources, unreviewed volumes or routing intent, unsupported recovery code, and insufficient disk space. It captures the exact predecessor, source revisions, image and agent selections in a new protected backup directory. A host lock serializes deployment and recovery operations. The workflow also holds Ploinky’s workspace mutation lock from capture through shutdown, preservation and source staging, so an ordinary CLI restart cannot interrupt the backup. It releases that lock before fresh Box preparation.
+Ordinary QA redeployment uses the in-place path above. The fresh-install path
+retains the guarded admission and recovery helpers used by older deployments,
+but its mandatory absence checks prevent them from stopping or moving an
+existing installation. The 25 GiB fresh-install capacity requirement does not
+apply to an in-place source update.
 
-The shutdown helper pins every registered container and its mounts. It drains OnlyOffice while DPU and Router remain available, stops consumers before providers, and requires PostgreSQL to report a clean shutdown. Router and its watchdog exit last. Failed or uncertain shutdown leaves the workspace in place. After shutdown, the workflow retains the stopped Box and its base image, moves the complete workspace under `/home/admin/.qa-deployment-backups/`, and copies durable files back with byte, ownership and permission comparisons. Operator files, local skills, database files and symlink targets remain intact. The master key, encrypted accounts and secrets, and subject-signing identity stay together. Fresh routing initialization precedes restoration of access policy, session revocations and audit history. Runtime registries, leases and compiled generations are regenerated.
+Existing backups from older recreation deployments remain available for their
+separately reviewed recovery procedure. Their shutdown helper pins registered
+containers and mounts, drains consumers before providers, and requires clean
+database shutdown. Recovery retains encryption identities, accounts, documents,
+policy, revocations and audit history together. The deploy workflow does not
+create another predecessor snapshot during an in-place update.
 
 Each backup contains reviewed recovery helpers and an authority record written before any stop or move. Run `node BACKUP/helpers/rollback-explorer-qa.mjs plan BACKUP --current-id FULL_ID` for a read-only recovery check, then replace `plan` with `execute` for the selected recovery operation. Use `absent` only when the failed replacement Box is absent. Recovery creates a fresh Box from the predecessor's pinned base image and clean source revisions, copies the saved durable data, restores policy and agent choices, and verifies new runtime identities and readiness. It preserves the predecessor and failed replacement snapshots. Recovery does not resume saved nested containers and does not claim browser acceptance.
 
@@ -87,7 +117,7 @@ retains the dedicated Cloudflare tunnel and DNS for the next deployment. This
 operation permanently removes the selected QA data; use it only when that reset
 has been explicitly authorized.
 
-QA capacity admission prints byte counts for available and required space,
+Fresh-install QA capacity admission prints byte counts for available and required space,
 the shortfall, retained QA backups, durable data, and source/dependency/image
 caches before stopping any service. The categories overlap and must not be
 added together. Admission still requires free space of at least the larger of
