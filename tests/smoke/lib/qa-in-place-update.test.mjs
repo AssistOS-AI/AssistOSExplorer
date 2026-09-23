@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { classifyChanges, createUpdateService, EXPLORER_SOURCE, updateProductionAdapters } from '../../../.github/scripts/update-explorer-qa.mjs';
+import { classifyChanges, createUpdateService, EXPLORER_SOURCE, preSignalRestartFailure, recoverUnchangedAgentRoute,
+    updateProductionAdapters } from '../../../.github/scripts/update-explorer-qa.mjs';
 
 const OLD = 'a'.repeat(40), NEXT = 'b'.repeat(40), CORE = 'c'.repeat(40), LIB = 'd'.repeat(40);
 const BOX = 'e'.repeat(64), IMAGE = 'f'.repeat(64);
@@ -43,10 +44,15 @@ function fixture(t) {
     const agents = ['explorer', 'gitAgent', 'webmeetAgent', 'roboTeamAgent'].map((agent, index) => ({
         name: `runtime-${agent}`, repo: agent === 'roboTeamAgent' ? 'AchillesCLI' : 'AchillesIDE', agent,
         alias: '', profile: 'default', auth: 'sso', runMode: 'isolated', instanceId: `instance-${index}`,
-        enableGeneration: `generation-${index}`, id: String(index + 1).repeat(64), image: `sha256:${IMAGE}`, ready: true,
+        enableGeneration: `generation-${index}`, id: String(index + 1).repeat(64), image: `sha256:${IMAGE}`, ready: true, running: true,
+        hostPath: path.join(scope.workspace, agent === 'roboTeamAgent' ? '.ploinky/repos/AchillesCLI' : EXPLORER_SOURCE, agent),
     }));
+    for (const agent of agents) {
+        agent.routeKey = agent.agent;
+        agent.route = { container: agent.name, repo: agent.repo, agent: agent.agent, hostPath: agent.hostPath, hostPort: 42507 };
+    }
     const state = { dirty: false, branch: 'main', commit: NEXT, local: true, fastForward: true,
-        active: true, changes: [change('explorer/services/infrastructure/explorerApi.js')],
+        active: true, changes: [change('explorer/src/index.mjs')], generation: 'original-generation',
         upstream: 'origin/main', restartFailure: null, healthFailure: 0 };
     const events = [];
     let held = false, restarts = 0;
@@ -59,7 +65,11 @@ function fixture(t) {
         async verifyAgentLib(_item, expected) {
             assert.equal(expected, LIB); return { mode: 'image', commit: LIB, fingerprint: IMAGE };
         },
-        runtime: async () => ({ agents: structuredClone(agents), active: state.active }),
+        runtime: async () => ({ agents: structuredClone(agents), active: state.active,
+            generation: state.generation, activationId: 'original-activation' }),
+        verifyBrowserFiles: async (_item, _repository, _commit, files) => {
+            assert.equal(held, true); events.push('verify-browser'); return { files: files.length };
+        },
         health: async () => {
             if (state.healthFailure > 0) { state.healthFailure -= 1; throw Error('health unavailable'); }
         },
@@ -83,10 +93,19 @@ function fixture(t) {
             const agent = agents.find(row => row.name === selection.name);
             if (state.restartFailure?.(restarts, agent)) {
                 agent.image = null; agent.ready = false;
-                throw Object.assign(Error('private process output is never reported'), { code: 'QA_UPDATE_EXTERNAL_COMMAND_FAILED' });
+                throw Object.assign(Error('private process output is never reported'), {
+                    code: 'QA_UPDATE_EXTERNAL_COMMAND_FAILED', operation: `targeted-restart:AchillesIDE/${agent.agent}`,
+                });
             }
             agent.id = (10 + restarts).toString(16).repeat(64);
             agent.image = `sha256:${IMAGE}`; agent.ready = true;
+        },
+        async recoverUnchangedAgent(_item, selected) {
+            assert.equal(held, true); events.push(`recover-route:${selected.agent}`);
+            const current = agents.find(agent => agent.name === selected.name);
+            assert.equal(current.id, selected.id); assert.equal(current.image, selected.image);
+            assert.deepEqual(current.route, { ...selected.route, draining: true });
+            delete current.route.draining; current.ready = true;
         },
         async acquireWorkspaceLock(workspace) {
             assert.equal(workspace, scope.workspace); assert.equal(held, false); held = true; events.push('lock');
@@ -112,7 +131,7 @@ test('plan discovers default branch without fetching, locks, receipts or runtime
 
 test('healthy update fast-forwards only Explorer and restarts only affected enabled agents', async t => {
     const f = fixture(t), prior = structuredClone(f.agents);
-    f.state.changes.push(change('gitAgent/IDE-plugins/git-panel/panel.js'), change('webmeetAgent/docs/readme.md'));
+    f.state.changes.push(change('gitAgent/src/index.mjs'), change('webmeetAgent/docs/readme.md'));
     const result = await f.service.execute(f.receipt);
     assert.equal(result.status, 'updated'); assert.equal(result.boxId, BOX);
     assert.deepEqual(result.agents, ['AchillesIDE/explorer', 'AchillesIDE/gitAgent']);
@@ -134,6 +153,54 @@ test('documentation-only changes fast-forward without runtime restarts', async t
     const result = await f.service.execute(f.receipt);
     assert.equal(result.status, 'updated'); assert.deepEqual(result.agents, []);
     assert.deepEqual(f.events, ['lock', 'fetch', 'fast-forward', 'unlock']);
+});
+
+test('reviewed browser assets update live sources without restarting any runtime', async t => {
+    const f = fixture(t), previous = structuredClone(f.agents);
+    f.state.changes = [change('explorer/services/infrastructure/explorerApi.js'), change('explorer/shared/ui/ui-common.css'),
+        change('gitAgent/IDE-plugins/git-tool-button/components/panel.js'),
+        change('webmeetAgent/IDE-plugins/webmeet-tool-button/components/panel.html'), change('docs/architecture.html')];
+    const result = await f.service.execute(f.receipt);
+    assert.equal(result.status, 'updated'); assert.deepEqual(result.agents, []);
+    assert.deepEqual(result.browserAgents, ['explorer', 'gitAgent', 'webmeetAgent']);
+    assert.equal(result.browserPaths.length, 4); assert.deepEqual(result.browserVerification, { files: 4 });
+    assert.deepEqual(f.agents, previous); assert.deepEqual(f.events, ['lock', 'fetch', 'fast-forward', 'verify-browser', 'unlock']);
+    f.unchangedData();
+});
+
+test('mixed browser and server changes restart only the server owner', async t => {
+    const f = fixture(t);
+    f.state.changes = [change('explorer/services/infrastructure/explorerApi.js'), change('gitAgent/src/index.mjs')];
+    const result = await f.service.execute(f.receipt);
+    assert.deepEqual(result.agents, ['AchillesIDE/gitAgent']); assert.deepEqual(result.browserAgents, ['explorer']);
+    assert.equal(result.browserVerification.files, 1);
+});
+
+test('browser fast path rejects a route rooted in a different source', async t => {
+    const f = fixture(t); f.state.changes = [change('explorer/services/infrastructure/explorerApi.js')];
+    f.agents[0].hostPath = '/another/checkout/explorer';
+    await assert.rejects(f.service.execute(f.receipt), { code: 'QA_UPDATE_STATIC_SOURCE_UNPROVEN' });
+    assert.deepEqual(f.events, ['lock', 'unlock']);
+});
+
+test('browser source verification failure rolls back code without changing runtime IDs', async t => {
+    const f = fixture(t), previous = structuredClone(f.agents);
+    f.state.changes = [change('explorer/shared/ui/ui-common.css')];
+    f.adapters.verifyBrowserFiles = async () => { throw Object.assign(Error('mismatch'), {
+        code: 'QA_UPDATE_PUBLIC_ASSET_MISMATCH', operation: 'public-browser-asset',
+    }); };
+    await assert.rejects(f.service.execute(f.receipt), error => error.receipt.rollback === 'passed'
+        && error.receipt.operation === 'public-browser-asset');
+    assert.deepEqual(f.agents, previous); assert.equal(f.sourcePins[EXPLORER_SOURCE].commit, OLD);
+    assert.equal(f.events.some(event => event.startsWith('restart:')), false);
+});
+
+test('browser-only update cannot silently change the active route generation', async t => {
+    const f = fixture(t), fastForward = f.adapters.fastForward;
+    f.state.changes = [change('explorer/shared/ui/ui-common.css')];
+    f.adapters.fastForward = (...args) => { fastForward(...args); f.state.generation = 'unexpected-generation'; };
+    await assert.rejects(f.service.execute(f.receipt), error => error.receipt.rollback === 'failed'
+        && error.receipt.code === 'QA_UPDATE_ROUTING_CHANGED');
 });
 
 test('shared code restarts all enabled same-repository agents and retains sibling repositories', async t => {
@@ -203,6 +270,38 @@ test('startup failure restores clean previous code and restarts successful and f
     f.unchangedData();
 });
 
+test('failure before physical replacement recovers the exact running predecessor route without another restart', async t => {
+    const f = fixture(t), prior = structuredClone(f.agents);
+    f.adapters.restart = async (_item, agent) => {
+        f.events.push(`restart:${agent.agent}`);
+        f.agents[0].ready = false; f.agents[0].route.draining = true;
+        throw Object.assign(Error('target still running'), {
+            code: 'QA_UPDATE_EXTERNAL_COMMAND_FAILED', operation: 'targeted-restart:AchillesIDE/explorer',
+            predecessorUntouched: agent.name,
+        });
+    };
+    await assert.rejects(f.service.execute(f.receipt), error => error.receipt.rollback === 'passed'
+        && error.receipt.operation === 'targeted-restart:AchillesIDE/explorer');
+    assert.deepEqual(f.agents, prior); assert.equal(f.sourcePins[EXPLORER_SOURCE].commit, OLD);
+    assert.deepEqual(f.events.filter(event => /^(?:restart:|recover-route:|restore$)/.test(event)),
+        ['restart:explorer', 'restore', 'recover-route:explorer']);
+});
+
+test('generic signal timeout with the same running ID cannot undrain the predecessor', async t => {
+    const f = fixture(t), restart = f.adapters.restart;
+    let calls = 0;
+    f.adapters.restart = async (...args) => {
+        if (++calls === 1) {
+            f.events.push('restart:explorer'); f.agents[0].ready = false; f.agents[0].route.draining = true;
+            throw Object.assign(Error('SIGTERM timeout but process is still running'), { code: 'QA_UPDATE_EXTERNAL_COMMAND_FAILED' });
+        }
+        await restart(...args); delete f.agents[0].route.draining;
+    };
+    await assert.rejects(f.service.execute(f.receipt), error => error.receipt.rollback === 'passed');
+    assert.equal(f.events.some(event => event.startsWith('recover-route:')), false);
+    assert.equal(f.events.filter(event => event === 'restart:explorer').length, 2);
+});
+
 test('readiness failure after restart rolls back and remains a failed deployment', async t => {
     const f = fixture(t), restart = f.adapters.restart;
     let count = 0;
@@ -246,9 +345,93 @@ test('changed logical target identity cannot be mistaken for the selected agent'
 
 test('rollback failure is explicit and retains the original failed status', async t => {
     const f = fixture(t); f.state.restartFailure = () => true;
-    await assert.rejects(f.service.execute(f.receipt), error => error.receipt.status === 'failed' && error.receipt.rollback === 'failed');
+    await assert.rejects(f.service.execute(f.receipt), error => error.receipt.status === 'failed' && error.receipt.rollback === 'failed'
+        && error.receipt.rollbackCode === 'QA_UPDATE_EXTERNAL_COMMAND_FAILED'
+        && error.receipt.rollbackOperation === 'targeted-restart:AchillesIDE/explorer');
     assert.equal(f.sourcePins[EXPLORER_SOURCE].commit, OLD);
 });
+
+function routeRecoveryFixture() {
+    const expected = { name: 'runtime-explorer', repo: 'AchillesIDE', agent: 'explorer', alias: '', profile: 'default',
+        auth: 'sso', runMode: 'isolated', instanceId: 'original-instance', enableGeneration: 'original-enable',
+        id: BOX, image: `sha256:${IMAGE}`, hostPath: '/workspace/.ploinky/repos/AchillesIDE/explorer', routeKey: 'explorer' };
+    expected.predecessorUntouched = expected.name;
+    expected.route = { container: expected.name, repo: expected.repo, agent: expected.agent, hostPath: expected.hostPath, hostPort: 42507 };
+    const state = { route: { ...expected.route, draining: true }, active: true,
+        record: { repoName: expected.repo, agentName: expected.agent, containerId: expected.id,
+            instanceId: expected.instanceId, enableGeneration: expected.enableGeneration, auth: { mode: 'sso' } },
+        container: { Id: expected.id, Image: expected.image, State: { Running: true } } };
+    const events = [];
+    const adapters = {
+        readActive: () => ({ selector: { state: state.active ? 'active' : 'inactive', publicationState: 'ready' },
+            generation: { routing: { routes: { explorer: structuredClone(state.route) } } } }),
+        readRouting: () => ({ routes: { explorer: structuredClone(state.route) } }),
+        readRegistry: () => ({ [expected.name]: structuredClone(state.record) }),
+        inspectContainer: () => structuredClone(state.container),
+        withWorkspaceLease: async (_options, callback) => { events.push('lease'); return callback(); },
+        withMaintenance: async (name, _options, callback) => { assert.equal(name, expected.name); events.push('maintenance'); return callback(); },
+        withNetwork: async callback => { events.push('network'); return callback('network-capability'); },
+        async mergeRouting(mutator, options) {
+            assert.equal(options.networkLifecycleCapability, 'network-capability');
+            options.validateActiveGeneration();
+            // The real coordinator inactivates before calling the mutator.
+            state.active = false;
+            const routing = mutator({ routes: { explorer: structuredClone(state.route) } });
+            state.route = routing.routes.explorer; state.active = true; events.push('route-restored');
+        },
+    };
+    return { expected, state, events, adapters };
+}
+
+test('coordinated route recovery validates the live predecessor before inactivation', async () => {
+    const f = routeRecoveryFixture();
+    const result = await recoverUnchangedAgentRoute(f.expected, f.adapters);
+    assert.deepEqual(result, { result: 'restored', containerId: BOX });
+    assert.deepEqual(f.state.route, f.expected.route);
+    assert.deepEqual(f.events, ['lease', 'maintenance', 'network', 'route-restored']);
+});
+
+test('already restored exact predecessor needs no routing mutation', async () => {
+    const f = routeRecoveryFixture(); delete f.state.route.draining;
+    assert.equal((await recoverUnchangedAgentRoute(f.expected, f.adapters)).result, 'unchanged');
+    assert.deepEqual(f.events, ['lease', 'maintenance', 'network']);
+});
+
+test('predecessor recovery requires positive evidence that the exact target was never signalled', async () => {
+    const f = routeRecoveryFixture(); delete f.expected.predecessorUntouched;
+    await assert.rejects(recoverUnchangedAgentRoute(f.expected, f.adapters), { code: 'QA_UPDATE_UNCHANGED_ROUTE_RECOVERY_REJECTED' });
+    assert.deepEqual(f.events, []);
+});
+
+test('only an exact completed pre-signal rejection supplies untouched-target evidence', () => {
+    const target = 'ploinky_AchillesIDE_explorer_explorerQaWorkspace_7a31ab77';
+    const stderr = `❌ Error: Failed to restart container ${target}: managed restart failed: affected selectors remain active for targeted drain of '${target}'\n`;
+    assert.equal(preSignalRestartFailure({ status: 1, stderr }, target), true);
+    assert.equal(preSignalRestartFailure({ status: 1, stderr: `${stderr}ploinky: In-box restart failed with status 1\n` }, target), true);
+    for (const result of [
+        { status: 0, stderr }, { status: null, stderr }, { status: 1, stderr, signal: 'SIGTERM' },
+        { status: 1, stderr, error: Error('timeout') }, { status: 1, stderr: `prefix ${stderr}` },
+        { status: 1, stderr: stderr.replace(target, 'another-container') },
+        { status: 1, stderr: 'targeted drain timed out after SIGTERM' },
+        { status: 1, stdout: stderr, stderr: '❌ Error: targeted drain exceeded its deadline after SIGTERM' },
+        { status: 1, stderr: `${stderr}❌ Error: targeted drain exceeded its deadline after SIGTERM\n` },
+    ]) assert.equal(preSignalRestartFailure(result, target), false);
+});
+
+for (const [label, drift] of [
+    ['route ownership', f => { f.state.route.hostPort += 1; }],
+    ['physical container', f => { f.state.container.Id = '0'.repeat(64); }],
+    ['running state', f => { f.state.container.State.Running = false; }],
+    ['image', f => { f.state.container.Image = `sha256:${'0'.repeat(64)}`; }],
+    ['logical instance', f => { f.state.record.instanceId = 'replacement'; }],
+    ['selection policy', f => { f.state.record.auth.mode = 'none'; }],
+]) {
+    test(`coordinated predecessor recovery rejects changed ${label}`, async () => {
+        const f = routeRecoveryFixture(); drift(f);
+        await assert.rejects(recoverUnchangedAgentRoute(f.expected, f.adapters), { code: 'QA_UPDATE_UNCHANGED_ROUTE_RECOVERY_REJECTED' });
+        assert.equal(f.events.includes('route-restored'), false); assert.equal(f.state.active, true);
+    });
+}
 
 test('path and lifecycle admission also rejects unknown runtime files and executable-bit changes', () => {
     for (const file of ['../explorer/src/a.js', 'explorer//a.js', '/tmp/a.js', 'explorer\\a.js']) {
@@ -298,7 +481,7 @@ test('Git adapter parses real additions, deletions and moves, fast-forwards, and
     const adapters = updateProductionAdapters();
     assert.deepEqual(adapters.agentRoots(root, previous), ['explorer']);
     const classified = classifyChanges(adapters.changes(root, previous, candidate), adapters.agentRoots(root, previous));
-    assert.deepEqual(classified, { affected: ['explorer'], shared: false });
+    assert.deepEqual(classified, { affected: ['explorer'], shared: false, browserPaths: [] });
     assert.equal(adapters.hasCommit(root, candidate), true); assert.equal(adapters.isAncestor(root, previous, candidate), true);
     adapters.fastForward(root, candidate); assert.equal(git(['rev-parse', 'HEAD']), candidate);
     adapters.restore(root, previous); assert.equal(git(['rev-parse', 'HEAD']), previous);

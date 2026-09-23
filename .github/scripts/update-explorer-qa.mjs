@@ -11,6 +11,9 @@ const COMMIT = /^[a-f0-9]{40}$/;
 const ID = /^[a-f0-9]{64}$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const SOURCE_ORIGIN = /^https:\/\/github\.com\/AssistOS-AI\/AssistOSExplorer(?:\.git)?$/i;
+// In this reviewed lifecycle implementation the selector rejection precedes
+// control-socket retirement, signals, and all container mutations.
+const PRE_SIGNAL_LIFECYCLE_SHA256 = '267a0cd6eec97568bf5f72eaee0c52243a2a96b7a19c198732f466f0db3909cf';
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const present = file => { try { return fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
@@ -60,6 +63,7 @@ function publicationIntent(scope) {
 export function classifyChanges(changes, agentRoots) {
     const agents = new Set(agentRoots);
     const affected = new Set();
+    const browserPaths = [];
     let shared = false;
     for (const change of changes) {
         const file = change.path;
@@ -83,10 +87,16 @@ export function classifyChanges(changes, agentRoots) {
         if (root === 'shared') shared = true;
         else {
             prove(agents.has(root), 'QA_UPDATE_UNKNOWN_RUNTIME_PATH');
-            affected.add(root);
+            // These reviewed trees are browser modules/assets streamed directly
+            // from the route's live hostPath by the Ploinky static handler.
+            const browser = /^(?:explorer|gitAgent|webmeetAgent)\/IDE-plugins\//.test(file)
+                || /^explorer\/(?:web-components\/|shared\/(?:ui|assets)\/|assets\/icons\/)/.test(file)
+                || file === 'explorer/services/infrastructure/explorerApi.js';
+            if (browser) browserPaths.push({ path: file, deleted: change.newMode === '000000' });
+            else affected.add(root);
         }
     }
-    return { affected: [...affected].sort(), shared };
+    return { affected: [...affected].sort(), shared, browserPaths };
 }
 
 function selection(agent) {
@@ -98,6 +108,51 @@ function selection(agent) {
     'QA_UPDATE_AGENT_SELECTION_INVALID');
     return { name, repo, agent: agentName, alias, profile, auth, runMode,
         ...(runMode === 'devel' ? { develRepo } : {}), instanceId, enableGeneration };
+}
+
+/** Recover only a predecessor that never stopped or changed physical identity. */
+export async function recoverUnchangedAgentRoute(expected, adapters) {
+    const requireEvidence = condition => {
+        if (!condition) throw Object.assign(new Error('QA_UPDATE_UNCHANGED_ROUTE_RECOVERY_REJECTED'),
+            { code: 'QA_UPDATE_UNCHANGED_ROUTE_RECOVERY_REJECTED', operation: 'recover-unchanged-agent-route' });
+    };
+    const canonical = value => JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item)
+        ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+    requireEvidence(expected.predecessorUntouched === expected.name
+        && expected.repo === 'AchillesIDE' && expected.routeKey === (expected.alias || expected.agent)
+        && expected.route?.container === expected.name && expected.route.repo === expected.repo
+        && expected.route.agent === expected.agent && expected.route.hostPath === expected.hostPath
+        && expected.route.draining !== true && expected.route.disabled !== true
+        && Number.isSafeInteger(expected.route.hostPort) && expected.route.hostPort > 0 && expected.route.hostPort <= 65535);
+    const validate = () => {
+        const active = adapters.readActive(), routing = adapters.readRouting(), registry = adapters.readRegistry();
+        const record = registry[expected.name], container = adapters.inspectContainer(expected.id);
+        requireEvidence(active?.selector?.state === 'active' && active.selector.publicationState === 'ready'
+            && record?.repoName === expected.repo && record.agentName === expected.agent
+            && record.containerId === expected.id && record.instanceId === expected.instanceId
+            && record.enableGeneration === expected.enableGeneration && (record.alias || '') === expected.alias
+            && (record.profile || 'default') === expected.profile && record.auth?.mode === expected.auth
+            && (record.runMode || 'isolated') === expected.runMode
+            && container?.Id === expected.id && container.State?.Running === true && container.Image === expected.image);
+        const current = active.generation?.routing?.routes?.[expected.routeKey];
+        const original = canonical(expected.route), drained = canonical({ ...expected.route, draining: true });
+        requireEvidence(canonical(current) === canonical(routing.routes?.[expected.routeKey])
+            && [original, drained].includes(canonical(current)));
+        return canonical(current) === original;
+    };
+    return adapters.withWorkspaceLease({ operation: 'recover-unchanged-agent-route' }, () =>
+        adapters.withMaintenance(expected.name, { operation: 'recover-route' }, () =>
+            adapters.withNetwork(async capability => {
+                if (validate()) return { result: 'unchanged', containerId: expected.id };
+                await adapters.mergeRouting(routing => {
+                    if (Object.hasOwn(expected.route, 'draining')) routing.routes[expected.routeKey].draining = expected.route.draining;
+                    else delete routing.routes[expected.routeKey].draining;
+                    return routing;
+                }, { reason: 'recover-unchanged-agent-after-failed-drain', networkLifecycleCapability: capability,
+                    validateActiveGeneration: validate });
+                requireEvidence(validate());
+                return { result: 'restored', containerId: expected.id };
+            })));
 }
 
 /** The service has no Box lifecycle, data-copy, dependency-install, or cache-removal adapter. */
@@ -154,10 +209,13 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         prove(equal(value.runtime.agents.map(selection), authority.runtime.agents.map(selection)), 'QA_UPDATE_SELECTION_CHANGED');
         for (const prior of authority.runtime.agents) {
             const current = value.runtime.agents.find(agent => agent.name === prior.name);
+            prove(current.hostPath === prior.hostPath, 'QA_UPDATE_STATIC_SOURCE_CHANGED');
             if (!touched.includes(prior.name)) prove(current.id === prior.id && current.image === prior.image,
                 'QA_UPDATE_UNRELATED_AGENT_CHANGED');
             else prove(current.image === prior.image || (recovering && current.image === null), 'QA_UPDATE_AGENT_IMAGE_CHANGED');
         }
+        if (touched.length === 0) prove(value.runtime.generation === authority.runtime.generation
+            && value.runtime.activationId === authority.runtime.activationId, 'QA_UPDATE_ROUTING_CHANGED');
     }
 
     function affectedAgents(value, classified) {
@@ -184,7 +242,12 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         prove(adapters.isAncestor(repository, prior.commit, remote.commit), 'QA_UPDATE_NOT_FAST_FORWARD');
         const changes = adapters.changes(repository, prior.commit, remote.commit);
         const classified = classifyChanges(changes, adapters.agentRoots(repository, prior.commit));
-        return { ...remote, changedPaths: changes.length, affected: affectedAgents(value, classified), local: true };
+        const browserAgents = [...new Set(classified.browserPaths.map(file => file.path.split('/')[0]))].sort();
+        for (const agent of value.runtime.agents.filter(row => row.repo === 'AchillesIDE' && browserAgents.includes(row.agent))) {
+            prove(agent.hostPath === path.join(repository, agent.agent), 'QA_UPDATE_STATIC_SOURCE_UNPROVEN');
+        }
+        return { ...remote, changedPaths: changes.length, affected: affectedAgents(value, classified),
+            browserPaths: classified.browserPaths, browserAgents, local: true };
     }
 
     async function plan() {
@@ -195,7 +258,8 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
         return { result: 'planned', mutations: false, boxId: value.current.box.id, imageId: value.current.box.image,
             previousCommit: source(value).commit, candidateCommit: next.commit, branch: next.branch,
             changeValidation: next.local ? 'passed' : 'requires-fetch', changedPaths: next.changedPaths,
-            agents: next.affected?.map(agent => `AchillesIDE/${agent.agent}`) || null };
+            agents: next.affected?.map(agent => `AchillesIDE/${agent.agent}`) || null,
+            browserAgents: next.browserAgents || null, browserPaths: next.browserPaths?.map(file => file.path) || null };
     }
 
     async function execute(receiptFile) {
@@ -219,7 +283,12 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             previousCommit: source(authority).commit, candidateCommit: next.commit, branch: next.branch,
             agents: touched.map(name => authority.runtime.agents.find(agent => agent.name === name))
                 .map(agent => `AchillesIDE/${agent.agent}`), rollback: receipt.rollback || null,
-            ...(receipt.code ? { code: receipt.code } : {}) });
+            browserAgents: next.browserAgents || [], browserPaths: next.browserPaths?.map(file => file.path) || [],
+            browserVerification: receipt.browserVerification || null,
+            ...(receipt.code ? { code: receipt.code } : {}),
+            ...(receipt.operation ? { operation: receipt.operation } : {}),
+            ...(receipt.rollbackCode ? { rollbackCode: receipt.rollbackCode } : {}),
+            ...(receipt.rollbackOperation ? { rollbackOperation: receipt.rollbackOperation } : {}) });
         try {
             authority = await snapshot();
             assertReady(authority);
@@ -261,12 +330,19 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             assertRetained(final, authority, next.commit, touched);
             assertReady(final);
             await adapters.health(final.current);
+            if (next.browserPaths.length) {
+                receipt.browserVerification = await adapters.verifyBrowserFiles(final.current, repository, next.commit,
+                    next.browserPaths.filter(file => final.runtime.agents.some(agent => agent.repo === 'AchillesIDE'
+                        && agent.agent === file.path.split('/')[0])));
+                assertRetained(await snapshot(), authority, next.commit, touched);
+            }
             receipt.status = 'updated'; receipt.completedAt = new Date().toISOString(); writeReceipt();
             return report();
         } catch (error) {
             if (!changed || !receipt) throw error;
             receipt.status = 'failed';
             receipt.code = /^QA_[A-Z_]+$/.test(error.code || '') ? error.code : 'QA_UPDATE_FAILED';
+            if (/^[A-Za-z0-9_:/.-]{1,160}$/.test(error.operation || '')) receipt.operation = error.operation;
             try {
                 if (!lock) await acquire();
                 assertRetained(await snapshot(), authority, next.commit, touched, true);
@@ -276,7 +352,14 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
                 receipt.rollback = 'source-restored'; writeReceipt();
                 for (const name of touched) {
                     const agent = authority.runtime.agents.find(row => row.name === name);
-                    assertRetained(await snapshot(), authority, source(authority).commit, touched, true);
+                    const beforeRecovery = await snapshot();
+                    assertRetained(beforeRecovery, authority, source(authority).commit, touched, true);
+                    const observed = beforeRecovery.runtime.agents.find(row => row.name === name);
+                    if (error.predecessorUntouched === name && observed.id === agent.id
+                        && observed.image === agent.image && observed.running === true) {
+                        await adapters.recoverUnchangedAgent(beforeRecovery.current, { ...agent, predecessorUntouched: name });
+                        continue;
+                    }
                     release();
                     try { await adapters.restart(authority.current, agent); }
                     finally { await acquire(); }
@@ -289,6 +372,7 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
             } catch (rollbackError) {
                 receipt.rollback = 'failed';
                 receipt.rollbackCode = /^QA_[A-Z_]+$/.test(rollbackError.code || '') ? rollbackError.code : 'QA_UPDATE_ROLLBACK_FAILED';
+                if (/^[A-Za-z0-9_:/.-]{1,160}$/.test(rollbackError.operation || '')) receipt.rollbackOperation = rollbackError.operation;
             }
             writeReceipt();
             throw Object.assign(new Error(receipt.code), { code: receipt.code, receipt: report() });
@@ -297,10 +381,23 @@ export function createUpdateService(adapters, scope = QA_SCOPE) {
     return { plan, execute };
 }
 
+export function preSignalRestartFailure(result, target) {
+    if (!NAME.test(target || '') || result.error || result.signal || !Number.isInteger(result.status) || result.status === 0) return false;
+    const message = `managed restart failed: affected selectors remain active for targeted drain of '${target}'`;
+    // The reviewed core CLI writes its terminal error to stderr; the outer CLI
+    // appends this one status trailer. Earlier stdout/log lines are not proof.
+    const lines = typeof result.stderr === 'string' ? result.stderr.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : [];
+    if (lines.at(-1) === `ploinky: In-box restart failed with status ${result.status}`) lines.pop();
+    return lines.at(-1) === `❌ Error: Failed to restart container ${target}: ${message}`;
+}
+
 function command(executable, args, options = {}) {
+    const { operation = 'external-command', preSignalTarget = null, ...spawnOptions } = options;
     const result = spawnSync(executable, args, { encoding: 'utf8', timeout: 60_000,
-        maxBuffer: 8 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], ...options });
-    prove(!result.error && result.status === 0, 'QA_UPDATE_EXTERNAL_COMMAND_FAILED');
+        maxBuffer: 8 * 1024 * 1024, stdio: ['pipe', 'pipe', 'pipe'], ...spawnOptions });
+    if (result.error || result.status !== 0) throw Object.assign(new Error('QA_UPDATE_EXTERNAL_COMMAND_FAILED'),
+        { code: 'QA_UPDATE_EXTERNAL_COMMAND_FAILED', operation,
+            ...(preSignalRestartFailure(result, preSignalTarget) ? { predecessorUntouched: preSignalTarget } : {}) });
     return result.stdout;
 }
 
@@ -309,7 +406,7 @@ export function updateProductionAdapters(scope = QA_SCOPE) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:PLOINKY_|CLOUDFLARE_|GIT_)/.test(key)));
     const git = (repo, args, options = {}) => command('git', ['-c', `safe.directory=${repo}`,
         '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args],
-    { env: { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }, ...options });
+    { env: { ...env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }, operation: `git-${args[0]}`, ...options });
     const gitSucceeds = (repo, args) => {
         const result = spawnSync('git', ['-c', `safe.directory=${repo}`, '-C', repo, ...args],
             { env, encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024 });
@@ -355,9 +452,89 @@ export function updateProductionAdapters(scope = QA_SCOPE) {
         restore: (repo, commit) => git(repo, ['reset', '--keep', commit]),
         async restart(item, agent) {
             prove(agent.repo === 'AchillesIDE' && NAME.test(agent.agent), 'QA_UPDATE_TARGET_INVALID');
+            const lifecycle = path.join(scope.workspace, '.runtime/ploinky/cli/sandbox/docker/targetedContainerLifecycle.js');
+            const reviewed = present(lifecycle)?.isFile() && digest(fs.readFileSync(lifecycle)) === PRE_SIGNAL_LIFECYCLE_SHA256;
             command(path.join(scope.workspace, '.runtime/ploinky/bin/ploinky'), ['restart', `AchillesIDE/${agent.agent}`],
-                { cwd: scope.workspace, timeout: 600_000, env: { ...env, PLOINKY_WORKSPACE_ROOT: scope.workspace,
+                { cwd: scope.workspace, timeout: 600_000, operation: `targeted-restart:AchillesIDE/${agent.agent}`,
+                    preSignalTarget: reviewed ? agent.name : null,
+                    env: { ...env, PLOINKY_WORKSPACE_ROOT: scope.workspace,
                     PLOINKY_BOX_IMAGE: item.box.imageReference, PLOINKY_ROUTER_HOST_PORT: '8097', PLOINKY_MEDIA_HOST_PORT: '7882' } });
+        },
+        async recoverUnchangedAgent(item, agent) {
+            const script = `
+                import {spawnSync} from 'node:child_process';
+                import {getAgentsRegistry} from '/opt/ploinky/cli/sandbox/docker/containerRegistry.js';
+                import {loadActiveEdgeRoutingGeneration} from '/opt/ploinky/cli/sandbox/edgeGeneration.js';
+                import {readRoutingConfig,mergeRoutingConfig} from '/opt/ploinky/cli/server/routingFile.js';
+                import {withWorkspaceMutationLease,withMaintenanceLock} from '/opt/ploinky/cli/utils/runtime/maintenanceLocks.js';
+                import {withNetworkLifecycleLock} from '/opt/ploinky/cli/sandbox/networkLifecycle.js';
+                const recover = ${recoverUnchangedAgentRoute.toString()};
+                const expected = JSON.parse(process.argv[2]);
+                const result = await recover(expected, {
+                    readActive:loadActiveEdgeRoutingGeneration,readRouting:readRoutingConfig,readRegistry:getAgentsRegistry,
+                    inspectContainer(id) {
+                        const probe = spawnSync('podman', ['container','inspect',id], {encoding:'utf8',timeout:10000,maxBuffer:1048576});
+                        if (probe.status !== 0) return null;
+                        const records = JSON.parse(probe.stdout);
+                        return records.length === 1 ? records[0] : null;
+                    },
+                    withWorkspaceLease:withWorkspaceMutationLease,withMaintenance:withMaintenanceLock,
+                    withNetwork:withNetworkLifecycleLock,mergeRouting:mergeRoutingConfig,
+                });
+                process.stdout.write(JSON.stringify(result));
+            `;
+            const result = JSON.parse(command(item.engine, ['container', 'exec', '-i', '--user', 'podman', '--workdir', scope.workspace,
+                '--env', `PLOINKY_WORKSPACE_ROOT=${scope.workspace}`, '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
+                '--env', 'PLOINKY_MEDIA_HOST_PORT=7882', item.box.id, 'node', '--input-type=module', '-', JSON.stringify(agent)],
+            { env, input: script, operation: 'recover-unchanged-agent-route', timeout: 600_000 }));
+            prove(['restored', 'unchanged'].includes(result.result) && result.containerId === agent.id,
+                'QA_UPDATE_UNCHANGED_ROUTE_RECOVERY_REJECTED');
+            return result;
+        },
+        async verifyBrowserFiles(item, repository, commit, browserPaths) {
+            const expected = browserPaths.map(file => ({ ...file,
+                sha256: file.deleted ? null : digest(git(repository, ['show', `${commit}:${file.path}`], { encoding: null })) }));
+            const script = `
+                import fs from 'node:fs'; import path from 'node:path'; import crypto from 'node:crypto';
+                import {loadActiveEdgeRoutingGeneration} from '/opt/ploinky/cli/sandbox/edgeGeneration.js';
+                import {resolveAgentStaticFile} from '/opt/ploinky/cli/server/static/index.js';
+                const expected = JSON.parse(process.argv[2]);
+                const repository = process.argv[3];
+                const active = loadActiveEdgeRoutingGeneration();
+                for (const file of expected) {
+                    const [agent, ...parts] = file.path.split('/');
+                    const matches = Object.entries(active.generation.routing.routes).filter(([, route]) =>
+                        route.repo === 'AchillesIDE' && route.agent === agent && route.disabled !== true && route.draining !== true);
+                    if (matches.length !== 1 || matches[0][1].hostPath !== path.join(repository, agent)) throw Error('static source mismatch');
+                    const resolved = await resolveAgentStaticFile(matches[0][0], parts.join('/'), {hostPath:matches[0][1].hostPath});
+                    if (file.deleted) { if (resolved !== null) throw Error('removed asset remains served'); continue; }
+                    if (resolved !== path.join(repository, file.path) || fs.realpathSync(resolved) !== resolved) throw Error('asset path mismatch');
+                    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
+                    if (sha256 !== file.sha256) throw Error('asset content mismatch');
+                }
+                process.stdout.write(JSON.stringify({files:expected.length}));
+            `;
+            const result = JSON.parse(command(item.engine, ['container', 'exec', '-i', '--user', 'podman', '--workdir', scope.workspace,
+                '--env', `PLOINKY_WORKSPACE_ROOT=${scope.workspace}`, '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
+                '--env', 'PLOINKY_MEDIA_HOST_PORT=7882', item.box.id, 'node', '--input-type=module', '-', JSON.stringify(expected), repository],
+            { env, input: script, operation: 'browser-source-verification', timeout: 120_000 }));
+            prove(result.files === expected.length, 'QA_UPDATE_BROWSER_SOURCE_MISMATCH');
+            const publicAssets = expected.filter(file => !file.deleted && /^explorer\/shared\/.+\.(?:css|svg|html)$/.test(file.path));
+            const publicAsset = publicAssets.find(file => file.path.endsWith('.css')) || publicAssets[0];
+            if (publicAsset) {
+                try {
+                    const url = new URL(`/${publicAsset.path}`, 'https://explorer-qa.axiologic.dev');
+                    url.searchParams.set('qa_revision', commit);
+                    const response = await fetch(url, { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15_000) });
+                    prove(response.status === 200 && digest(Buffer.from(await response.arrayBuffer())) === publicAsset.sha256,
+                        'QA_UPDATE_PUBLIC_ASSET_MISMATCH');
+                    result.publicAsset = { path: publicAsset.path, sha256: publicAsset.sha256 };
+                } catch (error) {
+                    throw Object.assign(new Error('QA_UPDATE_PUBLIC_ASSET_MISMATCH'),
+                        { code: 'QA_UPDATE_PUBLIC_ASSET_MISMATCH', operation: 'public-browser-asset' });
+                }
+            }
+            return result;
         },
         async health() {
             const { checkBoxHealth } = await import(pathToFileURL(path.join(scope.workspace, '.runtime/ploinky/ploinky-box/supervisor.mjs')).href);
@@ -371,6 +548,8 @@ export function updateProductionAdapters(scope = QA_SCOPE) {
                 import {applyRuntimeReadinessProjection} from '/opt/ploinky/cli/utils/noWaitReadiness.js';
                 import {loadActiveEdgeRoutingGeneration} from '/opt/ploinky/cli/sandbox/edgeGeneration.js';
                 const registry = getAgentsRegistry();
+                let activeValue = null;
+                try { activeValue = loadActiveEdgeRoutingGeneration(); } catch {}
                 const states = applyRuntimeReadinessProjection(await collectAgentRuntimeStatesAsync({registry}), registry);
                 const entries = Object.entries(registry).filter(([, row]) => row?.type === 'agent');
                 if (states.length !== entries.length || states.some(row => !row.enabled)) throw Error('runtime registry mismatch');
@@ -383,20 +562,24 @@ export function updateProductionAdapters(scope = QA_SCOPE) {
                     const ready = inspected[0]?.State?.Running === true && state?.state?.running === true
                         && state.state.status === 'running' && (state.state.noWaitState === undefined
                             || (state.state.noWaitState === 'running' && state.state.ready === true));
+                    const routes = Object.entries(activeValue?.generation?.routing?.routes || {})
+                        .filter(([,route]) => route.container === name && route.repo === row.repoName && route.agent === row.agentName);
+                    const roots = [...new Set(routes.map(([,route]) => route.hostPath))];
                     return {name,repo:row.repoName,agent:row.agentName,alias:row.alias||'',profile:row.profile||'default',
                         auth:row.auth?.mode,runMode:row.runMode||'isolated',...(row.runMode==='devel'?{develRepo:row.develRepo}:{}),
                         instanceId:row.instanceId,enableGeneration:row.enableGeneration,id:row.containerId,
-                        image:inspected[0]?.Image||null,ready};
+                        image:inspected[0]?.Image||null,ready,running:inspected[0]?.State?.Running===true,
+                        hostPath:roots.length===1?roots[0]:null,routeKey:routes.length===1?routes[0][0]:null,
+                        route:routes.length===1?routes[0][1]:null};
                 });
-                let active = false;
-                try { const value = loadActiveEdgeRoutingGeneration(); active = value.selector.state === 'active' && value.selector.publicationState === 'ready'; }
-                catch {}
-                process.stdout.write(JSON.stringify({agents,active}));
+                const active = activeValue?.selector?.state === 'active' && activeValue.selector.publicationState === 'ready';
+                process.stdout.write(JSON.stringify({agents,active,generation:activeValue?.selector?.generation||null,
+                    activationId:activeValue?.selector?.activationId||null}));
             `;
             return JSON.parse(command(item.engine, ['container', 'exec', '-i', '--user', 'podman', '--workdir', scope.workspace,
                 '--env', `PLOINKY_WORKSPACE_ROOT=${scope.workspace}`, '--env', 'PLOINKY_ROUTER_HOST_PORT=8097',
                 '--env', 'PLOINKY_MEDIA_HOST_PORT=7882', item.box.id, 'node', '--input-type=module', '-'],
-            { env, input: script, timeout: 120_000 }));
+            { env, input: script, operation: 'runtime-readiness-projection', timeout: 120_000 }));
         },
     };
 }
