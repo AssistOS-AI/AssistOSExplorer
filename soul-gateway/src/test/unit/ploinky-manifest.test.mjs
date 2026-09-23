@@ -128,8 +128,11 @@ test('Soul Gateway ships an admin-only settings entry and toolbar button', () =>
         path.join(repoRoot, 'IDE-plugins', 'soul-gateway-tool-button', 'soul-gateway-tool-button.js'),
         'utf8'
     );
-    assert.match(presenterSource, /launchAgentSettings/);
-    assert.match(presenterSource, /getCachedRuntimePlugins/);
+    assert.match(presenterSource, /openExpandedModal/);
+    assert.doesNotMatch(presenterSource, /getCachedRuntimePlugins|launchAgentSettings/);
+    assert.equal(toolbar.toolbarModal.url, settingsEntry.settingsUrl);
+    assert.equal(toolbar.toolbarModal.agentRef, 'proxies/soul-gateway');
+    assert.equal(toolbar.toolbarModal.mode, 'iframe');
 });
 
 test('Manifest no longer enables or defaults to the retired local model runtime', () => {

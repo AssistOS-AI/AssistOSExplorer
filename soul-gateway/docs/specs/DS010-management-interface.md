@@ -46,3 +46,5 @@ Administrators must be able to list and inspect audit logs, sessions, and agent 
 The management interface must consume the management API and must not embed a second authoritative configuration store. The Ploinky Explorer <code>soul-gateway-settings</code> settings entry and the admin-only <code>soul-gateway-tool-button</code> toolbar button must ensure the agent runs and open the agent-served dashboard in a maximized, administrator-only Explorer modal that embeds the Router-prefixed <code>/management/</code> URL in an iframe. It must not introduce a parallel management store, a duplicate dashboard, or a second settings implementation.
 
 The embedded dashboard reuses Explorer's shared UI assets and theme (light or dark) and must not keep a second theme store or a dashboard-local theme toggle. <code>/management/*</code> remains the single management API contract.
+
+The toolbar declares its shared iframe modal in `toolbarModal`. Explorer opens the shell immediately and handles agent startup and readiness inside it; the toolbar must not wait for a settings inventory lookup before showing the panel.

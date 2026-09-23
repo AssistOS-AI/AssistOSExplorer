@@ -1,28 +1,8 @@
-import { callExplorerTool, parseToolResult } from "/explorer/services/infrastructure/explorerApi.js";
-import { flattenPluginsByKey, getCachedRuntimePlugins } from "/explorer/web-components/modals/settings-modal/settings-plugin-model.js";
-import { buildAgentSettingsItems } from "/explorer/web-components/modals/settings-modal/settings-agent-model.js";
-import { launchAgentSettings } from "/explorer/web-components/modals/settings-modal/settings-agent-launcher.js";
-
-const SOUL_GATEWAY_SETTINGS_KEY = "soul-gateway";
-
-async function resolveSoulGatewaySettingsItem() {
-    let pluginsByLocation = getCachedRuntimePlugins();
-    if (!Array.isArray(pluginsByLocation?.agentSettings) || !pluginsByLocation.agentSettings.length) {
-        const payload = await callExplorerTool("collect_ide_plugins", {}, { raw: true, withLoader: false });
-        pluginsByLocation = parseToolResult(payload) || {};
-    }
-    const agentSettingsRaw = Array.isArray(pluginsByLocation?.agentSettings) ? pluginsByLocation.agentSettings : [];
-    const pluginItems = flattenPluginsByKey(pluginsByLocation);
-    const items = buildAgentSettingsItems(agentSettingsRaw, pluginItems);
-    return items.find((entry) => entry.key === SOUL_GATEWAY_SETTINGS_KEY) || null;
-}
-
 export class SoulGatewayToolButton {
     constructor(element, invalidate) {
         this.element = element;
         this.invalidate = invalidate;
         this.hostContext = {};
-        this.busy = false;
         this.invalidate();
     }
 
@@ -67,31 +47,14 @@ export class SoulGatewayToolButton {
         }
     }
 
-    setBusy(busy) {
-        this.busy = busy;
-        if (!this.button) return;
-        this.button.disabled = busy;
-        this.button.classList.toggle("is-busy", busy);
-        this.button.setAttribute("aria-busy", busy ? "true" : "false");
-    }
-
-    openSettings = async (event) => {
+    openSettings = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
-        if (this.busy) return;
-        this.setBusy(true);
-        try {
-            const item = await resolveSoulGatewaySettingsItem();
-            if (!item || !item.available) {
-                throw new Error("Soul Gateway settings are unavailable.");
-            }
-            await launchAgentSettings(item);
-        } catch (error) {
-            console.error("[soul-gateway] Failed to open settings:", error);
-            globalThis.assistOS?.showToast?.(error?.message || "Soul Gateway settings could not be opened.", "error", 4000);
-        } finally {
-            this.setBusy(false);
-            this.button?.focus?.();
-        }
+        const descriptor = this.hostContext?.pluginToolbarModal;
+        if (!descriptor) return;
+        void globalThis.assistOS.UI.openExpandedModal({
+            ...descriptor,
+            title: this.hostContext?.pluginLabel || 'Soul Gateway'
+        });
     };
 }
