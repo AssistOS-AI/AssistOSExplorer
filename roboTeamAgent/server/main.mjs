@@ -4,8 +4,6 @@ import { RobotStore } from './robot-store.mjs';
 import { RuntimeManager } from './runtime-manager.mjs';
 import { RobotSkillsets } from './robot-skillsets.mjs';
 import { RoboFlowService } from './roboflow/roboflow-service.mjs';
-import { ensureDefaultWorkflow } from './roboflow/default-workflow.mjs';
-import { DECISION_MCP_NAME } from './roboflow/constants.mjs';
 import { DATA_DIR, PUBLIC_BASE_PATH } from './constants.mjs';
 
 const workspaceRoot = requireWorkspaceRoot();
@@ -33,21 +31,13 @@ runtimeManager.skillsets = new RobotSkillsets({ robotStore,
 await runtimeManager.initialize();
 for (const robot of await robotStore.list()) await runtimeManager.prepareOpenCode(robot.id);
 
-// The decision robot receives the RoboTeam MCP capability natively. This is an
-// internal injection, not a skill or skillset.
-const mcpPort = Number(process.env.ROBOTEAM_MCP_PORT) || 7000;
-const decisionMcpServers = String(process.env.ROBOTEAM_DECISION_MCP_SERVERS
-    || `${DECISION_MCP_NAME}=http://127.0.0.1:${mcpPort}/mcp`);
-
 const roboflow = new RoboFlowService({
     robotStore,
     runtimeManager,
     skillsets: runtimeManager.skillsets,
-    decisionMcpServers,
     workspaceRoot,
 });
 await roboflow.initialize();
-await ensureDefaultWorkflow(roboflow.registry);
 runtimeManager.setTaskObserver((event) => roboflow.onRuntimeTaskEvent(event));
 
 const server = createRoboTeamServer({

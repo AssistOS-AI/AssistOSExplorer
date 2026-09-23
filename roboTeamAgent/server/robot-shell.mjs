@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { installSoulGatewayPlugin } from './soul-gateway-service.mjs';
+import { ensureDefaultAgentModel } from './agent-model-config.mjs';
 import { normalizeCodingAgents } from './coding-agents.mjs';
 
 function shellEnvironment({ codingAgents, binPath, cacheRoot = '/data/tool-cache' } = {}) {
@@ -47,6 +48,7 @@ export async function prepareRobotShell(home, options) {
         }
     }
     await installSoulGatewayPlugin(home);
+    if (normalizeCodingAgents(options?.codingAgents).includes('opencode')) await ensureDefaultAgentModel(home);
     for (const name of ['.roboteam-env.sh', '.bashrc', '.profile', '.bash_profile']) {
         const handle = await fs.open(path.join(home, name), fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
         try {

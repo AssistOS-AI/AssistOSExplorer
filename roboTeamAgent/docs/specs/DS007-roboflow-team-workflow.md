@@ -1,103 +1,105 @@
 ---
 title: DS007-roboflow-team-workflow
-summary: Defines RoboFlow workflow types, the default workflow, decision-robot task flows, member robot launches and the monitoring view. RoboFlow owns execution; the front copilot only chooses and starts a workflow.
+summary: Global task graphs, generated drafts, SQLite execution records, skillset matching and directed task routing.
 ---
 
 ## Introduction
 
-RoboTeam already runs one task on one robot and exposes each run through the shared CLI/WebChat wrapper. RoboFlow adds team workflows on top of those existing tasks. A workflow type declares which robots may work on an objective, what each may use, and how each runs, plus exactly one decision member. The front copilot no longer drives a flow: it receives a catalog of workflow types and can only choose one and start it. RoboFlow then owns the whole execution: it starts the decision robot, launches the member robots the decision robot requests, re-invokes the decision robot after each step, and completes or fails the flow. RoboFlow wraps each member launch around an existing `RuntimeManager` task; it never changes task storage or identity.
+RoboFlow runs directed graphs of tasks inside RoboTeam. Administrators describe a workflow, generate a draft with the default robot, refine its nodes and connections, and save it globally. The front copilot chooses a saved workflow and supplies the objective and working folder. RoboFlow chooses a matching robot for each task and follows the graph until completion.
 
 ## Core Content
 
-### Terminology
+### Graph contract and editor
 
-| Term | Meaning |
+A workflow has an id, name, description, entryTaskId, tasks, edges and layout. Each task has a unique id, name, description, skillsets and one executionType: terminal, desktop or browser. An edge has only id, sourceTaskId and targetTaskId. All referenced nodes must exist. Cycles and self-loops are allowed. Unreachable nodes produce diagnostics. Workflow definitions contain no robot assignments.
+
+The editor starts with a description and Generate action. Generation calls the real Ploinky MCP tool roboflow_generate_workflow through the Router. RoboTeam starts the default robot in terminal mode with a caller-supplied system prompt containing the graph contract and current discovered skillset catalog. It validates the final JSON before returning a draft. Generation never saves automatically. Without a supplied folder, generation uses the managed workspace scratch directory .achilles-cli/roboflow-generation. Cancel stops the generation task; invalid output preserves the current draft. Concurrent edits require confirmation before replacement.
+
+Manual editing uses the same draft. Adding a task immediately adds a named node. Nodes can be dragged, connections drawn between ports, or added through source and destination selectors. The entry node is explicit. Save persists the graph and node positions. Optimistic revision checks reject stale saves; this counter does not create historical workflow revisions.
+
+### Skillsets and coverage
+
+The selector lists named skillsets from repositories discovered at the current Ploinky endpoint, including sets not registered on any robot. Remote sources are prepared through the same Ploinky repository client before reading their descriptors; unavailable repositories return diagnostics. Stable identities combine canonical repository source and skillset name. A robot matches when it has every required skillset enabled in its own catalog; extra sets are allowed. An empty requirement matches any robot and mounts no selected skills.
+
+The server computes coverage for drafts after skillset selection and for saved workflows on reads and robot/catalog mutations. An uncovered task displays: No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly. Saved workflows have a yellow warning symbol. Coverage is derived UI data and is never persisted. It blocks neither Save nor Start. A run fails if it actually reaches a task with no matching robot.
+
+### Default workflow and caller instructions
+
+The protected default workflow contains one node and no edges. It always uses the default robot and the builtin copilot skillset. Its node supports terminal, desktop and browser; the caller must choose one executionType when starting this workflow. For every other workflow, mode comes from each node and a run-level executionType is rejected.
+
+The default robot has no hardcoded workflow role based on its name. The caller supplies system instructions for normal conversation, graph generation or branching execution. The front copilot receives the workflow catalog and the launch-workflow skill. It selects an execution mode only for the default workflow.
+
+### Dispatch and transitions
+
+Starting a run captures the saved graph and creates a queued task instance at entryTaskId. RoboFlow chooses randomly from matching available robots. Terminal tasks run concurrently without a container-count limit. Desktop and browser share a FIFO GUI slot per robot; an idle matching GUI-capable robot is preferred, otherwise the task waits in an eligible robot's queue. Current GUI backends are Codex and OpenCode. Matching is checked again before runtime preparation.
+
+Each graph visit creates a distinct task instance and runtime task id. A cycle A -> B -> A therefore records two separate instances of A. A run allows 500 visits by default, configurable with ROBOTEAM_WORKFLOW_MAX_VISITS. Per-run serialized transitions and instance terminal guards prevent duplicate runtime events from advancing twice. Stop cancels active work and prevents further dispatch.
+
+### Task input and routing output
+
+Every task receives the objective, complete captured graph, currentTaskId and ordered previousFinalResponses. Only previous final responses enter this history. Logs, transcript replay, artifacts and file references do not enter task context. Responses stay intact; exceeding the one MiB context limit fails explicitly.
+
+With no outgoing edge, completion ends the run. With exactly one outgoing edge, RoboFlow follows it automatically. Neither case receives routing system instructions or needs an edge choice.
+
+With multiple outgoing edges, the caller supplies a system prompt identifying the current node and full graph and asking for a final response such as:
+
+```markdown
+#message
+The review passed.
+#nextEdgeId
+review-to-publish
+```
+
+The parser accepts optional message, case-insensitive nextEdgeId, nextEdge or Edge headings, and JSON with the same keys, including a fenced JSON object. An edge choice is required and must identify an outgoing edge of the current node. Missing, conflicting or invalid choices fail the run. An incoming edge never authorizes reverse traversal. Plain final text is valid for automatic transitions and terminal nodes.
+
+### SQLite and output files
+
+RoboFlow embeds SQLite through Node's node:sqlite module. There is no separate database server. The runtime must support node:sqlite; installation checks it. The database is /data/roboflow/roboflow.sqlite in the RoboTeam data volume, uses WAL, foreign keys and a busy timeout, and restricts file permissions. Transactions capture snapshots and advance visits atomically.
+
+Exactly three application tables store JSON records with indexed identifiers:
+
+| Table | Stored data |
 | --- | --- |
-| Workflow type | A reusable team configuration created by an administrator: participating robots, their skillsets/skills and their terminal, desktop or browser execution type, plus exactly one decision member. |
-| Default workflow | The workflow type guaranteed at startup. It contains the default robot as a terminal decision member, plus a browser member and a desktop member, all with the `copilot` skillset. |
-| Task flow | One concrete objective created from a workflow type. It captures the workflow configuration at creation and owns decision steps and member runs. |
-| Decision robot | The one member selected as `decisionMemberId`. RoboFlow starts it each step; it inspects the flow state, launches members through MCP tools, and decides when the objective is complete. |
-| Decision step | One invocation of the decision robot. It records the runtime task id, state, summary and the member runs launched during that step. |
-| Member run | One request to a configured member robot with an instruction. It wraps exactly one existing RoboTeam runtime task. |
-| Runtime task | The existing `RuntimeManager` task that actually runs ALA. RoboFlow records its id but never changes its storage or semantics. |
+| workflow_types | Current saved graph, task definitions, layout, timestamps and optimistic save counter. |
+| workflow_runs | Run id, workflow id, immutable graph snapshot, objective, working folder, creator, state, timestamps, current instance and failure details. |
+| task_instances | Unique instance id, run id, sequence, graph task id, selected robot, mode, runtime id, state, timestamps, selected edge and output file references. |
 
-### Workflow types
+There are no schema_migrations or workflow_revisions tables. Snapshots belong to individual runs, so edits or deletion of a workflow cannot change an active or historical run. Startup removes legacy workflow JSON definitions without importing them. Robot configuration and unrelated project files remain separate.
 
-A workflow type has a stable id, a name, an optional description, one to thirty-two members and exactly one `decisionMemberId`. Each member declares a robot name, an execution type (`terminal`, `desktop` or `browser`), an optional role description, and optional skillsets or qualified skills. A member id is unique inside its workflow type.
+Logs and final responses stay in the run's working folder under .achilles-cli/roboflow/<runId>/<instanceId>.log and .result. The database stores references, not response or log bodies. Workflows and run metadata are global; a folder is only an execution context and output location. Missing output files are reported as unavailable. Paths reject substituted symlinks.
 
-Workflow types are configuration artifacts stored as versioned JSON records under the RoboTeam data root. Creating, updating or deleting one requires the authenticated administrator role, and member robots must exist. An update replaces the whole definition while preserving the workflow id and creation time. The default workflow is read-only and cannot be edited or deleted. A desktop or browser member declares a visible GUI task; RoboTeam's current GUI automation uses Codex, so such a member requires its robot to have Codex enabled when the task actually runs. The workflow builder requires at least one member and a decision-maker selection. Existing task flows keep the configuration they captured at creation, so deleting or editing a workflow type never changes a running flow.
+### Restart and monitoring
 
-### Default workflow
+Startup marks unfinished runs failed and unfinished instances interrupted. It does not replay tasks. Completed records remain readable. The authenticated RoboFlow page shows the captured graph and each visit with its robot, mode, state and final response; full logs load on demand. It exposes repeated cycle visits separately.
 
-Startup ensures the workflow type with id `default` exists, reusing an existing record unchanged. It is read-only: it cannot be edited or deleted. Its definition is:
+### HTTP and MCP
 
-- `default-terminal`: the default robot, terminal execution, decision member.
-- `default-browser`: the default robot, browser execution.
-- `default-desktop`: the default robot, desktop execution.
+The internal MCP tools are roboflow_list_workflows, roboflow_start_flow, roboflow_flow_state and roboflow_stop_flow. Create, update, delete and roboflow_generate_workflow require an authenticated administrator. Generation and start use native asynchronous Ploinky tasks. The retired roboflow_launch_robot and roboflow_finish_flow tools and HTTP routes are removed.
 
-Every member selects the builtin `copilot` skillset (`bash` and `launch-gpt-researcher`). The terminal member is also the decision member, so it can decide and, when needed, launch the default robot again as a browser or desktop member.
-
-### Task flows, decision steps and member runs
-
-A task flow records its workflow type id, the workflow name, the decision member, the workspace folder, the objective, the creator, timestamps, a status, and the captured members. `startFlow` creates the flow, sets it to `running`, and starts the first decision step.
-
-Flow status is `start`, `running`, `completed`, `failed` or `stopped`. `start` is the creation state before the first decision step; RoboFlow moves immediately to `running`.
-
-Each decision step starts one runtime task on the decision member's robot with the member's configured skillsets plus the internal RoboFlow MCP capability injected into the task. The decision capability is not a skill or skillset; RoboFlow passes the agent MCP server descriptor only to decision tasks. The decision robot acts only through the internal MCP tools:
-
-- `roboflow_flow_state` returns the objective, members and every step with each member run's instruction, state, summary and error.
-- `roboflow_launch_robot` validates that the requested member belongs to the flow's captured workflow type, starts that member's existing runtime task through the same skillset resolution and `RuntimeManager.startTask` path used elsewhere, records the run against the current step, and returns immediately.
-- `roboflow_finish_flow` completes the flow with a final result.
-- `roboflow_stop_flow` stops the flow and cancels its active decision or member runs.
-
-A member run records its robot, execution type, instruction, working directory, runtime task id, state, step, timestamps, final summary and full log location. Runtime invocation states are `queued`, `starting`, `running`, `completed`, `failed`, `stopped` and `interrupted`; the first three are not terminal. A retry or a second instruction creates a new run, so history is never rewritten.
-
-### Decision loop
-
-RoboFlow serializes all transitions for one flow. After a decision step's runtime task reaches a terminal state, RoboFlow waits for every member run of that step to become terminal, then starts the next decision step with the updated state. If a decision step launches nothing, RoboFlow re-invokes the decision robot up to a bounded number of idle turns before failing the flow; it also fails the flow at a bounded maximum number of steps. A failed decision task fails the flow. When the decision robot calls `roboflow_finish_flow`, the flow becomes `completed` and RoboFlow stops advancing it.
-
-### Observation and logs
-
-RoboFlow observes runtime tasks through an optional `taskObserver` hook. The hook only forwards progress text and lifecycle transitions; it does not own task storage. RoboFlow appends every progress chunk to the decision step's or member run's full log and records the runtime task's final result as its summary. The decision robot reads bounded summaries through `roboflow_flow_state`; a human audits the full logs on the monitoring page.
-
-### Scheduling and resource rules
-
-RoboFlow adds no separate scheduler or lease broker. A member run uses the existing per-robot behaviour: terminal tasks run concurrently, while desktop and browser tasks share the robot's single GUI container and FIFO queue. The decision robot always runs as a non-GUI (terminal) task so it never occupies the graphical slot.
-
-### Failure, stop and restart
-
-A failed, stopped or interrupted run is terminal and keeps its error. `roboflow_stop_flow` marks the flow `stopped` and cancels its active decision and member runtime tasks. Runtime tasks live only in memory, so when the service restarts every non-terminal flow is marked `failed` and its active steps and runs are marked terminal; there is no migration of in-flight work.
-
-### MCP surface
-
-`roboflow_list_workflows`, `roboflow_start_flow`, `roboflow_flow_state`, `roboflow_launch_robot`, `roboflow_finish_flow` and `roboflow_stop_flow` are internal workspace-agent tools. `roboflow_create_workflow`, `roboflow_update_workflow` and `roboflow_delete_workflow` require the authenticated administrator role, and the default workflow cannot be edited or deleted. `roboflow_start_flow` keeps the native asynchronous Ploinky task contract and is called by the front copilot's only skill, `launch-workflow`. `roboflow_flow_state`, `roboflow_launch_robot` and `roboflow_finish_flow` are called natively by the decision robot through the injected MCP capability.
-
-### Front copilot
-
-The default robot's direct conversation receives only the workflow catalog (workflow id, name, description, participating robots and roles, and the decision member) instead of the robot and skillset catalog. Its bundled catalog exposes the single `launch-workflow` skill; `bash` and `launch-gpt-researcher` are available to workflow members, and the decision robot additionally receives the RoboFlow MCP capability injected into its task. The front copilot cannot run tasks, delegate to individual robots, choose execution modes or skillsets, or control a flow after starting it.
-
-### Monitoring view
-
-The RoboFlow page is served by RoboTeam on its authenticated Router route. It lists task flows and workflow types, opens one flow, shows each decision step and member run with the robot, execution type, state, timestamps and summary, and loads any run's full log on demand. The view is read-only. The front copilot returns a Markdown link to the page; the generic WebChat side panel opens it through its existing embedded-link handling, so Ploinky needs no agent-specific change.
+HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, run start/state/stop and logs under /api/roboflow. Browser mutations require the existing Router CSRF proof. Generation uses the real MCP browser client, including task polling and cancellation. Credentials remain in the authenticated transport.
 
 ## Decisions & Questions
 
-### Question #1: Is RoboFlow a scheduler?
+### Question #1: Does RoboFlow require an external database service?
 
-Response: No. This version omits schedules, priority ageing, leases, dependencies and rework graphs. It provides a workflow type registry, task flows with a decision loop, validated member launches through the existing runtime, observation, and a read-only monitoring page.
+Response: No. SQLite is embedded in the RoboTeam process and stored in its data volume.
 
-### Question #2: Does RoboFlow own robot tasks?
+### Question #2: Are historical workflow versions stored separately?
 
-Response: No. A member run references an existing `RuntimeManager` task and adds configuration validation and an observation record. Task storage, task identity and ALA execution remain owned by the existing runtime.
+Response: No. workflow_types stores the current definition. Each workflow_runs record captures the definition used by that execution.
 
-### Question #3: Is RoboFlow a separate server?
+### Question #3: Can a task choose any node?
 
-Response: No. It stays a decoupled module inside the RoboTeam service, exposed through the existing authenticated HTTP routes and internal MCP tools. Splitting it into its own process is deferred.
+Response: No. Branching tasks may choose only an explicitly outgoing edge. RoboFlow handles zero or one outgoing edge without asking the robot.
 
-### Question #4: Why does the front copilot not drive the flow?
+### Question #4: Does incomplete coverage prevent editing or starting?
 
-Response: The design centralizes execution in RoboFlow. The front copilot only selects and starts a workflow; RoboFlow starts the decision robot, which owns every next step. This removes the previous manager-copilot loop and the ad-hoc delegation catalog from the front copilot.
+Response: No. It is a server-calculated UI warning. Reaching an uncovered task fails execution.
+
+### Question #5: How are old workflows handled?
+
+Response: Delete their legacy persisted definitions. Do not migrate them.
 
 ## Conclusion
 
-RoboFlow is the execution owner for team workflows. Administrators define workflow types with a decision member; the default workflow covers the default robot in every execution mode; the front copilot only chooses and starts a workflow; the decision robot launches member robots and decides when the objective is complete; and the full logs stay visible on the RoboFlow monitoring page.
+RoboFlow owns graph execution, records every task visit, and preserves the graph used by each run. The editor combines generated drafts with manual refinement; robot selection follows the skillsets required by each node.

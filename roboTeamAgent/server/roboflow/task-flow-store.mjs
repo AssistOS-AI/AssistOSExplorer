@@ -1,169 +1,72 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {
-    FLOWS_DIR, FLOW_ID_PATTERN, FLOW_STATUSES, INVOCATION_STATES, INVOCATION_ID_PATTERN,
-    MAX_INVOCATIONS, MAX_LOG_BYTES,
-} from './constants.mjs';
-import { appendFileBounded, ensureDirectory, listDirectories, readFileBounded, readJson, withLock, writeJsonAtomic } from './storage.mjs';
-
-const SCHEMA = 'roboflow-flow-v1';
-
-function invalid(message) {
-    return Object.assign(new Error(message), { statusCode: 400 });
-}
+import { RoboFlowDatabase } from './database.mjs';
+import { FLOW_ID_PATTERN, INVOCATION_ID_PATTERN } from './constants.mjs';
+import { invalid } from './graph.mjs';
 
 export class TaskFlowStore {
-    constructor(options = {}) {
-        this.directory = path.resolve(options.directory || FLOWS_DIR);
+    constructor(options = {}) { this.database = options.database || new RoboFlowDatabase(options.databaseFile); }
+    async initialize() { this.database.initialize(); }
+    static newFlowId() { return `flow_${crypto.randomBytes(12).toString('hex')}`; }
+    static newInvocationId() { return `inv_${crypto.randomBytes(12).toString('hex')}`; }
+    getSync(id) {
+        const row = this.database.db.prepare('SELECT record FROM workflow_runs WHERE id=?').get(id);
+        if (!row) return null;
+        return { ...JSON.parse(row.record), instances: this.database.db.prepare('SELECT record FROM task_instances WHERE run_id=? ORDER BY sequence').all(id).map(entry => JSON.parse(entry.record)) };
     }
-
-    async initialize() {
-        await ensureDirectory(this.directory);
+    saveSync(flow) {
+        const { instances, result, ...record } = flow;
+        this.database.db.prepare('INSERT INTO workflow_runs VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record=excluded.record').run(flow.id, JSON.stringify(record));
+        for (const instance of instances || []) this.database.db.prepare('INSERT INTO task_instances VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET record=excluded.record').run(instance.id, flow.id, instance.sequence, JSON.stringify(instance));
+        return flow;
     }
-
-    flowDirectory(flowId) {
-        if (!FLOW_ID_PATTERN.test(String(flowId || ''))) throw invalid('invalid task flow id');
-        const resolved = path.resolve(this.directory, flowId);
-        if (path.dirname(resolved) !== this.directory) throw invalid('invalid task flow path');
-        return resolved;
-    }
-
-    flowFile(flowId) {
-        return path.join(this.flowDirectory(flowId), 'flow.json');
-    }
-
-    logFile(flowId, invocationId) {
-        if (!INVOCATION_ID_PATTERN.test(String(invocationId || '')) && !/^step-\d{1,6}$/.test(String(invocationId || ''))) {
-            throw invalid('invalid invocation id');
-        }
-        return path.join(this.flowDirectory(flowId), 'logs', `${invocationId}.log`);
-    }
-
-    eventsFile(flowId) {
-        return path.join(this.flowDirectory(flowId), 'events.jsonl');
-    }
-
-    static newFlowId() {
-        return `flow_${crypto.randomBytes(12).toString('hex')}`;
-    }
-
-    static newInvocationId() {
-        return `inv_${crypto.randomBytes(12).toString('hex')}`;
-    }
-
-    async _read(flowId) {
-        const record = await readJson(this.flowFile(flowId));
-        if (!record) return null;
-        if (record.schema !== SCHEMA || record.id !== flowId) throw new Error(`task flow record is invalid for ${flowId}`);
-        return record;
-    }
-
-    async create(record) {
+    async createFromWorkflow(registry, workflowId, input) {
         await this.initialize();
-        if (!FLOW_ID_PATTERN.test(String(record?.id || ''))) throw invalid('invalid task flow id');
-        return withLock(`flow:${record.id}`, async () => {
-            if (await this._read(record.id)) throw Object.assign(invalid('task flow already exists'), { statusCode: 409 });
+        return this.database.transaction(() => {
+            const graph = registry.getSync(workflowId);
+            if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
             const now = new Date().toISOString();
-            const value = {
-                schema: SCHEMA,
-                id: record.id,
-                workflowTypeId: record.workflowTypeId,
-                workflowName: record.workflowName,
-                decisionMemberId: record.decisionMemberId || '',
-                decisionRobotName: record.decisionRobotName || '',
-                folder: record.folder,
-                objective: record.objective,
-                status: 'start',
-                version: 0,
-                createdBy: record.createdBy || '',
-                createdAt: now,
-                updatedAt: now,
-                finishedAt: null,
-                result: null,
-                error: null,
-                currentStep: 0,
-                awaitingStep: null,
-                idleTurns: 0,
-                members: record.members,
-                steps: [],
-                invocations: [],
-            };
-            await writeJsonAtomic(this.flowFile(value.id), value);
-            await this.appendEvent(value.id, { type: 'flow-created', objective: value.objective, workflowTypeId: value.workflowTypeId });
-            return value;
+            return this.saveSync({ id: TaskFlowStore.newFlowId(), workflowTypeId: graph.id, workflowName: graph.name, graph,
+                ...input, status: 'running', currentInstanceId: null, createdAt: now, updatedAt: now, finishedAt: null, error: null, instances: [] });
         });
     }
-
-    async get(flowId) {
+    async get(id) { await this.initialize(); return this.getSync(id); }
+    async list() { await this.initialize(); return this.database.db.prepare('SELECT id FROM workflow_runs ORDER BY rowid DESC').all().map(row => this.getSync(row.id)); }
+    async update(id, operation) {
         await this.initialize();
-        return this._read(flowId);
-    }
-
-    async list({ folder } = {}) {
-        await this.initialize();
-        const flows = [];
-        for (const name of await listDirectories(this.directory)) {
-            if (!FLOW_ID_PATTERN.test(name)) continue;
-            try {
-                const record = await this._read(name);
-                if (!record) continue;
-                if (folder && path.resolve(record.folder) !== path.resolve(folder)) continue;
-                flows.push(record);
-            } catch {
-                // Corrupt records stay private and are omitted.
-            }
-        }
-        return flows.sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
-    }
-
-    // Read-modify-write under a per-flow lock. The mutator may return a value to
-    // publish to the caller; the flow's optimistic version always advances.
-    async update(flowId, mutator) {
-        await this.initialize();
-        return withLock(`flow:${flowId}`, async () => {
-            const flow = await this._read(flowId);
-            if (!flow) throw Object.assign(invalid('task flow not found'), { statusCode: 404 });
-            const result = mutator(flow);
-            flow.version = Number(flow.version || 0) + 1;
+        return this.database.transaction(() => {
+            const flow = this.getSync(id);
+            if (!flow) throw Object.assign(invalid('workflow run not found'), { statusCode: 404 });
+            operation(flow);
             flow.updatedAt = new Date().toISOString();
-            await writeJsonAtomic(this.flowFile(flowId), flow);
-            return result;
+            return this.saveSync(flow);
         });
     }
-
-    async appendEvent(flowId, event) {
-        const line = `${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`;
-        await ensureDirectory(this.flowDirectory(flowId));
-        await fs.appendFile(this.eventsFile(flowId), line, { mode: 0o600 }).catch(async (error) => {
-            if (error.code !== 'ENOENT') throw error;
-            await ensureDirectory(path.dirname(this.eventsFile(flowId)));
-            await fs.appendFile(this.eventsFile(flowId), line, { mode: 0o600 });
-        });
+    async outputPath(flowId, instanceId, suffix, create = false) {
+        if (!FLOW_ID_PATTERN.test(flowId) || !INVOCATION_ID_PATTERN.test(instanceId) || !['log', 'result'].includes(suffix)) throw invalid('invalid task output reference');
+        const flow = await this.get(flowId);
+        if (!flow?.instances.some(instance => instance.id === instanceId)) throw invalid('task instance not found');
+        const root = await fs.realpath(flow.folder);
+        if (root !== path.resolve(flow.folder)) throw new Error('Workflow output folder was replaced by a symlink');
+        let directory = root;
+        for (const part of ['.achilles-cli', 'roboflow', flowId]) {
+            directory = path.join(directory, part);
+            if (create) await fs.mkdir(directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+            const stat = await fs.lstat(directory);
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe workflow output directory');
+        }
+        return path.join(directory, `${instanceId}.${suffix}`);
     }
-
-    async readEvents(flowId) {
-        const text = await readFileBounded(this.eventsFile(flowId), MAX_LOG_BYTES);
-        return text.split('\n').filter(Boolean).map((line) => {
-            try { return JSON.parse(line); } catch { return null; }
-        }).filter(Boolean);
+    async writeOutput(flowId, instanceId, value, suffix = 'log') {
+        const file = await this.outputPath(flowId, instanceId, suffix, true);
+        const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW | (suffix === 'log' ? fs.constants.O_APPEND : fs.constants.O_TRUNC);
+        const handle = await fs.open(file, flags, 0o600);
+        try { await handle.writeFile(String(value || '')); } finally { await handle.close(); }
     }
-
-    async appendLog(flowId, invocationId, chunk) {
-        return appendFileBounded(this.logFile(flowId, invocationId), chunk, MAX_LOG_BYTES);
-    }
-
-    async readLog(flowId, invocationId, limit = MAX_LOG_BYTES) {
-        return readFileBounded(this.logFile(flowId, invocationId), limit);
-    }
-
-    assertFlowStatus(status) {
-        if (!FLOW_STATUSES.includes(status)) throw invalid(`invalid task flow status: ${status}`);
-    }
-
-    assertInvocationState(state) {
-        if (!INVOCATION_STATES.includes(state)) throw invalid(`invalid invocation state: ${state}`);
+    async readOutput(flowId, instanceId, suffix = 'log') {
+        const file = await this.outputPath(flowId, instanceId, suffix);
+        const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        try { return await handle.readFile('utf8'); } finally { await handle.close(); }
     }
 }
-
-export const taskFlowStoreInternals = { SCHEMA, MAX_INVOCATIONS };

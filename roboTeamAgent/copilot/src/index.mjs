@@ -31,7 +31,7 @@ export { formatSlashResult } from './ui/ResultFormatter.mjs';
 export { printHelp as printREPLHelp, showHistory, searchHistory } from './ui/HelpPrinter.mjs';
 export { isWebchatEscapeControlChunk, handleWebchatControlChunk } from './lib/webchatControl.mjs';
 export { BUILT_IN_SKILLS } from './lib/constants.mjs';
-export { builtInSkillsDir, collectPloinkyRepoSkillRoots, resolveSkillCatalogRoots } from './lib/cliSkillRoots.mjs';
+export { builtInSkillsDir, resolveSkillCatalogRoots } from './lib/cliSkillRoots.mjs';
 export { parseCliOptions } from './lib/cliOptions.mjs';
 
 export async function createCliRuntime(options, { webchat = false } = {}) {
@@ -47,7 +47,7 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
         else initialSession = await sessionStore.createSession({ sessionId: options.sessionId, select: false });
     } else initialSession = await sessionStore.ensureCurrentSession();
     const robotCatalog = robotContext ? createRobotSkillCatalog({ context: robotContext, sessionStore,
-        workingDir, initialSessionId: initialSession.sessionId, discoverTaskSkills }) : null;
+        workingDir, initialSessionId: initialSession.sessionId, includeWorkflowCatalog: options.execution?.workflowCatalog === true, discoverTaskSkills }) : null;
     let catalog;
     const refresh = async () => {
         catalog = await createAnthropicSkillCatalog({
@@ -110,8 +110,9 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
     }
 }
 
-export async function main(args = process.argv.slice(2)) {
+export async function main(args = process.argv.slice(2), execution = {}) {
     const options = parseCliOptions(args);
+    options.execution = { ...options.execution, ...execution };
     if (options.help) { printHelp(); return; }
     if (options.version) { console.log('RoboTeam copilot v3.0.0'); return; }
     fs.mkdirSync(options.workingDir, { recursive: true });

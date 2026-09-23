@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { requireWorkspaceRoot } from '../server/workspace-root.mjs';
 import { resolveAchillesWorkspaceRoot } from '../copilot/src/lib/privateDataRoot.mjs';
-import { collectPloinkyRepoSkillRoots } from '../copilot/src/lib/cliSkillRoots.mjs';
 
 test('workspace configuration fails explicitly instead of falling back to cwd', t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'required-workspace-'));
@@ -14,7 +13,6 @@ test('workspace configuration fails explicitly instead of falling back to cwd', 
         const env = { PLOINKY_WORKSPACE_ROOT: value };
         assert.throws(() => requireWorkspaceRoot(env), /PLOINKY_WORKSPACE_ROOT is required/);
         assert.throws(() => resolveAchillesWorkspaceRoot(root, env), /PLOINKY_WORKSPACE_ROOT is required/);
-        assert.throws(() => collectPloinkyRepoSkillRoots(root, env), /PLOINKY_WORKSPACE_ROOT is required/);
     }
     assert.throws(() => requireWorkspaceRoot({ PLOINKY_WORKSPACE_ROOT: 'relative' }), /absolute/);
     assert.throws(() => requireWorkspaceRoot({ PLOINKY_WORKSPACE_ROOT: path.join(root, 'absent') }), /existing directory/);

@@ -36,13 +36,14 @@ function frontmatterFields(source) {
     return fields;
 }
 
-async function skillRecord(filePath, repositoryPath) {
+async function skillRecord(filePath, repositoryPath, { validate = true } = {}) {
     const fields = frontmatterFields(await fs.readFile(filePath, 'utf8'));
-    const name = fields?.get('name') || '';
+    const declaredName = fields?.get('name') || '';
     const description = fields?.get('description') || '';
-    if (!skillNamePattern.test(name) || !description) {
+    if (validate && (!skillNamePattern.test(declaredName) || !description)) {
         throw new Error(`Anthropic skill descriptor must define a lowercase hyphenated name and description: ${filePath}`);
     }
+    const name = declaredName || path.basename(path.dirname(filePath));
     return {
         name,
         shortName: name,
@@ -53,7 +54,7 @@ async function skillRecord(filePath, repositoryPath) {
     };
 }
 
-export async function discoverAnthropicSkills(repositoryPath) {
+export async function discoverAnthropicSkills(repositoryPath, options = {}) {
     const root = await fs.realpath(repositoryPath);
     const queue = [root];
     const records = [];
@@ -62,7 +63,7 @@ export async function discoverAnthropicSkills(repositoryPath) {
         const entries = await fs.readdir(current, { withFileTypes: true });
         for (const entry of entries) {
             const entryPath = path.join(current, entry.name);
-            if (entry.isFile() && entry.name === 'SKILL.md') records.push(await skillRecord(entryPath, root));
+            if (entry.isFile() && entry.name === 'SKILL.md') records.push(await skillRecord(entryPath, root, options));
             else if (entry.isDirectory() && !ignoredDirectories.has(entry.name)) queue.push(entryPath);
         }
     }

@@ -28,7 +28,7 @@ try {
             description: 'Inspect and select the next execution catalog for this conversation.', subCommands: [
                 { name: 'list', usage: '/skills list', description: 'List allowed robot skillsets' },
                 { name: 'use', usage: '/skills use <names|none>', description: 'Select session skills',
-                    argCompletions: [{ value: 'none', label: 'none' }, { value: 'workspace', label: 'workspace' }, ...inventory.skills.filter((entry) => entry.source === 'workspace').map((entry) => ({ value: entry.identity, label: entry.identity, description: entry.description })), ...sets.map((set) => ({ value: set.id, label: set.name, description: set.description })),
+                    argCompletions: [{ value: 'none', label: 'none' }, ...sets.map((set) => ({ value: set.id, label: set.name, description: set.description })),
                         ...publicRepositories(context.robot).flatMap((repo) => repo.skills.map((skill) => ({ value: skill.id, label: skill.id, description: skill.description })))] },
                 { name: 'pin', usage: '/skills pin', description: 'Keep the last executed catalog' },
                 { name: 'live', usage: '/skills live', description: 'Capture current source files at each execution' },

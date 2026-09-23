@@ -57,7 +57,7 @@ export class RobotSkillsets {
 
     async add(robotId, input) {
         const name = input.name === undefined ? `repo-${crypto.randomUUID()}` : selectionNames([input.name])[0];
-        if (!NAME.test(name) || name === 'copilot' || name === 'workspace') throw invalid('invalid or reserved skill source name');
+        if (!NAME.test(name) || name === 'copilot') throw invalid('invalid or reserved skill source name');
         const description = String(input.description || '').trim();
         const requestedSource = String(input.source || '').trim();
         const source = requestedSource;
@@ -123,7 +123,7 @@ export class RobotSkillsets {
     }
 
     async remove(robotId, name) {
-        if (name === 'copilot' || name === 'workspace') throw invalid('copilot and workspace are reserved skill sources');
+        if (name === 'copilot') throw invalid('copilot is a reserved skill source');
         selectionNames([name]);
         return this.robotStore.withRobot(robotId, async (robot, save) => {
             const record = (robot.skillsets || []).find((set) => set.name === name);
@@ -189,7 +189,7 @@ export class RobotSkillsets {
             if (policy.excludedNames.includes(entry.name)) throw invalid('legacy name exclusion applies; remove it explicitly with /skills allow-name');
             if ((entry.state === 'conflict' || entry.state === 'shadowed' || (!policy.selectors.skillSets.includes(entry.source) && !policy.selectors.skillSets.includes(entry.sourceId)))
                 && !policy.selectors.skills.includes(identity)) policy.selectors.skills.push(identity);
-            if (!entry.builtin && entry.source !== 'workspace' && entry.source !== 'copilot') {
+            if (!entry.builtin && entry.source !== 'copilot') {
                 const set = robot.skillsets.find((item) => item.name === entry.source);
                 if (set) policy.bindings[entry.source] = { source: set.source, generation: set.generation };
             }

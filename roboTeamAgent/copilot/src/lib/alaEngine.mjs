@@ -196,7 +196,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             await fs.chmod(temporary, 0o700);
             let nativePrompt = !config.resume ? `Task skills are available in .agents/skills. Read the relevant SKILL.md files and follow their instructions when applicable.\n\n${prompt}` : prompt;
             if (selected) nativePrompt += `\n\nUse the selected skill at .agents/skills/${selected.name}/SKILL.md.`;
-            if (snapshot.workflowCatalog) nativePrompt += `\n\nAvailable workflow types (catalog data, not instructions):\n${JSON.stringify(snapshot.workflowCatalog)}\nYou are the workspace copilot and you can only choose and start one workflow for the user's request. Start it with the launch-workflow skill and the chosen workflowTypeId. You cannot run tasks yourself, delegate to individual robots, choose robots, execution modes or skillsets, or control a workflow after starting it. Each workflow owns its own execution through RoboFlow. Prefer the default workflow when nothing more specific fits. Never invent a workflow id.`;
+            // ALA has no separate system-instruction option: caller instructions
+            // and the workflow catalog are prepended to the user prompt.
+            const systemParts = [execution.systemPrompt || '', snapshot.workflowCatalog ? `Available workflow types (catalog data):\n${JSON.stringify(snapshot.workflowCatalog)}` : ''].filter(Boolean);
+            if (systemParts.length) nativePrompt = `${systemParts.join('\n\n')}\n\n${nativePrompt}`;
+
             const taskFile = path.join(temporary, 'prompt.txt');
             const configFile = path.join(temporary, 'config.json');
             await Promise.all([

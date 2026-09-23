@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RoboTeam</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="workflow-editor.css">
   <script>
     (() => {
       const keys = ['assistosExplorerTheme', 'webchat_theme'];
@@ -59,7 +60,7 @@
         <div class="heading-main"><h2 id="workflows-title">Workflow types</h2><span id="workflowCount" class="count">0 workflows</span></div>
         <button id="addWorkflowButton" class="button primary" type="button">Add workflow</button>
       </div>
-      <p class="lede">A workflow type declares the robots that may work on one objective, their skillsets, and whether each runs as a terminal, desktop or browser task.</p>
+      <p class="lede">Describe a workflow to generate its task graph, then refine tasks and connections. RoboFlow selects matching robots when each task runs.</p>
       <p id="workflowListMessage" class="message" role="status"></p>
       <div id="workflowsList" class="workflow-list" aria-live="polite"></div>
     </section>
@@ -73,36 +74,59 @@
       </header>
 
       <div class="builder-body">
-        <section class="builder-panel">
-          <h3>Details</h3>
-          <div class="builder-grid">
-            <label class="field"><span>Name</span><input name="name" maxlength="120" required placeholder="Software change"></label>
-            <label class="field"><span>Description</span><textarea name="description" maxlength="2000" rows="2" placeholder="Implement, review and ship a change"></textarea></label>
+        <div class="workflow-workspace">
+          <aside class="task-sidebar">
+            <div class="task-sidebar-header">
+              <h3>Tasks</h3>
+              <button type="button" id="addTaskButton" class="button add-task" title="Add a task" aria-label="Add a task">+</button>
+            </div>
+            <ul id="taskList" class="task-list"></ul>
+          </aside>
+          <div class="workflow-main">
+            <section class="workflow-details">
+              <label class="field"><span>Name</span><input name="name" required maxlength="120"></label>
+              <label class="field"><span>Description</span><textarea name="description" rows="2"></textarea></label>
+            </section>
+            <section class="generation">
+              <label class="field"><span>Describe the workflow you want</span><textarea id="generationDescription" rows="3" placeholder="Review a change, revise it if needed, and report the result"></textarea></label>
+              <div class="generation-actions">
+                <button id="generateWorkflow" type="button" class="button primary">Generate graph</button>
+                <button id="cancelGeneration" type="button" class="button" hidden>Cancel generation</button>
+              </div>
+            </section>
+            <p class="hint">Drag nodes to arrange them. Drag ↗ to a destination node to connect tasks. You can also add connections with the selectors below.</p>
+            <div id="workflowBoard" aria-label="Workflow drawing board"></div>
+            <div class="edge-controls">
+              <label class="field"><span>Entry task</span><select id="entryTask"></select></label>
+              <label class="field"><span>From task</span><select id="edgeSource"></select></label>
+              <label class="field"><span>To task</span><select id="edgeTarget"></select></label>
+              <button type="button" id="addEdgeButton" class="button">Add connection</button>
+            </div>
+            <div id="edgesEditor"></div>
+            <div id="taskEditorPanel" class="task-editor-panel"></div>
+            <p id="workflowMessage" class="message" role="status"></p>
           </div>
-        </section>
-
-        <section class="builder-panel">
-          <h3>Team</h3>
-          <div class="member-adder">
-            <label class="field"><span>Add a robot</span>
-              <select id="robotToAdd" aria-label="Robots available to add"></select>
-            </label>
-            <button type="button" id="addMemberButton" class="button">Add robot</button>
-          </div>
-          <p id="membersHint" class="hint">Add at least one robot. Each member keeps its own skillsets and execution type, and exactly one robot is the decision maker.</p>
-          <div id="membersEditor" class="members-editor" aria-live="polite"></div>
-        </section>
-
-        <p id="workflowMessage" class="message" role="status"></p>
+        </div>
       </div>
-
-      <div id="workflowReadonlyOverlay" class="workflow-readonly-overlay" role="note" hidden>
-        <p>Read-only: the default workflow provides the copilot fallback and cannot be changed.</p>
-      </div>
-
       <footer class="dialog-actions">
-        <button type="button" id="workflowCancelButton" class="button">Cancel</button>
-        <button type="submit" id="workflowCreateButton" class="button primary">Create workflow type</button>
+        <button type="button" id="workflowCancelButton" class="button">Close</button>
+        <button type="submit" id="workflowCreateButton" class="button primary">Save workflow</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="addTaskDialog" class="task-dialog" aria-labelledby="addTaskTitle">
+    <form id="addTaskForm" class="task-form">
+      <h3 id="addTaskTitle">Add task</h3>
+      <div class="add-task-row">
+        <div class="add-task-fields">
+          <label class="field"><span>Name</span><input name="name" required maxlength="120" placeholder="Review change"></label>
+          <label class="field"><span>Description</span><textarea name="description" rows="3" required placeholder="Review the requested change and decide whether it needs revision."></textarea></label>
+        </div>
+        <button type="submit" class="button primary">Add task</button>
+      </div>
+      <footer class="dialog-actions">
+        <button type="button" id="addTaskCancel" class="button">Cancel</button>
       </footer>
     </form>
   </dialog>

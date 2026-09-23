@@ -11,28 +11,11 @@ export function selectorNames(value, individual = false) {
     return [...new Set(values.map((item) => {
         if (typeof item !== 'string') throw skillError('invalid skill selector');
         const name = item.trim();
-        if (name.startsWith('workspace:')) {
-            const relative = name.slice(10);
-            if (!relative || relative.length > 2048 || relative.startsWith('/') || relative.includes('\\')
-                || relative.split('/').some((part) => !part || part === '.' || part === '..') || /[\x00-\x1f]/.test(relative)) {
-                throw skillError('invalid workspace skill selector');
-            }
-        } else if (!(individual ? /^[a-z0-9-]+\/[a-z0-9-]+$/ : /^[a-z0-9]+(?:-[a-z0-9]+)*$/).test(name)) {
+        if (!(individual ? /^[a-z0-9-]+\/[a-z0-9-]+$/ : /^[a-z0-9]+(?:-[a-z0-9]+)*$/).test(name)) {
             throw skillError('invalid skillset or qualified skill selector');
         }
         return name;
     }))];
-}
-
-function validateExcludedNameIdentities(policy) {
-    const identities = policy.excludedNameIdentities;
-    if (identities === undefined) return;
-    if (!identities || typeof identities !== 'object' || Array.isArray(identities)
-        || Object.entries(identities).some(([identity, name]) => {
-            if (!identity.startsWith('workspace:') || typeof name !== 'string'
-                || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || !policy.excludedNames.includes(name)) return true;
-            try { selectorNames([identity], true); return false; } catch { return true; }
-        })) throw skillError('invalid stored name-exclusion identity provenance');
 }
 
 function validateImportedSkillNames(policy) {
@@ -42,7 +25,7 @@ function validateImportedSkillNames(policy) {
     if (!sources || typeof sources !== 'object' || Array.isArray(sources) || Object.keys(sources).length > 32) invalid();
     let count = 0;
     for (const [name, proof] of Object.entries(sources)) {
-        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || ['workspace', 'copilot'].includes(name)
+        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name === 'copilot'
             || !proof || typeof proof !== 'object' || Array.isArray(proof)
             || Object.keys(proof).sort().join(',') !== 'generation,names,source'
             || typeof proof.source !== 'string' || proof.source.length > 2048 || /[\x00-\x1f]/.test(proof.source)
@@ -80,7 +63,6 @@ export class SkillPolicies {
                 selectorNames(policy.selectors.skillSets);
                 selectorNames(policy.selectors.skills, true);
                 if (![...policy.excludedSources, ...policy.excludedSkills, ...policy.excludedNames].every((value) => typeof value === 'string')) throw skillError('invalid stored skill exclusions');
-                validateExcludedNameIdentities(policy);
                 validateImportedSkillNames(policy);
                 return policy;
             } finally { await handle.close(); }
@@ -93,28 +75,16 @@ export class SkillPolicies {
         return scope;
     }
     // Record only names proven by a valid descriptor during an explicit policy
-    // mutation. Inventory reads never write state. Workspace identities encode
-    // folder paths; imported names also need their source generation and directory
-    // to remain identifiable when a live descriptor is temporarily malformed.
+    // mutation. Inventory reads never write state. Imported names need their
+    // source generation and directory to stay identifiable when a live descriptor
+    // is temporarily malformed.
     async rememberNameExclusions(robot, policy, cwd, entries) {
         const next = { ...policy };
-        const remembered = Object.fromEntries(Object.entries(policy.excludedNameIdentities || {})
-            .filter(([, name]) => policy.excludedNames.includes(name)));
-        if (policy.excludedNames.length || policy.excludedSkills.some(identity => !identity.startsWith('workspace:'))
-            || policy.importedSkillNames) {
+        if (policy.excludedNames.length || policy.excludedSkills.length || policy.importedSkillNames) {
             entries ||= (await this.service.live.resolve(robot, {
                 ...policy, selectors: { skillSets: [], skills: [] },
             }, cwd)).entries;
         }
-        if (entries) {
-            for (const entry of entries) {
-                if (entry.source !== 'workspace' || entry.error || !entry.fingerprint) continue;
-                if (policy.excludedNames.includes(entry.name)) remembered[entry.identity] = entry.name;
-                else delete remembered[entry.identity];
-            }
-        }
-        if (Object.keys(remembered).length) next.excludedNameIdentities = remembered;
-        else delete next.excludedNameIdentities;
         const imported = [];
         for (const set of robot.skillsets || []) {
             if (!path.isAbsolute(set.source)) continue;
@@ -139,10 +109,6 @@ export class SkillPolicies {
         const skills = selectorNames(legacy?.skills ?? input.skills, true);
         const diagnostics = [];
         if (!legacy && !explicit && robot.name === 'default') sets = ['launch-workflow'];
-        if (legacy && robot.name === 'default' && sets.length === 1 && sets[0] === 'copilot' && skills.length === 0) {
-            sets.push('workspace');
-            diagnostics.push({ state: 'migration', message: 'Legacy nonempty copilot-only selection now includes workspace skills. Implicit and explicit bundled-only intent were historically identical; use /skills use copilot to opt out.' });
-        }
         let excludedNames = [];
         try {
             const settings = JSON.parse(await fs.readFile(path.join(this.service.robotStore.robotPath(robot.id), 'copilot', 'settings.json'), 'utf8'));
@@ -152,10 +118,10 @@ export class SkillPolicies {
         const repositories = availableRepositories(robot);
         const definitions = availableSkillsets(robot);
         const requested = [
-            ...sets.filter(name => name !== 'workspace' && !name.startsWith('workspace:')).map(selector => ({
+            ...sets.map(selector => ({
                 selector, repository: resolveSkillsetSelector(repositories, definitions, selector).repository,
             })),
-            ...skills.filter(identity => !identity.startsWith('workspace:')).map(identity => {
+            ...skills.map(identity => {
                 const selector = identity.split('/')[0];
                 return { selector, repository: repositories.find(repo => repo.name === selector) };
             }),

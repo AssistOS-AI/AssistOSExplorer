@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveAlaInstallation } from '../roboTeamAgent/copilot/src/lib/alaInstallation.mjs';
+import { discoverTaskSkills } from '../roboTeamAgent/server/skill-descriptor.mjs';
 import { createAnthropicSkillCatalog } from '../roboTeamAgent/copilot/src/lib/anthropicSkillCatalog.mjs';
 import { setDisabledSkills } from '../roboTeamAgent/copilot/src/lib/achillesSettings.mjs';
 import { writeSkill } from '../roboTeamAgent/copilot/tests/helpers/anthropicCatalogFixture.mjs';
@@ -40,7 +40,6 @@ test('nested launches discover only managed Anthropic repositories and revalidat
     writeSkill(firstRepo, 'skills/alpha', 'repo-alpha');
     writeSkill(path.join(workspace, '.data', 'other-agent'), 'skills/private', 'unrelated-private');
     writeSkill(path.join(selected, '.achilles-cli', 'private-state'), 'skills/private', 'not-a-repository');
-    const { discoverTaskSkills } = await resolveAlaInstallation();
     const options = { workingDir: selected, roots: [reposRoot], discoverTaskSkills };
     const catalog = await createAnthropicSkillCatalog(options);
     assert.deepEqual(catalog.getSkills().map((skill) => skill.name), ['repo-alpha']);

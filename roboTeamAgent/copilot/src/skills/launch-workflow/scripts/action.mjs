@@ -63,7 +63,7 @@ export async function action(invocation = {}) {
             const workflows = result.workflows || [];
             if (!workflows.length) return 'No RoboFlow workflow types are defined yet.';
             return workflows.map((workflow) => {
-                const members = workflow.members.map((member) => `${member.robotName}/${member.executionType}`).join(', ');
+                const members = (workflow.tasks || []).map(task => task.name).join(', ');
                 return `- ${workflow.id} — ${workflow.name}${workflow.description ? ` — ${workflow.description}` : ''} (${members})`;
             }).join('\n');
         }
@@ -75,6 +75,7 @@ export async function action(invocation = {}) {
             if (!objective) throw new Error('objective is required');
             const started = await client.call('roboflow_start_flow', {
                 workflowTypeId,
+                ...(request.executionType ? { executionType: request.executionType } : {}),
                 objective,
                 ...(trim(request.folder || invocation.workingDir) ? { folder: trim(request.folder || invocation.workingDir) } : {}),
             });

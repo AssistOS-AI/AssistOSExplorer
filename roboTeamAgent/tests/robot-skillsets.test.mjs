@@ -176,7 +176,7 @@ test('saved ambiguous selectors fail on creation and continuation while qualifie
 test('queues only policy references and explicit pinning preserves execution bytes through task continuation', async (t) => {
     const f = await fixture(t);
     const repo = await f.skillsets.add(f.robot.id, { source: f.source });
-    const manager = new RuntimeManager({ dataDir: f.dataDir, toolCache: {}, skillsets: f.skillsets });
+    const manager = new RuntimeManager({ dataDir: f.dataDir, workspaceRoot: f.skillsets.workspaceRoot, toolCache: {}, skillsets: f.skillsets });
     manager.shuttingDown = true;
     const started = await f.skillsets.start(f.robot, { skillSets: [`${repo.name}-set-1`, `${repo.name}-set-2`] },
         (robot, reference) => manager.startTask(robot, 'simple', { cwd: f.source, task: 'Review', skillPolicyRef: reference.policyId, alaSessionId: reference.policyId }));
@@ -193,7 +193,7 @@ test('queues only policy references and explicit pinning preserves execution byt
     await f.skillsets.remove(f.robot.id, repo.name);
     await fs.writeFile(path.join(f.source, 'read-pdf/helper.txt'), 'changed upstream');
     assert.equal(await fs.readFile(path.join(directory, 'read-pdf/helper.txt'), 'utf8'), 'original helper');
-    const next = new RuntimeManager({ dataDir: f.dataDir, toolCache: {}, skillsets: f.skillsets });
+    const next = new RuntimeManager({ dataDir: f.dataDir, workspaceRoot: f.skillsets.workspaceRoot, toolCache: {}, skillsets: f.skillsets });
     next.shuttingDown = true;
     const resumed = await next.resumeTask(f.robot, started.taskId, 'Continue review');
     assert.equal(next.tasks.get(resumed.taskId).request.skillPolicyRef, selection.policyId);

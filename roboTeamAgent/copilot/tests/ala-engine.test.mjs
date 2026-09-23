@@ -31,7 +31,7 @@ function deferred() {
     return { promise, resolve };
 }
 
-async function harness(t, interactions = {}, { workspaceAtRoot = false } = {}) {
+async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {} } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-engine-'));
     const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceAtRoot ? workingDir : path.dirname(workingDir);
@@ -48,7 +48,7 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false } = {}) {
         async discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; },
     };
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: catalog, installation,
-        settings: { readAchillesSettings: () => ({}), getCodingAgentModels: () => models, getPermissionMode: () => 'ask-for-approval' },
+        execution, settings: { readAchillesSettings: () => ({}), getCodingAgentModels: () => models, getPermissionMode: () => 'ask-for-approval' },
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
     t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); });
     return { workingDir, engine, store, installation, sessionId: session.sessionId,
@@ -173,17 +173,15 @@ test('coding provider names remain ordinary prompts without removed launcher rou
 });
 
 
-test('the default robot receives the workflow catalog in its native prompt', async t => {
+test('workflow catalog is prepended to the user prompt without hardcoded robot instructions', async t => {
     const h = await harness(t);
-    h.setWorkflowCatalog([{ id: 'software-change', name: 'Software change', description: 'Use for reviewing reports',
-        decisionMemberId: 'impl', members: [{ id: 'impl', robotName: 'analyst', role: 'Implements', executionType: 'terminal', decisionMaker: true }] }]);
+    h.setWorkflowCatalog([{ id: 'software-change', name: 'Software change', description: 'Use for reviewing reports', tasks: [] }]);
     const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Review the report' });
-    const prompt = JSON.parse(result.outputText).prompt;
-    assert.match(prompt, /Use for reviewing reports/);
-    assert.match(prompt, /software-change/);
-    assert.match(prompt, /launch-workflow skill/);
-    assert.match(prompt, /You cannot run tasks yourself/);
-    assert.match(prompt, /Never invent a workflow id/);
+    const output = JSON.parse(result.outputText);
+    assert.match(output.prompt, /Use for reviewing reports/);
+    assert.match(output.prompt, /software-change/);
+    assert.match(output.prompt, /Review the report/);
+    assert.doesNotMatch(output.prompt, /You cannot run tasks yourself/);
 });
 
 
@@ -220,4 +218,14 @@ test('model and effort persist in the native ALA config and survive continuation
     const reset = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Third' })).outputText);
     assert.equal(reset.config.codingAgents.models.codex, undefined);
     assert.equal(reset.config.codingAgents.efforts.codex, undefined);
+});
+
+
+test('caller system instructions are prepended to the user prompt on initial and resumed calls', async t => {
+    const h = await harness(t, {}, { execution: { systemPrompt: 'Generate a directed task graph.' } });
+    for (const prompt of ['First request', 'Second request']) {
+        const output = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt })).outputText);
+        assert.ok(output.prompt.startsWith('Generate a directed task graph.'));
+        assert.match(output.prompt, new RegExp(prompt));
+    }
 });

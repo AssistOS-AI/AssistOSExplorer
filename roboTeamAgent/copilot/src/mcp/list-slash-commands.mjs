@@ -22,7 +22,7 @@ async function discoverCatalog(dir, options = {}) {
     if (options.skillCatalog) return options.skillCatalog;
     const workingDir = dir || process.env.WORKSPACE_PATH || process.cwd();
     return createAnthropicSkillCatalog({ workingDir,
-        roots: await resolveSkillCatalogRoots(workingDir), discoverTaskSkills });
+        roots: await resolveSkillCatalogRoots(workingDir, { skillRoots: options.skillRoots || [] }), discoverTaskSkills });
 }
 
 export async function buildAchillesSkillCatalog(dir, options = {}) {

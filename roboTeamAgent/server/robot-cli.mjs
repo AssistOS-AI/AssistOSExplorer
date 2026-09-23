@@ -19,7 +19,7 @@ try {
     const { setRobotContext } = await import('../copilot/src/lib/robotContext.mjs');
     setRobotContext(context);
     const { main } = await import('../copilot/src/index.mjs');
-    await main(args);
+    await main(args, { workflowCatalog: true, systemPrompt: "You are the workspace copilot. Choose and start one workflow for the user's request using launch-workflow. Only when choosing workflow default, also select executionType terminal, desktop or browser. For other workflows their task definitions determine execution modes; do not override them. Do not launch individual robots or control graph traversal. Use the supplied workflow catalog and never invent workflow IDs." });
 } catch (error) {
     console.error('Robot CLI failed:', error.message);
     process.exitCode = error?.exitCode === 130 ? 130 : 1;

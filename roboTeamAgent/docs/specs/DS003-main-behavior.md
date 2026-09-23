@@ -1,6 +1,6 @@
 ---
 title: DS003-main-behavior
-summary: Defines workspace robots, concurrent CLI conversations, retained visible workstations, and observable delegated ALA tasks.
+summary: Defines workspace robots, concurrent CLI conversations, retained visible workstations, observable delegated ALA tasks, and global task graph authoring and execution.
 ---
 
 ## Introduction
@@ -16,7 +16,12 @@ RoboTeam lets workspace administrators maintain durable robots and lets internal
 | Workspace robot administration | Administrators create and delete shared robot records, while internal workspace agents list and run them by a workspace-unique name. |
 | Robot conversations | Every robot exposes the shared CLI/WebChat wrapper and retains independent conversations, cwd and native sessions; default is the Explorer copilot. |
 | Retained visible workstation | A Desktop or Browser container exposes the same Selkies session to ALA and a human, supports manual takeover with exact task continuation, and is reused or replaced according to mode and cwd. |
+| Graph authoring and execution | Generate and refine global task graphs, dispatch nodes by matching skillsets, and inspect durable run history and final responses. |
 | Queued observable ALA execution | Native asynchronous MCP start tools queue work per robot, stream ALA messages through Ploinky task logs, and reach a terminal state when the ALA process exits. |
+
+### Graph authoring and execution
+
+Administrators describe workflows and generate task graphs through the default robot, refine nodes and directed connections on the drawing board, and save them globally. RoboFlow matches each visited task to an available robot by its enabled skillsets, supplies only prior final responses and graph context, and follows outgoing edges. SQLite preserves the graph snapshot and distinct task visits for each run; folder-local output files support monitoring. See DS007 for the graph contract and the special default workflow.
 
 ### Workspace robot administration
 
@@ -30,7 +35,7 @@ The MCP interface consists of `robot_create`, `robot_list`, `robot_delete`, `ope
 
 ### Robot conversations
 
-Administrators select the coding agent available to an existing robot through the Coding agent dialog opened from its card. The main page displays the configured agent; the creation form has no coding-agent selector. New robots enable Codex only. The same selection determines managed tools in WebChat, delegated MCP tasks and manual Desktop or terminal use. The dashboard permits one selection while the server retains support for multiple agents. DS004 defines persistence, compatibility and mount behavior.
+Administrators select the coding agent available to an existing robot through the Coding agent dialog opened from its card. The main page displays the configured agent; the creation form has no coding-agent selector. New robots enable OpenCode only. The same selection determines managed tools in WebChat, delegated MCP tasks and manual Desktop or terminal use. The dashboard permits one selection while the server retains support for multiple agents. DS004 defines persistence, compatibility and mount behavior.
 
 RoboTeam must declare the CLI/WebChat entrypoint; Explorer must select `robot=default` and the current directory. Every robot must support concurrent independent CLI conversations with one execution lease per conversation. A Simple task must use the same conversational wrapper and create a separate persisted session. Continuing it must reuse its ALA/native session, pinned backend, cwd and conversation skill policy.
 
@@ -54,7 +59,7 @@ Each robot must have one active graphical ALA process and one FIFO [robot task q
 
 Before a graphical task starts ALA, RoboTeam must prepare the required tool-cache generation, create or reuse the matching container, and wait for Selkies and its MCP bridge. The robot home becomes ALA `--home`; the selected work tree becomes `--cwd`; the private prompt file becomes `--taskFile`; coding-agent, model and MCP values become explicit ALA arguments. Skill selection is installed before ALA starts; ALA receives canonical `--cwd` and `--folder` mounts without skill options. RoboTeam must enable ALA's structured event stream and convert `coding-agent-message` events into task progress while keeping final ALA standard output separate.
 
-AchillesCLI's front copilot exposes only the Anthropic `launch-workflow` skill. It receives the workflow catalog in its turn context and calls `roboflow_start_flow` through its scoped parent runtime channel, so the background-task observer retains Ploinky status polling and log persistence. RoboFlow then runs the workflow to completion through the decision robot and its member launches. Ordinary copilot prompts run through the default robot's conversational runtime.
+AchillesCLI's front copilot exposes only the Anthropic `launch-workflow` skill. It receives the workflow catalog in its turn context and calls `roboflow_start_flow` through its scoped parent runtime channel, so the background-task observer retains Ploinky status polling and log persistence. RoboFlow executes the captured task graph, selects robots by enabled skillsets and records each node visit. Administrators generate graph drafts through MCP, refine nodes and connections on a drawing board, and save global workflow definitions. Branching tasks select an outgoing edge; automatic transitions need no routing response. The default workflow uses one fixed default-robot node with a caller-selected execution mode. SQLite preserves global run metadata and graph snapshots; logs and final responses stay in the execution folder. Ordinary copilot prompts run through the default robot's conversational runtime.
 
 All three start tools must advertise `resumeTaskForRobot` through Ploinky's native continuation contract and `sendMessageToRobotTask` for input during execution. Cancelling their native Ploinky task must terminate only the selected ALA work, preserve the GUI container, and return an opaque continuation handle bound to the exact interrupted RoboTeam task. Resume must reject mismatched handles or missing native session state. It must continue the saved ALA conversation with its pinned backend and cwd, without repeating the original prompt. A paused manual-control task resumes ahead of the paused FIFO queue and clears manual-control mode; other continuations keep FIFO order. GUI continuation adds a fresh-screen instruction, while Simple continuation uses only the supplied prompt or Continue. Active input must use the declared message tool and report native delivery or sequential queueing without another concurrent ALA process. The continued native task must stay on the same AchillesCLI local task timeline and must issue another continuation handle if it is stopped again. Cancelling one queued task must not interrupt the active task ahead of it.
 

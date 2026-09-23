@@ -9,6 +9,7 @@ import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
 import { ConversationSessionStore, buildConversationInitialHistory } from '../src/lib/conversationSessionStore.mjs';
 import { createRobotSkillCatalog } from '../src/lib/robotSkillCatalog.mjs';
 import { REPLSession } from '../src/repl/REPLSession.mjs';
+import { installRepositoryLinks, removeRepositoryLinks } from '../../../../ploinky/cli/utils/repositoryInstall.mjs';
 
 async function fixture(t) {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'robot-repl-skills-')));
@@ -31,19 +32,24 @@ async function fixture(t) {
         await fs.rm(root, { recursive: true, force: true });
     });
     const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot: workingDir, scopeRoot: workingDir, discoverSkills: discoverTaskSkills });
+    const repository = { name: 'fixture', source: workingDir, origin: 'workspace' };
+    const installOptions = { workspaceRoot: workingDir, resolveRepository: () => repository };
     skillsets.repositoriesClient = {
-        listRepositories: async () => [{ name: 'fixture', source: workingDir, origin: 'workspace' }],
-        install: async () => ({ conflicts: [] }),
-        remove: async () => ({ conflicts: [] }),
+        listRepositories: async () => [repository],
+        install: async (input) => installRepositoryLinks(input, installOptions),
+        remove: async (paths) => removeRepositoryLinks(paths, installOptions),
     };
     const sessionStore = new ConversationSessionStore({ workingDir });
     const first = await sessionStore.createSession();
     const second = await sessionStore.createSession();
-    for (const session of [first, second]) await skillsets.policies.ensure(robot, session.sessionId, { input: { skillSets: ['workspace'] } });
-    const descriptor = path.join(workingDir, '.agents/skills/local/SKILL.md');
+    const source = path.join(workingDir, 'local-skills');
+    const descriptor = path.join(source, 'local/SKILL.md');
     await fs.mkdir(path.dirname(descriptor), { recursive: true });
     const writeSkill = (body) => fs.writeFile(descriptor, `---\nname: local\ndescription: Local ${body}\n---\n${body}\n`);
     await writeSkill('original');
+    await skillsets.add(robot.id, { name: 'local-skills', source });
+    const registered = await store.get(robot.id);
+    for (const session of [first, second]) await skillsets.policies.ensure(registered, session.sessionId, { input: { skills: ['local-skills/local'] } });
     const catalog = createRobotSkillCatalog({ context: { robot, store, skillsets }, sessionStore, workingDir, initialSessionId: first.sessionId });
     const nativeCalls = [];
     const engine = {

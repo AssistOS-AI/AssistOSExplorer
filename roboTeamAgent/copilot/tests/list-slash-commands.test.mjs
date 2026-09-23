@@ -59,11 +59,11 @@ test('MCP respects external overrides, descriptor descriptions and persisted dis
     writeSkill(root, 'custom-bash', 'bash', 'Use custom Bash rules.');
     writeSkill(root, 'research', 'research', 'Research the workspace.');
     await setDisabledSkills(workingDir, ['bash']);
-    const publicCatalog = await buildAchillesSkillCatalog(workingDir);
+    const publicCatalog = await buildAchillesSkillCatalog(workingDir, { skillRoots: [root] });
     assert.deepEqual(publicCatalog.skills.filter((skill) => skill.name === 'bash'), [{
         key: 'bash', name: 'bash', type: 'anthropic', isInternal: false, enabled: false,
     }]);
-    const catalog = await toAutocompleteCatalog({ dir: workingDir });
+    const catalog = await toAutocompleteCatalog({ dir: workingDir, skillRoots: [root] });
     const exec = catalog.commands.find((command) => command.name === '/exec');
     assert.equal(exec.argCompletions.some((entry) => entry.value === 'bash'), false);
     assert.equal(exec.argCompletions.find((entry) => entry.value === 'research').description, 'Research the workspace.');
@@ -80,10 +80,10 @@ test('malformed and duplicate descriptors fail public catalog discovery explicit
     const root = path.join(workingDir, 'skills');
     writeSkill(root, 'one', 'duplicate');
     writeSkill(root, 'two', 'duplicate');
-    await assert.rejects(buildAchillesSkillCatalog(workingDir), /Duplicate skill name/);
+    await assert.rejects(buildAchillesSkillCatalog(workingDir, { skillRoots: [root] }), /Duplicate skill name/);
     fs.rmSync(path.join(root, 'two'), { recursive: true });
     writeSkill(root, 'bad', 'bad', '');
-    await assert.rejects(buildAchillesSkillCatalog(workingDir), /descriptor must define/);
+    await assert.rejects(buildAchillesSkillCatalog(workingDir, { skillRoots: [root] }), /descriptor must define/);
 });
 
 test('session completions expose shared sessions without changing the startup selection', async (t) => {

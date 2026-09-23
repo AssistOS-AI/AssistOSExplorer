@@ -1,250 +1,233 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import test from 'node:test';
-
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
-import { WorkflowRegistry, normalizeWorkflow } from '../server/roboflow/workflow-registry.mjs';
-import { TaskFlowStore } from '../server/roboflow/task-flow-store.mjs';
-import { ensureDefaultWorkflow } from '../server/roboflow/default-workflow.mjs';
+import { normalizeWorkflow } from '../server/roboflow/graph.mjs';
+import { parseRoute } from '../server/roboflow/result-parser.mjs';
+import { coverage, canonicalSkillset } from '../server/roboflow/skill-matching.mjs';
 
-async function waitFor(predicate, { attempts = 3000 } = {}) {
-    for (let index = 0; index < attempts; index += 1) {
-        const value = await predicate();
-        if (value) return value;
-        await new Promise((resolve) => setImmediate(resolve));
-    }
-    throw new Error('condition was not met');
-}
-
-async function fixture(t) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const workspace = path.join(root, 'workspace');
-    await fs.mkdir(workspace, { recursive: true });
-    const robots = new Map([
-        ['implementer', { id: 'implementer-0001', name: 'implementer', codingAgents: ['codex'] }],
-        ['reviewer', { id: 'reviewer-0001', name: 'reviewer', codingAgents: ['codex'] }],
-    ]);
-    const robotStore = {
-        async getByName(name) { return robots.get(name) || null; },
-        async get(id) { return [...robots.values()].find((robot) => robot.id === id) || null; },
-        async list() { return [...robots.values()]; },
-    };
-    const started = [];
-    const stopped = [];
-    let counter = 0;
-    const runtimeManager = {
-        workspaceRoot: workspace,
-        async resolveCwd(value) {
-            const resolved = path.resolve(String(value || ''));
-            if (resolved !== workspace && !resolved.startsWith(`${workspace}${path.sep}`)) throw new Error('cwd must stay inside the enabled Ploinky workspace');
-            return resolved;
-        },
-        startTask(robot, type, request) {
-            counter += 1;
-            const taskId = `task-${counter}`;
-            started.push({ taskId, robotName: robot.name, type, request });
-            return { taskId, state: 'queued' };
-        },
-        stopTask(robot, type, taskId) { stopped.push({ robotName: robot.name, type, taskId }); return { taskId }; },
-    };
-    const service = new RoboFlowService({
-        robotStore,
-        runtimeManager,
-        registry: new WorkflowRegistry({ directory: path.join(root, 'workflows') }),
-        store: new TaskFlowStore({ directory: path.join(root, 'flows') }),
-    });
+const task = (id, extras = {}) => ({ id, name: id, description: `Execute ${id}`, executionType: 'terminal', skillsets: [], ...extras });
+const edge = (sourceTaskId, targetTaskId) => ({ id: `${sourceTaskId}-${targetTaskId}`, sourceTaskId, targetTaskId });
+const graph = () => ({ id: 'example', name: 'Example', entryTaskId: 'a', tasks: [task('a'), task('b'), task('c')], edges: [edge('a', 'b'), edge('a', 'c'), edge('b', 'a')] });
+async function fixture(t, options = {}) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-graph-'));
+    const robots = [{ id: 'default-id', name: 'default', codingAgents: ['codex'] }, { id: 'worker-id', name: 'worker', codingAgents: ['codex'] }];
+    const started = [], stopped = [];
+    const robotStore = { list: async () => robots, getByName: async name => robots.find(robot => robot.name === name), get: async id => robots.find(robot => robot.id === id) };
+    const runtimeManager = { resolveCwd: async value => value || root,
+        startTask(robot, type, request) { started.push({ robot, type, request, taskId: request.runtimeTaskId }); return { taskId: request.runtimeTaskId, state: 'queued' }; },
+        stopTask(robot, type, id) { stopped.push(id); }, guiBusy: options.guiBusy || (() => false) };
+    const service = new RoboFlowService({ robotStore, runtimeManager, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), random: () => .99,
+        discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }), ...options });
     await service.initialize();
-    return { root, workspace, service, started, stopped, robots };
+    t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
+    async function finish(index, result = 'Done', state = 'completed') {
+        service.onRuntimeTaskEvent({ kind: 'terminal', taskId: started[index].taskId, result, state });
+        while (service.chains.size) await Promise.allSettled(service.chains.values());
+    }
+    return { service, robots, started, stopped, root, finish };
 }
 
-const WORKFLOW = {
-    id: 'software-change',
-    name: 'Software change',
-    description: 'Implement and review a change',
-    decisionMemberId: 'impl',
-    members: [
-        { id: 'impl', robotName: 'implementer', executionType: 'terminal', role: 'Implements', skillSets: [], skills: [] },
-        { id: 'qa', robotName: 'reviewer', executionType: 'desktop', role: 'Reviews' },
-    ],
-};
-
-test('workflow normalization requires members, a valid decision member and execution types', () => {
-    assert.throws(() => normalizeWorkflow({ name: 'example', members: [] }), /at least one member/);
-    assert.throws(() => normalizeWorkflow({ name: 'example', members: [{ robotName: 'a', executionType: 'ssh' }] }), /executionType/);
-    assert.throws(() => normalizeWorkflow({ name: 'example', members: [{ robotName: 'a', executionType: 'terminal' }] }), /decision member/);
-    const normalized = normalizeWorkflow(WORKFLOW);
-    assert.equal(normalized.members[0].id, 'impl');
-    assert.equal(normalized.decisionMemberId, 'impl');
-    const flagged = normalizeWorkflow({ name: 'flagged', members: [
-        { robotName: 'a', executionType: 'terminal' },
-        { robotName: 'b', executionType: 'terminal', decisionMaker: true },
-    ] });
-    assert.equal(flagged.decisionMemberId, 'b-2');
+test('graph validation accepts cycles and rejects broken identity or legacy robot assignments', () => {
+    assert.equal(normalizeWorkflow(graph()).tasks.length, 3);
+    assert.throws(() => normalizeWorkflow({ ...graph(), entryTaskId: 'missing' }), /entryTaskId/);
+    assert.throws(() => normalizeWorkflow({ ...graph(), edges: [edge('a', 'missing')] }), /endpoints/);
+    assert.throws(() => normalizeWorkflow({ ...graph(), tasks: [task('a'), task('a')] }), /unique/);
+    assert.throws(() => normalizeWorkflow({ ...graph(), members: [] }), /obsolete/);
 });
 
-test('create workflow validates member robots and requires a decision member', async (t) => {
-    const f = await fixture(t);
-    await assert.rejects(() => f.service.createWorkflow({
-        name: 'missing', decisionMemberId: 'ghost-1', members: [{ robotName: 'ghost', executionType: 'terminal' }],
-    }), /does not exist/);
-    const workflow = await f.service.createWorkflow(WORKFLOW);
-    assert.equal(workflow.id, 'software-change');
-    const catalog = await f.service.listWorkflowCatalog();
-    assert.equal(catalog.length, 1);
-    assert.equal(catalog[0].members[0].decisionMaker, true);
-    assert.equal(catalog[0].members.find((member) => member.id === 'qa').executionType, 'desktop');
+test('branch parser tolerates aliases and formats but only authorizes outgoing edges', () => {
+    for (const source of ['#nextEdgeId\na-b', '# message\nOK\n# Edge\na-b', '# NEXTEDGE\r\n```\r\na-b\r\n```', '{"nextEdge":"a-b"}', '```json\n{"Edge":"a-b"}\n```']) assert.equal(parseRoute(source, graph(), 'a').nextEdgeId, 'a-b');
+    for (const source of ['Done', '#Edge\nb-a', '{"Edge":"a-b","nextEdge":"a-c"}', '#Edge\nunknown']) assert.throws(() => parseRoute(source, graph(), 'a'));
 });
 
-test('start flow runs the decision robot and advances after member runs finish', async (t) => {
-    const f = await fixture(t);
-    await f.service.createWorkflow(WORKFLOW);
-    const flow = await f.service.startFlow({ workflowTypeId: 'software-change', objective: 'Add OAuth', folder: f.workspace });
-    assert.equal(flow.status, 'running');
-
-    const decision = await waitFor(() => f.started.find((task) => task.request.task.includes('Flow id')));
-    assert.equal(decision.robotName, 'implementer');
-    assert.equal(decision.type, 'simple');
-
-    // The decision robot launches a member (non-blocking) and its turn ends.
-    const launched = await f.service.launchMember(flow.id, { member: 'qa', instruction: 'Review OAuth' });
-    assert.equal(launched.robotName, 'reviewer');
-    assert.equal(launched.executionType, 'desktop');
-    assert.equal(f.started.find((task) => task.taskId === launched.runtimeTaskId).type, 'desktop');
-
-    f.service.onRuntimeTaskEvent({ kind: 'terminal', taskId: decision.taskId, state: 'completed', result: 'launching qa', error: null });
-    await waitFor(async () => (await f.service.getFlow(flow.id, { logMode: 'none' })).awaitingStep === 0);
-    let snapshot = await f.service.getFlow(flow.id, { logMode: 'none' });
-    assert.equal(snapshot.awaitingStep, 0);
-
-    f.service.onRuntimeTaskEvent({ kind: 'terminal', taskId: launched.runtimeTaskId, state: 'completed', result: 'looks good', error: null });
-    await waitFor(async () => (await f.service.getFlow(flow.id, { logMode: 'none' })).steps.length === 2);
-    snapshot = await f.service.getFlow(flow.id, { logMode: 'none' });
-    assert.equal(snapshot.invocations[0].summary, 'looks good');
-    assert.equal(snapshot.steps.length, 2);
-    assert.equal(snapshot.currentStep, 1);
-
-    // The decision robot finishes the flow.
-    await f.service.finishFlow(flow.id, 'shipped');
-    const done = await f.service.getFlow(flow.id, { logMode: 'none' });
-    assert.equal(done.status, 'completed');
-    assert.equal(done.result, 'shipped');
+test('cycles create distinct tasks, preserve only final response history and branch prompts', async t => {
+    const f = await fixture(t); await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    assert.match(f.started[0].request.systemPrompt, /Current node: a/);
+    f.service.onRuntimeTaskEvent({ kind: 'progress', taskId: f.started[0].taskId, chunk: 'SECRET INTERMEDIATE' });
+    await f.finish(0, '#message\nRevise\n#nextEdgeId\na-b');
+    assert.equal(f.started[1].request.systemPrompt, '');
+    const input = JSON.parse(f.started[1].request.task);
+    assert.equal(input.previousFinalResponses[0].response, '#message\nRevise\n#nextEdgeId\na-b');
+    assert.ok(!f.started[1].request.task.includes('SECRET INTERMEDIATE'));
+    await f.finish(1, 'Revised');
+    assert.notEqual(f.started[2].taskId, f.started[0].taskId);
+    await f.finish(2, '{"Edge":"a-c"}'); await f.finish(3, 'Accepted');
+    const completed = await f.service.getFlow(flow.id);
+    assert.equal(completed.status, 'completed'); assert.equal(completed.result, 'Accepted');
+    assert.deepEqual(completed.instances.map(instance => instance.taskId), ['a', 'b', 'a', 'c']);
+    const tables = f.service.database.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name).sort();
+    assert.deepEqual(tables, ['task_instances', 'workflow_runs', 'workflow_types']);
+    const stored = f.service.database.db.prepare('SELECT record FROM task_instances').all().map(row => row.record).join();
+    assert.ok(!stored.includes('Revised')); assert.ok(!stored.includes('SECRET INTERMEDIATE'));
 });
 
-test('launch rejects members outside the workflow and terminal flows', async (t) => {
-    const f = await fixture(t);
-    await f.service.createWorkflow(WORKFLOW);
-    const flow = await f.service.startFlow({ workflowTypeId: 'software-change', objective: 'x', folder: f.workspace });
-    await assert.rejects(() => f.service.launchMember(flow.id, { member: 'ghost', instruction: 'x' }), /not part of this workflow/);
-    await f.service.finishFlow(flow.id, '');
-    await assert.rejects(() => f.service.launchMember(flow.id, { member: 'impl', instruction: 'x' }), /not running/);
+test('zero and one outgoing edge never require route output; repeated completion does not launch twice', async t => {
+    const f = await fixture(t); await f.service.createWorkflow({ ...graph(), edges: [edge('a', 'b')] });
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    assert.equal(f.started[0].request.systemPrompt, '');
+    await f.finish(0, 'plain response'); await f.finish(0, 'duplicate');
+    assert.equal(f.started.length, 2); await f.finish(1);
+    assert.equal((await f.service.getFlow(flow.id)).status, 'completed');
 });
 
-test('stop flow cancels active runs and marks them stopped', async (t) => {
-    const f = await fixture(t);
-    await f.service.createWorkflow(WORKFLOW);
-    const flow = await f.service.startFlow({ workflowTypeId: 'software-change', objective: 'x', folder: f.workspace });
-    await waitFor(() => f.started.find((task) => task.request.task.includes('Flow id')));
-    const launched = await f.service.launchMember(flow.id, { member: 'qa', instruction: 'Review' });
-    await f.service.stopFlow(flow.id);
-    assert.ok(f.stopped.some((entry) => entry.taskId === launched.runtimeTaskId));
-    const stopped = await f.service.getFlow(flow.id, { logMode: 'none' });
-    assert.equal(stopped.status, 'stopped');
-    assert.equal(stopped.invocations[0].state, 'stopped');
+test('invalid route fails without dispatch; stop prevents late completion', async t => {
+    const f = await fixture(t); await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    await f.finish(0, '#Edge\nb-a'); assert.equal((await f.service.getFlow(flow.id)).status, 'failed'); assert.equal(f.started.length, 1);
+    const second = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    await f.service.stopFlow(second.id); await f.finish(1, '#Edge\na-b');
+    assert.equal((await f.service.getFlow(second.id)).status, 'stopped'); assert.equal(f.started.length, 2);
 });
 
-test('default workflow is ensured with three default-robot members and a decision member', async (t) => {
+test('default requires an execution mode and always uses the default robot', async t => {
     const f = await fixture(t);
-    await f.robots.set('default', { id: 'default-0001', name: 'default', codingAgents: ['codex'] });
-    const first = await ensureDefaultWorkflow(f.service.registry);
-    assert.equal(first.id, 'default');
-    assert.equal(first.decisionMemberId, 'default-terminal');
-    assert.deepEqual(first.members.map((member) => member.id), ['default-terminal', 'default-browser', 'default-desktop']);
-    assert.ok(first.members.every((member) => member.robotName === 'default'));
-    assert.deepEqual(first.members.map((member) => member.executionType), ['terminal', 'browser', 'desktop']);
-    const second = await ensureDefaultWorkflow(f.service.registry);
-    assert.equal(second.createdAt, first.createdAt);
+    await assert.rejects(() => f.service.startFlow({ workflowTypeId: 'default', objective: 'Work' }), /executionType/);
+    for (const mode of ['terminal', 'desktop', 'browser']) {
+        const flow = await f.service.startFlow({ workflowTypeId: 'default', objective: 'Work', executionType: mode });
+        const started = f.started.at(-1); assert.equal(started.robot.name, 'default'); assert.equal(started.type, mode === 'terminal' ? 'simple' : mode); assert.equal(started.request.systemPrompt, '');
+        await f.finish(f.started.length - 1); assert.equal((await f.service.getFlow(flow.id)).status, 'completed');
+    }
+    await f.service.createWorkflow(graph());
+    await assert.rejects(() => f.service.startFlow({ workflowTypeId: 'example', objective: 'Work', executionType: 'terminal' }), /executionType/);
 });
 
-test('updating a workflow replaces its definition and the default workflow cannot be deleted', async (t) => {
+test('coverage requires all enabled skillsets on one robot and is not persisted', async t => {
     const f = await fixture(t);
-    await ensureDefaultWorkflow(f.service.registry);
-    await f.service.createWorkflow(WORKFLOW);
-    const updated = await f.service.updateWorkflow('software-change', {
-        name: 'Software change v2',
-        description: 'Updated team',
-        decisionMemberId: 'qa',
-        members: [
-            { id: 'impl', robotName: 'implementer', executionType: 'terminal' },
-            { id: 'qa', robotName: 'reviewer', executionType: 'browser', role: 'Verifies' },
+    const source = '/workspace/skills';
+    const repo = { name: 'local', source, skills: [{ name: 'one' }, { name: 'two' }], definitions: [{ name: 'S1', skills: ['one'] }, { name: 'S2', skills: ['two'] }] };
+    f.robots[0].skillsets = [repo]; f.robots[0].disabledSkillsets = ['local-set-2'];
+    f.robots[1].skillsets = [repo]; f.robots[1].disabledSkillsets = ['local-set-1'];
+    const definition = { ...graph(), tasks: [task('a', { skillsets: [canonicalSkillset(source, 'S1'), canonicalSkillset(source, 'S2')] })], edges: [] };
+    assert.equal(coverage(definition, f.robots).warning, true);
+    await f.service.createWorkflow(definition);
+    const failed = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' }); assert.equal(failed.status, 'failed');
+    f.robots[1].disabledSkillsets = [];
+    assert.equal((await f.service.listWorkflows()).find(graph => graph.id === 'example').coverage.warning, false);
+    assert.ok(!JSON.stringify(await f.service.registry.get('example')).includes('coverage'));
+});
+
+test('run snapshots survive editing and deleting their workflow', async t => {
+    const f = await fixture(t); const saved = await f.service.createWorkflow({ ...graph(), edges: [] });
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    await f.service.updateWorkflow('example', { ...saved, name: 'Changed' });
+    await assert.rejects(() => f.service.updateWorkflow('example', saved), /changed/);
+    await f.service.deleteWorkflow('example'); await f.finish(0, 'Done');
+    assert.equal((await f.service.getFlow(flow.id)).graph.name, 'Example');
+});
+
+test('GUI selection prefers idle matching robots and queues when all are busy', async t => {
+    const f = await fixture(t, { guiBusy: id => id === 'worker-id' });
+    await f.service.createWorkflow({ ...graph(), tasks: [task('a', { executionType: 'browser' })], edges: [] });
+    await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' }); assert.equal(f.started[0].robot.name, 'default');
+    f.service.runtimeManager.guiBusy = () => true;
+    await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' }); assert.equal(f.started[1].robot.name, 'worker');
+});
+
+test('generation uses supplied system instructions and returns a validated unsaved graph', async t => {
+    const f = await fixture(t);
+    const pending = f.service.generateWorkflow({ description: 'Make a graph' });
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.started[0].robot.name, 'default'); assert.equal(f.started[0].type, 'simple'); assert.match(f.started[0].request.systemPrompt, /workflow planner/);
+    await f.finish(0, JSON.stringify(graph())); const generated = await pending;
+    assert.equal(generated.graph.entryTaskId, 'a'); assert.equal(await f.service.registry.get('example'), null);
+});
+
+test('restart fails unfinished runs without replay and removes legacy workflow definitions', async t => {
+    const f = await fixture(t);
+    await f.service.createWorkflow(graph());
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    await f.service.close();
+    const legacy = path.join(f.root, 'old');
+    await fs.mkdir(legacy); await fs.writeFile(path.join(legacy, 'legacy.json'), '{"members":[]}');
+    await fs.writeFile(path.join(legacy, 'keep.txt'), 'unrelated');
+    f.service.registry.legacyDirectory = legacy;
+    await f.service.initialize();
+    const recovered = await f.service.getFlow(flow.id);
+    assert.equal(recovered.status, 'failed'); assert.equal(recovered.instances[0].state, 'interrupted');
+    assert.equal(f.started.length, 1);
+    await assert.rejects(fs.stat(path.join(legacy, 'legacy.json')), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(legacy, 'keep.txt'), 'utf8'), 'unrelated');
+    assert.equal((await f.service.registry.list()).length, 2);
+});
+
+test('generation rejects malformed and unknown skillset output and cancellation stops only its runtime task', async t => {
+    const f = await fixture(t);
+    for (const output of ['not a graph', JSON.stringify({ ...graph(), tasks: [task('a', { skillsets: ['unknown'] })], edges: [] })]) {
+        const index = f.started.length;
+        const pending = f.service.generateWorkflow({ description: 'Make a graph' });
+        const rejected = assert.rejects(pending);
+        while (f.started.length === index) await new Promise(resolve => setImmediate(resolve));
+        await f.finish(index, output); await rejected;
+    }
+    const control = new AbortController();
+    const pending = f.service.generateWorkflow({ description: 'Make a graph' }, { signal: control.signal });
+    const rejected = assert.rejects(pending, /cancelled/);
+    while (f.started.length < 3) await new Promise(resolve => setImmediate(resolve));
+    control.abort(); await rejected;
+    assert.deepEqual(f.stopped, [f.started[2].taskId]);
+    assert.equal(f.service.generations.size, 0); assert.equal(await f.service.registry.get('example'), null);
+});
+
+test('unreachable uncovered nodes warn but do not prevent successful execution', async t => {
+    const f = await fixture(t);
+    const saved = await f.service.createWorkflow({ ...graph(), tasks: [task('a'), task('b', { skillsets: ['missing/set'] })], edges: [] });
+    assert.equal(saved.coverage.warning, true);
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    await f.finish(0); assert.equal((await f.service.getFlow(flow.id)).status, 'completed');
+    assert.equal(f.started.length, 1);
+});
+
+test('generation without a project uses managed scratch and the visit cap is configurable', async t => {
+    const f = await fixture(t, { maxVisits: 1 });
+    f.service.runtimeManager.resolveCwd = async value => { assert.ok(path.isAbsolute(value), 'runtime needs an explicit cwd'); return value; };
+    const pending = f.service.generateWorkflow({ description: 'Draft' });
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.started[0].request.cwd, path.join(f.root, '.achilles-cli', 'roboflow-generation'));
+    await f.finish(0, JSON.stringify(graph())); await pending;
+    await f.service.createWorkflow({ ...graph(), edges: [edge('a', 'a')] });
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work', folder: f.root });
+    await f.finish(1, 'Again');
+    assert.equal(f.started.length, 2); assert.match((await f.service.getFlow(flow.id)).error, /maximum task visits/);
+});
+
+test('global discovery includes unregistered skill repositories and prepares remote sources via Ploinky', async t => {
+    const { discoverWorkflowSkillsets } = await import('../server/roboflow/skill-matching.mjs');
+    const f = await fixture(t);
+    const source = path.join(f.root, 'skills-repo'); await fs.mkdir(path.join(source, 'skills', 'review'), { recursive: true });
+    await fs.writeFile(path.join(source, 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: Review code.\n---\nReview it.');
+    await fs.writeFile(path.join(source, 'skillsets.md'), '# Review set\n## Description\nReview changes.\n## Skills\n- review\n');
+    const prepared = [];
+    const catalog = await discoverWorkflowSkillsets({
+        listRepositories: async () => [{ name: 'skills-repo', source: 'https://example.com/skills.git', origin: 'remote', kind: 'skills' }],
+        prepareRepository: async input => { prepared.push(input); return [{ name: 'skills-repo', source, origin: 'workspace', kind: 'skills' }]; }
+    });
+    assert.equal(prepared.length, 1); assert.deepEqual(catalog.diagnostics, []);
+    assert.ok(catalog.skillsets.some(set => set.id === canonicalSkillset(source, 'Review set')));
+    assert.equal(coverage({ tasks: [task('a', { skillsets: [canonicalSkillset(source, 'Review set')] })] }, f.robots).warning, true);
+});
+
+test('workflow skillset discovery reads only skills/ and ignores agent instruction descriptors', async t => {
+    const { discoverWorkflowSkillsets } = await import('../server/roboflow/skill-matching.mjs');
+    const f = await fixture(t);
+    const source = path.join(f.root, 'project');
+    const agentSkill = path.join(source, '.agents', 'skills', 'achilles_specs', 'SKILL.md');
+    await fs.mkdir(path.dirname(agentSkill), { recursive: true });
+    await fs.writeFile(agentSkill, '---\nname: achilles_specs\ndescription: Agent instruction.\n---\n');
+    const skill = path.join(source, 'skills', 'review', 'SKILL.md');
+    await fs.mkdir(path.dirname(skill), { recursive: true });
+    // Invalid skill name on purpose: workflow discovery must not validate names.
+    await fs.writeFile(skill, '---\nname: Review Extra\ndescription: Review code.\n---\n');
+    const catalog = await discoverWorkflowSkillsets({
+        listRepositories: async () => [
+            { name: 'project', source, origin: 'workspace', kind: 'skills' },
+            { name: 'mixed-repo', source, origin: 'workspace', kind: 'mixed' },
+            { name: 'agent-repo', source, origin: 'workspace', kind: 'agents' },
         ],
     });
-    assert.equal(updated.id, 'software-change');
-    assert.equal(updated.name, 'Software change v2');
-    assert.equal(updated.decisionMemberId, 'qa');
-    assert.equal(updated.members[1].executionType, 'browser');
-    assert.equal(updated.members[1].role, 'Verifies');
-    const stored = await f.service.getWorkflow('software-change');
-    assert.equal(stored.createdAt, updated.createdAt);
-    assert.equal(await f.service.deleteWorkflow('software-change'), true);
-    assert.equal(await f.service.getWorkflow('software-change'), null);
-    await assert.rejects(f.service.deleteWorkflow('default'), /cannot be deleted/);
-    await assert.rejects(() => f.service.updateWorkflow('default', {
-        name: 'Default v2', decisionMemberId: 'default-terminal',
-        members: [{ id: 'default-terminal', robotName: 'implementer', executionType: 'terminal' }],
-    }), /cannot be edited/);
-    assert.ok(await f.service.getWorkflow('default'));
-    await assert.rejects(() => f.service.updateWorkflow('missing', {
-        name: 'x', decisionMemberId: 'm', members: [{ id: 'm', robotName: 'implementer', executionType: 'terminal' }],
-    }), /not found/);
-});
-
-test('decision tasks receive the configured skillsets and the internal MCP capability', async (t) => {
-    const f = await fixture(t);
-    const calls = [];
-    let counter = 0;
-    f.service.skillsets = {
-        start(robot, input, enqueue) {
-            calls.push({ robotName: robot.name, skillSets: input.skillSets, skills: input.skills });
-            counter += 1;
-            return enqueue(robot, { policyId: `policy-${counter}` });
-        },
-    };
-    f.service.decisionMcpServers = 'roboTeamAgent=http://127.0.0.1:7000/mcp';
-    await f.service.createWorkflow({
-        ...WORKFLOW,
-        members: [
-            { id: 'impl', robotName: 'implementer', executionType: 'terminal', skillSets: ['copilot'], skills: ['a/b'] },
-            { id: 'qa', robotName: 'reviewer', executionType: 'desktop', skillSets: [], skills: [] },
-        ],
-    });
-    const flow = await f.service.startFlow({ workflowTypeId: 'software-change', objective: 'x', folder: f.workspace });
-    await waitFor(() => calls.length >= 1);
-    assert.deepEqual(calls[0].skillSets, ['copilot']);
-    assert.deepEqual(calls[0].skills, ['a/b']);
-    assert.equal(f.started[0].request.mcpServers, 'roboTeamAgent=http://127.0.0.1:7000/mcp');
-    await f.service.launchMember(flow.id, { member: 'qa', instruction: 'Review' });
-    assert.deepEqual(calls[1].skillSets, []);
-    assert.deepEqual(calls[1].skills, []);
-    assert.equal(f.started[1].request.mcpServers, undefined);
-});
-
-test('service restart fails unfinished flows', async (t) => {
-    const f = await fixture(t);
-    await f.service.createWorkflow(WORKFLOW);
-    const flow = await f.service.startFlow({ workflowTypeId: 'software-change', objective: 'x', folder: f.workspace });
-    await waitFor(() => f.started.find((task) => task.request.task.includes('Flow id')));
-
-    const revived = new RoboFlowService({
-        robotStore: f.service.robotStore,
-        runtimeManager: f.service.runtimeManager,
-        registry: f.service.registry,
-        store: f.service.store,
-    });
-    await revived.initialize();
-    const recovered = await revived.getFlow(flow.id, { logMode: 'none' });
-    assert.equal(recovered.status, 'failed');
-    assert.match(recovered.error, /service restart/);
+    assert.deepEqual(catalog.diagnostics, []);
+    assert.equal(catalog.skillsets.some(set => ['project', 'mixed-repo', 'agent-repo'].includes(set.repositoryName)), false);
 });

@@ -11,12 +11,12 @@ import { prepareRobotShell } from '../server/robot-shell.mjs';
 import { buildRobotRunArgs } from '../server/runtime-manager.mjs';
 import { resolveAlaInstallation } from '../copilot/src/lib/alaInstallation.mjs';
 
-test('new robots default to Codex and persisted API configuration supports all three', async t => {
+test('new robots default to OpenCode and persisted API configuration supports all three', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-agents-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const store = new RobotStore({ dataDir: root });
     const robot = await store.create({ name: 'worker' });
-    assert.deepEqual(robot.codingAgents, ['codex']);
+    assert.deepEqual(robot.codingAgents, ['opencode']);
     await store.setCodingAgents(robot.id, ['pi']);
     assert.deepEqual((await new RobotStore({ dataDir: root }).get(robot.id)).codingAgents, ['pi']);
     await store.setCodingAgents(robot.id, ['codex', 'opencode', 'pi']);

@@ -4,6 +4,7 @@ import { workspaceDataPath } from './workspace-paths.mjs';
 import { installLiveSkills } from './live-skill-install.mjs';
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
@@ -371,7 +372,7 @@ export class RuntimeManager {
 
     _newTask(robot, type, request, trackLatest = true) {
         const task = {
-            taskId: (!request.alaSessionId && request.skillSelection?.catalogId) || crypto.randomUUID(), robotId: robot.id, type, state: 'queued',
+            taskId: request.runtimeTaskId || (!request.alaSessionId && request.skillSelection?.catalogId) || crypto.randomUUID(), robotId: robot.id, type, state: 'queued',
             createdAt: new Date().toISOString(), request, logTail: '', logSeq: 0,
             logTruncated: false, result: '', error: null,
             child: null, cancelRequested: false,
@@ -450,6 +451,10 @@ export class RuntimeManager {
         return index < 0 ? 0 : index + 1;
     }
 
+    guiBusy(robotId) {
+        return this.manualControl.has(robotId) || [...this.tasks.values()].some(task => task.robotId === robotId && GUI_MODES.has(task.type) && ['queued', 'starting', 'running', 'stopping'].includes(task.state));
+    }
+
     async _runTask(robot, task) {
         if (task.cancelRequested || task.state !== 'queued') return;
         const appendProgress = (chunk) => {
@@ -466,6 +471,12 @@ export class RuntimeManager {
             const cwd = await this.resolveCwd(task.request.cwd);
             task.request.cwd = registerProject(this, cwd);
             if (task.cancelRequested) throw new Error('task was stopped');
+            if (task.request.requiredWorkflowSkillsets && this.skillsets) {
+                const currentRobot = await this.skillsets.robotStore.get(robot.id);
+                const { matchRobot } = await import('./roboflow/skill-matching.mjs');
+                if (!currentRobot || !matchRobot(currentRobot, { skillsets: task.request.requiredWorkflowSkillsets })) throw new Error('Robot skillsets changed while queued');
+                robot = currentRobot;
+            }
             const requestedAgent = task.request.ca || 'auto';
             const selectedAgents = robotCodingAgents(robot);
             if (requestedAgent !== 'auto' && !selectedAgents.includes(requestedAgent)) {
@@ -508,7 +519,11 @@ export class RuntimeManager {
             await fs.mkdir(runtimeDir, { recursive: true, mode: 0o700 });
             await this._saveTask(task);
             const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
-            await fs.writeFile(taskFile, task.request.task, { mode: 0o600 });
+            // Caller system instructions are prepended to the user prompt; ALA has
+            // no separate system-instruction option.
+            const taskText = task.request.systemPrompt
+                ? `${task.request.systemPrompt}\n\n${task.request.task}` : task.request.task;
+            await fs.writeFile(taskFile, taskText, { mode: 0o600 });
             if (task.cancelRequested) throw new Error('task was stopped');
             const args = ['--home', robotHome, '--cwd', cwd, '--taskFile', taskFile, '--ca', codingAgent];
             args.push('--session-id', task.alaSessionId, '--control-stdin');
@@ -540,8 +555,12 @@ export class RuntimeManager {
                 '--robot', robot.name, ...args], { cwd, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
             task.child = child;
             child.stdin?.on('error', () => {});
+            const resultDecoder = new StringDecoder('utf8');
+            let resultBytes = 0;
             child.stdout?.on('data', (chunk) => {
-                task.result = appendTail(task.result, chunk, TASK_RESULT_LIMIT);
+                resultBytes += Buffer.byteLength(chunk);
+                if (resultBytes > TASK_RESULT_LIMIT) task.resultOverflow = true;
+                else task.result += resultDecoder.write(chunk);
             });
             const progressParser = createAlaProgressParser(appendProgress, (event) => {
                 if (event.type === 'skill-catalog') task.skillExecution = { revision: event.revision, policyVersion: event.policyVersion };
@@ -568,6 +587,8 @@ export class RuntimeManager {
                 child.once('error', reject);
                 child.once('close', (code, signal) => {
                     progressParser.finish();
+                    task.result += resultDecoder.end();
+                    if (task.resultOverflow) return reject(new Error('Final response exceeds the 1 MiB limit'));
                     if (code === 0) resolve();
                     else reject(new Error(alaFailureMessage(signal || code, `${task.logTail}${task.result}`)));
                 });
@@ -591,7 +612,7 @@ export class RuntimeManager {
             if (['completed', 'failed', 'stopped'].includes(task.state)) {
                 this._emitTaskEvent({
                     kind: 'terminal', robotId: robot.id, taskId: task.taskId, state: task.state,
-                    result: task.result, error: task.error,
+                    result: task.result, error: task.error || (task.resultOverflow ? 'Final response exceeds the 1 MiB limit' : null),
                 });
             }
         }

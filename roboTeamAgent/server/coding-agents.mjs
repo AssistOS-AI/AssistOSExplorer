@@ -5,7 +5,7 @@ export const CODING_AGENT_NAMES = Object.freeze(['codex', 'opencode', 'pi']);
 // Pi has no native ALA-managed MCP support, so it cannot drive a GUI task.
 export const GUI_CODING_AGENTS = Object.freeze(['codex', 'opencode']);
 
-export function normalizeCodingAgents(value = ['codex']) {
+export function normalizeCodingAgents(value = ['opencode']) {
     if (!Array.isArray(value) || !value.length || value.some(name => !CODING_AGENT_NAMES.includes(name))) {
         throw new Error('codingAgents must contain codex, opencode or pi');
     }

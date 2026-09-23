@@ -42,3 +42,7 @@ The certified local Router transport advertises buffered chat only. The service 
 ### Local skill scope
 
 Trusted local-skill launch scope is carried from Ploinky as a canonical path inside the existing workspace grant and persisted per conversation. It is discovery metadata, not a new filesystem grant. Saved scope cannot be widened by resolving a retargeted alias; selected source trees are validated and mounted through ALA's existing read-only catalog delivery. Multiple bounded CLI scopes may share one already-authorized Box.
+
+### Workflow graph authoring
+
+roboflow_generate_workflow requires the administrator role, like workflow creation, update and deletion. The browser uses the native Ploinky MCP client and Router task polling and cancellation. HTTP mutations retain browser CSRF proof checks. Graph generation passes system instructions to a default robot terminal task and returns a validated unsaved draft. The retired decision tools have no MCP definitions or HTTP endpoints.

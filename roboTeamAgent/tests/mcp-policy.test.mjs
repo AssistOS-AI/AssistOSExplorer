@@ -47,13 +47,11 @@ test('roboflow orchestration tools are internal while workflow mutations stay au
         'roboflow_list_workflows',
         'roboflow_start_flow',
         'roboflow_flow_state',
-        'roboflow_launch_robot',
-        'roboflow_finish_flow',
         'roboflow_stop_flow',
     ]) {
         assert.deepEqual(tools.get(name)?.tags, ['internal'], `${name} must be internal`);
     }
-    for (const name of ['roboflow_create_workflow', 'roboflow_update_workflow', 'roboflow_delete_workflow']) {
+    for (const name of ['roboflow_create_workflow', 'roboflow_update_workflow', 'roboflow_delete_workflow', 'roboflow_generate_workflow']) {
         assert.deepEqual(tools.get(name)?.tags, ['admin'], `${name} must require administrator access`);
         assert.match(tools.get(name)?.description || '', /administrator role/i);
     }

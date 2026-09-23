@@ -32,12 +32,12 @@ test('copilot cache preparation is silent but preparation failures remain visibl
     t.mock.method(ToolCache.prototype, 'prepareShellTools', async function (names) {
         for (const name of ['codex', 'pi', 'opencode']) this.log(`[tool-cache] using ${name} cache generation example`);
         if (fail) throw new Error('cache preparation failed');
-        assert.deepEqual(names, ['codex']);
-        return { binPath: '/cached/bin', agents: { codex: { binPath: '/cached/bin' } } };
+        assert.deepEqual(names, ['opencode']);
+        return { binPath: '/cached/bin', agents: { opencode: { binPath: '/cached/bin' } } };
     });
     await prepareCopilotContext('default', { dataDir: root });
     assert.deepEqual(output, []);
-    assert.equal(process.env.CODEX_BIN, '/cached/bin/codex');
+    assert.equal(process.env.OPENCODE_BIN, '/cached/bin/opencode');
     fail = true;
     await assert.rejects(prepareCopilotContext('default', { dataDir: root }), /cache preparation failed/);
     assert.deepEqual(output, []);

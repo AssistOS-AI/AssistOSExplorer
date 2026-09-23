@@ -26,7 +26,7 @@ test('new robots have shell configuration, repeated preparation preserves user c
     assert.equal(environment.codex, path.join(home, '.codex'));
     assert.equal(environment.pi, path.join(home, '.pi/agent'));
     assert.equal(environment.config, path.join(home, '.config'));
-    assert(environment.path.startsWith('/data/tool-cache/shell-selections/shell-codex/bin:'));
+    assert(environment.path.startsWith('/data/tool-cache/shell-selections/shell-opencode/bin:'));
     await fs.unlink(path.join(home, '.bashrc'));
     await fs.symlink(path.join(home, '.profile'), path.join(home, '.bashrc'));
     await assert.rejects(prepareRobotShell(home), /ELOOP/);

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { availableRepositories, availableSkillsets, copilotSkillsRoot, resolveSkillsetSelector } from './copilot-skillset.mjs';
-import { workspaceSkills, inspectSkill, locality, explicitSkillDirectories } from './workspace-skill-source.mjs';
+import { inspectSkill, explicitSkillDirectories } from './workspace-skill-source.mjs';
 import { atomicJson, inside, hashValue, readSkillTree, treeFingerprint, writeSkillTree, catalogDigest, skillError } from './skill-files.mjs';
 
 async function owner() {
@@ -21,17 +21,13 @@ async function alive(record) {
 }
 
 function identitySource(identity) {
-    if (identity.startsWith('workspace:')) return { identity, source: 'workspace', sourceId: path.posix.dirname(identity) };
     const [source, name] = identity.split('/');
     return { identity, source, sourceId: source, name };
 }
 
 function suppression(policy, entry) {
-    const rememberedName = !entry.fingerprint || entry.error
-        ? policy.excludedNameIdentities?.[entry.identity] : null;
-    const nativeName = entry.error && (entry.source === 'workspace' || entry.unprovenIdentity) ? null : entry.name;
+    const nativeName = entry.error && entry.unprovenIdentity ? null : entry.name;
     if ((!entry.unprovenIdentity && policy.excludedSkills.includes(entry.identity)) || policy.excludedNames.includes(nativeName)
-        || (rememberedName && policy.excludedNames.includes(rememberedName))
         || policy.excludedSources.includes(entry.source) || policy.excludedSources.includes(entry.sourceId)) return 'disabled';
     if (Object.hasOwn(policy.overrides, entry.source)) return 'shadowed';
     return null;
@@ -57,15 +53,16 @@ export class LiveSkillCatalog {
         if (scope !== path.resolve(policy.scopeRoot) || !inside(workspace, scope)) throw skillError('saved skill scope is outside the workspace');
         cwd = await fs.realpath(cwd || scope);
         if (!inside(workspace, cwd)) throw skillError('execution cwd is outside the workspace');
-        const result = await workspaceSkills({ scopeRoot: scope, cwd, discover: (dir) => this.service.discover(dir),
-            excludePaths: [this.service.robotStore.dataDir] });
+        // RoboTeam resolves skills only from the bundled catalog and from
+        // repositories registered through the Ploinky marketplace endpoint. It
+        // never scans the workspace, its projects or package folders for skills.
+        const result = { entries: [], diagnostics: [], roots: [], scopeRoot: scope, cwd };
         const entries = result.entries;
         const diagnostics = [...(policy.diagnostics || []), ...result.diagnostics];
         const repositories = availableRepositories(robot);
         const skillsets = availableSkillsets(robot);
         const definitions = new Map(skillsets.map(set => [set.id, set]));
         const selectorSource = selector => {
-            if (selector === 'workspace' || selector.startsWith('workspace:')) return 'workspace';
             const { repository } = resolveSkillsetSelector(repositories, skillsets, selector);
             if (repository) return repository.name;
             const generated = /^(.+)-set-[1-9][0-9]*$/.exec(selector);
@@ -120,10 +117,8 @@ export class LiveSkillCatalog {
         }
         for (const set of policy.selectors.skillSets) {
             if (suppression(policy, { source: selectorSource(set), sourceId: set })) continue;
-            if (set === 'workspace' || set === 'copilot') continue;
-            if (set.startsWith('workspace:')) {
-                if (!result.roots.some((root) => `workspace:${path.relative(scope, root).split(path.sep).join('/')}` === set)) throw skillError(`selected skill source is unavailable: ${set}`);
-            } else if (!definitions.has(set) && !repositories.some((entry) => entry.name === set)) throw skillError(`skillset is not available for this robot: ${set}`);
+            if (set === 'copilot') continue;
+            if (!definitions.has(set) && !repositories.some((entry) => entry.name === set)) throw skillError(`skillset is not available for this robot: ${set}`);
         }
         for (const identity of policy.selectors.skills) {
             const entry = entries.find((item) => item.identity === identity && !item.unprovenIdentity);
@@ -148,7 +143,7 @@ export class LiveSkillCatalog {
             }
             if (entry.state === 'invalid') {
                 if (entry.explicit || memberSkills.has(entry.identity) || wholeSources.has(entry.sourceId)
-                    || (entry.source !== 'workspace' && wholeSources.has(entry.source))) throw skillError(`selected skill ${entry.identity}: ${entry.error}`);
+                    || wholeSources.has(entry.source)) throw skillError(`selected skill ${entry.identity}: ${entry.error}`);
                 diagnostics.push({ identity: entry.identity, state: 'invalid', message: entry.error }); continue; }
             if (!selected(entry)) continue;
             entry.state = 'selected'; entry.enabled = true;
@@ -161,11 +156,9 @@ export class LiveSkillCatalog {
         for (const group of groups.values()) {
             if (group.length < 2) continue;
             const explicit = group.filter((entry) => entry.explicit);
-            const top = Math.max(...group.map((entry) => locality(entry, scope, cwd)));
-            const local = group.filter((entry) => locality(entry, scope, cwd) === top);
-            // Only workspace locality or a qualified choice settles a duplicate. No lexical winner.
-            const winner = explicit.length === 1 ? explicit[0] : explicit.length === 0 && group.every((entry) => entry.source === 'workspace') && top > 0 && local.length === 1 ? local[0] : null;
-            if (!winner && (explicit.length || group.some((entry) => !['workspace', 'copilot'].includes(entry.source) || (entry.source === 'workspace' && policy.selectors.skillSets.includes(entry.sourceId))))) throw skillError(`selected skills have duplicate native name: ${group[0].name}`);
+            // Only an explicit qualified choice settles a duplicate native name.
+            const winner = explicit.length === 1 ? explicit[0] : null;
+            if (!winner && (explicit.length || group.some((entry) => entry.source !== 'copilot'))) throw skillError(`selected skills have duplicate native name: ${group[0].name}`);
             for (const entry of group) {
                 if (entry === winner) continue;
                 entry.enabled = false; entry.state = winner ? 'shadowed' : 'conflict';

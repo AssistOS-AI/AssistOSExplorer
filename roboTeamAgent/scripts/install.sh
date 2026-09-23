@@ -37,10 +37,12 @@ if [ -n "$missing" ]; then
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-node "$script_dir/verify-ala.mjs"
 
 node "$script_dir/prepare-data.mjs"
 mkdir -p /etc/ploinky
 ln -sfn /code/scripts/webtty-env.sh /etc/ploinky/webtty-env.sh
 
 echo "RoboTeam runtime contract verified"
+
+# RoboFlow uses the embedded SQLite driver shipped with Node.js.
+node --input-type=module -e "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(':memory:'); db.close();"

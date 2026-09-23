@@ -1,46 +1,7 @@
-import { DEFAULT_WORKFLOW_ID } from './constants.mjs';
-
-export { DEFAULT_WORKFLOW_ID };
-
-// The default workflow lets the front copilot start one objective on the default
-// robot with every execution mode available. Its terminal member is also the
-// decision member, so it can decide and, when needed, launch itself again as a
-// browser or desktop member.
+export const DEFAULT_WORKFLOW_ID = 'default';
 export function defaultWorkflowDefinition() {
-    return {
-        id: DEFAULT_WORKFLOW_ID,
-        name: 'Default',
-        description: 'Run one objective on the default robot with terminal, browser or desktop execution.',
-        decisionMemberId: 'default-terminal',
-        members: [
-            {
-                id: 'default-terminal',
-                robotName: 'default',
-                role: 'Decides the next step and can execute terminal work',
-                executionType: 'terminal',
-                skillSets: ['copilot'],
-                skills: [],
-            },
-            {
-                id: 'default-browser',
-                robotName: 'default',
-                role: 'Executes browser work',
-                executionType: 'browser',
-                skillSets: ['copilot'],
-                skills: [],
-            },
-            {
-                id: 'default-desktop',
-                robotName: 'default',
-                role: 'Executes desktop work',
-                executionType: 'desktop',
-                skillSets: ['copilot'],
-                skills: [],
-            },
-        ],
-    };
+    return { id: DEFAULT_WORKFLOW_ID, name: 'Default', description: 'Execute the objective on the default robot in the selected terminal, desktop or browser mode.',
+        entryTaskId: 'execute', tasks: [{ id: 'execute', name: 'Execute objective', description: 'Execute the supplied objective and return the final result.',
+            skillsets: ['builtin:copilot/copilot'], supportedExecutionTypes: ['terminal', 'desktop', 'browser'] }], edges: [] };
 }
-
-export async function ensureDefaultWorkflow(registry) {
-    return registry.ensure(defaultWorkflowDefinition());
-}
+export async function ensureDefaultWorkflow(registry) { return registry.ensure(defaultWorkflowDefinition()); }
