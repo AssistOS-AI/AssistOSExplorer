@@ -10,5 +10,11 @@
     "presenter": "RoboTeamToolButton",
     "type": "embedded",
     "autoPin": false,
+    "toolbarModal": {
+        "mode": "iframe",
+        "url": "/base-agent-additional-server/roboTeamAgent/3001/",
+        "agentRef": "AchillesCLI/roboTeamAgent",
+        "fullscreen": true
+    },
     "dependencies": []
 }

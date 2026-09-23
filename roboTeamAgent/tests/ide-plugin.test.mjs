@@ -17,6 +17,9 @@ test('declares an Explorer toolbar plugin immediately after WebMeet', async () =
     assert.deepEqual(config.location, ['file-exp:toolbar']);
     assert.equal(config.locationOrder, 350);
     assert.equal(config.presenter, 'RoboTeamToolButton');
+    assert.equal(config.toolbarModal.mode, 'iframe');
+    assert.equal(config.toolbarModal.url, '/base-agent-additional-server/roboTeamAgent/3001/');
+    assert.equal(config.toolbarModal.agentRef, 'AchillesCLI/roboTeamAgent');
 
     const [icon, html, css, source] = await Promise.all([
         'icon.svg',
@@ -95,6 +98,56 @@ test('opens the Explorer runtime loader for the RoboTeam dashboard and follows h
         assert.equal(listeners.has('click'), false);
     } finally {
         globalThis.window = previousWindow;
+    }
+});
+
+test('opens the RoboTeam dashboard in the shared expanded modal when the host provides it', () => {
+    const listeners = new Map();
+    const button = {
+        addEventListener(type, listener) {
+            listeners.set(type, listener);
+        },
+        removeEventListener(type, listener) {
+            if (listeners.get(type) === listener) listeners.delete(type);
+        },
+        setAttribute() {},
+    };
+    const element = {
+        getAttribute() {
+            return '';
+        },
+        querySelector(selector) {
+            return {
+                '#roboteamToolButton': button,
+                '.roboteam-tool-button-icon-image': {},
+                '.roboteam-tool-button-label': {},
+            }[selector];
+        },
+    };
+    const modalCalls = [];
+    const previousAssistOS = globalThis.assistOS;
+    globalThis.assistOS = { UI: { openExpandedModal(options) { modalCalls.push(options); } } };
+
+    try {
+        const presenter = new RoboTeamToolButton(element, () => {});
+        presenter.updateHostContext({
+            pluginLabel: 'RoboTeam',
+            pluginToolbarModal: {
+                mode: 'iframe',
+                url: '/base-agent-additional-server/roboTeamAgent/3001/',
+                agentRef: 'AchillesCLI/roboTeamAgent',
+                fullscreen: true,
+            },
+        });
+        presenter.afterRender();
+        listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+
+        assert.equal(modalCalls.length, 1);
+        assert.equal(modalCalls[0].url, '/base-agent-additional-server/roboTeamAgent/3001/');
+        assert.equal(modalCalls[0].agentRef, 'AchillesCLI/roboTeamAgent');
+        assert.equal(modalCalls[0].title, 'RoboTeam');
+    } finally {
+        globalThis.assistOS = previousAssistOS;
     }
 });
 

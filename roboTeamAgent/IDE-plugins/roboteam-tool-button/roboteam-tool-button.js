@@ -52,6 +52,15 @@ export class RoboTeamToolButton {
     openRoboTeam = (event) => {
         event?.preventDefault?.();
         event?.stopPropagation?.();
+        const descriptor = this.hostContext?.pluginToolbarModal;
+        const openExpandedModal = globalThis.assistOS?.UI?.openExpandedModal;
+        if (descriptor && typeof openExpandedModal === 'function') {
+            void openExpandedModal({
+                ...descriptor,
+                title: this.hostContext?.pluginLabel || descriptor.title
+            });
+            return;
+        }
         const parameters = new URLSearchParams({
             agentRef: 'AchillesCLI/roboTeamAgent',
             label: 'RoboTeam',
