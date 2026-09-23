@@ -72,7 +72,11 @@ test('modal action icons share one unified icon set', async () => {
     assert.doesNotMatch(css, /#expandedModal(Close|Fullscreen|OpenTab)\s+\.expanded-modal-icon/);
 
     for (const name of ['refresh', 'fullscreen', 'open-in-new-tab', 'close']) {
-        const svg = await readText(`assets/icons/${name}.svg`);
+        // The shared fullscreen icon is guest-reachable; the others live under /assets.
+        const iconPath = name === 'fullscreen'
+            ? `shared/assets/icons/${name}.svg`
+            : `assets/icons/${name}.svg`;
+        const svg = await readText(iconPath);
         assert.match(svg, /viewBox="0 0 24 24"/);
         assert.match(svg, /stroke-width="2"/);
     }

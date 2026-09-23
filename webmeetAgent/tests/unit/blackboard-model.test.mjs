@@ -2213,7 +2213,7 @@ test('blackboard poll widget renders summary modal and poll settings', async () 
     assert.match(panelSource, /if \(!isFullscreen && !widget\.groupId && !multiSelected\) this\.renderContextMenu\(node, widget\)/);
     assert.match(panelSource, /toggleBulletsFullscreen\(widget\.id\)/);
     assert.match(panelSource, /webmeet-blackboard-bullets-fullscreen-button/);
-    assert.match(panelSource, /fullscreenIcon\.src = '\/explorer\/assets\/icons\/fullscreen\.svg'/);
+    assert.match(panelSource, /fullscreenIcon\.src = '\/explorer\/shared\/assets\/icons\/fullscreen\.svg'/);
     assert.match(panelSource, /editButton\.textContent = 'Edit'/);
     assert.doesNotMatch(panelSource, /View Full Notes/);
     assert.match(panelCss, /\.webmeet-blackboard-bullets-list[\s\S]*overflow: auto/);

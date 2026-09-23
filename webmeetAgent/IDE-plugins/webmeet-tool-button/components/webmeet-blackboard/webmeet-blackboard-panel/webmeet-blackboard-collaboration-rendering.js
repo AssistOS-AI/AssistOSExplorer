@@ -63,7 +63,7 @@ export const blackboardCollaborationRenderingMethods = {
         fullscreenButton.setAttribute('aria-label', isFullscreen ? 'Exit full screen' : 'Full screen');
         fullscreenButton.setAttribute('aria-pressed', String(isFullscreen));
         const fullscreenIcon = document.createElement('img');
-        fullscreenIcon.src = '/explorer/assets/icons/fullscreen.svg';
+        fullscreenIcon.src = '/explorer/shared/assets/icons/fullscreen.svg';
         fullscreenIcon.alt = '';
         fullscreenIcon.className = 'webmeet-blackboard-bullets-fullscreen-icon';
         fullscreenIcon.setAttribute('aria-hidden', 'true');

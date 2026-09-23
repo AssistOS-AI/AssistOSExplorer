@@ -28,7 +28,7 @@ After capture, the applied settings are read with `getSettings()` and compared w
 
 ### Single-stage voice processing
 
-The default path does not stack independent processors. WebMeet does not request browser noise suppression and a second noise reduction stage at the same time, and it does not run a WebMeet automatic gain stage against the browser automatic gain stage. The adaptive noise gate, the fixed compressor, and the automatic hum notch are removed from the default path. A high-pass filter and a manual 50/60 Hz notch remain available, and a manual gain stage remains available when the participant requests one.
+The default path does not stack independent processors. WebMeet does not request browser noise suppression and a second noise reduction stage at the same time, and it does not run a WebMeet automatic gain stage against the browser automatic gain stage. The adaptive noise gate, the fixed compressor, and the automatic hum notch are removed from the default path. A high-pass filter and a manual 50/60 Hz notch remain available, and a manual gain stage remains available when the participant requests one. The hum filter defaults to off, so no notch is applied unless the participant selects one.
 
 The advanced profile runs the pinned `@jitsi/rnnoise-wasm` build inside an `AudioWorklet`. The worklet uses preallocated input and output ring buffers, processes fixed 480-sample frames at 48 kHz, and fills underrun output with silence instead of alternating between raw and processed audio. The processor is initialized before the processed track is published. Initialization failure, `processorerror`, or context closure marks the processor unavailable and falls back to the standard profile without leaving an apparently active but silent track.
 

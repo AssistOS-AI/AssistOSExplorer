@@ -104,7 +104,7 @@ export function createPreviewCloseButton(action, label) {
 
     const icon = document.createElement('img');
     icon.className = 'close-icon';
-    icon.src = './assets/icons/x-mark.svg';
+    icon.src = '/explorer/shared/assets/icons/x-mark.svg';
     icon.alt = 'close';
     button.appendChild(icon);
     return button;
@@ -489,7 +489,7 @@ export function renderHtmlPreview(fileExp, _refs, previewUiState, previewContent
 
     const renderClosePaneButton = (action, label) => `
         <button type="button" class="close preview-pane-close" data-local-action="${action}" aria-label="${label}" title="${label}">
-            <img class="close-icon" src="./assets/icons/x-mark.svg" alt="close">
+            <img class="close-icon" src="/explorer/shared/assets/icons/x-mark.svg" alt="close">
         </button>
     `;
 

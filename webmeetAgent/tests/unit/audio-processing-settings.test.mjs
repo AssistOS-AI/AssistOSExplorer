@@ -23,7 +23,7 @@ test('voice processing mode normalization defaults to auto', () => {
 });
 
 test('hum filter normalization accepts auto, off, 50 and 60 hertz modes', () => {
-    assert.equal(DEFAULT_HUM_FILTER, 'auto');
+    assert.equal(DEFAULT_HUM_FILTER, 'off');
     assert.equal(normalizeHumFilter('auto'), 'auto');
     assert.equal(normalizeHumFilter('off'), 'off');
     assert.equal(normalizeHumFilter('50'), '50');

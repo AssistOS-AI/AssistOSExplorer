@@ -33,6 +33,8 @@ Toolbar panels use Explorer's shared `openExpandedModal` shell. A `toolbarModal`
 
 An unavailable plugin component or dependent agent must produce a visible, recoverable interface error without preventing unrelated Explorer functionality from loading.
 
+Runtime content that unauthenticated guests can reach must reference assets only through the publicly served routes (`/shared/*` and `/web-components/components/*`) or through the plugin's own public path. Explorer's `/assets/*` tree is not public, so guest-facing components and iframes must not depend on it; shared guest assets live under `shared/`.
+
 Shared expanded panels serialize ownership across pending and visible launches. Reopening the same target retains its close promise and forwards updated properties; Git applies these through `updateModalProps` without recreating its panel or clearing drafts. Superseded launches are cancelled before display. Fullscreen restore preserves the previous dimensions within the viewport. Help delegates all window controls to the shared shell.
 
 A `toolbarModal` descriptor may opt into refresh resume with `resume: true`. While such a panel is the active expanded panel, the shell records a resumable descriptor in per-tab session storage, and Explorer reopens it during startup, before any toolbar interaction, restoring the embedded content to the state it resumes from. The record is cleared only when the panel is closed by the user; a browser refresh tears the panel down without clearing it, so the panel returns. The embedded content owns its own deeper state recovery, for example rejoining an active room and restoring microphone and camera state, using its own per-tab record. Panels that do not declare `resume` are unaffected.

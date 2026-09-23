@@ -3,7 +3,7 @@ export const HUM_FILTER_MODES = Object.freeze(['auto', 'off', '50', '60']);
 export const DEFAULT_VOICE_PROCESSING_MODE = 'auto';
 export const DEFAULT_MICROPHONE_GAIN = 0.8;
 export const DEFAULT_OUTPUT_VOLUME = 0.8;
-export const DEFAULT_HUM_FILTER = 'auto';
+export const DEFAULT_HUM_FILTER = 'off';
 
 export function normalizeVoiceProcessingMode(value) {
     const mode = String(value || '').trim().toLowerCase();
