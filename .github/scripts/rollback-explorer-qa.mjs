@@ -113,7 +113,8 @@ function validateDesired(root) {
     requireProof(Object.keys(desired).sort().join(',') === 'cloudflare,hosts,media'
         && Object.keys(desired.hosts).join(',') === 'explorer-qa.axiologic.dev'
         && desired.hosts['explorer-qa.axiologic.dev'].agent === 'AchillesIDE/explorer'
-        && desired.cloudflare?.tunnelId === '89dd05b5-05a7-4bd4-9626-ec4343b07c67'
+        && /^[a-f0-9-]{36}$/.test(String(desired.cloudflare?.tunnelId || ''))
+        && desired.cloudflare.tunnelId !== '091c4096-d1c8-4dbc-bb12-0c6357431d96'
         && desired.cloudflare.tunnelTokenSecret === 'publication/explorer-qa-tunnel'
         && desired.cloudflare.apiTokenSecret === 'publication/explorer-qa-api'
         && desired.media?.publicIPv4 === '45.136.70.141'

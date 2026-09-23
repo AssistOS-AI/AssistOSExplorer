@@ -171,7 +171,8 @@ test('QA workflow quiesces before backup, retains the old runtime, and restores 
     const readinessFailure = workflow.indexOf('timed out waiting for stable 15/15');
     assert.ok(readinessFailure > 0 && readinessFailure < workflow.indexOf('// BEGIN QA prior selection restoration'));
     assert.doesNotMatch(workflow, /fs\.rmSync\(target, \{ recursive: true/);
-    assert.doesNotMatch(workflow, /-X POST|CLOUDFLARE_TUNNEL_CREATED='true'/);
+    assert.equal(workflow.match(/-X POST/g)?.length, 1, 'the only Cloudflare mutation POST creates the dedicated tunnel');
+    assert.match(workflow, /--data '\{"name":"explorer-qa","config_src":"cloudflare"\}'/);
 });
 
 test('capacity admission refuses a full QA disk before any workspace move', t => {
@@ -287,7 +288,7 @@ test('QA capacity inventory lists at most twenty owned backup names and receipt 
     assert.doesNotMatch(logs.join('\n'), /canary|Symlink1/);
 });
 
-test('selected QA tunnel must exist with its exact identity before token retrieval', t => {
+test('QA tunnel lookup reuses one exact tunnel, leaves an absent one to creation, and rejects ambiguity', t => {
     const marker = workflow.indexOf("const tunnels = payload?.success === true ? payload.result : null;");
     const start = workflow.lastIndexOf("<<'NODE'\n", marker) + "<<'NODE'\n".length;
     const end = workflow.indexOf('\n          NODE', marker);
@@ -299,14 +300,20 @@ test('selected QA tunnel must exist with its exact identity before token retriev
     const run = result => {
         fs.writeFileSync(inventory, JSON.stringify({ success: true, result }));
         return spawnSync(process.execPath, ['--input-type=module', '-', inventory], {
-            input: script, encoding: 'utf8', env: { ...process.env, CLOUDFLARE_SELECTED_TUNNEL_ID: id, CLOUDFLARE_TUNNEL_NAME: 'explorer-qa' },
+            input: script, encoding: 'utf8', env: { ...process.env, CLOUDFLARE_TUNNEL_NAME: 'explorer-qa' },
         });
     };
     assert.equal(run([{ id, name: 'explorer-qa' }]).stdout, id);
-    for (const result of [[], [{ id: 'wrong', name: 'explorer-qa' }], [{ id, name: 'other' }],
-        [{ id, name: 'explorer-qa', deleted_at: 'yesterday' }], [{ id }, { id }]]) {
+    const absent = run([]);
+    assert.equal(absent.status, 0);
+    assert.equal(absent.stdout, '', 'an absent tunnel yields no id so the workflow creates one');
+    for (const [result, message] of [
+        [[{ id, name: 'other' }], /identity changed/],
+        [[{ id, name: 'explorer-qa', deleted_at: 'yesterday' }], /identity changed/],
+        [[{ id }, { id }], /ambiguous/],
+    ]) {
         const observed = run(result);
         assert.notEqual(observed.status, 0);
-        assert.match(observed.stderr, /deployment cannot create a tunnel/);
+        assert.match(observed.stderr, message);
     }
 });

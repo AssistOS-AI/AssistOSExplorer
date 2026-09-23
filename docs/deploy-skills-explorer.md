@@ -149,8 +149,9 @@ same screens with the smoke helper described in `tests/smoke/README.md`.
 2. Build or pull the pinned multi-architecture box and dependency images.
 3. Configure either explicit local-only mode or a complete dedicated-tunnel
    Cloudflare configuration. Never create a quick tunnel. The tracked Explorer
-   QA workflow requires the existing `explorer-qa` tunnel
-   `89dd05b5-05a7-4bd4-9626-ec4343b07c67` and fails if it is absent or ambiguous;
+   QA workflow reuses the single `explorer-qa` tunnel, creates it through the
+   Cloudflare API when it is absent (for example after the destroy workflow
+   deleted it), and fails if the name is ambiguous;
    it must preserve the pinned shared `proxies` tunnel and unrelated DNS,
    validate the connector credential against the selected account/tunnel,
    and keep connector and management credentials in separate encrypted handles.

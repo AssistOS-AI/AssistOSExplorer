@@ -61,7 +61,7 @@ const WORKFLOWS = [
       'EXPLORER_QA_CLOUDFLARE_ZONE_ID',
       'EXPLORER_QA_PLOINKY_MASTER_KEY',
       'Cloudflare management and connector authorities must be separate credentials',
-      'dedicated Explorer QA tunnel reuse did not converge to the selected existing identity',
+      'dedicated Explorer QA tunnel create/reuse did not converge to one exact identity',
       'connector token claims do not match the dedicated Explorer QA tunnel/account',
       'dedicated Explorer QA tunnel has shared or ambiguous ingress',
       'Explorer QA DNS does not target the selected dedicated tunnel',
@@ -308,6 +308,21 @@ test('Explorer QA destroy removes only its Ploinky-owned Cloudflare publication'
   );
 });
 
+test('Explorer QA destroy runs Ploinky on the QA-scoped Node, not an older host Node', () => {
+  const source = fs.readFileSync(
+    path.join(ROOT, '.github/workflows/destroy-explorer-qa.yml'),
+    'utf8',
+  );
+  const selectNode = source.indexOf('export PATH="$QA_NODE_HOME/bin:$PATH"');
+  assert.ok(selectNode > 0, 'destroy must prefer the deploy-installed QA Node');
+  assert.match(source, /QA_NODE_HOME="\/home\/admin\/\.qa-deployment-tools\/node-v24\.19\.0-linux-\$QA_NODE_ARCH"/);
+  assert.match(source, /--version 2>\/dev\/null\)" = 'v24\.19\.0' \]/);
+  assert.match(source, /process\.versions\.node\.split\("\."\)\[0\]'\)" -lt 22 \]/);
+  for (const marker of ['PINNED_BOX_PATH_HASH="$(', 'inspect_outer_box_status() {', '"$PLOINKY" --dry-run']) {
+    assert.ok(selectNode < source.indexOf(marker), `QA Node must be selected before ${marker}`);
+  }
+});
+
 test('Explorer QA destroy resolves every repository from its configured default branch', () => {
   const source = fs.readFileSync(
     path.join(ROOT, '.github/workflows/destroy-explorer-qa.yml'),
@@ -450,7 +465,8 @@ test('Explorer QA dedicated tunnel provisioning is fail-closed and preserves the
   );
 
   for (const required of [
-    "CLOUDFLARE_SELECTED_TUNNEL_ID: '89dd05b5-05a7-4bd4-9626-ec4343b07c67'",
+    "CLOUDFLARE_TUNNEL_CREATED='true'",
+    "if (created === 'true' && (ingress.length > 1 || records.length !== 0))",
     'named.length !== 1 || named[0]?.id !== selectedId',
     "ingress[0]?.service !== 'http://127.0.0.1:8080'",
     'records[0]?.content !== expectedTarget',
@@ -529,14 +545,22 @@ test('Explorer QA dedicated tunnel validator rejects malformed, shared, ambiguou
       ['--input-type=module', '-', ...files, selectedId, created],
       {
         encoding: 'utf8',
-        env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, PUBLIC_HOST: hostname, CLOUDFLARE_SELECTED_TUNNEL_ID: selectedId },
+        env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId, PUBLIC_HOST: hostname },
         input: script,
       },
     );
   };
   try {
-    assert.notEqual(run({ created: 'true' }).status, 0, 'a newly created tunnel is never authorized by redeploy');
-    assert.notEqual(run({ named: [] }).status, 0, 'absence must fail before provisioning');
+    assert.equal(run({ created: 'true' }).status, 0, 'a newly created empty dedicated tunnel is accepted');
+    assert.notEqual(run({ created: 'maybe' }).status, 0, 'the creation marker must be a literal boolean');
+    assert.notEqual(run({
+      created: 'true',
+      ingress: [
+        { hostname, service: 'http://127.0.0.1:8080' },
+        { service: 'http_status:404' },
+      ],
+    }).status, 0, 'a newly created tunnel must not already carry routes');
+    assert.notEqual(run({ named: [] }).status, 0, 'the created or reused tunnel must be listed before token retrieval');
     assert.equal(
       run({ ingress: null }).status,
       0,
