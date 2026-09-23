@@ -37,7 +37,7 @@
         <h1>RoboTeam</h1>
         <p class="lede">Manage your robots, conversations and workstations.</p>
       </div>
-      <button id="refreshButton" class="button secondary" type="button">Refresh</button>
+      <button id="flowsHistoryButton" class="button secondary" type="button">Flows history</button>
     </header>
 
     <section class="panel" aria-labelledby="create-title">
@@ -118,6 +118,17 @@
         <button type="submit" id="workflowCreateButton" class="button primary">Save workflow</button>
       </footer>
     </form>
+  </dialog>
+
+  <dialog id="flowsHistoryDialog" class="history-dialog" aria-labelledby="flowsHistoryTitle">
+    <header class="dialog-header">
+      <h2 id="flowsHistoryTitle">Flows history</h2>
+      <button id="flowsHistoryClose" class="button dialog-close" type="button" aria-label="Close">✕</button>
+    </header>
+    <div class="history-body">
+      <p id="flowsHistoryMessage" class="message" role="status"></p>
+      <div id="flowsHistoryList" class="history-list" aria-live="polite"></div>
+    </div>
   </dialog>
 
   <template id="robotTemplate">

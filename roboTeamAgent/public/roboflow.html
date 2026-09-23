@@ -33,17 +33,11 @@
     <header class="hero">
       <div>
         <h1>RoboFlow</h1>
-        <p class="lede">Monitor the task flows your robots execute.</p>
+        <p class="lede">Follow a task flow and its phases.</p>
       </div>
-      <button id="refreshButton" class="button secondary" type="button">Refresh</button>
     </header>
 
-    <section id="overview" class="panel" aria-labelledby="flows-title">
-      <div class="section-heading"><h2 id="flows-title">Task flows</h2><span id="flowCount" class="count">0</span></div>
-      <div id="flowsList" class="flow-list" aria-live="polite"></div>
-    </section>
-
-    <section id="detail" class="flow-workspace" hidden aria-labelledby="detail-title">
+    <section id="detail" class="flow-workspace" aria-labelledby="detail-title">
       <header class="flow-header">
         <div class="flow-heading">
           <h2 id="detail-title">Flow</h2>
@@ -52,7 +46,6 @@
         <div class="flow-actions">
           <span id="flowStatus" class="status-badge"></span>
           <button id="stopFlowButton" class="button danger" type="button">Stop workflow</button>
-          <button id="backButton" class="button secondary" type="button">All flows</button>
         </div>
       </header>
       <p id="flowError" class="message is-error" hidden></p>
@@ -69,11 +62,6 @@
           <div id="stageBody" class="stage-body"></div>
         </section>
       </div>
-    </section>
-
-    <section id="workflowsPanel" class="panel" aria-labelledby="workflows-title">
-      <div class="section-heading"><h2 id="workflows-title">Workflow types</h2><span id="workflowCount" class="count">0</span></div>
-      <div id="workflowsList" class="workflow-list"></div>
     </section>
 
     <p id="message" class="message" role="status"></p>

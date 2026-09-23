@@ -10,7 +10,11 @@ const robotTemplate = document.querySelector('#robotTemplate');
 const robotCount = document.querySelector('#robotCount');
 const createForm = document.querySelector('#createForm');
 const formMessage = document.querySelector('#formMessage');
-const refreshButton = document.querySelector('#refreshButton');
+const flowsHistoryButton = document.querySelector('#flowsHistoryButton');
+const flowsHistoryDialog = document.querySelector('#flowsHistoryDialog');
+const flowsHistoryClose = document.querySelector('#flowsHistoryClose');
+const flowsHistoryList = document.querySelector('#flowsHistoryList');
+const flowsHistoryMessage = document.querySelector('#flowsHistoryMessage');
 const logPollers = new Set();
 
 function closeOpenMenus(except) {
@@ -297,7 +301,6 @@ function renderRobots(robots, canAdmin = false) {
 }
 
 async function loadRobots() {
-    refreshButton.disabled = true;
     try {
         const result = await api('api/robots');
         renderRobots(result.robots || [], result.canAdmin === true);
@@ -305,8 +308,6 @@ async function loadRobots() {
         await workflows.load(result.canAdmin === true);
     } catch (error) {
         robotsList.textContent = `Robots unavailable: ${error.message}`;
-    } finally {
-        refreshButton.disabled = false;
     }
 }
 
@@ -328,7 +329,52 @@ createForm.addEventListener('submit', async (event) => {
     }
 });
 
-refreshButton.addEventListener('click', loadRobots);
+function flowPageUrl(flowId) {
+    const url = new URL(endpoint('roboflow'));
+    url.searchParams.set('flowId', flowId);
+    return url.toString();
+}
+
+function renderFlowsHistory(flows) {
+    flowsHistoryList.replaceChildren();
+    flowsHistoryMessage.textContent = flows.length ? '' : 'No flow executions yet.';
+    for (const flow of flows) {
+        const item = document.createElement('a');
+        item.className = 'history-item';
+        item.href = flowPageUrl(flow.id);
+        item.target = '_blank';
+        item.rel = 'noopener noreferrer';
+        const head = document.createElement('div');
+        head.className = 'history-item-head';
+        const name = document.createElement('strong');
+        name.textContent = flow.workflowName || flow.id;
+        const status = document.createElement('span');
+        status.className = 'history-item-status';
+        status.textContent = flow.status;
+        head.append(name, status);
+        const meta = document.createElement('span');
+        meta.className = 'history-item-meta';
+        meta.textContent = [flow.objective, flow.createdAt].filter(Boolean).join(' · ');
+        item.append(head, meta);
+        flowsHistoryList.append(item);
+    }
+}
+
+async function openFlowsHistory() {
+    flowsHistoryList.replaceChildren();
+    flowsHistoryMessage.textContent = 'Loading…';
+    if (!flowsHistoryDialog.open) flowsHistoryDialog.showModal();
+    try {
+        const { flows } = await api('api/roboflow/flows');
+        renderFlowsHistory(flows || []);
+    } catch (error) {
+        flowsHistoryList.replaceChildren();
+        flowsHistoryMessage.textContent = error.message;
+    }
+}
+
+flowsHistoryButton.addEventListener('click', () => void openFlowsHistory());
+flowsHistoryClose.addEventListener('click', () => flowsHistoryDialog.close());
 
 const workflows = createWorkflowEditor({ api });
 

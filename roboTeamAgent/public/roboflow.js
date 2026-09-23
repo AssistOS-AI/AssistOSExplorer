@@ -46,39 +46,6 @@ function instanceForTask(taskId) {
     return [...(currentFlow?.instances || [])].reverse().find(instance => instance.taskId === taskId) || null;
 }
 
-function renderOverview(flows, workflows) {
-    const list = document.querySelector('#flowsList');
-    list.replaceChildren();
-    document.querySelector('#flowCount').textContent = flows.length;
-    if (!flows.length) list.append(element('p', 'No task flows yet.'));
-    for (const flow of flows) {
-        const button = document.createElement('button');
-        button.className = 'flow-card';
-        button.type = 'button';
-        button.append(
-            element('span', `${flow.workflowName} · ${flow.status}`),
-            element('span', `${flow.objective} · ${flow.createdAt}`),
-        );
-        button.onclick = () => { selected = flow.id; void render(); };
-        list.append(button);
-    }
-    const types = document.querySelector('#workflowsList');
-    types.replaceChildren();
-    document.querySelector('#workflowCount').textContent = workflows.length;
-    for (const workflow of workflows) {
-        const card = document.createElement('article');
-        card.className = 'workflow-card';
-        card.append(element('h3', workflow.name), element('p', workflow.description));
-        if (workflow.coverage?.warning) {
-            const warning = element('p', `⚠ ${workflow.coverage.message}`);
-            warning.className = 'workflow-warning';
-            card.append(warning);
-        }
-        card.append(element('p', workflow.tasks.map(task => task.name).join(' · ')));
-        types.append(card);
-    }
-}
-
 function renderHeader(flow) {
     document.querySelector('#detail-title').textContent = flow.workflowName;
     document.querySelector('#flowObjective').textContent = flow.objective || '';
@@ -91,38 +58,61 @@ function renderHeader(flow) {
     document.querySelector('#stopFlowButton').disabled = terminalStatus(flow.status);
 }
 
+function phaseItem(task, instance) {
+    const item = document.createElement('li');
+    const card = document.createElement('div');
+    card.className = 'phase-card';
+    card.dataset.state = instance.state;
+    if (instance.id === selectedInstanceId) card.classList.add('is-selected');
+    card.tabIndex = 0;
+    card.onclick = () => selectPhase(instance.id);
+    card.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectPhase(instance.id); } };
+    const head = document.createElement('div');
+    head.className = 'phase-card-head';
+    head.append(element('strong', `${instance.sequence + 1}. ${task.name}`));
+    head.append(element('span', duration(instance)));
+    const meta = element('span', `${instance.robotName || 'Awaiting robot'} · ${instance.executionType || ''} · ${instance.state}`);
+    meta.className = 'phase-card-meta';
+    card.append(head, meta);
+    if (!terminalStatus(instance.state)) {
+        const stop = element('button', 'Stop');
+        stop.type = 'button';
+        stop.className = 'button danger phase-stop';
+        stop.onclick = event => { event.stopPropagation(); void stopPhase(instance.id); };
+        card.append(stop);
+    }
+    item.append(card);
+    return item;
+}
+
+function pendingItem(task) {
+    const item = document.createElement('li');
+    const card = document.createElement('div');
+    card.className = 'phase-card is-pending';
+    card.dataset.state = 'pending';
+    const head = document.createElement('div');
+    head.className = 'phase-card-head';
+    head.append(element('strong', task.name));
+    const meta = element('span', `${task.executionType || ''} · not started`);
+    meta.className = 'phase-card-meta';
+    card.append(head, meta);
+    item.append(card);
+    return item;
+}
+
 function renderPhases(flow) {
-    document.querySelector('#phaseCount').textContent = flow.instances.length;
+    document.querySelector('#phaseCount').textContent = flow.graph.tasks.length;
     const list = document.querySelector('#phaseList');
     list.replaceChildren();
-    for (const instance of flow.instances) {
-        const task = flow.graph.tasks.find(candidate => candidate.id === instance.taskId);
-        const item = document.createElement('li');
-        const card = document.createElement('div');
-        card.className = 'phase-card';
-        card.dataset.state = instance.state;
-        if (instance.id === selectedInstanceId) card.classList.add('is-selected');
-        card.tabIndex = 0;
-        card.onclick = () => selectPhase(instance.id);
-        card.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectPhase(instance.id); } };
-        const head = document.createElement('div');
-        head.className = 'phase-card-head';
-        head.append(element('strong', `${instance.sequence + 1}. ${task?.name || instance.taskId}`));
-        head.append(element('span', duration(instance)));
-        const meta = element('span', `${instance.robotName || 'Awaiting robot'} · ${instance.executionType || ''} · ${instance.state}`);
-        meta.className = 'phase-card-meta';
-        card.append(head, meta);
-        if (!terminalStatus(instance.state)) {
-            const stop = element('button', 'Stop');
-            stop.type = 'button';
-            stop.className = 'button danger phase-stop';
-            stop.onclick = event => { event.stopPropagation(); void stopPhase(instance.id); };
-            card.append(stop);
+    for (const task of flow.graph.tasks) {
+        const instances = flow.instances.filter(instance => instance.taskId === task.id);
+        if (!instances.length) {
+            list.append(pendingItem(task));
+            continue;
         }
-        item.append(card);
-        list.append(item);
+        for (const instance of instances) list.append(phaseItem(task, instance));
     }
-    if (!flow.instances.length) list.append(element('li', 'No phases started yet.'));
+    if (!flow.graph.tasks.length) list.append(element('li', 'No phases defined.'));
 }
 
 function renderStage() {
@@ -295,33 +285,21 @@ async function pollLog() {
 }
 
 async function render() {
+    if (!selected) {
+        location.replace(new URL('.', document.baseURI).toString());
+        return;
+    }
     try {
-        const detail = document.querySelector('#detail');
-        const overview = document.querySelector('#overview');
-        const workflowsPanel = document.querySelector('#workflowsPanel');
         setMessage('');
-        if (selected) {
-            overview.hidden = true;
-            workflowsPanel.hidden = true;
-            detail.hidden = false;
-            stageView = 'empty';
-            selectedInstanceId = null;
-            await refresh();
-            renderStage();
-        } else {
-            detail.hidden = true;
-            overview.hidden = false;
-            workflowsPanel.hidden = false;
-            const [{ flows }, { workflows }] = await Promise.all([get('api/roboflow/flows'), get('api/roboflow/workflows')]);
-            renderOverview(flows, workflows);
-        }
+        stageView = 'empty';
+        selectedInstanceId = null;
+        await refresh();
+        renderStage();
     } catch (error) {
         setMessage(error.message, true);
     }
 }
 
-document.querySelector('#refreshButton').onclick = () => render();
-document.querySelector('#backButton').onclick = () => { selected = null; currentFlow = null; stageView = 'empty'; logCache = ''; void render(); };
 document.querySelector('#graphButton').onclick = () => { if (currentFlow) showGraph(); };
 document.querySelector('#stopFlowButton').onclick = () => void stopFlow();
 

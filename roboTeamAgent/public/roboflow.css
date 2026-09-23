@@ -233,6 +233,9 @@ body {
 .phase-card[data-state='failed'] { border-left-color: var(--danger); }
 .phase-card[data-state='stopped'], .phase-card[data-state='interrupted'] { border-left-color: var(--warn); }
 
+.phase-card.is-pending { border-style: dashed; cursor: default; opacity: .72; }
+.phase-card.is-pending:hover { border-color: var(--border); }
+
 .phase-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .phase-card-head strong { overflow-wrap: anywhere; }
 .phase-card-meta { color: var(--muted); font-size: 13px; }
