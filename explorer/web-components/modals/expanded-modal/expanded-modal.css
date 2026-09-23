@@ -60,6 +60,13 @@ expanded-modal .expanded-modal-header {
     flex: 0 0 auto;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border, #393b42);
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+}
+
+dialog.modal.expanded-modal-dialog.is-fullscreen expanded-modal .expanded-modal-header {
+    cursor: default;
 }
 
 expanded-modal .expanded-modal-title {
@@ -75,8 +82,8 @@ expanded-modal .expanded-modal-actions {
 }
 
 expanded-modal .expanded-modal-icon {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     display: block;
 }
 

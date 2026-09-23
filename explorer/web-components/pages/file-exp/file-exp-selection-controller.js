@@ -20,7 +20,7 @@ export async function selectEntry(fileExp, element) {
     }
 
     if (type === 'directory') {
-        await fileExp.loadDirectory(path);
+        await fileExp.withLoader(() => fileExp.loadDirectory(path));
         return;
     }
 

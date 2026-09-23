@@ -26,14 +26,18 @@ test('expanded-modal is a registered WebSkel modal component', async () => {
 
     assert.match(html, /expanded-modal-header/);
     assert.match(html, /data-local-action="reloadContent"/);
+    assert.match(html, /data-local-action="openInNewTab"/);
+    assert.match(html, /open-in-new-tab\.svg/);
     assert.match(html, /data-local-action="toggleFullscreen"/);
     assert.match(html, /data-local-action="closeModal"/);
+    assert.match(html, /close\.svg/);
     assert.match(html, /data-resize-dir="se"/);
     assert.match(html, /expandedModalBody/);
 
     assert.match(css, /dialog\.modal\.expanded-modal-dialog/);
     assert.match(css, /expanded-modal-resize-handle/);
     assert.match(css, /\.is-fullscreen/);
+    assert.match(css, /cursor: move/);
 
     assert.match(presenter, /export class ExpandedModal/);
     assert.match(presenter, /ensureMarketplaceAgentRunning/);
@@ -43,7 +47,33 @@ test('expanded-modal is a registered WebSkel modal component', async () => {
     assert.match(presenter, /probeAgentRuntimeTarget/);
     assert.match(presenter, /setFullscreen/);
     assert.match(presenter, /startResize/);
+    assert.match(presenter, /bindHeaderDrag/);
+    assert.match(presenter, /startDrag/);
+    assert.match(presenter, /openInNewTab\(\)/);
     assert.match(presenter, /closeModal/);
+});
+
+test('Explorer exposes an open-in-new-tab action for the current path', async () => {
+    const html = await readText('web-components/pages/file-exp/file-exp.html');
+    const source = await readText('web-components/pages/file-exp/file-exp.js');
+
+    assert.match(html, /path-info-actions[\s\S]*data-local-action="openInNewTab"/);
+    assert.match(html, /open-in-new-tab\.svg/);
+    assert.match(source, /openInNewTab\(\)/);
+    assert.match(source, /buildFileExpHash\(path\)/);
+});
+
+test('modal action icons share one unified icon set', async () => {
+    const css = await readText('web-components/modals/expanded-modal/expanded-modal.css');
+
+    assert.match(css, /expanded-modal \.expanded-modal-icon\s*\{[^}]*width:\s*18px/);
+    assert.doesNotMatch(css, /#expandedModal(Close|Fullscreen|OpenTab)\s+\.expanded-modal-icon/);
+
+    for (const name of ['refresh', 'fullscreen', 'open-in-new-tab', 'close']) {
+        const svg = await readText(`assets/icons/${name}.svg`);
+        assert.match(svg, /viewBox="0 0 24 24"/);
+        assert.match(svg, /stroke-width="2"/);
+    }
 });
 
 test('openExpandedModal is a thin host shell over assistOS.UI.showModal', async () => {

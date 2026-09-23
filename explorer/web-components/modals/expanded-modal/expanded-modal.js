@@ -57,6 +57,7 @@ export class ExpandedModal {
         if (reloadButton) reloadButton.hidden = this.mode !== "iframe";
 
         this.bindResizeHandles();
+        this.bindHeaderDrag();
         this.setState("Loading…");
     }
 
@@ -86,6 +87,7 @@ export class ExpandedModal {
         }
         this.runId += 1;
         this.stopResize?.();
+        this.stopDrag?.();
         this.clearRetry();
     }
 
@@ -139,6 +141,7 @@ export class ExpandedModal {
         const isFullscreen = typeof value === "boolean"
             ? value
             : !this.dialog.classList.contains("is-fullscreen");
+        if (isFullscreen) this.stopDrag?.();
         if (isFullscreen && !this.dialog.classList.contains("is-fullscreen")) {
             const rect = this.dialog.getBoundingClientRect();
             this.prevRect = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
@@ -207,6 +210,43 @@ export class ExpandedModal {
         for (const handle of handles) {
             handle.addEventListener("pointerdown", (event) => this.startResize(event, handle.dataset.resizeDir));
         }
+    }
+
+    bindHeaderDrag() {
+        const header = this.element.querySelector(".expanded-modal-header");
+        header?.addEventListener("pointerdown", (event) => this.startDrag(event));
+    }
+
+    startDrag(event) {
+        if (!this.dialog || event.button !== 0) return;
+        if (this.dialog.classList.contains("is-fullscreen")) return;
+        if (event.target?.closest?.("button, a, input, select, textarea, [data-local-action]")) return;
+        event.preventDefault();
+        this.ensurePositioned();
+        this.stopResize?.();
+        const dialog = this.dialog;
+        const startRect = dialog.getBoundingClientRect();
+        const offsetX = event.clientX - startRect.left;
+        const offsetY = event.clientY - startRect.top;
+
+        const onMove = (moveEvent) => {
+            const maxLeft = Math.max(0, window.innerWidth - dialog.offsetWidth);
+            const maxTop = Math.max(0, window.innerHeight - dialog.offsetHeight);
+            const left = Math.min(Math.max(0, moveEvent.clientX - offsetX), maxLeft);
+            const top = Math.min(Math.max(0, moveEvent.clientY - offsetY), maxTop);
+            dialog.style.left = `${left}px`;
+            dialog.style.top = `${top}px`;
+        };
+        const onUp = () => {
+            window.removeEventListener("pointermove", onMove, true);
+            window.removeEventListener("pointerup", onUp, true);
+            window.removeEventListener("pointercancel", onUp, true);
+            this.stopDrag = null;
+        };
+        this.stopDrag = onUp;
+        window.addEventListener("pointercancel", onUp, true);
+        window.addEventListener("pointermove", onMove, true);
+        window.addEventListener("pointerup", onUp, true);
     }
 
     isFrameReady() {
@@ -417,6 +457,11 @@ export class ExpandedModal {
             this.frame = null;
         }
         void this.startFrameContent();
+    }
+
+    openInNewTab() {
+        if (typeof window === "undefined") return;
+        window.open(window.location.href, "_blank", "noopener,noreferrer");
     }
 
     closeModal() {

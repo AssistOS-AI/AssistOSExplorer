@@ -1092,6 +1092,13 @@ export class FileExp {
         return goUpDirectoryImpl(this);
     }
 
+    openInNewTab() {
+        const path = this.normalizePath(this.state?.path || '/');
+        const url = new URL(window.location.href);
+        url.hash = buildFileExpHash(path);
+        window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    }
+
     async filterEntriesForSpecs(entries = []) {
         return filterEntriesForSpecsImpl(this, entries);
     }
