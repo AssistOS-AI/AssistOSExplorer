@@ -19,8 +19,9 @@ The Explorer QA deploy workflow has no inputs and never tears down an existing
 installation. When `/home/admin/explorerQaWorkspace` exists, deployment updates
 only its clean `AchillesIDE` checkout (AssistOSExplorer) from the remote's
 configured default branch, pinned to an exact commit. It fast-forwards the
-checkout under the workspace lock and restarts affected enabled agents through
-Ploinky's targeted restart command. The existing Box, image, AgentLib, other
+checkout under the workspace lock. Browser assets served directly from the
+verified managed source paths become available without restarting containers;
+affected server code uses Ploinky's targeted restart command. The existing Box, image, AgentLib, other
 repositories, accounts, documents, and caches remain in place. Deployment does
 not copy the workspace or create a large rollback backup. An unchanged commit
 is a verified no-op.
@@ -28,7 +29,10 @@ is a verified no-op.
 Dirty sources, a different branch, divergent history, ambiguous ownership, or
 changes to dependencies, manifests, or runtime installation configuration stop
 the in-place update before checkout. A failed restart restores the prior clean
-source commit and restarts the affected agents again; a failure is still
+source commit. When the reviewed runtime proves the restart was rejected before signalling
+and the predecessor container is still running with its exact original identity,
+recovery republishes its withdrawn route through Ploinky's
+coordinated routing API; replaced runtimes restart against the previous code. A failure is still
 reported. The workflow never falls through from an unsuccessful update into
 fresh installation. Its host operation lock covers the complete update and
 recovery, while each source mutation and targeted restart uses the workspace
