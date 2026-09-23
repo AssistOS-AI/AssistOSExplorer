@@ -32,8 +32,11 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
     const edges = input.edges.map(edge => {
         if (!edge || !identifier.test(edge.id) || edgeIds.has(edge.id)) throw invalid('edge IDs must be valid and unique');
         if (!ids.has(edge.sourceTaskId) || !ids.has(edge.targetTaskId)) throw invalid('edge endpoints must identify tasks');
+        const sourcePort = edge.sourcePort === undefined ? 'right' : edge.sourcePort;
+        const targetPort = edge.targetPort === undefined ? 'left' : edge.targetPort;
+        if (!['left', 'right'].includes(sourcePort) || !['left', 'right'].includes(targetPort)) throw invalid('edge ports must be left or right');
         edgeIds.add(edge.id);
-        return { id: edge.id, sourceTaskId: edge.sourceTaskId, targetTaskId: edge.targetTaskId };
+        return { id: edge.id, sourceTaskId: edge.sourceTaskId, targetTaskId: edge.targetTaskId, sourcePort, targetPort };
     });
     const layout = Object.fromEntries(tasks.map((task, index) => {
         const point = input.layout?.[task.id];

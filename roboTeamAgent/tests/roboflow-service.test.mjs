@@ -31,7 +31,11 @@ async function fixture(t, options = {}) {
 }
 
 test('graph validation accepts cycles and rejects broken identity or legacy robot assignments', () => {
-    assert.equal(normalizeWorkflow(graph()).tasks.length, 3);
+    const normalized = normalizeWorkflow(graph());
+    assert.equal(normalized.tasks.length, 3);
+    assert.deepEqual(normalized.edges[0], { ...edge('a', 'b'), sourcePort: 'right', targetPort: 'left' });
+    assert.deepEqual(normalizeWorkflow({ ...graph(), edges: [{ ...edge('a', 'b'), sourcePort: 'left', targetPort: 'right' }] }).edges[0], { ...edge('a', 'b'), sourcePort: 'left', targetPort: 'right' });
+    assert.throws(() => normalizeWorkflow({ ...graph(), edges: [{ ...edge('a', 'b'), sourcePort: 'top' }] }), /ports/);
     assert.throws(() => normalizeWorkflow({ ...graph(), entryTaskId: 'missing' }), /entryTaskId/);
     assert.throws(() => normalizeWorkflow({ ...graph(), edges: [edge('a', 'missing')] }), /endpoints/);
     assert.throws(() => normalizeWorkflow({ ...graph(), tasks: [task('a'), task('a')] }), /unique/);
