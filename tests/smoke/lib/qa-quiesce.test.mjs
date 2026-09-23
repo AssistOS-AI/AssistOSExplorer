@@ -23,7 +23,7 @@ test('in-Box shutdown uses the pinned same-path QA workspace', () => {
 
 function fixture({ exitCodes = {}, neverStop = [], postgres = 'shut down' } = {}) {
     const agents = ['dpuAgent', 'explorer', 'onlyOffice', 'roboTeamAgent', 'soul-gateway',
-        'umamiAgent', 'webmeetAgent', 'webmeetScribeAgent', 'webmeetStt', 'liveKitServerAgent'];
+        'umamiAgent', 'webmeetAgent', 'webmeetScribeAgent', 'webmeetStt', 'liveKitServerAgent', 'opencode-free'];
     const registry = {};
     const containers = new Map();
     for (const [index, agent] of agents.entries()) {
@@ -130,13 +130,13 @@ test('QA quiesce withdraws and drains OnlyOffice with live dependencies, stops p
     const f = fixture({ exitCodes: { explorer: 143 } });
     const receipt = await quiesceExplorerQa(f.adapters);
     assert.equal(receipt.result, 'passed');
-    assert.equal(receipt.stopped.length, 10);
+    assert.equal(receipt.stopped.length, 11);
     const position = (operation, agent) => f.events.findIndex((event) => event[0] === operation && event[1] === agent);
     assert.ok(position('withdraw', 'onlyOffice') < position('retire-relay', 'onlyOffice'));
     assert.ok(position('retire-relay', 'onlyOffice') < position('SIGTERM', 'onlyOffice'));
     assert.ok(position('drained', 'onlyOffice') < position('SIGTERM', 'explorer'));
     assert.ok(position('postgres-fast-wait-proof', 'umamiAgent') < position('SIGTERM', 'umamiAgent'));
-    const order = ['webmeetAgent', 'webmeetScribeAgent', 'webmeetStt', 'liveKitServerAgent', 'dpuAgent', 'soul-gateway', 'Router'];
+    const order = ['webmeetAgent', 'webmeetScribeAgent', 'webmeetStt', 'liveKitServerAgent', 'dpuAgent', 'soul-gateway', 'opencode-free', 'Router'];
     for (let index = 1; index < order.length; index += 1) {
         assert.ok(position('SIGTERM', order[index - 1]) < position('SIGTERM', order[index]));
     }
@@ -154,9 +154,9 @@ for (const [description, options] of [
     test(`${description} aborts while providers remain live and never removes or recreates anything`, async () => {
         const f = fixture(options);
         await assert.rejects(quiesceExplorerQa(f.adapters), (error) => error.receipt.result === 'failed');
-        assert.ok(!f.stopped('dpuAgent') && !f.stopped('soul-gateway'));
+        assert.ok(!f.stopped('dpuAgent') && !f.stopped('soul-gateway') && !f.stopped('opencode-free'));
         assert.ok(!f.events.some(([operation, subject]) => operation === 'SIGTERM' && subject === 'Router'));
-        assert.equal(f.containers.size, 10);
+        assert.equal(f.containers.size, 11);
         assert.equal(f.held.size, 0);
         if (options.postgres) assert.ok(!f.stopped('umamiAgent'));
     });
@@ -172,6 +172,10 @@ for (const exitCode of [137, 1, 143]) {
 
 test('the stop order has no local model provider', () => {
     assert.equal(PROVIDER_ORDER.has('default-local-llm'), false, 'the Explorer graph no longer starts a local model');
+});
+
+test('the OpenCode free-models provider stops after Soul Gateway, its consumer', () => {
+    assert.ok(PROVIDER_ORDER.get('opencode-free') > PROVIDER_ORDER.get('soul-gateway'));
 });
 
 test('ordinary SIGTERM is bounded and does not escalate when a consumer stays alive', async () => {

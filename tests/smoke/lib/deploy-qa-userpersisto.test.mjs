@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { noWaitRuntimes, resolveExplorerGraphOrSkip } from './explorer-graph.mjs';
+
 const workflow = fs.readFileSync(new URL('../../../.github/workflows/deploy-explorer-qa.yml', import.meta.url), 'utf8');
 const publicUrl = 'https://explorer-qa.axiologic.dev';
 const service = '/base-agent-additional-server/userPersistoAgent/7000/service';
@@ -146,16 +148,29 @@ test('QA config executes after durable preservation and before graph activation,
     assert.doesNotMatch(block('UserPersisto configuration'), /USERPERSISTO_DEV_BOOTSTRAP|USERPERSISTO_AUTH_METHODS|USERPERSISTO_SELF_REGISTRATION_ENABLED/);
 });
 
-test('QA readiness includes UserPersisto and its email dependency in the default graph baseline', () => {
+test('QA readiness includes UserPersisto and its email dependency in the default graph baseline', t => {
     const explorer = JSON.parse(fs.readFileSync(new URL('../../../explorer/manifest.json', import.meta.url), 'utf8'));
     const provider = JSON.parse(fs.readFileSync(new URL('../../../userPersistoAgent/manifest.json', import.meta.url), 'utf8'));
     assert.equal(explorer.sso.providerAgent, 'userPersistoAgent');
     assert.ok(explorer.enable.includes('userPersistoAgent'));
     assert.ok(provider.enable.includes('emailAgent'));
-    // The retired default-local-llm runtime left the graph: 15 runtimes, 9 no-wait completions.
-    assert.equal(workflow.match(/Tracked agents: 15/g)?.length, 2);
-    assert.equal(workflow.match(/Running agents: 15/g)?.length, 2);
-    assert.match(workflow, /15\/15 process admission and 9\/9 semantic readiness/);
-    assert.match(workflow, /EXPECTED_NO_WAIT_AGENTS=9\n/);
-    assert.doesNotMatch(workflow, /(?:Tracked|Running) agents: 1[46]|1[46]\/1[46] process admission|10\/10 semantic readiness|EXPECTED_NO_WAIT_AGENTS=10/);
+    // The workflow's readiness literals are the recursive Explorer graph's totals,
+    // and neither the total nor the no-wait count may drift by one either way.
+    // The walk needs the sibling checkouts this repository is deployed beside;
+    // without them the helper skips the test with an actionable message.
+    const graph = resolveExplorerGraphOrSkip(t);
+    if (!graph) return;
+    const { runtimes } = graph;
+    const total = runtimes.size;
+    const noWait = noWaitRuntimes(runtimes).length;
+    assert.equal(workflow.match(new RegExp(`Tracked agents: ${total}\\b`, 'g'))?.length, 2);
+    assert.equal(workflow.match(new RegExp(`Running agents: ${total}\\b`, 'g'))?.length, 2);
+    assert.match(workflow, new RegExp(`${total}/${total} process admission and ${noWait}/${noWait} semantic readiness`));
+    assert.match(workflow, new RegExp(`EXPECTED_NO_WAIT_AGENTS=${noWait}\\n`));
+    for (const wrong of [total - 1, total + 1]) {
+        assert.doesNotMatch(workflow, new RegExp(`(?:Tracked|Running) agents: ${wrong}\\b|\\b${wrong}/${wrong} process admission`));
+    }
+    for (const wrong of [noWait - 1, noWait + 1]) {
+        assert.doesNotMatch(workflow, new RegExp(`\\b${wrong}/${wrong} semantic readiness|EXPECTED_NO_WAIT_AGENTS=${wrong}\\n`));
+    }
 });

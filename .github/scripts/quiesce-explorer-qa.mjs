@@ -21,6 +21,7 @@ export const PROVIDER_ORDER = new Map([
     ['liveKitServerAgent', 40],
     ['dpuAgent', 50],
     ['soul-gateway', 60],
+    ['opencode-free', 70],
 ]);
 const stopRank = (agent) => PROVIDER_ORDER.get(agent) ?? 10;
 
