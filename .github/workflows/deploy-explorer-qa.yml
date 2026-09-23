@@ -37,6 +37,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up the deployment test runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test deployment admission and recovery
+        run: |
+          node --test tests/smoke/lib/deploy-*.test.mjs tests/smoke/lib/qa-*.test.mjs
+
       - name: Validate GitHub configuration
         env:
           SSH_KEY: ${{ secrets.EXPLORER_QA_SSH_KEY }}
@@ -231,6 +240,7 @@ jobs:
               || records[0]?.proxied !== true)) {
               throw new Error('Explorer QA DNS points outside the dedicated tunnel');
             }
+            fs.appendFileSync(process.env.GITHUB_ENV, `CLOUDFLARE_TUNNEL_ID=${tunnelId}\n`);
           }
 
           const sharedDetail = requireSuccess(parse(sharedTunnelPath), 'protected shared tunnel detail');
@@ -300,7 +310,72 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           install -m 600 "$RUNNER_TEMP/explorer_qa_known_hosts" ~/.ssh/explorer_qa_known_hosts
 
+      - name: Update the existing Explorer QA installation in place
+        id: inplace
+        run: |
+          set -euo pipefail
+          umask 077
+          SSH=(ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts"
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=5)
+          REMOTE_DIR="$("${SSH[@]}" "${SSH_USER}@${SSH_HOST}" 'umask 077; mktemp -d /tmp/explorer-qa-update.XXXXXXXX')"
+          [[ "$REMOTE_DIR" =~ ^/tmp/explorer-qa-update\.[A-Za-z0-9]{8}$ ]]
+          cleanup_update() {
+            "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
+              "rm -f '$REMOTE_DIR/update-explorer-qa.mjs' '$REMOTE_DIR/rollback-explorer-qa.mjs' '$REMOTE_DIR/update.json'; rmdir '$REMOTE_DIR'" || true
+          }
+          trap cleanup_update EXIT
+          for helper in update-explorer-qa.mjs rollback-explorer-qa.mjs; do
+            scp -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              -o "UserKnownHostsFile=$HOME/.ssh/explorer_qa_known_hosts" \
+              "$GITHUB_WORKSPACE/.github/scripts/$helper" "${SSH_USER}@${SSH_HOST}:$REMOTE_DIR/$helper"
+          done
+          status=0
+          "${SSH[@]}" "${SSH_USER}@${SSH_HOST}" \
+            "flock -n -E 75 --close /home/admin/.qa-deployment-operation.lock bash -s -- '$REMOTE_DIR'" \
+            > "$RUNNER_TEMP/explorer-qa-update-result.json" <<'UPDATE' || status=$?
+          set -euo pipefail
+          update_dir="$1"
+          [[ "$update_dir" =~ ^/tmp/explorer-qa-update\.[A-Za-z0-9]{8}$ ]]
+          test "$(id -un)" = admin
+          test "$HOME" = /home/admin
+          workspace=/home/admin/explorerQaWorkspace
+          if [ ! -e "$workspace" ] && [ ! -L "$workspace" ]; then
+            # Prove absence before the fresh-install step can provision a tunnel.
+            for engine in podman docker; do
+              command -v "$engine" >/dev/null 2>&1 || continue
+              ids="$("$engine" container ls -aq --filter label=io.assistos.ploinky-box.path-hash=7a31ab7775eb)"
+              if [ -n "$ids" ] || "$engine" container inspect ploinky-box-explorerqaworkspace-7a31ab7775eb >/dev/null 2>&1; then
+                echo 'Absent QA workspace has a retained Box; deployment refuses to replace it.' >&2
+                exit 1
+              fi
+            done
+            exit 42
+          fi
+          case "$(uname -m)" in
+            x86_64) arch=x64 ;;
+            aarch64|arm64) arch=arm64 ;;
+            *) echo 'Unsupported QA architecture' >&2; exit 1 ;;
+          esac
+          node_home="/home/admin/.qa-deployment-tools/node-v24.19.0-linux-$arch"
+          test -x "$node_home/bin/node"
+          export PATH="$node_home/bin:$PATH"
+          test "$(node --version)" = v24.19.0
+          node "$update_dir/update-explorer-qa.mjs" execute --receipt "$update_dir/update.json" --lock-held
+          UPDATE
+          cat "$RUNNER_TEMP/explorer-qa-update-result.json"
+          if [ "$status" -eq 42 ]; then
+            echo 'updated=false' >> "$GITHUB_OUTPUT"
+            echo '[deploy-qa] No existing workspace; proceeding to first installation.'
+          elif [ "$status" -eq 0 ]; then
+            echo 'updated=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::error::In-place update failed. The deploy workflow will not recreate or destroy this installation.'
+            exit "$status"
+          fi
+
       - name: Reconcile and start Explorer QA Box
+        if: steps.inplace.outputs.updated == 'false'
         env:
           QA_USERPERSISTO_GOOGLE_CLIENT_ID: ${{ vars.EXPLORER_QA_USERPERSISTO_GOOGLE_CLIENT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.EXPLORER_QA_CLOUDFLARE_API_TOKEN }}
@@ -651,6 +726,27 @@ jobs:
               ;;
           esac
           trap cleanup_remote_files EXIT
+
+          # BEGIN QA fresh-install admission
+          # Deployment never retires an installation. A separately authorized
+          # destroy workflow owns removal; existing workspaces use the update step.
+          assert_qa_bootstrap_absent() {
+            if [ -e /home/admin/explorerQaWorkspace ] || [ -L /home/admin/explorerQaWorkspace ]; then
+              echo '[deploy-qa] ERROR: fresh installation requires an absent QA workspace; use in-place deployment for an existing installation.' >&2
+              return 1
+            fi
+            local engine ids
+            for engine in podman docker; do
+              command -v "$engine" >/dev/null 2>&1 || continue
+              ids="$("$engine" container ls -aq --filter label=io.assistos.ploinky-box.path-hash=7a31ab7775eb)" || return 1
+              if [ -n "$ids" ] || "$engine" container inspect ploinky-box-explorerqaworkspace-7a31ab7775eb >/dev/null 2>&1; then
+                echo '[deploy-qa] ERROR: fresh installation refuses an existing QA Box; no teardown is performed.' >&2
+                return 1
+              fi
+            done
+          }
+          assert_qa_bootstrap_absent
+          # END QA fresh-install admission
 
           if [ ! -f "$REMOTE_ENV_FILE" ] || [ -L "$REMOTE_ENV_FILE" ]; then
             echo "[deploy-qa] ERROR: deployment configuration was not transferred."
@@ -1275,6 +1371,7 @@ jobs:
           # END QA outer archive lock acquisition
           assert_qa_preservation_admission
           assert_qa_workspace_lock_held
+          assert_qa_bootstrap_absent
           QA_CAPTURE="$(node "$QA_HELPER_DIR/rollback-explorer-qa.mjs" capture "$QA_BACKUP_DIR" --lock-held)"
           QA_CAPTURED_CONTAINERS="$(cat "$QA_BACKUP_DIR/prior-containers.txt")"
           QA_EXPECTED_CONTAINERS="$(printf '%s\n' "${QA_CONTAINER_RECORDS[@]}")"
@@ -2443,6 +2540,8 @@ jobs:
 
       - name: Create summary
         if: always()
+        env:
+          UPDATED_IN_PLACE: ${{ steps.inplace.outputs.updated }}
         run: |
           {
             echo "## Explorer QA Box Deploy"
@@ -2451,14 +2550,18 @@ jobs:
             echo "- Identity directory: \`~/${WORKSPACE}\`"
             echo "- Router publication: \`127.0.0.1:${ROUTER_PORT}:8080/tcp\`"
             echo "- Media publication: \`0.0.0.0:7882:7882/udp\`"
-            echo "- Managed graph branches: configured repository defaults, resolved and pinned at deploy time"
-            echo "- Ploinky branch: configured repository default, resolved and pinned at deploy time"
+            if [ "$UPDATED_IN_PLACE" = true ]; then
+              echo "- Deployment: AssistOSExplorer updated in place from its configured default branch"
+              echo "- Existing Box, image, AgentLib, other repositories and workspace data retained"
+            else
+              echo "- First installation only: configured repository defaults, resolved and pinned at deploy time"
+            fi
             printf -- '- Cloudflare: dedicated persistent `%s` tunnel `%s`, ingress, and DNS API-managed by Ploinky\n' \
               "$CLOUDFLARE_TUNNEL_NAME" "${CLOUDFLARE_TUNNEL_ID:-not-created}"
             printf -- '- Cloudflare DNS record: `%s`\n' "${EXPLORER_QA_DNS_RECORD_ID:-not-created}"
             printf -- '- Protected shared tunnel: `%s` unchanged at `%s`\n' \
               "$CLOUDFLARE_PROTECTED_SHARED_TUNNEL_ID" "${PROTECTED_CLOUDFLARE_DIGEST:-not-snapshotted}"
-            echo "- Recovery: use the retained protected backup and reviewed rollback helper; destroying QA does not restore its data."
+            echo "- Recovery: in-place source failures restore the previous commit; teardown belongs to the separate destroy workflow."
             echo "- Public URL: \`${PUBLIC_URL}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 

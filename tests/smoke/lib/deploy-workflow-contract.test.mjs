@@ -118,7 +118,7 @@ const WORKFLOWS = [
       'Public edge verified the host-bound SSO login, email-first wizard, OIDC issuer, and rejected a WebAssist selector switch.',
       'Dedicated Explorer QA tunnel id=',
       'EXPLORER_QA_DNS_RECORD_ID=',
-      'Recovery: use the retained protected backup and reviewed rollback helper',
+      'Recovery: in-place source failures restore the previous commit',
       'SOUL_GATEWAY_WORKSPACE:',
       'SOUL_GATEWAY_ROUTER_PORT:',
       'refusing to operate on the production Soul Gateway workspace',
