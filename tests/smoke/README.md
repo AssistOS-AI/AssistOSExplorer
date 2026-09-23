@@ -738,11 +738,10 @@ repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
 `cd explorer && npm test`) both use the helper.
 
 Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
-the helper):
-
-| Enabled agent ref | Enabled by | Minimum revision | Why |
-| --- | --- | --- | --- |
-| `proxies/opencode-free` | `explorer/manifest.json` (`"proxies/opencode-free no-wait"`) | `22dc0cc` | first `proxies` revision with the published `opencode-free/manifest.json`; `2a95a2e` (the current `opencode-free` agent tip) or later is recommended |
+the helper). None is recorded, because no agent the current graph enables
+needs one. The controls in `explorer/tests/unit/retiredLocalModelGraph.test.js`
+pass a synthetic entry through the helper's `minimumRevisions` option to
+exercise the rule.
 
 The helper always walks the whole graph and sorts every finding into one of
 three groups:
@@ -783,7 +782,7 @@ violation is never skipped, even when gaps were found too.
 When the graph gains an edge to a new sibling repository, add the repository to
 `KNOWN_SIBLINGS`. When it gains an edge to an agent that older sibling
 checkouts do not have, record the agent ref and the first revision that has it
-in `MINIMUM_REVISIONS`. Update the tables above in the same change.
+in `MINIMUM_REVISIONS`. Update this section in the same change.
 
 ## Maintenance Rules
 

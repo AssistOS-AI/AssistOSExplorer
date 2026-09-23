@@ -27,6 +27,7 @@ test('Explorer local dependency graph excludes optional agents while retaining t
             const ref = (typeof entry === 'string' ? entry : entry.agent).split(/\s+/)[0];
             const shortName = ref.split('/').at(-1);
             assert.equal(shortName === 'onlyOffice', false, `${agent} must not auto-enable ${ref}; the external OnlyOffice agent stays opt-in`);
+            assert.equal(shortName === 'opencode-free', false, `${agent} must not auto-enable ${ref}; the optional proxies/opencode-free agent stays opt-in`);
             assert.equal(localOptionalAgents.includes(shortName), false, `${agent} must not auto-enable ${ref}`);
             await visit(ref);
         }

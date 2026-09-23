@@ -20,6 +20,15 @@ const RETIRED_REPO = 'proxies';
 // The synthetic workspaces use a real known sibling, so the controls exercise
 // the production known-sibling list rather than a test-only one.
 const SIBLING = 'AchillesCLI';
+// No agent in the real graph needs a minimum revision, so the controls inject
+// one for a synthetic agent in the synthetic proxies sibling.
+const PENDING_REF = 'proxies/pending-agent';
+const PENDING_MINIMUM = Object.freeze({
+    revision: '0123456789abcdef0123456789abcdef01234567',
+    why: 'first revision with the synthetic pending-agent manifest',
+    advice: '89abcde (synthetic recommended tip)',
+});
+const SYNTHETIC_MINIMUMS = Object.freeze({ [PENDING_REF]: PENDING_MINIMUM });
 const repoRoot = path.resolve(import.meta.dirname, '..', '..', '..');
 
 function isRetiredLocalModel(ref) {
@@ -106,7 +115,6 @@ test('with every known sibling checked out at its minimum revision, the real gra
     for (const repo of KNOWN_SIBLINGS) {
         assert.ok([...graph.runtimes.keys()].some((key) => key.startsWith(`${repo}/`)), `the walk must reach ${repo}`);
     }
-    assert.ok(graph.runtimes.has('proxies/opencode-free'));
 });
 
 test('negative control: a clean synthetic graph passes', (t) => {
@@ -154,7 +162,7 @@ test('negative control (a): an edge to an agent a present sibling does not have,
     writeManifest(explorerRepo, 'explorer', { enable: ['helper global', 'proxies/soul-gatewy no-wait'] });
     const skipped = [];
     assert.throws(() => resolveGraphOrSkip({ skip: (message) => skipped.push(message) },
-        { explorerRepo, isRetired: isRetiredLocalModel, containsRevision: neverAsked }), (error) => {
+        { explorerRepo, isRetired: isRetiredLocalModel, containsRevision: neverAsked, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
         assert.notEqual(error.code, SIBLING_MISSING_CODE);
         assert.match(error.message, /Agent "proxies\/soul-gatewy" enabled by AchillesIDE\/explorer has no manifest at /);
         assert.match(error.message, /no minimum revision is recorded for it, so the enable edge is wrong or the agent was renamed or removed/);
@@ -176,8 +184,8 @@ test('negative control (b): a qualified edge to a repository that is not a known
     });
 });
 
-function opencodeFreeCase(t, containment) {
-    const explorerRepo = syntheticWorkspace(t, ['proxies/opencode-free no-wait']);
+function pendingAgentCase(t, containment) {
+    const explorerRepo = syntheticWorkspace(t, [`${PENDING_REF} no-wait`]);
     const asked = [];
     const containsRevision = (dir, revision) => {
         asked.push({ dir, revision });
@@ -186,36 +194,36 @@ function opencodeFreeCase(t, containment) {
     return { explorerRepo, asked, containsRevision };
 }
 
-test('negative control (c): a proxies checkout that provably predates opencode-free is a gap naming the ref, path and minimum', (t) => {
-    const { explorerRepo, asked, containsRevision } = opencodeFreeCase(t, false);
+test('negative control (c): a sibling checkout that provably predates a recorded minimum revision is a gap naming the ref, path and minimum', (t) => {
+    const { explorerRepo, asked, containsRevision } = pendingAgentCase(t, false);
     const proxiesDir = path.join(path.dirname(explorerRepo), 'proxies');
-    assert.throws(() => resolveExplorerGraph({ explorerRepo, containsRevision }), (error) => {
+    assert.throws(() => resolveExplorerGraph({ explorerRepo, containsRevision, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
         assert.equal(error.code, SIBLING_MISSING_CODE);
-        assert.match(error.message, /Agent "proxies\/opencode-free" enabled by AchillesCLI\/relay has no manifest at /);
-        assert.ok(error.message.includes(path.join(proxiesDir, 'opencode-free', 'manifest.json')));
-        assert.match(error.message, /the sibling repository "proxies" is checked out at .* but does not contain 22dc0cc/);
-        assert.match(error.message, /must contain at least 22dc0cc \(first revision with the published opencode-free\/manifest\.json\); 2a95a2e/);
+        assert.match(error.message, /Agent "proxies\/pending-agent" enabled by AchillesCLI\/relay has no manifest at /);
+        assert.ok(error.message.includes(path.join(proxiesDir, 'pending-agent', 'manifest.json')));
+        assert.match(error.message, /the sibling repository "proxies" is checked out at .* but does not contain 0123456/);
+        assert.match(error.message, /must contain at least 0123456 \(first revision with the synthetic pending-agent manifest\); 89abcde/);
         assert.equal(error.message.includes('\n'), false, 'the gap message must stay a single reporter line');
         return true;
     });
-    assert.deepEqual(asked, [{ dir: proxiesDir, revision: MINIMUM_REVISIONS['proxies/opencode-free'].revision }]);
+    assert.deepEqual(asked, [{ dir: proxiesDir, revision: PENDING_MINIMUM.revision }]);
     const skipped = [];
     assert.equal(resolveGraphOrSkip({ skip: (message) => skipped.push(message) },
-        { explorerRepo, isRetired: isRetiredLocalModel, containsRevision }), null);
+        { explorerRepo, isRetired: isRetiredLocalModel, containsRevision, minimumRevisions: SYNTHETIC_MINIMUMS }), null);
     assert.equal(skipped.length, 1);
-    assert.match(skipped[0], /22dc0cc/);
+    assert.match(skipped[0], /0123456/);
 });
 
 for (const [label, containment, reason] of [
-    ['(d) contains the minimum revision', true, /already contains the minimum revision 22dc0cc, so the agent was renamed or removed there/],
-    ['(e) cannot be checked for the minimum revision', null, /cannot be checked for the minimum revision 22dc0cc/],
+    ['(d) contains the minimum revision', true, /already contains the minimum revision 0123456, so the agent was renamed or removed there/],
+    ['(e) cannot be checked for the minimum revision', null, /cannot be checked for the minimum revision 0123456/],
 ]) {
-    test(`negative control ${label}: a proxies checkout without opencode-free is a hard failure`, (t) => {
-        const { explorerRepo, asked, containsRevision } = opencodeFreeCase(t, containment);
+    test(`negative control ${label}: a sibling checkout without an agent that has a recorded minimum is a hard failure`, (t) => {
+        const { explorerRepo, asked, containsRevision } = pendingAgentCase(t, containment);
         assert.throws(() => resolveGraphOrSkip({ skip: () => assert.fail('this must not be skipped') },
-            { explorerRepo, isRetired: isRetiredLocalModel, containsRevision }), (error) => {
+            { explorerRepo, isRetired: isRetiredLocalModel, containsRevision, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
             assert.notEqual(error.code, SIBLING_MISSING_CODE);
-            assert.match(error.message, /Agent "proxies\/opencode-free" enabled by AchillesCLI\/relay has no manifest at /);
+            assert.match(error.message, /Agent "proxies\/pending-agent" enabled by AchillesCLI\/relay has no manifest at /);
             assert.match(error.message, reason);
             return true;
         });
@@ -224,11 +232,11 @@ for (const [label, containment, reason] of [
 }
 
 test('negative control: the default containment check treats a non-git sibling as undetermined', (t) => {
-    const explorerRepo = syntheticWorkspace(t, ['proxies/opencode-free no-wait']);
+    const explorerRepo = syntheticWorkspace(t, [`${PENDING_REF} no-wait`]);
     assert.equal(gitContainsRevision(path.join(path.dirname(explorerRepo), 'proxies'), 'HEAD'), null);
-    assert.throws(() => resolveExplorerGraph({ explorerRepo }), (error) => {
+    assert.throws(() => resolveExplorerGraph({ explorerRepo, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
         assert.notEqual(error.code, SIBLING_MISSING_CODE);
-        assert.match(error.message, /cannot be checked for the minimum revision 22dc0cc/);
+        assert.match(error.message, /cannot be checked for the minimum revision 0123456/);
         return true;
     });
 });
@@ -247,7 +255,7 @@ test('negative control: an inherited GIT_DIR never makes another repository answ
     });
     // As inside a git hook of this repository.
     process.env.GIT_DIR = gitDir.stdout.trim();
-    const revision = MINIMUM_REVISIONS['proxies/opencode-free'].revision;
+    const revision = PENDING_MINIMUM.revision;
     assert.equal(gitContainsRevision(path.join(path.dirname(explorerRepo), 'proxies'), revision), null);
 });
 
@@ -268,25 +276,25 @@ test('negative control: a shallow sibling cannot prove that it lacks a revision,
         t.skip('Skipped: git is not available, so no shallow checkout can be built.');
         return;
     }
-    const explorerRepo = syntheticWorkspace(t, ['proxies/opencode-free no-wait']);
+    const explorerRepo = syntheticWorkspace(t, [`${PENDING_REF} no-wait`]);
     const siblingsRoot = path.dirname(explorerRepo);
     // A synthetic upstream that once had the agent and then removed it.
     const upstream = path.join(siblingsRoot, 'upstream-proxies');
     fs.mkdirSync(upstream);
     syntheticGit(upstream, ['init', '--quiet']);
-    writeManifest(upstream, 'opencode-free', {});
+    writeManifest(upstream, 'pending-agent', {});
     writeManifest(upstream, RETIRED_AGENT, {});
     syntheticGit(upstream, ['add', '--all']);
     syntheticGit(upstream, ['commit', '--quiet', '--message', 'Add the agents']);
     const withAgent = syntheticGit(upstream, ['rev-parse', 'HEAD']);
-    fs.rmSync(path.join(upstream, 'opencode-free'), { recursive: true, force: true });
+    fs.rmSync(path.join(upstream, 'pending-agent'), { recursive: true, force: true });
     syntheticGit(upstream, ['add', '--all']);
-    syntheticGit(upstream, ['commit', '--quiet', '--message', 'Remove opencode-free']);
+    syntheticGit(upstream, ['commit', '--quiet', '--message', 'Remove pending-agent']);
     const proxiesDir = path.join(siblingsRoot, 'proxies');
     fs.rmSync(proxiesDir, { recursive: true, force: true });
     syntheticGit(siblingsRoot, ['clone', '--quiet', '--depth', '1', pathToFileURL(upstream).href, proxiesDir]);
 
-    const minimum = MINIMUM_REVISIONS['proxies/opencode-free'].revision;
+    const minimum = PENDING_MINIMUM.revision;
     assert.equal(syntheticGit(proxiesDir, ['rev-parse', '--is-shallow-repository']), 'true');
     assert.equal(syntheticGit(upstream, ['rev-parse', '--is-shallow-repository']), 'false');
     // The complete upstream history answers both ways.
@@ -296,16 +304,16 @@ test('negative control: a shallow sibling cannot prove that it lacks a revision,
     assert.equal(gitContainsRevision(proxiesDir, 'HEAD'), true);
     assert.equal(gitContainsRevision(proxiesDir, withAgent), null);
     assert.equal(gitContainsRevision(proxiesDir, minimum), null);
-    assert.equal(fs.existsSync(path.join(proxiesDir, 'opencode-free', 'manifest.json')), false);
+    assert.equal(fs.existsSync(path.join(proxiesDir, 'pending-agent', 'manifest.json')), false);
 
     const skipped = [];
     assert.throws(() => resolveGraphOrSkip({ skip: (message) => skipped.push(message) },
-        { explorerRepo, isRetired: isRetiredLocalModel }), (error) => {
+        { explorerRepo, isRetired: isRetiredLocalModel, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
         assert.equal(error.code, undefined, 'a shallow sibling must never be skipped as an outdated checkout');
         assert.deepEqual(error.gaps, []);
         assert.equal(error.defects.length, 1);
-        assert.match(error.defects[0], /^Agent "proxies\/opencode-free" enabled by AchillesCLI\/relay has no manifest at /);
-        assert.match(error.defects[0], /cannot be checked for the minimum revision 22dc0cc \(not a git checkout, a shallow checkout that cannot prove the revision is absent, or git failed\)/);
+        assert.match(error.defects[0], /^Agent "proxies\/pending-agent" enabled by AchillesCLI\/relay has no manifest at /);
+        assert.match(error.defects[0], /cannot be checked for the minimum revision 0123456 \(not a git checkout, a shallow checkout that cannot prove the revision is absent, or git failed\)/);
         return true;
     });
     assert.deepEqual(skipped, []);
@@ -378,14 +386,14 @@ test('negative control: a defect error also lists the retired edges the walk fou
 });
 
 test('negative control: every gap is listed, and a gap stops only the branch below it', (t) => {
-    const explorerRepo = syntheticWorkspace(t, ['proxies/opencode-free no-wait']);
+    const explorerRepo = syntheticWorkspace(t, [`${PENDING_REF} no-wait`]);
     const siblingsRoot = path.dirname(explorerRepo);
     writeManifest(explorerRepo, 'explorer', { enable: ['UmamiAgent/umamiAgent no-wait', 'helper global', `${SIBLING}/relay no-wait`] });
-    assert.throws(() => resolveExplorerGraph({ explorerRepo, containsRevision: () => false }), (error) => {
+    assert.throws(() => resolveExplorerGraph({ explorerRepo, containsRevision: () => false, minimumRevisions: SYNTHETIC_MINIMUMS }), (error) => {
         assert.equal(error.code, SIBLING_MISSING_CODE);
         assert.equal(error.gaps.length, 2);
         assert.match(error.gaps[0], /^Sibling repository "UmamiAgent" enabled by AchillesIDE\/explorer is missing at /);
-        assert.match(error.gaps[1], /^Agent "proxies\/opencode-free" enabled by AchillesCLI\/relay has no manifest at /);
+        assert.match(error.gaps[1], /^Agent "proxies\/pending-agent" enabled by AchillesCLI\/relay has no manifest at /);
         assert.ok(error.message.includes(path.join(siblingsRoot, 'UmamiAgent')));
         return true;
     });
