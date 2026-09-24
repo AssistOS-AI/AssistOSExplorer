@@ -75,6 +75,13 @@ async function saveUser(page, row, action, status) {
   });
 }
 
+async function setRolePickerOpen(row, open) {
+  const picker = row.locator('details[data-role-picker]');
+  await expect(picker).toHaveCount(1);
+  if ((await picker.getAttribute('open') !== null) !== open) await picker.locator('summary').click();
+  await expect(picker).toHaveJSProperty('open', open);
+}
+
 // Accounts already exist after signing in; public sign-ups initially have only
 // selfRegistered. Choose the complete role set so that role does not linger.
 export async function assignRoleThroughAdministration(page, account, { name = '', role = 'user' } = {}) {
@@ -89,15 +96,18 @@ export async function assignRoleThroughAdministration(page, account, { name = ''
     await saveUser(page, row, 'update', 'User details saved.');
   }
 
+  await setRolePickerOpen(row, true);
   await expect(row.getByRole('checkbox', { name: role, exact: true })).toHaveCount(1);
   for (const checkbox of await row.locator('input[data-user-role]').all()) {
     await checkbox.setChecked(await checkbox.inputValue() === role);
   }
+  await setRolePickerOpen(row, false);
   await saveUser(page, row, 'roles', 'User roles saved.');
   await searchUsers(page, email);
   const savedRow = userRow(page, email);
   await expect(savedRow).toHaveCount(1, { timeout: smokeConfig.timeouts.navigation });
   await expect(savedRow).toHaveAttribute('data-user-id', userId);
+  await setRolePickerOpen(savedRow, true);
   await expect(savedRow.locator('input[data-user-role]:checked')).toHaveCount(1);
   await expect(savedRow.getByRole('checkbox', { name: role, exact: true })).toBeChecked();
   if (name) await expect(savedRow.locator('input[data-user-field="displayName"]')).toHaveValue(name);
