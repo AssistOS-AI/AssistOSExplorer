@@ -4,7 +4,7 @@ import { normalizePermissionMode, PERMISSION_MODES } from '../permissions/protoc
 
 export function parseCliOptions(args, { env = process.env, cwd = process.cwd() } = {}) {
     const options = {
-        workingDir: cwd, prompt: null, singleShot: false,
+        prompt: null, singleShot: false,
         verbose: false, debug: false, renderMarkdown: true,
         uiStyle: env.ACHILLES_CLI_UI || 'claude-code', requestedPermissionMode: null,
         help: false, version: false,
@@ -49,6 +49,12 @@ export function parseCliOptions(args, { env = process.env, cwd = process.cwd() }
             options.singleShot = Boolean(options.prompt);
             break;
         } else throw new Error(`Unknown option: ${arg}`);
+    }
+    if (options.workingDir === undefined) {
+        if (isWebchatRuntime(args, env)) {
+            throw new Error('A working directory is required: the WebChat runtime must receive --dir.');
+        }
+        options.workingDir = cwd;
     }
     options.permissionMode = options.requestedPermissionMode || getPermissionMode(options.workingDir);
     return options;

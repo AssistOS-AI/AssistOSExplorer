@@ -17,7 +17,8 @@ async function fixture(t, options = {}) {
     const started = [], stopped = [];
     const robotStore = { list: async () => robots, getByName: async name => robots.find(robot => robot.name === name), get: async id => robots.find(robot => robot.id === id) };
     const runtimeManager = { resolveCwd: async value => value || root,
-        startTask(robot, type, request) { started.push({ robot, type, request, taskId: request.runtimeTaskId }); return { taskId: request.runtimeTaskId, state: 'queued' }; },
+        startTask(robot, type, request) { started.push({ robot, type, request, taskId: request.runtimeTaskId }); return { taskId: request.runtimeTaskId, state: 'queued',
+            ...(['browser', 'desktop'].includes(type) ? { sessionUrl: `/api/robots/${robot.id}/session/` } : {}) }; },
         stopTask(robot, type, id) { stopped.push(id); }, guiBusy: options.guiBusy || (() => false) };
     const service = new RoboFlowService({ robotStore, runtimeManager, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), random: () => .99,
         discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }), ...options });
@@ -135,8 +136,14 @@ test('run snapshots survive editing and deleting their workflow', async t => {
     assert.equal((await f.service.getFlow(flow.id)).graph.name, 'Example');
 });
 
-test('GUI selection prefers idle matching robots and queues when all are busy', async t => {
-    const f = await fixture(t, { guiBusy: id => id === 'worker-id' });
+test('browser tasks record the live GUI session URL on their instance', async t => {
+    const f = await fixture(t); await f.service.createWorkflow({ ...graph(), tasks: [task('a', { executionType: 'browser' })], edges: [] });
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    const instance = (await f.service.getFlow(flow.id)).instances[0];
+    assert.equal(instance.sessionUrl, `/api/robots/${f.started[0].robot.id}/session/`);
+});
+
+test('GUI selection prefers idle matching robots and queues when all are busy', async t => {    const f = await fixture(t, { guiBusy: id => id === 'worker-id' });
     await f.service.createWorkflow({ ...graph(), tasks: [task('a', { executionType: 'browser' })], edges: [] });
     await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' }); assert.equal(f.started[0].robot.name, 'default');
     f.service.runtimeManager.guiBusy = () => true;

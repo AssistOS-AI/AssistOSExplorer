@@ -46,11 +46,13 @@ export async function action(invocation = {}) {
             if (!workflowTypeId) throw new Error('workflowTypeId is required');
             const objective = trim(request.objective);
             if (!objective) throw new Error('objective is required');
+            const folder = trim(request.folder) || trim(invocation.workingDir);
+            if (!folder) throw new Error('a working folder is required');
             await client.call('roboflow_start_flow', {
                 workflowTypeId,
                 ...(request.executionType ? { executionType: request.executionType } : {}),
                 objective,
-                ...(trim(request.folder || invocation.workingDir) ? { folder: trim(request.folder || invocation.workingDir) } : {}),
+                folder,
             });
             return 'RoboFlow workflow started. It keeps running as a background task in this conversation; open that task to follow the workflow, its phases and their logs.';
         }

@@ -38,9 +38,10 @@ describe('Copilot launch extensions', () => {
         setRuntimePlugins([]);
         const url = buildCopilotUrl({
             isDirectory: true,
-            selectedFsPath: '/workspace/project'
+            selectedFsPath: '/workspace/project',
+            workspaceRoot: '/workspace/project'
         });
-        assert.equal(url, '/webchat?agent=roboTeamAgent&robot=default&dir=%2Fworkspace%2Fproject');
+        assert.equal(url, '/webchat?agent=roboTeamAgent&robot=default&workspace-dir=.');
     });
 
     it('adds generic launch-extension query parameters and workspace-relative directory', () => {
@@ -70,7 +71,7 @@ describe('Copilot launch extensions', () => {
         assert.equal(params.has('dir'), false);
     });
 
-    it('falls back to dir when an extension asks for a relative directory outside the workspace', () => {
+    it('omits the working directory when it resolves outside the workspace root', () => {
         setRuntimePlugins([{
             copilotLaunch: {
                 query: { 'forward-envelope': '1' },
@@ -84,7 +85,7 @@ describe('Copilot launch extensions', () => {
         });
         const params = new URLSearchParams(url.slice('/webchat?'.length));
         assert.equal(params.get('forward-envelope'), '1');
-        assert.equal(params.get('dir'), '/other/project');
+        assert.equal(params.has('dir'), false);
         assert.equal(params.has('workspace-dir'), false);
     });
 

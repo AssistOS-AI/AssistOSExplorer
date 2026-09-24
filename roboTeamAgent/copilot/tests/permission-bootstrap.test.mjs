@@ -74,3 +74,11 @@ test('WebChat preserves an explicit workspace approval policy', async (t) => {
     const options = parseCliOptions(['--forward-envelope', '--dir', workingDir]);
     assert.equal(options.permissionMode, 'ask-for-approval');
 });
+
+test('WebChat requires an explicit working directory without fallback', async (t) => {
+    const workingDir = await workspace(t);
+    const webchatArgs = ['--sso-user=guest', '--sso-user-id=guest', '--sso-roles=guest'];
+    assert.throws(() => parseCliOptions(webchatArgs), /working directory is required/i);
+    const options = parseCliOptions([...webchatArgs, `--dir=${workingDir}`]);
+    assert.equal(options.workingDir, workingDir);
+});

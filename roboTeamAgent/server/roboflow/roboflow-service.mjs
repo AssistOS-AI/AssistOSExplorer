@@ -132,8 +132,12 @@ export class RoboFlowService {
             });
             this.bindings.set(runtimeTaskId, { flowId: id, instanceId: instance.id });
             const skillSets = node.skillsets.map(identity => robotSelections(robot).find(set => set.id === identity).selector);
-            await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, skillSets,
+            const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, skillSets,
                 requiredWorkflowSkillsets: node.skillsets, systemPrompt: outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '' });
+            if (started?.sessionUrl) await this.store.update(id, current => {
+                const visit = current.instances.find(item => item.id === instance.id);
+                if (visit) visit.sessionUrl = started.sessionUrl;
+            });
         } catch (error) { await this._fail(id, error.message); }
     }
     async _startTask(robot, { skillSets = [], taskType = 'simple', ...request }) {

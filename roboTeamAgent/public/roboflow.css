@@ -284,6 +284,20 @@ body {
 .phase-meta-row dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 .phase-meta-row dd { margin: 0; overflow-wrap: anywhere; }
 
+.phase-live-link {
+    align-self: flex-start;
+    padding: 8px 12px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.phase-live-link:hover { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+
 .phase-view-status {
     padding: 3px 9px;
     border: 1px solid var(--border);

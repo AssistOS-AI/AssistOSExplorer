@@ -91,15 +91,9 @@ export function buildCopilotUrl(context = {}) {
 
     const workingDir = getWorkingDirectory(context);
     if (workingDir) {
-        const workspaceDirParam = getWorkspaceDirParam(extensions);
-        const relativeDir = workspaceDirParam
-            ? toWorkspaceRelativeParam(workingDir, getWorkspaceRoot(context))
-            : '';
-        if (workspaceDirParam && relativeDir) {
-            params.set(workspaceDirParam, relativeDir);
-        } else {
-            params.set('dir', workingDir);
-        }
+        const workspaceDirParam = getWorkspaceDirParam(extensions) || 'workspace-dir';
+        const relativeDir = toWorkspaceRelativeParam(workingDir, getWorkspaceRoot(context));
+        if (relativeDir) params.set(workspaceDirParam, relativeDir);
     }
 
     return `/webchat?${params.toString()}`;

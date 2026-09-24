@@ -247,6 +247,15 @@ function renderPhaseDetail(container, instance) {
         list.append(row);
     }
     container.append(list);
+    if (instance.sessionUrl && ['browser', 'desktop'].includes(instance.executionType)) {
+        const link = document.createElement('a');
+        link.className = 'phase-live-link';
+        link.href = instance.sessionUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = instance.executionType === 'desktop' ? 'Open live desktop' : 'Open live browser';
+        container.append(link);
+    }
 }
 
 function splitLogLines(text) {
