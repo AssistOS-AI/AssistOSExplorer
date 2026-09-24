@@ -8,6 +8,8 @@
     --ok: #1f8a4c;
     --warn: #b7791f;
     --danger: #c0392b;
+    --log-path: #5fbf72;
+    --log-accent: #008069;
     color-scheme: light;
 }
 
@@ -21,6 +23,8 @@
     --ok: #4cc38a;
     --warn: #e0b341;
     --danger: #ef6b63;
+    --log-path: #5fbf72;
+    --log-accent: #00a884;
     color-scheme: dark;
 }
 
@@ -284,19 +288,12 @@ body {
 .phase-meta-row dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 .phase-meta-row dd { margin: 0; overflow-wrap: anywhere; }
 
-.phase-live-link {
-    align-self: flex-start;
-    padding: 8px 12px;
-    border: 1px solid var(--accent);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
-    color: var(--accent);
-    font-size: 13px;
-    font-weight: 600;
-    text-decoration: none;
-}
-
-.phase-live-link:hover { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+.phase-tabs { flex: 0 0 auto; display: flex; gap: 6px; }
+.phase-tab { padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); font-size: 13px; cursor: pointer; }
+.phase-tab:hover { border-color: var(--accent); }
+.phase-tab.is-active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); font-weight: 600; }
+.phase-session-frame { flex: 1 1 auto; min-height: 420px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+.phase-session-frame[hidden] { display: none; }
 
 .phase-view-status {
     padding: 3px 9px;
@@ -333,7 +330,13 @@ body {
 
 .phase-log-line { display: block; min-height: 1.55em; }
 .phase-log-empty { color: var(--muted); }
-.phase-log-line.is-final { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--ok) 18%, transparent); }
+.phase-log-line.is-stderr { color: color-mix(in srgb, var(--muted) 72%, transparent); }
+.phase-log-line.is-intermediate { color: var(--muted); }
+.phase-log-line.is-final { color: var(--text); font-weight: 600; background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.phase-log-token.is-path { color: var(--log-path); }
+.phase-log-token.is-code { color: var(--log-accent); }
+.phase-log-inline-link { color: var(--log-accent); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.phase-log-inline-link:hover { color: color-mix(in srgb, var(--log-accent) 75%, var(--text)); }
 
 .graph-node.graph-state-running { border-color: var(--ok); animation: phase-pulse 1.6s ease-in-out infinite; }
 .graph-node.graph-state-queued { border-color: var(--accent); }
