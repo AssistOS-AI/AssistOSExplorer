@@ -14,6 +14,16 @@ import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
 const terminal = state => ['completed', 'failed', 'stopped', 'interrupted'].includes(state);
 const missing = () => Object.assign(new Error('workflow run not found'), { statusCode: 404 });
 
+// A run has one status. Running wins over everything, then failure, then stop:
+// there is no partially stopped run while any phase is still active.
+function deriveFlowStatus(instances) {
+    const states = instances.map(instance => instance.state);
+    if (states.some(state => ['queued', 'starting', 'running'].includes(state))) return 'running';
+    if (states.some(state => state === 'failed')) return 'failed';
+    if (states.some(state => ['stopped', 'interrupted'].includes(state))) return 'stopped';
+    return 'completed';
+}
+
 // Prepended to the user's description for graph generation; ALA has no separate
 // system-instruction option.
 function generationPrompt(catalog) {
@@ -148,8 +158,10 @@ export class RoboFlowService {
     }
     async _fail(id, message, status = 'failed') {
         const flow = await this.store.get(id);
-        if (!flow || terminal(flow.status)) return;
-        for (const instance of flow.instances) if (!terminal(instance.state) && instance.runtimeTaskId) {
+        if (!flow) return;
+        const active = flow.instances.filter(instance => !terminal(instance.state));
+        if (!active.length) return;
+        for (const instance of active) if (instance.runtimeTaskId) {
             this.bindings.delete(instance.runtimeTaskId);
             const robot = await this.robotStore.getByName(instance.robotName);
             if (robot) { try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId); } catch { /* Runtime may already be terminal. */ } }
@@ -167,33 +179,75 @@ export class RoboFlowService {
             const instance = flow.instances.find(item => item.id === instanceId);
             if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
             if (terminal(instance.state)) return this.getFlow(id);
-            if (instance.runtimeTaskId) {
-                this.bindings.delete(instance.runtimeTaskId);
-                const robot = await this.robotStore.getByName(instance.robotName);
-                if (robot) { try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId); } catch { /* Runtime may already be terminal. */ } }
-            }
-            await this.store.update(id, current => {
-                const visit = current.instances.find(item => item.id === instanceId);
-                visit.state = 'stopped'; visit.error = 'Stopped by user'; visit.endedAt = new Date().toISOString();
-            });
             await this._fail(id, 'Stopped by user', 'stopped');
             return this.getFlow(id);
         });
     }
+    async messageInstance(id, instanceId, prompt) {
+        const flow = await this.store.get(id);
+        if (!flow) throw missing();
+        const instance = flow.instances.find(item => item.id === instanceId);
+        if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
+        if (terminal(instance.state) || !instance.runtimeTaskId) throw invalid('only a running phase accepts a live prompt; continue it instead');
+        const message = textField(prompt, 'prompt', 32768, true);
+        const robot = await this.robotStore.getByName(instance.robotName);
+        if (!robot) throw new Error('Robot is unavailable');
+        const delivery = await this.runtimeManager.sendTaskMessage(robot, instance.runtimeTaskId, message);
+        await this.store.writeOutput(id, instanceId, `you> ${message}\n`);
+        return { ...delivery, flow: await this.getFlow(id) };
+    }
+    async resumeInstance(id, instanceId, prompt) {
+        const flow = await this.store.get(id);
+        if (!flow) throw missing();
+        const instance = flow.instances.find(item => item.id === instanceId);
+        if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
+        if (!['stopped', 'completed', 'failed'].includes(instance.state)) throw invalid('only a stopped, completed or failed phase can continue');
+        const message = textField(prompt, 'prompt', 32768, false);
+        const robot = await this.robotStore.getByName(instance.robotName);
+        if (!robot) throw new Error('Robot is unavailable');
+        const previous = { runtimeTaskId: instance.runtimeTaskId, state: instance.state, error: instance.error, endedAt: instance.endedAt };
+        const runtimeTaskId = crypto.randomUUID();
+        await this._serialize(id, async () => {
+            await this.store.update(id, current => {
+                const visit = current.instances.find(item => item.id === instanceId);
+                visit.runtimeTaskId = runtimeTaskId; visit.state = 'running'; visit.error = null; visit.endedAt = null;
+                current.status = deriveFlowStatus(current.instances); current.finishedAt = null; current.error = null;
+            });
+        });
+        this.bindings.set(runtimeTaskId, { flowId: id, instanceId, manual: true });
+        try {
+            await this.runtimeManager.resumeTask(robot, previous.runtimeTaskId, message, { runtimeTaskId });
+        } catch (error) {
+            this.bindings.delete(runtimeTaskId);
+            await this._serialize(id, async () => {
+                await this.store.update(id, current => {
+                    const visit = current.instances.find(item => item.id === instanceId);
+                    visit.runtimeTaskId = previous.runtimeTaskId; visit.state = previous.state; visit.error = previous.error; visit.endedAt = previous.endedAt;
+                    current.status = deriveFlowStatus(current.instances);
+                    if (current.status !== 'running') current.finishedAt = current.finishedAt || new Date().toISOString();
+                });
+            }).catch(() => {});
+            throw error;
+        }
+        if (message) await this.store.writeOutput(id, instanceId, `you> ${message}\n`);
+        return this.getFlow(id);
+    }
     async _completed(binding, event) {
         const flow = await this.store.get(binding.flowId);
-        if (!flow || terminal(flow.status)) return;
+        if (!flow || (terminal(flow.status) && !binding.manual)) return;
         const instance = flow.instances.find(item => item.id === binding.instanceId);
         if (!instance || terminal(instance.state)) return;
-        if (event.state !== 'completed' || event.error) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`);
+        if (event.state !== 'completed' || event.error) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, 'failed');
         await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
         const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === instance.taskId);
         const edge = outgoing.length > 1 ? parseRoute(event.result, flow.graph, instance.taskId).edge : outgoing[0];
         await this.store.update(flow.id, current => {
             const visit = current.instances.find(item => item.id === instance.id);
             visit.state = 'completed'; visit.endedAt = new Date().toISOString(); visit.nextEdgeId = edge?.id || null;
-            if (!edge) { current.status = 'completed'; current.finishedAt = visit.endedAt; }
-            else { const next = this._instance(edge.targetTaskId, current.instances.length); current.instances.push(next); current.currentInstanceId = next.id; }
+            if (edge) { const next = this._instance(edge.targetTaskId, current.instances.length); current.instances.push(next); current.currentInstanceId = next.id; }
+            current.status = deriveFlowStatus(current.instances);
+            current.finishedAt = current.status === 'running' ? null : visit.endedAt;
+            if (current.status !== 'failed') current.error = null;
         });
         if (edge) await this._dispatch(flow.id);
     }
@@ -205,7 +259,7 @@ export class RoboFlowService {
         if (event.kind === 'terminal') this.bindings.delete(event.taskId);
         void this._serialize(binding.flowId, async () => {
             const flow = await this.store.get(binding.flowId);
-            if (!flow || terminal(flow.status)) return;
+            if (!flow || (terminal(flow.status) && !binding.manual)) return;
             if (event.kind === 'progress') await this.store.writeOutput(flow.id, binding.instanceId, event.chunk);
             else if (event.kind === 'state') await this.store.update(flow.id, current => {
                 const instance = current.instances.find(item => item.id === binding.instanceId);

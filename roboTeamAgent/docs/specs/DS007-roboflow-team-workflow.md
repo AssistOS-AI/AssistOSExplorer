@@ -39,6 +39,14 @@ Starting a run captures the saved graph and creates a queued task instance at en
 
 Each graph visit creates a distinct task instance and runtime task id. A cycle A -> B -> A therefore records two separate instances of A. A run allows 500 visits by default, configurable with ROBOTEAM_WORKFLOW_MAX_VISITS. Per-run serialized transitions and instance terminal guards prevent duplicate runtime events from advancing twice. Stop cancels active work and prevents further dispatch.
 
+### Phase control
+
+Every phase owns its ALA session and can be driven from the flow page independently of graph traversal. A running phase accepts a live prompt, which is appended to its log as a user line and sent to the agent without changing the graph. A stopped, completed or failed phase can be continued with a prompt: RoboFlow resumes that phase's exact saved ALA session, and on completion the run continues from the same node, so continuing phase B of A -> B -> C still proceeds to C. Stopping a phase stops the whole run.
+
+A run has exactly one derived status. It is running when any phase is queued, starting or running; otherwise failed when any phase failed; otherwise stopped when any phase was stopped or interrupted; otherwise completed. Running wins over every other phase state, so a run with both running and stopped phases is running and there is no partially stopped run.
+
+Phase stop, live prompt and continue are exposed only through the RoboTeam HTTP API and the flow page; they are not RoboTeam MCP tools.
+
 ### Task input and routing output
 
 Every task receives the objective, complete captured graph, currentTaskId and ordered previousFinalResponses. Only previous final responses enter this history. Logs, transcript replay, artifacts and file references do not enter task context. Responses stay intact; exceeding the one MiB context limit fails explicitly.
@@ -82,7 +90,7 @@ The internal MCP tools are roboflow_list_workflows, roboflow_start_flow, roboflo
 
 The launch-workflow skill starts a flow and returns as soon as the native task is registered; it never waits for or processes the final result. The roboflow_start_flow tool process remains alive and owns the run until it reaches a terminal state, so stopping the native task stops the flow. Early in its standard error it emits a task control record that declares the flow page as the task's detail link, labelled Open workflow page, with the raw task log as a secondary View workflow logs link. The conversation's background task renders both from that metadata, so the model never receives the flow URL.
 
-HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, run start/state/stop, per-phase stop and logs under /api/roboflow. Browser mutations require the existing Router CSRF proof. Generation uses the real MCP browser client, including task polling and cancellation. Credentials remain in the authenticated transport.
+HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, run start/state/stop, per-phase stop, live prompt, continue and logs under /api/roboflow. Browser mutations require the existing Router CSRF proof. Generation uses the real MCP browser client, including task polling and cancellation. Credentials remain in the authenticated transport.
 
 ## Decisions & Questions
 

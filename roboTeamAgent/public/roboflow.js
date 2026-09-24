@@ -16,6 +16,18 @@ async function post(path) {
     return response.json();
 }
 
+async function postJson(path, body) {
+    const response = await fetch(api(path), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+    return payload;
+}
+
 const params = new URL(location.href).searchParams;
 let selected = params.get('flowId') || params.get('flow');
 let currentFlow = null;
@@ -151,8 +163,13 @@ function renderStage() {
         header.className = 'phase-view-header';
         const detail = document.createElement('div');
         detail.className = 'phase-view-detail';
+        const logs = document.createElement('div');
+        logs.className = 'phase-logs-section';
         const log = document.createElement('div');
         log.className = 'phase-log';
+        const composer = document.createElement('div');
+        composer.className = 'phase-composer';
+        logs.append(composer, log);
         view.append(header, detail);
         const sessionUrl = ['browser', 'desktop'].includes(instance.executionType) ? instance.sessionUrl : null;
         if (sessionUrl) {
@@ -165,24 +182,25 @@ function renderStage() {
             const logsTab = phaseTab('Logs', true, () => {
                 logsTab.classList.add('is-active');
                 sessionTab.classList.remove('is-active');
-                log.hidden = false;
+                logs.hidden = false;
                 frame.hidden = true;
             });
             const sessionTab = phaseTab(instance.executionType === 'desktop' ? 'Desktop' : 'Browser', false, () => {
                 sessionTab.classList.add('is-active');
                 logsTab.classList.remove('is-active');
-                log.hidden = true;
+                logs.hidden = true;
                 frame.hidden = false;
                 if (!frame.getAttribute('src')) frame.src = sessionUrl;
             });
             tabs.append(logsTab, sessionTab);
-            view.append(tabs, log, frame);
+            view.append(tabs, logs, frame);
         } else {
-            view.append(log);
+            view.append(logs);
         }
         body.append(view);
         renderPhaseHeader(header, instance);
         renderPhaseDetail(detail, instance);
+        renderPhaseComposer(composer, instance);
         void loadLog(instance);
         return;
     }
@@ -281,6 +299,82 @@ function renderPhaseDetail(container, instance) {
         list.append(row);
     }
     container.append(list);
+}
+
+const COMPOSER_MIN_HEIGHT = 40;
+const COMPOSER_MAX_HEIGHT = 132;
+
+function composerMode(instance) {
+    if (['queued', 'starting', 'running'].includes(instance.state)) return 'message';
+    if (['stopped', 'completed', 'failed'].includes(instance.state)) return 'continue';
+    return '';
+}
+
+function autoGrowInput(input) {
+    input.style.height = 'auto';
+    const scrollHeight = Math.ceil(input.scrollHeight);
+    input.style.height = `${Math.min(COMPOSER_MAX_HEIGHT, Math.max(COMPOSER_MIN_HEIGHT, scrollHeight))}px`;
+    input.style.overflowY = scrollHeight > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
+    if (scrollHeight <= COMPOSER_MAX_HEIGHT) input.scrollTop = 0;
+}
+
+function renderPhaseComposer(container, instance) {
+    const mode = composerMode(instance);
+    container.dataset.mode = mode;
+    container.replaceChildren();
+    if (!mode) {
+        container.hidden = true;
+        return;
+    }
+    container.hidden = false;
+    const running = mode === 'message';
+    const label = document.createElement('label');
+    label.textContent = running ? 'Send a message to the running phase' : 'Continue this phase with a prompt';
+    const row = document.createElement('div');
+    row.className = 'phase-composer-row';
+    const input = document.createElement('textarea');
+    input.rows = 1;
+    input.maxLength = 32768;
+    input.placeholder = running ? 'Message the running agent…' : 'Prompt the agent to continue…';
+    input.addEventListener('input', () => autoGrowInput(input));
+    const button = element('button', running ? 'Send' : 'Continue');
+    button.type = 'button';
+    button.className = 'button primary';
+    const status = document.createElement('p');
+    status.className = 'phase-composer-status';
+    const submit = async () => {
+        const prompt = input.value.trim();
+        if (button.disabled || (running && !prompt)) return;
+        button.disabled = true;
+        status.classList.remove('is-error');
+        status.textContent = running ? 'Sending…' : 'Continuing…';
+        try {
+            if (running) {
+                const result = await postJson(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instance.id)}/message`, { prompt });
+                status.textContent = `Delivered: ${result.delivery || 'sent'}`;
+            } else {
+                await postJson(`api/roboflow/flows/${encodeURIComponent(selected)}/instances/${encodeURIComponent(instance.id)}/resume`, { prompt });
+                status.textContent = 'Continuing…';
+            }
+            input.value = '';
+            autoGrowInput(input);
+            await refresh();
+        } catch (error) {
+            status.textContent = error.message;
+            status.classList.add('is-error');
+        } finally {
+            button.disabled = false;
+        }
+    };
+    button.onclick = () => void submit();
+    input.onkeydown = event => {
+        if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+        event.preventDefault();
+        void submit();
+    };
+    row.append(input, button);
+    container.append(label, row, status);
+    autoGrowInput(input);
 }
 
 const ANSI_RE = /[\u001b\u009b][[\]()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
@@ -397,6 +491,12 @@ function logLine(rawText, isFinal) {
         stream = streamMatch[2].toLowerCase();
         text = text.slice(streamMatch[0].length);
     }
+    const promptMatch = /^(?:User:\s*|you>\s?)(.*)$/i.exec(text);
+    if (promptMatch) {
+        row.className = 'phase-log-line is-user-prompt';
+        for (const fragment of lineFragments(`you> ${promptMatch[1]}`)) row.append(fragment);
+        return row;
+    }
     row.className = `phase-log-line is-${stream} ${isFinal ? 'is-final' : 'is-intermediate'}`;
     for (const fragment of lineFragments(text)) row.append(fragment);
     return row;
@@ -482,8 +582,10 @@ async function refresh() {
         const instance = flow.instances.find(item => item.id === selectedInstanceId);
         const header = document.querySelector('#stageBody .phase-view-header');
         const detail = document.querySelector('#stageBody .phase-view-detail');
+        const composer = document.querySelector('#stageBody .phase-composer');
         if (instance && header) renderPhaseHeader(header, instance);
         if (instance && detail) renderPhaseDetail(detail, instance);
+        if (instance && composer && composer.dataset.mode !== composerMode(instance)) renderPhaseComposer(composer, instance);
     } else if (stageView === 'pending') {
         const instance = [...flow.instances].reverse().find(item => item.taskId === selectedTaskId);
         if (instance) selectPhase(instance.id);

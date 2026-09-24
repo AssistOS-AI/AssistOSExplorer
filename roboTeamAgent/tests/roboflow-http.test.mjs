@@ -13,7 +13,9 @@ async function fixture(t) {
     const robotStore = new RobotStore({ dataDir: path.join(root, 'data') }); await robotStore.initialize(); await robotStore.ensureDefaultRobot();
     const started = [];
     const runtimeManager = { workspaceRoot: root, status: () => ({ state: 'stopped' }), resolveCwd: async () => root,
-        startTask(robot, type, request) { started.push({ robot, type, request }); return { taskId: request.runtimeTaskId, state: 'queued' }; }, stopTask() {}, activePort: () => null };
+        startTask(robot, type, request) { started.push({ robot, type, request }); return { taskId: request.runtimeTaskId, state: 'queued' }; },
+        stopTask() {}, sendTaskMessage() { return { delivery: 'sent' }; },
+        resumeTask(robot, taskId, prompt, options = {}) { return { taskId: options.runtimeTaskId, state: 'queued' }; }, activePort: () => null };
     const roboflow = new RoboFlowService({ robotStore, runtimeManager, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }) });
     await roboflow.initialize();
     const server = createRoboTeamServer({ robotStore, runtimeManager, roboflow, internalToken: 'test-token', publicBasePath: '/rt/' });
@@ -56,4 +58,18 @@ test('HTTP stops a single phase and stops the whole flow with it', async t => {
     assert.equal(after.status, 'stopped');
     assert.equal(after.instances[0].state, 'stopped');
     assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/instances/not-an-instance/stop`, 'user', {})).status, 404);
+});
+test('HTTP messages and continues a single phase', async t => {
+    const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
+    const { flow } = await (await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', objective: 'Work' })).json();
+    const instanceId = flow.instances[0].id;
+    const message = await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/message`, 'user', { prompt: 'go' });
+    assert.equal(message.status, 200);
+    assert.equal((await message.json()).delivery, 'sent');
+    await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/stop`, 'user', {});
+    const resume = await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/resume`, 'user', { prompt: 'again' });
+    assert.equal(resume.status, 200);
+    const { flow: after } = await resume.json();
+    assert.equal(after.status, 'running');
+    assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/instances/not-an-instance/message`, 'user', { prompt: 'x' })).status, 404);
 });

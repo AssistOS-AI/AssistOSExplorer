@@ -14,12 +14,15 @@ const graph = () => ({ id: 'example', name: 'Example', entryTaskId: 'a', tasks: 
 async function fixture(t, options = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-graph-'));
     const robots = [{ id: 'default-id', name: 'default', codingAgents: ['codex'] }, { id: 'worker-id', name: 'worker', codingAgents: ['codex'] }];
-    const started = [], stopped = [];
+    const started = [], stopped = [], messages = [], resumed = [];
     const robotStore = { list: async () => robots, getByName: async name => robots.find(robot => robot.name === name), get: async id => robots.find(robot => robot.id === id) };
     const runtimeManager = { resolveCwd: async value => value || root,
         startTask(robot, type, request) { started.push({ robot, type, request, taskId: request.runtimeTaskId }); return { taskId: request.runtimeTaskId, state: 'queued',
             ...(['browser', 'desktop'].includes(type) ? { sessionUrl: `/api/robots/${robot.id}/session/` } : {}) }; },
-        stopTask(robot, type, id) { stopped.push(id); }, guiBusy: options.guiBusy || (() => false) };
+        stopTask(robot, type, id) { stopped.push(id); },
+        sendTaskMessage(robot, taskId, prompt) { messages.push({ robot, taskId, prompt }); return { delivery: 'sent' }; },
+        resumeTask(robot, taskId, prompt, options = {}) { resumed.push({ robot, taskId, prompt }); return { taskId: options.runtimeTaskId, state: 'queued' }; },
+        guiBusy: options.guiBusy || (() => false) };
     const service = new RoboFlowService({ robotStore, runtimeManager, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), random: () => .99,
         discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }), ...options });
     await service.initialize();
@@ -28,7 +31,7 @@ async function fixture(t, options = {}) {
         service.onRuntimeTaskEvent({ kind: 'terminal', taskId: started[index].taskId, result, state });
         while (service.chains.size) await Promise.allSettled(service.chains.values());
     }
-    return { service, robots, started, stopped, root, finish };
+    return { service, robots, started, stopped, messages, resumed, root, finish };
 }
 
 test('graph validation accepts cycles and rejects broken identity or legacy robot assignments', () => {
@@ -253,4 +256,47 @@ test('workflow skillset discovery reads only skills/ and ignores agent instructi
     });
     assert.deepEqual(catalog.diagnostics, []);
     assert.equal(catalog.skillsets.some(set => ['project', 'mixed-repo', 'agent-repo'].includes(set.repositoryName)), false);
+});
+
+test('a live prompt reaches the running phase and is recorded in its log', async t => {
+    const f = await fixture(t); await f.service.createWorkflow({ ...graph(), edges: [edge('a', 'b')] });
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    const instance = flow.instances[0];
+    const result = await f.service.messageInstance(flow.id, instance.id, '  keep going  ');
+    assert.deepEqual(f.messages, [{ robot: f.started[0].robot, taskId: f.started[0].taskId, prompt: 'keep going' }]);
+    assert.equal(result.delivery, 'sent');
+    assert.match(await f.service.getInvocationLog(flow.id, instance.id), /you> keep going/);
+    await assert.rejects(() => f.service.messageInstance(flow.id, 'inv_000000000000000000000000', 'x'), { statusCode: 404 });
+    await assert.rejects(() => f.service.messageInstance(flow.id, instance.id, ''), /prompt/);
+});
+
+test('continuing a completed phase resumes its session and the run advances from that phase', async t => {
+    const f = await fixture(t); await f.service.createWorkflow({ ...graph(), edges: [edge('a', 'b'), edge('b', 'c')] });
+    const flow = await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    await f.finish(0, 'A'); await f.finish(1, 'B'); await f.finish(2, 'C');
+    let current = await f.service.getFlow(flow.id);
+    assert.equal(current.status, 'completed');
+    const completedB = current.instances.find(instance => instance.taskId === 'b');
+    await assert.rejects(() => f.service.messageInstance(flow.id, completedB.id, 'now'), /running phase/);
+    const resumedFlow = await f.service.resumeInstance(flow.id, completedB.id, 'redo b');
+    assert.equal(f.resumed.length, 1);
+    assert.equal(f.resumed[0].taskId, completedB.runtimeTaskId);
+    const resumedB = resumedFlow.instances.find(instance => instance.id === completedB.id);
+    assert.notEqual(resumedB.runtimeTaskId, completedB.runtimeTaskId);
+    assert.equal(resumedB.state, 'running');
+    assert.equal(resumedFlow.status, 'running');
+    f.service.onRuntimeTaskEvent({ kind: 'terminal', taskId: resumedB.runtimeTaskId, state: 'completed', result: 'B2' });
+    while (f.service.chains.size) await Promise.allSettled(f.service.chains.values());
+    const after = await f.service.getFlow(flow.id);
+    assert.equal(after.status, 'running');
+    assert.equal(after.instances.filter(instance => instance.taskId === 'c').length, 2);
+    assert.match(await f.service.getInvocationLog(flow.id, completedB.id), /you> redo b/);
+    const queuedC = after.instances.find(instance => instance.state === 'queued');
+    await assert.rejects(() => f.service.resumeInstance(flow.id, queuedC.id, 'again'), /can continue/);
+    const before = (await f.service.getInvocationLog(flow.id, completedB.id)).match(/you>/g).length;
+    const resumedWithoutPrompt = await f.service.resumeInstance(flow.id, completedB.id, '   ');
+    assert.equal(resumedWithoutPrompt.instances.find(instance => instance.id === completedB.id).state, 'running');
+    assert.equal(f.resumed.length, 2);
+    assert.equal(f.resumed[1].prompt, '');
+    assert.equal((await f.service.getInvocationLog(flow.id, completedB.id)).match(/you>/g).length, before);
 });

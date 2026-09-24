@@ -702,7 +702,7 @@ export class RuntimeManager {
         return this.stopTask(robot, null, taskId, { manualControl: true });
     }
 
-    async resumeTask(robot, taskId, prompt = '') {
+    async resumeTask(robot, taskId, prompt = '', { runtimeTaskId = null } = {}) {
         if (!/^[0-9a-f-]{36}$/u.test(String(taskId))) throw new Error('Invalid task id.');
         let internal = this.tasks.get(taskId);
         if (!internal) {
@@ -739,6 +739,7 @@ export class RuntimeManager {
         const resumed = this._enqueueTask(robot, internal.type, {
             ...internal.request,
             alaSessionId: internal.alaSessionId, resumeSession: true,
+            ...(runtimeTaskId ? { runtimeTaskId } : {}),
             task: GUI_MODES.has(internal.type) ? `${message}\n\n${RESUME_REOBSERVE_INSTRUCTION}` : message,
         }, { first: this.manualControl.get(robot.id) === taskId });
         if (this.manualControl.get(robot.id) === taskId) this.manualControl.delete(robot.id);
