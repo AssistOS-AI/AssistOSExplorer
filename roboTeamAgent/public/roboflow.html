@@ -51,12 +51,12 @@
       <p id="flowError" class="message is-error" hidden></p>
       <div class="flow-columns">
         <aside class="phase-pane" aria-label="Workflow phases">
+          <button id="graphButton" class="button" type="button">View execution graph</button>
           <div class="section-heading"><h3>Phases</h3><span id="phaseCount" class="count">0</span></div>
           <ol id="phaseList" class="phase-list"></ol>
         </aside>
         <section class="stage-pane" aria-label="Phase detail">
           <div class="stage-toolbar">
-            <button id="graphButton" class="button" type="button">Graph</button>
             <span id="stageTitle" class="stage-title">Select a phase to view its log</span>
           </div>
           <div id="stageBody" class="stage-body"></div>

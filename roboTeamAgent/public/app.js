@@ -15,6 +15,8 @@ const flowsHistoryDialog = document.querySelector('#flowsHistoryDialog');
 const flowsHistoryClose = document.querySelector('#flowsHistoryClose');
 const flowsHistoryList = document.querySelector('#flowsHistoryList');
 const flowsHistoryMessage = document.querySelector('#flowsHistoryMessage');
+const flowsHistoryFrame = document.querySelector('#flowsHistoryFrame');
+const flowsHistoryEmpty = document.querySelector('#flowsHistoryEmpty');
 const logPollers = new Set();
 
 function closeOpenMenus(except) {
@@ -335,34 +337,49 @@ function flowPageUrl(flowId) {
     return url.toString();
 }
 
+function formatFlowDate(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value || '';
+    return date.toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+}
+
+function selectFlowHistory(item, flowId) {
+    for (const entry of flowsHistoryList.children) entry.classList.toggle('is-selected', entry === item);
+    flowsHistoryEmpty.hidden = true;
+    flowsHistoryFrame.hidden = false;
+    flowsHistoryFrame.src = flowPageUrl(flowId);
+}
+
 function renderFlowsHistory(flows) {
     flowsHistoryList.replaceChildren();
     flowsHistoryMessage.textContent = flows.length ? '' : 'No flow executions yet.';
     for (const flow of flows) {
-        const item = document.createElement('a');
+        const item = document.createElement('button');
+        item.type = 'button';
         item.className = 'history-item';
-        item.href = flowPageUrl(flow.id);
-        item.target = '_blank';
-        item.rel = 'noopener noreferrer';
-        const head = document.createElement('div');
-        head.className = 'history-item-head';
         const name = document.createElement('strong');
         name.textContent = flow.workflowName || flow.id;
-        const status = document.createElement('span');
-        status.className = 'history-item-status';
-        status.textContent = flow.status;
-        head.append(name, status);
         const meta = document.createElement('span');
         meta.className = 'history-item-meta';
-        meta.textContent = [flow.objective, flow.createdAt].filter(Boolean).join(' · ');
-        item.append(head, meta);
+        meta.textContent = formatFlowDate(flow.createdAt);
+        item.append(name, meta);
+        item.onclick = () => selectFlowHistory(item, flow.id);
         flowsHistoryList.append(item);
     }
+}
+
+function resetFlowsHistory() {
+    flowsHistoryFrame.hidden = true;
+    flowsHistoryFrame.removeAttribute('src');
+    flowsHistoryEmpty.hidden = false;
 }
 
 async function openFlowsHistory() {
     flowsHistoryList.replaceChildren();
     flowsHistoryMessage.textContent = 'Loading…';
+    resetFlowsHistory();
     if (!flowsHistoryDialog.open) flowsHistoryDialog.showModal();
     try {
         const { flows } = await api('api/roboflow/flows');
@@ -375,6 +392,7 @@ async function openFlowsHistory() {
 
 flowsHistoryButton.addEventListener('click', () => void openFlowsHistory());
 flowsHistoryClose.addEventListener('click', () => flowsHistoryDialog.close());
+flowsHistoryDialog.addEventListener('close', resetFlowsHistory);
 
 const workflows = createWorkflowEditor({ api });
 

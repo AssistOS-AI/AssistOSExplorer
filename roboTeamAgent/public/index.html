@@ -76,15 +76,15 @@
       <div class="builder-body">
         <div class="workflow-workspace">
           <aside class="task-sidebar">
-            <div class="task-sidebar-header">
-              <h3>Tasks</h3>
-              <button type="button" id="addTaskButton" class="button add-task" title="Add a task" aria-label="Add a task">+</button>
-            </div>
             <nav class="workflow-pages" aria-label="Workflow editor pages">
               <button type="button" class="workflow-page-button" data-page="settings" aria-pressed="false">Flow settings</button>
               <button type="button" class="workflow-page-button" data-page="generate" aria-pressed="false">Generate</button>
               <button type="button" class="workflow-page-button" data-page="graph" aria-pressed="false">Graph</button>
             </nav>
+            <div class="task-sidebar-header">
+              <h3>Tasks</h3>
+              <button type="button" id="addTaskButton" class="button add-task" title="Add a task" aria-label="Add a task">+</button>
+            </div>
             <ul id="taskList" class="task-list"></ul>
           </aside>
           <div class="workflow-main">
@@ -125,9 +125,15 @@
       <h2 id="flowsHistoryTitle">Flows history</h2>
       <button id="flowsHistoryClose" class="button dialog-close" type="button" aria-label="Close">✕</button>
     </header>
-    <div class="history-body">
-      <p id="flowsHistoryMessage" class="message" role="status"></p>
-      <div id="flowsHistoryList" class="history-list" aria-live="polite"></div>
+    <div class="history-workspace">
+      <aside class="history-sidebar">
+        <p id="flowsHistoryMessage" class="message" role="status"></p>
+        <div id="flowsHistoryList" class="history-list" aria-live="polite"></div>
+      </aside>
+      <section class="history-main">
+        <iframe id="flowsHistoryFrame" class="history-frame" title="Flow details" hidden></iframe>
+        <p id="flowsHistoryEmpty" class="history-empty">Select a flow to see its execution.</p>
+      </section>
     </div>
   </dialog>
 

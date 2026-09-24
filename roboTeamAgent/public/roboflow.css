@@ -212,6 +212,20 @@ body {
 
 .phase-pane .section-heading { margin-bottom: 10px; }
 .phase-pane .section-heading h3 { margin: 0; font-size: 15px; }
+.phase-pane #graphButton {
+    flex: 0 0 auto;
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 12px 14px;
+    text-align: left;
+    font-size: 15px;
+    font-weight: 700;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.phase-pane #graphButton:hover { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
 
 .phase-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
 
@@ -233,8 +247,8 @@ body {
 .phase-card[data-state='failed'] { border-left-color: var(--danger); }
 .phase-card[data-state='stopped'], .phase-card[data-state='interrupted'] { border-left-color: var(--warn); }
 
-.phase-card.is-pending { border-style: dashed; cursor: default; opacity: .72; }
-.phase-card.is-pending:hover { border-color: var(--border); }
+.phase-card.is-pending { border-style: dashed; opacity: .78; }
+.phase-card.is-pending:hover, .phase-card.is-pending.is-selected { opacity: 1; }
 
 .phase-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .phase-card-head strong { overflow-wrap: anywhere; }
@@ -260,9 +274,15 @@ body {
 }
 
 .phase-view-name { overflow-wrap: anywhere; }
-.phase-view-meta, .phase-view-duration { color: var(--muted); font-size: 13px; }
-.phase-view-duration { margin-left: auto; }
+.phase-view-duration { color: var(--muted); font-size: 13px; margin-left: auto; }
 .phase-view-header .phase-stop { margin-left: 0; }
+
+.phase-view-detail { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; }
+.phase-description { margin: 0; color: var(--text); }
+.phase-meta { margin: 0; display: flex; flex-wrap: wrap; gap: 6px 24px; }
+.phase-meta-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.phase-meta-row dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.phase-meta-row dd { margin: 0; overflow-wrap: anywhere; }
 
 .phase-view-status {
     padding: 3px 9px;
@@ -281,7 +301,8 @@ body {
 
 .phase-log {
     flex: 1 1 auto;
-    min-height: 0;
+    min-height: 180px;
+    max-height: 60vh;
     margin: 0;
     padding: 14px;
     overflow-x: hidden;

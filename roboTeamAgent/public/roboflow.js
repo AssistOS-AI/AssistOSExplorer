@@ -20,6 +20,7 @@ const params = new URL(location.href).searchParams;
 let selected = params.get('flowId') || params.get('flow');
 let currentFlow = null;
 let selectedInstanceId = null;
+let selectedTaskId = null;
 let stageView = 'empty';
 let logCache = '';
 
@@ -90,6 +91,10 @@ function pendingItem(task) {
     const card = document.createElement('div');
     card.className = 'phase-card is-pending';
     card.dataset.state = 'pending';
+    if (task.id === selectedTaskId) card.classList.add('is-selected');
+    card.tabIndex = 0;
+    card.onclick = () => selectPending(task.id);
+    card.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectPending(task.id); } };
     const head = document.createElement('div');
     head.className = 'phase-card-head';
     head.append(element('strong', task.name));
@@ -129,6 +134,7 @@ function renderStage() {
         drawBoard(board, currentFlow.graph, { readOnly: true, states, onSelect: taskId => {
             const instance = instanceForTask(taskId);
             if (instance) selectPhase(instance.id);
+            else selectPending(taskId);
         } });
         return;
     }
@@ -143,13 +149,39 @@ function renderStage() {
         view.className = 'phase-view';
         const header = document.createElement('header');
         header.className = 'phase-view-header';
-        view.append(header);
+        const detail = document.createElement('div');
+        detail.className = 'phase-view-detail';
         const log = document.createElement('div');
         log.className = 'phase-log';
-        view.append(log);
+        view.append(header, detail, log);
         body.append(view);
         renderPhaseHeader(header, instance);
+        renderPhaseDetail(detail, instance);
         void loadLog(instance);
+        return;
+    }
+    if (stageView === 'pending') {
+        const task = currentFlow.graph.tasks.find(item => item.id === selectedTaskId);
+        title.textContent = 'Task details';
+        if (!task) {
+            body.append(element('p', 'This task is no longer available.'));
+            return;
+        }
+        const view = document.createElement('div');
+        view.className = 'phase-view';
+        const header = document.createElement('header');
+        header.className = 'phase-view-header';
+        const detail = document.createElement('div');
+        detail.className = 'phase-view-detail';
+        const log = document.createElement('div');
+        log.className = 'phase-log';
+        const empty = element('div', 'This task has not started yet.');
+        empty.className = 'phase-log-empty';
+        log.append(empty);
+        view.append(header, detail, log);
+        body.append(view);
+        renderPhaseHeader(header, { id: null, taskId: task.id, state: 'pending', executionType: task.executionType, robotName: null, startedAt: null, endedAt: null });
+        renderPhaseDetail(detail, { taskId: task.id });
         return;
     }
     title.textContent = 'Select a phase to view its log';
@@ -169,20 +201,52 @@ function renderPhaseHeader(header, instance) {
     header.replaceChildren();
     const name = element('strong', task?.name || instance.taskId);
     name.className = 'phase-view-name';
-    const meta = element('span', `${instance.robotName || 'Awaiting robot'} · ${instance.executionType || ''}`);
-    meta.className = 'phase-view-meta';
     const status = element('span', instance.state);
     status.className = `phase-view-status is-${phaseStatusClass(instance.state)}`;
     const time = element('span', duration(instance));
     time.className = 'phase-view-duration';
-    header.append(name, meta, status, time);
-    if (!terminalStatus(instance.state)) {
+    header.append(name, status, time);
+    if (instance.id && !terminalStatus(instance.state)) {
         const stop = element('button', 'Stop');
         stop.type = 'button';
         stop.className = 'button danger phase-stop';
         stop.onclick = () => void stopPhase(instance.id);
         header.append(stop);
     }
+}
+
+function skillsetLabel(id) {
+    const text = String(id || '');
+    const parts = text.split('::');
+    return parts.length > 1 ? parts[parts.length - 1] : text;
+}
+
+function renderPhaseDetail(container, instance) {
+    const task = currentFlow.graph.tasks.find(candidate => candidate.id === instance.taskId);
+    container.replaceChildren();
+    const description = element('p', task?.description || 'No description.');
+    description.className = 'phase-description';
+    container.append(description);
+    const skillsets = Array.isArray(task?.skillsets) ? task.skillsets : [];
+    const rows = [
+        { label: 'Execution type', value: instance.executionType || task?.executionType || '—' },
+        { label: 'Skillsets', value: skillsets.length ? skillsets.map(skillsetLabel).join(', ') : 'None', title: skillsets.join(', ') },
+    ];
+    if (instance.robotName) rows.push({ label: 'Robot', value: instance.robotName });
+    const list = document.createElement('dl');
+    list.className = 'phase-meta';
+    for (const { label, value, title } of rows) {
+        const row = document.createElement('div');
+        row.className = 'phase-meta-row';
+        const term = document.createElement('dt');
+        term.textContent = label;
+        const detail = document.createElement('dd');
+        detail.textContent = value;
+        if (title) detail.title = title;
+        row.append(term, detail);
+        list.append(row);
+    }
+    container.append(list);
 }
 
 function splitLogLines(text) {
@@ -230,9 +294,20 @@ async function loadLog(instance) {
 }
 
 function selectPhase(instanceId) {
-    if (!currentFlow?.instances.some(instance => instance.id === instanceId)) return;
+    const instance = currentFlow?.instances.find(item => item.id === instanceId);
+    if (!instance) return;
     selectedInstanceId = instanceId;
+    selectedTaskId = instance.taskId;
     stageView = 'log';
+    renderPhases(currentFlow);
+    renderStage();
+}
+
+function selectPending(taskId) {
+    if (!currentFlow?.graph.tasks.some(task => task.id === taskId)) return;
+    selectedInstanceId = null;
+    selectedTaskId = taskId;
+    stageView = 'pending';
     renderPhases(currentFlow);
     renderStage();
 }
@@ -240,6 +315,7 @@ function selectPhase(instanceId) {
 function showGraph() {
     stageView = 'graph';
     selectedInstanceId = null;
+    selectedTaskId = null;
     renderPhases(currentFlow);
     renderStage();
 }
@@ -266,7 +342,12 @@ async function refresh() {
     else if (stageView === 'log') {
         const instance = flow.instances.find(item => item.id === selectedInstanceId);
         const header = document.querySelector('#stageBody .phase-view-header');
+        const detail = document.querySelector('#stageBody .phase-view-detail');
         if (instance && header) renderPhaseHeader(header, instance);
+        if (instance && detail) renderPhaseDetail(detail, instance);
+    } else if (stageView === 'pending') {
+        const instance = [...flow.instances].reverse().find(item => item.taskId === selectedTaskId);
+        if (instance) selectPhase(instance.id);
     }
 }
 
@@ -293,6 +374,7 @@ async function render() {
         setMessage('');
         stageView = 'empty';
         selectedInstanceId = null;
+        selectedTaskId = null;
         await refresh();
         renderStage();
     } catch (error) {
