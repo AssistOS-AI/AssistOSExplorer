@@ -668,7 +668,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         label: 'Ploinky Box',
         detail: 'Workspace runtime',
         access: 'rw',
-        cwdDisplay: `/workspace/${fixture.relativeDirectory}`,
+        cwdDisplay: path.posix.join(initialRuntime.workspaceRoot, fixture.relativeDirectory),
       };
       expect(firstChooser.discovery.agentTargetsAvailable).toBe(true);
       expect(sortedTargets(firstChooser.discovery.targets.filter((target) => target.kind === 'agent')))
@@ -750,7 +750,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
         expectedHttpFailureDiagnostics('/webtty/sessions', { status: 404 }),
       );
 
-      const expectedCwd = `/workspace/${fixture.relativeDirectory}`;
+      const expectedCwd = path.posix.join(initialRuntime.workspaceRoot, fixture.relativeDirectory);
       const command = [
         'printf \'__WEBTTY_PWD__%s__\\n\' "$PWD"',
         'printf \'__WEBTTY_HOST__\'',
@@ -765,7 +765,7 @@ test.describe('Ploinky core WebTTY release gate', () => {
       );
       expect(input).toMatchObject({ status: 200, payload: { ok: true } });
       await expect.poll(() => first.terminalPage.locator('#terminal .xterm-rows').innerText(), {
-        message: 'the terminal must report its selected /workspace cwd and read the host marker',
+        message: 'the terminal must report its selected workspace cwd and read the host marker',
         timeout: smokeConfig.timeouts.navigation,
       }).toContain(`__WEBTTY_PWD__${expectedCwd}__`);
       await expect(first.terminalPage.locator('#terminal .xterm-rows')).toContainText(fixture.hostMarker);

@@ -370,6 +370,17 @@ failure while this gate is selected.
 The Box generation must be fresh, but its prebuilt image may be older only when
 the gate binds the exact container name, immutable image ID/reference, and
 read-only mounted Ploinky candidate derived from `SMOKE_PLOINKY_BIN`.
+Run WebTTY immediately after cold-start graph readiness and account setup,
+before warm starts, updates, and the other browser gates. Its shared freshness
+validator retains a hard 30-minute limit measured from the inspected Box
+`StartedAt`; this gate has no deployment-start timestamp override. An expired
+generation needs a fresh authorized deployment, not a later timestamp or a
+larger age limit.
+
+The independently verified workspace bind must use the canonical
+`SMOKE_WORKSPACE_ROOT` as both source and destination. Agent ownership hashes,
+terminal working directories, and the Router recovery pid-file path derive
+from that same absolute root. The retired `/workspace` alias is rejected.
 
 The intentional Router crash targets the recovery terminal, not unrelated
 Explorer background traffic. The gate first requires clean primary-page

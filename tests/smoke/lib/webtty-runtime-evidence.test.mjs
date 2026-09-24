@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 
 import {
   captureNestedPodmanEventCursor,
@@ -27,6 +28,11 @@ const AGENT = Object.freeze({
   containerName: 'ploinky-agent-git',
   instanceId: 'instance-git',
   enableGeneration: 'enable-git',
+});
+const ROUTER_EVIDENCE = Object.freeze({
+  outerContainerId: OUTER_ID,
+  workspaceRoot: '/srv/webtty workspace',
+  workspaceHash: workspaceHash('/srv/webtty workspace'),
 });
 
 test('WebTTY browser localhost and Box IPv4 origins select the same exact loopback port', () => {
@@ -64,7 +70,7 @@ test('WebTTY endpoint binding rejects remote, ambiguous, credential-bearing, and
 });
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'webtty-runtime-evidence-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'webtty-runtime-evidence-')));
   fs.mkdirSync(path.join(root, 'project', 'nested'), { recursive: true });
   fs.mkdirSync(path.join(root, '.ploinky', 'isolated'), { recursive: true });
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -81,13 +87,13 @@ function bind(source, destination, rw = true) {
 test('independent evidence derives global and read-only folder mappings', (t) => {
   const { root, selected } = fixture(t);
   assert.deepEqual(
-    independentlyTranslateMount(selected, [bind('/workspace', '/workspace')], root),
-    { translatedCwd: '/workspace/project/nested', access: 'rw' },
+    independentlyTranslateMount(selected, [bind(root, root)], root),
+    { translatedCwd: path.join(root, 'project/nested'), access: 'rw' },
   );
   assert.deepEqual(
     independentlyTranslateMount(selected, [
-      bind('/workspace', '/workspace'),
-      bind('/workspace/project', '/project-data', false),
+      bind(root, root),
+      bind(path.join(root, 'project'), '/project-data', false),
     ], root),
     { translatedCwd: '/project-data/nested', access: 'ro' },
   );
@@ -96,20 +102,20 @@ test('independent evidence derives global and read-only folder mappings', (t) =>
 test('independent evidence excludes isolated, ambiguous, and shadowed mounts', (t) => {
   const { root, selected } = fixture(t);
   assert.equal(
-    independentlyTranslateMount(selected, [bind('/workspace/.ploinky/isolated', '/root')], root),
+    independentlyTranslateMount(selected, [bind(path.join(root, '.ploinky/isolated'), '/root')], root),
     null,
   );
   assert.equal(
     independentlyTranslateMount(selected, [
-      bind('/workspace', '/workspace-a'),
-      bind('/workspace', '/workspace-b'),
+      bind(root, '/workspace-a'),
+      bind(root, '/workspace-b'),
     ], root),
     null,
   );
   assert.equal(
     independentlyTranslateMount(selected, [
-      bind('/workspace', '/workspace'),
-      { Type: 'volume', Source: 'shadow', Destination: '/workspace/project', RW: true },
+      bind(root, root),
+      { Type: 'volume', Source: 'shadow', Destination: path.join(root, 'project'), RW: true },
     ], root),
     null,
   );
@@ -122,6 +128,36 @@ test('workspace ownership hash is bound to the canonical workspace path', (t) =>
     workspaceHash(fs.realpathSync(root)),
     workspaceHash(path.join(fs.realpathSync(root), 'different')),
   );
+});
+
+test('independent mount evidence rejects legacy aliases, sibling paths and symlink escapes', (t) => {
+  const { root, selected } = fixture(t);
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'webtty-foreign-')));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  const alias = path.join(root, 'foreign-link');
+  fs.symlinkSync(outside, alias, 'dir');
+  for (const source of ['/workspace', `${root}-sibling`, alias]) {
+    assert.equal(independentlyTranslateMount(selected, [bind(source, root)], root), null);
+  }
+});
+
+test('runtime evidence rejects an aliased, foreign or read-only outer workspace before agent inspection', (t) => {
+  const { root, selected } = fixture(t);
+  for (const patch of [
+    { destination: '/workspace' },
+    { source: '/foreign/workspace' },
+    { readWrite: false },
+    { type: 'volume' },
+  ]) {
+    assert.throws(() => collectWebttyRuntimeEvidence({
+      baseURL: 'http://127.0.0.1:8080', workspaceRoot: root, selectedDirectory: selected,
+      command() { assert.fail('unproven outer workspace must never reach agent inspection'); },
+      collectLiveBox: () => ({
+        box: { containerId: OUTER_ID },
+        workspaceSourceMount: { type: 'bind', source: root, destination: root, readWrite: true, ...patch },
+      }),
+    }), /exact writable same-path workspace bind/);
+  }
 });
 
 test('runtime evidence binds an immutable prebuilt Box to explicit identity, image, and source pins', (t) => {
@@ -150,7 +186,7 @@ test('runtime evidence binds an immutable prebuilt Box to explicit identity, ima
         workspaceSourceMount: {
           type: 'bind',
           source: root,
-          destination: '/workspace',
+          destination: root,
           readWrite: true,
         },
       };
@@ -168,8 +204,9 @@ test('runtime evidence binds an immutable prebuilt Box to explicit identity, ima
     command: received.command,
   });
   assert.equal(typeof received.command, 'function');
-  assert.equal(evidence.workspaceHash, workspaceHash('/workspace'));
-  assert.notEqual(evidence.workspaceHash, workspaceHash(expectedPloinkySource));
+  assert.equal(evidence.workspaceRoot, root);
+  assert.equal(evidence.workspaceHash, workspaceHash(root));
+  assert.notEqual(evidence.workspaceHash, workspaceHash('/workspace'));
 });
 
 test('runtime proof refuses a different Box port before filesystem or container inspection', () => {
@@ -220,14 +257,14 @@ test('collected agent evidence preserves the exact runtime identity required by 
             'io.assistos.ploinky.managed': '1',
             'io.assistos.ploinky.resource': 'agent',
             'io.assistos.ploinky.network-schema': '2',
-            'io.assistos.ploinky.workspace': workspaceHash('/workspace'),
+            'io.assistos.ploinky.workspace': workspaceHash(root),
             'io.assistos.ploinky.network-contract': 'd'.repeat(64),
             'io.assistos.ploinky.instance-id': AGENT.instanceId,
             'io.assistos.ploinky.enable-generation': AGENT.enableGeneration,
           },
         },
         ExecIDs: [],
-        Mounts: [bind('/workspace', '/workspace')],
+        Mounts: [bind(root, root)],
       }];
     },
     collectLiveBox: () => ({
@@ -235,7 +272,7 @@ test('collected agent evidence preserves the exact runtime identity required by 
       workspaceSourceMount: {
         type: 'bind',
         source: root,
-        destination: '/workspace',
+        destination: root,
         readWrite: true,
       },
     }),
@@ -262,7 +299,7 @@ test('collected agent evidence preserves the exact runtime identity required by 
   }));
   assert.equal(crashInvocation.command, 'podman');
   assert.deepEqual(
-    JSON.parse(Buffer.from(crashInvocation.args[8], 'base64url').toString('utf8')),
+    JSON.parse(Buffer.from(crashInvocation.args[11], 'base64url').toString('utf8')),
     AGENT,
   );
 });
@@ -512,7 +549,7 @@ test('nested event audit binds exact cursors and immutable target identity witho
 
 test('RoutingServer crash is issued only inside the exact live Box and requires process evidence', () => {
   let invocation = null;
-  const result = crashExactRoutingServer({ outerContainerId: OUTER_ID }, AGENT, {
+  const result = crashExactRoutingServer(ROUTER_EVIDENCE, AGENT, {
     command(command, args, options) {
       invocation = { command, args, options };
       return {
@@ -542,16 +579,17 @@ test('RoutingServer crash is issued only inside the exact live Box and requires 
     },
   });
   assert.equal(invocation.command, 'podman');
-  assert.deepEqual(invocation.args.slice(0, 6), [
-    'exec', '--user', 'podman', OUTER_ID, '/usr/local/bin/node', '--input-type=module',
+  assert.deepEqual(invocation.args.slice(0, 8), [
+    'exec', '--user', 'podman', '--workdir', ROUTER_EVIDENCE.workspaceRoot, OUTER_ID, '/usr/local/bin/node', '--input-type=module',
   ]);
-  assert.equal(invocation.args[6], '--eval');
-  assert.match(invocation.args[7], /process\.kill\(revalidated\.router\.pid, 'SIGKILL'\)/);
-  assert.deepEqual(JSON.parse(Buffer.from(invocation.args[8], 'base64url').toString('utf8')), AGENT);
+  assert.equal(invocation.args[8], '--eval');
+  assert.match(invocation.args[9], /process\.kill\(revalidated\.router\.pid, 'SIGKILL'\)/);
+  assert.equal(invocation.args[10], ROUTER_EVIDENCE.workspaceRoot);
+  assert.deepEqual(JSON.parse(Buffer.from(invocation.args[11], 'base64url').toString('utf8')), AGENT);
   assert.deepEqual(invocation.options, { json: true });
 
   assert.throws(
-    () => crashExactRoutingServer({ outerContainerId: OUTER_ID }, AGENT, {
+    () => crashExactRoutingServer(ROUTER_EVIDENCE, AGENT, {
       command: () => ({ routerPid: 0, routerStartTime: '' }),
     }),
     /exact process identity evidence/,
@@ -561,9 +599,10 @@ test('RoutingServer crash is issued only inside the exact live Box and requires 
     /Exact live Box identity/,
   );
 
-  const observed = collectExactRoutingServerIdentity({ outerContainerId: OUTER_ID }, {
+  const observed = collectExactRoutingServerIdentity(ROUTER_EVIDENCE, {
     command: (_command, args) => {
-      assert.doesNotMatch(args[7], /process\.kill/);
+      assert.doesNotMatch(args[9], /process\.kill/);
+      assert.equal(args[10], ROUTER_EVIDENCE.workspaceRoot);
       return {
         watchdogPid: 40,
         watchdogStartTime: '987650',
@@ -579,7 +618,46 @@ test('RoutingServer crash is issued only inside the exact live Box and requires 
     routerStartTime: '987655',
   });
 
-  assert.deepEqual(collectWebttyRecoveryDirectoryState({ outerContainerId: OUTER_ID }, {
+  assert.deepEqual(collectWebttyRecoveryDirectoryState(ROUTER_EVIDENCE, {
     command: () => ({ recordCount: 0, temporaryCount: 0, otherCount: 0 }),
   }), { recordCount: 0, temporaryCount: 0, otherCount: 0 });
+});
+
+test('Router recovery refuses missing or mismatched workspace proof before running a command', () => {
+  for (const evidence of [
+    { outerContainerId: OUTER_ID },
+    { ...ROUTER_EVIDENCE, workspaceRoot: 'relative' },
+    { ...ROUTER_EVIDENCE, workspaceRoot: '/srv/foreign' },
+    { ...ROUTER_EVIDENCE, workspaceHash: workspaceHash('/workspace') },
+  ]) {
+    const options = { command() { assert.fail('invalid workspace proof must not execute'); } };
+    assert.throws(() => collectExactRoutingServerIdentity(evidence, options), /workspace/);
+    assert.throws(() => crashExactRoutingServer(evidence, AGENT, options), /workspace/);
+    assert.throws(() => collectWebttyRecoveryDirectoryState(evidence, options), /workspace/);
+  }
+});
+
+test('actual Router observer script reads only the proved same-path pid file and rejects foreign Box environment', (t) => {
+  const { root } = fixture(t);
+  const evidence = { outerContainerId: OUTER_ID, workspaceRoot: root, workspaceHash: workspaceHash(root) };
+  let invocation;
+  collectExactRoutingServerIdentity(evidence, {
+    command(_command, args) {
+      invocation = args;
+      return { watchdogPid: 40, watchdogStartTime: '987650', routerPid: 41, routerStartTime: '987654' };
+    },
+  });
+  const run = workspaceRoot => spawnSync(process.execPath,
+    ['--input-type=module', '--eval', invocation[9], invocation[10]], {
+      cwd: root, encoding: 'utf8', timeout: 5000,
+      env: { ...process.env, PLOINKY_WORKSPACE_ROOT: workspaceRoot },
+    });
+  const absent = run(root);
+  assert.notEqual(absent.status, 0);
+  assert.match(absent.stderr, /ENOENT/);
+  assert.ok(absent.stderr.includes(path.join(root, '.ploinky', 'running', 'router.pid')));
+  const foreign = run('/foreign/workspace');
+  assert.notEqual(foreign.status, 0);
+  assert.match(foreign.stderr, /Box workspace identity mismatch/);
+  assert.doesNotMatch(foreign.stderr, /ENOENT/);
 });
