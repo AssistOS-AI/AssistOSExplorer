@@ -10,12 +10,13 @@ test.describe('GitHub Git plugin @external', () => {
     const gitButton = page.getByRole('button', { name: 'Git', exact: true });
     await expect(gitButton).toBeVisible();
     await gitButton.click();
-    const dialog = page.getByRole('dialog', { name: 'Git commit and push', exact: true });
+    const dialog = page.getByRole('dialog', { name: 'Git', exact: true });
     await expect(dialog).toBeVisible();
     const settings = dialog.getByRole('button', { name: 'Git settings', exact: true });
     await expect(settings).toBeVisible();
-    await settings.click();
-    await expect(dialog.getByRole('tablist', { name: 'Git credentials sections', exact: true })).toBeVisible();
+    const credentials = dialog.getByRole('tablist', { name: 'Git credentials sections', exact: true });
+    if (!(await credentials.isVisible())) await settings.click();
+    await expect(credentials).toBeVisible();
     await expect(dialog.getByRole('radio', { name: 'GitHub', exact: true })).toBeVisible();
     await expect(page.locator('body')).not.toContainText(/ghp_|github_pat_|x-access-token/i);
   });

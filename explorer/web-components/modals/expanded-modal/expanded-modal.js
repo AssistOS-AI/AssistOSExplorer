@@ -47,6 +47,7 @@ export class ExpandedModal {
         this.dialog = this.element.closest("dialog");
         if (this.dialog) {
             this.dialog.dataset.expandedKey = this.attr("key");
+            this.dialog.setAttribute("aria-labelledby", "expandedModalTitle");
         }
         this.body = this.element.querySelector("#expandedModalBody");
         this.stateNode = this.element.querySelector("#expandedModalState");

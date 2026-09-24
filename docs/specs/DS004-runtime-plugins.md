@@ -31,6 +31,8 @@ Agent dashboard launchers may use Explorer's `#agent-runtime-wait` bootstrap rou
 
 Toolbar panels use Explorer's shared `openExpandedModal` shell. A `toolbarModal` descriptor selects component or iframe content. A toolbar contribution whose manifest declares `toolbarModal` opens that panel immediately on first activation from the manifest descriptor, showing the shell loading state while the runtime component, dependent agent, or embedded page resolves; the mounted control's later activation reuses the open panel for the same content instead of opening a second one. Component content uses WebSkel reactive properties and its normal removal lifecycle; the shell owns fullscreen, resize, Escape and close controls. Git contributes `git-panel` without a standalone window implementation. Only one expanded panel is open at a time; opening different content removes the previous panel, while operation-specific secondary dialogs may overlay it.
 
+The shared expanded dialog must derive its accessible name from its visible title using `aria-labelledby`, so initial and updated panel titles remain consistent for assistive technology and semantic browser controls.
+
 An unavailable plugin component or dependent agent must produce a visible, recoverable interface error without preventing unrelated Explorer functionality from loading.
 
 Runtime content that unauthenticated guests can reach must reference assets only through the publicly served routes (`/shared/*` and `/web-components/components/*`) or through the plugin's own public path. Explorer's `/assets/*` tree is not public, so guest-facing components and iframes must not depend on it; shared guest assets live under `shared/`.

@@ -141,6 +141,7 @@
         <section class="doc-section" id="boundaries">
           <h2>Safety and Ownership Boundaries</h2>
           <p>Explorer validates ordinary filesystem operations against configured allowed roots on every call. It does not translate a browser-visible path into authority outside those roots. Destructive actions require an explicit user action, and server errors remain visible instead of being interpreted as successful mutations.</p>
+          <p>Toolbar panels share a dialog whose accessible name follows its visible title, including when the open panel title changes.</p>
           <p>Virtual resources and plugin actions keep their own ownership boundaries. DPU decides permissions for Confidential resources, while Git, SOPLang, WebMeet, Tasks, and other domain agents own their mutations and diagnostics. Use the <a href="index.html#agents-and-plugins">Agents and Plugins section</a> in the Explorer overview to continue to the relevant agent documentation.</p>
         </section>
       </div>
