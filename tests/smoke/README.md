@@ -731,15 +731,16 @@ SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 `lib/explorer-graph.mjs` walks every manifest reachable from
 `explorer/manifest.json`. Qualified enable refs (`repo/agent`) resolve to
 checkouts placed **next to** this repository, except `AchillesIDE/...`, which
-names this repository itself. The known siblings are `AchillesCLI`, `proxies`
-and `UmamiAgent` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
+names this repository itself. The known siblings are `AchillesCLI`, `proxies`,
+`UmamiAgent` and `local-llms` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
 repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
 `explorer/tests/unit/retiredLocalModelGraph.test.js` (which runs under
 `cd explorer && npm test`) both use the helper.
 
 Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
-the helper). None is recorded, because no agent the current graph enables
-needs one. The controls in `explorer/tests/unit/retiredLocalModelGraph.test.js`
+the helper). One is recorded: `local-llms/local-llm` needs a local-llms
+checkout that contains `1990959` (the agent exists only on
+`feat/local-llm-agent` until local-llms merges it). The controls in `explorer/tests/unit/retiredLocalModelGraph.test.js`
 pass a synthetic entry through the helper's `minimumRevisions` option to
 exercise the rule.
 

@@ -2129,7 +2129,7 @@ jobs:
           echo "[deploy-qa] Starting Explorer from each managed repository's configured default branch..."
           export PLOINKY_NO_WAIT_SEQUENCE_TERMINAL_GRACE_MS='300000'
           QA_DEPLOY_STARTED_AT_MS="$(node -p 'Date.now()')"
-          EXPECTED_NO_WAIT_AGENTS=9
+          EXPECTED_NO_WAIT_AGENTS=10
           "$PLOINKY" start explorer "${BRANCH_ARGS[@]}"
 
           QA_READY=0
@@ -2167,7 +2167,7 @@ jobs:
                 ;;
             esac
             if [[ "$BOX_STATUS" == *"Ploinky Box: running-initialized"* ]] &&
-              [[ "$BOX_STATUS" == *"Tracked agents: 15"* ]] &&
+              [[ "$BOX_STATUS" == *"Tracked agents: 16"* ]] &&
               [[ "$BOX_STATUS" == *"Running agents: 15"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare mode: cloudflare"* ]] &&
               [[ "$BOX_STATUS" == *"Cloudflare management: api-managed"* ]] &&
@@ -2202,7 +2202,7 @@ jobs:
               ;;
           esac
           for expected_status in \
-            'Tracked agents: 15' \
+            'Tracked agents: 16' \
             'Running agents: 15' \
             'Cloudflare mode: cloudflare' \
             'Cloudflare management: api-managed' \

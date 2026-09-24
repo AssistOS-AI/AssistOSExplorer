@@ -10,18 +10,24 @@ export const EXPLORER_REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', 
 // repository part is neither one of these nor the Explorer alias is a defect
 // (a typo such as `proxy/soul-gateway`), never an environment gap. A new
 // sibling repository in the graph is added here and to the README table.
-export const KNOWN_SIBLINGS = Object.freeze(['AchillesCLI', 'proxies', 'UmamiAgent']);
+export const KNOWN_SIBLINGS = Object.freeze(['AchillesCLI', 'proxies', 'UmamiAgent', 'local-llms']);
 
 // Minimum sibling revisions, keyed by the enabled agent ref. A present sibling
 // that lacks the manifest of one of these agents is an environment gap only
 // when its checkout provably does not contain the recorded revision; every
 // other missing manifest in a present sibling is a defect. `advice` appears in
 // the message only and never widens what can be skipped. No agent the current
-// graph enables needs a minimum sibling revision. resolveExplorerGraph takes
+// graph enables needs one except local-llms/local-llm. resolveExplorerGraph takes
 // the table as `minimumRevisions` so the controls can exercise the rule; add an
 // entry when the graph gains an edge to an agent that older sibling checkouts
 // lack.
-export const MINIMUM_REVISIONS = Object.freeze({});
+export const MINIMUM_REVISIONS = Object.freeze({
+    'local-llms/local-llm': Object.freeze({
+        revision: '1990959a343c3453495b98bb4c7e6cc0aa4b386b',
+        why: 'first local-llms revision with the local-llm agent (branch feat/local-llm-agent; main has none yet)',
+        advice: 'check out local-llms on feat/local-llm-agent',
+    }),
+});
 
 // Every environment gap carries this code, so a caller can turn it into an
 // explicit skip. A defect is a plain Error without a code.

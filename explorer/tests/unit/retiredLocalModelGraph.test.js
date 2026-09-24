@@ -179,7 +179,7 @@ test('negative control (b): a qualified edge to a repository that is not a known
         { explorerRepo, isRetired: isRetiredLocalModel, containsRevision: neverAsked }), (error) => {
         assert.notEqual(error.code, SIBLING_MISSING_CODE);
         assert.match(error.message, /AchillesIDE\/explorer enables "proxy\/soul-gateway", but "proxy" is not a known sibling repository/);
-        assert.match(error.message, /known: AchillesCLI, proxies, UmamiAgent; "AchillesIDE" names the Explorer repository itself/);
+        assert.match(error.message, /known: AchillesCLI, proxies, UmamiAgent, local-llms; "AchillesIDE" names the Explorer repository itself/);
         return true;
     });
 });
