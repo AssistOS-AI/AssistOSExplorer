@@ -1,6 +1,8 @@
 import { skillsetMDParser } from './skillsetMDParser.mjs';
 import { createReadStream } from 'node:fs';
 import { EXPORT_LEDGER, skillTreeDigest, syncManagedSkillExports } from './managed-skill-exports.mjs';
+import { readSkillExportTransactionState, skillExportRecoveryProblem } from './skill-export-transaction.mjs';
+import { createSkillExclusionPlanner } from './skill-export-exclusions.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { jsonResponse, textResponse } from './responses.mjs';
@@ -370,12 +372,14 @@ export function createToolHandlers({
     return { url, name, branch, skills };
   }
 
-  async function readSkillsManifestEntries(manifestPath) {
+  // The raw bytes are the compare-before-write snapshot for the transaction
+  // that later publishes the manifest (null when the manifest is absent).
+  async function readSkillsManifestSnapshot(manifestPath) {
     let raw;
     try {
       raw = await fs.readFile(manifestPath, 'utf8');
     } catch (error) {
-      if (error?.code === 'ENOENT') return [];
+      if (error?.code === 'ENOENT') return { raw: null, entries: [] };
       throw error;
     }
     let parsed;
@@ -387,19 +391,21 @@ export function createToolHandlers({
     if (!Array.isArray(parsed)) {
       throw new Error(`Invalid skills manifest '${manifestPath}': expected an array of repository objects.`);
     }
-    return parsed.map((entry, index) => normalizeSkillsManifestEntry(entry, index, manifestPath));
+    return { raw, entries: parsed.map((entry, index) => normalizeSkillsManifestEntry(entry, index, manifestPath)) };
   }
 
-  async function writeSkillsManifestEntries(manifestPath, entries) {
-    await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+  async function readSkillsManifestEntries(manifestPath) {
+    return (await readSkillsManifestSnapshot(manifestPath)).entries;
+  }
+
+  function serializeSkillsManifestEntries(entries) {
     const normalized = entries.map((entry) => ({
       url: entry.url,
       name: entry.name,
       branch: entry.branch || null,
       skills: Array.from(new Set((entry.skills || []).map(normalizeSkillName))).sort((a, b) => a.localeCompare(b))
     }));
-    await fs.writeFile(manifestPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
-    invalidateCachesForPath(manifestPath);
+    return `${JSON.stringify(normalized, null, 2)}\n`;
   }
 
   async function repoPathExists(repoPath) {
@@ -458,21 +464,11 @@ export function createToolHandlers({
     return skillsetMDParser(source, availableSkills);
   }
 
-  async function ensureClaudeSymlink(folder) {
-    const claudePath = path.join(folder, '.claude');
-    const target = canonicalAgentsDir;
-    const stat = await fs.lstat(claudePath).catch(() => null);
-    if (!stat) {
-      await fs.symlink(target, claudePath, 'dir').catch(() => {});
-      return;
-    }
-    if (stat.isSymbolicLink()) {
-      const existing = await fs.readlink(claudePath).catch(() => '');
-      if (existing === target) return;
-    }
-  }
-
-  async function syncSkillsManifestInstall(folder, entries) {
+  // Links, the manifest (compared against the bytes the handler read) and the
+  // `.claude -> .agents` compatibility link publish as one recoverable
+  // transaction under the folder's skill export lock. The lock wait is kept
+  // short because the protocol is synchronous.
+  async function syncSkillsManifestInstall(folder, entries, { manifestPath, expectedManifest }) {
     const sources = [];
     for (const entry of entries) {
       const repoPath = await ensureSkillRepoCached(entry);
@@ -484,14 +480,46 @@ export function createToolHandlers({
         sources.push({ name: skill, path: path.join(repoPath, 'skills', skill), source: { url: entry.url, name: entry.name, branch: entry.branch || null } });
       }
     }
-    const result = syncManagedSkillExports({ folder, owner: 'manifest', sources, mode: 'symlink' });
-    await ensureClaudeSymlink(folder);
+    const result = syncManagedSkillExports({
+      folder,
+      owner: 'manifest',
+      sources,
+      mode: 'symlink',
+      manifest: {
+        path: manifestPath,
+        expected: expectedManifest,
+        next: serializeSkillsManifestEntries(entries),
+        changedMessage: `Skills manifest '${manifestPath}' changed while this update was prepared; reload it and retry.`
+      },
+      claude: 'root',
+      // The manifest is an explicit selection; recorded like Ploinky's consumer policy.
+      consumer: { selection: 'explicit', policy: 'manifest' },
+      // Same private worktree exclusions as Ploinky; a live external excludes
+      // policy is composed only with explicit consent. An agent never runs with
+      // the repository owner's HOME/XDG/global Git view (container or sandbox),
+      // so its view is unverified and the host refresh publishes exclusions.
+      exclusions: createSkillExclusionPlanner({
+        authorizeComposition: process.env.PLOINKY_SKILL_EXCLUDES_COMPOSE === '1',
+        containerExecutor: true,
+      }),
+      authority: { kind: 'explorer-tool', operation: 'skills-manifest' },
+      lock: { waitMs: 250 }
+    });
+    invalidateCachesForPath(manifestPath);
     const skillsPath = path.join(folder, canonicalSkillsDir);
     invalidateStructureIndexSubtree(skillsPath);
     for (const name of [...result.installed, ...result.removed]) {
       invalidateCachesForPath(path.join(skillsPath, name));
     }
     invalidateCachesForPath(skillsPath);
+    const recoveryProblem = skillExportRecoveryProblem(result);
+    if (recoveryProblem) {
+      const error = new Error(recoveryProblem.reason);
+      error.code = recoveryProblem.code;
+      error.transaction = recoveryProblem.transaction;
+      error.recovery = recoveryProblem.recovery;
+      throw error;
+    }
     return result;
   }
 
@@ -499,6 +527,28 @@ export function createToolHandlers({
     const selected = new Set(entries.flatMap((entry) => entry.skills || []));
     const diagnostics = [];
     const outputs = [];
+    // A pending journal means publication is incomplete; never report the
+    // current outputs as a finished state.
+    let exportTransaction = { status: 'idle' };
+    try {
+      const transaction = readSkillExportTransactionState(folder);
+      if (transaction.pending) {
+        exportTransaction = { status: 'pending', ...transaction.pending };
+        diagnostics.push({ reason: 'skill-export-transaction-pending', transaction: transaction.pending.transaction, phase: transaction.pending.phase });
+      }
+      for (const item of transaction.quarantined) {
+        diagnostics.push({ reason: 'skill-export-transaction-quarantined', transaction: item.transaction, details: item.reasons });
+      }
+      if (transaction.quarantined.length && exportTransaction.status === 'idle') exportTransaction = { status: 'recovery-required', quarantined: transaction.quarantined.length };
+    } catch (error) {
+      exportTransaction = { status: 'unknown' };
+      diagnostics.push({ reason: 'skill-export-transaction-unreadable', message: error.message });
+    }
+    const state = await readSkillExportOutputs(folder, selected, diagnostics, outputs);
+    return { ...state, exportTransaction };
+  }
+
+  async function readSkillExportOutputs(folder, selected, diagnostics, outputs) {
     const agents = path.join(folder, canonicalAgentsDir);
     const skillsDir = path.join(folder, canonicalSkillsDir);
     for (const directory of [agents, skillsDir]) {
@@ -1266,15 +1316,14 @@ export function createToolHandlers({
       });
     }
 
-    const entries = await readSkillsManifestEntries(manifestPath);
+    const { raw: expectedManifest, entries } = await readSkillsManifestSnapshot(manifestPath);
     const definitions = await readRepoSkillsets(repoPath, availableSkills);
     const nextEntry = { ...repoEntry, skills: definitions.length ? [...new Set(definitions.flatMap(set => set.skills))] : availableSkills };
     const existingIndex = entries.findIndex((entry) => entry.name === name || entry.url === url);
     const nextEntries = existingIndex === -1
       ? [...entries, nextEntry]
       : entries.map((entry, index) => index === existingIndex ? nextEntry : entry);
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
-    await writeSkillsManifestEntries(manifestPath, nextEntries);
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, { manifestPath, expectedManifest });
     return jsonResponse({
       ...await buildSkillsManifestState(folder, manifestPath, nextEntries),
       exportResult,
@@ -1290,7 +1339,7 @@ export function createToolHandlers({
     const { folder, manifestPath } = await skillsManifestPathForFolder(data.folderPath);
     const repoName = normalizeRepoName(data.repoName);
     if (typeof data.enabled !== 'boolean') throw new Error('enabled must be a boolean');
-    const entries = await readSkillsManifestEntries(manifestPath);
+    const { raw: expectedManifest, entries } = await readSkillsManifestSnapshot(manifestPath);
     const index = entries.findIndex((entry) => entry.name === repoName);
     if (index === -1) {
       throw new Error(`Repository '${repoName}' is not in the skills manifest.`);
@@ -1318,8 +1367,7 @@ export function createToolHandlers({
     const nextEntries = entries.map((entry, entryIndex) => entryIndex === index
       ? { ...entry, skills: Array.from(current).sort((left, right) => left.localeCompare(right)) }
       : entry);
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
-    await writeSkillsManifestEntries(manifestPath, nextEntries);
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, { manifestPath, expectedManifest });
     return jsonResponse({ ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult });
   }
 
@@ -1327,13 +1375,12 @@ export function createToolHandlers({
     const data = parseArgs(RemoveSkillsManifestRepoArgsSchema, args, 'remove_skills_manifest_repo');
     const { folder, manifestPath } = await skillsManifestPathForFolder(data.folderPath);
     const repoName = normalizeRepoName(data.repoName);
-    const entries = await readSkillsManifestEntries(manifestPath);
+    const { raw: expectedManifest, entries } = await readSkillsManifestSnapshot(manifestPath);
     const nextEntries = entries.filter((entry) => entry.name !== repoName);
     if (nextEntries.length === entries.length) {
       throw new Error(`Repository '${repoName}' is not in the skills manifest.`);
     }
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
-    await writeSkillsManifestEntries(manifestPath, nextEntries);
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, { manifestPath, expectedManifest });
     return jsonResponse({ ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult });
   }
 

@@ -11,14 +11,33 @@ const section = workflow.match(/# BEGIN QA isolated Node runtime\n([\s\S]*?)# EN
 const x64Sha = '14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647';
 const dist = 'node-v24.19.0-linux-x64';
 
+// The extracted deployment block intentionally uses GNU utilities. Resolve
+// their g-prefixed macOS installations too, but never replace a deadline or
+// checksum operation with a no-op fixture command.
+const gnuTools = Object.fromEntries(['timeout', 'mv', 'sha256sum'].map(name => {
+    for (const binary of [name, `g${name}`]) {
+        for (const directory of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+            const executable = path.join(directory, binary);
+            const result = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: 2000 });
+            if (result.status === 0 && /GNU coreutils/.test(result.stdout || '')) return [name, executable];
+        }
+    }
+    return [name, null];
+}));
+const missingGnuTools = Object.entries(gnuTools).filter(([, executable]) => !executable).map(([name]) => name);
+const runtimeOptions = missingGnuTools.length
+    ? { skip: `Requires GNU ${missingGnuTools.join(', ')}; run these workflow behavior tests on Linux or with GNU coreutils on PATH.` }
+    : {};
+
 function fixture(t) {
-    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'qa-node-runtime-'));
+    const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-node-runtime-')));
     t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
     const root = path.join(folder, 'tools');
     const shims = path.join(folder, 'shims');
     const archiveRoot = path.join(folder, 'archive');
     const archive = path.join(folder, 'node.tar.xz');
     fs.mkdirSync(shims);
+    for (const [name, executable] of Object.entries(gnuTools)) fs.symlinkSync(executable, path.join(shims, name));
     fs.mkdirSync(path.join(archiveRoot, dist, 'bin'), { recursive: true });
     fs.writeFileSync(path.join(archiveRoot, dist, 'bin/node'), '#!/bin/sh\nif [ "$1" = --version ]; then echo v24.19.0; else exec "$QA_REAL_NODE" "$@"; fi\n', { mode: 0o755 });
     execFileSync('tar', ['-cJf', archive, '-C', archiveRoot, dist]);
@@ -34,7 +53,7 @@ function fixture(t) {
     return { folder, root, source, run, node: path.join(root, dist, 'bin/node'), archive: path.join(root, `${dist}.tar.xz`) };
 }
 
-test('QA scoped Node installs a verified archive and reuses the exact validated binary', t => {
+test('QA scoped Node installs a verified archive and reuses the exact validated binary', runtimeOptions, t => {
     const f = fixture(t);
     const installed = f.run();
     assert.equal(installed.status, 0, installed.stderr);
@@ -48,7 +67,7 @@ test('QA scoped Node installs a verified archive and reuses the exact validated 
     assert.equal(fs.readdirSync(f.root).some(name => name.startsWith('.node-install-')), false);
 });
 
-test('QA scoped Node refuses a tampered cached binary before executing it', t => {
+test('QA scoped Node refuses a tampered cached binary before executing it', runtimeOptions, t => {
     const f = fixture(t);
     assert.equal(f.run().status, 0);
     const marker = path.join(f.folder, 'executed');
@@ -59,7 +78,7 @@ test('QA scoped Node refuses a tampered cached binary before executing it', t =>
     assert.equal(fs.readdirSync(f.root).some(name => name.startsWith('.node-install-')), false);
 });
 
-test('QA scoped Node refuses checksum mismatch and unsafe tool roots without publishing a runtime', t => {
+test('QA scoped Node refuses checksum mismatch and unsafe tool roots without publishing a runtime', runtimeOptions, t => {
     const f = fixture(t);
     const badChecksum = f.source.replace(/QA_NODE_SHA=[a-f0-9]{64}/, `QA_NODE_SHA=${'0'.repeat(64)}`);
     assert.notEqual(f.run(badChecksum).status, 0);

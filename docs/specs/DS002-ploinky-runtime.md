@@ -81,6 +81,16 @@ Explicit local development verification uses `SMOKE_SOURCE_VERIFICATION=local-sn
 
 Explorer must enable RoboTeam globally and route Open Copilot here through the RoboTeam copilot plugin with `agent=roboTeamAgent`, `robot=default` and the selected directory. Robot selection must remain in the WebChat launch query and declared MCP command-catalog arguments. Explorer must not enable a separate AchillesCLI agent or copy its persisted data. RoboTeam owns robot account configuration, conversational state and graphical task limits.
 
+### Skill publication and recovery
+
+Explorer's Manage skills actions and Ploinky's skill writers share target ownership, locking and recovery rules. A manifest refresh accounts for every selected source before changing that owner's exports. Changes to skill links, the selection manifest, compatibility links and local exclusions use recorded publication intent and ownership checks. User replacements, unrecorded links and modified legacy copies remain preserved. Interrupted multi-file publication may be completed or rolled back only when the recorded state still matches; unexpected changes are retained for operator review. Pending or quarantined publication must return `SKILL_EXPORT_RECOVERY_REQUIRED`, not a success result, even when some outputs were written. Journals and backups remain available for recovery.
+
+Git exclusions are private to the worktree. Explorer cannot establish the host owner's effective Git policy from an agent environment, so it reports exclusions as deferred for host refresh. Combining an existing external excludes policy requires explicit `PLOINKY_SKILL_EXCLUDES_COMPOSE=1` consent on each host invocation that performs the composition. Without consent, that policy is preserved and generated links may remain visible as untracked. A composed policy incorporates external edits on the next authorized refresh, not continuously. See [Manage skills](../workspace-operations.html#file-management) for operator behavior.
+
+### Marketplace activation recovery
+
+A Marketplace activation timeout or abnormal worker exit does not prove that child processes or installer runtimes stopped. Ploinky retains mutation ownership and reports recovery required; subsequent conflicting mutations must fail rather than reclaim that lease from age or worker death alone. From the selected workspace on the physical host, the operator stops the exact owned Box with `ploinky stop`, verifies it is stopped, then runs `ploinky start explorer`. The inner stop may report an error even after the outer Box stops, so verify the actual state before continuing. The next start retires the retained lease only after the runtime proves the previous Box stopped or absent. A timed-out worker must not be described as having automatically terminated every descendant.
+
 ## Conclusion
 
 Ploinky provides the deployment and trust boundary; Explorer provides the workspace interface inside that boundary.

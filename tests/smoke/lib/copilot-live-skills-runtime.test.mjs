@@ -67,7 +67,7 @@ test('actual reader setup accepts prefixed Podman identity and rejects a differe
     let image = 'sha256:' + digest, nestedReads = 0;
     const runCommand = async args => {
         if (args[0] === 'inspect') return [{ Id: release.liveBox.box.containerId, Image: image, State: { Running: true, StartedAt: startedAt },
-            Mounts: [{ Type: 'bind', Source: f.directory, Destination: '/workspace', RW: true }] }];
+            Mounts: [{ Type: 'bind', Source: f.directory, Destination: f.directory, RW: true }] }];
         nestedReads += 1; return runtime;
     };
     const input = { env: { SMOKE_PLOINKY_BOX_CONTAINER: 'owned-box', SMOKE_BOX_BASE_URL: 'http://127.0.0.1:8080', SMOKE_WORKSPACE_ROOT: f.directory },
