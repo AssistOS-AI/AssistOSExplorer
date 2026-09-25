@@ -19,19 +19,14 @@ const temporary = (t) => (label) => {
   return directory;
 };
 
-// Ploinky owns the paired copy; EXPLORER_TEST_PLOINKY_CHECKOUT points isolated
-// test copies at it.
-function ploinkyCheckout() {
-  const candidates = [
-    process.env.EXPLORER_TEST_PLOINKY_CHECKOUT,
-    fileURLToPath(new URL('../../../../ploinky', import.meta.url))
-  ].filter(Boolean);
-  return candidates.find((candidate) => fs.existsSync(path.join(candidate, PROTOCOL))) || null;
-}
-
-const ploinkyRoot = ploinkyCheckout();
+// Ploinky owns the paired copy in the sibling checkout ../ploinky, or at
+// EXPLORER_TEST_PLOINKY_CHECKOUT. The pairing is part of the protocol
+// contract, so a missing checkout fails the paired tests instead of skipping.
+const explicitPloinky = process.env.EXPLORER_TEST_PLOINKY_CHECKOUT;
+const ploinkyCandidate = explicitPloinky || fileURLToPath(new URL('../../../../ploinky', import.meta.url));
+const ploinkyRoot = fs.existsSync(path.join(ploinkyCandidate, PROTOCOL)) ? ploinkyCandidate : null;
 const ploinky = ploinkyRoot ? await import(pathToFileURL(path.join(ploinkyRoot, PROTOCOL)).href) : null;
-const skipReason = 'Ploinky checkout not present (set EXPLORER_TEST_PLOINKY_CHECKOUT)';
+const missingPloinky = `The paired Ploinky checkout was not found: ${path.join(ploinkyCandidate, PROTOCOL)} does not exist (${explicitPloinky ? 'EXPLORER_TEST_PLOINKY_CHECKOUT points there; set it' : 'default sibling path; set EXPLORER_TEST_PLOINKY_CHECKOUT'} to the Ploinky checkout).`;
 
 for (const scenario of scenarios) {
   test(`explorer protocol: ${scenario.name}`, (t) => scenario.run({ mod: explorer, exclusions: explorerExclusions, tmp: temporary(t) }));
@@ -41,8 +36,8 @@ test('two Explorer exporter instances exclude and recover each other on one fold
   contentionScenario({ first: explorer, second: explorer, tmp: temporary(t) });
 });
 
-test('Ploinky protocol and conformance scenarios are byte-identical paired copies', (t) => {
-  if (!ploinkyRoot) { t.skip(skipReason); return; }
+test('Ploinky protocol and conformance scenarios are byte-identical paired copies', () => {
+  assert.ok(ploinkyRoot, missingPloinky);
   const local = (file) => fs.readFileSync(fileURLToPath(new URL(file, import.meta.url)));
   assert.ok(local('../../utils/server/skill-export-transaction.mjs').equals(fs.readFileSync(path.join(ploinkyRoot, PROTOCOL))));
   assert.ok(local('./skillExportConformanceScenarios.mjs').equals(fs.readFileSync(path.join(ploinkyRoot, SCENARIOS))));
@@ -50,7 +45,7 @@ test('Ploinky protocol and conformance scenarios are byte-identical paired copie
 });
 
 test('Explorer and Ploinky exporters exclude and recover each other on one folder', (t) => {
-  if (!ploinky) { t.skip(skipReason); return; }
+  assert.ok(ploinky, missingPloinky);
   contentionScenario({ first: explorer, second: ploinky, tmp: temporary(t) });
   contentionScenario({ first: ploinky, second: explorer, tmp: temporary(t) });
 });

@@ -7,9 +7,18 @@ import path from 'node:path';
 
 import syncFs from 'node:fs';
 
-import { syncManagedSkillExports } from '../../utils/server/managed-skill-exports.mjs';
 import * as transaction from '../../utils/server/skill-export-transaction.mjs';
 import { createToolHandlers } from '../../utils/server/tool-handlers.mjs';
+
+// Never read or compose the global, system or XDG Git policy of this machine.
+const gitIsolation = syncFs.realpathSync(syncFs.mkdtempSync(path.join(os.tmpdir(), 'explorer-skills-git-env-')));
+syncFs.writeFileSync(path.join(gitIsolation, 'gitconfig'), '');
+delete process.env.PLOINKY_SKILL_EXCLUDES_COMPOSE;
+delete process.env.GIT_CONFIG_SYSTEM;
+Object.assign(process.env, {
+  XDG_CONFIG_HOME: path.join(gitIsolation, 'xdg'), GIT_CONFIG_GLOBAL: path.join(gitIsolation, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1'
+});
+test.after(() => syncFs.rmSync(gitIsolation, { recursive: true, force: true }));
 
 async function writeFile(filePath, content) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -313,7 +322,7 @@ test('add_skills_manifest_repo explains when a cached repository has no Anthropi
   }
 });
 
-test('manifest exports preserve legacy collisions, unrelated skills and independent Claude files', async () => {
+test('manifest exports preserve unrecorded collisions, unrelated skills and independent Claude files', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-preserve-'));
   try {
     const repoDir = await createLocalSkillRepo(workspaceRoot);
@@ -334,8 +343,8 @@ test('manifest exports preserve legacy collisions, unrelated skills and independ
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
-test('edited owned descriptor and executable modes survive replacement and removal with diagnostics', async () => {
-  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-owned-'));
+test('a ledger entry of an unsupported kind survives update and removal and is reported', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-unsupported-'));
   try {
     const repoDir = await createLocalSkillRepo(workspaceRoot);
     const projectDir = path.join(workspaceRoot, 'project');
@@ -343,21 +352,26 @@ test('edited owned descriptor and executable modes survive replacement and remov
     const handlers = createHandlers(workspaceRoot);
     const args = { folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' };
     await handlers.add_skills_manifest_repo(args);
-    // Recreate an owned copy from the previous export format before testing migration protection.
-    await fs.unlink(path.join(projectDir, '.agents', 'skills', 'alpha-skill'));
-    await fs.unlink(path.join(projectDir, '.agents', '.ploinky-skill-exports.json'));
-    syncManagedSkillExports({ folder: projectDir, owner: 'manifest', sources: [{ name: 'alpha-skill', path: path.join(repoDir, 'skills/alpha-skill') }] });
-    const output = path.join(projectDir, '.agents', 'skills', 'alpha-skill', 'SKILL.md');
-    const original = await fs.readFile(output, 'utf8');
+    // Exports are links; a recorded directory is state this protocol never writes.
+    const skillDir = path.join(projectDir, '.agents', 'skills', 'alpha-skill');
+    const output = path.join(skillDir, 'SKILL.md');
+    await fs.unlink(skillDir);
+    await writeFile(output, 'user copy\n');
     await fs.chmod(output, 0o755);
+    const ledgerPath = path.join(projectDir, '.agents', '.ploinky-skill-exports.json');
+    const ledger = JSON.parse(await fs.readFile(ledgerPath, 'utf8'));
+    ledger.entries['alpha-skill'] = { ...ledger.entries['alpha-skill'], kind: 'directory', digest: transaction.skillTreeDigest(skillDir) };
+    await fs.writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+    const record = ledger.entries['alpha-skill'];
     const update = parseJsonResponse(await handlers.add_skills_manifest_repo(args));
-    assert.equal(update.exportResult.diagnostics[0].reason, 'edited-output-preserved');
-    assert.equal((await fs.stat(output)).mode & 0o777, 0o755);
-    await fs.writeFile(output, original.replace('alpha-skill', 'local-skill'));
+    assert.ok(update.exportResult.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'unsupported-ledger-entry-preserved'));
     const removed = parseJsonResponse(await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'local-skills' }));
-    assert.equal(removed.skillOutputs[0].state, 'modified');
-    assert.match(await fs.readFile(output, 'utf8'), /local-skill/);
-    assert.equal(removed.exportResult.diagnostics[0].reason, 'edited-output-preserved');
+    assert.ok(removed.exportResult.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'unsupported-ledger-entry-preserved'));
+    assert.equal(removed.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'unsupported');
+    assert.ok(removed.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'unsupported-output-preserved'));
+    assert.equal(await fs.readFile(output, 'utf8'), 'user copy\n');
+    assert.equal((await fs.stat(output)).mode & 0o777, 0o755);
+    assert.deepEqual(JSON.parse(await fs.readFile(ledgerPath, 'utf8')).entries['alpha-skill'], record);
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
@@ -489,7 +503,7 @@ test('manifest state reports an incomplete transaction and a blocked lock is not
     const crash = Object.assign(new Error('stopped'), { [transaction.SIMULATED_CRASH]: true });
     const foreign = { current: () => ({ pid: 4242, start: 'x', boot: 'another-boot', namespace: 'another-ns', hostname: 'box', container: true }), alive: () => false, start: () => '' };
     assert.throws(() => transaction.syncManagedSkillExports({
-      folder: projectDir, owner: 'defaults:other', mode: 'symlink', sources: [{ name: 'other-skill', path: other }],
+      folder: projectDir, owner: 'defaults:other', sources: [{ name: 'other-skill', path: other }],
       lock: { liveness: foreign }, hooks: { crash: (point) => { if (point === 'after-journal') throw crash; } }
     }), /stopped/);
     const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
@@ -521,7 +535,7 @@ test('a marketplace mutation reports recovery failure after quarantining an inte
     const crash = Object.assign(new Error('fixture publication interrupted'), { [transaction.SIMULATED_CRASH]: true });
     const deadOwner = { ...transaction.currentSkillExportIdentity(), pid: 2147483647, start: 'fixture-dead-process' };
     assert.throws(() => transaction.syncManagedSkillExports({
-      folder: projectDir, owner: 'manifest', sources: [], mode: 'symlink',
+      folder: projectDir, owner: 'manifest', sources: [],
       manifest: { path: manifestPath, expected: before, next: '[]\n' },
       lock: { liveness: { current: () => deadOwner } },
       hooks: { crash(point) { if (point === 'after-ledger') throw crash; } },

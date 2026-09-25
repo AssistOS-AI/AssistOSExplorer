@@ -484,7 +484,6 @@ export function createToolHandlers({
       folder,
       owner: 'manifest',
       sources,
-      mode: 'symlink',
       manifest: {
         path: manifestPath,
         expected: expectedManifest,
@@ -572,13 +571,16 @@ export function createToolHandlers({
       presentNames.add(entry.name);
       const record = Object.hasOwn(ledger.entries, entry.name) ? ledger.entries[entry.name] : null;
       let state = 'local';
-      if (record) {
-        try { state = (record.kind === 'symlink' ? entry.isSymbolicLink() : entry.isDirectory()) && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
+      // Exports are recorded as links; any other recorded kind is unsupported
+      // state that the exporter preserves and never adopts.
+      if (record && record.kind !== 'symlink') state = 'unsupported';
+      else if (record) {
+        try { state = entry.isSymbolicLink() && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
         catch { state = 'modified'; }
       }
       const descriptor = (entry.isDirectory() || entry.isSymbolicLink()) ? await fs.stat(path.join(skillsDir, entry.name, 'SKILL.md')).catch(() => null) : null;
       outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || null });
-      if (state === 'modified' || (selected.has(entry.name) && state === 'local')) diagnostics.push({ name: entry.name, reason: `${state}-output-preserved` });
+      if (state === 'modified' || state === 'unsupported' || (selected.has(entry.name) && state === 'local')) diagnostics.push({ name: entry.name, reason: `${state}-output-preserved` });
     }
     for (const name of selected) if (!presentNames.has(name)) outputs.push({ name, state: 'missing', selected: true, installed: false });
     outputs.sort((a, b) => a.name.localeCompare(b.name));
