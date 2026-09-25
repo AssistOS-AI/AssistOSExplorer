@@ -464,6 +464,40 @@ export function createToolHandlers({
     return skillsetMDParser(source, availableSkills);
   }
 
+  function invalidateSkillExportCaches(folder, manifestPath, names) {
+    invalidateCachesForPath(manifestPath);
+    const skillsPath = path.join(folder, canonicalSkillsDir);
+    invalidateStructureIndexSubtree(skillsPath);
+    for (const name of names) {
+      invalidateCachesForPath(path.join(skillsPath, name));
+    }
+    invalidateCachesForPath(skillsPath);
+  }
+
+  function lockReleaseClause(releaseError) {
+    return releaseError
+      ? ` Its export lock could not be released either (${releaseError.message || 'unknown cause'}); later exports of this folder may stay blocked until the lock is released or reclaimed.`
+      : '';
+  }
+
+  // A failure before the commit point keeps its own code when its rollback
+  // restored every path. A rollback that quarantined output it could not
+  // restore leaves that output for recovery, like an unfinished result.
+  function rollbackRecoveryError(error, recovery) {
+    const names = (recovery.unexpected || []).map((item) => item.name);
+    const stopped = recovery.rollbackError ? ` Its rollback also reported ${recovery.rollbackError.message}.` : '';
+    const mapped = new Error(
+      `Skill export failed before its commit point (${error.message}); transaction ${recovery.transaction} was ${recovery.status} with output it could not restore${names.length ? ` (${names.join(', ')})` : ''}.${stopped} Existing state is preserved for recovery.${lockReleaseClause(error.lockReleaseError)}`,
+      { cause: error }
+    );
+    mapped.code = 'SKILL_EXPORT_RECOVERY_REQUIRED';
+    mapped.transaction = { id: recovery.transaction, status: recovery.status, unexpected: recovery.unexpected || [] };
+    mapped.recovery = recovery;
+    mapped.rollbackError = recovery.rollbackError || null;
+    mapped.lockReleaseError = error.lockReleaseError || null;
+    return mapped;
+  }
+
   // Links, the manifest (compared against the bytes the handler read) and the
   // `.claude -> .agents` compatibility link publish as one recoverable
   // transaction under the folder's skill export lock. The lock wait is kept
@@ -508,25 +542,23 @@ export function createToolHandlers({
         lock: { waitMs: 250 }
       });
     } catch (error) {
+      const recovery = error?.skillExportRecovery;
+      if (recovery?.status && recovery.status !== 'rolled-back') {
+        // Output the rollback could not restore changed on disk.
+        invalidateSkillExportCaches(folder, manifestPath, (recovery.unexpected || []).map((item) => item.name));
+        if (error.code === 'SKILL_EXPORT_RECOVERY_REQUIRED') throw error;
+        throw rollbackRecoveryError(error, recovery);
+      }
       // A lock release failure carries the completed result: its outputs
       // changed, and one that still needs recovery stays recovery required.
       if (error?.code !== 'SKILL_EXPORT_LOCK_RELEASE_FAILED' || !error.skillExportResult) throw error;
       result = error.skillExportResult;
       releaseFailure = error;
     }
-    invalidateCachesForPath(manifestPath);
-    const skillsPath = path.join(folder, canonicalSkillsDir);
-    invalidateStructureIndexSubtree(skillsPath);
-    for (const name of [...result.installed, ...result.removed]) {
-      invalidateCachesForPath(path.join(skillsPath, name));
-    }
-    invalidateCachesForPath(skillsPath);
+    invalidateSkillExportCaches(folder, manifestPath, [...result.installed, ...result.removed]);
     const recoveryProblem = skillExportRecoveryProblem(result);
     if (recoveryProblem) {
-      const release = releaseFailure
-        ? ` Its export lock could not be released either (${releaseFailure.cause?.message || 'unknown cause'}); later exports of this folder may stay blocked until the lock is released or reclaimed.`
-        : '';
-      const error = new Error(`${recoveryProblem.reason}${release}`, releaseFailure ? { cause: releaseFailure } : undefined);
+      const error = new Error(`${recoveryProblem.reason}${lockReleaseClause(releaseFailure && (releaseFailure.cause || {}))}`, releaseFailure ? { cause: releaseFailure } : undefined);
       error.code = recoveryProblem.code;
       error.transaction = recoveryProblem.transaction;
       error.recovery = recoveryProblem.recovery;

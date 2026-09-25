@@ -659,6 +659,165 @@ test('a lock release failure after a settled export stays a release failure', as
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
+// The second skill link of a publication fails with EIO, before the commit
+// point. With `userEdit`, a user first replaces the already published link
+// with a real directory, which the rollback must not remove.
+function armSecondLinkFailure(t, projectDir, { userEdit }) {
+  const skills = path.join(projectDir, '.agents', 'skills');
+  const original = syncFs.symlinkSync;
+  const armed = { value: false, published: [], faults: 0 };
+  t.mock.method(syncFs, 'symlinkSync', function (target, destination, ...rest) {
+    if (!armed.value || path.dirname(String(destination)) !== skills) return original.call(this, target, destination, ...rest);
+    if (armed.published.length === 1) {
+      armed.faults++;
+      if (userEdit) {
+        const first = armed.published[0];
+        syncFs.unlinkSync(first);
+        syncFs.mkdirSync(first);
+        syncFs.writeFileSync(path.join(first, 'SKILL.md'), 'user replacement\n');
+      }
+      throw Object.assign(new Error(`EIO: i/o error, symlink '${target}' -> '${destination}'`), { code: 'EIO', errno: -5, syscall: 'symlink' });
+    }
+    const created = original.call(this, target, destination, ...rest);
+    armed.published.push(String(destination));
+    return created;
+  });
+  return armed;
+}
+
+// Removing the journal while quarantining succeeds, but reports EIO: the
+// rollback stopped after the quarantine record was durable.
+function armJournalRemovalFailure(t, projectDir) {
+  const journal = path.join(projectDir, '.agents', transaction.EXPORT_JOURNAL);
+  const original = syncFs.rmSync;
+  const armed = { value: false, hits: 0 };
+  t.mock.method(syncFs, 'rmSync', function (target, ...rest) {
+    const removed = original.call(this, target, ...rest);
+    if (armed.value && String(target) === journal) {
+      armed.hits++;
+      armed.value = false;
+      throw Object.assign(new Error('EIO: i/o error, journal removal'), { code: 'EIO' });
+    }
+    return removed;
+  });
+  return armed;
+}
+
+async function twoSkillProject(prefix) {
+  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
+  const repoDir = await createLocalSkillRepo(workspaceRoot);
+  await writeFile(path.join(repoDir, 'skills', 'beta-skill', 'SKILL.md'), '---\nname: beta-skill\n---\n');
+  execFileSync('git', ['add', '.'], { cwd: repoDir, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'beta'], { cwd: repoDir, stdio: 'ignore' });
+  const projectDir = path.join(workspaceRoot, 'project');
+  await writeFile(path.join(projectDir, 'notes.txt'), 'user bytes\n');
+  return { workspaceRoot, repoDir, projectDir, manifestPath: path.join(projectDir, 'ploinky-skills-manifest.json') };
+}
+
+test('a pre-commit failure whose rollback quarantines user output is recovery required', async (t) => {
+  const { workspaceRoot, repoDir, projectDir, manifestPath } = await twoSkillProject('explorer-skills-rollback-quarantine-');
+  try {
+    const invalidated = [];
+    const handlers = createHandlers(workspaceRoot, invalidated);
+    const armed = armSecondLinkFailure(t, projectDir, { userEdit: true });
+    armed.value = true;
+    let first;
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+      first = path.basename(armed.published[0]);
+      assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
+      assert.match(error.message, /failed before its commit point \(EIO: i\/o error, symlink/);
+      assert.match(error.message, new RegExp(`quarantined with output it could not restore \\(${first}\\)`));
+      assert.doesNotMatch(error.message, /lock could not be released/);
+      // The original failure is preserved as the cause.
+      assert.equal(error.cause.code, 'EIO');
+      assert.equal(error.cause.syscall, 'symlink');
+      assert.equal(error.recovery.status, 'quarantined');
+      assert.equal(error.transaction.status, 'quarantined');
+      assert.equal(error.transaction.id, error.recovery.transaction);
+      assert.deepEqual(error.transaction.unexpected.map(item => item.name), [first]);
+      assert.equal(error.rollbackError, null);
+      assert.equal(error.lockReleaseError, null);
+      return true;
+    });
+    armed.value = false;
+    assert.equal(armed.faults, 1, 'the fault was injected into the real publication');
+    const skills = path.join(projectDir, '.agents', 'skills');
+    assert.equal(await fs.readFile(path.join(skills, first, 'SKILL.md'), 'utf8'), 'user replacement\n', 'the user replacement is preserved');
+    assert.deepEqual((await fs.readdir(skills)).sort(), [first]);
+    await assert.rejects(fs.stat(manifestPath), { code: 'ENOENT' }, 'the manifest is not written before the commit point');
+    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
+    assert.ok(invalidated.includes(path.join(skills, first)), 'the preserved output is invalidated');
+    assert.ok(invalidated.includes(skills));
+    const state = transaction.readSkillExportTransactionState(projectDir);
+    assert.equal(state.pending, null);
+    assert.equal(state.quarantined.length, 1);
+    assert.deepEqual(state.quarantined[0].reasons.map(item => [item.name, item.reason]), [[first, 'unexpected-output-preserved']]);
+    const listed = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
+    assert.equal(listed.exportTransaction.status, 'recovery-required');
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('a quarantining rollback keeps its rollback and lock release causes', async (t) => {
+  const { workspaceRoot, repoDir, projectDir } = await twoSkillProject('explorer-skills-rollback-causes-');
+  try {
+    const handlers = createHandlers(workspaceRoot);
+    const armed = armSecondLinkFailure(t, projectDir, { userEdit: true });
+    const journal = armJournalRemovalFailure(t, projectDir);
+    const { lock, armed: stray } = armStrayLockRelease(t, projectDir);
+    armed.value = true;
+    journal.value = true;
+    stray.value = true;
+    let first;
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+      first = path.basename(armed.published[0]);
+      assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
+      assert.equal(error.cause.code, 'EIO');
+      assert.equal(error.cause.syscall, 'symlink');
+      assert.equal(error.rollbackError.message, 'EIO: i/o error, journal removal');
+      assert.equal(error.recovery.rollbackError, error.rollbackError);
+      assert.equal(error.lockReleaseError.code, 'ENOTEMPTY');
+      assert.equal(error.cause.lockReleaseError, error.lockReleaseError);
+      assert.match(error.message, /Its rollback also reported EIO: i\/o error, journal removal/);
+      assert.match(error.message, /Its export lock could not be released either \(ENOTEMPTY/);
+      assert.doesNotMatch(error.message, /finished/);
+      return true;
+    });
+    stray.value = false;
+    assert.deepEqual([armed.faults, journal.hits, stray.hits], [1, 1, 1], 'every fault was injected into the real publication');
+    const skills = path.join(projectDir, '.agents', 'skills');
+    assert.equal(await fs.readFile(path.join(skills, first, 'SKILL.md'), 'utf8'), 'user replacement\n');
+    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
+    const state = transaction.readSkillExportTransactionState(projectDir);
+    assert.equal(state.pending, null);
+    assert.equal(state.quarantined.length, 1);
+    assert.ok(syncFs.existsSync(path.join(lock, 'stray')), 'the unreleased lock is left for the operator');
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('a pre-commit failure that rolls back cleanly stays an ordinary failure', async (t) => {
+  const { workspaceRoot, repoDir, projectDir, manifestPath } = await twoSkillProject('explorer-skills-rollback-clean-');
+  try {
+    const handlers = createHandlers(workspaceRoot);
+    const armed = armSecondLinkFailure(t, projectDir, { userEdit: false });
+    armed.value = true;
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+      assert.equal(error.code, 'EIO');
+      assert.equal(error.syscall, 'symlink');
+      assert.match(error.message, /^EIO: i\/o error, symlink/);
+      assert.equal(error.skillExportRecovery.status, 'rolled-back');
+      assert.deepEqual(error.skillExportRecovery.unexpected, []);
+      return true;
+    });
+    armed.value = false;
+    assert.equal(armed.faults, 1, 'the fault was injected into the real publication');
+    assert.deepEqual(await fs.readdir(path.join(projectDir, '.agents', 'skills')), [], 'the published link was rolled back');
+    await assert.rejects(fs.stat(manifestPath), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
+    const state = transaction.readSkillExportTransactionState(projectDir);
+    assert.deepEqual([state.pending, state.quarantined.length, state.lock], [null, 0, 'free']);
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
 test('skill changes in a Git project write no tracked rules and defer private exclusions to the host', async () => {
   const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-git-')));
   const saved = { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
