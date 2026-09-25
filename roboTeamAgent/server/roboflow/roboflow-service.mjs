@@ -33,9 +33,9 @@ function generationPrompt(catalog) {
         '- terminal: the usual CLI coding-agent mode;',
         '- desktop: coding agents with computer-use MCP tools operating a virtual desktop;',
         '- browser: coding agents with browser-use MCP tools operating a DuckDuckGo browser, to navigate the web and browse sites.',
-        'Return one JSON object with no prose and do not execute the workflow. Fields: name, description, entryTaskId, tasks, edges, layout. Each task has a unique id, name, description, skillsets (array of exact catalog IDs) and executionType (terminal, desktop or browser). Each edge has a unique id, sourceTaskId, targetTaskId and no description. Write task descriptions that let a branching task select its outgoing edge. All endpoints and the entry task must exist. Cycles are allowed. Never choose robots and never generate the reserved default workflow. Layout is optional.',
+        'Return one JSON object with no prose and do not execute the workflow. Fields: name, description, entryTaskId, tasks, edges, layout. Each task has a unique id, name, prompt, skillsets (array of exact catalog IDs; each is a named skillset or an individual skill) and executionType (terminal, desktop or browser). Each edge has a unique id, sourceTaskId, targetTaskId and no description. Write task prompts that let a branching task select its outgoing edge. All endpoints and the entry task must exist. Cycles are allowed. Never choose robots and never generate the reserved default workflow. Layout is optional.',
         `Catalog: ${JSON.stringify(catalog?.skillsets || [])}.`,
-        'Example: {"name":"Report","description":"Produce a report","entryTaskId":"research","tasks":[{"id":"research","name":"Research","description":"Open DuckDuckGo and collect sources about the topic","skillsets":[],"executionType":"browser"},{"id":"report","name":"Report","description":"Write the report from the collected sources","skillsets":[],"executionType":"terminal"}],"edges":[{"id":"done","sourceTaskId":"research","targetTaskId":"report"}]}',
+        'Example: {"name":"Report","description":"Produce a report","entryTaskId":"research","tasks":[{"id":"research","name":"Research","prompt":"Open DuckDuckGo and collect sources about the topic","skillsets":[],"executionType":"browser"},{"id":"report","name":"Report","prompt":"Write the report from the collected sources","skillsets":[],"executionType":"terminal"}],"edges":[{"id":"done","sourceTaskId":"research","targetTaskId":"report"}]}',
     ].join('\n');
 }
 
@@ -55,11 +55,12 @@ export class RoboFlowService {
         this.bindings = new Map();
         this.chains = new Map();
         this.generations = new Map();
+        this.generationTasks = new Map();
     }
     async initialize() {
         await this.registry.initialize();
+        await this.store.clearLegacyOnce();
         await ensureDefaultWorkflow(this.registry);
-        await this.store.clearRunsOnce();
         for (const flow of await this.store.list()) if (!terminal(flow.status)) await this.store.update(flow.id, current => {
             current.status = 'failed'; current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'interrupted'; instance.error = current.error; instance.endedAt = current.finishedAt; }
@@ -75,7 +76,7 @@ export class RoboFlowService {
     async catalog() { return this.discover(); }
     async validateDraft(input) {
         const graph = normalizeWorkflow({ ...input, name: input.name || 'Draft', tasks: input.tasks?.map(task => ({
-            ...task, name: task.name || 'Draft task', description: task.description || 'Draft task description' })) });
+            ...task, name: task.name || 'Draft task', prompt: task.prompt || 'Draft task prompt' })) });
         return { graph, coverage: coverage(graph, await this.robotStore.list()), diagnostics: graphDiagnostics(graph) };
     }
     async listWorkflows() {
@@ -132,7 +133,7 @@ export class RoboFlowService {
             const previous = [];
             for (const visit of flow.instances) if (visit.state === 'completed') previous.push({ taskId: visit.taskId, instanceId: visit.id,
                 response: await this.store.readOutput(id, visit.id, 'result') });
-            const task = JSON.stringify({ instruction: 'Execute only the task identified by currentTaskId, following its description and the objective. Use previousFinalResponses as context. Do not execute other graph nodes. Return a final answer, following routing instructions only when supplied.', objective: flow.objective, currentTaskId: node.id, graph: flow.graph, previousFinalResponses: previous });
+            const task = JSON.stringify({ instruction: 'Execute only the task identified by currentTaskId, following its prompt and the objective. Use previousFinalResponses as context. Do not execute other graph nodes. Return a final answer, following routing instructions only when supplied.', objective: flow.objective, currentTaskId: node.id, graph: flow.graph, previousFinalResponses: previous });
             if (Buffer.byteLength(task, 'utf8') > 1024 * 1024) throw new Error('Workflow final-response context exceeds the 1 MiB input limit');
             const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === node.id);
             const runtimeTaskId = crypto.randomUUID();
@@ -142,8 +143,11 @@ export class RoboFlowService {
                     logRef: `.achilles-cli/roboflow/${id}/${instance.id}.log`, resultRef: `.achilles-cli/roboflow/${id}/${instance.id}.result` });
             });
             this.bindings.set(runtimeTaskId, { flowId: id, instanceId: instance.id });
-            const skillSets = node.skillsets.map(identity => robotSelections(robot).find(set => set.id === identity).selector);
-            const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, skillSets,
+            const selections = robotSelections(robot);
+            const required = node.skillsets.map(identity => selections.find(set => set.id === identity));
+            const skillSets = required.filter(item => item.kind === 'skillset').map(item => item.selector);
+            const skills = required.filter(item => item.kind === 'skill').map(item => item.selector);
+            const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, skillSets, skills,
                 requiredWorkflowSkillsets: node.skillsets, systemPrompt: outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '' });
             if (started?.sessionUrl) await this.store.update(id, current => {
                 const visit = current.instances.find(item => item.id === instance.id);
@@ -151,11 +155,11 @@ export class RoboFlowService {
             });
         } catch (error) { await this._fail(id, error.message); }
     }
-    async _startTask(robot, { skillSets = [], taskType = 'simple', ...request }) {
+    async _startTask(robot, { skillSets = [], skills = [], taskType = 'simple', ...request }) {
         const start = (current, selection) => this.runtimeManager.startTask(current, taskType, { ...request, skillPolicyRef: selection?.policyId,
             alaSessionId: selection?.policyId, ca: 'auto' });
         if (!this.skillsets) return start(robot);
-        return this.skillsets.start(robot, { cwd: request.cwd, skillSets, skills: [], task: request.task, ca: 'auto' }, start);
+        return this.skillsets.start(robot, { cwd: request.cwd, skillSets, skills, task: request.task, ca: 'auto' }, start);
     }
     async _fail(id, message, status = 'failed') {
         const flow = await this.store.get(id);
@@ -320,5 +324,60 @@ export class RoboFlowService {
             return { graph, coverage: coverage(graph, await this.robotStore.list()), diagnostics: [...catalog.diagnostics, ...graphDiagnostics(graph)] };
         } finally { this.generations.delete(runtimeTaskId); signal?.removeEventListener('abort', abort); }
     }
-    async close() { for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
+    // Browser-facing generation: start returns immediately with an id and the
+    // page polls generationInfo every couple of seconds for live task logs.
+    async startGeneration(input) {
+        const description = textField(input.description, 'description', 32768, true);
+        const catalog = await this.catalog();
+        const robot = await this.robotStore.getByName('default');
+        if (!robot) throw new Error('Default robot is unavailable');
+        const cwd = await this.generationCwd(input.folder);
+        const record = { id: crypto.randomUUID(), runtimeTaskId: crypto.randomUUID(), robotId: robot.id,
+            status: 'running', graph: null, error: null, startedAt: new Date().toISOString(), catalog };
+        this.generationTasks.set(record.id, record);
+        void this._runGeneration(record, robot, cwd, description).catch(() => {});
+        return { id: record.id };
+    }
+    async _runGeneration(record, robot, cwd, description) {
+        let resolve, reject;
+        const completed = new Promise((res, rej) => { resolve = res; reject = rej; });
+        void completed.catch(() => {});
+        this.generations.set(record.runtimeTaskId, { resolve, reject });
+        try {
+            await this._startTask(robot, { cwd, task: description, runtimeTaskId: record.runtimeTaskId, skillSets: [],
+                systemPrompt: generationPrompt(record.catalog) });
+            const graph = normalizeWorkflow(extractJson(await completed));
+            const known = new Set(record.catalog.skillsets.map(set => set.id));
+            if (graph.tasks.some(task => task.skillsets.some(id => !known.has(id)))) throw invalid('Generated graph contains an unknown skillset');
+            record.graph = { ...graph, coverage: coverage(graph, await this.robotStore.list()),
+                diagnostics: [...record.catalog.diagnostics, ...graphDiagnostics(graph)] };
+            record.status = 'completed';
+        } catch (error) {
+            if (record.status !== 'cancelled') { record.status = 'failed'; record.error = error.message; }
+        } finally {
+            this.generations.delete(record.runtimeTaskId);
+            delete record.catalog;
+        }
+    }
+    generationInfo(id) {
+        const record = this.generationTasks.get(id);
+        if (!record) return null;
+        const log = (this.runtimeManager?.taskStatus?.(record.robotId, record.runtimeTaskId)?.logTail || '').slice(-256 * 1024);
+        const info = { id: record.id, status: record.status, log, graph: record.graph, error: record.error };
+        if (terminal(record.status)) this.generationTasks.delete(id);
+        return info;
+    }
+    cancelGeneration(id) {
+        const record = this.generationTasks.get(id);
+        if (!record) return null;
+        if (record.status === 'running') {
+            record.status = 'cancelled';
+            record.error = 'Graph generation cancelled';
+            try { Promise.resolve(this.runtimeManager?.stopTask?.({ id: record.robotId }, 'simple', record.runtimeTaskId)).catch(() => {}); } catch { /* Runtime may already be terminal. */ }
+        }
+        const info = { id: record.id, status: record.status, graph: record.graph, error: record.error };
+        this.generationTasks.delete(id);
+        return info;
+    }
+    async close() { for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
 }

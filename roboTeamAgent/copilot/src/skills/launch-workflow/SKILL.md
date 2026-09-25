@@ -8,7 +8,7 @@ description: Start one RoboFlow task flow for a user objective on the workspace 
 ## Description
 You are the workspace copilot. You can only choose which workflow to run and start it. A RoboFlow task flow owns its own execution: RoboFlow matches each task to an available robot and traverses the directed graph. Branching tasks choose an outgoing edge; terminal nodes finish the workflow. You do not run tasks yourself, do not delegate to individual robots, and do not control the flow after starting it.
 
-The workflow catalog is supplied in your turn context. Each entry has an id, a name, a description, and task names, descriptions and execution types. The default workflow lists its supported execution modes. Use it to choose a workflow; never invent an id.
+The workflow catalog is supplied in your turn context. Each entry has an id, a name, a description, and task names, prompts and execution types. The default workflow lists its supported execution modes. Use it to choose a workflow; never invent an id.
 
 ## Input Format
 Pass one JSON object, or a short command line, through `--input`:

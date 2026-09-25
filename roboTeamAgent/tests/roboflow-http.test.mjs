@@ -6,7 +6,7 @@ import test from 'node:test';
 import { createRoboTeamServer } from '../server/http-server.mjs';
 import { RobotStore } from '../server/robot-store.mjs';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
-const graph = { id: 'example', name: 'Example', entryTaskId: 'one', tasks: [{ id: 'one', name: 'One', description: 'Execute objective', skillsets: [], executionType: 'terminal' }], edges: [] };
+const graph = { id: 'example', name: 'Example', entryTaskId: 'one', tasks: [{ id: 'one', name: 'One', prompt: 'Execute objective', skillsets: [], executionType: 'terminal' }], edges: [] };
 const headers = role => ({ 'content-type': 'application/json', 'x-ploinky-auth-info': JSON.stringify({ user: { id: 'actor', roles: [role] } }) });
 async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'roboflow-http-'));
@@ -59,8 +59,7 @@ test('HTTP stops a single phase and stops the whole flow with it', async t => {
     assert.equal(after.instances[0].state, 'stopped');
     assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/instances/not-an-instance/stop`, 'user', {})).status, 404);
 });
-test('HTTP messages and continues a single phase', async t => {
-    const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
+test('HTTP messages and continues a single phase', async t => {    const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
     const { flow } = await (await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', objective: 'Work' })).json();
     const instanceId = flow.instances[0].id;
     const message = await f.request(`/api/roboflow/flows/${flow.id}/instances/${instanceId}/message`, 'user', { prompt: 'go' });
@@ -72,4 +71,18 @@ test('HTTP messages and continues a single phase', async t => {
     const { flow: after } = await resume.json();
     assert.equal(after.status, 'running');
     assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/instances/not-an-instance/message`, 'user', { prompt: 'x' })).status, 404);
+});
+test('HTTP async generation starts, streams logs and cancels', async t => {
+    const f = await fixture(t);
+    assert.equal((await f.request('/api/roboflow/generations', 'user', { description: 'Make a graph' })).status, 403);
+    const startedResponse = await f.request('/api/roboflow/generations', 'admin', { description: 'Make a graph' });
+    assert.equal(startedResponse.status, 202);
+    const { id } = await startedResponse.json();
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    f.roboflow.runtimeManager.taskStatus = () => ({ logTail: 'line one' });
+    const running = await (await f.request(`/api/roboflow/generations/${id}`, 'user')).json();
+    assert.equal(running.status, 'running');
+    assert.equal(running.log, 'line one');
+    assert.equal((await f.request(`/api/roboflow/generations/${id}`, 'admin', undefined, 'DELETE')).status, 200);
+    assert.equal((await f.request(`/api/roboflow/generations/${id}`, 'user')).status, 404);
 });

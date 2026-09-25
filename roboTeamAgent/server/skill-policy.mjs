@@ -106,9 +106,11 @@ export class SkillPolicies {
         const explicit = ['skillSets', 'skillset', 'skills'].some((key) => input[key] !== undefined);
         let sets = selectorNames(legacy?.skillSets ?? input.skillSets);
         sets = [...new Set([...sets, ...selectorNames(input.skillset)])];
-        const skills = selectorNames(legacy?.skills ?? input.skills, true);
+        let skills = selectorNames(legacy?.skills ?? input.skills, true);
         const diagnostics = [];
-        if (!legacy && !explicit && robot.name === 'default') sets = ['launch-workflow'];
+        // The default robot always mounts bash, launch-gpt-researcher and
+        // launch-workflow: the copilot skillset plus the front-copilot skill.
+        if (!legacy && !explicit && robot.name === 'default') { sets = ['copilot']; skills = ['copilot/launch-workflow']; }
         let excludedNames = [];
         try {
             const settings = JSON.parse(await fs.readFile(path.join(this.service.robotStore.robotPath(robot.id), 'copilot', 'settings.json'), 'utf8'));

@@ -32,14 +32,16 @@ export class TaskFlowStore {
         });
     }
     async get(id) { await this.initialize(); return this.getSync(id); }
-    // One-time cleanup of recorded runs; guarded by a marker next to the database.
-    async clearRunsOnce() {
+    // One-time cleanup of stored workflow types and runs; the default workflow is
+    // recreated afterwards. Guarded by a marker next to the database.
+    async clearLegacyOnce() {
         await this.initialize();
-        const marker = `${this.database.file}.runs-cleared`;
+        const marker = `${this.database.file}.legacy-cleared`;
         try { await fs.access(marker); return; } catch (error) { if (error.code !== 'ENOENT') throw error; }
         this.database.transaction(() => {
             this.database.db.prepare('DELETE FROM task_instances').run();
             this.database.db.prepare('DELETE FROM workflow_runs').run();
+            this.database.db.prepare('DELETE FROM workflow_types').run();
         });
         await fs.writeFile(marker, new Date().toISOString(), { mode: 0o600 });
     }

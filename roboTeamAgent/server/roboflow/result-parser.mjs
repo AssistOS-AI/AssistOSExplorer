@@ -35,5 +35,5 @@ export function parseRoute(source, graph, taskId) {
     return { message, nextEdgeId: edge.id, edge };
 }
 export function routingPrompt(graph, taskId) {
-    return `You are a robot executing one task in a directed workflow graph. Execute the current task, then choose exactly one of its outgoing edges. Return Markdown with optional # message and required # nextEdgeId sections. The latter must contain only the edge ID. Do not select incoming edges or edges from another node. Task descriptions explain the work at each destination.\nCurrent node: ${taskId}\nComplete graph:\n${JSON.stringify(graph)}\nAllowed outgoing edges:\n${JSON.stringify(graph.edges.filter(edge => edge.sourceTaskId === taskId))}`;
+    return `You are a robot executing one task in a directed workflow graph. Execute the current task, then choose exactly one of its outgoing edges. Return Markdown with optional # message and required # nextEdgeId sections. The latter must contain only the edge ID. Do not select incoming edges or edges from another node. Task prompts explain the work at each destination.\nCurrent node: ${taskId}\nComplete graph:\n${JSON.stringify(graph)}\nAllowed outgoing edges:\n${JSON.stringify(graph.edges.filter(edge => edge.sourceTaskId === taskId))}`;
 }

@@ -85,7 +85,7 @@ test('copilot is registered only on default and rejects selection on other robot
     ]);
     assert.ok(selected.resolvedSkills.every((name) => name.startsWith('copilot/')));
     const sets = publicSkillsets(robot).map(set => set.id).sort();
-    assert.deepEqual(sets, ['copilot', 'launch-workflow']);
+    assert.deepEqual(sets, ['copilot']);
     const other = await f.capture(f.robot);
     assert.deepEqual(other.resolvedSkills, []);
     assert.equal(publicSkillsets(f.robot).some(set => set.builtin), false);
@@ -340,8 +340,8 @@ test('default chat gets copilot while a saved delegated default conversation sta
         sessionStore, workingDir: f.source, discoverTaskSkills: discoverSkills });
     const chatId = crypto.randomUUID();
     const chat = await catalog.refresh(chatId);
-    assert.equal(chat.skills.filter(skill => skill.enabled).length, 1);
-    assert.equal(chat.skills.find((skill) => skill.enabled).name, 'launch-workflow');
+    assert.deepEqual(chat.skills.filter(skill => skill.enabled).map(skill => skill.name).sort(),
+        ['bash', 'launch-gpt-researcher', 'launch-workflow']);
     assert.equal(catalog.command, undefined);
     const empty = await f.skillsets.start(robot, {}, (_robot, selection) => selection);
     session = { skillPolicyRef: empty.policyId };

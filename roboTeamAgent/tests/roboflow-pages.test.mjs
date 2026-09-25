@@ -77,6 +77,7 @@ test('the flow type generation step is a separate page', async t => {
     assert.match(html, /id="generationDescription"/);
     assert.match(html, /id="skipButton"/);
     assert.match(html, /id="cancelButton"/);
+    assert.match(html, /id="generationLog"/);
     assert.equal(html.includes('id="generationPage"'), false);
 });
 

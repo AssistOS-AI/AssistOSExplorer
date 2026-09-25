@@ -39,11 +39,9 @@
   <header class="hero">
     <nav class="breadcrumbs" aria-label="Breadcrumb">
       <a href="./">RoboTeam</a>
-      <span class="breadcrumb-sep" aria-hidden="true">/</span>
-      <span class="breadcrumb-current-section">flow-types</span>
-      <span class="breadcrumb-sep" aria-hidden="true">/</span>
-      <a id="breadcrumbGenerate" href="flow-types/generate-new" hidden>generate</a>
       <span id="breadcrumbGenerateSep" class="breadcrumb-sep" aria-hidden="true" hidden>/</span>
+      <a id="breadcrumbGenerate" href="flow-types/generate-new" hidden>generate</a>
+      <span class="breadcrumb-sep" aria-hidden="true">/</span>
       <span id="breadcrumbLeaf" aria-current="page">new</span>
     </nav>
   </header>
@@ -53,7 +51,7 @@
       <div class="workflow-workspace">
         <aside class="task-sidebar">
           <nav class="workflow-pages" aria-label="Workflow editor pages">
-            <button type="button" class="workflow-page-button" data-page="settings" aria-pressed="false">Flow settings</button>
+            <button type="button" class="workflow-page-button" data-page="settings" aria-pressed="false">General</button>
             <button type="button" class="workflow-page-button" data-page="graph" aria-pressed="false">Graph</button>
           </nav>
           <div class="task-sidebar-header">
@@ -64,7 +62,7 @@
         </aside>
         <div class="workflow-main">
           <section id="flowSettingsPage" class="workflow-page" data-workflow-page="settings" aria-labelledby="flowSettingsTitle" hidden>
-            <h3 id="flowSettingsTitle">Flow settings</h3>
+            <h3 id="flowSettingsTitle">General</h3>
             <section class="workflow-details">
               <label class="field"><span>Name</span><input name="name" maxlength="120"></label>
               <label class="field"><span>Description</span><textarea name="description" rows="3"></textarea></label>

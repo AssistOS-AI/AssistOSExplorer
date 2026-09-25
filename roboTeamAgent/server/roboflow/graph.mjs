@@ -23,7 +23,7 @@ export function normalizeWorkflow(input, { id, builtin = false } = {}) {
         if (!builtin && !EXECUTION_TYPES.includes(task.executionType)) throw invalid('invalid execution type');
         if (!Array.isArray(task.skillsets) || task.skillsets.length > 100 || task.skillsets.some(s => typeof s !== 'string' || !s || s.length > 512)) throw invalid('invalid task skillsets');
         return { id: task.id, name: textField(task.name, 'task name', 120, true),
-            description: textField(task.description, 'task description', 16000, true), skillsets: [...new Set(task.skillsets)],
+            prompt: textField(task.prompt, 'task prompt', 16000, true), skillsets: [...new Set(task.skillsets)],
             ...(builtin ? { supportedExecutionTypes: [...EXECUTION_TYPES] } : { executionType: task.executionType }) };
     });
     if (!ids.has(input.entryTaskId)) throw invalid('entryTaskId must identify a task');
@@ -58,5 +58,5 @@ export function graphDiagnostics(graph) {
 export function workflowCatalogEntry(workflow) {
     return { id: workflow.id, name: workflow.name, description: workflow.description,
         ...(workflow.kind === 'default' ? { supportedExecutionTypes: [...EXECUTION_TYPES], requiresExecutionType: true } : {}),
-        tasks: workflow.tasks.map(({ id, name, description, executionType }) => ({ id, name, description, executionType })) };
+        tasks: workflow.tasks.map(({ id, name, prompt, executionType }) => ({ id, name, prompt, executionType })) };
 }

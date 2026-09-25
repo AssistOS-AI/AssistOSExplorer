@@ -169,6 +169,7 @@ function sessionRobotId(pathname) {
 
 const FLOW_PATH = '/api/roboflow/flows/(flow_[0-9a-f]{24})';
 const WORKFLOW_PATH = '/api/roboflow/workflows/([a-z0-9][a-z0-9-]{2,63})';
+const GENERATION_PATH = /^\/api\/roboflow\/generations\/([0-9a-f-]{36})$/;
 
 function sendText(res, status, body) {
     const payload = Buffer.from(String(body ?? ''));
@@ -210,6 +211,22 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         res.once('close', () => { if (!res.writableEnded) controller.abort(); });
         const result = await roboflow.generateWorkflow(await readJsonBody(req), { signal: controller.signal });
         sendJson(res, 200, { ok: true, ...result }); return true;
+    }
+    if (pathname === '/api/roboflow/generations' && req.method === 'POST') {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        sendJson(res, 202, { ok: true, ...await roboflow.startGeneration(await readJsonBody(req)) }); return true;
+    }
+    const generationId = pathname.match(GENERATION_PATH)?.[1];
+    if (generationId && req.method === 'GET') {
+        const generation = roboflow.generationInfo(generationId);
+        if (!generation) { sendError(res, 404, 'generation not found'); return true; }
+        sendJson(res, 200, { ok: true, ...generation }); return true;
+    }
+    if (generationId && req.method === 'DELETE') {
+        if (!isAdminActor(actor)) { sendError(res, 403, 'administrator role is required'); return true; }
+        const generation = roboflow.cancelGeneration(generationId);
+        if (!generation) { sendError(res, 404, 'generation not found'); return true; }
+        sendJson(res, 200, { ok: true, ...generation }); return true;
     }
     if (pathname === '/api/roboflow/workflows' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, workflows: await roboflow.listWorkflows() });

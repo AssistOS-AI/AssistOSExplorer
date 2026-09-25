@@ -40,8 +40,6 @@
       <nav class="breadcrumbs" aria-label="Breadcrumb">
         <a href="./">RoboTeam</a>
         <span class="breadcrumb-sep" aria-hidden="true">/</span>
-        <span class="breadcrumb-current-section">flow-types</span>
-        <span class="breadcrumb-sep" aria-hidden="true">/</span>
         <span aria-current="page">generate</span>
       </nav>
     </header>
@@ -53,12 +51,12 @@
       <p id="generationMessage" class="message" role="status"></p>
       <div class="generation-actions">
         <button id="generateButton" class="button primary" type="button">Generate</button>
+        <button id="skipButton" class="button" type="button" title="Skip generation and edit the workflow manually" aria-label="Skip generation and edit manually">Skip <span aria-hidden="true">→</span></button>
         <button id="cancelButton" class="button" type="button" hidden>Cancel</button>
       </div>
+      <pre id="generationLog" class="generation-log" aria-live="polite" aria-label="Generation logs" hidden></pre>
     </section>
   </main>
-
-  <button id="skipButton" class="manual-skip" type="button" title="Skip generation and edit the workflow manually" aria-label="Skip generation and edit manually">Skip <span aria-hidden="true">→</span></button>
 
   <script src="config.js"></script>
   <script type="module" src="generate.js"></script>

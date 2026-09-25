@@ -268,21 +268,20 @@ function renderPhaseHeader(header, instance) {
 }
 
 function skillsetLabel(id) {
-    const text = String(id || '');
-    const parts = text.split('::');
-    return parts.length > 1 ? parts[parts.length - 1] : text;
+    const segment = String(id || '').split('/').pop();
+    try { return decodeURIComponent(segment); } catch { return segment; }
 }
 
 function renderPhaseDetail(container, instance) {
     const task = currentFlow.graph.tasks.find(candidate => candidate.id === instance.taskId);
     container.replaceChildren();
-    const description = element('p', task?.description || 'No description.');
+    const description = element('p', task?.prompt || 'No prompt.');
     description.className = 'phase-description';
     container.append(description);
     const skillsets = Array.isArray(task?.skillsets) ? task.skillsets : [];
     const rows = [
         { label: 'Execution type', value: instance.executionType || task?.executionType || '—' },
-        { label: 'Skillsets', value: skillsets.length ? skillsets.map(skillsetLabel).join(', ') : 'None', title: skillsets.join(', ') },
+        { label: 'Skills', value: skillsets.length ? skillsets.map(skillsetLabel).join(', ') : 'None', title: skillsets.join(', ') },
     ];
     if (instance.robotName) rows.push({ label: 'Robot', value: instance.robotName });
     const list = document.createElement('dl');

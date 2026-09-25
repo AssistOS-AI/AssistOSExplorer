@@ -6,9 +6,9 @@ import test from 'node:test';
 import { RoboFlowService } from '../server/roboflow/roboflow-service.mjs';
 import { normalizeWorkflow } from '../server/roboflow/graph.mjs';
 import { parseRoute } from '../server/roboflow/result-parser.mjs';
-import { coverage, canonicalSkillset } from '../server/roboflow/skill-matching.mjs';
+import { coverage, canonicalSkillset, canonicalSkill, matchRobot, robotSelections } from '../server/roboflow/skill-matching.mjs';
 
-const task = (id, extras = {}) => ({ id, name: id, description: `Execute ${id}`, executionType: 'terminal', skillsets: [], ...extras });
+const task = (id, extras = {}) => ({ id, name: id, prompt: `Execute ${id}`, executionType: 'terminal', skillsets: [], ...extras });
 const edge = (sourceTaskId, targetTaskId) => ({ id: `${sourceTaskId}-${targetTaskId}`, sourceTaskId, targetTaskId });
 const graph = () => ({ id: 'example', name: 'Example', entryTaskId: 'a', tasks: [task('a'), task('b'), task('c')], edges: [edge('a', 'b'), edge('a', 'c'), edge('b', 'a')] });
 async function fixture(t, options = {}) {
@@ -255,7 +255,45 @@ test('workflow skillset discovery reads only skills/ and ignores agent instructi
         ],
     });
     assert.deepEqual(catalog.diagnostics, []);
-    assert.equal(catalog.skillsets.some(set => ['project', 'mixed-repo', 'agent-repo'].includes(set.repositoryName)), false);
+    assert.ok(catalog.skillsets.some(set => set.kind === 'skill' && set.repositoryName === 'project' && set.name === 'Review Extra'));
+    assert.equal(catalog.skillsets.some(set => set.name === 'achilles_specs'), false);
+    assert.equal(catalog.skillsets.some(set => ['mixed-repo', 'agent-repo'].includes(set.repositoryName)), false);
+});
+
+test('repositories without declared skillsets match and mount individual skills', () => {
+    const source = '/workspace/skills';
+    const repo = { name: 'local', source, skills: [{ name: 'one', description: 'One' }], definitions: [] };
+    const skillId = canonicalSkill(source, 'one');
+    const worker = { id: 'worker-id', name: 'worker', skillsets: [repo] };
+    assert.deepEqual(robotSelections(worker), [{ id: skillId, kind: 'skill', selector: 'local/one', name: 'one',
+        description: 'One', repositoryId: source, repositoryName: 'local' }]);
+    assert.equal(matchRobot(worker, { skillsets: [skillId] }), true);
+    assert.equal(matchRobot({ id: 'other-id', name: 'other', skillsets: [] }, { skillsets: [skillId] }), false);
+    assert.equal(robotSelections({ id: 'default-id', name: 'default', skillsets: [repo] }).some(item => item.id === skillId), true);
+});
+
+test('repositories with declared skillsets expose only their skillsets', () => {
+    const repo = { name: 'sets', source: '/workspace/sets', skills: [{ name: 'x' }, { name: 'y' }], definitions: [{ name: 'S', skills: ['x'] }] };
+    const selections = robotSelections({ id: 'worker-id', name: 'worker', skillsets: [repo] });
+    assert.deepEqual(selections.map(item => item.selector), ['sets-set-1']);
+    assert.ok(selections.every(item => item.kind === 'skillset'));
+});
+
+test('workflow task selections map skillsets and individual skills to robot selectors', async t => {
+    const recorded = [];
+    const f = await fixture(t, { skillsets: { start: async (robot, input, enqueue) => { recorded.push(input); return enqueue(robot, { policyId: 'policy-1' }); } } });
+    const source = '/workspace/skills';
+    f.robots[1].skillsets = [
+        { name: 'named', source: '/workspace/named', skills: [{ name: 'x' }], definitions: [{ name: 'S1', skills: ['x'] }] },
+        { name: 'individual', source, skills: [{ name: 'one' }], definitions: [] },
+    ];
+    const setsId = canonicalSkillset('/workspace/named', 'S1');
+    const skillId = canonicalSkill(source, 'one');
+    await f.service.createWorkflow({ ...graph(), tasks: [task('a', { skillsets: [setsId, skillId] })], edges: [] });
+    await f.service.startFlow({ workflowTypeId: 'example', objective: 'Work' });
+    assert.equal(f.started[0].robot.name, 'worker');
+    assert.deepEqual(recorded[0].skillSets, ['named-set-1']);
+    assert.deepEqual(recorded[0].skills, ['individual/one']);
 });
 
 test('a live prompt reaches the running phase and is recorded in its log', async t => {
@@ -299,4 +337,32 @@ test('continuing a completed phase resumes its session and the run advances from
     assert.equal(f.resumed.length, 2);
     assert.equal(f.resumed[1].prompt, '');
     assert.equal((await f.service.getInvocationLog(flow.id, completedB.id)).match(/you>/g).length, before);
+});
+
+test('async generation streams task logs and returns the validated graph', async t => {
+    const f = await fixture(t);
+    const { id } = await f.service.startGeneration({ description: 'Make a graph' });
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.started[0].robot.name, 'default');
+    f.service.runtimeManager.taskStatus = () => ({ logTail: 'working on it' });
+    assert.deepEqual(f.service.generationInfo(id), { id, status: 'running', log: 'working on it', graph: null, error: null });
+    await f.finish(0, JSON.stringify(graph()));
+    let done = null;
+    for (let attempt = 0; attempt < 100 && done?.status !== 'completed'; attempt++) {
+        done = f.service.generationInfo(id) || done;
+        if (done?.status !== 'completed') await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(done.status, 'completed');
+    assert.equal(done.graph.entryTaskId, 'a');
+    assert.equal(f.service.generationInfo(id), null);
+});
+
+test('cancelling an async generation stops its runtime task', async t => {
+    const f = await fixture(t);
+    const { id } = await f.service.startGeneration({ description: 'Make a graph' });
+    while (!f.started.length) await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(f.service.cancelGeneration(id), { id, status: 'cancelled', graph: null, error: 'Graph generation cancelled' });
+    assert.deepEqual(f.stopped, [f.started[0].taskId]);
+    assert.equal(f.service.generationInfo(id), null);
+    assert.equal(f.service.cancelGeneration(id), null);
 });
