@@ -63,6 +63,7 @@ test('flow type pages are served for new and existing editors', async t => {
         assert.match(html, /editor\.js/);
         assert.match(html, /flow-types/);
         assert.match(html, /id="breadcrumbLeaf"/);
+        assert.match(html, /<base href="\/rt\/">/);
         assert.equal(html.includes('id="generationPage"'), false);
         assert.equal(html.includes('id="generateWorkflow"'), false);
     }
@@ -78,6 +79,7 @@ test('the flow type generation step is a separate page', async t => {
     assert.match(html, /id="skipButton"/);
     assert.match(html, /id="cancelButton"/);
     assert.match(html, /id="generationLog"/);
+    assert.match(html, /<base href="\/rt\/">/);
     assert.equal(html.includes('id="generationPage"'), false);
 });
 

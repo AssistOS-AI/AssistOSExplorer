@@ -18,6 +18,7 @@ try {
         if (stored) {
             sessionStorage.removeItem('roboflow:new-draft');
             try { draft = JSON.parse(stored); } catch { draft = null; }
+            if (draft) delete draft.id;
         }
     }
     generateLink.hidden = Boolean(workflow);

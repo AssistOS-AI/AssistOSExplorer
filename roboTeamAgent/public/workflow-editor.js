@@ -20,7 +20,7 @@ export function createWorkflowEditor({ api }) {
     const message = document.querySelector('#workflowMessage');
     const addTaskButton = document.querySelector('#addTaskButton');
     const addTaskPanel = document.querySelector('#addTaskPanel');
-    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0, addSkillsets = [], openPickerMenu = null;
+    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0, addSkillsets = [];
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
     const readonly = () => !canAdmin || graph?.kind === 'default';
     const changed = () => { version++; };
@@ -38,13 +38,29 @@ export function createWorkflowEditor({ api }) {
     }
     function select(id) { selected = id; renderList(); renderTaskEditor(); showPage('task'); }
     function layoutFor(index) { return { x: 40 + index % 4 * 240, y: 40 + Math.floor(index / 4) * 150 }; }
+    function showCoverageMessage(result) {
+        message.replaceChildren();
+        const lines = [];
+        if (result.coverage.warning) {
+            const line = node('span', null, 'coverage-warning-line');
+            const icon = node('span', '⚠', 'coverage-warning-icon');
+            icon.setAttribute('aria-hidden', 'true');
+            line.append(icon, node('span', warningText));
+            lines.push(line);
+        }
+        for (const item of result.diagnostics) lines.push(node('span', item.message, 'coverage-diagnostic'));
+        lines.forEach((line, index) => {
+            if (index) message.append(document.createTextNode('\n'));
+            message.append(line);
+        });
+    }
     async function checkCoverage() {
         if (readonly() || !graph.tasks.length) return;
         const request = ++coverageRequest;
         try {
             const result = await api('api/roboflow/validate', { method: 'POST', body: { ...graph, name: graph.name || 'Draft' } });
             if (request !== coverageRequest) return;
-            message.textContent = [result.coverage.warning ? warningText : '', ...result.diagnostics.map(item => item.message)].filter(Boolean).join('\n');
+            showCoverageMessage(result);
             for (const task of result.coverage.tasks) taskList.querySelector(`[data-task-id="${CSS.escape(task.taskId)}"]`)?.classList.toggle('coverage-warning', !task.matchingRobotIds.length);
         } catch (error) { if (request === coverageRequest) showError(error); }
     }
@@ -55,8 +71,6 @@ export function createWorkflowEditor({ api }) {
     function renderBoard() { drawBoard(board, graph, { readOnly: readonly(), onSelect: id => { selected = id; renderList(); renderTaskEditor(); }, selectedEdgeId, onSelectEdge: id => { selectedEdgeId = id; renderBoard(); }, onSetEntry: id => { graph.entryTaskId = id; selected = id; changed(); render(); }, onChange: event => { if (event.connect) connect(event.connect); else changed(); } }); }
     function field(label, element) { const wrapper = node('label', null, 'field'); wrapper.append(node('span', label), element); return wrapper; }
     function fieldBlock(label, element) { const wrapper = node('div', null, 'field'); wrapper.append(node('span', label), element); return wrapper; }
-    function closePicker() { if (!openPickerMenu) return; openPickerMenu.menu.hidden = true; openPickerMenu.trigger.setAttribute('aria-expanded', 'false'); openPickerMenu = null; }
-    document.addEventListener('click', event => { if (openPickerMenu && !openPickerMenu.root.contains(event.target)) closePicker(); });
     function skillsetPicker(selectedIds) {
         const wrapper = node('div', null, 'skillset-picker');
         const pills = node('div', null, 'skillset-pills');
@@ -64,9 +78,16 @@ export function createWorkflowEditor({ api }) {
         trigger.type = 'button';
         trigger.setAttribute('aria-haspopup', 'true');
         trigger.setAttribute('aria-expanded', 'false');
-        trigger.append(node('span', 'Add skill'), node('span', '▾', 'skillset-trigger-caret'));
-        const menu = node('div', null, 'skillset-menu');
-        menu.hidden = true;
+        trigger.append(node('span', '+', 'skillset-trigger-icon'), node('span', 'Add skill or skillset'), node('span', '▾', 'skillset-trigger-caret'));
+        const panel = node('div', null, 'skillset-panel');
+        panel.hidden = true;
+        const search = node('input'); search.type = 'search'; search.className = 'skillset-search';
+        search.placeholder = 'Search skills and skillsets'; search.setAttribute('aria-label', 'Search skills and skillsets');
+        const list = node('div', null, 'skillset-list');
+        const count = node('span', '', 'skillset-count');
+        const footer = node('div', null, 'skillset-panel-footer');
+        footer.append(count, button('Done', () => setOpen(false)));
+        panel.append(search, list, footer);
         const groups = new Map();
         for (const set of catalog) {
             const key = set.repositoryName || set.repositoryId || 'Skillsets';
@@ -77,9 +98,14 @@ export function createWorkflowEditor({ api }) {
         const unavailable = selectedIds.filter(id => !known.has(id));
         if (unavailable.length) groups.set('Unavailable', unavailable.map(id => ({ id, name: `${id} (unavailable)` })));
         function apply() { changed(); void checkCoverage(); }
+        function setOpen(open) {
+            panel.hidden = !open;
+            trigger.setAttribute('aria-expanded', String(open));
+            if (open) search.focus();
+        }
         function renderPills() {
             pills.replaceChildren();
-            if (!selectedIds.length) { pills.append(node('span', 'No skillsets selected.', 'skillset-empty')); return; }
+            if (!selectedIds.length) { pills.append(node('span', 'No skills selected.', 'skillset-empty')); return; }
             for (const id of selectedIds) {
                 const set = catalog.find(item => item.id === id);
                 const label = set ? set.name : `${id} (unavailable)`;
@@ -88,42 +114,53 @@ export function createWorkflowEditor({ api }) {
                 const remove = node('button', '×', 'skillset-pill-remove');
                 remove.type = 'button';
                 remove.setAttribute('aria-label', `Remove ${label}`);
-                remove.onclick = () => { const index = selectedIds.indexOf(id); if (index >= 0) selectedIds.splice(index, 1); renderPills(); renderMenu(); apply(); };
+                remove.onclick = () => { const index = selectedIds.indexOf(id); if (index >= 0) selectedIds.splice(index, 1); renderPills(); renderOptions(); apply(); };
                 pill.append(remove);
                 pills.append(pill);
             }
         }
-        function renderMenu() {
-            menu.replaceChildren();
+        function renderOptions() {
+            const term = search.value.trim().toLowerCase();
+            list.replaceChildren();
+            let visible = 0;
             for (const [repository, sets] of groups) {
-                const group = node('div', null, 'skillset-group');
-                group.append(node('div', repository, 'skillset-group-header'));
-                for (const set of sets) {
+                const matches = sets.filter(set => !term || String(set.name || '').toLowerCase().includes(term)
+                    || String(set.description || '').toLowerCase().includes(term) || repository.toLowerCase().includes(term));
+                if (!matches.length) continue;
+                const group = node('section', null, 'skillset-group');
+                group.append(node('h4', repository, 'skillset-group-header'));
+                const grid = node('div', null, 'skillset-group-grid');
+                for (const set of matches) {
                     const chosen = selectedIds.includes(set.id);
-                    const item = node('button', null, 'skillset-menu-item');
+                    const item = node('button', null, 'skillset-pick-item');
                     item.type = 'button';
                     item.setAttribute('aria-pressed', String(chosen));
                     if (chosen) item.classList.add('selected');
-                    const text = node('span', null, 'skillset-menu-text');
-                    text.append(node('span', set.name, 'skillset-menu-name'));
-                    if (set.description) text.append(node('span', set.description, 'skillset-menu-desc'));
-                    item.append(node('span', chosen ? '✓' : '', 'skillset-menu-check'), text);
-                    item.onclick = () => { if (chosen) selectedIds.splice(selectedIds.indexOf(set.id), 1); else selectedIds.push(set.id); renderPills(); renderMenu(); apply(); };
-                    group.append(item);
+                    const text = node('span', null, 'skillset-pick-text');
+                    const nameRow = node('span', null, 'skillset-pick-name-row');
+                    nameRow.append(node('span', set.name, 'skillset-pick-name'));
+                    if (set.kind) nameRow.append(node('span', set.kind, 'skillset-pick-kind'));
+                    text.append(nameRow);
+                    if (set.description) text.append(node('span', set.description, 'skillset-pick-desc'));
+                    item.append(node('span', chosen ? '✓' : '', 'skillset-pick-check'), text);
+                    item.onclick = () => { if (chosen) selectedIds.splice(selectedIds.indexOf(set.id), 1); else selectedIds.push(set.id); renderPills(); renderOptions(); apply(); };
+                    grid.append(item);
                 }
-                menu.append(group);
+                group.append(grid);
+                list.append(group);
+                visible += matches.length;
             }
-            if (!groups.size) menu.append(node('p', 'No skillsets available.', 'skillset-empty'));
+            if (!visible) list.append(node('p', 'No matching skills or skillsets.', 'skillset-empty'));
+            count.textContent = selectedIds.length ? `${selectedIds.length} selected` : 'None selected';
         }
-        trigger.onclick = event => {
-            event.stopPropagation();
-            if (!menu.hidden) { closePicker(); return; }
-            closePicker();
-            menu.hidden = false; trigger.setAttribute('aria-expanded', 'true');
-            openPickerMenu = { root: wrapper, menu, trigger };
-        };
-        renderPills(); renderMenu();
-        wrapper.append(pills, trigger, menu);
+        trigger.onclick = () => setOpen(panel.hidden);
+        search.oninput = renderOptions;
+        wrapper.addEventListener('keydown', event => {
+            if (event.key !== 'Escape' || panel.hidden) return;
+            event.stopPropagation(); setOpen(false); trigger.focus();
+        });
+        renderPills(); renderOptions();
+        wrapper.append(pills, trigger, panel);
         return wrapper;
     }
     function renderList() {
@@ -142,7 +179,6 @@ export function createWorkflowEditor({ api }) {
         if (!graph.tasks.length) taskList.append(node('li', 'No tasks yet. Use + to add one.', 'task-list-empty'));
     }
     function renderTaskEditor() {
-        closePicker();
         taskPanel.replaceChildren();
         const task = graph.tasks.find(item => item.id === selected);
         if (!task) {
@@ -183,7 +219,6 @@ export function createWorkflowEditor({ api }) {
         taskPanel.append(card);
     }
     function renderAddTask() {
-        closePicker();
         const previous = addTaskPanel.querySelector('.task-editor');
         const previousValues = previous ? [...previous.querySelectorAll('input:not([type="checkbox"]),textarea,select')].map(control => control.value) : [];
         addTaskPanel.replaceChildren();

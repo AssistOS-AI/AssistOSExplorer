@@ -79,6 +79,27 @@ async function serveFile(res, root, relativePath) {
     fs.createReadStream(candidate).pipe(res);
 }
 
+// HTML pages live under route paths such as /flow-types/new, so their relative
+// asset URLs need an explicit base. It is injected in the markup (not by script)
+// so the browser's preload scanner resolves the assets correctly on first fetch.
+async function servePage(res, root, relativePath, basePath) {
+    const rootPath = path.resolve(root);
+    const candidate = path.resolve(rootPath, relativePath);
+    if (candidate !== rootPath && !candidate.startsWith(`${rootPath}${path.sep}`)) return sendError(res, 404, 'not found');
+    let html;
+    try { html = await fsp.readFile(candidate, 'utf8'); } catch { return sendError(res, 404, 'not found'); }
+    const href = String(basePath || './').replace(/"/g, '&quot;');
+    const injected = /<base[\s>]/i.test(html) ? html : html.replace(/<head(\s[^>]*)?>/i, match => `${match}\n  <base href="${href}">`);
+    const payload = Buffer.from(injected);
+    res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'content-length': payload.length,
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+    });
+    res.end(payload);
+}
+
 function proxyAgentServer(req, res, mcpPort) {
     const headers = { ...req.headers, host: `127.0.0.1:${mcpPort}` };
     const upstream = http.request({ host: '127.0.0.1', port: mcpPort, method: req.method, path: req.url, headers }, (response) => {
@@ -181,20 +202,20 @@ function sendText(res, status, body) {
     res.end(payload);
 }
 
-async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir }) {
+async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath }) {
     if (!pathname.startsWith('/api/roboflow') && !['/flows', '/flow-types', '/flow-types/new', '/flow-types/generate-new'].includes(pathname)) {
         return false;
     }
     if (pathname === '/flows' && req.method === 'GET') {
-        await serveFile(res, publicDir, url.searchParams.get('flowId') ? 'roboflow.html' : 'flows.html');
+        await servePage(res, publicDir, url.searchParams.get('flowId') ? 'roboflow.html' : 'flows.html', publicBasePath);
         return true;
     }
     if (pathname === '/flow-types/generate-new' && req.method === 'GET') {
-        await serveFile(res, publicDir, 'generate.html');
+        await servePage(res, publicDir, 'generate.html', publicBasePath);
         return true;
     }
     if ((pathname === '/flow-types' || pathname === '/flow-types/new') && req.method === 'GET') {
-        await serveFile(res, publicDir, 'editor.html');
+        await servePage(res, publicDir, 'editor.html', publicBasePath);
         return true;
     }
 
@@ -328,7 +349,7 @@ export function createRoboTeamServer(options) {
                 if (!port) return sendError(res, 409, 'robot is not running');
                 return proxySessionHttp(req, res, port, publicBasePath);
             }
-            if (pathname === '/' && req.method === 'GET') return serveFile(res, publicDir, 'index.html');
+            if (pathname === '/' && req.method === 'GET') return servePage(res, publicDir, 'index.html', publicBasePath);
             if (pathname === '/config.js' && req.method === 'GET') {
                 res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
                 res.end(`globalThis.ROBOTEAM_CONFIG=${JSON.stringify({ publicBasePath, routeKey })};\n`);
@@ -487,7 +508,7 @@ export function createRoboTeamServer(options) {
                 if (!robot) return sendError(res, 404, 'robot not found');
                 return sendJson(res, 200, { ok: true, logs: await runtimeManager.logs(robot.id, url.searchParams.get('tail')) });
             }
-            if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir })) return;
+            if (roboflow && await handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir, publicBasePath })) return;
             sendError(res, 404, 'not found');
         } catch (error) {
             const message = String(error?.message || '');

@@ -49,28 +49,39 @@
 .graph-port-left { left: -10px; }
 .graph-port-right { right: -10px; }
 .graph-port:focus-visible { outline: 3px solid var(--accent); }
-.skillset-picker { position: relative; display: grid; gap: 8px; min-width: 0; }
+.skillset-picker { display: grid; gap: 8px; min-width: 0; }
 .skillset-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 30px; }
-.skillset-empty { color: var(--text-soft); font-size: var(--font-sm); }
+.skillset-empty { margin: 0; color: var(--text-soft); font-size: var(--font-sm); }
 .skillset-pill { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 6px 3px 10px; border: 1px solid var(--border-strong); border-radius: 999px; background: color-mix(in srgb, var(--accent) 8%, var(--surface)); font-size: var(--font-sm); }
 .skillset-pill-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skillset-pill-remove { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-soft); font-size: 14px; line-height: 1; cursor: pointer; }
 .skillset-pill-remove:hover { background: color-mix(in srgb, var(--danger, #b42318) 14%, transparent); color: var(--danger, #b42318); }
-.skillset-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; max-width: 420px; padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); background: var(--input-bg, var(--surface)); color: var(--text); font-size: var(--font-sm); cursor: pointer; }
-.skillset-trigger:hover:not(:disabled) { border-color: var(--accent); }
-.skillset-trigger-caret { color: var(--text-soft); }
-.skillset-menu { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; width: min(420px, 100%); max-height: 320px; overflow-y: auto; padding: 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); background: var(--surface); box-shadow: 0 12px 30px rgba(0, 0, 0, .18); }
-.skillset-group { display: grid; gap: 2px; padding: 6px 4px; }
-.skillset-group + .skillset-group { border-top: 1px solid var(--border); }
-.skillset-group-header { padding: 4px 8px; font-size: var(--font-xs, .75rem); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-soft); }
-.skillset-menu-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-.skillset-menu-item:hover:not(:disabled) { background: var(--surface-soft, color-mix(in srgb, var(--accent) 8%, transparent)); }
-.skillset-menu-item.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.skillset-menu-check { flex: 0 0 14px; color: var(--accent); font-weight: 700; }
-.skillset-menu-text { display: grid; gap: 2px; min-width: 0; }
-.skillset-menu-name { font-size: var(--font-sm); font-weight: 500; }
-.skillset-menu-desc { font-size: var(--font-xs, .75rem); color: var(--text-soft); overflow-wrap: anywhere; }
+.skillset-trigger { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 420px; padding: 9px 12px; border: 1px dashed var(--border-strong); border-radius: var(--radius-md, 8px); background: transparent; color: var(--text); font-size: var(--font-sm); cursor: pointer; }
+.skillset-trigger:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.skillset-trigger-icon { font-weight: 700; color: var(--accent); }
+.skillset-trigger-caret { margin-left: auto; color: var(--text-soft); }
+.skillset-panel { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md, 8px); background: var(--surface-soft, var(--surface)); }
+.skillset-panel[hidden] { display: none; }
+.skillset-search { width: 100%; padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); background: var(--input-bg, var(--surface)); color: var(--text); font-size: var(--font-sm); outline: none; }
+.skillset-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 0 128 105), .14); }
+.skillset-list { display: grid; gap: 12px; max-height: 340px; overflow-y: auto; padding-right: 4px; }
+.skillset-group { display: grid; gap: 8px; }
+.skillset-group-header { margin: 0; font-size: var(--font-xs, .75rem); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-soft); }
+.skillset-group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; }
+.skillset-pick-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md, 8px); background: var(--surface); color: var(--text); text-align: left; cursor: pointer; }
+.skillset-pick-item:hover:not(:disabled) { border-color: var(--accent); }
+.skillset-pick-item.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.skillset-pick-check { flex: 0 0 16px; color: var(--accent); font-weight: 700; text-align: center; }
+.skillset-pick-text { display: grid; gap: 3px; min-width: 0; }
+.skillset-pick-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.skillset-pick-name { font-size: var(--font-sm); font-weight: 600; overflow-wrap: anywhere; }
+.skillset-pick-kind { padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--text-soft) 14%, transparent); color: var(--text-soft); font-size: 10px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+.skillset-pick-desc { font-size: var(--font-xs, .75rem); color: var(--text-soft); overflow-wrap: anywhere; }
+.skillset-panel-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.skillset-count { color: var(--text-soft); font-size: var(--font-xs, .75rem); }
 .coverage-warning { border-color: var(--warning); }
+.coverage-warning-line { display: inline-flex; align-items: baseline; gap: 6px; }
+.coverage-warning-icon { color: var(--warning); font-size: 1.15em; line-height: 1; }
 .workflow-warning { color: var(--warning); font-size: 24px; margin-right: 12px; }
 #workflowMessage { white-space: pre-wrap; overflow-wrap: anywhere; }
 .theme-dark .workflow-board, .theme-dark .graph-node { background-color: #20242b; color: #eee; }
