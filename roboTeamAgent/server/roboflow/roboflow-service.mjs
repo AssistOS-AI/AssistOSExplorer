@@ -59,6 +59,7 @@ export class RoboFlowService {
     async initialize() {
         await this.registry.initialize();
         await ensureDefaultWorkflow(this.registry);
+        await this.store.clearRunsOnce();
         for (const flow of await this.store.list()) if (!terminal(flow.status)) await this.store.update(flow.id, current => {
             current.status = 'failed'; current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'interrupted'; instance.error = current.error; instance.endedAt = current.finishedAt; }

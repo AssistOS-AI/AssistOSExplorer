@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam · Flows</title>
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    (() => {
+      const keys = ['assistosExplorerTheme', 'webchat_theme'];
+      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const syncTheme = () => {
+        let preference;
+        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+        catch { /* Browser settings may disable storage. */ }
+        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+        const root = document.documentElement;
+        root.classList.toggle('theme-dark', dark);
+        root.classList.toggle('theme-light', !dark);
+        root.setAttribute('theme', dark ? 'dark' : 'light');
+      };
+      syncTheme();
+      browserTheme.addEventListener('change', syncTheme);
+      window.addEventListener('storage', event => { if (event.key === null || keys.includes(event.key)) syncTheme(); });
+      window.addEventListener('focus', syncTheme);
+      window.addEventListener('pageshow', syncTheme);
+    })();
+  </script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <nav class="breadcrumbs" aria-label="Breadcrumb">
+        <a href="./">RoboTeam</a>
+        <span class="breadcrumb-sep" aria-hidden="true">/</span>
+        <span aria-current="page">flows</span>
+      </nav>
+    </header>
+
+    <section class="panel" aria-labelledby="flows-title">
+      <div class="section-heading"><h2 id="flows-title">Flows</h2><span id="flowCount" class="count">0</span></div>
+      <p id="flowsMessage" class="message" role="status"></p>
+      <div id="flowsList" class="flow-list" aria-live="polite"></div>
+    </section>
+  </main>
+  <script src="config.js"></script>
+  <script type="module" src="flows.js"></script>
+</body>
+</html>

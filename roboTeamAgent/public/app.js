@@ -1,23 +1,19 @@
-import { createWorkflowEditor } from './workflow-editor.js';
+import { api, endpoint, routeKey } from './roboflow-api.js';
 import { openSkillsDialog, codingAgentLabel, openCodingAgentsDialog } from './skills-dialog.js';
 import { openRobotTerminal } from './terminal.js';
 
-const config = globalThis.ROBOTEAM_CONFIG || {};
-const basePath = config.publicBasePath || './';
-const routeKey = config.routeKey || 'roboTeamAgent';
 const robotsList = document.querySelector('#robotsList');
 const robotTemplate = document.querySelector('#robotTemplate');
 const robotCount = document.querySelector('#robotCount');
 const createForm = document.querySelector('#createForm');
 const formMessage = document.querySelector('#formMessage');
-const flowsHistoryButton = document.querySelector('#flowsHistoryButton');
-const flowsHistoryDialog = document.querySelector('#flowsHistoryDialog');
-const flowsHistoryClose = document.querySelector('#flowsHistoryClose');
-const flowsHistoryList = document.querySelector('#flowsHistoryList');
-const flowsHistoryMessage = document.querySelector('#flowsHistoryMessage');
-const flowsHistoryFrame = document.querySelector('#flowsHistoryFrame');
-const flowsHistoryEmpty = document.querySelector('#flowsHistoryEmpty');
+const workflowsList = document.querySelector('#workflowsList');
+const workflowCount = document.querySelector('#workflowCount');
+const workflowListMessage = document.querySelector('#workflowListMessage');
+const addWorkflowButton = document.querySelector('#addWorkflowButton');
 const logPollers = new Set();
+
+const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
 
 function closeOpenMenus(except) {
     for (const menu of document.querySelectorAll('.robot-open')) {
@@ -60,38 +56,6 @@ function prepareOpenMenu(card, robot) {
     menu.addEventListener('focusout', event => {
         if (!menu.contains(event.relatedTarget)) closeOpenMenus();
     });
-}
-
-function endpoint(relativePath) {
-    return new URL(relativePath.replace(/^\/+/, ''), new URL(basePath, location.origin)).toString();
-}
-
-async function browserMutationToken() {
-    const tokenUrl = new URL('/auth/token', location.origin);
-    tokenUrl.searchParams.set('mutationRoute', routeKey);
-    const response = await fetch(tokenUrl, { credentials: 'include', cache: 'no-store' });
-    const payload = await response.json().catch(() => ({}));
-    const proof = payload.browserMutation;
-    if (!response.ok || !proof?.csrfToken || proof.routeKey !== routeKey) throw new Error('Could not obtain the Ploinky browser mutation proof.');
-    return proof.csrfToken;
-}
-
-async function api(relativePath, options = {}) {
-    const headers = new Headers(options.headers || {});
-    headers.set('accept', 'application/json');
-    if (options.body !== undefined) headers.set('content-type', 'application/json');
-    const method = String(options.method || 'GET').toUpperCase();
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers.set('x-ploinky-browser-csrf-token', await browserMutationToken());
-    const response = await fetch(endpoint(relativePath), {
-        ...options,
-        method,
-        headers,
-        credentials: 'include',
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
-    return payload;
 }
 
 function initials(name) {
@@ -302,12 +266,54 @@ function renderRobots(robots, canAdmin = false) {
     }
 }
 
+function renderWorkflows(workflows, canAdmin) {
+    workflowCount.textContent = `${workflows.length} workflows`;
+    workflowsList.replaceChildren();
+    for (const workflow of workflows) {
+        const card = document.createElement('article');
+        card.className = 'workflow-card';
+        const title = document.createElement('h3');
+        title.textContent = workflow.name;
+        const description = document.createElement('p');
+        description.textContent = workflow.description;
+        card.append(title, description);
+        if (workflow.coverage?.warning) {
+            const warning = document.createElement('span');
+            warning.className = 'workflow-warning';
+            warning.textContent = '⚠';
+            warning.title = warningText;
+            warning.setAttribute('aria-label', warningText);
+            card.append(warning);
+        }
+        const counts = document.createElement('p');
+        counts.textContent = `${workflow.tasks.length} tasks · ${workflow.edges.length} connections`;
+        card.append(counts);
+        const link = document.createElement('a');
+        link.className = 'button';
+        link.href = endpoint(`flow-types?id=${encodeURIComponent(workflow.id)}`);
+        link.textContent = canAdmin && workflow.kind !== 'default' ? 'Edit workflow' : 'View workflow';
+        card.append(link);
+        workflowsList.append(card);
+    }
+}
+
+async function loadWorkflows(canAdmin) {
+    addWorkflowButton.hidden = !canAdmin;
+    try {
+        const { workflows } = await api('api/roboflow/workflows');
+        workflowListMessage.textContent = '';
+        renderWorkflows(workflows, canAdmin);
+    } catch (error) {
+        workflowListMessage.textContent = error.message;
+    }
+}
+
 async function loadRobots() {
     try {
         const result = await api('api/robots');
         renderRobots(result.robots || [], result.canAdmin === true);
         for (const field of createForm.elements) field.disabled = result.canAdmin !== true;
-        await workflows.load(result.canAdmin === true);
+        await loadWorkflows(result.canAdmin === true);
     } catch (error) {
         robotsList.textContent = `Robots unavailable: ${error.message}`;
     }
@@ -330,70 +336,5 @@ createForm.addEventListener('submit', async (event) => {
         submit.disabled = false;
     }
 });
-
-function flowPageUrl(flowId) {
-    const url = new URL(endpoint('roboflow'));
-    url.searchParams.set('flowId', flowId);
-    return url.toString();
-}
-
-function formatFlowDate(value) {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value || '';
-    return date.toLocaleString(undefined, {
-        year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-    });
-}
-
-function selectFlowHistory(item, flowId) {
-    for (const entry of flowsHistoryList.children) entry.classList.toggle('is-selected', entry === item);
-    flowsHistoryEmpty.hidden = true;
-    flowsHistoryFrame.hidden = false;
-    flowsHistoryFrame.src = flowPageUrl(flowId);
-}
-
-function renderFlowsHistory(flows) {
-    flowsHistoryList.replaceChildren();
-    flowsHistoryMessage.textContent = flows.length ? '' : 'No flow executions yet.';
-    for (const flow of flows) {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.className = 'history-item';
-        const name = document.createElement('strong');
-        name.textContent = flow.workflowName || flow.id;
-        const meta = document.createElement('span');
-        meta.className = 'history-item-meta';
-        meta.textContent = formatFlowDate(flow.createdAt);
-        item.append(name, meta);
-        item.onclick = () => selectFlowHistory(item, flow.id);
-        flowsHistoryList.append(item);
-    }
-}
-
-function resetFlowsHistory() {
-    flowsHistoryFrame.hidden = true;
-    flowsHistoryFrame.removeAttribute('src');
-    flowsHistoryEmpty.hidden = false;
-}
-
-async function openFlowsHistory() {
-    flowsHistoryList.replaceChildren();
-    flowsHistoryMessage.textContent = 'Loading…';
-    resetFlowsHistory();
-    if (!flowsHistoryDialog.open) flowsHistoryDialog.showModal();
-    try {
-        const { flows } = await api('api/roboflow/flows');
-        renderFlowsHistory(flows || []);
-    } catch (error) {
-        flowsHistoryList.replaceChildren();
-        flowsHistoryMessage.textContent = error.message;
-    }
-}
-
-flowsHistoryButton.addEventListener('click', () => void openFlowsHistory());
-flowsHistoryClose.addEventListener('click', () => flowsHistoryDialog.close());
-flowsHistoryDialog.addEventListener('close', resetFlowsHistory);
-
-const workflows = createWorkflowEditor({ api });
 
 await loadRobots();

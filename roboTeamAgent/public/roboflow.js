@@ -611,6 +611,8 @@ async function render() {
         location.replace(new URL('.', document.baseURI).toString());
         return;
     }
+    const leaf = document.querySelector('#breadcrumbLeaf');
+    if (leaf) leaf.textContent = selected;
     try {
         setMessage('');
         stageView = 'empty';

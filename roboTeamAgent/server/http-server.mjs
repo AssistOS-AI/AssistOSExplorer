@@ -181,19 +181,19 @@ function sendText(res, status, body) {
 }
 
 async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, publicDir }) {
-    if (!pathname.startsWith('/api/roboflow') && !['/roboflow', '/roboflow.js', '/roboflow.css'].includes(pathname)) {
+    if (!pathname.startsWith('/api/roboflow') && !['/flows', '/flow-types', '/flow-types/new', '/flow-types/generate-new'].includes(pathname)) {
         return false;
     }
-    if (pathname === '/roboflow' && req.method === 'GET') {
-        await serveFile(res, publicDir, 'roboflow.html');
+    if (pathname === '/flows' && req.method === 'GET') {
+        await serveFile(res, publicDir, url.searchParams.get('flowId') ? 'roboflow.html' : 'flows.html');
         return true;
     }
-    if (pathname === '/roboflow.js' && req.method === 'GET') {
-        await serveFile(res, publicDir, 'roboflow.js');
+    if (pathname === '/flow-types/generate-new' && req.method === 'GET') {
+        await serveFile(res, publicDir, 'generate.html');
         return true;
     }
-    if (pathname === '/roboflow.css' && req.method === 'GET') {
-        await serveFile(res, publicDir, 'roboflow.css');
+    if ((pathname === '/flow-types' || pathname === '/flow-types/new') && req.method === 'GET') {
+        await serveFile(res, publicDir, 'editor.html');
         return true;
     }
 
@@ -319,7 +319,8 @@ export function createRoboTeamServer(options) {
             }
             if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(res, publicDir, 'InterVariable.woff2');
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
-            if (['/workflow-editor.js', '/workflow-board.js', '/workflow-generator.js', '/workflow-editor.css'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
+            if (['/workflow-editor.js', '/workflow-board.js', '/workflow-generator.js', '/workflow-editor.css',
+                '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');

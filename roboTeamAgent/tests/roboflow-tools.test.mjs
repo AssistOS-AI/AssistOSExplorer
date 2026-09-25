@@ -49,7 +49,7 @@ test('the start tool publishes a flow-page details link on stderr', { timeout: 1
     });
     let stderr = '';
     f.child.stderr.on('data', chunk => { stderr += chunk; });
-    const link = `/base-agent-additional-server/roboTeamAgent/3001/roboflow?flowId=${id}`;
+    const link = `/base-agent-additional-server/roboTeamAgent/3001/flows?flowId=${id}`;
     const deadline = Date.now() + 5000;
     while (!stderr.includes(link) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     const line = stderr.split('\n').find(entry => entry.startsWith('@@PLOINKY_TASK_CONTROL@@'));

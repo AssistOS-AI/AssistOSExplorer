@@ -32,6 +32,17 @@ export class TaskFlowStore {
         });
     }
     async get(id) { await this.initialize(); return this.getSync(id); }
+    // One-time cleanup of recorded runs; guarded by a marker next to the database.
+    async clearRunsOnce() {
+        await this.initialize();
+        const marker = `${this.database.file}.runs-cleared`;
+        try { await fs.access(marker); return; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        this.database.transaction(() => {
+            this.database.db.prepare('DELETE FROM task_instances').run();
+            this.database.db.prepare('DELETE FROM workflow_runs').run();
+        });
+        await fs.writeFile(marker, new Date().toISOString(), { mode: 0o600 });
+    }
     async list() { await this.initialize(); return this.database.db.prepare('SELECT id FROM workflow_runs ORDER BY rowid DESC').all().map(row => this.getSync(row.id)); }
     async update(id, operation) {
         await this.initialize();

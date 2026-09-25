@@ -5,7 +5,7 @@ const FLOW_TERMINAL = new Set(['completed', 'failed', 'stopped']);
 const lifetime = new AbortController();
 process.once('SIGTERM', () => lifetime.abort());
 const FLOW_ID = /^flow_[0-9a-f]{24}$/;
-const MONITOR_BASE = String(process.env.ROBOTEAM_MONITOR_BASE || '/base-agent-additional-server/roboTeamAgent/3001/roboflow');
+const MONITOR_BASE = String(process.env.ROBOTEAM_MONITOR_BASE || '/base-agent-additional-server/roboTeamAgent/3001/flows');
 
 function monitorUrl(flowId) {
     return `${MONITOR_BASE}?flowId=${encodeURIComponent(flowId)}`;

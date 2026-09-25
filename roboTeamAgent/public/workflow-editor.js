@@ -1,11 +1,18 @@
 import { drawBoard } from './workflow-board.js';
-import { generateGraph } from './workflow-generator.js';
 const warningText = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
 const node = (tag, text, className) => { const element = document.createElement(tag); if (text) element.textContent = text; if (className) element.className = className; return element; };
 const button = (text, action) => { const element = node('button', text, 'button'); element.type = 'button'; element.onclick = action; return element; };
 
+function appUrl(relative = '') {
+    const basePath = globalThis.ROBOTEAM_CONFIG?.publicBasePath || './';
+    return new URL(relative.replace(/^\/+/, ''), new URL(basePath, location.origin)).toString();
+}
+
+function leaveEditor() {
+    location.assign(appUrl(''));
+}
+
 export function createWorkflowEditor({ api }) {
-    const dialog = document.querySelector('#workflowDialog');
     const form = document.querySelector('#workflowForm');
     const taskList = document.querySelector('#taskList');
     const taskPanel = document.querySelector('#taskEditorPanel');
@@ -13,7 +20,7 @@ export function createWorkflowEditor({ api }) {
     const message = document.querySelector('#workflowMessage');
     const addTaskButton = document.querySelector('#addTaskButton');
     const addTaskPanel = document.querySelector('#addTaskPanel');
-    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0, generator;
+    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0;
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
     const readonly = () => !canAdmin || graph?.kind === 'default';
     const changed = () => { version++; };
@@ -36,7 +43,7 @@ export function createWorkflowEditor({ api }) {
         const request = ++coverageRequest;
         try {
             const result = await api('api/roboflow/validate', { method: 'POST', body: { ...graph, name: graph.name || 'Draft' } });
-            if (request !== coverageRequest || !dialog.open) return;
+            if (request !== coverageRequest) return;
             message.textContent = [result.coverage.warning ? warningText : '', ...result.diagnostics.map(item => item.message)].filter(Boolean).join('\n');
             for (const task of result.coverage.tasks) taskList.querySelector(`[data-task-id="${CSS.escape(task.taskId)}"]`)?.classList.toggle('coverage-warning', !task.matchingRobotIds.length);
         } catch (error) { if (request === coverageRequest) showError(error); }
@@ -148,64 +155,31 @@ export function createWorkflowEditor({ api }) {
         renderBoard();
         void checkCoverage();
     }
-    async function open(value) {
+    async function open(value = null, { admin = false } = {}) {
+        canAdmin = admin;
         graph = value ? structuredClone(value) : blank(); delete graph.coverage; delete graph.diagnostics;
         version++; coverageRequest++; message.textContent = ''; selected = graph.entryTaskId || graph.tasks[0]?.id || null; currentPage = 'settings'; addTaskPanel.replaceChildren();
         form.elements.name.value = graph.name; form.elements.description.value = graph.description;
-        document.querySelector('#workflowDialogTitle').textContent = graph.kind === 'default' ? 'Default workflow (read-only)' : graph.id ? 'Edit workflow' : 'Create workflow';
         for (const control of form.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
         for (const control of document.querySelectorAll('.workflow-page-button')) control.disabled = false;
         addTaskButton.disabled = readonly();
-        for (const id of ['workflowCancelButton', 'workflowDialogClose']) document.querySelector(`#${id}`).disabled = false;
-        document.querySelector('#workflowCreateButton').hidden = readonly();
-        document.documentElement.classList.add('workflow-modal-open');
-        dialog.showModal(); render(); showPage('settings');
+        const createButton = document.querySelector('#workflowCreateButton');
+        if (createButton) createButton.hidden = readonly();
+        render(); showPage('settings');
         try { const result = await api('api/roboflow/skillsets'); catalog = result.skillsets; render(); if (result.diagnostics.length) message.textContent = result.diagnostics.map(item => item.message).join('\n'); } catch (error) { showError(error); }
     }
-    async function load(admin = canAdmin) {
-        canAdmin = admin;
-        document.querySelector('#addWorkflowButton').disabled = !canAdmin;
-        const { workflows } = await api('api/roboflow/workflows');
-        const list = document.querySelector('#workflowsList'); list.replaceChildren();
-        document.querySelector('#workflowCount').textContent = `${workflows.length} workflows`;
-        for (const workflow of workflows) {
-            const card = node('article', null, 'workflow-card');
-            card.append(node('h3', workflow.name), node('p', workflow.description));
-            if (workflow.coverage?.warning) { const warning = node('span', '⚠', 'workflow-warning'); warning.title = warningText; warning.setAttribute('aria-label', warningText); card.append(warning); }
-            card.append(node('p', `${workflow.tasks.length} tasks · ${workflow.edges.length} connections`), button(canAdmin && workflow.kind !== 'default' ? 'Edit workflow' : 'View workflow', () => open(workflow)));
-            if (canAdmin && workflow.kind !== 'default') card.append(button('Delete', async () => { if (!confirm(`Delete workflow ${workflow.name}?`)) return; try { await api(`api/roboflow/workflows/${workflow.id}`, { method: 'DELETE' }); await load(); } catch (error) { document.querySelector('#workflowListMessage').textContent = error.message; } }));
-            list.append(card);
-        }
-        if (dialog.open) await checkCoverage();
-    }
-    document.querySelector('#addWorkflowButton').onclick = () => open();
-    document.querySelector('#workflowCancelButton').onclick = () => dialog.close();
-    document.querySelector('#workflowDialogClose').onclick = () => dialog.close();
-    dialog.addEventListener('close', () => { coverageRequest++; generator?.abort(); document.documentElement.classList.remove('workflow-modal-open'); });
+    document.querySelector('#workflowCancelButton').onclick = leaveEditor;
+    const closeButton = document.querySelector('#workflowDialogClose');
+    if (closeButton) closeButton.onclick = leaveEditor;
     form.elements.name.oninput = event => { graph.name = event.target.value; changed(); };
     form.elements.description.oninput = event => { graph.description = event.target.value; changed(); };
     for (const control of document.querySelectorAll('.workflow-page-button')) control.onclick = () => showPage(control.dataset.page);
     addTaskButton.onclick = () => { renderAddTask(); showPage('addTask'); addTaskPanel.querySelector('input')?.focus(); };
     document.addEventListener('keydown', event => {
-        if (readonly() || !dialog.open || currentPage !== 'graph' || !selectedEdgeId || !['Delete', 'Backspace'].includes(event.key)) return;
+        if (readonly() || currentPage !== 'graph' || !selectedEdgeId || !['Delete', 'Backspace'].includes(event.key)) return;
         if (event.target instanceof Element && event.target.matches('input,textarea,select,[contenteditable="true"]')) return;
         event.preventDefault(); graph.edges = graph.edges.filter(edge => edge.id !== selectedEdgeId); selectedEdgeId = null; changed(); render();
     });
-    document.querySelector('#cancelGeneration').onclick = () => generator?.abort();
-    document.querySelector('#generateWorkflow').onclick = async () => {
-        const capturedVersion = version;
-        generator = new AbortController(); const control = generator;
-        document.querySelector('#generateWorkflow').disabled = true; document.querySelector('#cancelGeneration').hidden = false;
-        try {
-            const result = await generateGraph(document.querySelector('#generationDescription').value, { signal: control.signal, onProgress: status => { message.textContent = `Generating graph: ${status}`; } });
-            if (!dialog.open || control.signal.aborted) return;
-            if (version !== capturedVersion && !confirm('Replace the draft edited during generation?')) return;
-            const identity = { id: graph.id, revision: graph.revision }; graph = { ...result.graph, ...identity };
-            form.elements.name.value = graph.name; form.elements.description.value = graph.description;
-            selected = graph.entryTaskId || graph.tasks[0]?.id || null; changed(); render(); showPage('graph');
-        } catch (error) { if (dialog.open) showError(error); }
-        finally { if (generator === control) { generator = null; document.querySelector('#generateWorkflow').disabled = readonly(); document.querySelector('#cancelGeneration').hidden = true; } }
-    };
     form.onsubmit = async event => {
         event.preventDefault(); if (readonly()) return;
         if (!graph.name.trim()) { showPage('settings'); message.textContent = 'Enter a workflow name before saving.'; form.elements.name.focus(); return; }
@@ -217,9 +191,8 @@ export function createWorkflowEditor({ api }) {
             taskPanel.querySelector(!invalidTask.name?.trim() ? 'input' : 'textarea')?.focus();
             return;
         }
-        try { await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph }); dialog.close(); await load(); }
+        try { await api(graph.id ? `api/roboflow/workflows/${graph.id}` : 'api/roboflow/workflows', { method: graph.id ? 'PUT' : 'POST', body: graph }); leaveEditor(); }
         catch (error) { showError(error); }
     };
-    window.addEventListener('focus', () => { void load().catch(() => {}); });
-    return { load };
+    return { open };
 }

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam · Flow type</title>
+  <script>
+    (() => {
+      const base = document.createElement('base');
+      base.href = location.pathname.replace(/\/(?:flow-types|flows)(?:\/.*)?$/, '/');
+      document.head.appendChild(base);
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="workflow-editor.css">
+  <script>
+    (() => {
+      const keys = ['assistosExplorerTheme', 'webchat_theme'];
+      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const syncTheme = () => {
+        let preference;
+        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+        catch { /* Browser settings may disable storage. */ }
+        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+        const root = document.documentElement;
+        root.classList.toggle('theme-dark', dark);
+        root.classList.toggle('theme-light', !dark);
+        root.setAttribute('theme', dark ? 'dark' : 'light');
+      };
+      syncTheme();
+      browserTheme.addEventListener('change', syncTheme);
+      window.addEventListener('storage', event => { if (event.key === null || keys.includes(event.key)) syncTheme(); });
+      window.addEventListener('focus', syncTheme);
+      window.addEventListener('pageshow', syncTheme);
+    })();
+  </script>
+</head>
+<body class="editor-page">
+  <header class="hero">
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <a href="./">RoboTeam</a>
+      <span class="breadcrumb-sep" aria-hidden="true">/</span>
+      <span class="breadcrumb-current-section">flow-types</span>
+      <span class="breadcrumb-sep" aria-hidden="true">/</span>
+      <a id="breadcrumbGenerate" href="flow-types/generate-new" hidden>generate</a>
+      <span id="breadcrumbGenerateSep" class="breadcrumb-sep" aria-hidden="true" hidden>/</span>
+      <span id="breadcrumbLeaf" aria-current="page">new</span>
+    </nav>
+  </header>
+
+  <form id="workflowForm" class="workflow-builder">
+    <div class="builder-body">
+      <div class="workflow-workspace">
+        <aside class="task-sidebar">
+          <nav class="workflow-pages" aria-label="Workflow editor pages">
+            <button type="button" class="workflow-page-button" data-page="settings" aria-pressed="false">Flow settings</button>
+            <button type="button" class="workflow-page-button" data-page="graph" aria-pressed="false">Graph</button>
+          </nav>
+          <div class="task-sidebar-header">
+            <h3>Tasks</h3>
+            <button type="button" id="addTaskButton" class="button add-task" title="Add a task" aria-label="Add a task">+</button>
+          </div>
+          <ul id="taskList" class="task-list"></ul>
+        </aside>
+        <div class="workflow-main">
+          <section id="flowSettingsPage" class="workflow-page" data-workflow-page="settings" aria-labelledby="flowSettingsTitle" hidden>
+            <h3 id="flowSettingsTitle">Flow settings</h3>
+            <section class="workflow-details">
+              <label class="field"><span>Name</span><input name="name" maxlength="120"></label>
+              <label class="field"><span>Description</span><textarea name="description" rows="3"></textarea></label>
+            </section>
+          </section>
+          <section id="graphPage" class="workflow-page" data-workflow-page="graph" aria-label="Graph" hidden>
+            <p class="hint">Drag nodes to arrange them. Drag a left or right connection point to another node’s point to create a directed connection. Double-click a node to make it the entry task. Select a connection and press Delete or Backspace to remove it.</p>
+            <div id="workflowBoard" aria-label="Workflow drawing board"></div>
+          </section>
+          <section id="taskPage" class="workflow-page" data-workflow-page="task" aria-label="Task details" hidden><div id="taskEditorPanel" class="task-editor-panel"></div></section>
+          <section id="addTaskPage" class="workflow-page" data-workflow-page="addTask" aria-label="Add task" hidden><div id="addTaskPanel" class="task-editor-panel"></div></section>
+          <p id="workflowMessage" class="message" role="status"></p>
+        </div>
+      </div>
+    </div>
+    <footer class="dialog-actions">
+      <button type="button" id="workflowCancelButton" class="button">Close</button>
+      <button type="submit" id="workflowCreateButton" class="button primary">Save workflow</button>
+    </footer>
+  </form>
+
+  <script src="config.js"></script>
+  <script type="module" src="editor.js"></script>
+</body>
+</html>

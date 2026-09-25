@@ -33,11 +33,10 @@
 <body>
   <main class="shell">
     <header class="hero">
-      <div>
-        <h1>RoboTeam</h1>
-        <p class="lede">Manage your robots, conversations and workstations.</p>
-      </div>
-      <button id="flowsHistoryButton" class="button secondary" type="button">Flows history</button>
+      <nav class="breadcrumbs" aria-label="Breadcrumb">
+        <span aria-current="page">RoboTeam</span>
+      </nav>
+      <a id="flowsHistoryButton" class="button secondary" href="flows">Flows history</a>
     </header>
 
     <section class="panel" aria-labelledby="create-title">
@@ -58,84 +57,13 @@
     <section class="panel" aria-labelledby="workflows-title">
       <div class="section-heading">
         <div class="heading-main"><h2 id="workflows-title">Workflow types</h2><span id="workflowCount" class="count">0 workflows</span></div>
-        <button id="addWorkflowButton" class="button primary" type="button">Add workflow</button>
+        <a id="addWorkflowButton" class="button primary" href="flow-types/generate-new">Create</a>
       </div>
       <p class="lede">Describe a workflow to generate its task graph, then refine tasks and connections. RoboFlow selects matching robots when each task runs.</p>
       <p id="workflowListMessage" class="message" role="status"></p>
       <div id="workflowsList" class="workflow-list" aria-live="polite"></div>
     </section>
   </main>
-
-  <dialog id="workflowDialog" class="workflow-dialog" aria-labelledby="workflowDialogTitle">
-    <form id="workflowForm" class="workflow-builder">
-      <header class="dialog-header">
-        <h2 id="workflowDialogTitle">Add workflow type</h2>
-        <button id="workflowDialogClose" class="button dialog-close" type="button" aria-label="Close">✕</button>
-      </header>
-
-      <div class="builder-body">
-        <div class="workflow-workspace">
-          <aside class="task-sidebar">
-            <nav class="workflow-pages" aria-label="Workflow editor pages">
-              <button type="button" class="workflow-page-button" data-page="settings" aria-pressed="false">Flow settings</button>
-              <button type="button" class="workflow-page-button" data-page="generate" aria-pressed="false">Generate</button>
-              <button type="button" class="workflow-page-button" data-page="graph" aria-pressed="false">Graph</button>
-            </nav>
-            <div class="task-sidebar-header">
-              <h3>Tasks</h3>
-              <button type="button" id="addTaskButton" class="button add-task" title="Add a task" aria-label="Add a task">+</button>
-            </div>
-            <ul id="taskList" class="task-list"></ul>
-          </aside>
-          <div class="workflow-main">
-            <section id="flowSettingsPage" class="workflow-page" data-workflow-page="settings" aria-labelledby="flowSettingsTitle" hidden>
-              <h3 id="flowSettingsTitle">Flow settings</h3>
-              <section class="workflow-details">
-                <label class="field"><span>Name</span><input name="name" maxlength="120"></label>
-                <label class="field"><span>Description</span><textarea name="description" rows="3"></textarea></label>
-              </section>
-            </section>
-            <section id="generationPage" class="workflow-page generation" data-workflow-page="generate" aria-labelledby="generationTitle" hidden>
-              <h3 id="generationTitle">Generate workflow</h3>
-              <label class="field"><span>Describe the workflow you want</span><textarea id="generationDescription" rows="3" placeholder="Review a change, revise it if needed, and report the result"></textarea></label>
-              <div class="generation-actions">
-                <button id="generateWorkflow" type="button" class="button primary">Generate graph</button>
-                <button id="cancelGeneration" type="button" class="button" hidden>Cancel generation</button>
-              </div>
-            </section>
-            <section id="graphPage" class="workflow-page" data-workflow-page="graph" aria-label="Graph" hidden>
-              <p class="hint">Drag nodes to arrange them. Drag a left or right connection point to another node’s point to create a directed connection. Double-click a node to make it the entry task. Select a connection and press Delete or Backspace to remove it.</p>
-              <div id="workflowBoard" aria-label="Workflow drawing board"></div>
-            </section>
-            <section id="taskPage" class="workflow-page" data-workflow-page="task" aria-label="Task details" hidden><div id="taskEditorPanel" class="task-editor-panel"></div></section>
-            <section id="addTaskPage" class="workflow-page" data-workflow-page="addTask" aria-label="Add task" hidden><div id="addTaskPanel" class="task-editor-panel"></div></section>
-            <p id="workflowMessage" class="message" role="status"></p>
-          </div>
-        </div>
-      </div>
-      <footer class="dialog-actions">
-        <button type="button" id="workflowCancelButton" class="button">Close</button>
-        <button type="submit" id="workflowCreateButton" class="button primary">Save workflow</button>
-      </footer>
-    </form>
-  </dialog>
-
-  <dialog id="flowsHistoryDialog" class="history-dialog" aria-labelledby="flowsHistoryTitle">
-    <header class="dialog-header">
-      <h2 id="flowsHistoryTitle">Flows history</h2>
-      <button id="flowsHistoryClose" class="button dialog-close" type="button" aria-label="Close">✕</button>
-    </header>
-    <div class="history-workspace">
-      <aside class="history-sidebar">
-        <p id="flowsHistoryMessage" class="message" role="status"></p>
-        <div id="flowsHistoryList" class="history-list" aria-live="polite"></div>
-      </aside>
-      <section class="history-main">
-        <iframe id="flowsHistoryFrame" class="history-frame" title="Flow details" hidden></iframe>
-        <p id="flowsHistoryEmpty" class="history-empty">Select a flow to see its execution.</p>
-      </section>
-    </div>
-  </dialog>
 
   <template id="robotTemplate">
     <article class="robot-card">

@@ -31,10 +31,13 @@
 <body>
   <main class="shell">
     <header class="hero">
-      <div>
-        <h1>RoboFlow</h1>
-        <p class="lede">Follow a task flow and its phases.</p>
-      </div>
+      <nav class="breadcrumbs" aria-label="Breadcrumb">
+        <a href="./">RoboTeam</a>
+        <span class="breadcrumb-sep" aria-hidden="true">/</span>
+        <a href="flows">flows</a>
+        <span class="breadcrumb-sep" aria-hidden="true">/</span>
+        <span id="breadcrumbLeaf" aria-current="page"></span>
+      </nav>
     </header>
 
     <section id="detail" class="flow-workspace" aria-labelledby="detail-title">
