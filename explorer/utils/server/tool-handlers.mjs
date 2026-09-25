@@ -480,30 +480,40 @@ export function createToolHandlers({
         sources.push({ name: skill, path: path.join(repoPath, 'skills', skill), source: { url: entry.url, name: entry.name, branch: entry.branch || null } });
       }
     }
-    const result = syncManagedSkillExports({
-      folder,
-      owner: 'manifest',
-      sources,
-      manifest: {
-        path: manifestPath,
-        expected: expectedManifest,
-        next: serializeSkillsManifestEntries(entries),
-        changedMessage: `Skills manifest '${manifestPath}' changed while this update was prepared; reload it and retry.`
-      },
-      claude: 'root',
-      // The manifest is an explicit selection; recorded like Ploinky's consumer policy.
-      consumer: { selection: 'explicit', policy: 'manifest' },
-      // Same private worktree exclusions as Ploinky; a live external excludes
-      // policy is composed only with explicit consent. An agent never runs with
-      // the repository owner's HOME/XDG/global Git view (container or sandbox),
-      // so its view is unverified and the host refresh publishes exclusions.
-      exclusions: createSkillExclusionPlanner({
-        authorizeComposition: process.env.PLOINKY_SKILL_EXCLUDES_COMPOSE === '1',
-        containerExecutor: true,
-      }),
-      authority: { kind: 'explorer-tool', operation: 'skills-manifest' },
-      lock: { waitMs: 250 }
-    });
+    let result;
+    let releaseFailure = null;
+    try {
+      result = syncManagedSkillExports({
+        folder,
+        owner: 'manifest',
+        sources,
+        manifest: {
+          path: manifestPath,
+          expected: expectedManifest,
+          next: serializeSkillsManifestEntries(entries),
+          changedMessage: `Skills manifest '${manifestPath}' changed while this update was prepared; reload it and retry.`
+        },
+        claude: 'root',
+        // The manifest is an explicit selection; recorded like Ploinky's consumer policy.
+        consumer: { selection: 'explicit', policy: 'manifest' },
+        // Same private worktree exclusions as Ploinky; a live external excludes
+        // policy is composed only with explicit consent. An agent never runs with
+        // the repository owner's HOME/XDG/global Git view (container or sandbox),
+        // so its view is unverified and the host refresh publishes exclusions.
+        exclusions: createSkillExclusionPlanner({
+          authorizeComposition: process.env.PLOINKY_SKILL_EXCLUDES_COMPOSE === '1',
+          containerExecutor: true,
+        }),
+        authority: { kind: 'explorer-tool', operation: 'skills-manifest' },
+        lock: { waitMs: 250 }
+      });
+    } catch (error) {
+      // A lock release failure carries the completed result: its outputs
+      // changed, and one that still needs recovery stays recovery required.
+      if (error?.code !== 'SKILL_EXPORT_LOCK_RELEASE_FAILED' || !error.skillExportResult) throw error;
+      result = error.skillExportResult;
+      releaseFailure = error;
+    }
     invalidateCachesForPath(manifestPath);
     const skillsPath = path.join(folder, canonicalSkillsDir);
     invalidateStructureIndexSubtree(skillsPath);
@@ -513,12 +523,21 @@ export function createToolHandlers({
     invalidateCachesForPath(skillsPath);
     const recoveryProblem = skillExportRecoveryProblem(result);
     if (recoveryProblem) {
-      const error = new Error(recoveryProblem.reason);
+      const release = releaseFailure
+        ? ` Its export lock could not be released either (${releaseFailure.cause?.message || 'unknown cause'}); later exports of this folder may stay blocked until the lock is released or reclaimed.`
+        : '';
+      const error = new Error(`${recoveryProblem.reason}${release}`, releaseFailure ? { cause: releaseFailure } : undefined);
       error.code = recoveryProblem.code;
       error.transaction = recoveryProblem.transaction;
       error.recovery = recoveryProblem.recovery;
+      if (releaseFailure) {
+        error.lockReleaseError = releaseFailure.cause || null;
+        error.skillExportResult = result;
+      }
       throw error;
     }
+    // Settled outputs whose lock stayed held report the release failure as is.
+    if (releaseFailure) throw releaseFailure;
     return result;
   }
 

@@ -557,6 +557,108 @@ test('a marketplace mutation reports recovery failure after quarantining an inte
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
+// A stray file written into the freshly created export lock directory makes
+// the real release fail (ENOTEMPTY) after the export completed. Only the
+// exact lock path of the armed folder is affected, so lock reclaim markers
+// and unarmed runs are untouched.
+function armStrayLockRelease(t, projectDir) {
+  const lock = path.join(projectDir, '.agents', transaction.EXPORT_LOCK);
+  const original = syncFs.mkdirSync;
+  const armed = { value: false, hits: 0 };
+  t.mock.method(syncFs, 'mkdirSync', function (target, ...rest) {
+    const created = original.call(this, target, ...rest);
+    if (armed.value && String(target) === lock) {
+      armed.hits++;
+      syncFs.writeFileSync(path.join(lock, 'stray'), 'stray\n');
+    }
+    return created;
+  });
+  return { lock, armed };
+}
+
+test('a lock release failure after a quarantining recovery stays recovery required and preserves user bytes', async (t) => {
+  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-release-quarantine-')));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir);
+    const invalidated = [];
+    const handlers = createHandlers(workspaceRoot, invalidated);
+    const repoName = path.basename(repoDir);
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: repoName });
+    const manifestPath = path.join(projectDir, 'ploinky-skills-manifest.json');
+    const before = await fs.readFile(manifestPath, 'utf8');
+    const crash = Object.assign(new Error('fixture publication interrupted'), { [transaction.SIMULATED_CRASH]: true });
+    const deadOwner = { ...transaction.currentSkillExportIdentity(), pid: 2147483647, start: 'fixture-dead-process' };
+    assert.throws(() => transaction.syncManagedSkillExports({
+      folder: projectDir, owner: 'manifest', sources: [],
+      manifest: { path: manifestPath, expected: before, next: '[]\n' },
+      lock: { liveness: { current: () => deadOwner } },
+      hooks: { crash(point) { if (point === 'after-ledger') throw crash; } },
+    }), /fixture publication interrupted/);
+    // A user edit after the commit point makes recovery quarantine that
+    // publication; the handler's own export then completes but cannot
+    // release its lock.
+    await fs.writeFile(manifestPath, `${before}\n`);
+    await writeFile(path.join(projectDir, 'notes.txt'), 'user bytes\n');
+    const { lock, armed } = armStrayLockRelease(t, projectDir);
+    armed.value = true;
+    invalidated.length = 0;
+    await assert.rejects(handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName }), error => {
+      assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
+      assert.equal(error.recovery.status, 'quarantined');
+      assert.match(error.message, /incomplete.*recovery quarantined/);
+      assert.match(error.message, /lock could not be released/);
+      assert.doesNotMatch(error.message, /finished/);
+      // The original release failure and its filesystem cause are preserved.
+      assert.equal(error.cause.code, 'SKILL_EXPORT_LOCK_RELEASE_FAILED');
+      assert.equal(error.lockReleaseError.code, 'ENOTEMPTY');
+      assert.equal(error.skillExportResult.recovery.status, 'quarantined');
+      return true;
+    });
+    armed.value = false;
+    assert.equal(armed.hits, 1, 'the fault was injected into the real lock');
+    // The handler read the edited manifest before it wrote its own selection.
+    assert.equal(await fs.readFile(manifestPath, 'utf8'), '[]\n');
+    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
+    assert.ok(invalidated.includes(manifestPath), 'caches of the completed outputs are invalidated');
+    const state = transaction.readSkillExportTransactionState(projectDir);
+    assert.equal(state.pending, null);
+    assert.equal(state.quarantined.length, 1);
+    assert.ok(state.quarantined[0].reasons.some(item => item.name === 'manifest'));
+    assert.ok(syncFs.existsSync(path.join(lock, 'stray')), 'the unreleased lock is left for the operator');
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('a lock release failure after a settled export stays a release failure', async (t) => {
+  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-release-settled-')));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir);
+    await writeFile(path.join(projectDir, 'notes.txt'), 'user bytes\n');
+    const invalidated = [];
+    const handlers = createHandlers(workspaceRoot, invalidated);
+    const { armed } = armStrayLockRelease(t, projectDir);
+    armed.value = true;
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+      assert.equal(error.code, 'SKILL_EXPORT_LOCK_RELEASE_FAILED');
+      assert.equal(error.cause.code, 'ENOTEMPTY');
+      assert.equal(error.skillExportResult.transaction.status, 'committed');
+      assert.deepEqual(error.skillExportResult.installed, ['alpha-skill']);
+      assert.match(error.message, /finished, but its lock could not be released/);
+      return true;
+    });
+    armed.value = false;
+    assert.equal(armed.hits, 1, 'the fault was injected into the real lock');
+    const link = path.join(projectDir, '.agents', 'skills', 'alpha-skill');
+    assert.equal((await fs.lstat(link)).isSymbolicLink(), true);
+    assert.ok(invalidated.includes(link), 'caches of the settled outputs are invalidated');
+    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
+    assert.equal(transaction.readSkillExportTransactionState(projectDir).pending, null);
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
 test('skill changes in a Git project write no tracked rules and defer private exclusions to the host', async () => {
   const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-git-')));
   const saved = { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
