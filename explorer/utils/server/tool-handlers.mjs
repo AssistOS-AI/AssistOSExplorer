@@ -480,6 +480,15 @@ export function createToolHandlers({
       : '';
   }
 
+  // A failure already in flight keeps its own code; only the message
+  // crosses the tool boundary, so a lock left held is named there too.
+  function withLockReleaseCause(error) {
+    if (error && typeof error === 'object' && error.lockReleaseError) {
+      error.message += lockReleaseClause(error.lockReleaseError);
+    }
+    return error;
+  }
+
   // A failure before the commit point keeps its own code when its rollback
   // restored every path. A rollback that quarantined output it could not
   // restore leaves that output for recovery, like an unfinished result.
@@ -546,12 +555,12 @@ export function createToolHandlers({
       if (recovery?.status && recovery.status !== 'rolled-back') {
         // Output the rollback could not restore changed on disk.
         invalidateSkillExportCaches(folder, manifestPath, (recovery.unexpected || []).map((item) => item.name));
-        if (error.code === 'SKILL_EXPORT_RECOVERY_REQUIRED') throw error;
+        if (error.code === 'SKILL_EXPORT_RECOVERY_REQUIRED') throw withLockReleaseCause(error);
         throw rollbackRecoveryError(error, recovery);
       }
       // A lock release failure carries the completed result: its outputs
       // changed, and one that still needs recovery stays recovery required.
-      if (error?.code !== 'SKILL_EXPORT_LOCK_RELEASE_FAILED' || !error.skillExportResult) throw error;
+      if (error?.code !== 'SKILL_EXPORT_LOCK_RELEASE_FAILED' || !error.skillExportResult) throw withLockReleaseCause(error);
       result = error.skillExportResult;
       releaseFailure = error;
     }
