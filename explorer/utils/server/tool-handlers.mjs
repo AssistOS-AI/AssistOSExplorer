@@ -464,6 +464,49 @@ export function createToolHandlers({
     return skillsetMDParser(source, availableSkills);
   }
 
+  function invalidateSkillExportCaches(folder, manifestPath, names) {
+    invalidateCachesForPath(manifestPath);
+    const skillsPath = path.join(folder, canonicalSkillsDir);
+    invalidateStructureIndexSubtree(skillsPath);
+    for (const name of names) {
+      invalidateCachesForPath(path.join(skillsPath, name));
+    }
+    invalidateCachesForPath(skillsPath);
+  }
+
+  function lockReleaseClause(releaseError) {
+    return releaseError
+      ? ` Its export lock could not be released either (${releaseError.message || 'unknown cause'}); later exports of this folder may stay blocked until the lock is released or reclaimed.`
+      : '';
+  }
+
+  // A failure already in flight keeps its own code; only the message
+  // crosses the tool boundary, so a lock left held is named there too.
+  function withLockReleaseCause(error) {
+    if (error && typeof error === 'object' && error.lockReleaseError) {
+      error.message += lockReleaseClause(error.lockReleaseError);
+    }
+    return error;
+  }
+
+  // A failure before the commit point keeps its own code when its rollback
+  // restored every path. A rollback that quarantined output it could not
+  // restore leaves that output for recovery, like an unfinished result.
+  function rollbackRecoveryError(error, recovery) {
+    const names = (recovery.unexpected || []).map((item) => item.name);
+    const stopped = recovery.rollbackError ? ` Its rollback also reported ${recovery.rollbackError.message}.` : '';
+    const mapped = new Error(
+      `Skill export failed before its commit point (${error.message}); transaction ${recovery.transaction} was ${recovery.status} with output it could not restore${names.length ? ` (${names.join(', ')})` : ''}.${stopped} Existing state is preserved for recovery.${lockReleaseClause(error.lockReleaseError)}`,
+      { cause: error }
+    );
+    mapped.code = 'SKILL_EXPORT_RECOVERY_REQUIRED';
+    mapped.transaction = { id: recovery.transaction, status: recovery.status, unexpected: recovery.unexpected || [] };
+    mapped.recovery = recovery;
+    mapped.rollbackError = recovery.rollbackError || null;
+    mapped.lockReleaseError = error.lockReleaseError || null;
+    return mapped;
+  }
+
   // Links, the manifest (compared against the bytes the handler read) and the
   // `.claude -> .agents` compatibility link publish as one recoverable
   // transaction under the folder's skill export lock. The lock wait is kept
@@ -480,45 +523,62 @@ export function createToolHandlers({
         sources.push({ name: skill, path: path.join(repoPath, 'skills', skill), source: { url: entry.url, name: entry.name, branch: entry.branch || null } });
       }
     }
-    const result = syncManagedSkillExports({
-      folder,
-      owner: 'manifest',
-      sources,
-      manifest: {
-        path: manifestPath,
-        expected: expectedManifest,
-        next: serializeSkillsManifestEntries(entries),
-        changedMessage: `Skills manifest '${manifestPath}' changed while this update was prepared; reload it and retry.`
-      },
-      claude: 'root',
-      // The manifest is an explicit selection; recorded like Ploinky's consumer policy.
-      consumer: { selection: 'explicit', policy: 'manifest' },
-      // Same private worktree exclusions as Ploinky; a live external excludes
-      // policy is composed only with explicit consent. An agent never runs with
-      // the repository owner's HOME/XDG/global Git view (container or sandbox),
-      // so its view is unverified and the host refresh publishes exclusions.
-      exclusions: createSkillExclusionPlanner({
-        authorizeComposition: process.env.PLOINKY_SKILL_EXCLUDES_COMPOSE === '1',
-        containerExecutor: true,
-      }),
-      authority: { kind: 'explorer-tool', operation: 'skills-manifest' },
-      lock: { waitMs: 250 }
-    });
-    invalidateCachesForPath(manifestPath);
-    const skillsPath = path.join(folder, canonicalSkillsDir);
-    invalidateStructureIndexSubtree(skillsPath);
-    for (const name of [...result.installed, ...result.removed]) {
-      invalidateCachesForPath(path.join(skillsPath, name));
+    let result;
+    let releaseFailure = null;
+    try {
+      result = syncManagedSkillExports({
+        folder,
+        owner: 'manifest',
+        sources,
+        manifest: {
+          path: manifestPath,
+          expected: expectedManifest,
+          next: serializeSkillsManifestEntries(entries),
+          changedMessage: `Skills manifest '${manifestPath}' changed while this update was prepared; reload it and retry.`
+        },
+        claude: 'root',
+        // The manifest is an explicit selection; recorded like Ploinky's consumer policy.
+        consumer: { selection: 'explicit', policy: 'manifest' },
+        // Same private worktree exclusions as Ploinky; a live external excludes
+        // policy is composed only with explicit consent. An agent never runs with
+        // the repository owner's HOME/XDG/global Git view (container or sandbox),
+        // so its view is unverified and the host refresh publishes exclusions.
+        exclusions: createSkillExclusionPlanner({
+          authorizeComposition: process.env.PLOINKY_SKILL_EXCLUDES_COMPOSE === '1',
+          containerExecutor: true,
+        }),
+        authority: { kind: 'explorer-tool', operation: 'skills-manifest' },
+        lock: { waitMs: 250 }
+      });
+    } catch (error) {
+      const recovery = error?.skillExportRecovery;
+      if (recovery?.status && recovery.status !== 'rolled-back') {
+        // Output the rollback could not restore changed on disk.
+        invalidateSkillExportCaches(folder, manifestPath, (recovery.unexpected || []).map((item) => item.name));
+        if (error.code === 'SKILL_EXPORT_RECOVERY_REQUIRED') throw withLockReleaseCause(error);
+        throw rollbackRecoveryError(error, recovery);
+      }
+      // A lock release failure carries the completed result: its outputs
+      // changed, and one that still needs recovery stays recovery required.
+      if (error?.code !== 'SKILL_EXPORT_LOCK_RELEASE_FAILED' || !error.skillExportResult) throw withLockReleaseCause(error);
+      result = error.skillExportResult;
+      releaseFailure = error;
     }
-    invalidateCachesForPath(skillsPath);
+    invalidateSkillExportCaches(folder, manifestPath, [...result.installed, ...result.removed]);
     const recoveryProblem = skillExportRecoveryProblem(result);
     if (recoveryProblem) {
-      const error = new Error(recoveryProblem.reason);
+      const error = new Error(`${recoveryProblem.reason}${lockReleaseClause(releaseFailure && (releaseFailure.cause || {}))}`, releaseFailure ? { cause: releaseFailure } : undefined);
       error.code = recoveryProblem.code;
       error.transaction = recoveryProblem.transaction;
       error.recovery = recoveryProblem.recovery;
+      if (releaseFailure) {
+        error.lockReleaseError = releaseFailure.cause || null;
+        error.skillExportResult = result;
+      }
       throw error;
     }
+    // Settled outputs whose lock stayed held report the release failure as is.
+    if (releaseFailure) throw releaseFailure;
     return result;
   }
 
