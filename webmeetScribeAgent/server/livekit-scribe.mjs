@@ -5,7 +5,11 @@ import { RoomEvent } from '@livekit/rtc-node';
 
 import { EncryptedSessionJournal } from '../lib/encrypted-journal.mjs';
 import { HolisticMeetingNotesAnalyzer } from '../lib/holistic-analyzer.mjs';
-import { bindJobToLiveKitWorkerTransport, resolveWorkerPort } from '../lib/runtime-config.mjs';
+import {
+    bindJobToLiveKitWorkerTransport,
+    LIVEKIT_WORKER_MAX_RETRY,
+    resolveWorkerPort,
+} from '../lib/runtime-config.mjs';
 import { startRouterWebSocketAuthorityProxy } from '../lib/router-websocket-authority-proxy.mjs';
 import {
     createMeetingAnalysisSnapshot,
@@ -663,6 +667,7 @@ const serverOptions = new Options({
     agentName: AGENT_NAME,
     port: resolveWorkerPort(),
     logLevel: String(process.env.WEBMEET_SCRIBE_LOG_LEVEL || 'info'),
+    maxRetry: LIVEKIT_WORKER_MAX_RETRY,
     requestFunc: async (request) => {
         const metadata = safeJson(request?.job?.metadata) || {};
         await request.accept('Meeting Secretary', `${AGENT_NAME}-${request.id}`, JSON.stringify({

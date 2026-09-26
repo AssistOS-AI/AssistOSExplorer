@@ -13,6 +13,14 @@ export function resolveWorkerPort(environment = process.env) {
 
 export const LIVEKIT_SIGNAL_PATH = '/base-agent-additional-server/liveKitServerAgent/7880/';
 
+// Explorer declares liveKitServerAgent no-wait, and Ploinky launches no-wait
+// runtimes only after the foreground and additional agents, this worker
+// included, are ready. LiveKit signaling can therefore stay unroutable for
+// minutes after a workspace restart. @livekit/agents stops after ten failed
+// connections (80 s of backoff) and the process exits; keep retrying at the
+// library's capped 10 s interval instead.
+export const LIVEKIT_WORKER_MAX_RETRY = Number.MAX_SAFE_INTEGER;
+
 export function resolveLiveKitRouterTransport(environment = process.env) {
     for (const name of ['PLOINKY_ROUTER_URL', 'PLOINKY_ROUTER_REQUEST_AUTHORITY']) {
         if (String(environment[`PLOINKY_ENV_SOURCE_${name}`] || '').trim() !== 'generated') {

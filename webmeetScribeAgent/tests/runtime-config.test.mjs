@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
     bindJobToLiveKitWorkerTransport,
+    LIVEKIT_WORKER_MAX_RETRY,
     resolveLiveKitRouterTransport,
     resolveWorkerPort,
 } from '../lib/runtime-config.mjs';
@@ -62,6 +63,29 @@ test('LiveKit jobs use the exact loopback transport created for their process', 
             /exact loopback/,
         );
     }
+});
+
+// @livekit/agents 1.3.4 waits min(2 * attempt, 10) seconds after each failed
+// connection and exits once maxRetry connections have failed.
+function toleratedLiveKitOutageSeconds(maxRetry) {
+    return maxRetry <= 4 ? maxRetry * (maxRetry + 1) : 10 * maxRetry - 20;
+}
+
+test('LiveKit worker keeps reconnecting while a no-wait LiveKit restart is unroutable', () => {
+    // The library default gave up after 80 s; after a workspace restart LiveKit
+    // signaling stayed unroutable for at least 131 s while this worker ran.
+    assert.equal(toleratedLiveKitOutageSeconds(10), 80);
+    assert.equal(LIVEKIT_WORKER_MAX_RETRY, Number.MAX_SAFE_INTEGER);
+    assert.ok(toleratedLiveKitOutageSeconds(LIVEKIT_WORKER_MAX_RETRY) > 365 * 24 * 60 * 60);
+});
+
+test('Meeting Secretary passes the reconnect budget to its LiveKit worker options', () => {
+    const entrypoint = fs.readFileSync(
+        fileURLToPath(new URL('../server/livekit-scribe.mjs', import.meta.url)),
+        'utf8',
+    );
+    const options = /const serverOptions = new Options\(\{([\s\S]*?)\n\}\);/.exec(entrypoint)?.[1] || '';
+    assert.match(options, /^ {4}maxRetry: LIVEKIT_WORKER_MAX_RETRY,$/m);
 });
 
 test('manifest shares the canonical LiveKit credentials in every profile', () => {
