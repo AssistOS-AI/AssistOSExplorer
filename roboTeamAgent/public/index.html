@@ -32,18 +32,16 @@
 </head>
 <body>
   <main class="shell">
-    <header class="hero">
-      <nav class="breadcrumbs" aria-label="Breadcrumb">
+    <header class="hero" data-embed-header>
+      <nav class="breadcrumbs" aria-label="Breadcrumb" data-embed-breadcrumbs>
         <span aria-current="page">RoboTeam</span>
       </nav>
-      <a id="flowsHistoryButton" class="button secondary" href="flows">Flows history</a>
     </header>
 
     <section class="panel" aria-labelledby="create-title">
       <div class="section-heading"><h2 id="create-title">Create a robot</h2></div>
       <form id="createForm" class="robot-form">
         <label><span>Name</span><input name="name" maxlength="80" required placeholder="Research analyst"></label>
-        <label><span>Specialization</span><textarea name="specialization" maxlength="500" rows="1" placeholder="Competitive research and source verification"></textarea></label>
         <button class="button primary" type="submit">Create robot</button>
       </form>
       <p id="formMessage" class="message" role="status"></p>
@@ -57,7 +55,10 @@
     <section class="panel" aria-labelledby="workflows-title">
       <div class="section-heading">
         <div class="heading-main"><h2 id="workflows-title">Workflow types</h2><span id="workflowCount" class="count">0 workflows</span></div>
-        <a id="addWorkflowButton" class="button primary" href="flow-types/generate-new">Create</a>
+        <div class="heading-actions">
+          <a id="flowsHistoryButton" class="button secondary" href="flows">Flows history</a>
+          <a id="addWorkflowButton" class="button primary" href="flow-types/generate-new">Create</a>
+        </div>
       </div>
       <p class="lede">Describe a workflow to generate its task graph, then refine tasks and connections. RoboFlow selects matching robots when each task runs.</p>
       <p id="workflowListMessage" class="message" role="status"></p>
@@ -69,7 +70,7 @@
     <article class="robot-card">
       <div class="robot-main">
         <div class="avatar" aria-hidden="true"></div>
-        <div><div class="robot-title-row"><h3></h3><span class="run-state"></span></div><p class="specialization"></p><p class="robot-id"></p><p class="active-coding-agent"></p></div>
+        <div><div class="robot-title-row"><h3></h3><span class="run-state"></span></div><p class="robot-id"></p><p class="active-coding-agent"></p></div>
       </div>
       <div class="robot-actions">
         <div class="robot-open">

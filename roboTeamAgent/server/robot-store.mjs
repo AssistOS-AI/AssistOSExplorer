@@ -15,12 +15,6 @@ function normalizeName(value) {
     return name;
 }
 
-function normalizeSpecialization(value) {
-    const specialization = String(value || '').trim();
-    if (specialization.length > 500) throw new Error('specialization must be at most 500 characters');
-    return specialization;
-}
-
 function slugify(value) {
     const slug = String(value || '')
         .normalize('NFKD')
@@ -224,19 +218,18 @@ export class RobotStore {
         return withRegistryMutation(this.robotsDir, async () => {
             const matches = (await this._allRobots({ strict: true })).filter((robot) => robot.name === 'default');
             if (matches.length > 1) throw new Error('robot registry contains more than one robot named default');
-            return matches[0] || this._create({ name: 'default', specialization: '' });
+            return matches[0] || this._create({ name: 'default' });
         });
     }
 
-    async create({ name, specialization = '', codingAgents }) {
+    async create({ name, codingAgents }) {
         await this.initialize();
-        return withRegistryMutation(this.robotsDir, () => this._create({ name, specialization, codingAgents }));
+        return withRegistryMutation(this.robotsDir, () => this._create({ name, codingAgents }));
     }
 
-    async _create({ name, specialization = '', codingAgents }) {
+    async _create({ name, codingAgents }) {
         const selectedAgents = normalizeCodingAgents(codingAgents);
         const normalizedName = normalizeName(name);
-        const normalizedSpecialization = normalizeSpecialization(specialization);
         await this.initialize();
         if ((await this._allRobots({ strict: true })).some((robot) => robot.name === normalizedName)) {
             throw new Error('robot name already exists');
@@ -261,7 +254,6 @@ export class RobotStore {
             schema: 'roboteam-robot-v1',
             id: robotId,
             name: normalizedName,
-            specialization: normalizedSpecialization,
             codingAgents: selectedAgents,
             createdAt: now,
             updatedAt: now,

@@ -91,3 +91,14 @@ test('page modules are served as javascript', async t => {
         assert.match(response.headers.get('content-type') || '', /javascript/, asset);
     }
 });
+
+test('agent pages mark an embeddable header and breadcrumbs', async t => {
+    const request = await fixture(t);
+    for (const url of ['/', '/flows', '/flows?flowId=flow_123456789012345678901234', '/flow-types/new', '/flow-types/generate-new']) {
+        const response = await request(url);
+        assert.equal(response.status, 200, url);
+        const html = await response.text();
+        assert.match(html, /data-embed-header/, url);
+        assert.match(html, /data-embed-breadcrumbs/, url);
+    }
+});

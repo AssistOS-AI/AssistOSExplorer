@@ -114,9 +114,9 @@ test('terminal session selection still refreshes configured skills and supports 
 
 test('terminal list robots uses the supplied workspace catalog without ALA', async (t) => {
     const f = await fixture(t);
-    f.repl.slashHandler.listRobots = async () => [{ name: 'default', specialization: 'Copilot' }];
+    f.repl.slashHandler.listRobots = async () => [{ name: 'default' }];
     await f.repl._handleSlashCommand('/list robots');
-    assert.match(f.output.at(-1), /default · Copilot/);
+    assert.match(f.output.at(-1), /default/);
     assert.deepEqual(f.nativeCalls, []);
     assert.deepEqual(f.errors, []);
 });

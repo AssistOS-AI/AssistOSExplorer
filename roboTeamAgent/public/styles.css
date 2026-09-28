@@ -249,7 +249,8 @@ h3 { margin: 0; font-size: 1rem; font-weight: 600; }
 .lede { margin: 4px 0 0; color: var(--text-soft); font-size: var(--font-sm); }
 .panel { margin-bottom: 24px; padding: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-sm); }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.robot-form { display: grid; grid-template-columns: minmax(160px, 240px) minmax(220px, 1fr) auto; align-items: end; gap: 16px; }
+.robot-form { display: grid; grid-template-columns: minmax(160px, 240px) auto; align-items: end; gap: 16px; }
+.robot-form button[type="submit"] { justify-self: start; }
 label { display: grid; gap: 8px; color: var(--text-soft); font-size: var(--font-sm); font-weight: 500; }
 input, textarea { width: 100%; min-width: 0; padding: 10px 12px; color: var(--text); background: var(--input-bg); border: 1px solid var(--border-strong); border-radius: var(--radius-md); box-shadow: var(--input-shadow); resize: none; outline: none; }
 input::placeholder, textarea::placeholder { color: var(--text-soft); opacity: .75; }
@@ -274,7 +275,6 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .avatar { display: grid; flex: 0 0 40px; width: 40px; height: 40px; place-items: center; color: var(--accent); background: var(--bg-active); border: 1px solid rgba(var(--accent-rgb), .18); border-radius: var(--radius-md); font-size: 1rem; font-weight: 600; }
 .robot-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .robot-title-row h3 { overflow-wrap: anywhere; }
-.specialization { margin: 4px 0; color: var(--text-soft); font-size: var(--font-sm); overflow-wrap: anywhere; }
 .robot-id { margin: 0; color: var(--text-soft); font-family: var(--mono-font); font-size: .7rem; overflow-wrap: anywhere; }
 .run-state { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; color: var(--text-soft); background: var(--surface-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: .7rem; font-weight: 500; }
 .run-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -385,6 +385,7 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
 .workflow-actions .button { margin-top: 0; }
 .dialog-actions { position: relative; z-index: 2; display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px; border-top: 1px solid var(--border); background: var(--surface); }
 .heading-main { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.heading-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* Breadcrumbs */
 .breadcrumbs { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--font-sm, .85rem); color: var(--text-soft); }

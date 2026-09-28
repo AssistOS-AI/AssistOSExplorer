@@ -557,7 +557,7 @@ export class SlashCommandHandler {
             try {
                 const robots = await this.listRobots();
                 return { handled: true, result: robots.length
-                    ? robots.map((robot) => [robot.name, robot.specialization || robot.description].filter(Boolean).join(' · ')).join('\n')
+                    ? robots.map((robot) => robot.name).join('\n')
                     : 'No robots are available in this workspace.' };
             } catch (error) { return { handled: true, error: error.message }; }
         }

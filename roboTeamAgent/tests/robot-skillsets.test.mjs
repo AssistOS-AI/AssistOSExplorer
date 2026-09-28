@@ -43,7 +43,7 @@ async function fixture(t) {
     }
     await fs.writeFile(path.join(source, 'skillsets.md'), '# reports\n\n## Description\nRead and write reports\n\n## Skills\n- read-pdf\n- write-doc\n\n# reading\n## Description\nRead PDFs\n## Skills\n- read-pdf\n');
     const store = new RobotStore({ dataDir });
-    const robot = await store.create({ name: 'Analyst', specialization: 'Reports' });
+    const robot = await store.create({ name: 'Analyst' });
     const skillsets = new RobotSkillsets({ robotStore: store, workspaceRoot, discoverSkills });
     const capture = async (selectedRobot, input = {}) => {
         const reference = await skillsets.start(selectedRobot, input, (_robot, selection) => selection);
@@ -66,7 +66,7 @@ test('disabled skillsets persist per robot and disappear only from discovery', a
     assert.equal(publicRepositories(saved)[0].skillsets[0].enabled, false);
     assert.deepEqual(individualSkillRepositories(saved), [], 'disabled combinations must not leak through individual-skill fallback');
     assert.equal((await f.capture(saved, { skillSets: [id] })).resolvedSkills.length, 2, 'saved task selections remain usable');
-    const other = await f.store.create({ name: 'Other', specialization: 'Reports' });
+    const other = await f.store.create({ name: 'Other' });
     await f.skillsets.add(other.id, { name: 'documents', source: f.source });
     assert.equal(publicSkillsets(await f.store.get(other.id)).length, 2);
     await assert.rejects(f.skillsets.setSkillsetEnabled(f.robot.id, { id: 'missing', enabled: false }), /not found/);

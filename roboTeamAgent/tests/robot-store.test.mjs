@@ -33,7 +33,7 @@ test('concurrent CLI users do not serialize execution but prevent deletion until
 
 test('creates a persistent workspace robot and exposes it in the shared listing', async () => {
     await withStore(async (store, dataDir) => {
-        const robot = await store.create({ name: 'Research Analyst', specialization: 'Research' });
+        const robot = await store.create({ name: 'Research Analyst' });
         assert.match(robot.id, /^research-analyst-[a-f0-9]{6}$/);
         assert.equal(robot.schema, 'roboteam-robot-v1');
         assert.equal(Object.hasOwn(robot, 'ownerUserId'), false);
@@ -48,7 +48,7 @@ test('creates a persistent workspace robot and exposes it in the shared listing'
 
 test('enforces workspace-wide unique names and deletes by robot id', async () => {
     await withStore(async (store, dataDir) => {
-        const robot = await store.create({ name: 'Unique', specialization: '' });
+        const robot = await store.create({ name: 'Unique' });
         await assert.rejects(() => store.create({ name: 'Unique' }), /already exists/);
         assert.equal((await store.getByName('Unique')).id, robot.id);
         assert.equal(await store.delete(robot.id), true);
@@ -58,7 +58,7 @@ test('enforces workspace-wide unique names and deletes by robot id', async () =>
 
 test('startup reuses an ordinary default robot unchanged and ordinary deletion permits recreation', async () => {
     await withStore(async (store, dataDir) => {
-        const existing = await store.create({ name: 'default', specialization: 'Keep this role' });
+        const existing = await store.create({ name: 'default' });
         const homeFile = path.join(dataDir, 'robots', existing.id, 'home', 'keep.txt');
         const metadataFile = path.join(dataDir, 'robots', existing.id, 'metadata.json');
         await fs.writeFile(homeFile, 'keep this home');
@@ -71,9 +71,8 @@ test('startup reuses an ordinary default robot unchanged and ordinary deletion p
         assert.equal(await store.getByName('default'), null);
         const recreated = await new RobotStore({ dataDir }).ensureDefaultRobot();
         assert.equal(recreated.name, 'default');
-        assert.equal(recreated.specialization, '');
         assert.deepEqual(Object.keys(recreated).sort(),
-            ['codingAgents', 'createdAt', 'id', 'name', 'schema', 'specialization', 'updatedAt']);
+            ['codingAgents', 'createdAt', 'id', 'name', 'schema', 'updatedAt']);
         assert.equal((await store.list()).length, 1);
     });
 });

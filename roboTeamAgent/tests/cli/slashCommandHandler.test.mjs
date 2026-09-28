@@ -70,10 +70,10 @@ test('hierarchical continuation preserves multiline prompt and exact originating
 
 test('deterministic catalog commands never use the execution engine', async () => {
     const commands = handler({
-        listRobots: async () => [{ name: 'default', specialization: 'Workspace copilot' }, { name: 'analyst' }],
+        listRobots: async () => [{ name: 'default' }, { name: 'analyst' }],
         executeSkill: () => assert.fail('catalog operations cannot execute the model'),
     });
-    assert.equal((await commands.executeSlashCommand('list', 'robots')).result, 'default · Workspace copilot\nanalyst');
+    assert.equal((await commands.executeSlashCommand('list', 'robots')).result, 'default\nanalyst');
     for (const args of ['skills', 'repos', 'robots extra', '']) {
         assert.match((await commands.executeSlashCommand('list', args)).error, /Usage: \/list robots/);
     }

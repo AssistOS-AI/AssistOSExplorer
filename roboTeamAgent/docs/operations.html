@@ -40,7 +40,7 @@
     <tbody>
       <tr><td><code>list_achilles_cli_commands</code></td><td>Returns WebChat command completions for the robot selected by the optional robot argument and dir. The compatibility tool name is retained; it executes inside RoboTeam.</td></tr>
       <tr><td><code>list_achilles_skills</code></td><td>Returns workspace inventory, effective selection, policy version and active revision. Optional sessionId selects that conversation and its saved cwd; omission previews scoped robot defaults. It does not launch ALA.</td></tr>
-      <tr><td><code>robot_create</code></td><td>Creates a persistent workspace robot with a workspace-unique name, optional specialization and optional codingAgents list, defaulting to Codex. Only an authenticated administrator may call it.</td></tr>
+      <tr><td><code>robot_create</code></td><td>Creates a persistent workspace robot with a workspace-unique name and an optional codingAgents list, defaulting to Codex. Only an authenticated administrator may call it.</td></tr>
       <tr><td><code>set_achilles_skill_enabled</code></td><td>Sets an exact skill identity enabled or disabled for the indicated conversation or scoped defaults. Requires enabled and the observed policyVersion; stale updates fail and must be reloaded.</td></tr>
       <tr><td><code>robot_list</code></td><td>Returns workspace robots, descriptions, current run state, and available skillsets. Each skillset includes its description, member names and generated selection ID; repository entries also list individual skill metadata. This is an internal workspace-agent tool.</td></tr>
       <tr><td><code>robot_delete</code></td><td>Deletes a stopped robot and its persistent home. Only an authenticated administrator may call it.</td></tr>
@@ -95,7 +95,7 @@
       <tr><td><code>/task continue &lt;task-id&gt; &lt;prompt&gt;</code></td><td>Continues a terminal delegated task through its advertised continuation tool. This differs from selecting the parent conversation with <code>/session resume</code>.</td></tr>
       <tr><td><code>/task model &lt;task-id&gt; [model-key]</code>, <code>/task login &lt;task-id&gt; [provider] [method]</code></td><td>Configures a delegated worker when it exposes the corresponding model or login capability. These are not universal robot login commands; configure robot accounts through its Desktop.</td></tr>
       <tr><td><code>/history [clear|&lt;n&gt;|&lt;query&gt;]</code></td><td>Shows recent input history, clears that history, or searches it. Clearing input history does not delete saved conversations or native sessions.</td></tr>
-      <tr><td><code>/list robots</code></td><td>Lists names and specializations from the current workspace robot catalog without invoking ALA.</td></tr>
+      <tr><td><code>/list robots</code></td><td>Lists names from the current workspace robot catalog without invoking ALA.</td></tr>
       <tr><td><code>/help [topic]</code></td><td>Shows help for the retained commands.</td></tr>
       <tr><td><code>/exit</code>, <code>/quit</code></td><td>The wrapper recognizes terminal-exit commands. WebChat does not close the browser tab through these commands; close the tab to leave it.</td></tr>
     </tbody>

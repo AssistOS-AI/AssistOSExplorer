@@ -85,7 +85,7 @@ test('robot API shares workspace robots and restricts creation to administrators
         const created = await fetch(`${fixture.baseUrl}/api/robots`, {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-ploinky-auth-info': authHeader('admin-a', ['admin']) },
-            body: JSON.stringify({ name: 'Publisher', specialization: 'Editorial operations' }),
+            body: JSON.stringify({ name: 'Publisher' }),
         });
         assert.equal(created.status, 201);
         const robot = (await created.json()).robot;
@@ -116,7 +116,7 @@ test('skillset mutations are admin-only, including rejection of internal agents'
         setSkillsetEnabled: async (...args) => calls.push(['toggle', ...args]),
     } });
     t.after(fixture.close);
-    const robot = await fixture.robotStore.create({ name: 'Skills', specialization: 'Documents' });
+    const robot = await fixture.robotStore.create({ name: 'Skills' });
     for (const method of ['POST', 'DELETE', 'PATCH']) {
         for (const headers of [{ 'x-ploinky-auth-info': authHeader('user') }, { 'x-roboteam-internal-token': 'test-token' }]) {
             const response = await fetch(`${fixture.baseUrl}/api/robots/${robot.id}/skillsets`, {
@@ -142,7 +142,7 @@ test('skillset mutations are admin-only, including rejection of internal agents'
 test('task starts validate allowed policy intent and ignore caller-supplied snapshots and policy references', async (t) => {
     const fixture = await startFixture();
     t.after(fixture.close);
-    const robot = await fixture.robotStore.create({ name: 'Catalog Task', specialization: 'Reports' });
+    const robot = await fixture.robotStore.create({ name: 'Catalog Task' });
     const requests = [];
     fixture.runtimeManager.startTask = (_robot, type, request) => {
         requests.push({ type, request });

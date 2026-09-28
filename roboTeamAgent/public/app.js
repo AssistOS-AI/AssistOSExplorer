@@ -167,7 +167,6 @@ function renderRobots(robots, canAdmin = false) {
         });
         card.querySelector('.avatar').textContent = initials(robot.name);
         card.querySelector('h3').textContent = robot.name;
-        card.querySelector('.specialization').textContent = robot.specialization || 'General-purpose robot';
         card.querySelector('.robot-id').textContent = robot.id;
         const codingAgents = robot.codingAgents || ['codex', 'opencode', 'pi'];
         card.querySelector('.active-coding-agent').textContent = `Coding agent: ${codingAgentLabel(codingAgents)}`;
@@ -325,7 +324,7 @@ createForm.addEventListener('submit', async (event) => {
     submit.disabled = true;
     const data = new FormData(createForm);
     try {
-        await api('api/robots', { method: 'POST', body: { name: data.get('name'), specialization: data.get('specialization') } });
+        await api('api/robots', { method: 'POST', body: { name: data.get('name') } });
         createForm.reset();
         formMessage.textContent = 'Robot created.';
         formMessage.className = 'message success';

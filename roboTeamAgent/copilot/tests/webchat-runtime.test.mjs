@@ -37,8 +37,8 @@ test('WebChat rejects retired commands without invoking skill administration or 
         assert.match(result.output, /Unknown command|Usage: \/list robots/);
     }
     runtime.historyManager.add = async () => {};
-    runtime.listRobots = async () => [{ name: 'default', specialization: 'Copilot' }];
-    assert.equal((await executeRuntimeCommand({ runtime, connection: {}, input: '/list robots' })).output, 'default · Copilot');
+    runtime.listRobots = async () => [{ name: 'default' }];
+    assert.equal((await executeRuntimeCommand({ runtime, connection: {}, input: '/list robots' })).output, 'default');
 });
 
 test('WebChat publishes effort on connection, model selection, session selection and reset', async (t) => {

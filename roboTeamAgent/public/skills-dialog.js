@@ -17,7 +17,7 @@ export function hasRecommendedRepository(robot, recommendation) {
 }
 
 export async function loadSkillRecommendations(fetchImpl = globalThis.fetch) {
-    const response = await fetchImpl('/api/marketplace', { credentials: 'include', cache: 'no-store',
+    const response = await fetchImpl('/api/marketplace/repos', { credentials: 'include', cache: 'no-store',
         headers: { accept: 'application/json' } });
     if (!response.ok) throw new Error('Could not load recommended repositories from Ploinky.');
     const payload = await response.json();

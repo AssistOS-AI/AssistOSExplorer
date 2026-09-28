@@ -91,7 +91,7 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
             historyManager, settings, interactions, webchatController, backgroundTasks,
             listRobots: async () => {
                 if (!robotContext) throw new Error('Robot discovery requires the RoboTeam runtime.');
-                return (await robotContext.store.list()).map(({ name, specialization }) => ({ name, specialization }));
+                return (await robotContext.store.list()).map(({ name }) => ({ name }));
             },
             getPermissions: () => settings.getPermissionMode(workingDir),
             setPermissions: (mode) => settings.setPermissionMode(workingDir, mode),

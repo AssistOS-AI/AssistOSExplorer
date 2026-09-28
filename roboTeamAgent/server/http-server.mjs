@@ -182,9 +182,7 @@ function publicRobot(robot, run) {
     return {
         id: robot.id,
         name: robot.name,
-        specialization: robot.specialization,
         codingAgents: robotCodingAgents(robot),
-        description: robot.specialization,
         skillsets: publicSkillsets(robot),
         skillRepositories: individualSkillRepositories(robot),
         repositories: publicRepositories(robot),
@@ -411,7 +409,7 @@ export function createRoboTeamServer(options) {
             if (pathname === '/api/robots' && req.method === 'POST') {
                 if (!isAdminActor(actor)) return sendError(res, 403, 'administrator role is required');
                 const body = await readJsonBody(req);
-                const robot = await robotStore.create({ name: body.name, specialization: body.specialization, codingAgents: body.codingAgents });
+                const robot = await robotStore.create({ name: body.name, codingAgents: body.codingAgents });
                 await runtimeManager.prepareOpenCode?.(robot.id);
                 await roboflow?.refreshCoverage();
                 return sendJson(res, 201, { ok: true, robot: publicRobot(robot, runtimeManager.status(robot.id)) });
