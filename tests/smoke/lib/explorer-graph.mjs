@@ -24,8 +24,8 @@ export const KNOWN_SIBLINGS = Object.freeze(['AchillesCLI', 'proxies', 'UmamiAge
 export const MINIMUM_REVISIONS = Object.freeze({
     'local-llms/local-llm': Object.freeze({
         revision: '1990959a343c3453495b98bb4c7e6cc0aa4b386b',
-        why: 'first local-llms revision with the local-llm agent (branch feat/local-llm-agent; main has none yet)',
-        advice: 'check out local-llms on feat/local-llm-agent',
+        why: 'first local-llms revision with the local-llm agent; local-llms main contains it',
+        advice: 'check out local-llms main',
     }),
 });
 

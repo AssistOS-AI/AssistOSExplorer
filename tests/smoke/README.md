@@ -739,8 +739,8 @@ repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
 
 Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
 the helper). One is recorded: `local-llms/local-llm` needs a local-llms
-checkout that contains `1990959` (the agent exists only on
-`feat/local-llm-agent` until local-llms merges it). The controls in `explorer/tests/unit/retiredLocalModelGraph.test.js`
+checkout that contains `1990959` (the first local-llms revision with the
+agent; local-llms `main` contains it). The controls in `explorer/tests/unit/retiredLocalModelGraph.test.js`
 pass a synthetic entry through the helper's `minimumRevisions` option to
 exercise the rule.
 
