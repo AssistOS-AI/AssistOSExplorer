@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { registerProject } from '../../server/project-storage.mjs';
+import { PUBLIC_BASE_PATH } from '../../server/constants.mjs';
 
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -82,7 +83,8 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
             onTaskStarted: (task, origin) => attachTaskToSession(sessionStore, task, origin, { webchat }),
         }) : null;
         const engine = createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, interactions, backgroundTasks, installation,
-            execution: { ...options.execution, robotId: robotContext?.robot.id } });
+            execution: { ...options.execution, robotId: robotContext?.robot.id },
+            webchatLogsBase: `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/webchat-logs` });
         const historyManager = new HistoryManager({ workingDir });
         return {
             ...options, installation, skillCatalog, sessionStore, initialSession, engine,

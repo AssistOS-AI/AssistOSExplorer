@@ -9,6 +9,7 @@ import { acquireExecutionLease, withWorkspaceMutation } from './workspaceStateLo
 import { ensureSafeAchillesPrivateDirectory, resolveAchillesWorkspaceRoot } from './privateDataRoot.mjs';
 import { createPloinkyTaskContext } from './ploinkyTaskContext.mjs';
 import { createSanitizer } from './skillRuntimePolicy.mjs';
+import { writeWebchatTurnLog, webchatTurnLogUrl } from './webchatTurnLog.mjs';
 
 const BACKENDS = ['codex', 'opencode', 'pi'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
@@ -92,7 +93,7 @@ function interrupted() {
 }
 
 export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settings = workspaceSettings,
-    interactions, backgroundTasks, installation, execution = {} } = {}) {
+    interactions, backgroundTasks, installation, execution = {}, webchatLogsBase = '' } = {}) {
     if (!sessionStore || !skillCatalog) throw new TypeError('ALA requires a session store and Anthropic skill catalog.');
     const active = new Set();
     let closed = false;
@@ -160,11 +161,15 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
         let release, catalogRelease, turn, scriptContext, temporary, child, childDone;
+        const turnLogLines = [];
+        const recordTurnLog = (line) => { const text = String(line ?? '').trim(); if (text) turnLogLines.push(text); };
         const env = { ...process.env };
         const sanitize = createSanitizer(context, env);
         const emit = async (event) => { await onEvent?.(sanitize(event)); };
         try {
             controller.signal.throwIfAborted();
+            const robotName = String(process.env.ROBOTEAM_COPILOT_ROBOT_NAME || '').trim();
+            await emit({ type: 'progress', reason: robotName ? `Connecting to robot "${robotName}"` : 'Connecting to robot' });
             release = await acquireExecutionLease(workingDir, `session:${sessionId}`);
             const config = await configuration(sessionId, env);
             const { cwd, home, backend, api, permissionMode } = config;
@@ -223,6 +228,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (execution.mcpServers) args.push('--MCPServers', execution.mcpServers);
 
             const isNode = /\.(?:mjs|cjs|js)$/i.test(api.entryPath);
+            await emit({ type: 'progress', reason: 'Starting ALA' });
             child = spawn(isNode ? process.execPath : api.entryPath, isNode ? [api.entryPath, ...args] : args, {
                 cwd, env: { ...config.env, ALA_EVENT_STREAM: '1', ALA_TASK_REPOSITORIES: '' },
                 shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
@@ -231,7 +237,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 if (!child.stdin.destroyed && !controller.signal.aborted) child.stdin.write(JSON.stringify(message) + '\n');
             });
             childDone = consumeChild(child, { config: { ...config, skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null }, controller, context: captured, sessionId, turnId,
-                assistantMessageId: turn.assistantMessageId, emit, sanitize });
+                assistantMessageId: turn.assistantMessageId, emit, sanitize, recordLog: recordTurnLog });
             const outputText = await childDone;
             if (scriptContext) {
                 const completedContext = scriptContext;
@@ -239,8 +245,15 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 await completedContext.close();
             }
             controller.signal.throwIfAborted();
-            const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText);
-            return { outputText, session: completed, turnId, userMessageId: turn.userMessageId,
+            let finalText = outputText;
+            if (captured.sourceTabId && webchatLogsBase && turnLogLines.length) {
+                try {
+                    writeWebchatTurnLog(workingDir, sessionId, turn.assistantMessageId, turnLogLines);
+                    finalText = `${outputText}\n\n[View logs](${webchatTurnLogUrl(webchatLogsBase, sessionId, turn.assistantMessageId)})`;
+                } catch { /* Log persistence must not fail the answer. */ }
+            }
+            const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, finalText);
+            return { outputText: finalText, session: completed, turnId, userMessageId: turn.userMessageId,
                 assistantMessageId: turn.assistantMessageId, backend };
         } catch (cause) {
             const cancelled = controller.signal.aborted || cause?.exitCode === 130;
@@ -266,7 +279,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         }
     }
 
-    async function consumeChild(child, { config, controller, context, sessionId, turnId, assistantMessageId, emit, sanitize }) {
+    async function consumeChild(child, { config, controller, context, sessionId, turnId, assistantMessageId, emit, sanitize, recordLog = null }) {
         let stdout = '', stderr = '', diagnostics = '', finalText = null, selected = false, protocolError = null;
         let queued = Promise.resolve();
         let remainingFinals = 1;
@@ -329,9 +342,11 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 interactions?.resolve(event.id, event.reason);
             }
             if (event.type === 'coding-agent-message' || event.type === 'agentlib-tool') {
-                const progress = sanitize(event.message || event.reason || '');
-                if (progress) await sessionStore.appendProgress(sessionId, assistantMessageId, progress);
+                recordLog?.(event.message || event.reason);
+            } else if (event.type === 'diagnostic') {
+                recordLog?.(event.message);
             }
+            // Progress is delivered as a transient WebChat status, never persisted on the message.
             await emit(event);
         };
         const line = (value) => {

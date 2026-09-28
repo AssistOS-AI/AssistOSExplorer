@@ -74,6 +74,37 @@ test('WebChat publishes effort on connection, model selection, session selection
     assert.ok(states().every((state) => state.targetTabId === 'tabA'));
 });
 
+test('WebChat streams transient progress envelopes for connection and ALA events', async (t) => {
+    const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-webchat-progress-'));
+    t.after(() => fs.rm(workingDir, { recursive: true, force: true }));
+    const sessionStore = new ConversationSessionStore({ workingDir });
+    const initialSession = await sessionStore.ensureCurrentSession();
+    const engine = {
+        async executeTurn({ sessionId, turnId, prompt, onEvent }) {
+            const turn = await sessionStore.beginTurn({ sessionId, turnId, text: prompt });
+            await onEvent({ type: 'turn-started', ...turn, turnId });
+            await onEvent({ type: 'progress', reason: 'Connecting to robot "default"' });
+            await onEvent({ type: 'coding-agent-selected', agent: 'opencode' });
+            await onEvent({ type: 'coding-agent-message', agent: 'opencode', message: 'Reading files' });
+            const outputText = 'done';
+            const session = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, outputText);
+            return { outputText, session };
+        },
+    };
+    const output = eventQueue();
+    const runtime = { workingDir, sessionStore, initialSession, engine, historyManager: new HistoryManager({ workingDir }),
+        skillCatalog: { getSkills: () => [] }, settings: {}, backgroundTasks: null };
+    const dispatcher = createWebchatDispatcher(runtime, { write: (value) => output.write(value) });
+    t.after(() => dispatcher.cancel());
+    dispatcher.receive(JSON.stringify({ __webchatMessage: 1, version: 1, text: 'hello',
+        sourceTabId: 'tabP', sourcePageInstanceId: 'page1', presentation: { visible: false } }));
+    await dispatcher.drain();
+    const progress = output.events.filter((event) => event.__webchatProgress);
+    assert.deepEqual(progress.map((event) => event.reason),
+        ['Connecting to robot "default"', 'Routing to OpenCode', 'Reading files']);
+    assert.ok(progress.every((event) => event.targetTabId === 'tabP'));
+});
+
 test('tabs run different sessions concurrently, retain selection on reload, and Stop targets only its turn', { timeout: 10000 }, async (t) => {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-webchat-tabs-'));
     t.after(() => fs.rm(workingDir, { recursive: true, force: true }));

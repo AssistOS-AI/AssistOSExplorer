@@ -31,7 +31,7 @@ function deferred() {
     return { promise, resolve };
 }
 
-async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {} } = {}) {
+async function harness(t, interactions = {}, { workspaceAtRoot = false, execution = {}, webchatLogsBase = '' } = {}) {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'achilles-engine-'));
     const oldRoot = process.env.PLOINKY_WORKSPACE_ROOT;
     process.env.PLOINKY_WORKSPACE_ROOT = workspaceAtRoot ? workingDir : path.dirname(workingDir);
@@ -48,7 +48,8 @@ async function harness(t, interactions = {}, { workspaceAtRoot = false, executio
         async discoverCodingAgents() { return [{ name: 'codex', binary: process.execPath, available: true }]; },
     };
     const engine = createAlaEngine({ workingDir, sessionStore: store, skillCatalog: catalog, installation,
-        execution, settings: { readAchillesSettings: () => ({}), getCodingAgentModels: () => models, getPermissionMode: () => 'ask-for-approval' },
+        execution, webchatLogsBase,
+        settings: { readAchillesSettings: () => ({}), getCodingAgentModels: () => models, getPermissionMode: () => 'ask-for-approval' },
         interactions: { cancelTurn() {}, resolve() {}, ...interactions } });
     t.after(async () => { await engine.close(); await fs.rm(workingDir, { recursive: true, force: true }); });
     return { workingDir, engine, store, installation, sessionId: session.sessionId,
@@ -90,7 +91,11 @@ test('stderr final and stdout produce one persisted answer; live selection is pr
     assert.equal(output.model, 'native-first');
     assert.equal(result.session.messages[0].text, 'Original UI request');
     assert.equal(result.session.messages[1].text, result.outputText);
-    assert.deepEqual(result.session.messages[1].progress, ['Visible progress']);
+    // Progress is transient: it is emitted as events but never persisted on the message.
+    assert.deepEqual(result.session.messages[1].progress, []);
+    assert.ok(events.some((event) => event.type === 'progress' && /Connecting to robot/.test(event.reason || '')));
+    assert.ok(events.some((event) => event.type === 'progress' && event.reason === 'Starting ALA'));
+    assert.ok(events.some((event) => event.type === 'coding-agent-message' && event.message === 'Visible progress'));
     assert.equal(events.filter((event) => event.type === 'coding-agent-final').length, 1);
     assert.equal(JSON.stringify(events).includes('secret-token-for-test'), false);
     assert.equal(JSON.stringify(result.session).includes('secret-token-for-test'), false);
@@ -228,4 +233,22 @@ test('caller system instructions are prepended to the user prompt on initial and
         assert.ok(output.prompt.startsWith('Generate a directed task graph.'));
         assert.match(output.prompt, new RegExp(prompt));
     }
+});
+
+test('a webchat turn persists an on-demand log and links it from the answer', async (t) => {
+    const h = await harness(t, {}, { webchatLogsBase: '/base-agent-additional-server/roboTeamAgent/3001/webchat-logs' });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'LOG_TURN',
+        context: { sourceTabId: 'tab1', sourcePageInstanceId: 'page1', rawText: 'LOG_TURN' } });
+    const messageId = result.assistantMessageId;
+    assert.match(result.session.messages.at(-1).text,
+        /\[View logs\]\(\/base-agent-additional-server\/roboTeamAgent\/3001\/webchat-logs\/[a-f0-9-]{36}\/[a-f0-9-]{36}\)/);
+    const log = await fs.readFile(path.join(h.workingDir, '.achilles-cli', 'logs', h.sessionId, `${messageId}.log`), 'utf8');
+    assert.match(log, /Visible progress/);
+});
+
+test('a non-webchat turn keeps only the answer without a log link', async (t) => {
+    const h = await harness(t, {}, { webchatLogsBase: '/base-agent-additional-server/roboTeamAgent/3001/webchat-logs' });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'PLAIN' });
+    assert.equal(result.session.messages.at(-1).text.includes('View logs'), false);
+    await assert.rejects(fs.stat(path.join(h.workingDir, '.achilles-cli', 'logs')), { code: 'ENOENT' });
 });

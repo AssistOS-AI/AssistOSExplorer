@@ -9,6 +9,7 @@ import { RobotSkillsets, publicSkillsets, publicRepositories, individualSkillRep
 import { robotTerminalDirectory } from './robot-terminal.mjs';
 import { prepareRobotShell } from './robot-shell.mjs';
 import { robotCodingAgents } from './coding-agents.mjs';
+import { findProjectRecord } from './project-storage.mjs';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = path.resolve(MODULE_DIR, '..', 'public');
@@ -77,6 +78,20 @@ async function serveFile(res, root, relativePath) {
         'x-content-type-options': 'nosniff',
     });
     fs.createReadStream(candidate).pipe(res);
+}
+
+// A main-conversation log is written by the copilot next to its session store,
+// so the session id alone locates the opened folder through the project registry.
+function readWebchatTurnLog(robotStore, workspaceRoot, sessionId, messageId) {
+    let sessionFile;
+    try { sessionFile = findProjectRecord({ dataDir: robotStore.dataDir, workspaceRoot }, 'session', sessionId); }
+    catch { return null; }
+    if (!sessionFile) return null;
+    const workingDir = path.dirname(path.dirname(path.dirname(sessionFile)));
+    const root = path.join(workingDir, '.achilles-cli', 'logs');
+    const file = path.join(root, sessionId, `${messageId}.log`);
+    if (!file.startsWith(`${root}${path.sep}`)) return null;
+    try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
 }
 
 // HTML pages live under route paths such as /flow-types/new, so their relative
@@ -358,10 +373,20 @@ export function createRoboTeamServer(options) {
             if (pathname === '/InterVariable.woff2' && req.method === 'GET') return serveFile(res, publicDir, 'InterVariable.woff2');
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
             if (['/workflow-editor.js', '/workflow-board.js', '/workflow-generator.js', '/workflow-editor.css',
-                '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
+                '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js',
+                '/log-render.js', '/webchat-logs.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');
+
+            const logsPage = pathname.match(/^\/webchat-logs\/([a-f0-9-]{36})\/([a-f0-9-]{36})$/);
+            if (logsPage && req.method === 'GET') return servePage(res, publicDir, 'webchat-logs.html', publicBasePath);
+            const logsApi = pathname.match(/^\/api\/webchat\/logs\/([a-f0-9-]{36})\/([a-f0-9-]{36})$/);
+            if (logsApi && req.method === 'GET') {
+                const log = readWebchatTurnLog(robotStore, runtimeManager.workspaceRoot, logsApi[1], logsApi[2]);
+                if (log === null) return sendError(res, 404, 'log not found');
+                return sendText(res, 200, log);
+            }
 
             const terminalRobotId = matchRobotPath(pathname, '/terminal');
             if (terminalRobotId && req.method === 'POST') {

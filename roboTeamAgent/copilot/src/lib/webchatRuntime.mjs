@@ -8,6 +8,7 @@ import { parseWebchatInteractionResponse } from '../permissions/protocol.mjs';
 import { createCurrentSessionEnvelope, createSelectedSessionEnvelope, createSessionListEnvelope } from './webchatSessionState.mjs';
 import { createWebchatSkillsEnvelope } from './workspaceSkillsState.mjs';
 import { createWebchatRuntimeStateEnvelope } from './webchatRuntimeState.mjs';
+import { createWebchatProgressEnvelope, codingAgentLabel } from './webchatProgressState.mjs';
 import { executeRuntimeCommand } from './cliRuntimeCommands.mjs';
 import { handleWebchatControlChunk, isWebchatEscapeControlChunk } from './webchatControl.mjs';
 import { createSanitizer } from './skillRuntimePolicy.mjs';
@@ -93,12 +94,21 @@ export function createWebchatDispatcher(runtime, { write = (value) => process.st
         const emitOutput = shouldEmitWebchatOutput(message, { isSlashCommand: isSlash });
         let commandTurn = null;
         let engineStarted = false;
+        const sendProgress = (reason, extra) => {
+            const envelope = createWebchatProgressEnvelope(reason, extra);
+            if (envelope) send(envelope, context);
+        };
         const onEvent = async (event) => {
             if (event.type === 'turn-started') {
                 engineStarted = true;
                 update(event.session, context);
-            } else if (engineStarted && ['coding-agent-message', 'agentlib-tool', 'coding-agent-selected'].includes(event.type)) {
-                update(runtime.sessionStore.loadSession(sessionId), context);
+            }
+            if (event.type === 'progress' && event.reason) {
+                sendProgress(event.reason);
+            } else if (event.type === 'coding-agent-selected') {
+                sendProgress(`Routing to ${codingAgentLabel(event.agent)}`, { type: 'coding-agent' });
+            } else if (event.type === 'coding-agent-message' || event.type === 'agentlib-tool') {
+                sendProgress(event.message || event.reason, { tool: event.tool || '', type: event.type });
             }
             if (event.type === 'coding-agent-selected' && connection.sessionId === sessionId) {
                 send(createWebchatRuntimeStateEnvelope(event.model, { backend: event.agent, effort: event.effort }), context);
