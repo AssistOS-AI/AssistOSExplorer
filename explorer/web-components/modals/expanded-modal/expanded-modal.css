@@ -69,10 +69,54 @@ dialog.modal.expanded-modal-dialog.is-fullscreen expanded-modal .expanded-modal-
     cursor: default;
 }
 
+expanded-modal .expanded-modal-heading {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+expanded-modal .expanded-modal-breadcrumbs {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 14px;
+    color: var(--text-soft, #9fa2a8);
+}
+
+expanded-modal .expanded-modal-breadcrumbs[hidden] {
+    display: none;
+}
+
+expanded-modal .expanded-modal-breadcrumbs a {
+    color: var(--accent, #60a5fa);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+expanded-modal .expanded-modal-breadcrumbs a:hover {
+    text-decoration: underline;
+}
+
+expanded-modal .expanded-modal-breadcrumbs [aria-current="page"] {
+    color: var(--text, #cfd1d6);
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+expanded-modal .expanded-modal-breadcrumbs .breadcrumb-sep {
+    color: var(--text-soft, #9fa2a8);
+}
+
 expanded-modal .expanded-modal-title {
     font-size: 15px;
     font-weight: 700;
     color: var(--text, #cfd1d6);
+}
+
+expanded-modal .expanded-modal-title[hidden] {
+    display: none;
 }
 
 expanded-modal .expanded-modal-actions {

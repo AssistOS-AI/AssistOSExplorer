@@ -34,7 +34,7 @@ test.describe('Fresh optional-agent Marketplace activation', () => {
         const marketplace = page.locator('marketplace-modal');
         await expect(marketplace).toBeVisible();
 
-        const response = await page.request.get('/api/marketplace');
+        const response = await page.request.get('/api/marketplace/agents');
         expect(response.ok()).toBe(true);
         const payload = await response.json();
         expect(Array.isArray(payload.marketplace?.agents)).toBe(true);
@@ -70,7 +70,7 @@ test.describe('Fresh optional-agent Marketplace activation', () => {
             const expectedMode = ref.endsWith('/onlyOffice') ? 'global' : 'isolated';
             await mode.selectOption(expectedMode);
             const mutation = page.waitForResponse((candidate) => (
-                new URL(candidate.url()).pathname === '/api/marketplace'
+                new URL(candidate.url()).pathname === '/api/marketplace/agents'
                 && candidate.request().method() === 'POST'
             ), { timeout: startupTimeout });
             await row.getByRole('button', { name: 'Enable', exact: true }).click();

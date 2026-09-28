@@ -19,12 +19,11 @@ import {
     resolveSettingsComponentBase
 } from "./settings-component-loader.js";
 import { avatarController, defaultAvatarConfig } from "./settings-avatar-controller.js";
-import { copilotController } from "./settings-copilot-controller.js";
 import { runtimeSettingsController } from "./settings-runtime-controller.js";
 import { accountController } from "./settings-account-controller.js";
 import { usersController } from "./settings-users-controller.js";
 
-const BASE_TABS = ['account', 'agents', 'plugins', 'copilot', 'keymap', 'editor', 'theme', 'avatar'];
+const BASE_TABS = ['account', 'agents', 'plugins', 'keymap', 'editor', 'theme', 'avatar'];
 
 export {
     applyAgentRuntimeStatuses,
@@ -64,13 +63,6 @@ export class SettingsModal {
             agentSettingsDataLoaded: false,
             agentSettingsBusyKey: "",
             agentRuntimeStatusRequestId: 0,
-            copilotItems: [],
-            copilotBusy: false,
-            copilotPolicyVersion: null,
-            copilotDiagnostics: [],
-            copilotStatus: "",
-            copilotStatusType: "",
-            copilotDataLoaded: false,
             avatarDataLoaded: false,
             avatarStatus: "",
             avatarStatusType: "",
@@ -112,9 +104,6 @@ export class SettingsModal {
         if (this.state.activeTab === "agents" && !this.state.agentSettingsDataLoaded) {
             await this.loadAgentSettingsData();
         }
-        if (this.state.activeTab === "copilot" && !this.state.copilotDataLoaded) {
-            await this.loadCopilotSettingsData();
-        }
         if (this.state.activeTab === "avatar" && !this.state.avatarDataLoaded) {
             await this.loadAvatarSettingsData();
         }
@@ -126,7 +115,6 @@ export class SettingsModal {
         this.themeSection = this.element.querySelector('[data-section="theme"]');
         this.pluginsSection = this.element.querySelector('[data-section="plugins"]');
         this.agentsSection = this.element.querySelector('[data-section="agents"]');
-        this.copilotSection = this.element.querySelector('[data-section="copilot"]');
         this.avatarSection = this.element.querySelector('[data-section="avatar"]');
         this.accountSection = this.element.querySelector('[data-section="account"]');
         this.usersSection = this.element.querySelector('[data-section="users"]');
@@ -137,8 +125,6 @@ export class SettingsModal {
         this.pluginSettingsStatusEl = this.element.querySelector("#pluginSettingsStatus");
         this.agentSettingsListEl = this.element.querySelector("#agentSettingsList");
         this.agentSettingsStatusEl = this.element.querySelector("#agentSettingsStatus");
-        this.copilotSettingsListEl = this.element.querySelector("#copilotSettingsList");
-        this.copilotSettingsStatusEl = this.element.querySelector("#copilotSettingsStatus");
         this.avatarSettingsStatusEl = this.element.querySelector("#avatarSettingsStatus");
         this.profileAvatarControlsEl = this.element.querySelector('avatar-settings-form[data-avatar-scope="profile"]');
         this.agentAvatarControlsEl = this.element.querySelector('avatar-settings-form[data-avatar-scope="agent"]');
@@ -228,13 +214,6 @@ export class SettingsModal {
                 void this.refreshAgentRuntimeStatuses();
             }
         }
-        if (this.state.activeTab === "copilot" && !this.state.copilotDataLoaded) {
-            this.loadCopilotSettingsData().catch((error) => {
-                this.state.copilotStatus = error?.message || "Failed to load Copilot skills.";
-                this.state.copilotStatusType = "error";
-                this.renderCopilotSettingsStatus();
-            });
-        }
         if (this.state.activeTab === "avatar") {
             this.state.avatarDataLoaded = false;
             this.loadAvatarSettingsData().catch((error) => {
@@ -271,7 +250,6 @@ export class SettingsModal {
             { key: 'theme', element: this.themeSection },
             { key: 'plugins', element: this.pluginsSection },
             { key: 'agents', element: this.agentsSection },
-            { key: 'copilot', element: this.copilotSection },
             { key: 'avatar', element: this.avatarSection },
             { key: 'users', element: this.usersSection }
         ];
@@ -449,12 +427,7 @@ export class SettingsModal {
         });
     }
 
-    afterUnload() {
-        this.invalidateCopilotRequests();
-    }
-
     closeModal(payload) {
-        this.invalidateCopilotRequests();
         assistOS.UI.closeModal(this.element, payload);
     }
 }
@@ -462,7 +435,6 @@ export class SettingsModal {
 Object.assign(
     SettingsModal.prototype,
     runtimeSettingsController,
-    copilotController,
     avatarController,
     accountController,
     usersController

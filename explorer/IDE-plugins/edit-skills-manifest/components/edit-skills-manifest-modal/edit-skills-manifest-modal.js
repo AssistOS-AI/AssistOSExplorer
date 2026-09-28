@@ -223,7 +223,7 @@ export class EditSkillsManifestModal {
     }
 
     async loadMarketplaceSkillRepositories() {
-        const response = await fetch('/api/marketplace', {
+        const response = await fetch('/api/marketplace/repos', {
             credentials: 'include',
             headers: { Accept: 'application/json' }
         });
@@ -246,7 +246,8 @@ export class EditSkillsManifestModal {
                 url: String(repo.url || ''),
                 branch: String(repo.branch || ''),
                 installed: Boolean(repo.installed),
-                kind: String(repo.kind || '')
+                kind: String(repo.kind || ''),
+                warnings: Array.isArray(repo.warnings) ? repo.warnings : []
             }))
             .sort((left, right) => left.name.localeCompare(right.name));
     }
@@ -291,7 +292,7 @@ export class EditSkillsManifestModal {
         if (!this.presetListEl) return;
         const repositories = this.state.skillRepositories || [];
         if (!repositories.length) {
-            this.presetListEl.innerHTML = '<div class="edit-skills-manifest-empty">No predefined skills repositories found.</div>';
+            this.presetListEl.innerHTML = '<div class="edit-skills-manifest-empty">No skill repositories found in the workspace or registered in Ploinky.</div>';
             return;
         }
         this.presetListEl.innerHTML = repositories.map((repository, index) => {
@@ -301,6 +302,7 @@ export class EditSkillsManifestModal {
                     <div>
                         <div class="recommended-name">${escapeHtml(repository.name || repository.label || repository.url)}</div>
                         <div class="muted">${escapeHtml(repository.label || '')}</div>
+                        ${(repository.warnings || []).map(warning => `<div class="skill-repository-warning">Warning: ${escapeHtml(warning)}</div>`).join('')}
                     </div>
                     <button class="button secondary" type="button" data-preset-index="${index}" ${alreadyAdded || this.busy ? 'disabled' : ''}>${alreadyAdded ? 'Added' : 'Add repo'}</button>
                 </div>

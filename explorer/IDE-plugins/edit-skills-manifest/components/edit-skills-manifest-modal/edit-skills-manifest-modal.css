@@ -69,3 +69,5 @@ edit-skills-manifest-modal .skillset-item { display: grid; grid-template-columns
 edit-skills-manifest-modal .skillset-item > strong { grid-column: 1; grid-row: 1; }
 edit-skills-manifest-modal .skillset-item > .button { grid-column: 2; grid-row: 1; justify-self: end; }
 edit-skills-manifest-modal .skillset-item > p, edit-skills-manifest-modal .skillset-item > .skill-members { grid-column: 1 / -1; }
+
+.skill-repository-warning { color: var(--warning, #b7791f); overflow-wrap: anywhere; }

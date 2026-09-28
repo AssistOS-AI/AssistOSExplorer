@@ -1,3 +1,6 @@
+import fsSync from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { installRepositoryLinks, removeRepositoryLinks } from '../../../../ploinky/cli/utils/repositoryInstall.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -5,6 +8,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { syncManagedSkillExports as syncPloinkyExports } from '../../../../ploinky/cli/utils/skills/managedExports.js';
 import { syncManagedSkillExports } from '../../utils/server/managed-skill-exports.mjs';
 import { createToolHandlers } from '../../utils/server/tool-handlers.mjs';
 
@@ -115,7 +119,37 @@ async function createAchillesCopilotBasicSkillsRepo(rootDir) {
 }
 
 function createHandlers(workspaceRoot, invalidated = []) {
+  const registry = new Map();
+  const repositoryClient = {
+    async listRepositories() {
+      const file = path.join(workspaceRoot, 'ploinky/cli/utils/repos.js');
+      let presets = {};
+      try {
+        const module = await import(pathToFileURL(file).href);
+        presets = module.getPredefinedRepos?.() || {};
+        for (const item of module.getSkillRepositoryRecommendations?.({ workspaceRoot }) || []) {
+          registry.set(item.name, { ...item, source: item.skillSource.source, origin: 'workspace' });
+        }
+      } catch (error) { if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error; }
+      for (const [name, preset] of Object.entries(presets)) registry.set(name, { name, ...preset,
+        source: preset.url, origin: 'workspace', kind: 'skills' });
+      for (const entry of fsSync.readdirSync(workspaceRoot, { withFileTypes: true })) {
+        const source = path.join(workspaceRoot, entry.name);
+        if (entry.isDirectory() && fsSync.existsSync(path.join(source, '.git')) && ![...registry.values()].some(repo => repo.source === source)) {
+          registry.set(entry.name, { name: entry.name, source, url: source, kind: 'skills', origin: 'workspace' });
+        }
+      }
+      return [...registry.values()];
+    },
+    async prepareRepository({ name, url }) {
+      registry.set(name, { name, source: url, url, kind: 'skills', origin: 'workspace' });
+      return this.listRepositories();
+    },
+    async install(input) { return installRepositoryLinks(input, { workspaceRoot, resolveRepository: name => registry.get(name) }); },
+    async remove(paths) { return removeRepositoryLinks(paths, { workspaceRoot }); }
+  };
   return createToolHandlers({
+    repositoryClient,
     fs,
     path,
     schemas: createMinimalSchemas(),
@@ -286,7 +320,7 @@ test('add_skills_manifest_repo explains when a cached repository has no Anthropi
     const handlers = createHandlers(workspaceRoot);
     const result = parseJsonResponse(await handlers.add_skills_manifest_repo({
       folderPath: projectDir,
-      url: `file://${repoDir}`,
+      url: repoDir,
       name: 'code-skills-only'
     }));
 
@@ -295,7 +329,7 @@ test('add_skills_manifest_repo explains when a cached repository has no Anthropi
     assert.equal(result.cached, true);
     assert.match(result.message, /cached but was not added.*no Anthropic skills were found/i);
 
-    const cachedRepo = await fs.stat(path.join(workspaceRoot, '.ploinky', 'repos', 'code-skills-only'));
+    const cachedRepo = await fs.stat(repoDir);
     assert.equal(cachedRepo.isDirectory(), true);
     await assert.rejects(
       fs.stat(path.join(projectDir, 'ploinky-skills-manifest.json')),
@@ -316,9 +350,9 @@ test('manifest exports preserve legacy collisions, unrelated skills and independ
     await writeFile(path.join(projectDir, '.agents', 'skills', 'unrelated', 'SKILL.md'), 'local unrelated');
     await writeFile(path.join(projectDir, '.claude', 'skills', 'independent', 'SKILL.md'), 'independent Claude');
     const handlers = createHandlers(workspaceRoot);
-    const added = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }));
+    const added = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }));
     assert.equal(await fs.readFile(localFile, 'utf8'), 'local alpha');
-    assert.equal(added.exportResult.diagnostics[0].reason, 'unrecorded-output-preserved');
+    assert.equal(added.exportResult.diagnostics[0].reason, 'existing-output-preserved');
     assert.equal(added.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'local');
     assert.equal(await fs.readFile(path.join(projectDir, '.claude', 'skills', 'independent', 'SKILL.md'), 'utf8'), 'independent Claude');
     const removed = parseJsonResponse(await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'local-skills' }));
@@ -334,39 +368,38 @@ test('edited owned descriptor and executable modes survive replacement and remov
     const projectDir = path.join(workspaceRoot, 'project');
     await fs.mkdir(projectDir);
     const handlers = createHandlers(workspaceRoot);
-    const args = { folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' };
+    const args = { folderPath: projectDir, url: repoDir, name: 'local-skills' };
     await handlers.add_skills_manifest_repo(args);
     // Recreate an owned copy from the previous export format before testing migration protection.
     await fs.unlink(path.join(projectDir, '.agents', 'skills', 'alpha-skill'));
-    await fs.unlink(path.join(projectDir, '.agents', '.ploinky-skill-exports.json'));
+    await fs.rm(path.join(projectDir, '.agents', '.ploinky-skill-exports.json'), { force: true });
     syncManagedSkillExports({ folder: projectDir, owner: 'manifest', sources: [{ name: 'alpha-skill', path: path.join(repoDir, 'skills/alpha-skill') }] });
     const output = path.join(projectDir, '.agents', 'skills', 'alpha-skill', 'SKILL.md');
     const original = await fs.readFile(output, 'utf8');
     await fs.chmod(output, 0o755);
     const update = parseJsonResponse(await handlers.add_skills_manifest_repo(args));
-    assert.equal(update.exportResult.diagnostics[0].reason, 'edited-output-preserved');
+    assert.equal(update.exportResult.diagnostics[0].reason, 'existing-output-preserved');
     assert.equal((await fs.stat(output)).mode & 0o777, 0o755);
     await fs.writeFile(output, original.replace('alpha-skill', 'local-skill'));
     const removed = parseJsonResponse(await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'local-skills' }));
     assert.equal(removed.skillOutputs[0].state, 'modified');
     assert.match(await fs.readFile(output, 'utf8'), /local-skill/);
-    assert.equal(removed.exportResult.diagnostics[0].reason, 'edited-output-preserved');
+    assert.equal(removed.skillOutputs[0].state, 'modified');
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
-test('unchanged owned output is removed alone and retired content is retained outside the skill root', async () => {
+test('deselection removes only the installed link and preserves repository content', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-remove-'));
   try {
     const repoDir = await createLocalSkillRepo(workspaceRoot);
     const projectDir = path.join(workspaceRoot, 'project');
     await writeFile(path.join(projectDir, '.agents', 'skills', 'local', 'SKILL.md'), 'keep');
     const handlers = createHandlers(workspaceRoot);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' });
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' });
     const removed = parseJsonResponse(await handlers.set_skills_manifest_skill_enabled({ folderPath: projectDir, repoName: 'local-skills', skill: 'alpha-skill', enabled: false }));
     assert.deepEqual(removed.installedSkills, ['local']);
     assert.deepEqual(removed.exportResult.removed, ['alpha-skill']);
-    assert.equal(removed.exportResult.backups.length, 1);
-    assert.match(await fs.readFile(path.join(removed.exportResult.backups[0], 'SKILL.md'), 'utf8'), /alpha-skill/);
+    assert.match(await fs.readFile(path.join(repoDir, 'skills/alpha-skill/SKILL.md'), 'utf8'), /alpha-skill/);
     assert.equal(await fs.readFile(path.join(projectDir, '.agents', 'skills', 'local', 'SKILL.md'), 'utf8'), 'keep');
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
@@ -380,8 +413,8 @@ test('same-name exports from two repositories are rejected without a traversal-o
     const projectDir = path.join(workspaceRoot, 'project');
     await fs.mkdir(projectDir);
     const handlers = createHandlers(workspaceRoot);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'first' });
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${secondRepo}`, name: 'second' }), /Duplicate exported skill name/);
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'first' });
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: secondRepo, name: 'second' }), /Duplicate selected skill/);
     const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
     assert.deepEqual(state.repositories.map((entry) => entry.name), ['first']);
     assert.equal(state.skillOutputs[0].source.name, 'first');
@@ -398,7 +431,7 @@ test('skillset controls batch symlink exports, prefer workspace sources and pres
     await fs.mkdir(projectDir);
     const invalidated = [];
     const handlers = createHandlers(workspaceRoot, invalidated);
-    const add = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: path.basename(repoDir) }));
+    const add = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: path.basename(repoDir) }));
     assert.equal(add.repositories[0].repoPath, repoDir);
     const alpha = path.join(projectDir, '.agents/skills/alpha-skill');
     const beta = path.join(projectDir, '.agents/skills/beta-skill');
@@ -438,4 +471,37 @@ test('published MCP schema admits a skillset toggle without an individual skill'
   assert.equal(tool.inputSchema.skillset.type, 'string');
   assert.equal(tool.inputSchema.skillset.optional, true);
   assert.equal(tool.inputSchema.enabled.type, 'boolean');
+});
+
+test('workspace-only recommendations add the live checkout rather than the installed copy', async t => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-local-recommendation-'));
+  t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
+  const local = await createLocalSkillRepo(workspaceRoot);
+  const name = path.basename(local);
+  await fs.mkdir(path.join(local, 'skills/incomplete'));
+  const sourceModule = new URL('../../../../ploinky/cli/utils/skillRepositorySource.js', import.meta.url).href;
+  await writeFile(path.join(local, 'skills/alpha-skill/SKILL.md'), '---\nname: alpha-skill\ndescription: Local skill\n---\nLOCAL EDIT\n');
+  await writeFile(path.join(workspaceRoot, 'ploinky/cli/utils/repos.js'), `
+import { listWorkspaceSkillRepositories } from '${sourceModule}';
+export function getSkillRepositoryRecommendations(options) {
+  return listWorkspaceSkillRepositories(options).map(repo => ({
+    name: repo.name, url: repo.source, kind: 'skills', skillSource: repo, warnings: repo.warnings || []
+  }));
+}
+`);
+  await writeFile(path.join(workspaceRoot, '.ploinky/repos', name, 'skills/alpha-skill/SKILL.md'), 'STALE CACHE');
+  const project = path.join(workspaceRoot, 'project');
+  await fs.mkdir(project);
+  const handlers = createHandlers(workspaceRoot);
+  const initial = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: project }));
+  assert.equal(initial.skillRepositories[0].url, local);
+  assert.deepEqual(initial.skillRepositories[0].warnings, ['skills/incomplete: missing SKILL.md']);
+  await handlers.add_skills_manifest_repo({ folderPath: project, url: local, name });
+  const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: project }));
+  assert.equal(state.repositories[0].repoPath, local);
+  assert.match(await fs.readFile(path.join(project, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'), /LOCAL EDIT/);
+  await fs.rm(path.join(local, 'skills/alpha-skill'), { recursive: true });
+  const pruned = syncPloinkyExports({ folder: project, owner: 'manifest', mode: 'symlink', sources: [] });
+  assert.deepEqual(pruned.removed, ['alpha-skill']);
+  await assert.rejects(fs.lstat(path.join(project, '.agents/skills/alpha-skill')), { code: 'ENOENT' });
 });

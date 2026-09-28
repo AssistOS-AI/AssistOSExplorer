@@ -308,7 +308,7 @@ export class WebmeetRoomSettingsModal {
 
     async isSecretaryDisabled() {
         try {
-            const response = await fetch('/api/marketplace', {
+            const response = await fetch('/api/marketplace/agents', {
                 credentials: 'include',
                 headers: { Accept: 'application/json' },
                 signal: AbortSignal.timeout(5000),

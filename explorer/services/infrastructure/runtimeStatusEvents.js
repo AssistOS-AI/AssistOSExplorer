@@ -10,7 +10,7 @@ export async function fetchMarketplaceSnapshot({
     signal,
     fetchImplementation = globalThis.fetch,
 } = {}) {
-    const response = await fetchImplementation('/api/marketplace', {
+    const response = await fetchImplementation('/api/marketplace/agents', {
         credentials: 'include',
         cache: 'no-store',
         signal,

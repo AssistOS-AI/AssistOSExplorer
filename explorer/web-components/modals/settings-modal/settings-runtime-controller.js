@@ -206,7 +206,7 @@ export const runtimeSettingsController = {
     async refreshAgentRuntimeStatuses() {
         const requestId = ++this.state.agentRuntimeStatusRequestId;
         try {
-            const response = await fetch("/api/marketplace", {
+            const response = await fetch("/api/marketplace/agents", {
                 credentials: "same-origin",
                 headers: { accept: "application/json" },
                 cache: "no-store"

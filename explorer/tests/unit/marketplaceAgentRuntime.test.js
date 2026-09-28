@@ -11,7 +11,7 @@ test('ensureMarketplaceAgentRunning enables a stopped agent with the CSRF proof'
     globalThis.location = { origin: 'http://localhost:8080' };
     globalThis.fetch = async (url, options = {}) => {
         calls.push({ url: String(url), options });
-        if (String(url) === '/api/marketplace' && !options.method) {
+        if (String(url) === '/api/marketplace/agents' && !options.method) {
             return Response.json({
                 ok: true,
                 marketplace: { agents: [{ ref: 'AchillesIDE/webmeetAgent', name: 'webmeetAgent', running: false }] }
@@ -23,7 +23,7 @@ test('ensureMarketplaceAgentRunning enables a stopped agent with the CSRF proof'
                 adminControl: { origin: 'http://localhost:8080', csrfToken: 'csrf-1' }
             });
         }
-        if (String(url) === '/api/marketplace' && options.method === 'POST') {
+        if (String(url) === '/api/marketplace/agents' && options.method === 'POST') {
             return Response.json({
                 ok: true,
                 marketplace: { agents: [{ ref: 'AchillesIDE/webmeetAgent', name: 'webmeetAgent', running: true }] }
@@ -84,7 +84,7 @@ test('closing during the startup snapshot aborts fetch and never enables the age
         const pending = ensureMarketplaceAgentRunning('webmeetAgent', { signal: controller.signal });
         controller.abort();
         await assert.rejects(pending, { name: 'AbortError' });
-        assert.deepEqual(calls, ['/api/marketplace']);
+        assert.deepEqual(calls, ['/api/marketplace/agents']);
     } finally {
         globalThis.fetch = previousFetch;
     }
