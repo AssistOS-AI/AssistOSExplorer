@@ -19,8 +19,7 @@ export function createWorkflowEditor({ api }) {
     const board = document.querySelector('#workflowBoard');
     const message = document.querySelector('#workflowMessage');
     const addTaskButton = document.querySelector('#addTaskButton');
-    const addTaskPanel = document.querySelector('#addTaskPanel');
-    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0, addSkillsets = [];
+    let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0;
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
     const readonly = () => !canAdmin || graph?.kind === 'default';
     const changed = () => { version++; };
@@ -68,26 +67,40 @@ export function createWorkflowEditor({ api }) {
         if (source.taskId === target.taskId) return;
         graph.edges.push({ id: `edge-${crypto.randomUUID()}`, sourceTaskId: source.taskId, targetTaskId: target.taskId, sourcePort: source.side, targetPort: target.side }); changed(); render();
     }
-    function renderBoard() { drawBoard(board, graph, { readOnly: readonly(), onSelect: id => { selected = id; renderList(); renderTaskEditor(); }, selectedEdgeId, onSelectEdge: id => { selectedEdgeId = id; renderBoard(); }, onSetEntry: id => { graph.entryTaskId = id; selected = id; changed(); render(); }, onChange: event => { if (event.connect) connect(event.connect); else changed(); } }); }
+    function renderBoard() { drawBoard(board, graph, { readOnly: readonly(), onSelect: id => { selected = id; renderList(); renderTaskEditor(); }, selectedEdgeId, onSelectEdge: id => { selectedEdgeId = id; renderBoard(); }, onChange: event => { if (event.connect) connect(event.connect); else changed(); } }); }
     function field(label, element) { const wrapper = node('label', null, 'field'); wrapper.append(node('span', label), element); return wrapper; }
     function fieldBlock(label, element) { const wrapper = node('div', null, 'field'); wrapper.append(node('span', label), element); return wrapper; }
+    let openSkillDialog = null;
+    function closeSkillDialog() {
+        if (!openSkillDialog) return;
+        const { dialog, trigger, previousOverflow } = openSkillDialog;
+        openSkillDialog = null;
+        trigger?.setAttribute('aria-expanded', 'false');
+        document.documentElement.style.overflow = previousOverflow || '';
+        try { dialog.close(); } catch { /* Already closed. */ }
+        dialog.remove();
+    }
     function skillsetPicker(selectedIds) {
+        closeSkillDialog();
         const wrapper = node('div', null, 'skillset-picker');
         const pills = node('div', null, 'skillset-pills');
         const trigger = node('button', null, 'skillset-trigger');
         trigger.type = 'button';
-        trigger.setAttribute('aria-haspopup', 'true');
+        trigger.setAttribute('aria-haspopup', 'dialog');
         trigger.setAttribute('aria-expanded', 'false');
         trigger.append(node('span', '+', 'skillset-trigger-icon'), node('span', 'Add skill or skillset'), node('span', '▾', 'skillset-trigger-caret'));
-        const panel = node('div', null, 'skillset-panel');
-        panel.hidden = true;
+        const dialog = document.createElement('dialog');
+        dialog.className = 'skillset-dialog';
+        dialog.setAttribute('aria-label', 'Add skill or skillset');
+        const header = node('div', null, 'skillset-dialog-header');
+        header.append(node('h3', 'Add skill or skillset', 'skillset-dialog-title'), button('Close', () => closeSkillDialog()));
         const search = node('input'); search.type = 'search'; search.className = 'skillset-search';
         search.placeholder = 'Search skills and skillsets'; search.setAttribute('aria-label', 'Search skills and skillsets');
         const list = node('div', null, 'skillset-list');
         const count = node('span', '', 'skillset-count');
-        const footer = node('div', null, 'skillset-panel-footer');
-        footer.append(count, button('Done', () => setOpen(false)));
-        panel.append(search, list, footer);
+        const footer = node('div', null, 'skillset-dialog-footer');
+        footer.append(count, button('Done', () => closeSkillDialog()));
+        dialog.append(header, search, list, footer);
         const groups = new Map();
         for (const set of catalog) {
             const key = set.repositoryName || set.repositoryId || 'Skillsets';
@@ -98,10 +111,16 @@ export function createWorkflowEditor({ api }) {
         const unavailable = selectedIds.filter(id => !known.has(id));
         if (unavailable.length) groups.set('Unavailable', unavailable.map(id => ({ id, name: `${id} (unavailable)` })));
         function apply() { changed(); void checkCoverage(); }
-        function setOpen(open) {
-            panel.hidden = !open;
-            trigger.setAttribute('aria-expanded', String(open));
-            if (open) search.focus();
+        function open() {
+            closeSkillDialog();
+            document.body.append(dialog);
+            const previousOverflow = document.documentElement.style.overflow;
+            document.documentElement.style.overflow = 'hidden';
+            openSkillDialog = { dialog, trigger, previousOverflow };
+            trigger.setAttribute('aria-expanded', 'true');
+            dialog.showModal();
+            renderOptions();
+            search.focus();
         }
         function renderPills() {
             pills.replaceChildren();
@@ -125,42 +144,46 @@ export function createWorkflowEditor({ api }) {
             let visible = 0;
             for (const [repository, sets] of groups) {
                 const matches = sets.filter(set => !term || String(set.name || '').toLowerCase().includes(term)
-                    || String(set.description || '').toLowerCase().includes(term) || repository.toLowerCase().includes(term));
+                    || repository.toLowerCase().includes(term));
                 if (!matches.length) continue;
-                const group = node('section', null, 'skillset-group');
-                group.append(node('h4', repository, 'skillset-group-header'));
+                const group = node('div', null, 'skillset-group');
+                const header = node('button', null, 'skillset-group-header');
+                header.type = 'button';
+                const arrow = node('span', '▸', 'skillset-group-arrow');
+                header.append(arrow, node('span', repository, 'skillset-group-name'), node('span', String(matches.length), 'skillset-group-count'));
                 const grid = node('div', null, 'skillset-group-grid');
+                const setOpen = (openGroup) => {
+                    grid.style.display = openGroup ? 'grid' : 'none';
+                    arrow.textContent = openGroup ? '▾' : '▸';
+                    header.setAttribute('aria-expanded', String(openGroup));
+                };
+                setOpen(Boolean(term));
+                header.onclick = () => setOpen(grid.style.display === 'none');
                 for (const set of matches) {
                     const chosen = selectedIds.includes(set.id);
                     const item = node('button', null, 'skillset-pick-item');
                     item.type = 'button';
                     item.setAttribute('aria-pressed', String(chosen));
                     if (chosen) item.classList.add('selected');
-                    const text = node('span', null, 'skillset-pick-text');
                     const nameRow = node('span', null, 'skillset-pick-name-row');
                     nameRow.append(node('span', set.name, 'skillset-pick-name'));
                     if (set.kind) nameRow.append(node('span', set.kind, 'skillset-pick-kind'));
-                    text.append(nameRow);
-                    if (set.description) text.append(node('span', set.description, 'skillset-pick-desc'));
-                    item.append(node('span', chosen ? '✓' : '', 'skillset-pick-check'), text);
+                    item.append(node('span', chosen ? '✓' : '', 'skillset-pick-check'), nameRow);
                     item.onclick = () => { if (chosen) selectedIds.splice(selectedIds.indexOf(set.id), 1); else selectedIds.push(set.id); renderPills(); renderOptions(); apply(); };
                     grid.append(item);
                 }
-                group.append(grid);
+                group.append(header, grid);
                 list.append(group);
                 visible += matches.length;
             }
             if (!visible) list.append(node('p', 'No matching skills or skillsets.', 'skillset-empty'));
             count.textContent = selectedIds.length ? `${selectedIds.length} selected` : 'None selected';
         }
-        trigger.onclick = () => setOpen(panel.hidden);
-        search.oninput = renderOptions;
-        wrapper.addEventListener('keydown', event => {
-            if (event.key !== 'Escape' || panel.hidden) return;
-            event.stopPropagation(); setOpen(false); trigger.focus();
-        });
-        renderPills(); renderOptions();
-        wrapper.append(pills, trigger, panel);
+        trigger.onclick = () => { if (openSkillDialog?.dialog === dialog) closeSkillDialog(); else open(); };
+        dialog.addEventListener('cancel', event => { event.preventDefault(); closeSkillDialog(); });
+        dialog.addEventListener('click', event => { if (event.target === dialog) closeSkillDialog(); });
+        renderPills();
+        wrapper.append(pills, trigger);
         return wrapper;
     }
     function renderList() {
@@ -179,6 +202,7 @@ export function createWorkflowEditor({ api }) {
         if (!graph.tasks.length) taskList.append(node('li', 'No tasks yet. Use + to add one.', 'task-list-empty'));
     }
     function renderTaskEditor() {
+        closeSkillDialog();
         taskPanel.replaceChildren();
         const task = graph.tasks.find(item => item.id === selected);
         if (!task) {
@@ -205,58 +229,51 @@ export function createWorkflowEditor({ api }) {
         };
         const basics = node('div', null, 'task-editor-row');
         basics.append(field('Name', name), field('Execution type', mode));
-        card.append(basics, field('Prompt', prompt));
+        const isEntry = graph.entryTaskId === task.id;
+        const entryToggle = node('button', isEntry ? 'First node' : 'Mark as first node', 'entry-toggle');
+        entryToggle.type = 'button';
+        entryToggle.setAttribute('aria-pressed', String(isEntry));
+        if (isEntry) entryToggle.classList.add('is-active');
+        entryToggle.onclick = () => { graph.entryTaskId = task.id; changed(); renderBoard(); renderTaskEditor(); };
+        card.append(basics, entryToggle, field('Prompt', prompt));
         if (!Array.isArray(task.skillsets)) task.skillsets = [];
-        card.append(fieldBlock('Skills', skillsetPicker(task.skillsets)), button('Delete task', () => {
+        const deleteTask = button('Delete task', () => {
             graph.tasks = graph.tasks.filter(item => item.id !== task.id);
             graph.edges = graph.edges.filter(edge => edge.sourceTaskId !== task.id && edge.targetTaskId !== task.id);
             delete graph.layout[task.id];
             if (graph.entryTaskId === task.id) graph.entryTaskId = graph.tasks[0]?.id || '';
             if (selected === task.id) selected = graph.tasks[0]?.id || null;
             changed(); render(); showPage(graph.tasks.length ? 'graph' : 'settings');
-        }));
+        });
+        deleteTask.classList.add('task-delete');
+        card.append(fieldBlock('Skills', skillsetPicker(task.skillsets)), deleteTask);
         for (const control of card.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
         taskPanel.append(card);
     }
-    function renderAddTask() {
-        const previous = addTaskPanel.querySelector('.task-editor');
-        const previousValues = previous ? [...previous.querySelectorAll('input:not([type="checkbox"]),textarea,select')].map(control => control.value) : [];
-        addTaskPanel.replaceChildren();
-        const card = node('section', null, 'task-editor');
-        card.append(node('h3', 'Add task'));
-        const name = node('input'); name.maxLength = 120; name.placeholder = 'Review change';
-        const prompt = node('textarea'); prompt.rows = 3; prompt.placeholder = 'Describe what this task should do.';
-        const mode = node('select');
-        for (const value of ['terminal', 'desktop', 'browser']) mode.add(new Option(value, value));
-        const save = button('Save task', () => {
-            if (!name.value.trim() || !prompt.value.trim()) { card.querySelector('.task-form-error').textContent = 'Enter a name and prompt.'; return; }
-            const id = `task-${crypto.randomUUID()}`;
-            graph.tasks.push({ id, name: name.value.trim(), prompt: prompt.value.trim(), skillsets: [...addSkillsets], executionType: mode.value });
-            addSkillsets = [];
-            graph.layout[id] = layoutFor(graph.tasks.length - 1);
-            graph.entryTaskId ||= id; selected = id; changed(); addTaskPanel.replaceChildren(); render(); showPage('task');
-        });
-        const error = node('p', '', 'task-form-error'); error.setAttribute('role', 'alert');
-        const basics = node('div', null, 'task-editor-row');
-        basics.append(field('Name', name), field('Execution type', mode));
-        card.append(basics, field('Prompt', prompt), fieldBlock('Skills', skillsetPicker(addSkillsets)), error, save);
-        if (previousValues.length) { name.value = previousValues[0]; mode.value = previousValues[1] || 'terminal'; prompt.value = previousValues[2] || ''; }
-        for (const control of card.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
-        addTaskPanel.append(card);
+    function addTask() {
+        if (readonly()) return;
+        const id = `task-${crypto.randomUUID()}`;
+        graph.tasks.unshift({ id, name: 'New Task', prompt: '', skillsets: [], executionType: 'terminal' });
+        graph.layout[id] = layoutFor(Math.max(0, graph.tasks.length - 1));
+        graph.entryTaskId ||= id;
+        selected = id;
+        changed();
+        render();
+        showPage('task');
+        taskPanel.querySelector('input')?.focus();
     }
     function render() {
         if (!graph.tasks.some(task => task.id === selected)) selected = graph.entryTaskId || graph.tasks[0]?.id || null;
         if (!graph.edges.some(edge => edge.id === selectedEdgeId)) selectedEdgeId = null;
         renderList();
         renderTaskEditor();
-        if (addTaskPanel.firstElementChild) renderAddTask();
         renderBoard();
         void checkCoverage();
     }
     async function open(value = null, { admin = false } = {}) {
         canAdmin = admin;
         graph = value ? structuredClone(value) : blank(); delete graph.coverage; delete graph.diagnostics;
-        version++; coverageRequest++; message.textContent = ''; selected = graph.entryTaskId || graph.tasks[0]?.id || null; currentPage = 'settings'; addTaskPanel.replaceChildren();
+        version++; coverageRequest++; message.textContent = ''; selected = graph.entryTaskId || graph.tasks[0]?.id || null; currentPage = 'settings';
         form.elements.name.value = graph.name; form.elements.description.value = graph.description;
         for (const control of form.querySelectorAll('input,textarea,select,button')) control.disabled = readonly();
         for (const control of document.querySelectorAll('.workflow-page-button')) control.disabled = false;
@@ -270,7 +287,7 @@ export function createWorkflowEditor({ api }) {
     form.elements.name.oninput = event => { graph.name = event.target.value; changed(); };
     form.elements.description.oninput = event => { graph.description = event.target.value; changed(); };
     for (const control of document.querySelectorAll('.workflow-page-button')) control.onclick = () => showPage(control.dataset.page);
-    addTaskButton.onclick = () => { renderAddTask(); showPage('addTask'); addTaskPanel.querySelector('input')?.focus(); };
+    addTaskButton.onclick = () => addTask();
     document.addEventListener('keydown', event => {
         if (readonly() || currentPage !== 'graph' || !selectedEdgeId || !['Delete', 'Backspace'].includes(event.key)) return;
         if (event.target instanceof Element && event.target.matches('input,textarea,select,[contenteditable="true"]')) return;
@@ -279,7 +296,7 @@ export function createWorkflowEditor({ api }) {
     form.onsubmit = async event => {
         event.preventDefault(); if (readonly()) return;
         if (!graph.name.trim()) { showPage('settings'); message.textContent = 'Enter a workflow name before saving.'; form.elements.name.focus(); return; }
-        if (!graph.tasks.length) { renderAddTask(); showPage('addTask'); message.textContent = 'Add at least one task before saving.'; addTaskPanel.querySelector('input')?.focus(); return; }
+        if (!graph.tasks.length) { message.textContent = 'Add at least one task before saving.'; addTaskButton.focus(); return; }
         const invalidTask = graph.tasks.find(task => !task.name?.trim() || !task.prompt?.trim());
         if (invalidTask) {
             select(invalidTask.id);

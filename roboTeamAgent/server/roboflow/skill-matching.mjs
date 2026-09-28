@@ -1,8 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { availableSkillsets, availableRepositories } from '../copilot-skillset.mjs';
+import { availableSkillsets, availableRepositories, copilotSkillsRoot } from '../copilot-skillset.mjs';
 import { repositoryClient } from '../repository-client.mjs';
-import { discoverAnthropicSkills } from '../skill-descriptor.mjs';
 import { readSkillsetDefinitions } from '../robot-skillsets.mjs';
 
 export const COVERAGE_WARNING = 'No robot has these matching skillsets, add or edit a robot to ensure the workflow runs correctly';
@@ -35,6 +34,13 @@ export function coverage(graph, robots) {
     return { warning: tasks.some(task => !task.matchingRobotIds.length), tasks,
         message: tasks.some(task => !task.matchingRobotIds.length) ? COVERAGE_WARNING : null };
 }
+// Workflow selections use the skill folder names. SKILL.md is never parsed for
+// the catalog, so descriptors and descriptions never affect the picker.
+async function listSkillNames(skillsRoot) {
+    const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
+    return entries.filter(entry => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules')
+        .map(entry => entry.name).sort();
+}
 export async function discoverWorkflowSkillsets(client) {
     client ||= await repositoryClient();
     const repositories = await client.listRepositories();
@@ -55,25 +61,24 @@ export async function discoverWorkflowSkillsets(client) {
             const skillsRoot = path.join(source, 'skills');
             const stat = await fs.stat(skillsRoot).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
             if (!stat?.isDirectory()) continue;
-            const skills = await discoverAnthropicSkills(skillsRoot, { validate: false });
+            const skillNames = await listSkillNames(skillsRoot);
             // A repository declares its skillsets either at its root or beside the
             // skill folders; both are read without validating skill names.
-            const definitions = await readSkillsetDefinitions(source, skills);
+            const definitions = await readSkillsetDefinitions(source, skillNames);
             if (!definitions.length && path.resolve(source) !== path.resolve(skillsRoot)) {
-                definitions.push(...await readSkillsetDefinitions(skillsRoot, skills));
+                definitions.push(...await readSkillsetDefinitions(skillsRoot, skillNames));
             }
             if (definitions.length) for (const set of definitions) skillsets.push({ id: canonicalSkillset(source, set.name), kind: 'skillset',
                 name: set.name, description: set.description, repositoryId: source, repositoryName: repository.name });
-            else for (const skill of skills) skillsets.push({ id: canonicalSkill(source, skill.name), kind: 'skill', name: skill.name,
-                description: skill.description, repositoryId: source, repositoryName: repository.name });
+            else for (const name of skillNames) skillsets.push({ id: canonicalSkill(source, name), kind: 'skill', name,
+                description: '', repositoryId: source, repositoryName: repository.name });
         } catch (error) { diagnostics.push({ repository: repository.name, message: error.message }); }
     }
-    for (const repository of availableRepositories({ name: 'default' })) {
-        const definitions = repository.definitions || [];
-        if (definitions.length) for (const set of definitions) skillsets.push({ id: canonicalSkillset(repository.source, set.name), kind: 'skillset',
-            name: set.name, description: set.description, repositoryId: repository.source, repositoryName: repository.name });
-        else for (const skill of repository.skills || []) skillsets.push({ id: canonicalSkill(repository.source, skill.name), kind: 'skill',
-            name: skill.name, description: skill.description, repositoryId: repository.source, repositoryName: repository.name });
-    }
+    const copilotSkills = await listSkillNames(copilotSkillsRoot);
+    const copilotDefinitions = await readSkillsetDefinitions(copilotSkillsRoot, copilotSkills);
+    if (copilotDefinitions.length) for (const set of copilotDefinitions) skillsets.push({ id: canonicalSkillset('builtin:copilot', set.name),
+        kind: 'skillset', name: set.name, description: set.description, repositoryId: 'builtin:copilot', repositoryName: 'copilot' });
+    else for (const name of copilotSkills) skillsets.push({ id: canonicalSkill('builtin:copilot', name), kind: 'skill', name,
+        description: '', repositoryId: 'builtin:copilot', repositoryName: 'copilot' });
     return { skillsets: [...new Map(skillsets.map(set => [set.id, set])).values()], diagnostics };
 }

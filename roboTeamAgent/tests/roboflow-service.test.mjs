@@ -236,7 +236,7 @@ test('global discovery includes unregistered skill repositories and prepares rem
     assert.equal(coverage({ tasks: [task('a', { skillsets: [canonicalSkillset(source, 'Review set')] })] }, f.robots).warning, true);
 });
 
-test('workflow skillset discovery reads only skills/ and ignores agent instruction descriptors', async t => {
+test('workflow skillset discovery reads only skills/ by folder name and never parses SKILL.md', async t => {
     const { discoverWorkflowSkillsets } = await import('../server/roboflow/skill-matching.mjs');
     const f = await fixture(t);
     const source = path.join(f.root, 'project');
@@ -245,7 +245,7 @@ test('workflow skillset discovery reads only skills/ and ignores agent instructi
     await fs.writeFile(agentSkill, '---\nname: achilles_specs\ndescription: Agent instruction.\n---\n');
     const skill = path.join(source, 'skills', 'review', 'SKILL.md');
     await fs.mkdir(path.dirname(skill), { recursive: true });
-    // Invalid skill name on purpose: workflow discovery must not validate names.
+    // A descriptor with a different declared name must not affect the catalog.
     await fs.writeFile(skill, '---\nname: Review Extra\ndescription: Review code.\n---\n');
     const catalog = await discoverWorkflowSkillsets({
         listRepositories: async () => [
@@ -255,7 +255,8 @@ test('workflow skillset discovery reads only skills/ and ignores agent instructi
         ],
     });
     assert.deepEqual(catalog.diagnostics, []);
-    assert.ok(catalog.skillsets.some(set => set.kind === 'skill' && set.repositoryName === 'project' && set.name === 'Review Extra'));
+    assert.ok(catalog.skillsets.some(set => set.kind === 'skill' && set.repositoryName === 'project' && set.name === 'review'));
+    assert.equal(catalog.skillsets.some(set => set.name === 'Review Extra'), false);
     assert.equal(catalog.skillsets.some(set => set.name === 'achilles_specs'), false);
     assert.equal(catalog.skillsets.some(set => ['mixed-repo', 'agent-repo'].includes(set.repositoryName)), false);
 });

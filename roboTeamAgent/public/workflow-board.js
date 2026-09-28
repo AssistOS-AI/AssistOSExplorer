@@ -1,5 +1,5 @@
 const svgNS = 'http://www.w3.org/2000/svg';
-export function drawBoard(container, graph, { readOnly = false, onChange = () => {}, onSelect = () => {}, onSetEntry = () => {}, onSelectEdge = () => {}, selectedEdgeId = null, states = {} } = {}) {
+export function drawBoard(container, graph, { readOnly = false, onChange = () => {}, onSelect = () => {}, onSelectEdge = () => {}, selectedEdgeId = null, states = {} } = {}) {
     container._workflowBoardCleanup?.();
     const controller = new AbortController();
     container._workflowBoardCleanup = () => controller.abort();
@@ -16,10 +16,15 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
     for (const [name, value] of Object.entries({ id: markerId, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' })) marker.setAttribute(name, value);
     const arrow = document.createElementNS(svgNS, 'path'); arrow.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z'); arrow.setAttribute('fill', 'currentColor'); marker.append(arrow); defs.append(marker); svg.append(defs);
     const nodeElements = new Map();
+    // End edges at the port's outer edge so the arrowhead is never covered by
+    // the connection point.
+    const PORT_OFFSET = 11;
     function point(taskId, side) {
         const layout = graph.layout[taskId];
         const element = nodeElements.get(taskId);
-        return { x: layout.x + (side === 'right' ? (element?.offsetWidth || 190) : 0), y: layout.y + (element?.offsetHeight || 70) / 2 };
+        const width = element?.offsetWidth || 190;
+        const height = element?.offsetHeight || 70;
+        return { x: layout.x + (side === 'right' ? width + PORT_OFFSET : -PORT_OFFSET), y: layout.y + height / 2 };
     }
     function curve(start, end) {
         const direction = end.x >= start.x ? 1 : -1;
@@ -87,6 +92,7 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         nodeElements.set(task.id, node);
         node.setAttribute('aria-label', `${task.name}. ${readOnly ? '' : 'Arrow keys move this task.'}`);
         if (task.id === graph.entryTaskId) node.classList.add('graph-entry');
+        if (!graph.edges.some(edge => edge.sourceTaskId === task.id)) node.classList.add('graph-terminal');
         if (states[task.id]) node.classList.add(`graph-state-${states[task.id]}`);
         const label = document.createElement('strong'); label.textContent = task.name;
         const detail = document.createElement('span'); detail.textContent = `${task.executionType || 'terminal / desktop / browser'}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
@@ -94,7 +100,6 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         const place = () => { node.style.left = `${graph.layout[task.id].x}px`; node.style.top = `${graph.layout[task.id].y}px`; };
         place();
         node.addEventListener('click', () => onSelect(task.id));
-        node.addEventListener('dblclick', event => { if (readOnly) return; event.preventDefault(); onSetEntry(task.id); });
         if (!readOnly) {
             for (const side of ['left', 'right']) {
                 const port = document.createElement('button'); port.type = 'button'; port.className = `graph-port graph-port-${side}`; port.textContent = '●'; port.title = 'Drag to another connection point'; port.dataset.taskId = task.id; port.dataset.side = side;
