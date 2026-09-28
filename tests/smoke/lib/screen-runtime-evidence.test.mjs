@@ -7,6 +7,7 @@ import {
   screenRuntimeEvidenceProvesUdpMux,
   validateBoxScreenEvidence,
   validateHostLocalScreenEvidence,
+  validateScreenRuntimeEvidence,
 } from './screen-runtime-evidence.mjs';
 
 const NOW = Date.parse('2026-07-27T12:00:00.000Z');
@@ -175,6 +176,23 @@ test('host-local screen evidence rejects Box overlap, inner bindings, and missin
     delete invalid.liveKit[field];
     assert.equal(screenRuntimeEvidenceProvesUdpMux(invalid), false);
   }
+});
+
+test('Box screen evidence carries an explicit GPU grant expectation through re-validation', () => {
+  const gpuGrant = '9'.repeat(64);
+  const evidence = boxEvidence();
+  evidence.box.box.semanticLabels.gpuGrant = gpuGrant;
+  const options = { baseURL: BASE_URL, nowMs: NOW, expectedGpuGrant: gpuGrant };
+  assert.equal(validateBoxScreenEvidence(evidence, options).box.box.semanticLabels.gpuGrant, gpuGrant);
+  assert.equal(validateScreenRuntimeEvidence(evidence, options).box.box.semanticLabels.gpuGrant, gpuGrant);
+  assert.throws(
+    () => validateScreenRuntimeEvidence(evidence, { baseURL: BASE_URL, nowMs: NOW }),
+    /requires an explicit SMOKE_BOX_GPU_GRANT/,
+  );
+  assert.throws(
+    () => validateBoxScreenEvidence(boxEvidence(), options),
+    /gpu-grant label must equal/,
+  );
 });
 
 test('Box screen evidence binds the nested LiveKit listener to the exact outer generation and publications', () => {

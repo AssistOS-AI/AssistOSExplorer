@@ -10,6 +10,7 @@ import { parseTurnEndpoint, requirePublicIpv4 } from '../lib/network.mjs';
 import { stopAndAttachRedactedTrace } from '../lib/redacted-trace.mjs';
 import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.mjs';
 import {
+  readExpectedGpuGrant,
   validateExternalTcpNegativeEvidence,
   validateBoxEvidence,
 } from '../lib/box-evidence.mjs';
@@ -113,6 +114,7 @@ test.describe('WebMeet native external-network matrix @external', () => {
       expectedImageRef: required('SMOKE_EXPECT_BOX_IMAGE_REF'),
       baseURL: smokeConfig.baseURL,
       publicIPv4,
+      expectedGpuGrant: readExpectedGpuGrant(),
     });
     const externalTcpNegative = validateExternalTcpNegativeEvidence(
       containerEngineEvidence.externalTcpNegative,

@@ -514,6 +514,19 @@ use the wildcard publication when testing LAN login and loopback WebMeet media
 on the same Box. The separate screen-share and external-network gates retain
 their existing loopback-publication requirements.
 
+When the Box has GPU wiring (an installed agent declares
+`containerSecurity.gpu: true`, the operator ran `ploinky gpu grant`, or the
+operator revoked such access), Ploinky adds the `io.assistos.ploinky-box.gpu-grant`
+label with the grant fingerprint and a read-only bind of the grant marker
+(`/etc/ploinky-box-gpu-grant.json`) from that fingerprint's grant directory.
+Active wiring, on a host with an NVIDIA GPU, also binds the CDI spec
+(`/etc/cdi/ploinky-gpu.json`) from the same directory and the driver files under
+`/usr/local/nvidia`; stale or revoked wiring binds only the marker. Set
+`SMOKE_BOX_GPU_GRANT` to that exact 64-hex fingerprint for such a Box. Without
+it, shared Box evidence (including the screen-share and network-matrix gates)
+rejects the label, and it rejects marker, CDI spec, or driver mounts when the
+label is absent; it never infers the expectation from the running container.
+
 For the screen-share gate in Box mode, exactly one outer container must publish
 `127.0.0.1:<SMOKE_BASE_URL port>:8080/tcp` and
 `0.0.0.0:7882:7882/udp`, carry the exact semantic Box ownership labels, and use a freshly built
