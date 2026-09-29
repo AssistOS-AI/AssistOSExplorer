@@ -1,3 +1,5 @@
+import { buildNativePrompt } from './prompts.mjs';
+import { advanceSummaryFile } from '../../../shared/summary-file-index.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,7 +11,7 @@ import { acquireExecutionLease, withWorkspaceMutation } from './workspaceStateLo
 import { ensureSafeAchillesPrivateDirectory, resolveAchillesWorkspaceRoot } from './privateDataRoot.mjs';
 import { createPloinkyTaskContext } from './ploinkyTaskContext.mjs';
 import { createSanitizer } from './skillRuntimePolicy.mjs';
-import { writeWebchatTurnLog, webchatTurnLogUrl } from './webchatTurnLog.mjs';
+import { appendWebchatTurnLog, webchatTurnLogUrl, webchatTurnLogPath } from './webchatTurnLog.mjs';
 
 const BACKENDS = ['codex', 'opencode', 'pi'];
 const EVENT_PREFIX = '@@ALA_EVENT@@';
@@ -145,6 +147,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
     }
 
     async function executeTurn({ sessionId, turnId = randomUUID(), prompt, skillName, context = {}, signal, onEvent, onControl } = {}) {
+        const responseStarted = performance.now();
         if (closed) throw new Error('ALA engine is closed.');
         if (typeof prompt !== 'string') throw new TypeError('The turn prompt must be text.');
         context = { ...context,
@@ -161,8 +164,25 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
         const operation = { controller, done: new Promise((resolve) => { finish = resolve; }) };
         active.add(operation);
         let release, catalogRelease, turn, scriptContext, temporary, child, childDone;
-        const turnLogLines = [];
-        const recordTurnLog = (line) => { const text = String(line ?? '').trim(); if (text) turnLogLines.push(text); };
+        let hasTurnLog = false;
+        const summaryIndex = { state: {} };
+        const summaryLogRanges = [];
+        const recordTurnLog = async (line, metadata = {}) => {
+            if (execution.captureTurnLogs === false) return;
+            const text = String(line ?? '');
+            if (!text && !metadata.outputComplete) return;
+            const assistant = metadata.outputKind === 'assistant';
+            const output = (metadata.outputComplete || !assistant) && !text.endsWith('\n') ? `${text}\n` : text;
+            const offset = appendWebchatTurnLog(workingDir, sessionId, turn.assistantMessageId, output);
+            hasTurnLog = true;
+            const ranges = await advanceSummaryFile(webchatTurnLogPath(workingDir, sessionId, turn.assistantMessageId), summaryIndex,
+                { start: offset, end: offset + Buffer.byteLength(output), assistant,
+                    complete: metadata.outputComplete === true, outputId: metadata.outputId || '' });
+            if (ranges.length) {
+                summaryLogRanges.push(...ranges);
+                await sessionStore.recordSummaryLog(sessionId, turn.assistantMessageId, summaryLogRanges);
+            }
+        };
         const env = { ...process.env };
         const sanitize = createSanitizer(context, env);
         const emit = async (event) => { await onEvent?.(sanitize(event)); };
@@ -199,12 +219,9 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             const root = ensureSafeAchillesPrivateDirectory(cwd, 'ala/turns');
             temporary = await fs.mkdtemp(path.join(root, 'turn-'));
             await fs.chmod(temporary, 0o700);
-            let nativePrompt = !config.resume ? `Task skills are available in .agents/skills. Read the relevant SKILL.md files and follow their instructions when applicable.\n\n${prompt}` : prompt;
-            if (selected) nativePrompt += `\n\nUse the selected skill at .agents/skills/${selected.name}/SKILL.md.`;
-            // ALA has no separate system-instruction option: caller instructions
-            // and the workflow catalog are prepended to the user prompt.
-            const systemParts = [execution.systemPrompt || '', snapshot.workflowCatalog ? `Available workflow types (catalog data):\n${JSON.stringify(snapshot.workflowCatalog)}` : ''].filter(Boolean);
-            if (systemParts.length) nativePrompt = `${systemParts.join('\n\n')}\n\n${nativePrompt}`;
+            const nativePrompt = buildNativePrompt({ prompt, resume: config.resume,
+                selectedSkillName: selected?.name, systemPrompt: execution.systemPrompt,
+                workflowCatalog: snapshot.workflowCatalog });
 
             const taskFile = path.join(temporary, 'prompt.txt');
             const configFile = path.join(temporary, 'config.json');
@@ -246,13 +263,13 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             }
             controller.signal.throwIfAborted();
             let finalText = outputText;
-            if (captured.sourceTabId && webchatLogsBase && turnLogLines.length) {
+            if (captured.sourceTabId && webchatLogsBase && hasTurnLog) {
                 try {
-                    writeWebchatTurnLog(workingDir, sessionId, turn.assistantMessageId, turnLogLines);
                     finalText = `${outputText}\n\n[View Thinking](${webchatTurnLogUrl(webchatLogsBase, sessionId, turn.assistantMessageId)})`;
                 } catch { /* Log persistence must not fail the answer. */ }
             }
-            const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, finalText);
+            const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, finalText,
+                { durationMs: Math.max(0, Math.round(performance.now() - responseStarted)) });
             return { outputText: finalText, session: completed, turnId, userMessageId: turn.userMessageId,
                 assistantMessageId: turn.assistantMessageId, backend };
         } catch (cause) {
@@ -261,7 +278,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (!cancelled && cause?.exitCode !== undefined) error.exitCode = cause.exitCode;
             if (turn) {
                 error.session = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, error.message,
-                    { status: cancelled ? 'interrupted' : 'failed' });
+                    { status: cancelled ? 'interrupted' : 'failed', durationMs: Math.max(0, Math.round(performance.now() - responseStarted)) });
                 error.turnId = turnId;
                 error.assistantMessageId = turn.assistantMessageId;
             }
@@ -319,6 +336,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             } else if (event.type === 'coding-agent-final') {
                 if (remainingFinals <= 0 || event.agent !== config.backend || typeof event.message !== 'string') throw new Error('Malformed or duplicate ALA final event.');
                 remainingFinals--;
+                if (finalText !== null) await recordLog?.(sanitize(finalText), { outputKind: 'assistant', outputComplete: true });
                 finalText = event.message;
             } else if (event.type === 'message-accepted' && event.delivery === 'queued') {
                 remainingFinals++;
@@ -342,9 +360,9 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 interactions?.resolve(event.id, event.reason);
             }
             if (event.type === 'coding-agent-message' || event.type === 'agentlib-tool') {
-                recordLog?.(event.message || event.reason);
+                await recordLog?.(sanitize(event.message ?? event.reason), event.type === 'coding-agent-message' ? event : {});
             } else if (event.type === 'diagnostic') {
-                recordLog?.(event.message);
+                await recordLog?.(sanitize(event.message));
             }
             // Progress is delivered as a transient WebChat status, never persisted on the message.
             await emit(event);

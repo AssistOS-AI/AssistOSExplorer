@@ -173,31 +173,33 @@ function renderStage() {
         logs.append(composer, log);
         view.append(header, detail);
         const sessionUrl = ['browser', 'desktop'].includes(instance.executionType) ? instance.sessionUrl : null;
+        const tabs = document.createElement('div');
+        tabs.className = 'phase-tabs';
+        const panels = [];
+        const addTab = (label, panel, href) => {
+            const tab = phaseTab(label, panels.length === 0, () => {
+                for (const entry of panels) {
+                    entry.panel.hidden = entry.panel !== panel;
+                    entry.tab.classList.toggle('is-active', entry.panel === panel);
+                }
+                if (href && !panel.getAttribute('src')) panel.src = href;
+            });
+            panel.hidden = panels.length > 0;
+            panels.push({ tab, panel });
+            tabs.append(tab);
+        };
+        addTab('Logs', logs);
+        const summary = document.createElement('iframe');
+        summary.className = 'phase-session-frame';
+        summary.title = 'View Summary';
+        addTab('View Summary', summary, api(`summary?flow=${encodeURIComponent(selected)}&instance=${encodeURIComponent(instance.id)}`));
         if (sessionUrl) {
             const frame = document.createElement('iframe');
             frame.className = 'phase-session-frame';
             frame.title = `${instance.executionType} session`;
-            frame.hidden = true;
-            const tabs = document.createElement('div');
-            tabs.className = 'phase-tabs';
-            const logsTab = phaseTab('Logs', true, () => {
-                logsTab.classList.add('is-active');
-                sessionTab.classList.remove('is-active');
-                logs.hidden = false;
-                frame.hidden = true;
-            });
-            const sessionTab = phaseTab(instance.executionType === 'desktop' ? 'Desktop' : 'Browser', false, () => {
-                sessionTab.classList.add('is-active');
-                logsTab.classList.remove('is-active');
-                logs.hidden = true;
-                frame.hidden = false;
-                if (!frame.getAttribute('src')) frame.src = sessionUrl;
-            });
-            tabs.append(logsTab, sessionTab);
-            view.append(tabs, logs, frame);
-        } else {
-            view.append(logs);
+            addTab(instance.executionType === 'desktop' ? 'Desktop' : 'Browser', frame, sessionUrl);
         }
+        view.append(tabs, ...panels.map(entry => entry.panel));
         body.append(view);
         renderPhaseHeader(header, instance);
         renderPhaseDetail(detail, instance);

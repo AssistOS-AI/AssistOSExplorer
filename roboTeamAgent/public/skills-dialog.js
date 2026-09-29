@@ -32,7 +32,7 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
     dialog.className = 'skills-dialog';
     dialog.setAttribute('aria-labelledby', 'skills-dialog-title');
     dialog.innerHTML = `<header class="skills-dialog-heading"><h2 id="skills-dialog-title"></h2><button type="button" class="button secondary close-skills">Close</button></header>
-        <div class="repository-list"></div>
+        <section class="required-skills"><h3>Required skills</h3><p class="muted">Loading…</p></section><div class="repository-list"></div>
         <section class="skill-recommendations" aria-labelledby="skill-recommendations-title"><h3 id="skill-recommendations-title">Recommended repositories</h3><p class="muted">Detected in the workspace or registered in Ploinky. Workspace checkouts are preferred.</p><div class="recommendation-list" aria-live="polite"></div></section>
         <form class="repository-form"><label>Repository URL<input name="source" type="url" required maxlength="2048" placeholder="https://github.com/owner/skills.git"></label><button class="button primary" type="submit">Add repo</button></form>
         <p class="message" role="status" aria-live="polite"></p>`;
@@ -178,6 +178,19 @@ export function openSkillsDialog(robot, { api, onChanged, canAdmin }) {
     document.body.append(dialog);
     render();
     dialog.showModal();
+    void api('api/required-skills').then(({ skills }) => {
+        const section = dialog.querySelector('.required-skills');
+        section.replaceChildren(node('h3', 'Required skills'));
+        for (const skill of skills) {
+            const details = document.createElement('details');
+            details.append(node('summary', `${skill.name} · Required · View only`));
+            const content = node('pre', skill.content);
+            content.style.whiteSpace = 'pre-wrap';
+            content.style.overflowWrap = 'anywhere';
+            details.append(content);
+            section.append(details);
+        }
+    }).catch(error => { dialog.querySelector('.required-skills p').textContent = error.message; });
     void loadSkillRecommendations().then(repos => { recommendations = repos; })
         .catch(error => { recommendationError = error.message; })
         .finally(() => { loadingRecommendations = false; if (dialog.isConnected) render(); });

@@ -99,6 +99,16 @@ Response: No. The default robot starts with its own state. Existing robot homes 
 
 RoboTeam must not implement conversation commands for skill selection, live updates or pinning. ALA owns the single initial instruction about mounted .agents/skills; continued turns must not repeat that instruction.
 
+### Required impact summaries
+
+Every robot, including default and existing robots, always receives the required summarize-agent-impact skill from DocumentationSkills. Ploinky resolves the workspace checkout or prepares its internal repository copy. The required skill is shown as view-only in Manage skills and cannot be disabled through the skill selection API. An unavailable required source prevents execution.
+
+View Summary opens the shared RoboTeam summary page in the WebChat side panel or in the selected workflow phase tab. The page lists complete assistant summary blocks as bullets without their markers and refreshes during execution. Conversation records store message IDs and character ranges; existing turn logs and workflow output use byte ranges. No separate summary text file is written. The endpoint reads indexed ranges instead of searching all output. Historical assistant replies and workflow results are indexed lazily; historical raw logs without output provenance are excluded. Continuing a workflow phase appends to its existing result file and retains references to earlier results, while normal result reads return the latest response.
+
+Assistant replies persist durationMs measured from the start of turn execution through response completion, including preparation and tool execution. WebChat displays this as “Thought for …” beside the reply time and preserves it when loading history. Older replies without recorded durations show only their time.
+
+The copilot/src/lib/prompts.mjs module builds the native prompt and centralizes workspace-copilot instructions, workflow task context, branch routing instructions, graph-generation instructions and task/system prompt composition. RoboFlow supplies the captured graph, objective, current task and previous completed responses when dispatching each task; branch instructions are supplied only for multiple outgoing edges. At the start of a new native conversation, RoboTeam instructs the coding agent to read the SKILL.md headers in .agents/skills and use those skills when needed. It does not enumerate skills in the prompt. This discovery instruction is not repeated on native continuation. RoboTeam owns this caller instruction; ALA forwards the prepared prompt.
+
 ## Conclusion
 
 RoboTeam owns robot and GUI lifecycle; the shared conversational wrapper preserves session and task state, and ALA owns native coding-agent execution.

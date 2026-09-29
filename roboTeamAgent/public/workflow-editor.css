@@ -92,6 +92,8 @@
 .skillset-pick-kind { padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--text-soft) 14%, transparent); color: var(--text-soft); font-size: 10px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
 .skillset-count { color: var(--text-soft); font-size: var(--font-xs, .75rem); }
 .coverage-warning { border-color: var(--warning); }
+.task-list-item.coverage-warning { border-color: var(--warning); }
+.task-list-item.coverage-warning.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 .coverage-warning-line { display: inline-flex; align-items: baseline; gap: 6px; }
 .coverage-warning-icon { color: var(--warning); font-size: 1.15em; line-height: 1; }
 .workflow-warning { color: var(--warning); font-size: 24px; margin-right: 12px; }

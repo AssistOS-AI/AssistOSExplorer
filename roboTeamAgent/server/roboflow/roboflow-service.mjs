@@ -6,7 +6,8 @@ import { WorkflowRegistry } from './workflow-registry.mjs';
 import { TaskFlowStore } from './task-flow-store.mjs';
 import { normalizeWorkflow, invalid, textField, graphDiagnostics } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
-import { routingPrompt, parseRoute, extractJson } from './result-parser.mjs';
+import { parseRoute, extractJson } from './result-parser.mjs';
+import { generationPrompt, routingPrompt, buildWorkflowTaskPrompt } from '../../copilot/src/lib/prompts.mjs';
 import { ensureDefaultWorkflow } from './default-workflow.mjs';
 import { EXECUTION_TASK_TYPES, EXECUTION_TYPES, WORKFLOWS_DIR } from './constants.mjs';
 import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
@@ -22,21 +23,6 @@ function deriveFlowStatus(instances) {
     if (states.some(state => state === 'failed')) return 'failed';
     if (states.some(state => ['stopped', 'interrupted'].includes(state))) return 'stopped';
     return 'completed';
-}
-
-// Prepended to the user's description for graph generation; ALA has no separate
-// system-instruction option.
-function generationPrompt(catalog) {
-    return [
-        'You are a workflow planner. For the user task, produce an optimal directed graph: split the task into smaller tasks that each make sense, and find the execution paths that can lead the task to completion. A task can have several possible execution paths, not only a linear one.',
-        'Every task is executed by a coding agent and must declare exactly one execution type:',
-        '- terminal: the usual CLI coding-agent mode;',
-        '- desktop: coding agents with computer-use MCP tools operating a virtual desktop;',
-        '- browser: coding agents with browser-use MCP tools operating a DuckDuckGo browser, to navigate the web and browse sites.',
-        'Return one JSON object with no prose and do not execute the workflow. Fields: name, description, entryTaskId, tasks, edges, layout. Each task has a unique id, name, prompt, skillsets (array of exact catalog IDs; each is a named skillset or an individual skill) and executionType (terminal, desktop or browser). Each edge has a unique id, sourceTaskId, targetTaskId and no description. Write task prompts that let a branching task select its outgoing edge. All endpoints and the entry task must exist. Cycles are allowed. Never choose robots and never generate the reserved default workflow. Layout is optional.',
-        `Catalog: ${JSON.stringify(catalog?.skillsets || [])}.`,
-        'Example: {"name":"Report","description":"Produce a report","entryTaskId":"research","tasks":[{"id":"research","name":"Research","prompt":"Open DuckDuckGo and collect sources about the topic","skillsets":[],"executionType":"browser"},{"id":"report","name":"Report","prompt":"Write the report from the collected sources","skillsets":[],"executionType":"terminal"}],"edges":[{"id":"done","sourceTaskId":"research","targetTaskId":"report"}]}',
-    ].join('\n');
 }
 
 export class RoboFlowService {
@@ -133,7 +119,7 @@ export class RoboFlowService {
             const previous = [];
             for (const visit of flow.instances) if (visit.state === 'completed') previous.push({ taskId: visit.taskId, instanceId: visit.id,
                 response: await this.store.readOutput(id, visit.id, 'result') });
-            const task = JSON.stringify({ instruction: 'Execute only the task identified by currentTaskId, following its prompt and the objective. Use previousFinalResponses as context. Do not execute other graph nodes. Return a final answer, following routing instructions only when supplied.', objective: flow.objective, currentTaskId: node.id, graph: flow.graph, previousFinalResponses: previous });
+            const task = buildWorkflowTaskPrompt({ objective: flow.objective, currentTaskId: node.id, graph: flow.graph, previousFinalResponses: previous });
             if (Buffer.byteLength(task, 'utf8') > 1024 * 1024) throw new Error('Workflow final-response context exceeds the 1 MiB input limit');
             const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === node.id);
             const runtimeTaskId = crypto.randomUUID();
@@ -265,7 +251,7 @@ export class RoboFlowService {
         void this._serialize(binding.flowId, async () => {
             const flow = await this.store.get(binding.flowId);
             if (!flow || (terminal(flow.status) && !binding.manual)) return;
-            if (event.kind === 'progress') await this.store.writeOutput(flow.id, binding.instanceId, event.chunk);
+            if (event.kind === 'progress') await this.store.writeOutput(flow.id, binding.instanceId, event.chunk, 'log', { assistant: event.outputKind === 'assistant', complete: event.outputComplete, outputId: event.outputId });
             else if (event.kind === 'state') await this.store.update(flow.id, current => {
                 const instance = current.instances.find(item => item.id === binding.instanceId);
                 if (instance && !terminal(instance.state)) { instance.state = event.state; instance.startedAt ||= new Date().toISOString(); }

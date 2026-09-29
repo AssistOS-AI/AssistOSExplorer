@@ -1,3 +1,4 @@
+import { assertSafeAchillesPrivatePath } from './privateDataRoot.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -23,4 +24,19 @@ export function webchatTurnLogUrl(base, sessionId, messageId) {
     const root = String(base || '').replace(/\/+$/, '');
     if (!root) return '';
     return `${root}/${encodeURIComponent(sessionId)}/${encodeURIComponent(messageId)}`;
+}
+
+export function appendWebchatTurnLog(workingDir, sessionId, messageId, text) {
+    if (![sessionId, messageId].every(id => /^[a-f0-9-]{36}$/.test(id))) throw new Error('Invalid turn log identity');
+    for (const relative of ['logs', `logs/${sessionId}`]) {
+        const directory = assertSafeAchillesPrivatePath(workingDir, relative, { type: 'directory' });
+        fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    }
+    const file = assertSafeAchillesPrivatePath(workingDir, `logs/${sessionId}/${messageId}.log`, { type: 'file' });
+    const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+    try {
+        const start = fs.fstatSync(fd).size;
+        fs.writeFileSync(fd, text);
+        return start;
+    } finally { fs.closeSync(fd); }
 }

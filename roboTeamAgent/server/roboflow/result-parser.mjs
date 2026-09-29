@@ -1,14 +1,16 @@
+import { withoutSummaryBlocks } from '../../shared/impact-summary.mjs';
 import { invalid } from './graph.mjs';
 const alias = /^(nextEdgeId|nextEdge|Edge)$/i;
 const scalar = value => typeof value === 'string' ? value.trim().replace(/^`+|`+$/g, '').trim() : '';
 export function extractJson(source) {
-    const text = String(source).trim();
+    const text = withoutSummaryBlocks(source).trim();
     try { return JSON.parse(text); } catch { /* Native responses may wrap JSON in a fence. */ }
     const blocks = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/gi)].map(match => match[1]);
     if (blocks.length === 1) { try { return JSON.parse(blocks[0]); } catch { /* Report the contract failure below. */ } }
     throw invalid('Expected one JSON object');
 }
 export function parseRoute(source, graph, taskId) {
+    source = withoutSummaryBlocks(source);
     const values = [];
     let message;
     let json;
@@ -33,7 +35,4 @@ export function parseRoute(source, graph, taskId) {
     const edge = graph.edges.find(entry => entry.id === unique[0] && entry.sourceTaskId === taskId);
     if (!edge) throw invalid(`Selected edge is not outgoing from task ${taskId}: ${unique[0]}`);
     return { message, nextEdgeId: edge.id, edge };
-}
-export function routingPrompt(graph, taskId) {
-    return `You are a robot executing one task in a directed workflow graph. Execute the current task, then choose exactly one of its outgoing edges. Return Markdown with optional # message and required # nextEdgeId sections. The latter must contain only the edge ID. Do not select incoming edges or edges from another node. Task prompts explain the work at each destination.\nCurrent node: ${taskId}\nComplete graph:\n${JSON.stringify(graph)}\nAllowed outgoing edges:\n${JSON.stringify(graph.edges.filter(edge => edge.sourceTaskId === taskId))}`;
 }

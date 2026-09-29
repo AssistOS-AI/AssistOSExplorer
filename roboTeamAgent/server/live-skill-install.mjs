@@ -33,7 +33,10 @@ export async function installLiveSkills({ service, robot, policyId, cwd, client 
         // directory without belonging to a Ploinky repository. The client owns
         // every link it publishes, so those sources cannot be installed and are
         // reported instead of failing the whole execution.
-        if (!repository) { skipped.push(entry.name); continue; }
+        if (!repository) {
+            if (entry.required) throw new Error(`Required skill repository is unavailable: ${entry.name}`);
+            skipped.push(entry.name); continue;
+        }
         sources.set(path.join(cwd, '.agents', 'skills', entry.name), source);
         repos.push({ repoName: repository.name, sourcePath: path.relative(repository.source, source),
             destination: path.join(cwd, '.agents', 'skills', entry.name) });

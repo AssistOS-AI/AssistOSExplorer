@@ -1,3 +1,6 @@
+import { withLock } from './storage.mjs';
+import { advanceSummaryFile } from '../../shared/summary-file-index.mjs';
+import { scanSummaryLines } from '../../shared/impact-summary.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -71,15 +74,58 @@ export class TaskFlowStore {
         }
         return path.join(directory, `${instanceId}.${suffix}`);
     }
-    async writeOutput(flowId, instanceId, value, suffix = 'log') {
-        const file = await this.outputPath(flowId, instanceId, suffix, true);
-        const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW | (suffix === 'log' ? fs.constants.O_APPEND : fs.constants.O_TRUNC);
-        const handle = await fs.open(file, flags, 0o600);
-        try { await handle.writeFile(String(value || '')); } finally { await handle.close(); }
+    async writeOutput(flowId, instanceId, value, suffix = 'log', { assistant = suffix === 'result', complete = suffix === 'result', outputId = '' } = {}) {
+        return withLock(`summary-output:${flowId}:${instanceId}`, async () => {
+            const file = await this.outputPath(flowId, instanceId, suffix, true);
+            const handle = await fs.open(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW | fs.constants.O_APPEND, 0o600);
+            let start;
+            const text = String(value || '');
+            const output = complete && !text.endsWith('\n') ? `${text}\n` : text;
+            try {
+                start = (await handle.stat()).size;
+                await handle.writeFile(output);
+            } finally { await handle.close(); }
+            const flow = await this.get(flowId);
+            const instance = flow.instances.find(entry => entry.id === instanceId);
+            const index = structuredClone(instance.summaryOutputs?.[suffix] || { version: 1, ranges: [], state: {} });
+            if (suffix === 'result' && !instance.summaryOutputs?.[suffix] && start) {
+                const previous = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+                let existing;
+                try { existing = await previous.readFile(); } finally { await previous.close(); }
+                index.ranges = scanSummaryLines(existing.subarray(0, start).toString('utf8'), { bytes: true }).ranges
+                    .map(range => ({ ...range, attempt: 'legacy' }));
+            }
+            if (suffix === 'result' || index.attempt !== instance.runtimeTaskId) index.state = {};
+            const ranges = await advanceSummaryFile(file, index, { start, end: start + Buffer.byteLength(output), assistant, complete, outputId });
+            let sequence = instance.summarySequence || 0;
+            for (const range of ranges) index.ranges.push({ ...range, attempt: instance.runtimeTaskId, sequence: ++sequence });
+            index.attempt = instance.runtimeTaskId;
+            await this.update(flowId, record => {
+                const current = record.instances.find(entry => entry.id === instanceId);
+                current.summaryOutputs ||= {};
+                current.summaryOutputs[suffix] = index;
+                current.summarySequence = sequence;
+                if (suffix === 'result') current.latestResult = { start, end: start + Buffer.byteLength(text) };
+            });
+        });
     }
     async readOutput(flowId, instanceId, suffix = 'log') {
         const file = await this.outputPath(flowId, instanceId, suffix);
         const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-        try { return await handle.readFile('utf8'); } finally { await handle.close(); }
+        try {
+            const flow = suffix === 'result' ? await this.get(flowId) : null;
+            const range = flow?.instances.find(entry => entry.id === instanceId)?.latestResult;
+            if (!range) return await handle.readFile('utf8');
+            if (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end)
+                || range.start < 0 || range.end < range.start || range.end > (await handle.stat()).size) throw new Error('Invalid workflow result reference');
+            const buffer = Buffer.alloc(range.end - range.start);
+            let read = 0;
+            while (read < buffer.length) {
+                const chunk = await handle.read(buffer, read, buffer.length - read, range.start + read);
+                if (!chunk.bytesRead) throw new Error('Workflow result changed while reading');
+                read += chunk.bytesRead;
+            }
+            return buffer.toString('utf8');
+        } finally { await handle.close(); }
     }
 }

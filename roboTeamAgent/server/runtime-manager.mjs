@@ -1,3 +1,4 @@
+import { buildTaskPrompt } from '../copilot/src/lib/prompts.mjs';
 import { registerProject, executionDirectory, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
 import { workspaceDataPath } from './workspace-paths.mjs';
@@ -42,6 +43,8 @@ function appendTail(previous, chunk, limit) {
 
 function createAlaProgressParser(onText, onEvent = () => {}) {
     let buffered = '';
+    const decoder = new StringDecoder('utf8');
+    let pendingFinal = null;
     const consumeLine = (line, terminated) => {
         if (!line.startsWith(ALA_EVENT_PREFIX)) {
             onText(`${line}${terminated ? '\n' : ''}`);
@@ -50,14 +53,18 @@ function createAlaProgressParser(onText, onEvent = () => {}) {
         try {
             const event = JSON.parse(line.slice(ALA_EVENT_PREFIX.length));
             onEvent(event);
-            if (event?.type === 'coding-agent-message' && typeof event.message === 'string') onText(event.message);
+            if (event?.type === 'coding-agent-final' && typeof event.message === 'string') {
+                if (pendingFinal !== null) onText(pendingFinal, { outputKind: 'assistant', outputComplete: true });
+                pendingFinal = event.message;
+            }
+            if (event?.type === 'coding-agent-message' && typeof event.message === 'string') onText(event.message, event);
         } catch {
             onText(`${line}${terminated ? '\n' : ''}`);
         }
     };
     return {
         push(chunk) {
-            buffered += chunk.toString('utf8');
+            buffered += decoder.write(chunk);
             let newline = buffered.indexOf('\n');
             while (newline >= 0) {
                 consumeLine(buffered.slice(0, newline), true);
@@ -66,6 +73,7 @@ function createAlaProgressParser(onText, onEvent = () => {}) {
             }
         },
         finish() {
+            buffered += decoder.end();
             if (buffered) consumeLine(buffered, false);
             buffered = '';
         },
@@ -457,12 +465,12 @@ export class RuntimeManager {
 
     async _runTask(robot, task) {
         if (task.cancelRequested || task.state !== 'queued') return;
-        const appendProgress = (chunk) => {
+        const appendProgress = (chunk, output = {}) => {
             const previousLength = task.logTail.length;
             task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
             if (task.logTail.length < previousLength + String(chunk).length) task.logTruncated = true;
             task.logSeq += 1;
-            this._emitTaskEvent({ kind: 'progress', robotId: robot.id, taskId: task.taskId, chunk: String(chunk) });
+            this._emitTaskEvent({ kind: 'progress', robotId: robot.id, taskId: task.taskId, chunk: String(chunk), outputKind: output.outputKind, outputComplete: output.outputComplete === true, outputId: output.outputId });
         };
         try {
             task.state = 'starting';
@@ -521,8 +529,7 @@ export class RuntimeManager {
             const taskFile = path.join(runtimeDir, `${task.taskId}.prompt`);
             // Caller system instructions are prepended to the user prompt; ALA has
             // no separate system-instruction option.
-            const taskText = task.request.systemPrompt
-                ? `${task.request.systemPrompt}\n\n${task.request.task}` : task.request.task;
+            const taskText = buildTaskPrompt(task.request);
             await fs.writeFile(taskFile, taskText, { mode: 0o600 });
             if (task.cancelRequested) throw new Error('task was stopped');
             const args = ['--home', robotHome, '--cwd', cwd, '--taskFile', taskFile, '--ca', codingAgent];

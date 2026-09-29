@@ -29,7 +29,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         delete process.env.ROBOTEAM_TASK_SKILL_SELECTION;
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
-            execution: { backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
+            execution: { captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
                 model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access' } });
         let control;
         input = readline.createInterface({ input: process.stdin });

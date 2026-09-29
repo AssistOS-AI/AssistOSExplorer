@@ -1,3 +1,5 @@
+import { conversationSummaries, workflowSummaries } from './impact-summaries.mjs';
+import { requiredImpactSkill } from './required-skills.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
@@ -372,10 +374,25 @@ export function createRoboTeamServer(options) {
             if (pathname === '/styles.css' && req.method === 'GET') return serveFile(res, publicDir, 'styles.css');
             if (['/workflow-editor.js', '/workflow-board.js', '/workflow-generator.js', '/workflow-editor.css',
                 '/flows.js', '/editor.js', '/generate.js', '/roboflow.js', '/roboflow.css', '/roboflow-api.js',
-                '/log-render.js', '/webchat-logs.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
+                '/log-render.js', '/webchat-logs.js', '/summary.js'].includes(pathname) && req.method === 'GET') return serveFile(res, publicDir, pathname.slice(1));
             if (pathname === '/app.js' && req.method === 'GET') return serveFile(res, publicDir, 'app.js');
             if (pathname === '/skills-dialog.js' && req.method === 'GET') return serveFile(res, publicDir, 'skills-dialog.js');
             if (pathname === '/terminal.js' && req.method === 'GET') return serveFile(res, publicDir, 'terminal.js');
+
+            if (pathname === '/summary' && req.method === 'GET') return servePage(res, publicDir, 'summary.html', publicBasePath);
+            if (pathname === '/api/summary' && req.method === 'GET') {
+                const session = url.searchParams.get('session');
+                if (session) return sendJson(res, 200, await conversationSummaries(robotStore, runtimeManager.workspaceRoot, session));
+                const flow = url.searchParams.get('flow');
+                const instance = url.searchParams.get('instance');
+                if (!roboflow || !/^flow_[a-f0-9]{24}$/.test(flow || '') || !/^inv_[a-f0-9]{24}$/.test(instance || '')) return sendError(res, 400, 'Invalid summary context');
+                return sendJson(res, 200, await workflowSummaries(roboflow, flow, instance));
+            }
+            if (pathname === '/api/required-skills' && req.method === 'GET') {
+                const skill = await requiredImpactSkill(skillsets);
+                const content = await fs.promises.readFile(path.join(skill.sourcePath, 'SKILL.md'), 'utf8');
+                return sendJson(res, 200, { skills: [{ name: skill.name, description: skill.description, content, required: true, readOnly: true }] });
+            }
 
             const logsPage = pathname.match(/^\/webchat-logs\/([a-f0-9-]{36})\/([a-f0-9-]{36})$/);
             if (logsPage && req.method === 'GET') return servePage(res, publicDir, 'webchat-logs.html', publicBasePath);

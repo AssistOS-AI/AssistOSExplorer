@@ -180,6 +180,7 @@ export class RobotSkillsets {
         if (inventory.policy.mode === 'pinned') throw invalid('pinned catalogs are immutable; use /skills live before changing selection');
         const entry = inventory.skills.find((skill) => skill.identity === identity);
         if (!entry) throw invalid('skill identity is unavailable');
+        if (entry.required || entry.readOnly) throw invalid('Required skills are read-only');
         let policy = structuredClone(inventory.policy);
         policy.excludedSkills = policy.excludedSkills.filter((name) => name !== identity);
         if (!enabled) policy.excludedSkills.push(identity);

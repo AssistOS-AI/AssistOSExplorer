@@ -1,3 +1,4 @@
+import { requiredImpactSkill, IMPACT_SKILL } from './required-skills.mjs';
 import { projectDirectories } from './project-storage.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -148,6 +149,15 @@ export class LiveSkillCatalog {
             if (!selected(entry)) continue;
             entry.state = 'selected'; entry.enabled = true;
         }
+        const required = await requiredImpactSkill(this.service);
+        for (const entry of entries) {
+            if (entry.name !== IMPACT_SKILL) continue;
+            entry.enabled = false;
+            entry.readOnly = true;
+            entry.state = 'shadowed';
+            entry.reason = 'Provided automatically by DocumentationSkills';
+        }
+        entries.push(required);
         const groups = new Map();
         for (const entry of entries.filter((item) => item.enabled)) {
             const key = entry.name.normalize('NFC').toLowerCase();

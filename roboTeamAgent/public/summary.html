@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RoboTeam · View Summary</title>
+  <link rel="stylesheet" href="roboflow.css">
+  <style>
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    .request-log-page { display: flex; flex-direction: column; gap: 12px; min-height: 100vh; padding: 16px 20px 24px; box-sizing: border-box; }
+    .request-log-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .request-log-heading h1 { margin: 0; font-size: 18px; color: var(--text); }
+    .request-log-status { color: var(--muted); font-size: 13px; }
+    #summaries { margin: 0; padding-left: 24px; }
+    #summaries li { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; margin-bottom: 16px; }
+    .request-log-page .phase-log { flex: 1 1 auto; max-height: none; }
+  </style>
+  <script>
+    (() => {
+      const keys = ['assistosExplorerTheme', 'webchat_theme'];
+      const browserTheme = window.matchMedia('(prefers-color-scheme: dark)');
+      const syncTheme = () => {
+        let preference;
+        try { preference = keys.map(key => localStorage.getItem(key)).find(Boolean); }
+        catch { /* Browser settings may disable storage. */ }
+        const dark = preference ? ['dark', 'obsidian'].includes(preference.toLowerCase()) : browserTheme.matches;
+        const root = document.documentElement;
+        root.classList.toggle('theme-dark', dark);
+        root.classList.toggle('theme-light', !dark);
+        root.setAttribute('theme', dark ? 'dark' : 'light');
+      };
+      syncTheme();
+      browserTheme.addEventListener('change', syncTheme);
+      window.addEventListener('storage', event => { if (event.key === null || keys.includes(event.key)) syncTheme(); });
+      window.addEventListener('focus', syncTheme);
+      window.addEventListener('pageshow', syncTheme);
+    })();
+  </script>
+</head>
+<body>
+  <main class="request-log-page">
+    <header class="request-log-heading">
+      <h1>View Summary</h1>
+      <span id="summaryStatus" class="request-log-status" role="status"></span>
+    </header>
+    <ul id="summaries" aria-live="polite"></ul>
+  </main>
+
+  <script type="module" src="summary.js"></script>
+</body>
+</html>

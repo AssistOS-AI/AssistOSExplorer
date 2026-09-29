@@ -1,3 +1,4 @@
+import { indexConversationSummaries } from '../../../shared/impact-summary.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -91,6 +92,7 @@ function normalizeConversationMessage(raw, sessionId, index) {
             .map((entry) => entry.trim())
             .filter(Boolean);
     }
+    if (role === 'assistant' && Number.isSafeInteger(raw.durationMs) && raw.durationMs >= 0) message.durationMs = raw.durationMs;
     if (raw.context === false) message.context = false;
     if (raw.turnId !== undefined) {
         if (typeof raw.turnId !== 'string' || !raw.turnId.trim()) throw new Error('invalid_turn_id');
@@ -142,7 +144,7 @@ function normalizeSession(raw, expectedId = '') {
         updatedAt,
         messages,
         ...(raw.cwd && path.isAbsolute(raw.cwd) ? { cwd: raw.cwd } : {}),
-        ...Object.fromEntries(['skillPolicyRef', 'legacySkillSelection', 'skillExecution', 'previousSkillExecution'].filter((key) => raw[key] !== undefined).map((key) => [key, structuredClone(raw[key])])),
+        ...Object.fromEntries(['skillPolicyRef', 'legacySkillSelection', 'skillExecution', 'previousSkillExecution', 'summaryRefs', 'summaryIndexVersion', 'summaryLogRefs'].filter((key) => raw[key] !== undefined).map((key) => [key, structuredClone(raw[key])])),
         ...(raw.skillSelection ? { skillSelection: structuredClone(raw.skillSelection) } : {}),
         ...(raw.engine === undefined ? {} : { engine: normalizeEngine(raw.engine, sessionId) }),
     };
@@ -258,7 +260,7 @@ export class ConversationSessionStore {
             const now = new Date().toISOString();
             sessionId = assertSessionId(sessionId);
             if (fs.existsSync(this.sessionPath(sessionId))) throw new Error('session_already_exists');
-            const session = { sessionId, createdAt: now, updatedAt: now, messages: [], cwd: this.workingDir };
+            const session = { sessionId, createdAt: now, updatedAt: now, messages: [], summaryRefs: [], summaryIndexVersion: 1, summaryLogRefs: [], cwd: this.workingDir };
             atomicWriteJson(this.sessionPath(session.sessionId), session);
             if (select) await setCurrentSessionId(this.workingDir, session.sessionId);
             this.currentSessionId = session.sessionId;
@@ -334,8 +336,10 @@ export class ConversationSessionStore {
     async updateSession(sessionId, updater) {
         return withWorkspaceMutation(this.workingDir, () => {
             const session = this.#loadMigratedSession(sessionId);
+            const previous = { messages: session.messages.map(({ id, role, text }) => ({ id, role, text })) };
             const result = updater(session);
             if (result && typeof result.then === 'function') throw new Error('session_updater_must_be_synchronous');
+            indexConversationSummaries(session, previous);
             session.updatedAt = new Date().toISOString();
             const normalized = normalizeSession(session, sessionId);
             atomicWriteJson(this.sessionPath(normalized.sessionId), normalized);
@@ -381,6 +385,8 @@ export class ConversationSessionStore {
                 ...(context === false ? { context: false } : {}),
                 ...(turnId === undefined ? {} : { turnId }),
             };
+            record.summaryLogRefs ||= [];
+            record.summaryLogRefs.push({ messageId: assistantMessageId, ranges: [] });
             record.messages.push({
                 ...metadata, id: userMessageId, role: 'user',
                 text: typeof text === 'string' ? text : '',
@@ -416,12 +422,28 @@ export class ConversationSessionStore {
         });
     }
 
-    async completeTurn(sessionId, assistantMessageId, text, { status = 'completed' } = {}) {
+    async recordSummaryLog(sessionId, messageId, ranges) {
+        return this.updateSession(sessionId, record => {
+            record.summaryLogRefs ||= [];
+            const previous = record.summaryLogRefs.find(ref => ref.messageId === messageId);
+            if (previous) previous.ranges = ranges;
+            else record.summaryLogRefs.push({ messageId, ranges });
+        });
+    }
+
+    async ensureSummaryIndex(sessionId) {
+        const session = this.loadSession(sessionId);
+        if (session.summaryIndexVersion === 1) return session;
+        return this.updateSession(sessionId, () => {});
+    }
+
+    async completeTurn(sessionId, assistantMessageId, text, { status = 'completed', durationMs } = {}) {
         if (!['completed', 'failed', 'interrupted'].includes(status)) throw new Error('invalid_message_status');
         return this.updateSession(sessionId, (record) => {
             const message = this.#assistant(record, assistantMessageId);
             message.text = typeof text === 'string' ? text : String(text ?? '');
             message.status = status;
+            if (Number.isSafeInteger(durationMs) && durationMs >= 0) message.durationMs = durationMs;
         });
     }
 

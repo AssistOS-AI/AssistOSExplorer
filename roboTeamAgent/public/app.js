@@ -291,7 +291,33 @@ function renderWorkflows(workflows, canAdmin) {
         link.className = 'button';
         link.href = endpoint(`flow-types?id=${encodeURIComponent(workflow.id)}`);
         link.textContent = canAdmin && workflow.kind !== 'default' ? 'Edit workflow' : 'View workflow';
-        card.append(link);
+        const actions = document.createElement('div');
+        actions.className = 'workflow-actions';
+        actions.append(link);
+        if (canAdmin && workflow.id !== 'default' && workflow.kind !== 'default') {
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'button danger';
+            remove.textContent = 'Delete';
+            remove.setAttribute('aria-label', `Delete workflow type ${workflow.name}`);
+            remove.addEventListener('click', async () => {
+                if (remove.disabled || !confirm(`Delete workflow type "${workflow.name}"? Existing runs and their history will be kept.`)) return;
+                remove.disabled = true;
+                remove.textContent = 'Deleting…';
+                workflowListMessage.textContent = '';
+                try {
+                    await api(`api/roboflow/workflows/${encodeURIComponent(workflow.id)}`, { method: 'DELETE' });
+                    await loadWorkflows(canAdmin);
+                } catch (error) {
+                    workflowListMessage.textContent = error.message;
+                } finally {
+                    remove.disabled = false;
+                    remove.textContent = 'Delete';
+                }
+            });
+            actions.append(remove);
+        }
+        card.append(actions);
         workflowsList.append(card);
     }
 }

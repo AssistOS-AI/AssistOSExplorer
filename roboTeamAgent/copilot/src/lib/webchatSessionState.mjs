@@ -1,3 +1,4 @@
+import { PUBLIC_BASE_PATH } from '../../../server/constants.mjs';
 import { summarizeConversationSession } from './conversationSessionStore.mjs';
 
 const WEBCHAT_SESSION_VERSION = 1;
@@ -18,6 +19,7 @@ export function createCurrentSessionEnvelope(session, options = {}) {
         session,
         summary: summarizeConversationSession(session),
         ...(settingsAction ? { settingsAction } : {}),
+        summaryAction: { label: 'View Summary', href: `${PUBLIC_BASE_PATH.replace(/\/+$/, '')}/summary?session=${encodeURIComponent(session.sessionId)}` },
     };
 }
 

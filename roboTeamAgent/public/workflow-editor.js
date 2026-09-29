@@ -20,6 +20,7 @@ export function createWorkflowEditor({ api }) {
     const message = document.querySelector('#workflowMessage');
     const addTaskButton = document.querySelector('#addTaskButton');
     let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0;
+    let warningTaskIds = new Set();
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
     const readonly = () => !canAdmin || graph?.kind === 'default';
     const changed = () => { version++; };
@@ -60,7 +61,10 @@ export function createWorkflowEditor({ api }) {
             const result = await api('api/roboflow/validate', { method: 'POST', body: { ...graph, name: graph.name || 'Draft' } });
             if (request !== coverageRequest) return;
             showCoverageMessage(result);
-            for (const task of result.coverage.tasks) taskList.querySelector(`[data-task-id="${CSS.escape(task.taskId)}"]`)?.classList.toggle('coverage-warning', !task.matchingRobotIds.length);
+            warningTaskIds = new Set(result.coverage.tasks.filter(task => !task.matchingRobotIds.length).map(task => task.taskId));
+            for (const item of taskList.querySelectorAll('[data-task-id]')) {
+                item.classList.toggle('coverage-warning', warningTaskIds.has(item.dataset.taskId));
+            }
         } catch (error) { if (request === coverageRequest) showError(error); }
     }
     function connect({ source, target }) {
@@ -194,6 +198,7 @@ export function createWorkflowEditor({ api }) {
             item.type = 'button';
             item.dataset.taskId = task.id;
             if (task.id === selected) item.classList.add('selected');
+            if (warningTaskIds.has(task.id)) item.classList.add('coverage-warning');
             item.append(node('strong', task.name || 'Untitled task'), node('span', task.executionType || 'terminal / desktop / browser'));
             item.onclick = () => select(task.id);
             row.append(item);
@@ -272,6 +277,7 @@ export function createWorkflowEditor({ api }) {
     }
     async function open(value = null, { admin = false } = {}) {
         canAdmin = admin;
+        warningTaskIds = new Set((value?.coverage?.tasks || []).filter(task => !task.matchingRobotIds.length).map(task => task.taskId));
         graph = value ? structuredClone(value) : blank(); delete graph.coverage; delete graph.diagnostics;
         version++; coverageRequest++; message.textContent = ''; selected = graph.entryTaskId || graph.tasks[0]?.id || null; currentPage = 'settings';
         form.elements.name.value = graph.name; form.elements.description.value = graph.description;
