@@ -73,8 +73,12 @@ test('a hung restart command is terminated and never retried or reported as succ
             'process.on("SIGTERM", () => {});',
             'setInterval(() => {}, 1000);',
         ].join('\n'));
+        // The budget also covers starting the Node child before its first
+        // statement records the invocation. As for the failure test below,
+        // allow 2 s so the load of a full parallel test run does not kill the
+        // fixture before it starts (solo start-up is about 70 ms).
         await assert.rejects(restartOnlyOffice({
-            executable: process.execPath, workspaceRoot, timeoutMs: 250,
+            executable: process.execPath, workspaceRoot, timeoutMs: 2000,
         }), (error) => error.killed === true && error.signal === 'SIGKILL');
         assert.equal(await fs.readFile(path.join(workspaceRoot, 'invocations'), 'utf8'), 'started\n');
     } finally {
