@@ -610,13 +610,16 @@ export function createToolHandlers({
         try { state = entry.isSymbolicLink() && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
         catch { state = 'modified'; }
       }
+      // A link into the selected repository only names its source; ownership
+      // state above comes from the ledger and is never overridden here.
+      let linkedSource = null;
       const selectedRepo = entries.find(repo => repo.skills.includes(entry.name));
-      if (entry.isSymbolicLink() && selectedRepo && resolvedRepositorySources.has(selectedRepo.name)) {
-        const source = path.resolve(skillsDir, await fs.readlink(path.join(skillsDir, entry.name)));
-        if (source === path.join(resolvedRepositorySources.get(selectedRepo.name), 'skills', entry.name)) state = 'managed';
+      if (!record?.source && entry.isSymbolicLink() && selectedRepo && resolvedRepositorySources.has(selectedRepo.name)) {
+        const target = path.resolve(skillsDir, await fs.readlink(path.join(skillsDir, entry.name)));
+        if (target === path.join(resolvedRepositorySources.get(selectedRepo.name), 'skills', entry.name)) linkedSource = { name: selectedRepo.name, url: selectedRepo.url };
       }
       const descriptor = (entry.isDirectory() || entry.isSymbolicLink()) ? await fs.stat(path.join(skillsDir, entry.name, 'SKILL.md')).catch(() => null) : null;
-      outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || (state === 'managed' && selectedRepo ? { name: selectedRepo.name, url: selectedRepo.url } : null) });
+      outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || linkedSource });
       if (state === 'modified' || state === 'unsupported' || (selected.has(entry.name) && state === 'local')) diagnostics.push({ name: entry.name, reason: `${state}-output-preserved` });
     }
     for (const name of selected) if (!presentNames.has(name)) outputs.push({ name, state: 'missing', selected: true, installed: false });

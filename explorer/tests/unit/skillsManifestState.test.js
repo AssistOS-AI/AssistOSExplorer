@@ -409,6 +409,51 @@ test('a ledger entry of an unsupported kind survives update and removal and is r
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
+// Ownership comes from the ledger: a link that still resolves into the
+// selected repository must not be reported as managed when the ledger disagrees.
+test('a relinked export with the same canonical target is reported as modified, not managed', async () => {
+  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-relinked-')));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir);
+    const handlers = createHandlers(workspaceRoot);
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: path.basename(repoDir) });
+    const before = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
+    assert.equal(before.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'managed');
+    // Same canonical target, but no longer the link the exporter recorded.
+    const link = path.join(projectDir, '.agents', 'skills', 'alpha-skill');
+    const target = path.join(repoDir, 'skills', 'alpha-skill');
+    await fs.unlink(link);
+    await fs.symlink(target, link);
+    const after = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
+    assert.equal(after.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'modified');
+    assert.ok(after.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'modified-output-preserved'));
+    assert.equal(await fs.readlink(link), target);
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
+test('an intact export whose ledger kind is unsupported is reported as unsupported, not managed', async () => {
+  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-unsupported-link-')));
+  try {
+    const repoDir = await createLocalSkillRepo(workspaceRoot);
+    const projectDir = path.join(workspaceRoot, 'project');
+    await fs.mkdir(projectDir);
+    const handlers = createHandlers(workspaceRoot);
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: path.basename(repoDir) });
+    const before = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
+    assert.equal(before.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'managed');
+    const ledgerPath = path.join(projectDir, '.agents', '.ploinky-skill-exports.json');
+    const ledger = JSON.parse(await fs.readFile(ledgerPath, 'utf8'));
+    ledger.entries['alpha-skill'] = { ...ledger.entries['alpha-skill'], kind: 'unsupported-kind' };
+    await fs.writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
+    const after = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
+    assert.equal(after.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'unsupported');
+    assert.ok(after.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'unsupported-output-preserved'));
+    assert.equal((await fs.lstat(path.join(projectDir, '.agents', 'skills', 'alpha-skill'))).isSymbolicLink(), true);
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
 test('deselection removes only the installed link and preserves repository content', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-remove-'));
   try {
