@@ -6,8 +6,8 @@ import test from 'node:test';
 import { RobotStore } from '../../server/robot-store.mjs';
 import { RobotSkillsets } from '../../server/robot-skillsets.mjs';
 import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
-import { ConversationSessionStore, buildConversationInitialHistory } from '../src/lib/conversationSessionStore.mjs';
-import { createRobotSkillCatalog } from '../src/lib/robotSkillCatalog.mjs';
+import { ConversationSessionStore, buildConversationInitialHistory } from '../src/lib/storage/conversationSessionStore.mjs';
+import { createRobotSkillCatalog } from '../src/lib/skills/robotSkillCatalog.mjs';
 import { REPLSession } from '../src/repl/REPLSession.mjs';
 import { installRepositoryLinks, removeRepositoryLinks } from '../../../../ploinky/cli/utils/repositoryInstall.mjs';
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { assertSafeAchillesPrivatePath, ensureSafeAchillesPrivateDirectory } from '../copilot/src/lib/privateDataRoot.mjs';
+import { assertSafeAchillesPrivatePath, ensureSafeAchillesPrivateDirectory } from '../copilot/src/lib/storage/privateDataRoot.mjs';
 
 // This registry contains project locations only. History and execution records
 // have one owner: the project's .achilles-cli directory.

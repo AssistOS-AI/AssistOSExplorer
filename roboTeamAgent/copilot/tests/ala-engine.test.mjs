@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createAlaEngine } from '../src/lib/alaEngine.mjs';
-import { ConversationSessionStore } from '../src/lib/conversationSessionStore.mjs';
+import { createAlaEngine } from '../src/lib/execution/alaEngine.mjs';
+import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
 
 const childEntry = fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url));
 
@@ -202,7 +202,7 @@ test('explicit skill selection stays in the caller prompt without ALA skill opti
 });
 
 test('model and effort persist in the native ALA config and survive continuation and reset', async (t) => {
-    const { resolveAlaInstallation } = await import('../src/lib/alaInstallation.mjs');
+    const { resolveAlaInstallation } = await import('../src/lib/execution/alaInstallation.mjs');
     const api = await resolveAlaInstallation();
     const h = await harness(t);
     h.installation.loadConfig = api.loadConfig;

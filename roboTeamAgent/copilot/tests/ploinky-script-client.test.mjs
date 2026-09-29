@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createPloinkyTaskContext } from '../src/lib/ploinkyTaskContext.mjs';
+import { createPloinkyTaskContext } from '../src/lib/ploinky/ploinkyTaskContext.mjs';
 import { createSkillInvocation } from '../src/skills/launch-gpt-researcher/scripts/ploinkyInvocation.mjs';
 import { action } from '../src/skills/launch-gpt-researcher/scripts/action.mjs';
-import { createWebchatBackgroundTaskManager } from '../src/lib/webchatBackgroundTasks.mjs';
+import { createWebchatBackgroundTaskManager } from '../src/lib/webchat/webchatBackgroundTasks.mjs';
 
 test('script task receipts attach authenticated observers to their originating chat turn', async (t) => {
     const workingDir = await fs.mkdtemp(path.join(os.tmpdir(), 'script-observer-'));

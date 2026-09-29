@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
 
-import { getDisabledSkills, setDisabledSkills } from '../src/lib/achillesSettings.mjs';
+import { getDisabledSkills, setDisabledSkills } from '../src/lib/config/achillesSettings.mjs';
 import {
     applyPersistedWorkspaceSkillState,
     createWebchatSkillsEnvelope,
     createWorkspaceSkillsSnapshot,
     setWorkspaceDirectoryEnabled,
     setWorkspaceSkillEnabled,
-} from '../src/lib/workspaceSkillsState.mjs';
+} from '../src/lib/skills/workspaceSkillsState.mjs';
 import { SlashCommandHandler } from '../src/repl/SlashCommandHandler.mjs';
 import { createCatalogFixture, writeSkill } from './helpers/anthropicCatalogFixture.mjs';
 

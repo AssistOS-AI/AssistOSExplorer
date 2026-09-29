@@ -4,8 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { initializeCliOptions, parseCliOptions, isWebchatRuntime } from '../src/lib/cliOptions.mjs';
-import { getPermissionMode, setPermissionMode } from '../src/lib/achillesSettings.mjs';
+import { initializeCliOptions, parseCliOptions, isWebchatRuntime } from '../src/lib/cli/cliOptions.mjs';
+import { getPermissionMode, setPermissionMode } from '../src/lib/config/achillesSettings.mjs';
 
 async function workspace(t) {
     const directory = await mkdtemp(join(tmpdir(), 'achilles-permission-bootstrap-'));

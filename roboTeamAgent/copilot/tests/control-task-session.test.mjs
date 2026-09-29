@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { controlTaskSession } from '../src/lib/taskSessionControl.mjs';
+import { controlTaskSession } from '../src/lib/tasks/taskSessionControl.mjs';
 
 const TASK = {
     id: 'task_111111111111111111111111',

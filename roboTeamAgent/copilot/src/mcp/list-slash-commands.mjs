@@ -4,14 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { buildSlashCommandCatalog } from '../repl/SlashCommandHandler.mjs';
-import { createAnthropicSkillCatalog } from '../lib/anthropicSkillCatalog.mjs';
-import { resolveAlaInstallation } from '../lib/alaInstallation.mjs';
-import { resolveSkillCatalogRoots } from '../lib/cliSkillRoots.mjs';
+import { createAnthropicSkillCatalog } from '../lib/skills/anthropicSkillCatalog.mjs';
+import { resolveAlaInstallation } from '../lib/execution/alaInstallation.mjs';
+import { resolveSkillCatalogRoots } from '../lib/skills/cliSkillRoots.mjs';
 import { discoverTaskSkills } from '../../../server/skill-descriptor.mjs';
-import { createAlaEngine } from '../lib/alaEngine.mjs';
-import * as settings from '../lib/achillesSettings.mjs';
-import { ConversationSessionStore } from '../lib/conversationSessionStore.mjs';
-import { buildTaskCompletions } from '../lib/workspaceTasks.mjs';
+import { createAlaEngine } from '../lib/execution/alaEngine.mjs';
+import * as settings from '../lib/config/achillesSettings.mjs';
+import { ConversationSessionStore } from '../lib/storage/conversationSessionStore.mjs';
+import { buildTaskCompletions } from '../lib/tasks/workspaceTasks.mjs';
 
 const permissionCompletions = [
     { value: 'ask-for-approval', label: 'ask-for-approval', description: 'Forward the native backend approval choices' },

@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
     appendRecoveringTask,
     runBoundedCleanup,
-} from '../src/lib/webchatTurnQueue.mjs';
+} from '../src/lib/webchat/webchatTurnQueue.mjs';
 
 test('WebChat prompt queue runs the next task after the previous task rejected', async () => {
     const errors = [];

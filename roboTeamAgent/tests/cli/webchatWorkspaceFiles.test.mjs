@@ -7,7 +7,7 @@ import test from 'node:test';
 import {
     __testables,
     createWebchatWorkspaceFileIndex,
-} from '../roboTeamAgent/copilot/src/lib/webchatWorkspaceFiles.mjs';
+} from '../roboTeamAgent/copilot/src/lib/webchat/webchatWorkspaceFiles.mjs';
 
 function makeWorkingDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-workspace-files-'));

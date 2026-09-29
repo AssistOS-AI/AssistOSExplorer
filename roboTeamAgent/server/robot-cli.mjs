@@ -17,7 +17,7 @@ try {
     if (!robotName) throw new Error('--robot requires a robot name.');
     const context = await prepareCopilotContext(robotName, { holdUsage: true });
     releaseUsage = context.releaseUsage;
-    const { setRobotContext } = await import('../copilot/src/lib/robotContext.mjs');
+    const { setRobotContext } = await import('../copilot/src/lib/execution/robotContext.mjs');
     setRobotContext(context);
     const { main } = await import('../copilot/src/index.mjs');
     await main(args, { workflowCatalog: true, systemPrompt: WORKSPACE_COPILOT_PROMPT });

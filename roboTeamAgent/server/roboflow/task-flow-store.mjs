@@ -1,3 +1,4 @@
+import { executionTiming, transitionTiming } from '../../shared/execution-timing.mjs';
 import { withLock } from './storage.mjs';
 import { advanceSummaryFile } from '../../shared/summary-file-index.mjs';
 import { scanSummaryLines } from '../../shared/impact-summary.mjs';
@@ -7,6 +8,10 @@ import path from 'node:path';
 import { RoboFlowDatabase } from './database.mjs';
 import { FLOW_ID_PATTERN, INVOCATION_ID_PATTERN } from './constants.mjs';
 import { invalid } from './graph.mjs';
+
+const activePhase = phase => ['starting', 'running', 'stopping'].includes(phase.state);
+const flowTiming = flow => executionTiming(flow, flow.status === 'running', flow.createdAt, flow.finishedAt);
+const phaseTiming = phase => executionTiming(phase, activePhase(phase), phase.startedAt, phase.endedAt);
 
 export class TaskFlowStore {
     constructor(options = {}) { this.database = options.database || new RoboFlowDatabase(options.databaseFile); }
@@ -31,7 +36,7 @@ export class TaskFlowStore {
             if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
             const now = new Date().toISOString();
             return this.saveSync({ id: TaskFlowStore.newFlowId(), workflowTypeId: graph.id, workflowName: graph.name, graph,
-                ...input, status: 'running', currentInstanceId: null, createdAt: now, updatedAt: now, finishedAt: null, error: null, instances: [] });
+                ...input, elapsedMs: 0, activeSince: now, status: 'running', currentInstanceId: null, createdAt: now, updatedAt: now, finishedAt: null, error: null, instances: [] });
         });
     }
     async get(id) { await this.initialize(); return this.getSync(id); }
@@ -54,8 +59,14 @@ export class TaskFlowStore {
         return this.database.transaction(() => {
             const flow = this.getSync(id);
             if (!flow) throw Object.assign(invalid('workflow run not found'), { statusCode: 404 });
+            const timing = flowTiming(flow);
+            const phases = new Map(flow.instances.map(phase => [phase.id, phaseTiming(phase)]));
             operation(flow);
             flow.updatedAt = new Date().toISOString();
+            Object.assign(flow, transitionTiming(timing, flow.status === 'running', flow.updatedAt));
+            for (const phase of flow.instances) {
+                Object.assign(phase, transitionTiming(phases.get(phase.id) || { elapsedMs: 0, activeSince: null }, activePhase(phase), flow.updatedAt));
+            }
             return this.saveSync(flow);
         });
     }

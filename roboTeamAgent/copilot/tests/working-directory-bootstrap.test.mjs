@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { initializeCliOptions } from '../src/lib/cliOptions.mjs';
-import { setPermissionMode } from '../src/lib/achillesSettings.mjs';
+import { initializeCliOptions } from '../src/lib/cli/cliOptions.mjs';
+import { setPermissionMode } from '../src/lib/config/achillesSettings.mjs';
 
 async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'copilot-directory-bootstrap-'));

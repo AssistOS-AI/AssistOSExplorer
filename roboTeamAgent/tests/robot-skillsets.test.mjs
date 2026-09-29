@@ -328,7 +328,7 @@ test('repositories without skillsets publish only skill metadata and support exa
 
 
 test('default chat gets copilot while a saved delegated default conversation stays empty', async t => {
-    const { createRobotSkillCatalog } = await import('../copilot/src/lib/robotSkillCatalog.mjs');
+    const { createRobotSkillCatalog } = await import('../copilot/src/lib/skills/robotSkillCatalog.mjs');
     const f = await fixture(t);
     const robot = await f.store.ensureDefaultRobot();
     let session = {};

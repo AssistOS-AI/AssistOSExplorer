@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createNativeInteractions } from '../src/lib/nativeInteractions.mjs';
-import { createWebchatInteractionController } from '../src/lib/webchatInteractionController.mjs';
+import { createNativeInteractions } from '../src/lib/execution/nativeInteractions.mjs';
+import { createWebchatInteractionController } from '../src/lib/webchat/webchatInteractionController.mjs';
 import { parseWebchatInteractionResponse } from '../src/permissions/protocol.mjs';
 
 const nativeEvent = (id) => ({

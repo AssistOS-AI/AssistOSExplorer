@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ConversationSessionStore } from '../src/lib/conversationSessionStore.mjs';
-import { attachTaskToSession } from '../src/lib/webchatRuntime.mjs';
-import { createWebchatBackgroundTaskManager } from '../src/lib/webchatBackgroundTasks.mjs';
-import { getTask, readTaskLog } from '../src/lib/workspaceTasks.mjs';
+import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
+import { attachTaskToSession } from '../src/lib/webchat/webchatRuntime.mjs';
+import { createWebchatBackgroundTaskManager } from '../src/lib/webchat/webchatBackgroundTasks.mjs';
+import { getTask, readTaskLog } from '../src/lib/tasks/workspaceTasks.mjs';
 
 for (const failure of ['none', 'session-publication', 'task-publication']) {
     test(`script task attachment tracks logs and completion with ${failure}`, { timeout: 5000 }, async (t) => {

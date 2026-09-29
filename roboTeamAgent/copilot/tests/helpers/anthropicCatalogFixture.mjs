@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createAnthropicSkillCatalog } from '../../src/lib/anthropicSkillCatalog.mjs';
+import { createAnthropicSkillCatalog } from '../../src/lib/skills/anthropicSkillCatalog.mjs';
 import { discoverTaskSkills } from '../../../server/skill-descriptor.mjs';
 
 export function writeSkill(root, directory, name, description = `Use ${name} for a focused task.`) {

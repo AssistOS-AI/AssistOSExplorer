@@ -4,10 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { discoverTaskSkills } from '../roboTeamAgent/server/skill-descriptor.mjs';
-import { createAnthropicSkillCatalog } from '../roboTeamAgent/copilot/src/lib/anthropicSkillCatalog.mjs';
-import { setDisabledSkills } from '../roboTeamAgent/copilot/src/lib/achillesSettings.mjs';
+import { createAnthropicSkillCatalog } from '../roboTeamAgent/copilot/src/lib/skills/anthropicSkillCatalog.mjs';
+import { setDisabledSkills } from '../roboTeamAgent/copilot/src/lib/config/achillesSettings.mjs';
 import { writeSkill } from '../roboTeamAgent/copilot/tests/helpers/anthropicCatalogFixture.mjs';
-import { getManagedRepoSkillRoot } from '../roboTeamAgent/copilot/src/lib/repoManager.mjs';
+import { getManagedRepoSkillRoot } from '../roboTeamAgent/copilot/src/lib/skills/repoManager.mjs';
 
 function fixture(t, selectedInsideData = false) {
     const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-managed-boundary-')));

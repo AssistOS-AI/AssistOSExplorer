@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { callAgentTool } from '../src/lib/agentMcpClient.mjs';
+import { callAgentTool } from '../src/lib/ploinky/agentMcpClient.mjs';
 
 test('generated-local Agent MCP has no credentialed raw-URL fallback', async (t) => {
     const originalFetch = globalThis.fetch;

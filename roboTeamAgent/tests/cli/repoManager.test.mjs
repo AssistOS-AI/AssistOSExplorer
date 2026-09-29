@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import {
     addRepo,
     updateRepos,
-} from '../roboTeamAgent/copilot/src/lib/repoManager.mjs';
+} from '../roboTeamAgent/copilot/src/lib/skills/repoManager.mjs';
 
 describe('repoManager', () => {
     let tempDir;

@@ -7,10 +7,10 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
-import { resolveAlaInstallation } from '../copilot/src/lib/alaInstallation.mjs';
+import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 import { prepareCopilotContext } from '../server/copilot-context.mjs';
 import { ToolCache } from '../server/tool-cache.mjs';
-import { ConversationSessionStore } from '../copilot/src/lib/conversationSessionStore.mjs';
+import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
 
 test('copilot cache preparation is silent but preparation failures remain visible', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-cache-output-'));

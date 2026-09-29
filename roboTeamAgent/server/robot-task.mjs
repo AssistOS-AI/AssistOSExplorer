@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import readline from 'node:readline';
 import { prepareCopilotContext } from './copilot-context.mjs';
-import { setRobotContext } from '../copilot/src/lib/robotContext.mjs';
+import { setRobotContext } from '../copilot/src/lib/execution/robotContext.mjs';
 import { createCliRuntime } from '../copilot/src/index.mjs';
 
 import { pathToFileURL } from 'node:url';

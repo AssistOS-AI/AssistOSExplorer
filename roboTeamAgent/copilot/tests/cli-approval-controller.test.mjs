@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createNativeInteractions } from '../src/lib/nativeInteractions.mjs';
+import { createNativeInteractions } from '../src/lib/execution/nativeInteractions.mjs';
 
 const event = (id) => ({
     type: 'coding-agent-request', id, kind: 'permission',

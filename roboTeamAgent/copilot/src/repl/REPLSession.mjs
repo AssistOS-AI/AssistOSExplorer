@@ -10,9 +10,9 @@ import { renderMarkdown } from '../ui/MarkdownRenderer.mjs';
 import { showHelp, getHelpTopics, getCommandHelp } from '../ui/HelpSystem.mjs';
 import { showHistory, searchHistory } from '../ui/HelpPrinter.mjs';
 import { UIContext } from '../ui/UIContext.mjs';
-import { buildTaskCompletions, formatWorkspaceTaskDetail, formatWorkspaceTaskSummary } from '../lib/workspaceTasks.mjs';
-import { createTaskControlCommands } from '../lib/taskControlCommands.mjs';
-import { getPermissionMode, setPermissionMode } from '../lib/achillesSettings.mjs';
+import { buildTaskCompletions, formatWorkspaceTaskDetail, formatWorkspaceTaskSummary } from '../lib/tasks/workspaceTasks.mjs';
+import { createTaskControlCommands } from '../lib/tasks/taskControlCommands.mjs';
+import { getPermissionMode, setPermissionMode } from '../lib/config/achillesSettings.mjs';
 
 /** A connection owns its selected conversation; ALA owns each executing turn. */
 export class REPLSession {

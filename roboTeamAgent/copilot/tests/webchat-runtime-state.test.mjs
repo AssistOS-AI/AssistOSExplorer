@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createWebchatRuntimeStateEnvelope, clearWebchatRuntimeModel, selectWebchatRuntimeModel } from '../src/lib/webchatRuntimeState.mjs';
-import { getCodingAgentModels, getSelectedModel, setCodingAgentModel, setSelectedModel } from '../src/lib/achillesSettings.mjs';
+import { createWebchatRuntimeStateEnvelope, clearWebchatRuntimeModel, selectWebchatRuntimeModel } from '../src/lib/webchat/webchatRuntimeState.mjs';
+import { getCodingAgentModels, getSelectedModel, setCodingAgentModel, setSelectedModel } from '../src/lib/config/achillesSettings.mjs';
 
 test('native model selection and reset preserve other backends and legacy stored data', async (t) => {
     const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-native-model-state-'));

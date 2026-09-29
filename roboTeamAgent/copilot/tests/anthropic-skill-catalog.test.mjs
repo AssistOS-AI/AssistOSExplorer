@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
-import { setDisabledSkills } from '../src/lib/achillesSettings.mjs';
+import { setDisabledSkills } from '../src/lib/config/achillesSettings.mjs';
 import { createCatalogFixture, writeSkill } from './helpers/anthropicCatalogFixture.mjs';
 
  test('later roots override packaged skills while turn snapshots retain their selection', async (t) => {

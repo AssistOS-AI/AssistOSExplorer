@@ -79,10 +79,11 @@ async function startFlowUntilTerminal({ body, user }) {
             previousStatus = flow.status;
         }
         if (FLOW_TERMINAL.has(flow.status)) {
-            if (flow.status !== 'completed') {
+            if (flow.status === 'failed') {
                 throw new Error(String(flow.error || '').trim() || `RoboFlow task flow ended ${flow.status}`);
             }
-            return { outputText: String(flow.result || '').trim(), flowId, status: flow.status };
+            return { outputText: String(flow.result || '').trim() || (flow.status === 'stopped' ? 'Workflow stopped.' : ''),
+                flowId, status: flow.status, taskStatus: flow.status === 'stopped' ? 'cancelled' : 'completed' };
         }
         await sleep(TASK_POLL_INTERVAL_MS);
     }

@@ -9,7 +9,7 @@ import { ToolCache } from '../server/tool-cache.mjs';
 import { codingAgentEnvironment, robotCodingAgents } from '../server/coding-agents.mjs';
 import { prepareRobotShell } from '../server/robot-shell.mjs';
 import { buildRobotRunArgs } from '../server/runtime-manager.mjs';
-import { resolveAlaInstallation } from '../copilot/src/lib/alaInstallation.mjs';
+import { resolveAlaInstallation } from '../copilot/src/lib/execution/alaInstallation.mjs';
 
 test('new robots default to OpenCode and persisted API configuration supports all three', async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'robot-agents-'));

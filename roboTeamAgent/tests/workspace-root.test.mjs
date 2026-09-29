@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { requireWorkspaceRoot } from '../server/workspace-root.mjs';
-import { resolveAchillesWorkspaceRoot } from '../copilot/src/lib/privateDataRoot.mjs';
+import { resolveAchillesWorkspaceRoot } from '../copilot/src/lib/storage/privateDataRoot.mjs';
 
 test('workspace configuration fails explicitly instead of falling back to cwd', t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'required-workspace-'));

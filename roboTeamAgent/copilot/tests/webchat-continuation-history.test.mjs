@@ -5,7 +5,7 @@ import {
     isWebchatMessageEnvelope,
     normalizeWebchatMessage,
     shouldEmitWebchatOutput,
-} from '../src/lib/webchatEnvelope.mjs';
+} from '../src/lib/webchat/webchatEnvelope.mjs';
 
 test('WebChat messages cannot supply their own conversation history', () => {
     const normalized = normalizeWebchatMessage(JSON.stringify({

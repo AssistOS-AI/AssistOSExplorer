@@ -7,7 +7,7 @@ import test from 'node:test';
 import { RobotStore } from '../server/robot-store.mjs';
 import { RobotSkillsets } from '../server/robot-skillsets.mjs';
 import { recoverPathCatalog } from '../server/legacy-skill-catalog.mjs';
-import { createRobotSkillCatalog } from '../copilot/src/lib/robotSkillCatalog.mjs';
+import { createRobotSkillCatalog } from '../copilot/src/lib/skills/robotSkillCatalog.mjs';
 import { discoverTaskSkills } from '../server/skill-descriptor.mjs';
 
 async function fixture(t) {

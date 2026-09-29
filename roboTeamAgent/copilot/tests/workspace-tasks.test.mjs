@@ -19,7 +19,7 @@ import {
     readOngoingTasks,
     readWorkspaceTasks,
     setTaskModel,
-} from '../src/lib/workspaceTasks.mjs';
+} from '../src/lib/tasks/workspaceTasks.mjs';
 
 const FINISHED_ID = 'task_111111111111111111111111';
 const ONGOING_ID = 'task_222222222222222222222222';
@@ -492,7 +492,7 @@ test('competing process pollers reject stale sources and never rewind log cursor
         await ingestTaskEvent(fixture.workspace, { task: first, finalOutput: 'FIRST' });
         const current = await beginTaskContinuation(fixture.workspace, FINISHED_ID, { remoteTaskId: 'new', message: 'continue' });
         const source = `
-            import { ingestTaskEvent } from ${JSON.stringify(new URL('../src/lib/workspaceTasks.mjs', import.meta.url).href)};
+            import { ingestTaskEvent } from ${JSON.stringify(new URL('../src/lib/tasks/workspaceTasks.mjs', import.meta.url).href)};
             for (const event of JSON.parse(process.env.TASK_INPUT)) await ingestTaskEvent(process.env.TASK_WORKSPACE, event);
         `;
         const events = [1, 2, 3, 4].map((seq) => ({ task: current,
@@ -540,7 +540,7 @@ test('competing process continuations start one remote task and keep one local t
         const source = `
             import fs from 'node:fs';
             import path from 'node:path';
-            import { createWebchatBackgroundTaskManager } from ${JSON.stringify(new URL('../src/lib/webchatBackgroundTasks.mjs', import.meta.url).href)};
+            import { createWebchatBackgroundTaskManager } from ${JSON.stringify(new URL('../src/lib/webchat/webchatBackgroundTasks.mjs', import.meta.url).href)};
             let observer;
             const manager = await createWebchatBackgroundTaskManager({ workingDir: process.env.TASK_WORKSPACE, emitProtocol: false,
                 agentClientModule: {

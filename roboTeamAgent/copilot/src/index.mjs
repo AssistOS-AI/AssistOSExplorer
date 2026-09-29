@@ -4,25 +4,25 @@ import { PUBLIC_BASE_PATH } from '../../server/constants.mjs';
 
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { initializeCliOptions, isWebchatRuntime } from './lib/cliOptions.mjs';
-import { resolveSkillCatalogRoots, builtInSkillsDir } from './lib/cliSkillRoots.mjs';
-import { createAnthropicSkillCatalog } from './lib/anthropicSkillCatalog.mjs';
+import { initializeCliOptions, isWebchatRuntime } from './lib/cli/cliOptions.mjs';
+import { resolveSkillCatalogRoots, builtInSkillsDir } from './lib/skills/cliSkillRoots.mjs';
+import { createAnthropicSkillCatalog } from './lib/skills/anthropicSkillCatalog.mjs';
 import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
-import { resolveAlaInstallation } from './lib/alaInstallation.mjs';
-import { createAlaEngine } from './lib/alaEngine.mjs';
-import * as settings from './lib/achillesSettings.mjs';
-import { ConversationSessionStore } from './lib/conversationSessionStore.mjs';
-import { createWebchatBackgroundTaskManager } from './lib/webchatBackgroundTasks.mjs';
-import { createWebchatInteractionController } from './lib/webchatInteractionController.mjs';
-import { createNativeInteractions } from './lib/nativeInteractions.mjs';
+import { resolveAlaInstallation } from './lib/execution/alaInstallation.mjs';
+import { createAlaEngine } from './lib/execution/alaEngine.mjs';
+import * as settings from './lib/config/achillesSettings.mjs';
+import { ConversationSessionStore } from './lib/storage/conversationSessionStore.mjs';
+import { createWebchatBackgroundTaskManager } from './lib/webchat/webchatBackgroundTasks.mjs';
+import { createWebchatInteractionController } from './lib/webchat/webchatInteractionController.mjs';
+import { createNativeInteractions } from './lib/execution/nativeInteractions.mjs';
 import { HistoryManager } from './repl/HistoryManager.mjs';
 import { REPLSession } from './repl/REPLSession.mjs';
 import { createProvider, getProviderNames } from './ui/providers/index.mjs';
 import { UIContext } from './ui/UIContext.mjs';
-import { executeRuntimeCommand } from './lib/cliRuntimeCommands.mjs';
-import { runWebchatInteractive, attachTaskToSession } from './lib/webchatRuntime.mjs';
-import { getRobotContext } from './lib/robotContext.mjs';
-import { createRobotSkillCatalog } from './lib/robotSkillCatalog.mjs';
+import { executeRuntimeCommand } from './lib/cli/cliRuntimeCommands.mjs';
+import { runWebchatInteractive, attachTaskToSession } from './lib/webchat/webchatRuntime.mjs';
+import { getRobotContext } from './lib/execution/robotContext.mjs';
+import { createRobotSkillCatalog } from './lib/skills/robotSkillCatalog.mjs';
 
 export { REPLSession } from './repl/REPLSession.mjs';
 export { SlashCommandHandler } from './repl/SlashCommandHandler.mjs';
@@ -30,10 +30,10 @@ export { CommandSelector, showCommandSelector, showSkillSelector, buildCommandLi
 export { HistoryManager } from './repl/HistoryManager.mjs';
 export { formatSlashResult } from './ui/ResultFormatter.mjs';
 export { printHelp as printREPLHelp, showHistory, searchHistory } from './ui/HelpPrinter.mjs';
-export { isWebchatEscapeControlChunk, handleWebchatControlChunk } from './lib/webchatControl.mjs';
+export { isWebchatEscapeControlChunk, handleWebchatControlChunk } from './lib/webchat/webchatControl.mjs';
 export { BUILT_IN_SKILLS } from './lib/constants.mjs';
-export { builtInSkillsDir, resolveSkillCatalogRoots } from './lib/cliSkillRoots.mjs';
-export { parseCliOptions } from './lib/cliOptions.mjs';
+export { builtInSkillsDir, resolveSkillCatalogRoots } from './lib/skills/cliSkillRoots.mjs';
+export { parseCliOptions } from './lib/cli/cliOptions.mjs';
 
 export async function createCliRuntime(options, { webchat = false } = {}) {
     const { workingDir } = options;

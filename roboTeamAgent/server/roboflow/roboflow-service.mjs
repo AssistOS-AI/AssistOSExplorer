@@ -15,13 +15,13 @@ import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
 const terminal = state => ['completed', 'failed', 'stopped', 'interrupted'].includes(state);
 const missing = () => Object.assign(new Error('workflow run not found'), { statusCode: 404 });
 
-// A run has one status. Running wins over everything, then failure, then stop:
+// A run has one status. Running wins over everything, then stop, then failure:
 // there is no partially stopped run while any phase is still active.
 function deriveFlowStatus(instances) {
     const states = instances.map(instance => instance.state);
-    if (states.some(state => ['queued', 'starting', 'running'].includes(state))) return 'running';
-    if (states.some(state => state === 'failed')) return 'failed';
+    if (states.some(state => ['queued', 'starting', 'running', 'stopping'].includes(state))) return 'running';
     if (states.some(state => ['stopped', 'interrupted'].includes(state))) return 'stopped';
+    if (states.some(state => state === 'failed')) return 'failed';
     return 'completed';
 }
 
@@ -48,8 +48,9 @@ export class RoboFlowService {
         await this.store.clearLegacyOnce();
         await ensureDefaultWorkflow(this.registry);
         for (const flow of await this.store.list()) if (!terminal(flow.status)) await this.store.update(flow.id, current => {
-            current.status = 'failed'; current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
+            current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'interrupted'; instance.error = current.error; instance.endedAt = current.finishedAt; }
+            current.status = deriveFlowStatus(current.instances);
         });
     }
     _serialize(id, operation) {
@@ -158,8 +159,9 @@ export class RoboFlowService {
             if (robot) { try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId); } catch { /* Runtime may already be terminal. */ } }
         }
         await this.store.update(id, current => {
-            current.status = status; current.error = message; current.finishedAt = new Date().toISOString();
+            current.error = message; current.finishedAt = new Date().toISOString();
             for (const visit of current.instances) if (!terminal(visit.state)) { visit.state = status; visit.error = message; visit.endedAt = current.finishedAt; }
+            current.status = deriveFlowStatus(current.instances);
         });
     }
     async stopFlow(id) { return this._serialize(id, async () => { if (!await this.store.get(id)) throw missing(); await this._fail(id, 'Stopped by user', 'stopped'); return this.getFlow(id); }); }
@@ -228,6 +230,7 @@ export class RoboFlowService {
         if (!flow || (terminal(flow.status) && !binding.manual)) return;
         const instance = flow.instances.find(item => item.id === binding.instanceId);
         if (!instance || terminal(instance.state)) return;
+        if (['stopped', 'interrupted'].includes(event.state)) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, event.state);
         if (event.state !== 'completed' || event.error) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, 'failed');
         await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
         const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === instance.taskId);

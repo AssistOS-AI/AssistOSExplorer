@@ -17,7 +17,7 @@
  * @module ui/LineEditor
  */
 
-import { copyToClipboard, pasteFromClipboard } from '../lib/clipboard.mjs';
+import { copyToClipboard, pasteFromClipboard } from '../lib/cli/clipboard.mjs';
 import { baseTheme } from './themes/base.mjs';
 import { getTerminalSize } from './terminalSize.mjs';
 

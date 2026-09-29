@@ -2,8 +2,8 @@ import { withLock } from './roboflow/storage.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { findProjectRecord } from './project-storage.mjs';
-import { ConversationSessionStore } from '../copilot/src/lib/conversationSessionStore.mjs';
-import { assertSafeAchillesPrivatePath } from '../copilot/src/lib/privateDataRoot.mjs';
+import { ConversationSessionStore } from '../copilot/src/lib/storage/conversationSessionStore.mjs';
+import { assertSafeAchillesPrivatePath } from '../copilot/src/lib/storage/privateDataRoot.mjs';
 import { scanSummaryLines, validRange } from '../shared/impact-summary.mjs';
 
 const missing = () => Object.assign(new Error('Summary source not found'), { statusCode: 404 });

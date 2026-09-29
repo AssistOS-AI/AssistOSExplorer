@@ -48,9 +48,13 @@ function terminalStatus(status) {
 }
 
 function duration(instance) {
-    if (!instance?.startedAt) return '';
-    const end = instance.endedAt ? new Date(instance.endedAt) : new Date();
-    const ms = end - new Date(instance.startedAt);
+    if (!instance) return '';
+    const active = ['running', 'starting', 'stopping'].includes(instance.state || instance.status);
+    const start = instance.startedAt || instance.createdAt;
+    const end = instance.endedAt || instance.finishedAt;
+    const ms = Number.isFinite(instance.elapsedMs)
+        ? instance.elapsedMs + (active && instance.activeSince ? Math.max(0, Date.now() - Date.parse(instance.activeSince)) : 0)
+        : (end ? Date.parse(end) : active ? Date.now() : Date.parse(start)) - Date.parse(start);
     if (!Number.isFinite(ms) || ms < 0) return '';
     const seconds = Math.round(ms / 1000);
     return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -66,6 +70,7 @@ function renderHeader(flow) {
     const status = document.querySelector('#flowStatus');
     status.textContent = flow.status;
     status.dataset.status = flow.status;
+    document.querySelector('#flowDuration').textContent = duration(flow);
     const error = document.querySelector('#flowError');
     error.hidden = !flow.error;
     error.textContent = flow.error || '';

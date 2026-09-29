@@ -8,11 +8,11 @@ import path from 'node:path';
 import {
     readAchillesSettings,
     setSelectedModel,
-} from '../src/lib/achillesSettings.mjs';
+} from '../src/lib/config/achillesSettings.mjs';
 import {
     resolveAchillesPrivateDataRoot,
     resolveAchillesWorkspaceRoot,
-} from '../src/lib/privateDataRoot.mjs';
+} from '../src/lib/storage/privateDataRoot.mjs';
 
 test('Ploinky launch from a workspace subdirectory stores private state in the selected project', async t => {
     const workspaceRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'achilles-workspace-'));

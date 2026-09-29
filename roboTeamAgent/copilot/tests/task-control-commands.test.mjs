@@ -5,8 +5,8 @@ import {
     createTaskControlCommands,
     normalizeLoginCatalog,
     normalizeLoginChallenge,
-} from '../src/lib/taskControlCommands.mjs';
-import { createWebchatInteractionController } from '../src/lib/webchatInteractionController.mjs';
+} from '../src/lib/tasks/taskControlCommands.mjs';
+import { createWebchatInteractionController } from '../src/lib/webchat/webchatInteractionController.mjs';
 
 const TASK_ID = 'task_111111111111111111111111';
 

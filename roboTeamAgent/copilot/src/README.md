@@ -60,11 +60,11 @@ Delegated workers retain their own credentials and native sessions. The parent o
 | Path | Responsibility |
 | --- | --- |
 | `cli.mjs`, `index.mjs` | Trusted startup and surface selection. |
-| `lib/alaEngine.mjs` | Owned ALA execution, continuation, native events and transcript outcome. |
-| `lib/anthropicSkillCatalog.mjs` | Deterministic parser-backed catalog and enablement snapshot. |
-| `lib/ploinkyTaskContext.mjs`, skill-local `scripts/ploinkyInvocation.mjs` | Prepared read-only Ploinky runtime, direct SDK calls and acknowledged Unix-socket task notifications for chat observation. |
-| `lib/workspaceStateLock.mjs` | Short interprocess transactions and execution leases. |
-| `lib/conversationSessionStore.mjs`, `lib/workspaceTasks.mjs` | Authoritative UI history and delegated task persistence. |
+| `lib/execution/alaEngine.mjs` | Owned ALA execution, continuation, native events and transcript outcome. |
+| `lib/skills/anthropicSkillCatalog.mjs` | Deterministic parser-backed catalog and enablement snapshot. |
+| `lib/ploinky/ploinkyTaskContext.mjs`, skill-local `scripts/ploinkyInvocation.mjs` | Prepared read-only Ploinky runtime, direct SDK calls and acknowledged Unix-socket task notifications for chat observation. |
+| `lib/storage/workspaceStateLock.mjs` | Short interprocess transactions and execution leases. |
+| `lib/storage/conversationSessionStore.mjs`, `lib/tasks/workspaceTasks.mjs` | Authoritative UI history and delegated task persistence. |
 | `repl/`, `ui/`, `permissions/` | Deterministic commands, terminal presentation and native interaction choices. |
 | `skills/` | The three portable product skills. |
 

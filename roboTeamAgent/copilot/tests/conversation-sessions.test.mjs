@@ -8,13 +8,13 @@ import { spawn } from 'node:child_process';
 import {
     buildConversationInitialHistory,
     ConversationSessionStore,
-} from '../src/lib/conversationSessionStore.mjs';
+} from '../src/lib/storage/conversationSessionStore.mjs';
 import {
     createCurrentSessionEnvelope,
     createSelectedSessionEnvelope,
     createSessionListEnvelope,
-} from '../src/lib/webchatSessionState.mjs';
-import { getCurrentSessionId } from '../src/lib/achillesSettings.mjs';
+} from '../src/lib/webchat/webchatSessionState.mjs';
+import { getCurrentSessionId } from '../src/lib/config/achillesSettings.mjs';
 import { SlashCommandHandler } from '../src/repl/SlashCommandHandler.mjs';
 
 function workspace(t) {
@@ -322,7 +322,7 @@ test('corrupt records are reported and are never replaced or hidden by startup r
 
 function runSessionWriter(workingDir, sessionId, assistantMessageId, worker) {
     const source = `
-        import { ConversationSessionStore } from ${JSON.stringify(new URL('../src/lib/conversationSessionStore.mjs', import.meta.url).href)};
+        import { ConversationSessionStore } from ${JSON.stringify(new URL('../src/lib/storage/conversationSessionStore.mjs', import.meta.url).href)};
         const [workingDir, sessionId, assistantMessageId, worker] = process.argv.slice(1);
         const store = new ConversationSessionStore({ workingDir });
         for (let index = 0; index < 8; index += 1) {

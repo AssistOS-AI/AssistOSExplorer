@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createAlaEngine } from '../src/lib/alaEngine.mjs';
-import { ConversationSessionStore } from '../src/lib/conversationSessionStore.mjs';
+import { createAlaEngine } from '../src/lib/execution/alaEngine.mjs';
+import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
 import { loadAutocompleteCatalog } from '../src/mcp/list-slash-commands.mjs';
 
 // Model discovery for WebChat autocomplete builds a short-lived ALA engine. When

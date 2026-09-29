@@ -7,14 +7,14 @@ import path from 'node:path';
 import {
     __testables,
     createWebchatBackgroundTaskManager,
-} from '../src/lib/webchatBackgroundTasks.mjs';
+} from '../src/lib/webchat/webchatBackgroundTasks.mjs';
 import {
     getTask,
     ingestTaskEvent,
     readTaskLog,
     setTaskModel,
-} from '../src/lib/workspaceTasks.mjs';
-import { runWithSkillRuntimeOrigin } from '../src/lib/skillTaskOrigin.mjs';
+} from '../src/lib/tasks/workspaceTasks.mjs';
+import { runWithSkillRuntimeOrigin } from '../src/lib/skills/skillTaskOrigin.mjs';
 
 
 test('background task ids are stable per target agent and remote task', () => {

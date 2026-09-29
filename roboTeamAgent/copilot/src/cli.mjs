@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main } from './index.mjs';
 
-export { parseCliOptions } from './lib/cliOptions.mjs';
+export { parseCliOptions } from './lib/cli/cliOptions.mjs';
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
     main().catch((error) => {

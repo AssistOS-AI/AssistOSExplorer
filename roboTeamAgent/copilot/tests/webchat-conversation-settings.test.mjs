@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createConversationSettingsAction, createCurrentSessionEnvelope, createSelectedSessionEnvelope } from '../src/lib/webchatSessionState.mjs';
+import { createConversationSettingsAction, createCurrentSessionEnvelope, createSelectedSessionEnvelope } from '../src/lib/webchat/webchatSessionState.mjs';
 
 const session = { sessionId: 'caa7d510-d4a7-4e82-bb74-4c1b2e1c74fd', workingDir: '/private/saved-cwd', messages: [] };
 

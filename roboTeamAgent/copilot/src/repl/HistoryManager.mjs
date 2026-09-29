@@ -5,8 +5,8 @@ import {
     assertSafeAchillesPrivatePath,
     ensureAchillesPrivateDataRoot,
     resolveAchillesPrivateDataRoot,
-} from '../lib/privateDataRoot.mjs';
-import { withWorkspaceMutation } from '../lib/workspaceStateLock.mjs';
+} from '../lib/storage/privateDataRoot.mjs';
+import { withWorkspaceMutation } from '../lib/storage/workspaceStateLock.mjs';
 
 const HISTORY_FILENAME = 'history';
 const DEFAULT_MAX_ENTRIES = 1000;

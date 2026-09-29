@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ConversationSessionStore } from '../src/lib/conversationSessionStore.mjs';
+import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
 import { HistoryManager } from '../src/repl/HistoryManager.mjs';
-import { createWebchatDispatcher } from '../src/lib/webchatRuntime.mjs';
-import { executeRuntimeCommand } from '../src/lib/cliRuntimeCommands.mjs';
+import { createWebchatDispatcher } from '../src/lib/webchat/webchatRuntime.mjs';
+import { executeRuntimeCommand } from '../src/lib/cli/cliRuntimeCommands.mjs';
 
 function eventQueue() {
     const events = [];

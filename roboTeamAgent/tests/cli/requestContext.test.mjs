@@ -11,7 +11,7 @@ describe('RequestContext', () => {
     let RequestContext, abortableTimeout, raceWithAbort, withRequestContext;
 
     beforeEach(async () => {
-        const module = await import('../roboTeamAgent/copilot/src/lib/RequestContext.mjs');
+        const module = await import('../roboTeamAgent/copilot/src/lib/execution/RequestContext.mjs');
         RequestContext = module.RequestContext;
         abortableTimeout = module.abortableTimeout;
         raceWithAbort = module.raceWithAbort;
@@ -255,7 +255,7 @@ describe('Utility functions', () => {
     let abortableTimeout, raceWithAbort, withRequestContext;
 
     beforeEach(async () => {
-        const module = await import('../roboTeamAgent/copilot/src/lib/RequestContext.mjs');
+        const module = await import('../roboTeamAgent/copilot/src/lib/execution/RequestContext.mjs');
         abortableTimeout = module.abortableTimeout;
         raceWithAbort = module.raceWithAbort;
         withRequestContext = module.withRequestContext;

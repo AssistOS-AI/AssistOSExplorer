@@ -7,7 +7,7 @@ import {
     clearSelectedModel, getCurrentSessionId, getDisabledSkills, getPermissionMode,
     getSelectedModel, setPermissionMode, setCurrentSessionId, setDisabledSkills,
     setSelectedModel, getCodingAgentModels, setCodingAgentModel, getAchillesSettingsPath,
-} from '../src/lib/achillesSettings.mjs';
+} from '../src/lib/config/achillesSettings.mjs';
 
 function workspace(t) {
     const dir = fs.mkdtempSync(join(tmpdir(), 'achilles-settings-'));

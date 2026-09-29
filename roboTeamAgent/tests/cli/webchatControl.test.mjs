@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
     handleWebchatControlChunk,
     isWebchatEscapeControlChunk
-} from '../roboTeamAgent/copilot/src/lib/webchatControl.mjs';
+} from '../roboTeamAgent/copilot/src/lib/webchat/webchatControl.mjs';
 
 describe('webchat control handling', () => {
     it('recognizes ESC control chunks from webchat', () => {

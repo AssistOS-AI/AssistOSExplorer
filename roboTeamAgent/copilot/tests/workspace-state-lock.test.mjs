@@ -6,12 +6,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { acquireExecutionLease, withWorkspaceMutation } from '../src/lib/workspaceStateLock.mjs';
-import { getCodingAgentModels, getPermissionMode, getCurrentSessionId } from '../src/lib/achillesSettings.mjs';
+import { acquireExecutionLease, withWorkspaceMutation } from '../src/lib/storage/workspaceStateLock.mjs';
+import { getCodingAgentModels, getPermissionMode, getCurrentSessionId } from '../src/lib/config/achillesSettings.mjs';
 import { HistoryManager } from '../src/repl/HistoryManager.mjs';
 
-const lockModule = new URL('../src/lib/workspaceStateLock.mjs', import.meta.url).href;
-const settingsModule = new URL('../src/lib/achillesSettings.mjs', import.meta.url).href;
+const lockModule = new URL('../src/lib/storage/workspaceStateLock.mjs', import.meta.url).href;
+const settingsModule = new URL('../src/lib/config/achillesSettings.mjs', import.meta.url).href;
 const historyModule = new URL('../src/repl/HistoryManager.mjs', import.meta.url).href;
 
 function workspace(t) {

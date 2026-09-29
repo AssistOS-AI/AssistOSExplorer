@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { formatWebchatError } from '../src/lib/webchatError.mjs';
+import { formatWebchatError } from '../src/lib/webchat/webchatError.mjs';
 
 test('WebChat errors link AchillesAgentLib stack frames to the workspace source copy', () => {
     const error = new Error('The LLM planner returned an empty response instead of the required Markdown decision.');
