@@ -148,7 +148,7 @@ function renderRobots(robots, canAdmin = false) {
             finally { terminalButton.disabled = false; }
         });
         card.querySelector('.open-chat').addEventListener('click', () => {
-            const params = new URLSearchParams({ agent: routeKey, robot: robot.name, 'workspace-dir': '.', 'forward-envelope': '1' });
+            const params = new URLSearchParams({ agent: routeKey, robot: robot.name, 'workspace-dir': 'achilles-cli', 'forward-envelope': '1' });
             window.open(`/webchat?${params}`, '_blank', 'noopener');
         });
         card.querySelector('.manage-skills').addEventListener('click', () => openSkillsDialog(robot, { api, onChanged: loadRobots, canAdmin }));

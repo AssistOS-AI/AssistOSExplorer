@@ -84,17 +84,26 @@ function getWorkingDirectory(context) {
     return normalize(context?.currentFsPath || context?.workspaceFsRoot || '');
 }
 
+function getWorkspaceDirectory(context) {
+    const explorerPath = context?.isDirectory ? context?.selectedPath : context?.currentPath;
+    const relative = context?.workspaceDirectory ?? (typeof explorerPath === 'string' && explorerPath
+        ? explorerPath.replace(/^\/+/, '') || '.'
+        : toWorkspaceRelativeParam(getWorkingDirectory(context), getWorkspaceRoot(context)));
+    if (typeof relative !== 'string' || !relative || relative.startsWith('/')
+        || relative.includes('\\') || relative.includes('\0') || relative.split('/').includes('..')) {
+        throw new Error('Cannot open Copilot without a valid workspace directory.');
+    }
+    return relative;
+}
+
 export function buildCopilotUrl(context = {}) {
     const params = new URLSearchParams({ agent: 'roboTeamAgent', robot: 'default' });
     const extensions = getCopilotLaunchExtensions();
     applyExtensionQuery(params, extensions);
 
-    const workingDir = getWorkingDirectory(context);
-    if (workingDir) {
-        const workspaceDirParam = getWorkspaceDirParam(extensions) || 'workspace-dir';
-        const relativeDir = toWorkspaceRelativeParam(workingDir, getWorkspaceRoot(context));
-        if (relativeDir) params.set(workspaceDirParam, relativeDir);
-    }
+    const workspaceDirParam = getWorkspaceDirParam(extensions) || 'workspace-dir';
+    params.delete('dir');
+    params.set(workspaceDirParam, getWorkspaceDirectory(context));
 
     return `/webchat?${params.toString()}`;
 }

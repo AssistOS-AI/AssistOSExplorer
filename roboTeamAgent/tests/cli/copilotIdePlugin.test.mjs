@@ -13,19 +13,13 @@ async function readConfig(pluginName) {
 }
 
 describe('Achilles CLI Copilot IDE plugin', () => {
-    it('contributes one logical plugin to Tools and the directory context menu', async () => {
-        const toolbarConfig = await readConfig('achilles-cli-tool-button');
+    it('contributes Copilot only to the directory context menu', async () => {
+        await assert.rejects(readConfig('achilles-cli-tool-button'), { code: 'ENOENT' });
         const menuConfig = await readConfig('achilles-cli-menu-contributions');
-
-        assert.equal(toolbarConfig.id, 'achilles-cli-copilot');
-        assert.equal(toolbarConfig.contributionType ?? 'mount', 'mount');
-        assert.deepEqual(toolbarConfig.location, ['file-exp:toolbar-plugins-dropdown']);
-        assert.equal(toolbarConfig.label, 'Open Copilot here');
-
-        assert.equal(menuConfig.id, toolbarConfig.id);
+        assert.equal(menuConfig.id, 'achilles-cli-copilot');
         assert.equal(menuConfig.contributionType, 'menu');
         assert.deepEqual(menuConfig.location, ['file-exp:context-menu:directory']);
-        assert.equal(menuConfig.label, toolbarConfig.label);
+        assert.equal(menuConfig.label, 'Open Copilot here');
         assert.equal(menuConfig.menuModule, 'menu-contributions.js');
     });
 

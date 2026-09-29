@@ -42,6 +42,24 @@ export function resolveAchillesWorkspaceRoot(workingDir = process.cwd(), env = p
     return workspaceRoot;
 }
 
+export function ensureAchillesWorkingDirectory(workingDir, env = process.env) {
+    const selectedPath = path.resolve(workingDir);
+    const workspaceRoot = resolveAchillesWorkspaceRoot(selectedPath, env);
+    let ancestor = selectedPath;
+    let realAncestor = realDirectory(ancestor, 'Selected AchillesCLI directory');
+    while (!realAncestor) {
+        ancestor = path.dirname(ancestor);
+        realAncestor = realDirectory(ancestor, 'Selected AchillesCLI parent directory');
+    }
+    const destination = path.resolve(realAncestor, path.relative(ancestor, selectedPath));
+    if (!isInside(workspaceRoot, destination)) {
+        throw new Error('The selected AchillesCLI directory is outside PLOINKY_WORKSPACE_ROOT.');
+    }
+    fs.mkdirSync(destination, { recursive: true });
+    resolveAchillesWorkspaceRoot(destination, env);
+    return realDirectory(destination, 'Selected AchillesCLI directory');
+}
+
 export function resolveAchillesPrivateDataRoot(workingDir = process.cwd(), options = {}) {
     resolveAchillesWorkspaceRoot(workingDir, options.env ?? process.env);
     const project = realDirectory(workingDir, 'Selected AchillesCLI directory');

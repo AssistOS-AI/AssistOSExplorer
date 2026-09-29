@@ -71,25 +71,29 @@ describe('Copilot launch extensions', () => {
         assert.equal(params.has('dir'), false);
     });
 
-    it('omits the working directory when it resolves outside the workspace root', () => {
-        setRuntimePlugins([{
-            copilotLaunch: {
-                query: { 'forward-envelope': '1' },
-                workspaceDirParam: 'workspace-dir'
-            }
-        }]);
-        const url = buildCopilotUrl({
+    it('rejects a directory outside the workspace instead of launching at the root', () => {
+        setRuntimePlugins([]);
+        assert.throws(() => buildCopilotUrl({
             isDirectory: true,
             selectedFsPath: '/other/project',
             workspaceRoot: '/workspace/project'
-        });
-        const params = new URLSearchParams(url.slice('/webchat?'.length));
-        assert.equal(params.get('forward-envelope'), '1');
-        assert.equal(params.has('dir'), false);
-        assert.equal(params.has('workspace-dir'), false);
+        }), /valid workspace directory/);
     });
 
-    it('opens the workspace root from the Explorer Tools plugin context', () => {
+    it('uses the selected Explorer path even when filesystem-root discovery is unavailable', () => {
+        setRuntimePlugins([]);
+        const url = new URL(buildCopilotUrl({
+            isDirectory: true,
+            selectedPath: '/projects/My folder & notes',
+            selectedFsPath: '/projects/My folder & notes',
+            workspaceFsRoot: '/'
+        }), 'http://localhost');
+        assert.equal(url.searchParams.get('workspace-dir'), 'projects/My folder & notes');
+        assert.throws(() => buildCopilotUrl({ isDirectory: true, selectedPath: '/../outside' }), /valid workspace directory/);
+        assert.throws(() => buildCopilotUrl({}), /valid workspace directory/);
+    });
+
+    it('opens the workspace root from an explicit Explorer root context', () => {
         setRuntimePlugins([{
             copilotLaunch: {
                 query: { 'forward-envelope': '1' },
@@ -108,7 +112,7 @@ describe('Copilot launch extensions', () => {
         assert.equal(params.has('dir'), false);
     });
 
-    it('opens the current Explorer folder from the Tools plugin context', () => {
+    it('opens the current Explorer folder from an explicit Explorer directory context', () => {
         setRuntimePlugins([{
             copilotLaunch: {
                 workspaceDirParam: 'workspace-dir'

@@ -4,7 +4,7 @@ import { PUBLIC_BASE_PATH } from '../../server/constants.mjs';
 
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { parseCliOptions, isWebchatRuntime } from './lib/cliOptions.mjs';
+import { initializeCliOptions, isWebchatRuntime } from './lib/cliOptions.mjs';
 import { resolveSkillCatalogRoots, builtInSkillsDir } from './lib/cliSkillRoots.mjs';
 import { createAnthropicSkillCatalog } from './lib/anthropicSkillCatalog.mjs';
 import { discoverTaskSkills } from '../../server/skill-descriptor.mjs';
@@ -113,12 +113,10 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
 }
 
 export async function main(args = process.argv.slice(2), execution = {}) {
-    const options = parseCliOptions(args);
+    const options = initializeCliOptions(args);
     options.execution = { ...options.execution, ...execution };
     if (options.help) { printHelp(); return; }
     if (options.version) { console.log('RoboTeam copilot v3.0.0'); return; }
-    fs.mkdirSync(options.workingDir, { recursive: true });
-    options.workingDir = fs.realpathSync(options.workingDir);
     process.chdir(options.workingDir);
     if (!getProviderNames().includes(options.uiStyle)) throw new Error(`Invalid UI style '${options.uiStyle}'. Available: ${getProviderNames().join(', ')}`);
     UIContext.setProvider(createProvider(options.uiStyle));

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parseCliOptions, isWebchatRuntime } from '../src/lib/cliOptions.mjs';
+import { initializeCliOptions, parseCliOptions, isWebchatRuntime } from '../src/lib/cliOptions.mjs';
 import { getPermissionMode, setPermissionMode } from '../src/lib/achillesSettings.mjs';
 
 async function workspace(t) {
@@ -13,11 +13,11 @@ async function workspace(t) {
     return directory;
 }
 
-test('CLI restores workspace native permission selection without changing disk during parsing', async (t) => {
+test('CLI initialization restores workspace native permission selection without overwriting it', async (t) => {
     const workingDir = await workspace(t);
     await setPermissionMode(workingDir, 'full-access');
-    assert.equal(parseCliOptions(['--dir', workingDir]).permissionMode, 'full-access');
-    const overridden = parseCliOptions(['--permissions', 'ask-for-approval', '--dir', workingDir]);
+    assert.equal(initializeCliOptions(['--dir', workingDir]).permissionMode, 'full-access');
+    const overridden = initializeCliOptions(['--permissions', 'ask-for-approval', '--dir', workingDir]);
     assert.equal(overridden.permissionMode, 'ask-for-approval');
     assert.equal(overridden.workingDir, workingDir);
     assert.equal(getPermissionMode(workingDir), 'full-access');
@@ -52,7 +52,8 @@ test('Ploinky WebChat launch metadata does not become a prompt or native session
         assert.equal(options.workingDir, workingDir);
         assert.equal(options.prompt, null);
         assert.equal(options.singleShot, false);
-        assert.equal(options.permissionMode, 'full-access');
+        assert.equal(options.requestedPermissionMode, null);
+        assert.equal(Object.hasOwn(options, 'permissionMode'), false);
         assert.equal(options.pageInstanceId, undefined);
         assert.equal(isWebchatRuntime(args, {}), true);
         assert.equal(isWebchatRuntime([...metadata, `--dir=${workingDir}`], { SSO_USER_ID: 'guest' }), true);
@@ -71,7 +72,7 @@ test('transport metadata remains bounded and does not disable unknown-option val
 test('WebChat preserves an explicit workspace approval policy', async (t) => {
     const workingDir = await workspace(t);
     await setPermissionMode(workingDir, 'ask-for-approval');
-    const options = parseCliOptions(['--forward-envelope', '--dir', workingDir]);
+    const options = initializeCliOptions(['--forward-envelope', '--dir', workingDir]);
     assert.equal(options.permissionMode, 'ask-for-approval');
 });
 

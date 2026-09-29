@@ -44,10 +44,10 @@ test('opening Copilot selects context without creating a manifest or other works
     });
     await executeMenuAction({
         action: 'open-copilot-here',
-        context: { isDirectory: true, selectedFsPath: workingDir },
+        context: { isDirectory: true, selectedFsPath: workingDir, workspaceFsRoot: path.dirname(workingDir) },
     });
     assert.deepEqual(calls, [[
-        `/webchat?agent=roboTeamAgent&robot=default&dir=${encodeURIComponent(workingDir)}`,
+        `/webchat?agent=roboTeamAgent&robot=default&workspace-dir=${encodeURIComponent(path.basename(workingDir))}`,
         '_blank',
         'noopener,noreferrer',
     ]]);
@@ -66,8 +66,8 @@ test('the generic launch plugin does not handle the retired editor action', asyn
     assert.deepEqual(calls, []);
 });
 
-test('both supported plugin contributions expose generic labels without provider policy', () => {
-    for (const name of ['achilles-cli-menu-contributions', 'achilles-cli-tool-button']) {
+test('the directory plugin contribution exposes generic labels without provider policy', () => {
+    for (const name of ['achilles-cli-menu-contributions']) {
         const config = JSON.parse(fs.readFileSync(path.join(pluginsRoot, name, 'config.json'), 'utf8'));
         assert.equal(config.id, 'achilles-cli-copilot');
         assert.equal(config.label, 'Open Copilot here');

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { getPermissionMode } from './achillesSettings.mjs';
+import { ensureAchillesWorkingDirectory } from './privateDataRoot.mjs';
 import { normalizePermissionMode, PERMISSION_MODES } from '../permissions/protocol.mjs';
 
 export function parseCliOptions(args, { env = process.env, cwd = process.cwd() } = {}) {
@@ -56,8 +57,15 @@ export function parseCliOptions(args, { env = process.env, cwd = process.cwd() }
         }
         options.workingDir = cwd;
     }
-    options.permissionMode = options.requestedPermissionMode || getPermissionMode(options.workingDir);
     return options;
+}
+
+export function initializeCliOptions(args, options = {}) {
+    const parsed = parseCliOptions(args, options);
+    if (parsed.help || parsed.version) return parsed;
+    parsed.workingDir = ensureAchillesWorkingDirectory(parsed.workingDir, options.env ?? process.env);
+    parsed.permissionMode = parsed.requestedPermissionMode || getPermissionMode(parsed.workingDir);
+    return parsed;
 }
 
 export function isWebchatRuntime(args = process.argv.slice(2), env = process.env) {
