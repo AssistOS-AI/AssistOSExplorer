@@ -29,6 +29,7 @@ import { parseWebMeetEvent } from '../../IDE-plugins/webmeet-tool-button/compone
 import { WEBMEET_AVATAR_PRESETS } from '../../IDE-plugins/webmeet-tool-button/components/webmeet-dashboard/services/webmeet-avatar-override.js';
 import { EMOTIONS } from '../../../explorer/shared/vendor/axi-face/src/state-machine.mjs';
 import { withGuestParticipantOwner } from './participant-owner-fixture.mjs';
+import { installEdgeJoinFixture } from './edge-join-fixture.mjs';
 
 let tempRoot = '';
 const originalDataDir = process.env.WEBMEET_DATA_DIR;
@@ -44,6 +45,11 @@ async function joinTestGuest(context, args) {
     return await withGuestParticipantOwner(context, args.meetingId, () => (
         joinGuestMeeting(context, args)
     ), String(args.participantId || '').trim());
+}
+
+// Later guest room operations run as the same verified guest that joined.
+async function asTestGuest(context, meetingId, guestId, callback) {
+    return await withGuestParticipantOwner(context, meetingId, callback, guestId);
 }
 
 beforeEach(() => {
@@ -119,7 +125,7 @@ function rewriteMeetingPayloadMembers(context, meetingId, transform) {
 }
 
 test("profile avatar updates are published as workspace events", async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const authInfo = {
         user: {
@@ -165,7 +171,7 @@ test("authenticated event list tools are exposed through MCP config and dispatch
 });
 
 test("join publishes workspace user id in participant state and LiveKit token attributes", async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const authInfo = {
         user: {
@@ -206,7 +212,7 @@ test("join publishes workspace user id in participant state and LiveKit token at
 });
 
 test('participant avatar update returns a sanitized live projection without persisting roster avatar', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const authInfo = {
         user: {
@@ -262,7 +268,7 @@ test('participant avatar update returns a sanitized live projection without pers
 });
 
 test("participant avatar projection rejects unsafe or invalid config fields", async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const authInfo = {
         user: {
@@ -325,7 +331,7 @@ test("participant avatar projection rejects unsafe or invalid config fields", as
 });
 
 test('join does not persist avatar projection or token avatar attributes', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const authInfo = {
         user: {
@@ -371,7 +377,7 @@ test('join does not persist avatar projection or token avatar attributes', async
 });
 
 test('join ignores avatar payloads until a live avatar projection is published', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const adminAuthInfo = {
         user: {
@@ -414,7 +420,7 @@ test('join ignores avatar payloads until a live avatar projection is published',
 });
 
 test('meeting details read avatar projection from LiveKit participant attributes', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const authInfo = {
         user: {
@@ -465,7 +471,7 @@ test('meeting details read avatar projection from LiveKit participant attributes
 });
 
 test("unauthenticated meeting join is rejected", async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const adminAuthInfo = {
         user: {
@@ -497,7 +503,7 @@ test("unauthenticated meeting join is rejected", async () => {
 });
 
 test("guest meeting join does not publish authenticated avatar identity or projection", async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const adminAuthInfo = {
         user: {
@@ -531,7 +537,7 @@ test("guest meeting join does not publish authenticated avatar identity or proje
 });
 
 test('guest participant avatar override is returned for live propagation without meeting-store persistence', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const adminAuthInfo = {
         user: {
@@ -553,7 +559,7 @@ test('guest participant avatar override is returned for live propagation without
         participantId: 'guest-person-override'
     });
 
-    const updated = await updateGuestMeetingParticipantAvatar(context, {
+    const updated = await asTestGuest(context, meeting.id, 'guest-person-override', () => updateGuestMeetingParticipantAvatar(context, {
         meetingId: meeting.id,
         participantId: session.participantIdentity,
         avatar: {
@@ -565,7 +571,7 @@ test('guest participant avatar override is returned for live propagation without
                 seed: 'guest-person-override'
             }
         }
-    });
+    }));
 
     assert.equal(updated.profileAvatar.enabled, true);
     assert.equal(updated.profileAvatar.config.emotion, 'happy');
@@ -582,7 +588,7 @@ test('guest participant avatar override is returned for live propagation without
 });
 
 test('guest meeting details allow a joined guest before LiveKit presence appears', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const adminAuthInfo = {
         user: {
@@ -604,10 +610,10 @@ test('guest meeting details allow a joined guest before LiveKit presence appears
         participantId: 'guest-bootstrap-1'
     });
 
-    const details = await getGuestMeetingDetails(context, {
+    const details = await asTestGuest(context, meeting.id, 'guest-bootstrap-1', () => getGuestMeetingDetails(context, {
         meetingId: meeting.id,
         participantId: session.participantIdentity
-    });
+    }));
 
     assert.equal(details.meeting.id, meeting.id);
     assert.ok(Array.isArray(details.participants));
@@ -615,7 +621,7 @@ test('guest meeting details allow a joined guest before LiveKit presence appears
 });
 
 test('guest meeting details tolerate stored guest members that lost the guest flag', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const adminAuthInfo = {
         user: {
@@ -650,17 +656,17 @@ test('guest meeting details tolerate stored guest members that lost the guest fl
         };
     }));
 
-    const details = await getGuestMeetingDetails(context, {
+    const details = await asTestGuest(context, meeting.id, 'guest-degraded-1', () => getGuestMeetingDetails(context, {
         meetingId: meeting.id,
         participantId: session.participantIdentity
-    });
+    }));
 
     assert.equal(details.meeting.id, meeting.id);
     assert.equal(details.participants[0]?.id, session.participantIdentity);
 });
 
 test('guest meeting details do not wipe stored members when LiveKit roster is temporarily empty', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const adminAuthInfo = {
         user: {
@@ -684,17 +690,17 @@ test('guest meeting details do not wipe stored members when LiveKit roster is te
 
     setLiveKitParticipants(context, []);
 
-    const details = await getGuestMeetingDetails(context, {
+    const details = await asTestGuest(context, meeting.id, 'guest-empty-1', () => getGuestMeetingDetails(context, {
         meetingId: meeting.id,
         participantId: session.participantIdentity
-    });
+    }));
 
     assert.equal(details.participants[0]?.id, session.participantIdentity);
 
-    const repeatDetails = await getGuestMeetingDetails(context, {
+    const repeatDetails = await asTestGuest(context, meeting.id, 'guest-empty-1', () => getGuestMeetingDetails(context, {
         meetingId: meeting.id,
         participantId: session.participantIdentity
-    });
+    }));
 
     assert.equal(repeatDetails.participants[0]?.id, session.participantIdentity);
 });
@@ -777,16 +783,17 @@ test("authenticated dashboard join connects before publishing avatar best-effort
     assert.match(joinMethod, /await this\.webMeetRoom\.connectLiveKit\(\)/);
     assert.match(joinMethod, /await this\.webMeetRoom\.refreshState\(\)/);
     assert.match(joinMethod, /this\.syncParticipantsFromRoom\(this\.room, window\.LivekitClient\?\.Track \|\| null\)/);
-    assert.match(joinMethod, /void this\.publishCurrentParticipantAvatar\(\{ force: true \}\)\.catch/);
+    // Best effort: a failed publish is reported and never aborts the join.
+    assert.match(joinMethod, /try \{\s*await this\.publishCurrentParticipantAvatar\(\{ force: true \}\);\s*\} catch \(error\) \{/);
+    assert.match(joinMethod, /WebMeet could not publish the avatar/);
     assert.ok(
-        joinMethod.indexOf('await this.webMeetRoom.connectLiveKit()') < joinMethod.indexOf('void this.publishCurrentParticipantAvatar({ force: true }).catch'),
+        joinMethod.indexOf('await this.webMeetRoom.connectLiveKit()') < joinMethod.indexOf('await this.publishCurrentParticipantAvatar({ force: true })'),
         'avatar publish must happen after room connect'
     );
     assert.ok(
         joinMethod.indexOf('await this.webMeetRoom.connectLiveKit()') < joinMethod.indexOf('await this.webMeetRoom.refreshState()'),
         'presence reconciliation must happen after LiveKit connects'
     );
-    assert.doesNotMatch(joinMethod, /await this\.publishCurrentParticipantAvatar\(\{ force: true/);
     assert.doesNotMatch(joinMethod, /initialAvatarState/);
     assert.doesNotMatch(joinMethod, /payload\.avatar/);
 });
@@ -1057,7 +1064,7 @@ test("local participant sync resolves the effective avatar before the first card
 
     assert.match(method, /buildWebMeetAvatarSource\(\{/);
     assert.match(method, /override: this\.state\.webMeetAvatarOverride \|\| null/);
-    assert.match(method, /setRoomAvatarFor\(this, localIdentity, effectiveLocalAvatar\)/);
+    assert.match(method, /setRoomAvatarFor\(this, localIdentity, initialLocalAvatar\)/);
     assert.ok(
         method.indexOf('buildWebMeetAvatarSource({') < method.indexOf('const items = [{'),
         'local effective avatar must be resolved before local participant items are rendered'
@@ -1146,7 +1153,7 @@ test("LiveKit avatar republish reuses the current live projection before recompu
     assert.match(republishMethod, /getCurrentPublishedAvatarProjection/);
     assert.match(republishMethod, /publishAvatarProjection\(/);
     assert.doesNotMatch(republishMethod, /webmeet_participant_avatar_update/);
-    assert.match(joinMethod, /void this\.publishCurrentParticipantAvatar\(\{ force: true \}\)\.catch/);
+    assert.match(joinMethod, /try \{\s*await this\.publishCurrentParticipantAvatar\(\{ force: true \}\);\s*\} catch \(error\) \{/);
     assert.doesNotMatch(joinMethod, /initialAvatarState/);
     assert.doesNotMatch(joinMethod, /publishCurrentParticipantAvatar\(\{ force: true,[\s\S]*avatar: initialAvatar/);
 });
@@ -1402,16 +1409,19 @@ test("WebMeet avatar override is browser scoped and participates in effective av
     assert.match(meetingActionSource, /resolveCurrentWebMeetAvatarSource/);
     assert.match(meetingActionSource, /buildWebMeetAvatarSource/);
     assert.match(meetingActionSource, /const override = this\.loadCurrentWebMeetAvatarOverride\(\)/);
-    assert.match(meetingActionSource, /if \(this\.isGuestSession\(\)\) \{\s*return '';\s*\}/);
+    // A guest's override is scoped to its own participant identity.
+    assert.match(meetingActionSource, /if \(this\.isGuestSession\(\)\) \{[\s\S]*?return participantId \? `guest:\$\{participantId\}` : '';\s*\}/);
     assert.doesNotMatch(meetingActionSource, /this\.state\.webMeetAvatarOverride \|\| this\.loadCurrentWebMeetAvatarOverride\(\)/);
     assert.match(meetingActionSource, /await this\.resolveCurrentWebMeetAvatarSource\(\{[\s\S]*participantId[\s\S]*\}\)/);
-    assert.match(meetingActionSource, /void this\.publishCurrentParticipantAvatar\(\{ force: true \}\)\.catch/);
+    assert.match(meetingActionSource, /await this\.publishCurrentParticipantAvatar\(\{ force: true \}\)/);
     assert.doesNotMatch(meetingActionSource, /initialAvatarState/);
     assert.match(meetingActionSource, /WebMeet avatar override applied and published\./);
     assert.match(meetingActionSource, /WebMeet avatar override saved\. Join a room to publish it\./);
     assert.match(meetingActionSource, /this\.renderParticipantLayout\?\.\(\)/);
     assert.match(meetingActionSource, /this\.renderMeetingList\?\.\(\)/);
-    assert.match(meetingActionSource, /applyWebMeetAvatarSourceMode/);
+    // Source modes are the shared normalized AVATAR_SOURCE_MODES.
+    assert.match(meetingActionSource, /AVATAR_SOURCE_MODES,\s*deriveAvatarSourceMode/);
+    assert.match(meetingActionSource, /sourceMode: AVATAR_SOURCE_MODES\.PACK/);
     assert.match(serviceSource, /sourceMode/);
 });
 
@@ -1726,7 +1736,11 @@ test("guest room entry republishes the current avatar override after connecting"
     assert.match(source, /async bootstrapGuestRoomEntry\(roomEntry = \{\}\)/);
     assert.match(source, /this\.state\.skipConnectedAvatarRepublishOnce = true;/);
     assert.match(source, /await this\.connectRoom\(\);/);
-    assert.match(source, /this\.publishCurrentParticipantAvatar\(\{ force: true \}\)\.catch/);
+    assert.match(source, /try \{\s*await this\.publishCurrentParticipantAvatar\(\{ force: true \}\);\s*\} catch \(error\) \{/);
+    assert.ok(
+        source.indexOf('await this.connectRoom();') < source.indexOf('await this.publishCurrentParticipantAvatar({ force: true });', source.indexOf('async bootstrapGuestRoomEntry')),
+        'the guest avatar is republished after the room connects'
+    );
 });
 
 test("guest avatar override is keyed by participant identity", async () => {
@@ -1768,7 +1782,9 @@ test("guest room entry prepares route state before authenticated room loading", 
     assert.doesNotMatch(source, /loadWorkspaces\(/);
     assert.match(source, /await this\.prepareGuestRoomEntry\(initialRoomId\);/);
     assert.match(source, /async prepareGuestRoomEntry\(roomId\)/);
-    assert.match(source, /async handleGuestEntrySubmit\(event\)/);
+    // Guest entry is the dedicated modal component; its result bootstraps the room.
+    assert.match(source, /showModal\('webmeet-guest-entry-modal'/);
+    assert.match(source, /await this\.bootstrapGuestRoomEntry\(\{ roomId: targetRoomId, displayName \}\)/);
     assert.match(source, /function normalizeRoomPayload\(payload = null\)/);
     assert.match(source, /const wrapped = payload\.meeting \|\| payload\.room;/);
     assert.match(source, /const roomId = String\(payload\.roomId \|\| payload\.id \|\| ''\)\.trim\(\);/);
@@ -1854,7 +1870,7 @@ test("public guest room lookup is exposed as a dedicated MCP tool", async () => 
 
     assert.ok(config.tools.some((tool) => tool.name === 'webmeet_room_public_get'));
     assert.match(toolSource, /case 'webmeet_room_public_get':/);
-    assert.match(toolSource, /getPublicGuestMeeting\(context, getRequiredString\(args, 'roomId'\)\)/);
+    assert.match(toolSource, /case 'webmeet_room_public_get':[\s\S]*?const roomId = getRequiredString\(args, 'roomId'\);\s*assertPublicRoomInvocation\(authInfo, roomId\);\s*return await getPublicGuestMeeting\(context, roomId\);/);
     assert.match(storeSource, /export async function getPublicGuestMeeting\(context, meetingId\)/);
     assert.match(storeSource, /String\(record\?\.roomType \|\| ''\)\.trim\(\) !== 'guest'/);
 });
@@ -1888,16 +1904,12 @@ test("guest room loader stays a bootstrapper while dashboard owns guest entry UI
     assert.match(loaderSource, /function createJsonRpcAgentClient\(agentId\)/);
     assert.match(loaderSource, /headers\.set\('accept', 'application\/json'\)/);
     assert.match(loaderSource, /send\('tools\/call'/);
-    assert.match(loaderSource, /const dashboardReady = waitForDashboardReady\(\);/);
     assert.match(loaderSource, /function closeStartupLoaders\(\)/);
     assert.match(loaderSource, /dialog\.spinner\.spinner-default-style/);
-    assert.match(loaderSource, /window\.__WEBMEET_DASHBOARD_READY__ === true/);
-    assert.match(loaderSource, /const pageChange = webSkel\.changeToDynamicPage/);
-    assert.match(loaderSource, /await dashboardReady;/);
-    assert.match(loaderSource, /closeStartupLoaders\(\);/);
-    assert.match(loaderSource, /await pageChange;/);
-    assert.match(htmlSource, /id="webmeetGuestEntry"/);
-    assert.match(htmlSource, /id="webmeetGuestEntryForm"/);
+    assert.match(loaderSource, /closeStartupLoaders\(\);\s*webSkel\.changeToDynamicPage\('webmeet-dashboard', 'webmeet-dashboard'/);
+    // The dashboard, not the loader, owns the guest entry UI (a modal component).
+    assert.doesNotMatch(htmlSource, /webmeetGuestEntryForm/);
+    assert.match(dashboardSource, /showModal\('webmeet-guest-entry-modal'/);
     assert.match(dashboardSource, /prepareGuestRoomEntry\(roomId\)/);
 });
 
@@ -2023,7 +2035,7 @@ test("participant audio settings use the registered modal API and do not use bro
 });
 
 test('authenticated meeting refresh keeps a just-joined guest until LiveKit exposes the participant', async () => {
-    const context = await createStoreContext(tempRoot);
+    const context = installEdgeJoinFixture(await createStoreContext(tempRoot));
     const workspace = await createWorkspace(context);
     const adminAuthInfo = {
         user: {
@@ -2054,15 +2066,16 @@ test('authenticated meeting refresh keeps a just-joined guest until LiveKit expo
     setLiveKitParticipants(context, [liveKitParticipant(adminSession.participantIdentity, 'Admin')]);
 
     const adminDetails = await getMeeting(context, meeting.id, adminAuthInfo);
-    assert.deepEqual(adminDetails.participants.map((entry) => entry.id).sort(), [
+    // Room agents (RoboTeam) are participants too; the pending guest is what matters here.
+    assert.deepEqual(adminDetails.participants.filter((entry) => entry.kind !== 'agent').map((entry) => entry.id).sort(), [
         guestSession.participantIdentity,
         adminSession.participantIdentity
     ].sort());
 
-    const guestDetails = await getGuestMeetingDetails(context, {
+    const guestDetails = await asTestGuest(context, meeting.id, 'guest-pending-1', () => getGuestMeetingDetails(context, {
         meetingId: meeting.id,
         participantId: guestSession.participantIdentity
-    });
+    }));
 
     assert.equal(guestDetails.participants.some((entry) => entry.id === guestSession.participantIdentity), true);
 });
@@ -2093,7 +2106,8 @@ test("WebMeet tools use generic Ploinky MCP, not a room-specific server bridge",
         'utf8'
     );
 
-    assert.match(apiClientSource, /callAgentTool\(WEBMEET_AGENT_NAME, toolName/);
+    assert.match(apiClientSource, /getClient\?\.\(WEBMEET_AGENT_NAME\)/);
+    assert.match(apiClientSource, /getWebMeetClient\(\)\.callTool\(toolName, /);
     assert.doesNotMatch(apiClientSource, /getToolBridgeRoomId/);
     assert.doesNotMatch(apiClientSource, /\/rooms\/.*\/tool/);
     assert.doesNotMatch(apiClientSource, new RegExp(`guest${'Token'}|params\\.get\\('token'\\)`));
