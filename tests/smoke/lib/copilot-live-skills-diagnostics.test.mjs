@@ -106,8 +106,11 @@ async function isolatedBrowser(t) {
         });
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    const browser = await chromium.launch({ headless: true });
-    t.after(async () => { await browser.close(); for (const timer of timers) clearTimeout(timer); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+    // Register cleanup before launching: a failed launch must fail the test and
+    // still close the server, never leave it holding the test process open.
+    let browser;
+    t.after(async () => { await browser?.close(); for (const timer of timers) clearTimeout(timer); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+    browser = await chromium.launch({ headless: true });
     return { browser, serverEvents, serverRequests, origin: `http://127.0.0.1:${server.address().port}` };
 }
 
