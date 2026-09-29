@@ -3,26 +3,14 @@ import { pathToFileURL } from 'node:url';
 import { installRepositoryLinks, removeRepositoryLinks } from '../../../../ploinky/cli/utils/repositoryInstall.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import syncFs from 'node:fs';
-
-import * as transaction from '../../utils/server/skill-export-transaction.mjs';
 import { syncManagedSkillExports as syncPloinkyExports } from '../../../../ploinky/cli/utils/skills/managedExports.js';
+import { syncManagedSkillExports } from '../../utils/server/managed-skill-exports.mjs';
 import { createToolHandlers } from '../../utils/server/tool-handlers.mjs';
-
-// Never read or compose the global, system or XDG Git policy of this machine.
-const gitIsolation = syncFs.realpathSync(syncFs.mkdtempSync(path.join(os.tmpdir(), 'explorer-skills-git-env-')));
-syncFs.writeFileSync(path.join(gitIsolation, 'gitconfig'), '');
-delete process.env.PLOINKY_SKILL_EXCLUDES_COMPOSE;
-delete process.env.GIT_CONFIG_SYSTEM;
-Object.assign(process.env, {
-  XDG_CONFIG_HOME: path.join(gitIsolation, 'xdg'), GIT_CONFIG_GLOBAL: path.join(gitIsolation, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1'
-});
-test.after(() => syncFs.rmSync(gitIsolation, { recursive: true, force: true }));
 
 async function writeFile(filePath, content) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -131,10 +119,6 @@ async function createAchillesCopilotBasicSkillsRepo(rootDir) {
 }
 
 function createHandlers(workspaceRoot, invalidated = []) {
-  return createToolHandlers(handlerOptions(workspaceRoot, invalidated));
-}
-
-function handlerOptions(workspaceRoot, invalidated = []) {
   const registry = new Map();
   const repositoryClient = {
     async listRepositories() {
@@ -164,7 +148,7 @@ function handlerOptions(workspaceRoot, invalidated = []) {
     async install(input) { return installRepositoryLinks(input, { workspaceRoot, resolveRepository: name => registry.get(name) }); },
     async remove(paths) { return removeRepositoryLinks(paths, { workspaceRoot }); }
   };
-  return {
+  return createToolHandlers({
     repositoryClient,
     fs,
     path,
@@ -205,7 +189,7 @@ function handlerOptions(workspaceRoot, invalidated = []) {
     DEFAULT_DIRECTORY_TREE_MAX_DEPTH: 4,
     DEFAULT_DIRECTORY_TREE_MAX_NODES: 100,
     getAllowedDirectories: () => [workspaceRoot]
-  };
+  });
 }
 
 test('read_skills_manifest_state caches existing manifest repositories and lists available skills', async () => {
@@ -356,7 +340,7 @@ test('add_skills_manifest_repo explains when a cached repository has no Anthropi
   }
 });
 
-test('manifest exports preserve unrecorded collisions, unrelated skills and independent Claude files', async () => {
+test('manifest exports preserve legacy collisions, unrelated skills and independent Claude files', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-preserve-'));
   try {
     const repoDir = await createLocalSkillRepo(workspaceRoot);
@@ -368,7 +352,7 @@ test('manifest exports preserve unrecorded collisions, unrelated skills and inde
     const handlers = createHandlers(workspaceRoot);
     const added = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }));
     assert.equal(await fs.readFile(localFile, 'utf8'), 'local alpha');
-    assert.equal(added.exportResult.diagnostics[0].reason, 'unrecorded-output-preserved');
+    assert.equal(added.exportResult.diagnostics[0].reason, 'existing-output-preserved');
     assert.equal(added.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'local');
     assert.equal(await fs.readFile(path.join(projectDir, '.claude', 'skills', 'independent', 'SKILL.md'), 'utf8'), 'independent Claude');
     const removed = parseJsonResponse(await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'local-skills' }));
@@ -377,8 +361,8 @@ test('manifest exports preserve unrecorded collisions, unrelated skills and inde
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
-test('a ledger entry of an unsupported kind survives update and removal and is reported', async () => {
-  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-unsupported-'));
+test('edited owned descriptor and executable modes survive replacement and removal with diagnostics', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-owned-'));
   try {
     const repoDir = await createLocalSkillRepo(workspaceRoot);
     const projectDir = path.join(workspaceRoot, 'project');
@@ -386,71 +370,21 @@ test('a ledger entry of an unsupported kind survives update and removal and is r
     const handlers = createHandlers(workspaceRoot);
     const args = { folderPath: projectDir, url: repoDir, name: 'local-skills' };
     await handlers.add_skills_manifest_repo(args);
-    // Exports are links; a recorded directory is state this protocol never writes.
-    const skillDir = path.join(projectDir, '.agents', 'skills', 'alpha-skill');
-    const output = path.join(skillDir, 'SKILL.md');
-    await fs.unlink(skillDir);
-    await writeFile(output, 'user copy\n');
+    // Recreate an owned copy from the previous export format before testing migration protection.
+    await fs.unlink(path.join(projectDir, '.agents', 'skills', 'alpha-skill'));
+    await fs.rm(path.join(projectDir, '.agents', '.ploinky-skill-exports.json'), { force: true });
+    syncManagedSkillExports({ folder: projectDir, owner: 'manifest', sources: [{ name: 'alpha-skill', path: path.join(repoDir, 'skills/alpha-skill') }] });
+    const output = path.join(projectDir, '.agents', 'skills', 'alpha-skill', 'SKILL.md');
+    const original = await fs.readFile(output, 'utf8');
     await fs.chmod(output, 0o755);
-    const ledgerPath = path.join(projectDir, '.agents', '.ploinky-skill-exports.json');
-    const ledger = JSON.parse(await fs.readFile(ledgerPath, 'utf8'));
-    ledger.entries['alpha-skill'] = { ...ledger.entries['alpha-skill'], kind: 'directory', digest: transaction.skillTreeDigest(skillDir) };
-    await fs.writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
-    const record = ledger.entries['alpha-skill'];
     const update = parseJsonResponse(await handlers.add_skills_manifest_repo(args));
-    assert.ok(update.exportResult.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'unsupported-ledger-entry-preserved'));
-    const removed = parseJsonResponse(await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'local-skills' }));
-    assert.ok(removed.exportResult.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'unsupported-ledger-entry-preserved'));
-    assert.equal(removed.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'unsupported');
-    assert.ok(removed.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'unsupported-output-preserved'));
-    assert.equal(await fs.readFile(output, 'utf8'), 'user copy\n');
+    assert.equal(update.exportResult.diagnostics[0].reason, 'existing-output-preserved');
     assert.equal((await fs.stat(output)).mode & 0o777, 0o755);
-    assert.deepEqual(JSON.parse(await fs.readFile(ledgerPath, 'utf8')).entries['alpha-skill'], record);
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-// Ownership comes from the ledger: a link that still resolves into the
-// selected repository must not be reported as managed when the ledger disagrees.
-test('a relinked export with the same canonical target is reported as modified, not managed', async () => {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-relinked-')));
-  try {
-    const repoDir = await createLocalSkillRepo(workspaceRoot);
-    const projectDir = path.join(workspaceRoot, 'project');
-    await fs.mkdir(projectDir);
-    const handlers = createHandlers(workspaceRoot);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: path.basename(repoDir) });
-    const before = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
-    assert.equal(before.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'managed');
-    // Same canonical target, but no longer the link the exporter recorded.
-    const link = path.join(projectDir, '.agents', 'skills', 'alpha-skill');
-    const target = path.join(repoDir, 'skills', 'alpha-skill');
-    await fs.unlink(link);
-    await fs.symlink(target, link);
-    const after = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
-    assert.equal(after.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'modified');
-    assert.ok(after.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'modified-output-preserved'));
-    assert.equal(await fs.readlink(link), target);
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-test('an intact export whose ledger kind is unsupported is reported as unsupported, not managed', async () => {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-unsupported-link-')));
-  try {
-    const repoDir = await createLocalSkillRepo(workspaceRoot);
-    const projectDir = path.join(workspaceRoot, 'project');
-    await fs.mkdir(projectDir);
-    const handlers = createHandlers(workspaceRoot);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: path.basename(repoDir) });
-    const before = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
-    assert.equal(before.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'managed');
-    const ledgerPath = path.join(projectDir, '.agents', '.ploinky-skill-exports.json');
-    const ledger = JSON.parse(await fs.readFile(ledgerPath, 'utf8'));
-    ledger.entries['alpha-skill'] = { ...ledger.entries['alpha-skill'], kind: 'unsupported-kind' };
-    await fs.writeFile(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`);
-    const after = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
-    assert.equal(after.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'unsupported');
-    assert.ok(after.diagnostics.some((item) => item.name === 'alpha-skill' && item.reason === 'unsupported-output-preserved'));
-    assert.equal((await fs.lstat(path.join(projectDir, '.agents', 'skills', 'alpha-skill'))).isSymbolicLink(), true);
+    await fs.writeFile(output, original.replace('alpha-skill', 'local-skill'));
+    const removed = parseJsonResponse(await handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName: 'local-skills' }));
+    assert.equal(removed.skillOutputs[0].state, 'modified');
+    assert.match(await fs.readFile(output, 'utf8'), /local-skill/);
+    assert.equal(removed.skillOutputs[0].state, 'modified');
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
@@ -480,7 +414,7 @@ test('same-name exports from two repositories are rejected without a traversal-o
     await fs.mkdir(projectDir);
     const handlers = createHandlers(workspaceRoot);
     await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'first' });
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: secondRepo, name: 'second' }), /Duplicate exported skill name/);
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: secondRepo, name: 'second' }), /Duplicate selected skill/);
     const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
     assert.deepEqual(state.repositories.map((entry) => entry.name), ['first']);
     assert.equal(state.skillOutputs[0].source.name, 'first');
@@ -537,468 +471,6 @@ test('published MCP schema admits a skillset toggle without an individual skill'
   assert.equal(tool.inputSchema.skillset.type, 'string');
   assert.equal(tool.inputSchema.skillset.optional, true);
   assert.equal(tool.inputSchema.enabled.type, 'boolean');
-});
-
-test('a manifest changed after the handler read it is never overwritten and no links change', async () => {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-snapshot-')));
-  try {
-    const repoDir = await createLocalSkillRepo(workspaceRoot);
-    await writeFile(path.join(repoDir, 'skills', 'beta-skill', 'SKILL.md'), '---\nname: beta-skill\n---\n');
-    const projectDir = path.join(workspaceRoot, 'project');
-    await fs.mkdir(projectDir);
-    const repoName = path.basename(repoDir);
-    await createHandlers(workspaceRoot).add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: repoName });
-    const manifestPath = path.join(projectDir, 'ploinky-skills-manifest.json');
-    const concurrent = '[]\n';
-    const racingFs = {
-      ...fs,
-      async readFile(file, ...rest) {
-        // Another writer replaces the manifest after the snapshot was taken.
-        if (String(file).endsWith('skillsets.md')) syncFs.writeFileSync(manifestPath, concurrent);
-        return fs.readFile(file, ...rest);
-      }
-    };
-    const handlers = createToolHandlers({ ...handlerOptions(workspaceRoot), fs: racingFs });
-    await assert.rejects(handlers.set_skills_manifest_skill_enabled({ folderPath: projectDir, repoName, skill: 'alpha-skill', enabled: false }), /changed while this update was prepared/);
-    assert.equal(await fs.readFile(manifestPath, 'utf8'), concurrent);
-    assert.equal((await fs.lstat(path.join(projectDir, '.agents', 'skills', 'alpha-skill'))).isSymbolicLink(), true);
-    assert.equal(await fs.readlink(path.join(projectDir, '.claude')), '.agents');
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-test('manifest state reports an incomplete transaction and a blocked lock is not overridden', async () => {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-pending-')));
-  try {
-    const repoDir = await createLocalSkillRepo(workspaceRoot);
-    const projectDir = path.join(workspaceRoot, 'project');
-    await fs.mkdir(projectDir);
-    const handlers = createHandlers(workspaceRoot);
-    const repoName = path.basename(repoDir);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: repoName });
-    const other = path.join(workspaceRoot, 'other-skill');
-    await writeFile(path.join(other, 'SKILL.md'), '---\nname: other-skill\n---\n');
-    // A foreign-namespace exporter stopped after its journal was written.
-    const crash = Object.assign(new Error('stopped'), { [transaction.SIMULATED_CRASH]: true });
-    const foreign = { current: () => ({ pid: 4242, start: 'x', boot: 'another-boot', namespace: 'another-ns', hostname: 'box', container: true }), alive: () => false, start: () => '' };
-    assert.throws(() => transaction.syncManagedSkillExports({
-      folder: projectDir, owner: 'defaults:other', sources: [{ name: 'other-skill', path: other }],
-      lock: { liveness: foreign }, hooks: { crash: (point) => { if (point === 'after-journal') throw crash; } }
-    }), /stopped/);
-    const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
-    assert.equal(state.exportTransaction.status, 'pending');
-    assert.equal(state.exportTransaction.owner, 'defaults:other');
-    assert.ok(state.diagnostics.some((item) => item.reason === 'skill-export-transaction-pending'));
-    await assert.rejects(handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName }), /another boot, host or PID namespace/);
-    assert.equal((await fs.lstat(path.join(projectDir, '.agents', 'skills', 'alpha-skill'))).isSymbolicLink(), true);
-    assert.equal(JSON.parse(await fs.readFile(path.join(projectDir, 'ploinky-skills-manifest.json'), 'utf8')).length, 1);
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-function spawnGitConfig(cwd, key) {
-  const result = spawnSync('git', ['config', '--get', key], { cwd, encoding: 'utf8' });
-  return result.status === 0 ? result.stdout.trim() : '';
-}
-
-test('a marketplace mutation reports recovery failure after quarantining an interrupted publication', async () => {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-quarantine-')));
-  try {
-    const repoDir = await createLocalSkillRepo(workspaceRoot);
-    const projectDir = path.join(workspaceRoot, 'project');
-    await fs.mkdir(projectDir);
-    const handlers = createHandlers(workspaceRoot);
-    const repoName = path.basename(repoDir);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: repoName });
-    const manifestPath = path.join(projectDir, 'ploinky-skills-manifest.json');
-    const before = await fs.readFile(manifestPath, 'utf8');
-    const crash = Object.assign(new Error('fixture publication interrupted'), { [transaction.SIMULATED_CRASH]: true });
-    const deadOwner = { ...transaction.currentSkillExportIdentity(), pid: 2147483647, start: 'fixture-dead-process' };
-    assert.throws(() => transaction.syncManagedSkillExports({
-      folder: projectDir, owner: 'manifest', sources: [],
-      manifest: { path: manifestPath, expected: before, next: '[]\n' },
-      lock: { liveness: { current: () => deadOwner } },
-      hooks: { crash(point) { if (point === 'after-ledger') throw crash; } },
-    }), /fixture publication interrupted/);
-    // A valid user edit after the commit point must quarantine that old
-    // publication. The next handler must not hide the recovery failure behind
-    // a newly successful transaction.
-    await fs.writeFile(manifestPath, `${before}\n`);
-    await assert.rejects(handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName }), error => {
-      assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
-      assert.equal(error.recovery.status, 'quarantined');
-      assert.match(error.message, /incomplete.*recovery quarantined/);
-      return true;
-    });
-    const state = transaction.readSkillExportTransactionState(projectDir);
-    assert.equal(state.pending, null);
-    assert.equal(state.quarantined.length, 1);
-    assert.ok(state.quarantined[0].reasons.some(item => item.name === 'manifest'));
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-// A stray file written into the freshly created export lock directory makes
-// the real release fail (ENOTEMPTY) after the export completed. Only the
-// exact lock path of the armed folder is affected, so lock reclaim markers
-// and unarmed runs are untouched.
-function armStrayLockRelease(t, projectDir) {
-  const lock = path.join(projectDir, '.agents', transaction.EXPORT_LOCK);
-  const original = syncFs.mkdirSync;
-  const armed = { value: false, hits: 0 };
-  t.mock.method(syncFs, 'mkdirSync', function (target, ...rest) {
-    const created = original.call(this, target, ...rest);
-    if (armed.value && String(target) === lock) {
-      armed.hits++;
-      syncFs.writeFileSync(path.join(lock, 'stray'), 'stray\n');
-    }
-    return created;
-  });
-  return { lock, armed };
-}
-
-test('a lock release failure after a quarantining recovery stays recovery required and preserves user bytes', async (t) => {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-release-quarantine-')));
-  try {
-    const repoDir = await createLocalSkillRepo(workspaceRoot);
-    const projectDir = path.join(workspaceRoot, 'project');
-    await fs.mkdir(projectDir);
-    const invalidated = [];
-    const handlers = createHandlers(workspaceRoot, invalidated);
-    const repoName = path.basename(repoDir);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: repoName });
-    const manifestPath = path.join(projectDir, 'ploinky-skills-manifest.json');
-    const before = await fs.readFile(manifestPath, 'utf8');
-    const crash = Object.assign(new Error('fixture publication interrupted'), { [transaction.SIMULATED_CRASH]: true });
-    const deadOwner = { ...transaction.currentSkillExportIdentity(), pid: 2147483647, start: 'fixture-dead-process' };
-    assert.throws(() => transaction.syncManagedSkillExports({
-      folder: projectDir, owner: 'manifest', sources: [],
-      manifest: { path: manifestPath, expected: before, next: '[]\n' },
-      lock: { liveness: { current: () => deadOwner } },
-      hooks: { crash(point) { if (point === 'after-ledger') throw crash; } },
-    }), /fixture publication interrupted/);
-    // A user edit after the commit point makes recovery quarantine that
-    // publication; the handler's own export then completes but cannot
-    // release its lock.
-    await fs.writeFile(manifestPath, `${before}\n`);
-    await writeFile(path.join(projectDir, 'notes.txt'), 'user bytes\n');
-    const { lock, armed } = armStrayLockRelease(t, projectDir);
-    armed.value = true;
-    invalidated.length = 0;
-    await assert.rejects(handlers.remove_skills_manifest_repo({ folderPath: projectDir, repoName }), error => {
-      assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
-      assert.equal(error.recovery.status, 'quarantined');
-      assert.match(error.message, /incomplete.*recovery quarantined/);
-      assert.match(error.message, /lock could not be released/);
-      assert.doesNotMatch(error.message, /finished/);
-      // The original release failure and its filesystem cause are preserved.
-      assert.equal(error.cause.code, 'SKILL_EXPORT_LOCK_RELEASE_FAILED');
-      assert.equal(error.lockReleaseError.code, 'ENOTEMPTY');
-      assert.equal(error.skillExportResult.recovery.status, 'quarantined');
-      return true;
-    });
-    armed.value = false;
-    assert.equal(armed.hits, 1, 'the fault was injected into the real lock');
-    // The handler read the edited manifest before it wrote its own selection.
-    assert.equal(await fs.readFile(manifestPath, 'utf8'), '[]\n');
-    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
-    assert.ok(invalidated.includes(manifestPath), 'caches of the completed outputs are invalidated');
-    const state = transaction.readSkillExportTransactionState(projectDir);
-    assert.equal(state.pending, null);
-    assert.equal(state.quarantined.length, 1);
-    assert.ok(state.quarantined[0].reasons.some(item => item.name === 'manifest'));
-    assert.ok(syncFs.existsSync(path.join(lock, 'stray')), 'the unreleased lock is left for the operator');
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-test('a lock release failure after a settled export stays a release failure', async (t) => {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-release-settled-')));
-  try {
-    const repoDir = await createLocalSkillRepo(workspaceRoot);
-    const projectDir = path.join(workspaceRoot, 'project');
-    await fs.mkdir(projectDir);
-    await writeFile(path.join(projectDir, 'notes.txt'), 'user bytes\n');
-    const invalidated = [];
-    const handlers = createHandlers(workspaceRoot, invalidated);
-    const { armed } = armStrayLockRelease(t, projectDir);
-    armed.value = true;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
-      assert.equal(error.code, 'SKILL_EXPORT_LOCK_RELEASE_FAILED');
-      assert.equal(error.cause.code, 'ENOTEMPTY');
-      assert.equal(error.skillExportResult.transaction.status, 'committed');
-      assert.deepEqual(error.skillExportResult.installed, ['alpha-skill']);
-      assert.match(error.message, /finished, but its lock could not be released/);
-      return true;
-    });
-    armed.value = false;
-    assert.equal(armed.hits, 1, 'the fault was injected into the real lock');
-    const link = path.join(projectDir, '.agents', 'skills', 'alpha-skill');
-    assert.equal((await fs.lstat(link)).isSymbolicLink(), true);
-    assert.ok(invalidated.includes(link), 'caches of the settled outputs are invalidated');
-    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
-    assert.equal(transaction.readSkillExportTransactionState(projectDir).pending, null);
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-// The second skill link of a publication fails with EIO, before the commit
-// point. With `userEdit`, a user first replaces the already published link
-// with a real directory, which the rollback must not remove.
-function armSecondLinkFailure(t, projectDir, { userEdit }) {
-  const skills = path.join(projectDir, '.agents', 'skills');
-  const original = syncFs.symlinkSync;
-  const armed = { value: false, published: [], faults: 0 };
-  t.mock.method(syncFs, 'symlinkSync', function (target, destination, ...rest) {
-    if (!armed.value || path.dirname(String(destination)) !== skills) return original.call(this, target, destination, ...rest);
-    if (armed.published.length === 1) {
-      armed.faults++;
-      if (userEdit) {
-        const first = armed.published[0];
-        syncFs.unlinkSync(first);
-        syncFs.mkdirSync(first);
-        syncFs.writeFileSync(path.join(first, 'SKILL.md'), 'user replacement\n');
-      }
-      throw Object.assign(new Error(`EIO: i/o error, symlink '${target}' -> '${destination}'`), { code: 'EIO', errno: -5, syscall: 'symlink' });
-    }
-    const created = original.call(this, target, destination, ...rest);
-    armed.published.push(String(destination));
-    return created;
-  });
-  return armed;
-}
-
-// Removing the journal while quarantining succeeds, but reports EIO: the
-// rollback stopped after the quarantine record was durable.
-function armJournalRemovalFailure(t, projectDir) {
-  const journal = path.join(projectDir, '.agents', transaction.EXPORT_JOURNAL);
-  const original = syncFs.rmSync;
-  const armed = { value: false, hits: 0 };
-  t.mock.method(syncFs, 'rmSync', function (target, ...rest) {
-    const removed = original.call(this, target, ...rest);
-    if (armed.value && String(target) === journal) {
-      armed.hits++;
-      armed.value = false;
-      throw Object.assign(new Error('EIO: i/o error, journal removal'), { code: 'EIO' });
-    }
-    return removed;
-  });
-  return armed;
-}
-
-async function twoSkillProject(prefix) {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
-  const repoDir = await createLocalSkillRepo(workspaceRoot);
-  await writeFile(path.join(repoDir, 'skills', 'beta-skill', 'SKILL.md'), '---\nname: beta-skill\n---\n');
-  execFileSync('git', ['add', '.'], { cwd: repoDir, stdio: 'ignore' });
-  execFileSync('git', ['commit', '-m', 'beta'], { cwd: repoDir, stdio: 'ignore' });
-  const projectDir = path.join(workspaceRoot, 'project');
-  await writeFile(path.join(projectDir, 'notes.txt'), 'user bytes\n');
-  return { workspaceRoot, repoDir, projectDir, manifestPath: path.join(projectDir, 'ploinky-skills-manifest.json') };
-}
-
-test('a pre-commit failure whose rollback quarantines user output is recovery required', async (t) => {
-  const { workspaceRoot, repoDir, projectDir, manifestPath } = await twoSkillProject('explorer-skills-rollback-quarantine-');
-  try {
-    const invalidated = [];
-    const handlers = createHandlers(workspaceRoot, invalidated);
-    const armed = armSecondLinkFailure(t, projectDir, { userEdit: true });
-    armed.value = true;
-    let first;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
-      first = path.basename(armed.published[0]);
-      assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
-      assert.match(error.message, /failed before its commit point \(EIO: i\/o error, symlink/);
-      assert.match(error.message, new RegExp(`quarantined with output it could not restore \\(${first}\\)`));
-      assert.doesNotMatch(error.message, /lock could not be released/);
-      // The original failure is preserved as the cause.
-      assert.equal(error.cause.code, 'EIO');
-      assert.equal(error.cause.syscall, 'symlink');
-      assert.equal(error.recovery.status, 'quarantined');
-      assert.equal(error.transaction.status, 'quarantined');
-      assert.equal(error.transaction.id, error.recovery.transaction);
-      assert.deepEqual(error.transaction.unexpected.map(item => item.name), [first]);
-      assert.equal(error.rollbackError, null);
-      assert.equal(error.lockReleaseError, null);
-      return true;
-    });
-    armed.value = false;
-    assert.equal(armed.faults, 1, 'the fault was injected into the real publication');
-    const skills = path.join(projectDir, '.agents', 'skills');
-    assert.equal(await fs.readFile(path.join(skills, first, 'SKILL.md'), 'utf8'), 'user replacement\n', 'the user replacement is preserved');
-    assert.deepEqual((await fs.readdir(skills)).sort(), [first]);
-    await assert.rejects(fs.stat(manifestPath), { code: 'ENOENT' }, 'the manifest is not written before the commit point');
-    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
-    assert.ok(invalidated.includes(path.join(skills, first)), 'the preserved output is invalidated');
-    assert.ok(invalidated.includes(skills));
-    const state = transaction.readSkillExportTransactionState(projectDir);
-    assert.equal(state.pending, null);
-    assert.equal(state.quarantined.length, 1);
-    assert.deepEqual(state.quarantined[0].reasons.map(item => [item.name, item.reason]), [[first, 'unexpected-output-preserved']]);
-    const listed = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
-    assert.equal(listed.exportTransaction.status, 'recovery-required');
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-test('a quarantining rollback keeps its rollback and lock release causes', async (t) => {
-  const { workspaceRoot, repoDir, projectDir } = await twoSkillProject('explorer-skills-rollback-causes-');
-  try {
-    const handlers = createHandlers(workspaceRoot);
-    const armed = armSecondLinkFailure(t, projectDir, { userEdit: true });
-    const journal = armJournalRemovalFailure(t, projectDir);
-    const { lock, armed: stray } = armStrayLockRelease(t, projectDir);
-    armed.value = true;
-    journal.value = true;
-    stray.value = true;
-    let first;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
-      first = path.basename(armed.published[0]);
-      assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
-      assert.equal(error.cause.code, 'EIO');
-      assert.equal(error.cause.syscall, 'symlink');
-      assert.equal(error.rollbackError.message, 'EIO: i/o error, journal removal');
-      assert.equal(error.recovery.rollbackError, error.rollbackError);
-      assert.equal(error.lockReleaseError.code, 'ENOTEMPTY');
-      assert.equal(error.cause.lockReleaseError, error.lockReleaseError);
-      assert.match(error.message, /Its rollback also reported EIO: i\/o error, journal removal/);
-      assert.match(error.message, /Its export lock could not be released either \(ENOTEMPTY/);
-      assert.doesNotMatch(error.message, /finished/);
-      return true;
-    });
-    stray.value = false;
-    assert.deepEqual([armed.faults, journal.hits, stray.hits], [1, 1, 1], 'every fault was injected into the real publication');
-    const skills = path.join(projectDir, '.agents', 'skills');
-    assert.equal(await fs.readFile(path.join(skills, first, 'SKILL.md'), 'utf8'), 'user replacement\n');
-    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
-    const state = transaction.readSkillExportTransactionState(projectDir);
-    assert.equal(state.pending, null);
-    assert.equal(state.quarantined.length, 1);
-    assert.ok(syncFs.existsSync(path.join(lock, 'stray')), 'the unreleased lock is left for the operator');
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-test('a pre-commit failure that rolls back cleanly stays an ordinary failure', async (t) => {
-  const { workspaceRoot, repoDir, projectDir, manifestPath } = await twoSkillProject('explorer-skills-rollback-clean-');
-  try {
-    const handlers = createHandlers(workspaceRoot);
-    const armed = armSecondLinkFailure(t, projectDir, { userEdit: false });
-    armed.value = true;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
-      assert.equal(error.code, 'EIO');
-      assert.equal(error.syscall, 'symlink');
-      assert.match(error.message, /^EIO: i\/o error, symlink/);
-      assert.equal(error.skillExportRecovery.status, 'rolled-back');
-      assert.deepEqual(error.skillExportRecovery.unexpected, []);
-      assert.doesNotMatch(error.message, /lock could not be released/);
-      assert.equal(error.lockReleaseError, undefined);
-      return true;
-    });
-    armed.value = false;
-    assert.equal(armed.faults, 1, 'the fault was injected into the real publication');
-    assert.deepEqual(await fs.readdir(path.join(projectDir, '.agents', 'skills')), [], 'the published link was rolled back');
-    await assert.rejects(fs.stat(manifestPath), { code: 'ENOENT' });
-    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
-    const state = transaction.readSkillExportTransactionState(projectDir);
-    assert.deepEqual([state.pending, state.quarantined.length, state.lock], [null, 0, 'free']);
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-test('a clean rollback whose lock release fails stays an ordinary failure that names the release', async (t) => {
-  const { workspaceRoot, repoDir, projectDir, manifestPath } = await twoSkillProject('explorer-skills-rollback-clean-release-');
-  try {
-    const handlers = createHandlers(workspaceRoot);
-    const armed = armSecondLinkFailure(t, projectDir, { userEdit: false });
-    const { lock, armed: stray } = armStrayLockRelease(t, projectDir);
-    armed.value = true;
-    stray.value = true;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
-      assert.equal(error.code, 'EIO');
-      assert.equal(error.syscall, 'symlink');
-      assert.match(error.message, /^EIO: i\/o error, symlink/);
-      assert.match(error.message, /Its export lock could not be released either \(ENOTEMPTY/);
-      assert.equal(error.lockReleaseError.code, 'ENOTEMPTY');
-      assert.equal(error.skillExportRecovery.status, 'rolled-back');
-      return true;
-    });
-    stray.value = false;
-    assert.deepEqual([armed.faults, stray.hits], [1, 1], 'both faults were injected into the real publication');
-    assert.deepEqual(await fs.readdir(path.join(projectDir, '.agents', 'skills')), [], 'the published link was rolled back');
-    await assert.rejects(fs.stat(manifestPath), { code: 'ENOENT' });
-    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
-    const state = transaction.readSkillExportTransactionState(projectDir);
-    assert.deepEqual([state.pending, state.quarantined.length], [null, 0]);
-    assert.ok(syncFs.existsSync(path.join(lock, 'stray')), 'the unreleased lock is left for the operator');
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-test('a rollback left pending keeps the exporter error and names the lock release', async (t) => {
-  const { workspaceRoot, repoDir, projectDir, manifestPath } = await twoSkillProject('explorer-skills-rollback-pending-');
-  try {
-    const invalidated = [];
-    const handlers = createHandlers(workspaceRoot, invalidated);
-    const armed = armSecondLinkFailure(t, projectDir, { userEdit: false });
-    // The rollback cannot remove the first published link, so it stops
-    // while the journal is still present.
-    const originalUnlink = syncFs.unlinkSync;
-    const unlink = { value: false, hits: 0 };
-    t.mock.method(syncFs, 'unlinkSync', function (target, ...rest) {
-      if (unlink.value && String(target) === armed.published[0]) {
-        unlink.hits++;
-        throw Object.assign(new Error('EIO: i/o error, unlink'), { code: 'EIO', syscall: 'unlink' });
-      }
-      return originalUnlink.call(this, target, ...rest);
-    });
-    const { armed: stray } = armStrayLockRelease(t, projectDir);
-    armed.value = true;
-    unlink.value = true;
-    stray.value = true;
-    let first;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
-      first = armed.published[0];
-      assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
-      assert.match(error.message, /failed before its commit point \(EIO: i\/o error, symlink.*and its rollback stopped \(EIO: i\/o error, unlink\); it remains pending for recovery\./);
-      assert.match(error.message, /Its export lock could not be released either \(ENOTEMPTY/);
-      assert.equal(error.skillExportRecovery.status, 'pending');
-      assert.equal(error.cause.syscall, 'symlink');
-      assert.equal(error.rollbackError.syscall, 'unlink');
-      assert.equal(error.lockReleaseError.code, 'ENOTEMPTY');
-      return true;
-    });
-    unlink.value = false;
-    stray.value = false;
-    assert.deepEqual([armed.faults, unlink.hits, stray.hits], [1, 1, 1], 'every fault was injected into the real publication');
-    const skills = path.join(projectDir, '.agents', 'skills');
-    assert.equal((await fs.lstat(first)).isSymbolicLink(), true, 'the unrestored link is left for recovery');
-    assert.ok(invalidated.includes(skills), 'the changed skills directory is invalidated');
-    await assert.rejects(fs.stat(manifestPath), { code: 'ENOENT' });
-    assert.equal(await fs.readFile(path.join(projectDir, 'notes.txt'), 'utf8'), 'user bytes\n');
-    const state = transaction.readSkillExportTransactionState(projectDir);
-    assert.notEqual(state.pending, null, 'the journal stays pending');
-    assert.equal(state.quarantined.length, 0);
-  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
-});
-
-test('skill changes in a Git project write no tracked rules and defer private exclusions to the host', async () => {
-  const workspaceRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-git-')));
-  const saved = { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM };
-  try {
-    await fs.writeFile(path.join(workspaceRoot, 'gitconfig'), '');
-    Object.assign(process.env, { XDG_CONFIG_HOME: path.join(workspaceRoot, 'xdg'), GIT_CONFIG_GLOBAL: path.join(workspaceRoot, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' });
-    const repoDir = await createLocalSkillRepo(workspaceRoot);
-    const projectDir = path.join(workspaceRoot, 'project');
-    await writeFile(path.join(projectDir, 'README.md'), 'x\n');
-    const git = (...args) => execFileSync('git', args, { cwd: projectDir, encoding: 'utf8' });
-    git('init', '-q');
-    git('add', 'README.md');
-    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'initial');
-    const added = parseJsonResponse(await createHandlers(workspaceRoot).add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }));
-    // An agent never sees the repository owner's HOME/XDG/global Git view, so
-    // it cannot prove which excludes policy is live: nothing is written and
-    // the host refresh (`ploinky update`) publishes the private exclusions.
-    assert.equal(added.exportResult.exclusions.status, 'deferred');
-    assert.equal(added.exportResult.exclusions.code, 'exclusions-executor-view-unverified');
-    await assert.rejects(fs.stat(path.join(projectDir, '.gitignore')), { code: 'ENOENT' });
-    assert.equal(spawnGitConfig(projectDir, 'extensions.worktreeConfig'), '', 'shared Git config untouched');
-    assert.match(git('status', '--porcelain'), /\?\? ploinky-skills-manifest\.json/);
-  } finally {
-    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-    await fs.rm(workspaceRoot, { recursive: true, force: true });
-  }
 });
 
 test('workspace-only recommendations add the live checkout rather than the installed copy', async t => {

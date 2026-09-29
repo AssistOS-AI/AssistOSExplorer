@@ -1,8 +1,7 @@
+import { readRepositorySkillState, ownsRepositorySkillLink, saveRepositorySkillState } from './repository-skill-state.mjs';
 import { skillsetMDParser } from './skillsetMDParser.mjs';
 import { createReadStream } from 'node:fs';
-import { EXPORT_LEDGER, skillTreeDigest, syncManagedSkillExports } from './managed-skill-exports.mjs';
-import { readSkillExportTransactionState, skillExportRecoveryProblem } from './skill-export-transaction.mjs';
-import { createSkillExclusionPlanner } from './skill-export-exclusions.mjs';
+import { EXPORT_LEDGER, skillTreeDigest } from './managed-skill-exports.mjs';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { jsonResponse, textResponse } from './responses.mjs';
@@ -358,14 +357,12 @@ export function createToolHandlers({
     return { url, name, branch, skills };
   }
 
-  // The raw bytes are the compare-before-write snapshot for the transaction
-  // that later publishes the manifest (null when the manifest is absent).
-  async function readSkillsManifestSnapshot(manifestPath) {
+  async function readSkillsManifestEntries(manifestPath) {
     let raw;
     try {
       raw = await fs.readFile(manifestPath, 'utf8');
     } catch (error) {
-      if (error?.code === 'ENOENT') return { raw: null, entries: [] };
+      if (error?.code === 'ENOENT') return [];
       throw error;
     }
     let parsed;
@@ -377,21 +374,19 @@ export function createToolHandlers({
     if (!Array.isArray(parsed)) {
       throw new Error(`Invalid skills manifest '${manifestPath}': expected an array of repository objects.`);
     }
-    return { raw, entries: parsed.map((entry, index) => normalizeSkillsManifestEntry(entry, index, manifestPath)) };
+    return parsed.map((entry, index) => normalizeSkillsManifestEntry(entry, index, manifestPath));
   }
 
-  async function readSkillsManifestEntries(manifestPath) {
-    return (await readSkillsManifestSnapshot(manifestPath)).entries;
-  }
-
-  function serializeSkillsManifestEntries(entries) {
+  async function writeSkillsManifestEntries(manifestPath, entries) {
+    await fs.mkdir(path.dirname(manifestPath), { recursive: true });
     const normalized = entries.map((entry) => ({
       url: entry.url,
       name: entry.name,
       branch: entry.branch || null,
       skills: Array.from(new Set((entry.skills || []).map(normalizeSkillName))).sort((a, b) => a.localeCompare(b))
     }));
-    return `${JSON.stringify(normalized, null, 2)}\n`;
+    await fs.writeFile(manifestPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+    invalidateCachesForPath(manifestPath);
   }
 
   async function repoPathExists(repoPath) {
@@ -436,150 +431,49 @@ export function createToolHandlers({
     return skillsetMDParser(source, availableSkills);
   }
 
-  function invalidateSkillExportCaches(folder, manifestPath, names) {
-    invalidateCachesForPath(manifestPath);
-    const skillsPath = path.join(folder, canonicalSkillsDir);
-    invalidateStructureIndexSubtree(skillsPath);
-    for (const name of names) {
-      invalidateCachesForPath(path.join(skillsPath, name));
-    }
-    invalidateCachesForPath(skillsPath);
-  }
-
-  function lockReleaseClause(releaseError) {
-    return releaseError
-      ? ` Its export lock could not be released either (${releaseError.message || 'unknown cause'}); later exports of this folder may stay blocked until the lock is released or reclaimed.`
-      : '';
-  }
-
-  // A failure already in flight keeps its own code; only the message
-  // crosses the tool boundary, so a lock left held is named there too.
-  function withLockReleaseCause(error) {
-    if (error && typeof error === 'object' && error.lockReleaseError) {
-      error.message += lockReleaseClause(error.lockReleaseError);
-    }
-    return error;
-  }
-
-  // A failure before the commit point keeps its own code when its rollback
-  // restored every path. A rollback that quarantined output it could not
-  // restore leaves that output for recovery, like an unfinished result.
-  function rollbackRecoveryError(error, recovery) {
-    const names = (recovery.unexpected || []).map((item) => item.name);
-    const stopped = recovery.rollbackError ? ` Its rollback also reported ${recovery.rollbackError.message}.` : '';
-    const mapped = new Error(
-      `Skill export failed before its commit point (${error.message}); transaction ${recovery.transaction} was ${recovery.status} with output it could not restore${names.length ? ` (${names.join(', ')})` : ''}.${stopped} Existing state is preserved for recovery.${lockReleaseClause(error.lockReleaseError)}`,
-      { cause: error }
-    );
-    mapped.code = 'SKILL_EXPORT_RECOVERY_REQUIRED';
-    mapped.transaction = { id: recovery.transaction, status: recovery.status, unexpected: recovery.unexpected || [] };
-    mapped.recovery = recovery;
-    mapped.rollbackError = recovery.rollbackError || null;
-    mapped.lockReleaseError = error.lockReleaseError || null;
-    return mapped;
-  }
-
-  // Links, the manifest (compared against the bytes the handler read) and the
-  // `.claude -> .agents` compatibility link publish as one recoverable
-  // transaction under the folder's skill export lock. The lock wait is kept
-  // short because the protocol is synchronous.
-  async function syncSkillsManifestInstall(folder, entries, { manifestPath, expectedManifest }) {
-    const sources = [];
+  async function syncSkillsManifestInstall(folder, entries) {
+    const client = await repositoriesClient();
+    const previous = await readSkillsManifestEntries(path.join(folder, skillsManifestFile));
+    const ledger = await readRepositorySkillState(folder);
+    const wanted = new Map();
     for (const entry of entries) {
-      const repoPath = await ensureSkillRepoCached(entry);
-      const available = new Set(await listRepoSkillNames(repoPath));
-      for (const skill of entry.skills) {
-        if (!available.has(skill)) {
-          throw new Error(`Skill '${skill}' is listed for repo '${entry.name}' but is not available in cache.`);
-        }
-        sources.push({ name: skill, path: path.join(repoPath, 'skills', skill), source: { url: entry.url, name: entry.name, branch: entry.branch || null } });
+      await ensureSkillRepoCached(entry);
+      for (const name of entry.skills) {
+        if (wanted.has(name) && wanted.get(name) !== entry.name) throw new Error(`Duplicate selected skill: ${name}`);
+        wanted.set(name, entry.name);
       }
     }
-    let result;
-    let releaseFailure = null;
-    try {
-      result = syncManagedSkillExports({
-        folder,
-        owner: 'manifest',
-        sources,
-        manifest: {
-          path: manifestPath,
-          expected: expectedManifest,
-          next: serializeSkillsManifestEntries(entries),
-          changedMessage: `Skills manifest '${manifestPath}' changed while this update was prepared; reload it and retry.`
-        },
-        claude: 'root',
-        // The manifest is an explicit selection; recorded like Ploinky's consumer policy.
-        consumer: { selection: 'explicit', policy: 'manifest' },
-        // Same private worktree exclusions as Ploinky; a live external excludes
-        // policy is composed only with explicit consent. An agent never runs with
-        // the repository owner's HOME/XDG/global Git view (container or sandbox),
-        // so its view is unverified and the host refresh publishes exclusions.
-        exclusions: createSkillExclusionPlanner({
-          authorizeComposition: process.env.PLOINKY_SKILL_EXCLUDES_COMPOSE === '1',
-          containerExecutor: true,
-        }),
-        authority: { kind: 'explorer-tool', operation: 'skills-manifest' },
-        lock: { waitMs: 250 }
-      });
-    } catch (error) {
-      const recovery = error?.skillExportRecovery;
-      if (recovery?.status && recovery.status !== 'rolled-back') {
-        // Output the rollback could not restore changed on disk.
-        invalidateSkillExportCaches(folder, manifestPath, (recovery.unexpected || []).map((item) => item.name));
-        if (error.code === 'SKILL_EXPORT_RECOVERY_REQUIRED') throw withLockReleaseCause(error);
-        throw rollbackRecoveryError(error, recovery);
+    const removed = [];
+    for (const entry of previous) for (const name of entry.skills) {
+      const destination = path.join(folder, canonicalSkillsDir, name);
+      const info = await fs.lstat(destination).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      if (!info?.isSymbolicLink()) continue;
+      const current = path.resolve(path.dirname(destination), await fs.readlink(destination));
+      const selected = wanted.get(name);
+      if (selected === entry.name && current === path.join(resolvedRepositorySources.get(entry.name), 'skills', name)) continue;
+      if (!ownsRepositorySkillLink(ledger, name, destination)) {
+        const source = await ensureSkillRepoCached(entry);
+        if (current !== path.join(source, 'skills', name)) continue;
       }
-      // A lock release failure carries the completed result: its outputs
-      // changed, and one that still needs recovery stays recovery required.
-      if (error?.code !== 'SKILL_EXPORT_LOCK_RELEASE_FAILED' || !error.skillExportResult) throw withLockReleaseCause(error);
-      result = error.skillExportResult;
-      releaseFailure = error;
+      removed.push(destination);
     }
-    invalidateSkillExportCaches(folder, manifestPath, [...result.installed, ...result.removed]);
-    const recoveryProblem = skillExportRecoveryProblem(result);
-    if (recoveryProblem) {
-      const error = new Error(`${recoveryProblem.reason}${lockReleaseClause(releaseFailure && (releaseFailure.cause || {}))}`, releaseFailure ? { cause: releaseFailure } : undefined);
-      error.code = recoveryProblem.code;
-      error.transaction = recoveryProblem.transaction;
-      error.recovery = recoveryProblem.recovery;
-      if (releaseFailure) {
-        error.lockReleaseError = releaseFailure.cause || null;
-        error.skillExportResult = result;
-      }
-      throw error;
-    }
-    // Settled outputs whose lock stayed held report the release failure as is.
-    if (releaseFailure) throw releaseFailure;
-    return result;
+    const removal = removed.length ? await client.remove(removed) : { conflicts: [] };
+    const skillRepos = entries.map(entry => ({ destination: folder, repoName: resolvedRepositoryNames.get(entry.name) || entry.name, skills: entry.skills }));
+    const result = await client.install({ skillRepos: skillRepos.length ? skillRepos : [{ destination: folder, skills: [] }] });
+    const confirmedRemoved = (removal.results || []).filter(entry => ['removed', 'absent'].includes(entry.status)).map(entry => entry.destination);
+    await saveRepositorySkillState(folder, ledger, result, confirmedRemoved, entries);
+    const diagnostics = [...removal.conflicts, ...result.conflicts].map(entry => ({ name: path.basename(entry.destination), reason: 'existing-output-preserved', ...entry }));
+    const installed = result.results.filter(entry => entry.status === 'installed').map(entry => path.basename(entry.destination));
+    invalidateStructureIndexSubtree(path.join(folder, canonicalSkillsDir));
+    for (const name of [...installed, ...removed.map(file => path.basename(file))]) invalidateCachesForPath(path.join(folder, canonicalSkillsDir, name));
+    invalidateCachesForPath(path.join(folder, canonicalSkillsDir));
+    return { installed, removed: removed.map(file => path.basename(file)), diagnostics };
   }
 
   async function readSkillExportState(folder, entries) {
     const selected = new Set(entries.flatMap((entry) => entry.skills || []));
     const diagnostics = [];
     const outputs = [];
-    // A pending journal means publication is incomplete; never report the
-    // current outputs as a finished state.
-    let exportTransaction = { status: 'idle' };
-    try {
-      const transaction = readSkillExportTransactionState(folder);
-      if (transaction.pending) {
-        exportTransaction = { status: 'pending', ...transaction.pending };
-        diagnostics.push({ reason: 'skill-export-transaction-pending', transaction: transaction.pending.transaction, phase: transaction.pending.phase });
-      }
-      for (const item of transaction.quarantined) {
-        diagnostics.push({ reason: 'skill-export-transaction-quarantined', transaction: item.transaction, details: item.reasons });
-      }
-      if (transaction.quarantined.length && exportTransaction.status === 'idle') exportTransaction = { status: 'recovery-required', quarantined: transaction.quarantined.length };
-    } catch (error) {
-      exportTransaction = { status: 'unknown' };
-      diagnostics.push({ reason: 'skill-export-transaction-unreadable', message: error.message });
-    }
-    const state = await readSkillExportOutputs(folder, entries, selected, diagnostics, outputs);
-    return { ...state, exportTransaction };
-  }
-
-  async function readSkillExportOutputs(folder, entries, selected, diagnostics, outputs) {
     const agents = path.join(folder, canonicalAgentsDir);
     const skillsDir = path.join(folder, canonicalSkillsDir);
     for (const directory of [agents, skillsDir]) {
@@ -603,24 +497,18 @@ export function createToolHandlers({
       presentNames.add(entry.name);
       const record = Object.hasOwn(ledger.entries, entry.name) ? ledger.entries[entry.name] : null;
       let state = 'local';
-      // Exports are recorded as links; any other recorded kind is unsupported
-      // state that the exporter preserves and never adopts.
-      if (record && record.kind !== 'symlink') state = 'unsupported';
-      else if (record) {
-        try { state = entry.isSymbolicLink() && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
+      if (record) {
+        try { state = (record.kind === 'symlink' ? entry.isSymbolicLink() : entry.isDirectory()) && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
         catch { state = 'modified'; }
       }
-      // A link into the selected repository only names its source; ownership
-      // state above comes from the ledger and is never overridden here.
-      let linkedSource = null;
       const selectedRepo = entries.find(repo => repo.skills.includes(entry.name));
-      if (!record?.source && entry.isSymbolicLink() && selectedRepo && resolvedRepositorySources.has(selectedRepo.name)) {
-        const target = path.resolve(skillsDir, await fs.readlink(path.join(skillsDir, entry.name)));
-        if (target === path.join(resolvedRepositorySources.get(selectedRepo.name), 'skills', entry.name)) linkedSource = { name: selectedRepo.name, url: selectedRepo.url };
+      if (entry.isSymbolicLink() && selectedRepo && resolvedRepositorySources.has(selectedRepo.name)) {
+        const source = path.resolve(skillsDir, await fs.readlink(path.join(skillsDir, entry.name)));
+        if (source === path.join(resolvedRepositorySources.get(selectedRepo.name), 'skills', entry.name)) state = 'managed';
       }
       const descriptor = (entry.isDirectory() || entry.isSymbolicLink()) ? await fs.stat(path.join(skillsDir, entry.name, 'SKILL.md')).catch(() => null) : null;
-      outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || linkedSource });
-      if (state === 'modified' || state === 'unsupported' || (selected.has(entry.name) && state === 'local')) diagnostics.push({ name: entry.name, reason: `${state}-output-preserved` });
+      outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || (state === 'managed' && selectedRepo ? { name: selectedRepo.name, url: selectedRepo.url } : null) });
+      if (state === 'modified' || (selected.has(entry.name) && state === 'local')) diagnostics.push({ name: entry.name, reason: `${state}-output-preserved` });
     }
     for (const name of selected) if (!presentNames.has(name)) outputs.push({ name, state: 'missing', selected: true, installed: false });
     outputs.sort((a, b) => a.name.localeCompare(b.name));
@@ -1358,14 +1246,15 @@ export function createToolHandlers({
       });
     }
 
-    const { raw: expectedManifest, entries } = await readSkillsManifestSnapshot(manifestPath);
+    const entries = await readSkillsManifestEntries(manifestPath);
     const definitions = await readRepoSkillsets(repoPath, availableSkills);
     const nextEntry = { ...repoEntry, skills: definitions.length ? [...new Set(definitions.flatMap(set => set.skills))] : availableSkills };
     const existingIndex = entries.findIndex((entry) => entry.name === name || entry.url === url);
     const nextEntries = existingIndex === -1
       ? [...entries, nextEntry]
       : entries.map((entry, index) => index === existingIndex ? nextEntry : entry);
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, { manifestPath, expectedManifest });
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
+    await writeSkillsManifestEntries(manifestPath, nextEntries);
     return jsonResponse({
       ...await buildSkillsManifestState(folder, manifestPath, nextEntries),
       exportResult,
@@ -1381,7 +1270,7 @@ export function createToolHandlers({
     const { folder, manifestPath } = await skillsManifestPathForFolder(data.folderPath);
     const repoName = normalizeRepoName(data.repoName);
     if (typeof data.enabled !== 'boolean') throw new Error('enabled must be a boolean');
-    const { raw: expectedManifest, entries } = await readSkillsManifestSnapshot(manifestPath);
+    const entries = await readSkillsManifestEntries(manifestPath);
     const index = entries.findIndex((entry) => entry.name === repoName);
     if (index === -1) {
       throw new Error(`Repository '${repoName}' is not in the skills manifest.`);
@@ -1409,7 +1298,8 @@ export function createToolHandlers({
     const nextEntries = entries.map((entry, entryIndex) => entryIndex === index
       ? { ...entry, skills: Array.from(current).sort((left, right) => left.localeCompare(right)) }
       : entry);
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, { manifestPath, expectedManifest });
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
+    await writeSkillsManifestEntries(manifestPath, nextEntries);
     return jsonResponse({ ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult });
   }
 
@@ -1417,12 +1307,13 @@ export function createToolHandlers({
     const data = parseArgs(RemoveSkillsManifestRepoArgsSchema, args, 'remove_skills_manifest_repo');
     const { folder, manifestPath } = await skillsManifestPathForFolder(data.folderPath);
     const repoName = normalizeRepoName(data.repoName);
-    const { raw: expectedManifest, entries } = await readSkillsManifestSnapshot(manifestPath);
+    const entries = await readSkillsManifestEntries(manifestPath);
     const nextEntries = entries.filter((entry) => entry.name !== repoName);
     if (nextEntries.length === entries.length) {
       throw new Error(`Repository '${repoName}' is not in the skills manifest.`);
     }
-    const exportResult = await syncSkillsManifestInstall(folder, nextEntries, { manifestPath, expectedManifest });
+    const exportResult = await syncSkillsManifestInstall(folder, nextEntries);
+    await writeSkillsManifestEntries(manifestPath, nextEntries);
     return jsonResponse({ ...await buildSkillsManifestState(folder, manifestPath, nextEntries), exportResult });
   }
 
