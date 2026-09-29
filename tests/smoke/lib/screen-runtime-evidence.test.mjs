@@ -9,6 +9,7 @@ import {
   validateHostLocalScreenEvidence,
   validateScreenRuntimeEvidence,
 } from './screen-runtime-evidence.mjs';
+import { imageAgentLibSourceIdHash } from './box-evidence.mjs';
 
 const NOW = Date.parse('2026-07-27T12:00:00.000Z');
 const LIVEKIT_ID = 'a'.repeat(64);
@@ -222,4 +223,36 @@ test('Box screen evidence binds the nested LiveKit listener to the exact outer g
     /capture is not bound/,
   );
   assert.equal(screenRuntimeEvidenceProvesUdpMux(unboundCapture), false);
+});
+
+// The AchillesAgentLib copy a Box image supplies is identified by that outer
+// image and the library; the Box carries no content fingerprint or commit label.
+function imageAgentLibBoxEvidence() {
+  const evidence = boxEvidence();
+  const labels = evidence.box.box.semanticLabels;
+  labels.agentLibMode = 'image';
+  labels.agentLibSourceIdHash = imageAgentLibSourceIdHash(IMAGE_ID);
+  labels.agentLibSourceRelativePath = 'image';
+  delete labels.agentLibFingerprint;
+  delete labels.agentLibCommit;
+  return evidence;
+}
+
+test('Box screen evidence accepts an image-supplied AgentLib bound to the exact outer image', () => {
+  const evidence = validateBoxScreenEvidence(imageAgentLibBoxEvidence(), { baseURL: BASE_URL, nowMs: NOW });
+  assert.equal(evidence.box.box.semanticLabels.agentLibMode, 'image');
+  assert.equal(screenRuntimeEvidenceProvesUdpMux(evidence), true);
+  assert.equal(sameScreenRuntimeGeneration(evidence, structuredClone(evidence)), true);
+
+  for (const change of [
+    (labels) => { labels.agentLibSourceIdHash = imageAgentLibSourceIdHash(`sha256:${'d'.repeat(64)}`); },
+    (labels) => { labels.agentLibSourceRelativePath = 'achillesAgentLib'; },
+    (labels) => { labels.agentLibFingerprint = '2'.repeat(64); },
+    (labels) => { labels.agentLibCommit = '3'.repeat(40); },
+  ]) {
+    const invalid = imageAgentLibBoxEvidence();
+    change(invalid.box.box.semanticLabels);
+    assert.throws(() => validateBoxScreenEvidence(invalid, { baseURL: BASE_URL, nowMs: NOW }), /AgentLib|labels must be exactly/);
+    assert.equal(screenRuntimeEvidenceProvesUdpMux(invalid), false, String(change));
+  }
 });

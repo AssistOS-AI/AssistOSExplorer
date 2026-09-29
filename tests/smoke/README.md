@@ -463,8 +463,11 @@ Opt-in checks:
   inspector still rejects non-loopback, ambiguous, stale, or mismatched outer
   containers. Its exact semantic-label contract includes the selected
   nested-Podman seccomp profile fingerprint and the selected achillesAgentLib
-  mode, source-identity hash, content fingerprint,
-  workspace-relative source path, and Git commit. The ordinary Copilot gate
+  mode, source-identity hash and workspace-relative source path, plus the
+  content fingerprint and Git commit of a local checkout. The copy a Box image
+  supplies (`image` mode) carries no fingerprint or commit label: its source
+  identity must equal the hash of the exact outer image ID and the library
+  name. The ordinary Copilot gate
   requires that live AgentLib commit to equal the verified release-manifest
   commit before and after Chromium. It requires a fresh outer-container
   generation and the manifest's exact immutable image digest/reference; unlike

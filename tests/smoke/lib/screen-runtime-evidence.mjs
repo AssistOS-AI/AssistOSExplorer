@@ -5,7 +5,7 @@ import {
   sameLiveBoxGeneration,
   validateLiveBoxEvidence,
 } from './live-box.mjs';
-import { normalizeOuterPortBindings, readExpectedGpuGrant } from './box-evidence.mjs';
+import { imageAgentLibSourceIdHash, normalizeOuterPortBindings, readExpectedGpuGrant } from './box-evidence.mjs';
 
 const MANAGED_LABEL = 'io.assistos.ploinky.managed';
 const BOX_ROLE_LABEL = 'io.assistos.ploinky-box.role';
@@ -19,6 +19,25 @@ function exactRecord(value, name) {
     throw new Error(`${name} must be an object.`);
   }
   return value;
+}
+
+// A local checkout is identified by its content fingerprint and Git commit; the
+// copy a Box image supplies only by that outer image and the library.
+function boxAgentLibLabelsMatch(labels, imageId) {
+  if (!/^[0-9a-f]{64}$/.test(String(labels.agentLibSourceIdHash || ''))) return false;
+  if (labels.agentLibMode === 'image') {
+    return labels.agentLibSourceRelativePath === 'image'
+      && labels.agentLibSourceIdHash === imageAgentLibSourceIdHash(imageId)
+      && !Object.hasOwn(labels, 'agentLibFingerprint')
+      && !Object.hasOwn(labels, 'agentLibCommit');
+  }
+  return ['local', 'managed'].includes(labels.agentLibMode)
+    && /^[0-9a-f]{64}$/.test(String(labels.agentLibFingerprint || ''))
+    && String(labels.agentLibSourceRelativePath || '').length > 0
+    && !String(labels.agentLibSourceRelativePath).startsWith('/')
+    && !String(labels.agentLibSourceRelativePath).split('/').includes('..')
+    && (labels.agentLibCommit === ''
+      || /^[0-9a-f]{40}$/.test(String(labels.agentLibCommit || '')));
 }
 
 function exactDate(value, name) {
@@ -456,14 +475,7 @@ export function screenRuntimeEvidenceProvesUdpMux(evidence) {
       && box.semanticLabels.mediaHostPort === '7882'
       && /^[0-9a-f]{64}$/.test(String(box.semanticLabels.dependenciesFingerprint || ''))
       && /^[0-9a-f]{64}$/.test(String(box.semanticLabels.imagesFingerprint || ''))
-      && ['local', 'managed'].includes(box.semanticLabels.agentLibMode)
-      && /^[0-9a-f]{64}$/.test(String(box.semanticLabels.agentLibSourceIdHash || ''))
-      && /^[0-9a-f]{64}$/.test(String(box.semanticLabels.agentLibFingerprint || ''))
-      && String(box.semanticLabels.agentLibSourceRelativePath || '').length > 0
-      && !String(box.semanticLabels.agentLibSourceRelativePath).startsWith('/')
-      && !String(box.semanticLabels.agentLibSourceRelativePath).split('/').includes('..')
-      && (box.semanticLabels.agentLibCommit === ''
-        || /^[0-9a-f]{40}$/.test(String(box.semanticLabels.agentLibCommit || '')))
+      && boxAgentLibLabelsMatch(box.semanticLabels, String(box.imageId).toLowerCase())
       && JSON.stringify(normalizeOuterPortBindings(box.normalizedPortBindings))
         === JSON.stringify(expectedBindings);
   } catch (_) {

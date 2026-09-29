@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildBoxEvidence,
   GPU_GRANT_LABEL,
+  imageAgentLibSourceIdHash,
   normalizeOuterPortBindings,
   readExpectedGpuGrant,
   validateExternalTcpNegativeEvidence,
@@ -21,8 +22,9 @@ const HOST_KEY_A = `SHA256:${'A'.repeat(43)}`;
 const HOST_KEY_B = `SHA256:${'B'.repeat(43)}`;
 const AGENTLIB_COMMIT = '1'.repeat(40);
 const WORKSPACE_ROOT = '/verified/work space ăîș';
-// Cross-checked against Ploinky imageSourceId + sourceIdHash for IMAGE_ID and 2*64.
-const IMAGE_AGENTLIB_SOURCE_ID = 'f1b3a1c480fffb60894cb1f24c0b137725c9180a2ef1148467c18d79a9985a85';
+// Cross-checked against Ploinky imageSourceIdHash(imageSourceIdentity(IMAGE_ID)): the
+// image-supplied AchillesAgentLib is identified by the outer image and library only.
+const IMAGE_AGENTLIB_SOURCE_ID = '9e98b703aa33138e2b98d84df0d29533c208f3bb6caa2f293dcb688565cc381a';
 
 function containerInspect(bindings = {
   '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '18080' }],
@@ -81,6 +83,9 @@ function imageAgentLibInspect() {
     inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-mode'] = 'image';
     inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-source-path'] = 'image';
     inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-source-id'] = IMAGE_AGENTLIB_SOURCE_ID;
+    // An image selection carries no content fingerprint or Git commit label.
+    delete inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-fingerprint'];
+    delete inspected[0].Config.Labels['io.assistos.ploinky-box.agentlib-commit'];
     inspected[0].Mounts = [
         { Type: 'bind', Source: '/verified/ploinky', Destination: '/opt/ploinky', RW: false },
         { Type: 'bind', Source: WORKSPACE_ROOT, Destination: WORKSPACE_ROOT, RW: true },
@@ -88,23 +93,26 @@ function imageAgentLibInspect() {
     return inspected;
 }
 
-test('image AgentLib evidence binds immutable image identity, content fingerprint, revision, and fixed source sentinel', () => {
+test('image AgentLib evidence binds the immutable outer image identity and the fixed source sentinel', () => {
     const evidence = buildBoxEvidence({ containerInspect: imageAgentLibInspect(), imageInspect: imageInspect(), ...expected() });
     assert.equal(evidence.semanticLabels.agentLibMode, 'image');
     assert.equal(evidence.semanticLabels.agentLibSourceRelativePath, 'image');
-    assert.equal(evidence.semanticLabels.agentLibCommit, AGENTLIB_COMMIT);
     assert.equal(evidence.semanticLabels.agentLibSourceIdHash, IMAGE_AGENTLIB_SOURCE_ID);
+    assert.equal(imageAgentLibSourceIdHash(IMAGE_ID), IMAGE_AGENTLIB_SOURCE_ID);
+    assert.equal(Object.hasOwn(evidence.semanticLabels, 'agentLibFingerprint'), false);
+    assert.equal(Object.hasOwn(evidence.semanticLabels, 'agentLibCommit'), false);
     assert.equal(evidence.imageId, IMAGE_ID);
     assert.deepEqual(validateBoxEvidence(JSON.parse(JSON.stringify(evidence)), expected()), evidence);
-    for (const [field, value] of [
-        ['agentLibSourceIdHash', 'b'.repeat(64)],
-        ['agentLibFingerprint', '3'.repeat(64)],
-        ['agentLibSourceRelativePath', 'achillesAgentLib'],
-        ['agentLibCommit', ''],
+    for (const [field, value, pattern] of [
+        ['agentLibSourceIdHash', 'b'.repeat(64), /Image AgentLib source identity must bind/],
+        ['agentLibSourceRelativePath', 'achillesAgentLib', /Image AgentLib evidence requires source-path image/],
+        // An image selection that claims a content fingerprint or commit is not the current contract.
+        ['agentLibFingerprint', '3'.repeat(64), /labels must be exactly/],
+        ['agentLibCommit', AGENTLIB_COMMIT, /labels must be exactly/],
     ]) {
         const changed = structuredClone(evidence);
         changed.semanticLabels[field] = value;
-        assert.throws(() => validateBoxEvidence(changed, expected()), /Image AgentLib/);
+        assert.throws(() => validateBoxEvidence(changed, expected()), pattern, field);
     }
 });
 
@@ -131,25 +139,34 @@ test('Box evidence requires a workspace-free image and one exact runtime workspa
   }
 });
 
-test('image AgentLib rejects substituted source identity, fingerprint, missing commit, and nonexact labels', () => {
-    for (const [label, value] of [
-        ['agentlib-source-id', '1'.repeat(64)], ['agentlib-fingerprint', '3'.repeat(64)],
-        ['agentlib-source-id', IMAGE_AGENTLIB_SOURCE_ID.toUpperCase()],
-        ['agentlib-fingerprint', ' 2'.repeat(64)], ['agentlib-mode', 'image '],
-        ['agentlib-source-path', ' image '], ['agentlib-source-path', 'achillesAgentLib'],
-        ['agentlib-commit', ''], ['agentlib-commit', null], ['agentlib-commit', 'short'],
+test('image AgentLib rejects substituted source identity, fingerprint or commit labels, and nonexact labels', () => {
+    for (const [label, value, pattern] of [
+        ['agentlib-source-id', '1'.repeat(64), /Image AgentLib source identity must bind/],
+        ['agentlib-source-id', IMAGE_AGENTLIB_SOURCE_ID.toUpperCase(), /Image AgentLib labels require exact image mode/],
+        // Earlier contracts put a content fingerprint and commit on an image Box; the current one does not.
+        ['agentlib-fingerprint', '3'.repeat(64), /labels must be exactly/],
+        ['agentlib-commit', AGENTLIB_COMMIT, /labels must be exactly/],
+        ['agentlib-commit', '', /labels must be exactly/],
+        ['agentlib-mode', 'image ', /labels must be exactly/],
+        ['agentlib-source-path', ' image ', /Image AgentLib evidence requires source-path image/],
+        ['agentlib-source-path', 'achillesAgentLib', /Image AgentLib evidence requires source-path image/],
     ]) {
         const inspected = imageAgentLibInspect();
         inspected[0].Config.Labels[`io.assistos.ploinky-box.${label}`] = value;
-        assert.throws(() => buildBoxEvidence({ containerInspect: inspected, imageInspect: imageInspect(), ...expected() }), /AgentLib/);
+        assert.throws(() => buildBoxEvidence({ containerInspect: inspected, imageInspect: imageInspect(), ...expected() }), pattern, `${label}=${value}`);
     }
+    // The pre-change image source identity (image ID plus content fingerprint) is not accepted.
+    const previous = imageAgentLibInspect();
+    previous[0].Config.Labels['io.assistos.ploinky-box.agentlib-source-id'] = 'f1b3a1c480fffb60894cb1f24c0b137725c9180a2ef1148467c18d79a9985a85';
+    assert.throws(() => buildBoxEvidence({ containerInspect: previous, imageInspect: imageInspect(), ...expected() }),
+        /Image AgentLib source identity must bind the exact outer image ID and the library/);
     const copied = imageAgentLibInspect();
     copied[0].Image = 'b'.repeat(64);
     const otherImage = imageInspect();
     otherImage[0].Id = 'b'.repeat(64);
     assert.throws(() => buildBoxEvidence({
         containerInspect: copied, imageInspect: otherImage, ...expected(), expectedImageId: `sha256:${'b'.repeat(64)}`,
-    }), /source identity must bind the exact image ID/);
+    }), /source identity must bind the exact outer image ID/);
     assert.throws(() => buildBoxEvidence({
         containerInspect: imageAgentLibInspect(), imageInspect: imageInspect(), ...expected(), expectedImageId: `sha256:${'b'.repeat(64)}`,
     }), /image ID/);

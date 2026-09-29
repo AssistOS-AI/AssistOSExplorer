@@ -106,6 +106,17 @@ function exactAgentLibSourceRelativePath(value, name) {
   return text;
 }
 
+// The labels an image AgentLib selection does not carry.
+const IMAGE_AGENTLIB_ABSENT_LABELS = Object.freeze([BOX_LABELS.agentLibFingerprint, BOX_LABELS.agentLibCommit]);
+
+// Ploinky's source identity of the AchillesAgentLib copy an outer Box image
+// supplies: a hash of that image ID and the library name, never of content.
+export function imageAgentLibSourceIdHash(imageId) {
+  return createHash('sha256')
+    .update(JSON.stringify({ kind: 'image', library: 'achillesAgentLib', supplyingImageId: imageId }))
+    .digest('hex');
+}
+
 function exactAgentLibCommit(value, name) {
   const text = String(value ?? '');
   if (text !== '' && !/^[0-9a-f]{40}$/.test(text)) {
@@ -188,10 +199,14 @@ function exactBoxLabels(labels, {
   const source = record(labels, 'outer container Config.Labels');
   const routerBindAddress = assertRouterBindAddressLabel(source, expectedRouterBindAddress);
   const gpuGrant = assertGpuGrantLabel(source, expectedGpuGrant);
+  // Ploinky identifies the AchillesAgentLib copy a Box image supplies by that
+  // outer image and the library, so an image selection carries no content
+  // fingerprint or Git commit label; a local checkout carries both.
+  const imageAgentLib = source[BOX_LABELS.agentLibMode] === 'image';
   const semanticEntries = Object.entries(source)
     .sort(([left], [right]) => left.localeCompare(right));
   const expectedNames = [
-    ...Object.values(BOX_LABELS),
+    ...Object.values(BOX_LABELS).filter((name) => !imageAgentLib || !IMAGE_AGENTLIB_ABSENT_LABELS.includes(name)),
     ...(routerBindAddress === DEFAULT_ROUTER_BIND_ADDRESS ? [] : [ROUTER_BIND_ADDRESS_LABEL]),
     ...(gpuGrant === null ? [] : [GPU_GRANT_LABEL]),
   ].sort();
@@ -240,7 +255,7 @@ function exactBoxLabels(labels, {
     source[BOX_LABELS.agentLibSourceIdHash],
     'outer container Box AgentLib source-id label',
   );
-  const agentLibFingerprint = exactSha256(
+  const agentLibFingerprint = imageAgentLib ? null : exactSha256(
     source[BOX_LABELS.agentLibFingerprint],
     'outer container Box AgentLib fingerprint label',
   );
@@ -248,25 +263,21 @@ function exactBoxLabels(labels, {
     source[BOX_LABELS.agentLibSourceRelativePath],
     'outer container Box AgentLib source-path label',
   );
-  const agentLibCommit = exactAgentLibCommit(
+  const agentLibCommit = imageAgentLib ? null : exactAgentLibCommit(
     source[BOX_LABELS.agentLibCommit],
     'outer container Box AgentLib commit label',
   );
   if (agentLibMode === 'image') {
     if (source[BOX_LABELS.agentLibMode] !== 'image'
-      || source[BOX_LABELS.agentLibSourceIdHash] !== agentLibSourceIdHash
-      || source[BOX_LABELS.agentLibFingerprint] !== agentLibFingerprint) {
-      throw new Error('Image AgentLib labels require exact image mode and lowercase SHA-256 fingerprints.');
+      || source[BOX_LABELS.agentLibSourceIdHash] !== agentLibSourceIdHash) {
+      throw new Error('Image AgentLib labels require exact image mode and a lowercase SHA-256 source identity.');
     }
-    if (source[BOX_LABELS.agentLibSourceRelativePath] !== 'image' || !agentLibCommit) {
-      throw new Error('Image AgentLib evidence requires source-path image and a nonempty 40-hex commit.');
+    if (source[BOX_LABELS.agentLibSourceRelativePath] !== 'image') {
+      throw new Error('Image AgentLib evidence requires source-path image.');
     }
     const imageId = exactImageId(expectedImageId, 'image AgentLib expected image ID');
-    const expectedSourceId = createHash('sha256')
-      .update(`image:${imageId}:${agentLibFingerprint}`)
-      .digest('hex');
-    if (agentLibSourceIdHash !== expectedSourceId) {
-      throw new Error('Image AgentLib source identity must bind the exact image ID and content fingerprint.');
+    if (agentLibSourceIdHash !== imageAgentLibSourceIdHash(imageId)) {
+      throw new Error('Image AgentLib source identity must bind the exact outer image ID and the library.');
     }
   }
   return Object.freeze({
@@ -281,9 +292,9 @@ function exactBoxLabels(labels, {
     imagesFingerprint,
     agentLibMode,
     agentLibSourceIdHash,
-    agentLibFingerprint,
+    ...(imageAgentLib ? {} : { agentLibFingerprint }),
     agentLibSourceRelativePath,
-    agentLibCommit,
+    ...(imageAgentLib ? {} : { agentLibCommit }),
     ...(gpuGrant === null ? {} : { gpuGrant }),
   });
 }
@@ -514,7 +525,11 @@ export function validateBoxEvidence(input, {
   const securityOptions = exactBoxSecurityOptions(evidence.securityOptions);
   const semanticLabels = exactBoxLabels(
     Object.fromEntries([
-      ...Object.entries(BOX_LABELS).map(([name, label]) => [label, evidence.semanticLabels?.[name]]),
+      // A label the evidence does not record stays absent, so the exact label
+      // set check decides whether this AgentLib mode may omit it.
+      ...Object.entries(BOX_LABELS)
+        .filter(([name]) => Object.hasOwn(evidence.semanticLabels || {}, name))
+        .map(([name, label]) => [label, evidence.semanticLabels[name]]),
       ...(Object.hasOwn(evidence.semanticLabels || {}, 'routerBindAddress')
         ? [[ROUTER_BIND_ADDRESS_LABEL, evidence.semanticLabels.routerBindAddress]] : []),
       ...(Object.hasOwn(evidence.semanticLabels || {}, 'gpuGrant')
