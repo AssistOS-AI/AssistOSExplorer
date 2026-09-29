@@ -290,11 +290,11 @@ function renderWorkflows(workflows, canAdmin) {
         const link = document.createElement('a');
         link.className = 'button';
         link.href = endpoint(`flow-types?id=${encodeURIComponent(workflow.id)}`);
-        link.textContent = canAdmin && workflow.kind !== 'default' ? 'Edit workflow' : 'View workflow';
+        link.textContent = canAdmin && !workflow.readOnly && workflow.kind !== 'default' ? 'Edit workflow' : 'View workflow';
         const actions = document.createElement('div');
         actions.className = 'workflow-actions';
         actions.append(link);
-        if (canAdmin && workflow.id !== 'default' && workflow.kind !== 'default') {
+        if (canAdmin && !workflow.readOnly && workflow.id !== 'default' && workflow.kind !== 'default') {
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'button danger';

@@ -234,6 +234,10 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         return true;
     }
 
+    if (pathname === '/api/roboflow/creator-skill' && req.method === 'GET') {
+        const content = await fs.promises.readFile(new URL('../copilot/src/skills/workflow-creator/SKILL.md', import.meta.url), 'utf8');
+        sendJson(res, 200, { name: 'workflow-creator', content, readOnly: true }); return true;
+    }
     if (pathname === '/api/roboflow/skillsets' && req.method === 'GET') {
         sendJson(res, 200, { ok: true, ...await roboflow.catalog() }); return true;
     }
@@ -303,6 +307,11 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
     const stopId = pathname.match(new RegExp(`^${FLOW_PATH}/stop$`))?.[1];
     if (stopId && req.method === 'POST') {
         sendJson(res, 200, { ok: true, flow: await roboflow.stopFlow(stopId) });
+        return true;
+    }
+    const resumeId = pathname.match(new RegExp(`^${FLOW_PATH}/resume$`))?.[1];
+    if (resumeId && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, flow: await roboflow.resumeFlow(resumeId) });
         return true;
     }
     const instanceStop = pathname.match(new RegExp(`^${FLOW_PATH}/instances/(inv_[0-9a-f]{24})/stop$`));

@@ -1,3 +1,4 @@
+import { emitTaskDiagnostic } from './webchatDiagnostics.mjs';
 import { workflowIdForTask, readWorkflowTask } from './webchatWorkflowStatus.mjs';
 import crypto from 'node:crypto';
 import { normalizeTaskLiveSession } from '../tasks/taskLiveSession.mjs';
@@ -170,6 +171,14 @@ export async function createWebchatBackgroundTaskManager({
     const taskStartWaiters = new Map();
     const pendingContinuations = new Map();
     let closed = false;
+    const diagnose = (message, taskId, error, level = 'warn') => {
+        if (!closed) emitTaskDiagnostic({ message, taskId, error, level }, emitProtocol);
+    };
+    const recovered = record => {
+        if (record.pollFailures) diagnose('Task monitoring recovered.', record.id, null, 'info');
+        record.pollFailures = 0;
+        record.lastDiagnostic = null;
+    };
 
     const notifyTaskStarted = (record, origin) => {
         const key = originKey(origin);
@@ -178,12 +187,14 @@ export async function createWebchatBackgroundTaskManager({
     };
 
     const publish = async (payload, { persist = true, workflowSnapshot = false } = {}) => {
+        if (closed) return { rejected: true, task: payload?.task };
         let outgoing = payload;
         if (persist && payload?.task) {
             const stored = await ingestTaskEvent(workingDir, payload, { workflowSnapshot });
             if (stored.rejected) return stored;
             outgoing = { ...payload, ...stored };
         }
+        if (closed) return { ...outgoing, rejected: true };
         if (outgoing?.task) outgoing = { ...outgoing, task: presentTask(outgoing.task, taskModelCatalogs) };
         if (Array.isArray(outgoing?.tasks)) {
             outgoing = { ...outgoing, tasks: outgoing.tasks.map((task) => presentTask(task, taskModelCatalogs)) };
@@ -197,7 +208,10 @@ export async function createWebchatBackgroundTaskManager({
         if (closed || record.terminal || record.timer) return;
         record.timer = setTimeout(() => {
             record.timer = null;
-            void poll(record, getTaskStatus);
+            void poll(record, getTaskStatus).catch(error => {
+                diagnose('Task monitoring could not publish an update; retrying.', record.id, error);
+                schedulePoll(record, getTaskStatus, 30000);
+            });
         }, delay);
     };
 
@@ -226,6 +240,7 @@ export async function createWebchatBackgroundTaskManager({
         try {
             if (workflowIdForTask(record)) {
                 await syncWorkflow(record);
+                recovered(record);
                 schedulePoll(record, getTaskStatus);
                 return;
             }
@@ -248,6 +263,7 @@ export async function createWebchatBackgroundTaskManager({
                 const saved = getTask(workingDir, record.id);
                 await publish({ event: 'update', task: { ...saved, details: record.details } });
                 await syncWorkflow(record);
+                recovered(record);
                 schedulePoll(record, getTaskStatus);
                 return;
             }
@@ -297,12 +313,14 @@ export async function createWebchatBackgroundTaskManager({
                     return;
                 }
             }
+            recovered(record);
             if (status !== 'ongoing') {
                 record.terminal = true;
                 if (active.get(record.id) === record) active.delete(record.id);
                 return;
             }
         } catch (error) {
+            if (closed || record.terminal) return;
             record.remoteStatus = previousStatus;
             record.logSeq = previousSeq;
             const message = trim(error?.message).toLowerCase();
@@ -324,9 +342,14 @@ export async function createWebchatBackgroundTaskManager({
                 });
                 return;
             }
-            console.warn(`[webchat-tasks] Unable to poll or persist ${record.id}: ${error?.code || 'task_poll_failed'}`);
+            record.pollFailures = (record.pollFailures || 0) + 1;
+            const key = `${error?.code || ''}:${error?.message || ''}`;
+            if (record.lastDiagnostic?.key !== key || Date.now() - record.lastDiagnostic.time >= 60000) {
+                diagnose('Unable to poll or persist task; retrying.', record.id, error);
+                record.lastDiagnostic = { key, time: Date.now() };
+            }
         }
-        schedulePoll(record, getTaskStatus);
+        schedulePoll(record, getTaskStatus, Math.min(30000, TASK_POLL_INTERVAL_MS * 2 ** Math.min(record.pollFailures || 0, 4)));
     };
 
     const watch = async ({ agentName, taskId, toolName, arguments: args, metadata, getTaskStatus }, existing = null, origin = null) => {
@@ -380,14 +403,14 @@ export async function createWebchatBackgroundTaskManager({
                 await onTaskStarted(record, Object.freeze({ ...association(origin), workingDir,
                     sourceTabId: trim(origin.sourceTabId), sourcePageInstanceId: trim(origin.sourcePageInstanceId) }));
             } catch {
-                console.warn(`[webchat-tasks] Unable to attach ${id} to its conversation; task observation continues.`);
+                diagnose('Unable to attach task to its conversation; observation continues.', id);
             }
         }
         try {
             await publish({ event: existing ? 'reattached' : 'started', task: outgoing.task,
                 ...association(existing || origin) }, { persist: false });
         } catch {
-            console.warn(`[webchat-tasks] Unable to publish ${id}; task observation continues.`);
+            diagnose('Unable to publish task; observation continues.', id);
         } finally {
             if (!existing) notifyTaskStarted(record, origin);
             schedulePoll(record, getTaskStatus, 0);
@@ -431,12 +454,14 @@ export async function createWebchatBackgroundTaskManager({
         try {
             ongoingTasks = readWorkspaceTasks(workingDir).filter(task => task.status === 'ongoing' || workflowIdForTask(task));
         } catch (error) {
-            console.warn(`[webchat-tasks] Unable to read task journal: ${error.message}`);
+            diagnose('Unable to read task journal.', null, error);
             return;
         }
         for (const task of ongoingTasks) {
             void agentClientModule.createAgentClient(task.targetAgent).then(async (client) => {
+                if (closed) return;
                 await client.ensureAgentRunning(task.targetAgent, { mode: 'global' });
+                if (closed) return;
                 await watch({
                     agentName: task.targetAgent,
                     taskId: task.remoteTaskId,
@@ -446,7 +471,7 @@ export async function createWebchatBackgroundTaskManager({
                     getTaskStatus: () => client.getTaskStatus(task.remoteTaskId),
                 }, task);
             }).catch((error) => {
-                console.warn(`[webchat-tasks] Unable to reattach ${task.id}: ${error.message}`);
+                diagnose('Unable to reattach task.', task.id, error);
             });
         }
     }, 250);

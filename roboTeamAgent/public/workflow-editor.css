@@ -106,3 +106,8 @@
     .workflow-main { height: auto; }
     #graphPage { min-height: 420px; }
 }
+
+.graph-node.graph-creator { outline: 3px solid #a855f7; outline-offset: 3px; }
+.graph-node.graph-creator:focus-visible { box-shadow: 0 0 0 7px var(--accent); }
+.graph-node.graph-coordinator { border-style: dashed; }
+.creator-toggle.is-active { background: #7e22ce; border-color: #7e22ce; }

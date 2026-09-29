@@ -22,7 +22,7 @@ export function createWorkflowEditor({ api }) {
     let graph, catalog = [], canAdmin = false, selected = null, selectedEdgeId = null, currentPage = 'settings', version = 0, coverageRequest = 0;
     let warningTaskIds = new Set();
     const blank = () => ({ name: '', description: '', entryTaskId: '', tasks: [], edges: [], layout: {} });
-    const readonly = () => !canAdmin || graph?.kind === 'default';
+    const readonly = () => !canAdmin || graph?.readOnly === true || graph?.kind === 'default';
     const changed = () => { version++; };
     function showError(error) { message.textContent = error.message; }
     function showPage(page) {
@@ -67,8 +67,25 @@ export function createWorkflowEditor({ api }) {
             }
         } catch (error) { if (request === coverageRequest) showError(error); }
     }
+    function syncCoordinator() {
+        const creators = graph.tasks.filter(task => task.creator);
+        const id = 'run-workflows';
+        if (creators.length && !graph.tasks.some(task => task.id === id)) {
+            graph.tasks.push({ id, name: 'Run workflows', kind: 'run-workflows', skillsets: [] });
+            graph.layout[id] = layoutFor(graph.tasks.length - 1);
+        }
+        if (!creators.length) {
+            graph.tasks = graph.tasks.filter(task => task.id !== id);
+            delete graph.layout[id];
+        }
+        graph.edges = graph.edges.filter(edge => edge.targetTaskId !== id || creators.some(task => task.id === edge.sourceTaskId));
+        if (!creators.length) graph.edges = graph.edges.filter(edge => edge.sourceTaskId !== id);
+    }
     function connect({ source, target }) {
         if (source.taskId === target.taskId) return;
+        if (target.taskId === 'run-workflows' && !graph.tasks.find(task => task.id === source.taskId)?.creator) {
+            showError(new Error('Only a workflow creator can connect to Run workflows.')); return;
+        }
         graph.edges.push({ id: `edge-${crypto.randomUUID()}`, sourceTaskId: source.taskId, targetTaskId: target.taskId, sourcePort: source.side, targetPort: target.side }); changed(); render();
     }
     function renderBoard() { drawBoard(board, graph, { readOnly: readonly(), onSelect: id => { selected = id; renderList(); renderTaskEditor(); }, selectedEdgeId, onSelectEdge: id => { selectedEdgeId = id; renderBoard(); }, onChange: event => { if (event.connect) connect(event.connect); else changed(); } }); }
@@ -199,7 +216,7 @@ export function createWorkflowEditor({ api }) {
             item.dataset.taskId = task.id;
             if (task.id === selected) item.classList.add('selected');
             if (warningTaskIds.has(task.id)) item.classList.add('coverage-warning');
-            item.append(node('strong', task.name || 'Untitled task'), node('span', task.executionType || 'terminal / desktop / browser'));
+            item.append(node('strong', task.name || 'Untitled task'), node('span', task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Creator · ' : ''}${task.executionType || 'terminal / desktop / browser'}`));
             item.onclick = () => select(task.id);
             row.append(item);
             taskList.append(row);
@@ -215,7 +232,12 @@ export function createWorkflowEditor({ api }) {
             return;
         }
         const card = node('section', null, 'task-editor'); card.dataset.taskId = task.id;
-        card.append(node('h3', 'Edit task'));
+        card.append(node('h3', task.kind === 'run-workflows' ? 'Run workflows' : 'Edit task'));
+        if (task.kind === 'run-workflows') {
+            card.append(node('p', 'RoboFlow runs the workflows chosen by a creator in parallel. After all children complete or fail, it follows the creator’s selected outgoing edge. A stopped child waits for Resume.'));
+            card.append(node('p', 'Connect creators to this node and draw its outgoing continuation edges in the graph.'));
+            taskPanel.append(card); return;
+        }
         const name = node('input'); name.value = task.name || ''; name.maxLength = 120;
         name.oninput = () => {
             task.name = name.value; changed();
@@ -240,12 +262,42 @@ export function createWorkflowEditor({ api }) {
         entryToggle.setAttribute('aria-pressed', String(isEntry));
         if (isEntry) entryToggle.classList.add('is-active');
         entryToggle.onclick = () => { graph.entryTaskId = task.id; changed(); renderBoard(); renderTaskEditor(); };
-        card.append(basics, entryToggle, field('Prompt', prompt));
+        const creatorToggle = node('button', task.creator ? 'Workflow creator' : 'Mark as workflow creator', 'entry-toggle creator-toggle');
+        creatorToggle.type = 'button';
+        creatorToggle.setAttribute('aria-pressed', String(Boolean(task.creator)));
+        creatorToggle.classList.toggle('is-active', Boolean(task.creator));
+        creatorToggle.onclick = () => {
+            if (task.creator && graph.tasks.filter(item => item.creator).length === 1
+                && graph.edges.some(edge => edge.sourceTaskId === 'run-workflows' || edge.targetTaskId === 'run-workflows')
+                && !confirm('Remove the last creator? Run workflows and its connections will be removed.')) return;
+            task.creator = !task.creator;
+            syncCoordinator();
+            if (task.creator && !graph.edges.some(edge => edge.sourceTaskId === task.id && edge.targetTaskId === 'run-workflows')) {
+                graph.edges.push({ id: `edge-${crypto.randomUUID()}`, sourceTaskId: task.id, targetTaskId: 'run-workflows', sourcePort: 'right', targetPort: 'left' });
+            }
+            changed(); renderList(); renderBoard(); renderTaskEditor();
+        };
+        card.append(basics, entryToggle, creatorToggle, field('Prompt', prompt));
+        if (task.creator) {
+            const skill = node('details');
+            skill.append(node('summary', 'workflow-creator · Required · View only'));
+            const content = node('pre', 'Open to read the skill.'); content.style.whiteSpace = 'pre-wrap'; skill.append(content);
+            let loaded = false;
+            skill.ontoggle = async () => {
+                if (!skill.open || loaded) return;
+                try { const result = await api('api/roboflow/creator-skill'); content.textContent = result.content; loaded = true; }
+                catch (error) { content.textContent = error.message; }
+            };
+            card.append(skill);
+        }
         if (!Array.isArray(task.skillsets)) task.skillsets = [];
         const deleteTask = button('Delete task', () => {
+            if (task.creator && graph.tasks.filter(item => item.creator).length === 1
+                && !confirm('Delete the last creator and remove Run workflows with its connections?')) return;
             graph.tasks = graph.tasks.filter(item => item.id !== task.id);
             graph.edges = graph.edges.filter(edge => edge.sourceTaskId !== task.id && edge.targetTaskId !== task.id);
             delete graph.layout[task.id];
+            syncCoordinator();
             if (graph.entryTaskId === task.id) graph.entryTaskId = graph.tasks[0]?.id || '';
             if (selected === task.id) selected = graph.tasks[0]?.id || null;
             changed(); render(); showPage(graph.tasks.length ? 'graph' : 'settings');

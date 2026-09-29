@@ -158,6 +158,16 @@ export class LiveSkillCatalog {
             entry.reason = 'Provided automatically by DocumentationSkills';
         }
         entries.push(required);
+        if (policy.workflowCreator) {
+            const sourcePath = path.join(copilotSkillsRoot, 'workflow-creator');
+            const inspected = await inspectSkill(sourcePath, directory => this.service.discover(directory));
+            for (const entry of entries) if (entry.name === 'workflow-creator') {
+                entry.enabled = false; entry.readOnly = true; entry.state = 'shadowed';
+            }
+            entries.push({ ...inspected, identity: 'required/workflow-creator', source: 'RoboFlow', sourceId: 'required',
+                sourcePath, owner: copilotSkillsRoot, type: 'anthropic', required: true, readOnly: true,
+                enabled: true, explicit: true, state: 'selected' });
+        }
         const groups = new Map();
         for (const entry of entries.filter((item) => item.enabled)) {
             const key = entry.name.normalize('NFC').toLowerCase();

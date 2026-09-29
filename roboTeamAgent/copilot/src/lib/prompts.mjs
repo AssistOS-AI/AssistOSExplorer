@@ -31,12 +31,17 @@ export function routingPrompt(graph, taskId) {
 export function generationPrompt(catalog) {
     return [
         'You are a workflow planner. For the user task, produce an optimal directed graph: split the task into smaller tasks that each make sense, and find the execution paths that can lead the task to completion. A task can have several possible execution paths, not only a linear one.',
-        'Every task is executed by a coding agent and must declare exactly one execution type:',
+        'Ordinary tasks are executed by a coding agent and must declare exactly one execution type:',
         '- terminal: the usual CLI coding-agent mode;',
         '- desktop: coding agents with computer-use MCP tools operating a virtual desktop;',
         '- browser: coding agents with browser-use MCP tools operating a DuckDuckGo browser, to navigate the web and browse sites.',
         'Return one JSON object with no prose and do not execute the workflow. Fields: name, description, entryTaskId, tasks, edges, layout. Each task has a unique id, name, prompt, skillsets (array of exact catalog IDs; each is a named skillset or an individual skill) and executionType (terminal, desktop or browser). Each edge has a unique id, sourceTaskId, targetTaskId and no description. Write task prompts that let a branching task select its outgoing edge. All endpoints and the entry task must exist. Cycles are allowed. Never choose robots and never generate the reserved default workflow. Layout is optional.',
         `Catalog: ${JSON.stringify(catalog?.skillsets || [])}.`,
+        'An ordinary task may set creator:true to choose parallel child workflows. In that case include exactly one shared task {id:"run-workflows",name:"Run workflows",kind:"run-workflows",skillsets:[]}. This managed task has no prompt or executionType, cannot be the entry, accepts edges only from creators and has outgoing continuation edges. Creators may also have ordinary outgoing edges.',
         'Example: {"name":"Report","description":"Produce a report","entryTaskId":"research","tasks":[{"id":"research","name":"Research","prompt":"Open DuckDuckGo and collect sources about the topic","skillsets":[],"executionType":"browser"},{"id":"report","name":"Report","prompt":"Write the report from the collected sources","skillsets":[],"executionType":"terminal"}],"edges":[{"id":"done","sourceTaskId":"research","targetTaskId":"report"}]}',
     ].join('\n');
+}
+
+export function creatorPrompt(graph, taskId, catalog) {
+    return `You are a workflow creator. Read .agents/skills/workflow-creator/SKILL.md. Choose either an ordinary outgoing edge or the edge into Run workflows to delegate the current task. Choose workflows from the supplied catalog by their descriptions and give each a self-contained prompt. All chosen workflows run in parallel. Return one JSON object with message and nextEdgeId. When entering Run workflows, also return afterWorkflowsEdgeId (an outgoing edge of Run workflows) and a nonempty workflows array of {workflowTypeId,prompt}; default additionally requires executionType. Do not launch workflows yourself.\nCurrent node: ${taskId}\nGraph: ${JSON.stringify(graph)}\nAvailable workflows: ${JSON.stringify(catalog)}`;
 }

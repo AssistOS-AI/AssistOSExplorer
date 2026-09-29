@@ -8,7 +8,7 @@ export const IMPACT_SKILL = 'summarize-agent-impact';
 export const IMPACT_IDENTITY = `required/${IMPACT_SKILL}`;
 const REPOSITORY = 'DocumentationSkills';
 
-export async function requiredImpactSkill(service) {
+export async function requiredDocumentationRepository(service = {}) {
     const client = service.repositoriesClient || await repositoryClient();
     let repositories = await client.listRepositories();
     let repo = repositories.find(entry => entry.name === REPOSITORY);
@@ -18,7 +18,11 @@ export async function requiredImpactSkill(service) {
         repo = repositories.find(entry => entry.name === REPOSITORY && entry.origin !== 'remote');
     }
     if (!repo || repo.origin === 'remote') throw skillError('Required DocumentationSkills repository is unavailable');
-    const root = await fs.realpath(repo.source);
+    return fs.realpath(repo.source);
+}
+
+export async function requiredImpactSkill(service) {
+    const root = await requiredDocumentationRepository(service);
     const sourcePath = await fs.realpath(path.join(root, 'skills', IMPACT_SKILL));
     if (!inside(root, sourcePath)) throw skillError('Required impact skill is outside its repository');
     const inspected = await inspectSkill(sourcePath, directory => service.discover(directory));

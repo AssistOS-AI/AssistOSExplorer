@@ -29,7 +29,7 @@ export function matchRobot(robot, task) {
     return task.skillsets.every(id => sets.some(set => set.id === id));
 }
 export function coverage(graph, robots) {
-    const tasks = graph.tasks.map(task => ({ taskId: task.id, matchingRobotIds: robots.filter(robot =>
+    const tasks = graph.tasks.filter(task => task.kind !== 'run-workflows').map(task => ({ taskId: task.id, matchingRobotIds: robots.filter(robot =>
         (graph.kind !== 'default' || robot.name === 'default') && matchRobot(robot, task)).map(robot => robot.id) }));
     return { warning: tasks.some(task => !task.matchingRobotIds.length), tasks,
         message: tasks.some(task => !task.matchingRobotIds.length) ? COVERAGE_WARNING : null };

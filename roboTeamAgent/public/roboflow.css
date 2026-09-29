@@ -391,3 +391,7 @@ body {
     .hero { flex-direction: column; }
     .section-heading { flex-wrap: wrap; }
 }
+
+.phase-subflows { padding: 1rem; overflow: auto; }
+.phase-subflows li { padding: .75rem 0; }
+.phase-subflows li > span { margin-left: 1rem; }

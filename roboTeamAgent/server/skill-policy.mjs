@@ -139,7 +139,7 @@ export class SkillPolicies {
                 diagnostics.push({ state: 'migration-required', message: `Original source for ${name} cannot be proven; reselect a source or explicitly pin the recovery catalog.` });
             } else bindings[name] = { source: set.source, generation: set.generation };
         }
-        const policy = { version: 2, policyVersion: 1, mode: 'live', scopeRoot, selectors: { skillSets: sets, skills }, bindings,
+        const policy = { ...(input?.workflowCreator === true ? { workflowCreator: true } : {}), version: 2, policyVersion: 1, mode: 'live', scopeRoot, selectors: { skillSets: sets, skills }, bindings,
             excludedSkills: [], excludedSources: [], excludedNames, overrides: {}, diagnostics,
             ...(legacy ? { legacyRecovery: structuredClone(legacy) } : {}) };
         return this.rememberNameExclusions(robot, policy, scopeRoot);

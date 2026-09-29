@@ -91,11 +91,13 @@ export function drawBoard(container, graph, { readOnly = false, onChange = () =>
         node.dataset.taskId = task.id;
         nodeElements.set(task.id, node);
         node.setAttribute('aria-label', `${task.name}. ${readOnly ? '' : 'Arrow keys move this task.'}`);
+        if (task.creator) node.classList.add('graph-creator');
+        if (task.kind === 'run-workflows') node.classList.add('graph-coordinator');
         if (task.id === graph.entryTaskId) node.classList.add('graph-entry');
         if (!graph.edges.some(edge => edge.sourceTaskId === task.id)) node.classList.add('graph-terminal');
         if (states[task.id]) node.classList.add(`graph-state-${states[task.id]}`);
         const label = document.createElement('strong'); label.textContent = task.name;
-        const detail = document.createElement('span'); detail.textContent = `${task.executionType || 'terminal / desktop / browser'}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
+        const detail = document.createElement('span'); detail.textContent = `${task.kind === 'run-workflows' ? 'RoboFlow coordinator' : `${task.creator ? 'Creator · ' : ''}${task.executionType || 'terminal / desktop / browser'}`}${states[task.id] ? ` · ${states[task.id]}` : ''}`;
         node.append(label, detail);
         const place = () => { node.style.left = `${graph.layout[task.id].x}px`; node.style.top = `${graph.layout[task.id].y}px`; };
         place();

@@ -74,7 +74,18 @@ function renderHeader(flow) {
     const error = document.querySelector('#flowError');
     error.hidden = !flow.error;
     error.textContent = flow.error || '';
-    document.querySelector('#stopFlowButton').disabled = terminalStatus(flow.status);
+    const control = document.querySelector('#stopFlowButton');
+    const paused = ['stopped', 'interrupted'].includes(flow.status);
+    control.textContent = paused ? 'Resume workflow' : 'Stop workflow';
+    control.classList.toggle('danger', !paused);
+    control.classList.toggle('primary', paused);
+    control.disabled = ['completed', 'failed'].includes(flow.status);
+    let parentLink = document.querySelector('#parentFlowLink');
+    if (!parentLink && flow.parentFlowId) {
+        parentLink = element('a', 'Parent workflow'); parentLink.id = 'parentFlowLink';
+        control.parentElement.prepend(parentLink);
+    }
+    if (parentLink) parentLink.href = api(`flows?flowId=${encodeURIComponent(flow.parentFlowId)}`);
 }
 
 function phaseItem(task, instance) {
@@ -90,7 +101,8 @@ function phaseItem(task, instance) {
     head.className = 'phase-card-head';
     head.append(element('strong', `${instance.sequence + 1}. ${task.name}`));
     head.append(element('span', duration(instance)));
-    const meta = element('span', `${instance.robotName || 'Awaiting robot'} · ${instance.executionType || ''} · ${instance.state}`);
+    const meta = element('span', task.kind === 'run-workflows' ? `Parallel workflows · ${instance.state}`
+        : `${instance.robotName || 'Awaiting robot'} · ${instance.executionType || ''} · ${instance.state}`);
     meta.className = 'phase-card-meta';
     card.append(head, meta);
     if (!terminalStatus(instance.state)) {
@@ -194,6 +206,11 @@ function renderStage() {
             tabs.append(tab);
         };
         addTab('Logs', logs);
+        const definition = currentFlow.graph.tasks.find(task => task.id === instance.taskId);
+        if (definition?.creator || definition?.kind === 'run-workflows') {
+            const children = document.createElement('div'); children.className = 'phase-subflows';
+            addTab('Sub-flows', children); renderSubflows(children, instance);
+        }
         const summary = document.createElement('iframe');
         summary.className = 'phase-session-frame';
         summary.title = 'View Summary';
@@ -240,6 +257,25 @@ function renderStage() {
     body.append(element('p', 'Pick a phase on the left, or open the graph to follow the running tasks.'));
 }
 
+function renderSubflows(container, instance) {
+    container.replaceChildren();
+    const children = instance.subflows || [];
+    if (!children.length) { container.append(element('p', 'No sub-flows started for this phase.')); return; }
+    const finished = children.filter(child => ['completed', 'failed'].includes(child.status)).length;
+    container.append(element('p', `${finished}/${children.length} sub-flows finished`));
+    const list = document.createElement('ul');
+    for (const child of children) {
+        const row = document.createElement('li');
+        const link = element('a', child.workflowName || child.id);
+        link.href = api(`flows?flowId=${encodeURIComponent(child.id)}`);
+        const status = element('span', child.status); status.className = `phase-view-status is-${phaseStatusClass(child.status)}`;
+        row.append(link, status, element('span', duration(child)));
+        if (child.error) row.append(element('p', child.error));
+        list.append(row);
+    }
+    container.append(list);
+}
+
 function phaseStatusClass(state) {
     if (['running', 'queued', 'starting'].includes(state)) return 'running';
     if (state === 'completed') return 'finished';
@@ -283,10 +319,13 @@ function skillsetLabel(id) {
 function renderPhaseDetail(container, instance) {
     const task = currentFlow.graph.tasks.find(candidate => candidate.id === instance.taskId);
     container.replaceChildren();
-    const description = element('p', task?.prompt || 'No prompt.');
+    const description = element('p', task?.kind === 'run-workflows'
+        ? 'Runs the creator’s selected workflows in parallel and waits for them before continuing on the selected edge.'
+        : task?.prompt || 'No prompt.');
     description.className = 'phase-description';
     container.append(description);
-    const skillsets = Array.isArray(task?.skillsets) ? task.skillsets : [];
+    if (task?.kind === 'run-workflows') return;
+    const skillsets = [...(Array.isArray(task?.skillsets) ? task.skillsets : []), ...(task?.creator ? ['workflow-creator (required)'] : [])];
     const rows = [
         { label: 'Execution type', value: instance.executionType || task?.executionType || '—' },
         { label: 'Skills', value: skillsets.length ? skillsets.map(skillsetLabel).join(', ') : 'None', title: skillsets.join(', ') },
@@ -312,6 +351,7 @@ const COMPOSER_MIN_HEIGHT = 40;
 const COMPOSER_MAX_HEIGHT = 132;
 
 function composerMode(instance) {
+    if (currentFlow?.graph.tasks.find(task => task.id === instance.taskId)?.kind === 'run-workflows') return '';
     if (['queued', 'starting', 'running'].includes(instance.state)) return 'message';
     if (['stopped', 'completed', 'failed'].includes(instance.state)) return 'continue';
     return '';
@@ -427,8 +467,11 @@ function showGraph() {
 
 async function stopFlow() {
     if (!selected) return;
-    try { await post(`api/roboflow/flows/${encodeURIComponent(selected)}/stop`); await refresh(); }
+    const action = ['stopped', 'interrupted'].includes(currentFlow?.status) ? 'resume' : 'stop';
+    const button = document.querySelector('#stopFlowButton'); button.disabled = true;
+    try { await post(`api/roboflow/flows/${encodeURIComponent(selected)}/${action}`); await refresh(); }
     catch (error) { setMessage(error.message, true); }
+    finally { if (currentFlow) renderHeader(currentFlow); }
 }
 
 async function stopPhase(instanceId) {
@@ -450,6 +493,8 @@ async function refresh() {
         const detail = document.querySelector('#stageBody .phase-view-detail');
         const composer = document.querySelector('#stageBody .phase-composer');
         if (instance && header) renderPhaseHeader(header, instance);
+        const children = document.querySelector('#stageBody .phase-subflows');
+        if (instance && children) renderSubflows(children, instance);
         if (instance && detail) renderPhaseDetail(detail, instance);
         if (instance && composer && composer.dataset.mode !== composerMode(instance)) renderPhaseComposer(composer, instance);
     } else if (stageView === 'pending') {

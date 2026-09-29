@@ -29,14 +29,18 @@ export class TaskFlowStore {
         for (const instance of instances || []) this.database.db.prepare('INSERT INTO task_instances VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET record=excluded.record').run(instance.id, flow.id, instance.sequence, JSON.stringify(instance));
         return flow;
     }
+    createRecord(graph, input = {}) {
+        const now = new Date().toISOString();
+        return { id: TaskFlowStore.newFlowId(), workflowTypeId: graph.id, workflowName: graph.name, graph,
+            ...input, elapsedMs: 0, activeSince: now, status: 'running', currentInstanceId: null,
+            createdAt: now, updatedAt: now, finishedAt: null, error: null, instances: [] };
+    }
     async createFromWorkflow(registry, workflowId, input) {
         await this.initialize();
         return this.database.transaction(() => {
             const graph = registry.getSync(workflowId);
             if (!graph) throw Object.assign(invalid('workflow not found'), { statusCode: 404 });
-            const now = new Date().toISOString();
-            return this.saveSync({ id: TaskFlowStore.newFlowId(), workflowTypeId: graph.id, workflowName: graph.name, graph,
-                ...input, elapsedMs: 0, activeSince: now, status: 'running', currentInstanceId: null, createdAt: now, updatedAt: now, finishedAt: null, error: null, instances: [] });
+            return this.saveSync(this.createRecord(graph, input));
         });
     }
     async get(id) { await this.initialize(); return this.getSync(id); }
@@ -56,9 +60,11 @@ export class TaskFlowStore {
     async list() { await this.initialize(); return this.database.db.prepare('SELECT id FROM workflow_runs ORDER BY rowid DESC').all().map(row => this.getSync(row.id)); }
     async update(id, operation) {
         await this.initialize();
-        return this.database.transaction(() => {
+        let previousStatus;
+        const updated = this.database.transaction(() => {
             const flow = this.getSync(id);
             if (!flow) throw Object.assign(invalid('workflow run not found'), { statusCode: 404 });
+            previousStatus = flow.status;
             const timing = flowTiming(flow);
             const phases = new Map(flow.instances.map(phase => [phase.id, phaseTiming(phase)]));
             operation(flow);
@@ -69,6 +75,8 @@ export class TaskFlowStore {
             }
             return this.saveSync(flow);
         });
+        if (previousStatus !== updated.status) this.onStatusChange?.(updated);
+        return updated;
     }
     async outputPath(flowId, instanceId, suffix, create = false) {
         if (!FLOW_ID_PATTERN.test(flowId) || !INVOCATION_ID_PATTERN.test(instanceId) || !['log', 'result'].includes(suffix)) throw invalid('invalid task output reference');

@@ -87,17 +87,15 @@ When `--ca` selects a concrete backend, RoboTeam prepares that backend's current
 
 ALA owns the coding-agent sandbox even when it runs inside RoboTeam's outer container. It must first probe its normal user-namespace and private-procfs path. The current bounded nested runtime rejects the procfs mount inside that additional user namespace, so ALA may use its capability-assisted private-proc path: Bubblewrap omits the extra user namespace, retains private PID, IPC, and UTS namespaces and the private procfs, constructs the mounts using the outer admitted capability, and drops all capabilities before starting Codex. Codex must disable its redundant native sandbox inside this boundary. Neither this Codex setting nor ALA's private-proc fallback permits execution outside the ALA Bubblewrap filesystem and environment boundary.
 
-## Decisions & Questions
+### Conversation concurrency
 
-### Question #1: Can a robot run several conversations?
+Independent Simple/CLI conversations run concurrently. Desktop and Browser retain one shared graphical queue and container. One conversation uses one ALA session and permits only one active turn. The shared copilot wrapper persists UI messages in the opened folder under .achilles-cli/sessions and invokes ALA with that robot's home.
 
-Response: Independent Simple/CLI conversations run concurrently. Desktop and Browser retain one shared graphical queue and container. One conversation uses one ALA session and permits only one active turn. The shared copilot wrapper persists UI messages under the robot's copilot directory and invokes ALA with that robot's home.
+### Native account continuity
 
-### Question #2: Does this change migrate AchillesCLI state?
+The default robot starts with its own state. Existing robot homes are retained, and old AchillesCLI files are left untouched.
 
-Response: No. The default robot starts with its own state. Existing robot homes are retained, and old AchillesCLI files are left untouched.
-
-RoboTeam must not implement conversation commands for skill selection, live updates or pinning. ALA owns the single initial instruction about mounted .agents/skills; continued turns must not repeat that instruction.
+RoboTeam must not implement conversation commands for skill selection, live updates or pinning. RoboTeam supplies the single initial instruction about mounted .agents/skills; continued turns must not repeat that instruction.
 
 ### Required impact summaries
 
@@ -109,7 +107,7 @@ Assistant replies persist durationMs measured from the start of turn execution t
 
 The copilot/src/lib/prompts.mjs module builds the native prompt and centralizes workspace-copilot instructions, workflow task context, branch routing instructions, graph-generation instructions and task/system prompt composition. RoboFlow supplies the captured graph, objective, current task and previous completed responses when dispatching each task; branch instructions are supplied only for multiple outgoing edges. At the start of a new native conversation, RoboTeam instructs the coding agent to read the SKILL.md headers in .agents/skills and use those skills when needed. It does not enumerate skills in the prompt. This discovery instruction is not repeated on native continuation. RoboTeam owns this caller instruction; ALA forwards the prepared prompt.
 
-## Conclusion
+### Execution ownership
 
 RoboTeam owns robot and GUI lifecycle; the shared conversational wrapper preserves session and task state, and ALA owns native coding-agent execution.
 
@@ -124,3 +122,11 @@ Skillset discovery visibility is administrator-controlled per robot through PATC
 ### Task duration across continuation
 
 WebChat task metadata persists completed active time as `elapsedMs` and the current interval start as `activeSince`. Terminal updates freeze the duration. Continuing the same task retains its elapsed time and begins a new interval, excluding the pause. Log, model and metadata updates do not advance a stopped timer. Ploinky preserves these fields for task cards and task details.
+
+### Creator skill policy
+
+A [Workflow creator](../wiki.html#definition-workflow-creator) policy must always include the bundled workflow-creator descriptor as a required, read-only skill. Normal robot skill selections still determine robot eligibility. The creator policy is stored with the native session and retained on continuation. The managed [Run workflows](../wiki.html#definition-run-workflows) node must execute entirely within RoboFlow without an ALA session. [DS007](DS007-roboflow-team-workflow.md) owns the creator response and child lifecycle contracts.
+
+### Background task diagnostics
+
+WebChat task monitoring must emit version-1 __webchatDiagnostic records for operational warnings and recovery notices. Ploinky must route them to its server console and the browser diagnostic SSE event, without adding them to conversation text or session history. Diagnostics include a bounded, credential-redacted error message and code. Identical polling failures must be reported at most once per minute, with retries backing off to 30 seconds. Recovery resets the polling interval. A closed task manager must suppress late diagnostic and publication callbacks. Opening a new conversation does not delete the folder's task history; stopped workflow cards remain observed so later external continuations can be reflected.

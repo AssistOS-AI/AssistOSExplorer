@@ -1,6 +1,6 @@
 ---
 title: DS007-roboflow-team-workflow
-summary: Global task graphs, generated drafts, SQLite execution records, skillset matching and directed task routing.
+summary: Global task graphs, creator-selected parallel sub-workflows, coordinated stop and resume, SQLite execution records and directed routing.
 ---
 
 ## Introduction
@@ -11,7 +11,7 @@ RoboFlow runs directed graphs of tasks inside RoboTeam. Administrators describe 
 
 ### Graph contract and editor
 
-A workflow has an id, name, description, entryTaskId, tasks, edges and layout. Each task has a unique id, name, prompt, skill selections and one executionType: terminal, desktop or browser. The `skillsets` array holds exact selection IDs that are either named skillsets or individual skills. An edge has id, sourceTaskId, targetTaskId and optional sourcePort/targetPort values of left or right. Older edges without port values normalize to right-to-left. All referenced nodes must exist. Cycles and self-loops are allowed in stored/generated graphs; the manual editor does not create a same-node self-loop. Unreachable nodes produce diagnostics. Workflow definitions contain no robot assignments.
+A workflow has an id, name, description, entryTaskId, tasks, edges and layout. Each ordinary task has a unique id, name, prompt, skill selections and one executionType: terminal, desktop or browser. It may set creator:true. A managed Run workflows task uses kind:run-workflows and has no robot, prompt or execution type. The `skillsets` array holds exact selection IDs that are either named skillsets or individual skills. An edge has id, sourceTaskId, targetTaskId and optional sourcePort/targetPort values of left or right. Older edges without port values normalize to right-to-left. All referenced nodes must exist. Cycles and self-loops are allowed in stored/generated graphs; the manual editor does not create a same-node self-loop. Unreachable nodes produce diagnostics. Workflow definitions contain no robot assignments.
 
 The workflow editor keeps the task list in a left sidebar and shows one right-side page at a time. General contains the workflow name and description. Generate contains the generation prompt and action. Graph contains the drawing board. Selecting a task opens its editable details. The + button immediately inserts a new task named New Task at the top of the list with the terminal execution type, selects it, and opens its details; there is no separate add-task form. Sidebar navigation preserves form values. A missing workflow name is reported on Save and opens General so it can be corrected. Every RoboTeam page marks its hero header with `data-embed-header` and its breadcrumb navigation with `data-embed-breadcrumbs`; an embedding host such as the Explorer expanded modal hides the duplicated page header and mirrors the breadcrumbs into its own single header.
 
@@ -35,6 +35,12 @@ The default robot has no hardcoded workflow role based on its name. The caller s
 
 A run's working folder is the WebChat workspace directory that started it: the WebChat runtime resolves `workspace-dir` relative to the Ploinky workspace root and passes it as the copilot's working directory. The launch-workflow skill always submits that folder and the server rejects a start without one. Every task in the run executes with that folder as its cwd; there is no fallback to the process directory.
 
+### Code Development preset
+
+Startup must also ensure the code-development workflow named Code Development. This read-only preset uses terminal-mode Planning, Execution and Validation tasks with fixed skill requirements from DocumentationSkills. Planning requires gamp-specs and detect-main-behaviors. Execution requires node-coding-style, web-design, gamp-specs, detect-main-behaviors and unslop. Validation requires review-specs and unslop. Normal robot matching applies, and the Execution creator receives its required skill automatically. The editor must allow inspection only, hide deletion controls, and the API must reject edits or deletion even for administrators. The code-development ID is reserved for startup initialization. Existing records must be protected; a missing preset is created at startup. An existing preset with a direct Execution-to-Validation edge must receive the targeted routing update at startup, removing that edge and updating its Execution prompt. Startup must synchronize these phase requirements with the canonical DocumentationSkills source resolved through Ploinky, preparing its default repository when needed. Requirements constrain robot matching and task skill selection; they do not add skills to robot configurations or propagate them to child workflows. Existing run snapshots remain unchanged. This preset is an ordinary workflow with fixed per-task modes, so callers must not supply a run-level executionType.
+
+Planning must inspect the objective and repository and return a detailed plan, acceptance criteria, dependencies, independent work boundaries and testing strategy. Execution must delegate implementation portions through Run workflows, grouping dependent work in one child and separating independent portions into parallel children. It must complete shared prerequisites before delegation and give children self-contained prompts with separate scopes. It may perform appropriate tests during implementation. Execution has only the edge to Run workflows; the coordinator continuation leads to Validation. Validation must inspect the assembled working tree, investigate failed child work, check integration against the plan and objective, run appropriate checks, fix scoped defects and report actual outcomes and remaining gaps. Because it contains a creator, Code Development must be excluded from child catalogs.
+
 ### Dispatch and transitions
 
 Starting a run captures the saved graph and creates a queued task instance at entryTaskId. RoboFlow chooses randomly from matching available robots. Terminal tasks run concurrently without a container-count limit. Desktop and browser share a FIFO GUI slot per robot; an idle matching GUI-capable robot is preferred, otherwise the task waits in an eligible robot's queue. Current GUI backends are Codex and OpenCode. Matching is checked again before runtime preparation.
@@ -51,7 +57,7 @@ The workflow launcher reports a stopped run through the generic command result e
 
 Task instances and runs persist `elapsedMs` for completed active intervals and `activeSince` for the current interval. Stop or completion freezes the duration; continuation opens a new interval without counting the pause. Task timing starts when execution starts; run timing includes dispatch and queue waits while the run is active. Concurrent phases contribute wall-clock time once to the run timer. The flow page displays both phase and run durations. Legacy records use their existing start/end timestamps until their next transition; older pauses cannot be reconstructed.
 
-Phase stop, live prompt and continue are exposed only through the RoboTeam HTTP API and the flow page; they are not RoboTeam MCP tools.
+Workflow resume, phase stop, live prompt and continue are exposed only through the RoboTeam HTTP API and the flow page; they are not RoboTeam MCP tools.
 
 ### Task input and routing output
 
@@ -69,6 +75,34 @@ review-to-publish
 ```
 
 The parser accepts optional message, case-insensitive nextEdgeId, nextEdge or Edge headings, and JSON with the same keys, including a fenced JSON object. An edge choice is required and must identify an outgoing edge of the current node. Missing, conflicting or invalid choices fail the run. An incoming edge never authorizes reverse traversal. Plain final text is valid for automatic transitions and terminal nodes.
+
+### Creators and parallel sub-workflows
+
+An administrator may mark an ordinary task as a [Workflow creator](../wiki.html#definition-workflow-creator). The editor must give it a purple outline that remains visible alongside first-node, selection and execution-state styling. The first creator introduces one shared [Run workflows](../wiki.html#definition-run-workflows) node with the reserved id run-workflows. The editor connects a newly enabled creator to it. Only creators may have incoming edges to that node; it cannot be the entry task, select a robot or carry a prompt, execution type or skill selection. Removing the last creator must remove the managed node and its connections, with confirmation when connections would be removed. Its layout and outgoing continuation edges remain editable. Coverage must evaluate only robot-executed tasks.
+
+The creator must receive the read-only workflow-creator skill for its execution policy, including native continuations. It must also receive the workflow catalog with IDs, names, descriptions and default-workflow execution modes. The catalog must exclude every definition containing a creator or managed coordinator. The same restriction must be validated when accepting a plan. The skill is bundled under copilot/src/skills/workflow-creator and is supplied only for creator policies; it is not part of the default copilot skillset. The task editor exposes its descriptor as view-only. Prompt construction remains in copilot/src/lib/prompts.mjs.
+
+A creator must choose an ordinary outgoing edge or delegate the current task to workflows from the catalog. Its final response must identify one outgoing nextEdgeId. When that edge enters Run workflows, the response must be one JSON object containing message, nextEdgeId, afterWorkflowsEdgeId and workflows. afterWorkflowsEdgeId must identify an outgoing edge of Run workflows. The nonempty workflows array must contain at most 100 objects with workflowTypeId and a nonempty prompt. A default child requires executionType; other child definitions determine their modes. Names are display labels; workflowTypeId is the execution identity. Ordinary edge selection does not launch children.
+
+```json
+{
+  "message": "Review the implementation from two perspectives.",
+  "nextEdgeId": "creator-to-children",
+  "afterWorkflowsEdgeId": "children-to-report",
+  "workflows": [
+    { "workflowTypeId": "security-review", "prompt": "Review security boundaries in this project." },
+    { "workflowTypeId": "usability-review", "prompt": "Review the user experience in this project." }
+  ]
+}
+```
+
+RoboFlow must validate the entire plan before starting a child. Acceptance must atomically capture all child graph snapshots, their objectives and execution modes, the parent and creator visit identities, and the selected continuation edge. Each visit to the shared coordinator owns an independent child list. Child creation must commit together with the parent transition, so duplicate terminal events cannot create another batch. Later type edits or deletion must not change accepted child executions.
+
+All [sub-flows](../wiki.html#definition-sub-flow) must be submitted in parallel in the parent's folder and with the parent's actor attribution. Existing per-robot graphical queues still limit simultaneous GUI execution. Array order identifies result order and must not imply sequential execution. Children must not contain creators, so delegation has one level. The managed coordinator must not start ALA or allocate a robot. It must wait until every child is completed or failed, then follow the edge selected by the creator. A failed child must not cancel siblings or make the parent fail automatically. Its status and error must be available with the other child results to the next phase. The coordinator result stores child references and outcomes; downstream context reads child final responses from their existing outputs, without copying their response bodies into another result file. A stopped or interrupted child must block the join until resumed; it must not count as finished.
+
+The coordinator must be running while any child is active, stopped when no child is active and at least one is stopped or interrupted, and completed after the join advances. Its state participates in the existing parent status precedence. Stop workflow must suspend parent traversal and stop all active phases and child flows. Resume workflow, exposed by POST /api/roboflow/flows/:id/resume, must resume only stopped or interrupted work using “Continuă de unde ai rămas”. Completed and failed children must not restart. A child stopped before native execution must start its saved pending phase; a child with native execution state must continue its saved session. If one continuation cannot start, the other stopped children must still be attempted and the operation must report the failure. Accumulated durations must exclude stopped intervals.
+
+The flow header must replace Stop workflow with Resume workflow when the run is stopped. Each creator visit and coordinator visit must expose a Sub-flows tab with child statuses, durations and links to their flow pages. Child pages must link back to the parent. Polling must update the selected tab without replacing its selection. The WebChat parent card must continue to read the parent workflow's derived state and duration.
 
 ### SQLite and output files
 
@@ -88,7 +122,7 @@ Logs and final responses stay in the run's working folder under .achilles-cli/ro
 
 ### Restart and monitoring
 
-Startup marks unfinished runs failed and unfinished instances interrupted. It does not replay tasks. Completed records remain readable. RoboTeam is a set of separately navigated pages whose header contains breadcrumbs. The dashboard at `/` lists robots, flow types and a Flows history link. Administrators can delete a custom workflow type from its card after confirmation. The built-in default cannot be deleted. Deleting a type preserves existing runs and their captured graphs and output. The flows list page at `/flows` lists executions by workflow name and a human-friendly date, and each entry opens the flow page at `/flows?flowId=<runId>`. The flow type editor is a dedicated page at `/flow-types/new` and `/flow-types?id=<workflowId>` instead of a dialog. The flow page shows a single run and splits into a left phase list and a right stage: the phase list shows every graph task, marking tasks that have not started as pending and each visit with its robot, mode, state and duration, while the stage renders the captured graph on demand or the selected phase's log. Running graph nodes pulse; clicking a node opens that task. Opening a phase shows its prompt, execution type, skillsets and, when assigned, the robot that ran it, above a bounded log panel that scrolls as new output arrives and highlights the final response. Task logs use the same token highlighting as the WebChat task view, including paths, inline code and links. Browser and desktop phases with a live session show Logs and a live GUI session tab that embeds the session in a frame instead of opening another page. Tasks that have not started can be opened too; they show the same details with an empty log. The page stops the whole flow or one running phase. It exposes repeated cycle visits separately. The start tool declares this page as the background task's details link, so the conversation task opens it directly.
+Startup marks unfinished instances interrupted and derives unfinished runs as stopped. Resume resumes saved work explicitly; startup does not launch child workflows. It does not replay tasks. Completed records remain readable. RoboTeam is a set of separately navigated pages whose header contains breadcrumbs. The dashboard at `/` lists robots, flow types and a Flows history link. Administrators can delete a custom workflow type from its card after confirmation. The built-in Default and Code Development workflows cannot be edited or deleted. Deleting a type preserves existing runs and their captured graphs and output. The flows list page at `/flows` lists executions by workflow name and a human-friendly date, and each entry opens the flow page at `/flows?flowId=<runId>`. The flow type editor is a dedicated page at `/flow-types/new` and `/flow-types?id=<workflowId>` instead of a dialog. The flow page shows a single run and splits into a left phase list and a right stage: the phase list shows every graph task, marking tasks that have not started as pending and each visit with its robot, mode, state and duration, while the stage renders the captured graph on demand or the selected phase's log. Running graph nodes pulse; clicking a node opens that task. Opening a phase shows its prompt, execution type, skillsets and, when assigned, the robot that ran it, above a bounded log panel that scrolls as new output arrives and highlights the final response. Task logs use the same token highlighting as the WebChat task view, including paths, inline code and links. Browser and desktop phases with a live session show Logs and a live GUI session tab that embeds the session in a frame instead of opening another page. Tasks that have not started can be opened too; they show the same details with an empty log. The page stops the whole flow or one running phase. It exposes repeated cycle visits separately. The start tool declares this page as the background task's details link, so the conversation task opens it directly.
 
 ### HTTP and MCP
 
@@ -96,36 +130,10 @@ The internal MCP tools are roboflow_list_workflows, roboflow_start_flow, roboflo
 
 The launch-workflow skill starts a flow and returns as soon as the native task is registered; it never waits for or processes the final result. The roboflow_start_flow tool process remains alive and owns the run until it reaches a terminal state, so stopping the native task stops the flow. Early in its standard error it emits a task control record that declares the flow page as the task's detail link, labelled Open workflow page, with the raw task log as a secondary View workflow logs link. The conversation's background task renders both from that metadata, so the model never receives the flow URL.
 
-HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, run start/state/stop, per-phase stop, live prompt, continue and logs under /api/roboflow. Browser mutations require the existing Router CSRF proof. Generation uses the real MCP browser client, including task polling and cancellation. Credentials remain in the authenticated transport.
-
-## Decisions & Questions
-
-### Question #1: Does RoboFlow require an external database service?
-
-Response: No. SQLite is embedded in the RoboTeam process and stored in its data volume.
-
-### Question #2: Are historical workflow versions stored separately?
-
-Response: No. workflow_types stores the current definition. Each workflow_runs record captures the definition used by that execution.
-
-### Question #3: Can a task choose any node?
-
-Response: No. Branching tasks may choose only an explicitly outgoing edge. RoboFlow handles zero or one outgoing edge without asking the robot.
-
-### Question #4: Does incomplete coverage prevent editing or starting?
-
-Response: No. It is a server-calculated UI warning. Reaching an uncovered task fails execution.
-
-### Question #5: How are old workflows handled?
-
-Response: Delete their legacy persisted definitions. Do not migrate them.
+HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, run start/state/stop/resume, per-phase stop, live prompt, continue and logs under /api/roboflow. Browser mutations require the existing Router CSRF proof. Generation uses the real MCP browser client, including task polling and cancellation. Credentials remain in the authenticated transport.
 
 ### Phase summaries
 
 Each executed phase exposes a View Summary tab using the same page as WebChat. Summary references belong to the phase instance and execution attempt, so repeated visits remain separate and manual continuation retains earlier summaries. The index stores offsets in existing log and result files in the task instance record; it does not duplicate summary text. Runtime output identifies assistant text separately from tool output and diagnostics. Workflow JSON and branch selectors are parsed after complete impact-summary blocks are excluded; the original response remains stored.
 
 Task cards retain their coverage warning when selected, deselected or rebuilt by the editor. A task with no matching robot keeps its yellow warning border; selecting it also adds a separate selection outline. A new coverage result updates or clears the warning.
-
-## Conclusion
-
-RoboFlow owns graph execution, records every task visit, and preserves the graph used by each run. The editor combines generated drafts with manual refinement; robot selection follows the skillsets required by each node.

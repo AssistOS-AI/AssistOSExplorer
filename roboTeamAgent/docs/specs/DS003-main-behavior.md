@@ -16,12 +16,8 @@ RoboTeam lets workspace administrators maintain durable robots and lets internal
 | Workspace robot administration | Administrators create and delete shared robot records, while internal workspace agents list and run them by a workspace-unique name. |
 | Robot conversations | Every robot exposes the shared CLI/WebChat wrapper and retains independent conversations, cwd and native sessions; default is the Explorer copilot. |
 | Retained visible workstation | A Desktop or Browser container exposes the same Selkies session to ALA and a human, supports manual takeover with exact task continuation, and is reused or replaced according to mode and cwd. |
-| Graph authoring and execution | Generate and refine global task graphs, dispatch nodes by matching skillsets, and inspect durable run history and final responses. |
+| Graph authoring and execution | Generate and refine global task graphs, dispatch robot tasks by matching skillsets, coordinate parallel child workflows, and inspect durable run history and final responses. |
 | Queued observable ALA execution | Native asynchronous MCP start tools queue work per robot, stream ALA messages through Ploinky task logs, and reach a terminal state when the ALA process exits. |
-
-### Graph authoring and execution
-
-Administrators describe workflows and generate task graphs through the default robot, refine nodes and directed connections on the drawing board, and save them globally. RoboFlow matches each visited task to an available robot by its enabled skillsets, supplies only prior final responses and graph context, and follows outgoing edges. SQLite preserves the graph snapshot and distinct task visits for each run; folder-local output files support monitoring. See DS007 for the graph contract and the special default workflow.
 
 ### Workspace robot administration
 
@@ -48,6 +44,10 @@ A user can call `openDesktopForRobot` or use the dashboard to configure coding-a
 While a GUI session is ready, the dashboard must display its complete authenticated URL on the robot card so the user can reopen a closed session window. The card's Open dropdown offers Browser, Desktop, Terminal (administrators only), and Chat. Browser and Desktop start the selected mode or reopen its ready session; a separate Stop Browser or Stop Desktop button stops the active GUI session. The other GUI mode remains disabled while one is active. A separate `Logs` toggle below that row must reveal only the active GUI container's `podman logs` output and refresh the latest 200-line snapshot once per second. It must not substitute or combine ALA task output. Closing the panel must stop polling. New output must remain in view when the reader is at the bottom, while an upward scroll must preserve the reader's position. The dashboard must not render Take Control or Resume buttons; their programmatic task-control operations remain outside this dashboard contract.
 
 RoboTeam must retain at most one GUI container per robot. A completed or stopped graphical task leaves that container running so a user can inspect the result. A later graphical task must reuse it when its mode and resolved cwd match. If the queued task requires another mode or cwd, RoboTeam must remove the idle retained container by its exact managed name and create one replacement before starting ALA. A Simple task must not start a graphical container and must not remove an existing retained container. Container stop tools remain separate from ALA task stop tools.
+
+### Graph authoring and execution
+
+Administrators describe workflows and generate task graphs through the default robot, refine nodes and directed connections on the drawing board, and save them globally. RoboFlow matches each visited ordinary task to an available robot by its enabled skillsets, supplies only prior final responses and graph context, and follows outgoing edges. SQLite preserves the graph snapshot and distinct task visits for each run; folder-local output files support monitoring. A [Workflow creator](../wiki.html#definition-workflow-creator) may delegate to parallel child workflows through the shared [Run workflows](../wiki.html#definition-run-workflows) node. RoboFlow waits for completed or failed children and follows the creator-selected edge; a stopped child waits for continuation. Children cannot themselves contain creators. Stop and Resume on the parent propagate to active and stopped executions respectively, retaining finished child work and excluding pauses from durations. The creator phase exposes child states and links in Sub-flows. [DS007](DS007-roboflow-team-workflow.md) defines the graph, child-execution and default-workflow contracts.
 
 ### Queued observable ALA execution
 

@@ -1,13 +1,15 @@
+import { ensureCodeDevelopmentWorkflow } from './code-development-workflow.mjs';
+import { Subflows, CONTINUE_PROMPT } from './subflows.mjs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { RoboFlowDatabase } from './database.mjs';
 import { WorkflowRegistry } from './workflow-registry.mjs';
 import { TaskFlowStore } from './task-flow-store.mjs';
-import { normalizeWorkflow, invalid, textField, graphDiagnostics } from './graph.mjs';
+import { normalizeWorkflow, invalid, textField, graphDiagnostics, isCoordinator } from './graph.mjs';
 import { coverage, matchRobot, robotSelections, discoverWorkflowSkillsets } from './skill-matching.mjs';
 import { parseRoute, extractJson } from './result-parser.mjs';
-import { generationPrompt, routingPrompt, buildWorkflowTaskPrompt } from '../../copilot/src/lib/prompts.mjs';
+import { generationPrompt, routingPrompt, buildWorkflowTaskPrompt, creatorPrompt } from '../../copilot/src/lib/prompts.mjs';
 import { ensureDefaultWorkflow } from './default-workflow.mjs';
 import { EXECUTION_TASK_TYPES, EXECUTION_TYPES, WORKFLOWS_DIR } from './constants.mjs';
 import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
@@ -40,6 +42,7 @@ export class RoboFlowService {
         this.discover = options.discoverSkillsets || (() => discoverWorkflowSkillsets(this.skillsets?.repositoriesClient));
         this.bindings = new Map();
         this.chains = new Map();
+        this.subflows = new Subflows(this);
         this.generations = new Map();
         this.generationTasks = new Map();
     }
@@ -47,11 +50,22 @@ export class RoboFlowService {
         await this.registry.initialize();
         await this.store.clearLegacyOnce();
         await ensureDefaultWorkflow(this.registry);
+        await ensureCodeDevelopmentWorkflow(this.registry, this.skillsets);
         for (const flow of await this.store.list()) if (!terminal(flow.status)) await this.store.update(flow.id, current => {
             current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'interrupted'; instance.error = current.error; instance.endedAt = current.finishedAt; }
             current.status = deriveFlowStatus(current.instances);
         });
+        this.store.onStatusChange = flow => {
+            if (!flow.parentFlowId) return;
+            void this._serialize(flow.parentFlowId, () => this.subflows.reconcile(flow.parentFlowId))
+                .catch(error => this._serialize(flow.parentFlowId, () => this._fail(flow.parentFlowId, error.message)).catch(() => {}));
+        };
+    }
+    _derive(flow) {
+        flow.status = deriveFlowStatus(flow.instances);
+        flow.finishedAt = flow.status === 'running' ? null : new Date().toISOString();
+        if (flow.status !== 'failed') flow.error = null;
     }
     _serialize(id, operation) {
         const previous = this.chains.get(id) || Promise.resolve();
@@ -63,7 +77,7 @@ export class RoboFlowService {
     async catalog() { return this.discover(); }
     async validateDraft(input) {
         const graph = normalizeWorkflow({ ...input, name: input.name || 'Draft', tasks: input.tasks?.map(task => ({
-            ...task, name: task.name || 'Draft task', prompt: task.prompt || 'Draft task prompt' })) });
+            ...task, name: task.name || 'Draft task', ...(isCoordinator(task) ? {} : { prompt: task.prompt || 'Draft task prompt' }) })) });
         return { graph, coverage: coverage(graph, await this.robotStore.list()), diagnostics: graphDiagnostics(graph) };
     }
     async listWorkflows() {
@@ -102,13 +116,15 @@ export class RoboFlowService {
             flow.instances.push(instance); flow.currentInstanceId = instance.id;
         });
     }
-    async _dispatch(id) {
+    async _dispatch(id, instanceId = null) {
         let flow = await this.store.get(id);
         if (!flow || terminal(flow.status)) return;
-        const instance = flow.instances.find(item => item.id === flow.currentInstanceId);
+        const instance = flow.instances.find(item => item.id === (instanceId || flow.currentInstanceId));
+        if (!instance || instance.state !== 'queued' || instance.runtimeTaskId || flow.stopRequested) return;
         const node = flow.graph.tasks.find(task => task.id === instance.taskId);
         try {
             if (flow.instances.length > this.maxVisits) throw new Error('maximum task visits reached');
+            if (isCoordinator(node)) return await this.subflows.dispatch(flow, instance);
             const mode = flow.graph.kind === 'default' ? flow.executionType : node.executionType;
             const robots = (await this.robotStore.list()).filter(robot => (flow.graph.kind !== 'default' || robot.name === 'default') && matchRobot(robot, node));
             if (!robots.length) throw new Error(`No robot has matching skillsets for task ${node.id}`);
@@ -119,7 +135,9 @@ export class RoboFlowService {
             const robot = pool[Math.min(pool.length - 1, Math.floor(this.random() * pool.length))];
             const previous = [];
             for (const visit of flow.instances) if (visit.state === 'completed') previous.push({ taskId: visit.taskId, instanceId: visit.id,
-                response: await this.store.readOutput(id, visit.id, 'result') });
+                response: visit.creatorInstanceId && visit.childFlowIds
+                    ? JSON.stringify(await this.subflows.results(visit.childFlowIds))
+                    : await this.store.readOutput(id, visit.id, 'result') });
             const task = buildWorkflowTaskPrompt({ objective: flow.objective, currentTaskId: node.id, graph: flow.graph, previousFinalResponses: previous });
             if (Buffer.byteLength(task, 'utf8') > 1024 * 1024) throw new Error('Workflow final-response context exceeds the 1 MiB input limit');
             const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === node.id);
@@ -135,44 +153,80 @@ export class RoboFlowService {
             const skillSets = required.filter(item => item.kind === 'skillset').map(item => item.selector);
             const skills = required.filter(item => item.kind === 'skill').map(item => item.selector);
             const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, skillSets, skills,
-                requiredWorkflowSkillsets: node.skillsets, systemPrompt: outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '' });
+                requiredWorkflowSkillsets: node.skillsets, workflowCreator: node.creator === true,
+                systemPrompt: node.creator ? creatorPrompt(flow.graph, node.id, await this.subflows.catalog()) : outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '' });
             if (started?.sessionUrl) await this.store.update(id, current => {
                 const visit = current.instances.find(item => item.id === instance.id);
                 if (visit) visit.sessionUrl = started.sessionUrl;
             });
         } catch (error) { await this._fail(id, error.message); }
     }
-    async _startTask(robot, { skillSets = [], skills = [], taskType = 'simple', ...request }) {
+    async _startTask(robot, { skillSets = [], skills = [], taskType = 'simple', workflowCreator = false, ...request }) {
         const start = (current, selection) => this.runtimeManager.startTask(current, taskType, { ...request, skillPolicyRef: selection?.policyId,
             alaSessionId: selection?.policyId, ca: 'auto' });
         if (!this.skillsets) return start(robot);
-        return this.skillsets.start(robot, { cwd: request.cwd, skillSets, skills, task: request.task, ca: 'auto' }, start);
+        return this.skillsets.start(robot, { cwd: request.cwd, skillSets, skills, task: request.task, ca: 'auto', workflowCreator }, start);
     }
     async _fail(id, message, status = 'failed') {
         const flow = await this.store.get(id);
         if (!flow) return;
         const active = flow.instances.filter(instance => !terminal(instance.state));
         if (!active.length) return;
+        if (!flow.stopRequested && active.some(instance => instance.creatorInstanceId)) {
+            await this.store.update(id, current => { current.stopRequested = true; });
+            await this.subflows.stopChildren(flow);
+        }
+        const started = new Map();
         for (const instance of active) if (instance.runtimeTaskId) {
             this.bindings.delete(instance.runtimeTaskId);
             const robot = await this.robotStore.getByName(instance.robotName);
-            if (robot) { try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId); } catch { /* Runtime may already be terminal. */ } }
+            if (robot) {
+                const runtime = this.runtimeManager.taskStatus?.(robot.id, instance.runtimeTaskId);
+                if (runtime?.startedAt) started.set(instance.id, runtime.startedAt);
+                try { await this.runtimeManager.stopTask(robot, EXECUTION_TASK_TYPES[instance.executionType], instance.runtimeTaskId); } catch { /* Runtime may already be terminal. */ } }
         }
         await this.store.update(id, current => {
             current.error = message; current.finishedAt = new Date().toISOString();
-            for (const visit of current.instances) if (!terminal(visit.state)) { visit.state = status; visit.error = message; visit.endedAt = current.finishedAt; }
+            for (const visit of current.instances) if (!terminal(visit.state)) {
+                visit.startedAt ||= started.get(visit.id) || null;
+                visit.state = status; visit.error = message; visit.endedAt = current.finishedAt;
+            }
             current.status = deriveFlowStatus(current.instances);
         });
     }
-    async stopFlow(id) { return this._serialize(id, async () => { if (!await this.store.get(id)) throw missing(); await this._fail(id, 'Stopped by user', 'stopped'); return this.getFlow(id); }); }
-    async stopInstance(id, instanceId) {
+    async stopFlow(id) {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
-            const instance = flow.instances.find(item => item.id === instanceId);
-            if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
-            if (terminal(instance.state)) return this.getFlow(id);
+            if (['completed', 'failed'].includes(flow.status)) return this.getFlow(id);
+            await this.store.update(id, current => { current.stopRequested = true; });
+            await this.subflows.stopChildren(flow);
             await this._fail(id, 'Stopped by user', 'stopped');
+            return this.getFlow(id);
+        });
+    }
+    async stopInstance(id, instanceId) {
+        const flow = await this.store.get(id);
+        if (!flow) throw missing();
+        const instance = flow.instances.find(item => item.id === instanceId);
+        if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
+        if (terminal(instance.state)) return this.getFlow(id);
+        return this.stopFlow(id);
+    }
+    async resumeFlow(id) {
+        return this._serialize(id, async () => {
+            const flow = await this.store.get(id);
+            if (!flow) throw missing();
+            if (!flow.instances.some(item => ['stopped', 'interrupted'].includes(item.state))) return this.getFlow(id);
+            await this.store.update(id, current => { current.stopRequested = false; });
+            const errors = [];
+            try { await this.subflows.resumeChildren(flow); } catch (error) { errors.push(error.message); }
+            const results = await Promise.allSettled(flow.instances.filter(item => ['stopped', 'interrupted'].includes(item.state)
+                && !isCoordinator(flow.graph.tasks.find(task => task.id === item.taskId)))
+                .map(item => this._resumeInstance(id, item.id, CONTINUE_PROMPT)));
+            errors.push(...results.filter(item => item.status === 'rejected').map(item => item.reason.message));
+            await this.subflows.reconcile(id);
+            if (errors.length) throw new Error(errors.join('; '));
             return this.getFlow(id);
         });
     }
@@ -191,34 +245,46 @@ export class RoboFlowService {
     }
     async resumeInstance(id, instanceId, prompt) {
         const flow = await this.store.get(id);
+        const instance = flow?.instances.find(item => item.id === instanceId);
+        if (instance && isCoordinator(flow.graph.tasks.find(task => task.id === instance.taskId))) return this.resumeFlow(id);
+        return this._serialize(id, () => this._resumeInstance(id, instanceId, prompt));
+    }
+    async _resumeInstance(id, instanceId, prompt) {
+        const flow = await this.store.get(id);
         if (!flow) throw missing();
         const instance = flow.instances.find(item => item.id === instanceId);
         if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
-        if (!['stopped', 'completed', 'failed'].includes(instance.state)) throw invalid('only a stopped, completed or failed phase can continue');
+        if (!['stopped', 'interrupted', 'completed', 'failed'].includes(instance.state)) throw invalid('only a stopped, completed or failed phase can continue');
+        if (['stopped', 'interrupted'].includes(instance.state) && !instance.startedAt
+            && !isCoordinator(flow.graph.tasks.find(task => task.id === instance.taskId))) {
+            await this.store.update(id, current => {
+                const phase = current.instances.find(item => item.id === instanceId);
+                phase.state = 'queued'; phase.runtimeTaskId = null; phase.error = null; phase.endedAt = null;
+                current.currentInstanceId = instanceId; current.stopRequested = false; this._derive(current);
+            });
+            await this._dispatch(id, instanceId);
+            return this.getFlow(id);
+        }
         const message = textField(prompt, 'prompt', 32768, false);
         const robot = await this.robotStore.getByName(instance.robotName);
         if (!robot) throw new Error('Robot is unavailable');
         const previous = { runtimeTaskId: instance.runtimeTaskId, state: instance.state, error: instance.error, endedAt: instance.endedAt };
         const runtimeTaskId = crypto.randomUUID();
-        await this._serialize(id, async () => {
-            await this.store.update(id, current => {
-                const visit = current.instances.find(item => item.id === instanceId);
-                visit.runtimeTaskId = runtimeTaskId; visit.state = 'running'; visit.error = null; visit.endedAt = null;
-                current.status = deriveFlowStatus(current.instances); current.finishedAt = null; current.error = null;
-            });
+        await this.store.update(id, current => {
+            const visit = current.instances.find(item => item.id === instanceId);
+            visit.runtimeTaskId = runtimeTaskId; visit.state = 'running'; visit.error = null; visit.endedAt = null;
+            current.status = deriveFlowStatus(current.instances); current.finishedAt = null; current.error = null; current.stopRequested = false;
         });
         this.bindings.set(runtimeTaskId, { flowId: id, instanceId, manual: true });
         try {
             await this.runtimeManager.resumeTask(robot, previous.runtimeTaskId, message, { runtimeTaskId });
         } catch (error) {
             this.bindings.delete(runtimeTaskId);
-            await this._serialize(id, async () => {
-                await this.store.update(id, current => {
-                    const visit = current.instances.find(item => item.id === instanceId);
-                    visit.runtimeTaskId = previous.runtimeTaskId; visit.state = previous.state; visit.error = previous.error; visit.endedAt = previous.endedAt;
-                    current.status = deriveFlowStatus(current.instances);
-                    if (current.status !== 'running') current.finishedAt = current.finishedAt || new Date().toISOString();
-                });
+            await this.store.update(id, current => {
+                const visit = current.instances.find(item => item.id === instanceId);
+                visit.runtimeTaskId = previous.runtimeTaskId; visit.state = previous.state; visit.error = previous.error; visit.endedAt = previous.endedAt;
+                current.status = deriveFlowStatus(current.instances);
+                if (current.status !== 'running') current.finishedAt = current.finishedAt || new Date().toISOString();
             }).catch(() => {});
             throw error;
         }
@@ -233,17 +299,24 @@ export class RoboFlowService {
         if (['stopped', 'interrupted'].includes(event.state)) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, event.state);
         if (event.state !== 'completed' || event.error) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, 'failed');
         await this.store.writeOutput(flow.id, instance.id, event.result || '', 'result');
+        const node = flow.graph.tasks.find(task => task.id === instance.taskId);
         const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === instance.taskId);
-        const edge = outgoing.length > 1 ? parseRoute(event.result, flow.graph, instance.taskId).edge : outgoing[0];
-        await this.store.update(flow.id, current => {
-            const visit = current.instances.find(item => item.id === instance.id);
+        const plan = node.creator ? await this.subflows.plan(flow, instance, event.result) : null;
+        const edge = plan?.edge || (outgoing.length > 1 ? parseRoute(event.result, flow.graph, instance.taskId).edge : outgoing[0]);
+        await this._advance(flow.id, instance.id, edge, plan);
+    }
+    async _advance(id, instanceId, edge, plan = null) {
+        await this.store.update(id, current => {
+            const visit = current.instances.find(item => item.id === instanceId);
             visit.state = 'completed'; visit.endedAt = new Date().toISOString(); visit.nextEdgeId = edge?.id || null;
-            if (edge) { const next = this._instance(edge.targetTaskId, current.instances.length); current.instances.push(next); current.currentInstanceId = next.id; }
-            current.status = deriveFlowStatus(current.instances);
-            current.finishedAt = current.status === 'running' ? null : visit.endedAt;
-            if (current.status !== 'failed') current.error = null;
+            if (edge) {
+                const next = this._instance(edge.targetTaskId, current.instances.length);
+                current.instances.push(next); current.currentInstanceId = next.id;
+                if (plan?.plans) this.subflows.createChildren(current, visit, next, plan);
+            }
+            this._derive(current);
         });
-        if (edge) await this._dispatch(flow.id);
+        if (edge) await this._dispatch(id);
     }
     onRuntimeTaskEvent(event) {
         const generation = this.generations.get(event?.taskId);
@@ -267,6 +340,12 @@ export class RoboFlowService {
         const flow = await this.store.get(id);
         if (!flow) throw missing();
         for (const instance of flow.instances) {
+            if (instance.childFlowIds) instance.subflows = await Promise.all(instance.childFlowIds.map(async childId => {
+                const child = await this.store.get(childId);
+                return child ? { id: child.id, workflowName: child.workflowName, status: child.status, error: child.error,
+                    elapsedMs: child.elapsedMs, activeSince: child.activeSince, createdAt: child.createdAt, finishedAt: child.finishedAt }
+                    : { id: childId, status: 'unavailable' };
+            }));
             if (instance.state === 'completed') {
                 try { instance.finalResponse = await this.store.readOutput(id, instance.id, 'result'); }
                 catch { instance.outputUnavailable = true; }
@@ -368,5 +447,5 @@ export class RoboFlowService {
         this.generationTasks.delete(id);
         return info;
     }
-    async close() { for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
+    async close() { this.store.onStatusChange = null; for (const generation of this.generations.values()) generation.reject(new Error('Service stopped')); this.generations.clear(); this.generationTasks.clear(); await Promise.allSettled(this.chains.values()); this.bindings.clear(); this.database.close(); }
 }
