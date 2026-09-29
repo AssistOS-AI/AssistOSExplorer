@@ -249,7 +249,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             if (captured.sourceTabId && webchatLogsBase && turnLogLines.length) {
                 try {
                     writeWebchatTurnLog(workingDir, sessionId, turn.assistantMessageId, turnLogLines);
-                    finalText = `${outputText}\n\n[View logs](${webchatTurnLogUrl(webchatLogsBase, sessionId, turn.assistantMessageId)})`;
+                    finalText = `${outputText}\n\n[View Thinking](${webchatTurnLogUrl(webchatLogsBase, sessionId, turn.assistantMessageId)})`;
                 } catch { /* Log persistence must not fail the answer. */ }
             }
             const completed = await sessionStore.completeTurn(sessionId, turn.assistantMessageId, finalText);

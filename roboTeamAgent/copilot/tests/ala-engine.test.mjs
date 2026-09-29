@@ -241,7 +241,7 @@ test('a webchat turn persists an on-demand log and links it from the answer', as
         context: { sourceTabId: 'tab1', sourcePageInstanceId: 'page1', rawText: 'LOG_TURN' } });
     const messageId = result.assistantMessageId;
     assert.match(result.session.messages.at(-1).text,
-        /\[View logs\]\(\/base-agent-additional-server\/roboTeamAgent\/3001\/webchat-logs\/[a-f0-9-]{36}\/[a-f0-9-]{36}\)/);
+        /\[View Thinking\]\(\/base-agent-additional-server\/roboTeamAgent\/3001\/webchat-logs\/[a-f0-9-]{36}\/[a-f0-9-]{36}\)/);
     const log = await fs.readFile(path.join(h.workingDir, '.achilles-cli', 'logs', h.sessionId, `${messageId}.log`), 'utf8');
     assert.match(log, /Visible progress/);
 });
@@ -249,6 +249,6 @@ test('a webchat turn persists an on-demand log and links it from the answer', as
 test('a non-webchat turn keeps only the answer without a log link', async (t) => {
     const h = await harness(t, {}, { webchatLogsBase: '/base-agent-additional-server/roboTeamAgent/3001/webchat-logs' });
     const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'PLAIN' });
-    assert.equal(result.session.messages.at(-1).text.includes('View logs'), false);
+    assert.equal(result.session.messages.at(-1).text.includes('View Thinking'), false);
     await assert.rejects(fs.stat(path.join(h.workingDir, '.achilles-cli', 'logs')), { code: 'ENOENT' });
 });
