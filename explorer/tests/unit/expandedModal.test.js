@@ -65,6 +65,21 @@ test('Explorer exposes an open-in-new-tab action for the current path', async ()
     assert.match(source, /buildFileExpHash\(path\)/);
 });
 
+test('an embedded page header folds its breadcrumbs into the modal header', async () => {
+    const html = await readText('web-components/modals/expanded-modal/expanded-modal.html');
+    const presenter = await readText('web-components/modals/expanded-modal/expanded-modal.js');
+    const css = await readText('web-components/modals/expanded-modal/expanded-modal.css');
+
+    assert.match(html, /id="expandedModalBreadcrumbs"/);
+    assert.match(presenter, /syncFrameHeader/);
+    assert.match(presenter, /\[data-embed-header\]/);
+    assert.match(presenter, /\[data-embed-breadcrumbs\]/);
+    assert.match(presenter, /new MutationObserver/);
+    assert.match(presenter, /contentWindow\.location\.href/);
+    assert.match(presenter, /contentDocument\?\.baseURI/);
+    assert.match(css, /\.expanded-modal-breadcrumbs/);
+});
+
 test('modal action icons share one unified icon set', async () => {
     const css = await readText('web-components/modals/expanded-modal/expanded-modal.css');
 

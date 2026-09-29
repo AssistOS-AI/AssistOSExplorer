@@ -3,7 +3,7 @@ import { fetchMarketplaceProof } from "./authApi.js";
 const CSRF_ERRORS = ["csrf_invalid", "browser_csrf_invalid"];
 
 async function fetchMarketplaceSnapshot(signal) {
-    const response = await fetch("/api/marketplace", {
+    const response = await fetch("/api/marketplace/agents", {
         signal,
         credentials: "include",
         cache: "no-store",
@@ -21,7 +21,7 @@ async function postMarketplace(body, signal) {
         signal?.throwIfAborted();
         const proof = await fetchMarketplaceProof();
         signal?.throwIfAborted();
-        const response = await fetch("/api/marketplace", {
+        const response = await fetch("/api/marketplace/agents", {
             signal,
             method: "POST",
             credentials: "include",

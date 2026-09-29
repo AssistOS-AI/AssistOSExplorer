@@ -191,18 +191,23 @@ test('Marketplace search cannot restore hidden groups or entries, while allowed 
     assert.match(modal.agentsEl.textContent, /No agents or repositories match/);
 });
 
-test('Marketplace initial load and polling apply the same policy when repository metadata changes', async (t) => {
+test('Marketplace load, agent polling and repository refresh apply the same visibility policy', async (t) => {
     const modal = await createModal(t);
     const catalog = marketplaceCatalog();
     catalog.permissions.canManage = false;
     modal.state.marketplace = null;
     modal.requestMarketplace = async () => structuredClone(catalog);
+    modal.fetchMarketplaceHalf = async resource => (resource === 'agents'
+        ? { agents: structuredClone(catalog.agents), enabledAgents: structuredClone(catalog.enabledAgents) }
+        : { repositories: structuredClone(catalog.repositories) });
     await modal.loadMarketplace();
     assert.deepEqual(renderedRefs(modal), visibleAgentRefs);
-    catalog.repositories.find(repo => repo.name === 'proxies').kind = 'mixed';
     await modal.refreshAgentStatuses();
+    assert.deepEqual(renderedRefs(modal), visibleAgentRefs, 'agent polling keeps the same policy');
+    catalog.repositories.find(repo => repo.name === 'proxies').kind = 'mixed';
+    modal.mergeMarketplaceSnapshot({ repositories: structuredClone(catalog.repositories) });
     assert.ok(!renderedRefs(modal).includes('proxies/worker'));
-    assert.ok(!renderedRepos(modal, 'repos').includes('proxies'), 'polling also refreshes the Repos tab');
+    assert.ok(!renderedRepos(modal, 'repos').includes('proxies'), 'repository refresh updates the Repos tab');
     assert.ok(renderedRefs(modal).includes('AchillesCLI/worker'));
 });
 
@@ -316,7 +321,7 @@ for (const status of [401, 403]) {
             modal.state.status = 'The previous agent mutation failed.';
             modal.state.statusType = 'error';
         }
-        modal.requestMarketplace = async () => {
+        modal.fetchMarketplaceHalf = async () => {
             throw Object.assign(new Error('Authentication is required.'), {status});
         };
         await modal.refreshAgentStatuses();

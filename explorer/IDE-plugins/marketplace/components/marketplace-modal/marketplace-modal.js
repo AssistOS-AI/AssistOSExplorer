@@ -17,7 +17,6 @@ import {
   fetchMarketplaceProof
 } from '/explorer/services/infrastructure/authApi.js';
 import {
-  fetchMarketplaceSnapshot,
   isRetryableMarketplaceStatusError
 } from '/explorer/services/infrastructure/runtimeStatusEvents.js';
 import {
@@ -178,34 +177,51 @@ export class MarketplaceModal {
     this.syncInteractiveState();
   };
 
+  async fetchMarketplaceHalf(resource, { signal } = {}) {
+    const response = await fetch(`/api/marketplace/${resource}`, {
+      credentials: 'include',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+      signal
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.ok === false) {
+      throw Object.assign(new Error(data?.message || data?.error || `Marketplace request failed (${response.status})`), { status: response.status });
+    }
+    return data.marketplace || data;
+  }
+
   async requestMarketplace(actionBody = null, options = {}) {
-    if (!actionBody) return fetchMarketplaceSnapshot({signal: options.signal});
+    if (!actionBody) {
+      const [repositories, agents] = await Promise.all([
+        this.fetchMarketplaceHalf('repos', options),
+        this.fetchMarketplaceHalf('agents', options)
+      ]);
+      const marketplace = { ...repositories, ...agents };
+      return options.raw === true ? { ok: true, marketplace } : marketplace;
+    }
     this.invalidateAgentStatusRefresh();
+    const resource = ['enable_agent', 'disable_agent'].includes(actionBody.action) ? 'agents' : 'repos';
     const fetchOptions = {
       credentials: 'include',
-      headers: { Accept: 'application/json' }
+      headers: { Accept: 'application/json' },
+      method: 'POST'
     };
-    let url = '/api/marketplace';
-    if (actionBody) {
-      fetchOptions.method = 'POST';
-      fetchOptions.headers['Content-Type'] = 'application/json';
-      fetchOptions.body = JSON.stringify(actionBody);
-    }
+    fetchOptions.headers['Content-Type'] = 'application/json';
+    fetchOptions.body = JSON.stringify(actionBody);
 
     const sendRequest = async () => {
-      if (actionBody) {
-        const proof = await fetchMarketplaceProof();
-        delete fetchOptions.headers['x-ploinky-csrf-token'];
-        delete fetchOptions.headers['x-ploinky-browser-csrf-token'];
-        fetchOptions.headers[proof.header] = proof.csrfToken;
-      }
-      const response = await fetch(url, fetchOptions);
+      const proof = await fetchMarketplaceProof();
+      delete fetchOptions.headers['x-ploinky-csrf-token'];
+      delete fetchOptions.headers['x-ploinky-browser-csrf-token'];
+      fetchOptions.headers[proof.header] = proof.csrfToken;
+      const response = await fetch(`/api/marketplace/${resource}`, fetchOptions);
       const data = await response.json().catch(() => ({}));
       return { response, data };
     };
 
     let { response, data } = await sendRequest();
-    if (actionBody && response.status === 403 && ['csrf_invalid', 'browser_csrf_invalid'].includes(data?.error)) {
+    if (response.status === 403 && ['csrf_invalid', 'browser_csrf_invalid'].includes(data?.error)) {
       ({ response, data } = await sendRequest());
     }
     if (!response.ok || data?.ok === false) {
@@ -246,7 +262,7 @@ export class MarketplaceModal {
     const {repositories, agents} = getVisibleMarketplaceCatalog(marketplace);
     return JSON.stringify({
       canManage: marketplace?.permissions?.canManage === true,
-      repositories: repositories.map(({name, url, description, kind, installed}) => ({name, url, description, kind, installed})),
+      repositories: repositories.map(({name, displayName, url, description, kind, installed}) => ({name, displayName, url, description, kind, installed})),
       agents: agents.map(({ref, repo, name, about, enableModes}) => ({ref, repo, name, about, enableModes})),
     });
   }
@@ -267,6 +283,11 @@ export class MarketplaceModal {
       if (repository && note) this.updateRepositoryCount(note, repository);
     }
     this.syncInteractiveState();
+  }
+
+  mergeMarketplaceSnapshot(partial) {
+    if (!partial) return;
+    this.applyMarketplaceSnapshot({ ...this.state.marketplace, ...partial });
   }
 
   updateRepositoryCount(note, repository) {
@@ -359,7 +380,7 @@ export class MarketplaceModal {
         ...(name ? { name } : {}),
         ...(branch ? { branch } : {})
       }, { raw: true });
-      this.state.marketplace = response?.marketplace || response;
+      this.mergeMarketplaceSnapshot(response?.marketplace || response);
       this.repoNameInput.value = '';
       this.repoUrlInput.value = '';
       this.repoBranchInput.value = '';
@@ -412,7 +433,7 @@ export class MarketplaceModal {
         ...(!active ? { mode } : {})
       });
       if (this.unloaded) return;
-      this.applyMarketplaceSnapshot(marketplace);
+      this.mergeMarketplaceSnapshot(marketplace);
       this.setStatus(`${agentRef} ${active ? 'disabled' : 'enabled'}.`);
     } catch (error) {
       this.setStatus(error?.message || 'Failed to update agent.', 'error');
@@ -563,7 +584,7 @@ export class MarketplaceModal {
         ? { action: 'uninstall_repo', target: name || url }
         : { action: 'install_repo', url, ...(name ? { name } : {}) };
       const response = await this.requestMarketplace(payload, { raw: true });
-      this.state.marketplace = response?.marketplace || response;
+      this.mergeMarketplaceSnapshot(response?.marketplace || response);
       const resultName = response?.result?.name || name || url;
       this.setStatus(`${resultName} ${installed ? 'uninstalled' : 'installed'}.`);
     } catch (error) {
@@ -702,7 +723,7 @@ export class MarketplaceModal {
       const info = document.createElement('div');
       const title = document.createElement('div');
       title.className = 'marketplace-title';
-      title.textContent = repo.name;
+      title.textContent = repo.displayName || repo.name;
       const description = document.createElement('div');
       description.className = 'marketplace-description';
       description.textContent = repo.description || repo.url || '';
@@ -802,9 +823,9 @@ export class MarketplaceModal {
     const revision = this.agentStatusRevision || 0;
     this.agentStatusRefreshController = controller;
     try {
-      const marketplace = await this.requestMarketplace(null, {signal: controller.signal});
+      const agents = await this.fetchMarketplaceHalf('agents', { signal: controller.signal });
       if (this.unloaded || controller.signal.aborted || revision !== (this.agentStatusRevision || 0)) return;
-      this.applyMarketplaceSnapshot(marketplace);
+      this.mergeMarketplaceSnapshot(agents);
     } catch (error) {
       if (this.unloaded || controller.signal.aborted || revision !== (this.agentStatusRevision || 0)) return;
       if (!isRetryableMarketplaceStatusError(error)) {
@@ -854,7 +875,7 @@ export class MarketplaceModal {
       usedRepoNames.add(repoName);
       repoEntries.push({
         repoName,
-        repoLabel: repoName === noRepoName ? noRepoLabel : repoName,
+        repoLabel: repoName === noRepoName ? noRepoLabel : (repo.displayName || repoName),
         repo,
         agents: agentsByRepo.get(repoName) || [],
         hasMetadata: true

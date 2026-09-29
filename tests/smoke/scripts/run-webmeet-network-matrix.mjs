@@ -14,6 +14,7 @@ import {
 } from '../lib/network.mjs';
 import {
   buildBoxEvidence,
+  readExpectedGpuGrant,
   validateExternalTcpNegativeEvidence,
 } from '../lib/box-evidence.mjs';
 import {
@@ -97,6 +98,7 @@ function collectContainerEngineAndBox({
     expectedImageRef,
     baseURL,
     publicIPv4,
+    expectedGpuGrant: readExpectedGpuGrant(),
   });
   const boxFreshness = validateBoxFreshness({
     capturedAt: new Date(capturedAtMs).toISOString(),

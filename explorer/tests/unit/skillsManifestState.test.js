@@ -1,3 +1,6 @@
+import fsSync from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { installRepositoryLinks, removeRepositoryLinks } from '../../../../ploinky/cli/utils/repositoryInstall.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -8,6 +11,7 @@ import path from 'node:path';
 import syncFs from 'node:fs';
 
 import * as transaction from '../../utils/server/skill-export-transaction.mjs';
+import { syncManagedSkillExports as syncPloinkyExports } from '../../../../ploinky/cli/utils/skills/managedExports.js';
 import { createToolHandlers } from '../../utils/server/tool-handlers.mjs';
 
 // Never read or compose the global, system or XDG Git policy of this machine.
@@ -131,7 +135,37 @@ function createHandlers(workspaceRoot, invalidated = []) {
 }
 
 function handlerOptions(workspaceRoot, invalidated = []) {
+  const registry = new Map();
+  const repositoryClient = {
+    async listRepositories() {
+      const file = path.join(workspaceRoot, 'ploinky/cli/utils/repos.js');
+      let presets = {};
+      try {
+        const module = await import(pathToFileURL(file).href);
+        presets = module.getPredefinedRepos?.() || {};
+        for (const item of module.getSkillRepositoryRecommendations?.({ workspaceRoot }) || []) {
+          registry.set(item.name, { ...item, source: item.skillSource.source, origin: 'workspace' });
+        }
+      } catch (error) { if (error.code !== 'ERR_MODULE_NOT_FOUND') throw error; }
+      for (const [name, preset] of Object.entries(presets)) registry.set(name, { name, ...preset,
+        source: preset.url, origin: 'workspace', kind: 'skills' });
+      for (const entry of fsSync.readdirSync(workspaceRoot, { withFileTypes: true })) {
+        const source = path.join(workspaceRoot, entry.name);
+        if (entry.isDirectory() && fsSync.existsSync(path.join(source, '.git')) && ![...registry.values()].some(repo => repo.source === source)) {
+          registry.set(entry.name, { name: entry.name, source, url: source, kind: 'skills', origin: 'workspace' });
+        }
+      }
+      return [...registry.values()];
+    },
+    async prepareRepository({ name, url }) {
+      registry.set(name, { name, source: url, url, kind: 'skills', origin: 'workspace' });
+      return this.listRepositories();
+    },
+    async install(input) { return installRepositoryLinks(input, { workspaceRoot, resolveRepository: name => registry.get(name) }); },
+    async remove(paths) { return removeRepositoryLinks(paths, { workspaceRoot }); }
+  };
   return {
+    repositoryClient,
     fs,
     path,
     schemas: createMinimalSchemas(),
@@ -302,7 +336,7 @@ test('add_skills_manifest_repo explains when a cached repository has no Anthropi
     const handlers = createHandlers(workspaceRoot);
     const result = parseJsonResponse(await handlers.add_skills_manifest_repo({
       folderPath: projectDir,
-      url: `file://${repoDir}`,
+      url: repoDir,
       name: 'code-skills-only'
     }));
 
@@ -311,7 +345,7 @@ test('add_skills_manifest_repo explains when a cached repository has no Anthropi
     assert.equal(result.cached, true);
     assert.match(result.message, /cached but was not added.*no Anthropic skills were found/i);
 
-    const cachedRepo = await fs.stat(path.join(workspaceRoot, '.ploinky', 'repos', 'code-skills-only'));
+    const cachedRepo = await fs.stat(repoDir);
     assert.equal(cachedRepo.isDirectory(), true);
     await assert.rejects(
       fs.stat(path.join(projectDir, 'ploinky-skills-manifest.json')),
@@ -332,7 +366,7 @@ test('manifest exports preserve unrecorded collisions, unrelated skills and inde
     await writeFile(path.join(projectDir, '.agents', 'skills', 'unrelated', 'SKILL.md'), 'local unrelated');
     await writeFile(path.join(projectDir, '.claude', 'skills', 'independent', 'SKILL.md'), 'independent Claude');
     const handlers = createHandlers(workspaceRoot);
-    const added = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }));
+    const added = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }));
     assert.equal(await fs.readFile(localFile, 'utf8'), 'local alpha');
     assert.equal(added.exportResult.diagnostics[0].reason, 'unrecorded-output-preserved');
     assert.equal(added.skillOutputs.find((item) => item.name === 'alpha-skill').state, 'local');
@@ -350,7 +384,7 @@ test('a ledger entry of an unsupported kind survives update and removal and is r
     const projectDir = path.join(workspaceRoot, 'project');
     await fs.mkdir(projectDir);
     const handlers = createHandlers(workspaceRoot);
-    const args = { folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' };
+    const args = { folderPath: projectDir, url: repoDir, name: 'local-skills' };
     await handlers.add_skills_manifest_repo(args);
     // Exports are links; a recorded directory is state this protocol never writes.
     const skillDir = path.join(projectDir, '.agents', 'skills', 'alpha-skill');
@@ -375,19 +409,18 @@ test('a ledger entry of an unsupported kind survives update and removal and is r
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
 
-test('unchanged owned output is removed alone and retired content is retained outside the skill root', async () => {
+test('deselection removes only the installed link and preserves repository content', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-skills-remove-'));
   try {
     const repoDir = await createLocalSkillRepo(workspaceRoot);
     const projectDir = path.join(workspaceRoot, 'project');
     await writeFile(path.join(projectDir, '.agents', 'skills', 'local', 'SKILL.md'), 'keep');
     const handlers = createHandlers(workspaceRoot);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' });
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' });
     const removed = parseJsonResponse(await handlers.set_skills_manifest_skill_enabled({ folderPath: projectDir, repoName: 'local-skills', skill: 'alpha-skill', enabled: false }));
     assert.deepEqual(removed.installedSkills, ['local']);
     assert.deepEqual(removed.exportResult.removed, ['alpha-skill']);
-    assert.equal(removed.exportResult.backups.length, 1);
-    assert.match(await fs.readFile(path.join(removed.exportResult.backups[0], 'SKILL.md'), 'utf8'), /alpha-skill/);
+    assert.match(await fs.readFile(path.join(repoDir, 'skills/alpha-skill/SKILL.md'), 'utf8'), /alpha-skill/);
     assert.equal(await fs.readFile(path.join(projectDir, '.agents', 'skills', 'local', 'SKILL.md'), 'utf8'), 'keep');
   } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
 });
@@ -401,8 +434,8 @@ test('same-name exports from two repositories are rejected without a traversal-o
     const projectDir = path.join(workspaceRoot, 'project');
     await fs.mkdir(projectDir);
     const handlers = createHandlers(workspaceRoot);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'first' });
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${secondRepo}`, name: 'second' }), /Duplicate exported skill name/);
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'first' });
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: secondRepo, name: 'second' }), /Duplicate exported skill name/);
     const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: projectDir }));
     assert.deepEqual(state.repositories.map((entry) => entry.name), ['first']);
     assert.equal(state.skillOutputs[0].source.name, 'first');
@@ -419,7 +452,7 @@ test('skillset controls batch symlink exports, prefer workspace sources and pres
     await fs.mkdir(projectDir);
     const invalidated = [];
     const handlers = createHandlers(workspaceRoot, invalidated);
-    const add = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: path.basename(repoDir) }));
+    const add = parseJsonResponse(await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: path.basename(repoDir) }));
     assert.equal(add.repositories[0].repoPath, repoDir);
     const alpha = path.join(projectDir, '.agents/skills/alpha-skill');
     const beta = path.join(projectDir, '.agents/skills/beta-skill');
@@ -469,7 +502,7 @@ test('a manifest changed after the handler read it is never overwritten and no l
     const projectDir = path.join(workspaceRoot, 'project');
     await fs.mkdir(projectDir);
     const repoName = path.basename(repoDir);
-    await createHandlers(workspaceRoot).add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: repoName });
+    await createHandlers(workspaceRoot).add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: repoName });
     const manifestPath = path.join(projectDir, 'ploinky-skills-manifest.json');
     const concurrent = '[]\n';
     const racingFs = {
@@ -496,7 +529,7 @@ test('manifest state reports an incomplete transaction and a blocked lock is not
     await fs.mkdir(projectDir);
     const handlers = createHandlers(workspaceRoot);
     const repoName = path.basename(repoDir);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: repoName });
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: repoName });
     const other = path.join(workspaceRoot, 'other-skill');
     await writeFile(path.join(other, 'SKILL.md'), '---\nname: other-skill\n---\n');
     // A foreign-namespace exporter stopped after its journal was written.
@@ -529,7 +562,7 @@ test('a marketplace mutation reports recovery failure after quarantining an inte
     await fs.mkdir(projectDir);
     const handlers = createHandlers(workspaceRoot);
     const repoName = path.basename(repoDir);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: repoName });
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: repoName });
     const manifestPath = path.join(projectDir, 'ploinky-skills-manifest.json');
     const before = await fs.readFile(manifestPath, 'utf8');
     const crash = Object.assign(new Error('fixture publication interrupted'), { [transaction.SIMULATED_CRASH]: true });
@@ -585,7 +618,7 @@ test('a lock release failure after a quarantining recovery stays recovery requir
     const invalidated = [];
     const handlers = createHandlers(workspaceRoot, invalidated);
     const repoName = path.basename(repoDir);
-    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: repoName });
+    await handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: repoName });
     const manifestPath = path.join(projectDir, 'ploinky-skills-manifest.json');
     const before = await fs.readFile(manifestPath, 'utf8');
     const crash = Object.assign(new Error('fixture publication interrupted'), { [transaction.SIMULATED_CRASH]: true });
@@ -641,7 +674,7 @@ test('a lock release failure after a settled export stays a release failure', as
     const handlers = createHandlers(workspaceRoot, invalidated);
     const { armed } = armStrayLockRelease(t, projectDir);
     armed.value = true;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
       assert.equal(error.code, 'SKILL_EXPORT_LOCK_RELEASE_FAILED');
       assert.equal(error.cause.code, 'ENOTEMPTY');
       assert.equal(error.skillExportResult.transaction.status, 'committed');
@@ -722,7 +755,7 @@ test('a pre-commit failure whose rollback quarantines user output is recovery re
     const armed = armSecondLinkFailure(t, projectDir, { userEdit: true });
     armed.value = true;
     let first;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
       first = path.basename(armed.published[0]);
       assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
       assert.match(error.message, /failed before its commit point \(EIO: i\/o error, symlink/);
@@ -768,7 +801,7 @@ test('a quarantining rollback keeps its rollback and lock release causes', async
     journal.value = true;
     stray.value = true;
     let first;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
       first = path.basename(armed.published[0]);
       assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
       assert.equal(error.cause.code, 'EIO');
@@ -800,7 +833,7 @@ test('a pre-commit failure that rolls back cleanly stays an ordinary failure', a
     const handlers = createHandlers(workspaceRoot);
     const armed = armSecondLinkFailure(t, projectDir, { userEdit: false });
     armed.value = true;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
       assert.equal(error.code, 'EIO');
       assert.equal(error.syscall, 'symlink');
       assert.match(error.message, /^EIO: i\/o error, symlink/);
@@ -828,7 +861,7 @@ test('a clean rollback whose lock release fails stays an ordinary failure that n
     const { lock, armed: stray } = armStrayLockRelease(t, projectDir);
     armed.value = true;
     stray.value = true;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
       assert.equal(error.code, 'EIO');
       assert.equal(error.syscall, 'symlink');
       assert.match(error.message, /^EIO: i\/o error, symlink/);
@@ -870,7 +903,7 @@ test('a rollback left pending keeps the exporter error and names the lock releas
     unlink.value = true;
     stray.value = true;
     let first;
-    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }), error => {
+    await assert.rejects(handlers.add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }), error => {
       first = armed.published[0];
       assert.equal(error.code, 'SKILL_EXPORT_RECOVERY_REQUIRED');
       assert.match(error.message, /failed before its commit point \(EIO: i\/o error, symlink.*and its rollback stopped \(EIO: i\/o error, unlink\); it remains pending for recovery\./);
@@ -908,7 +941,7 @@ test('skill changes in a Git project write no tracked rules and defer private ex
     git('init', '-q');
     git('add', 'README.md');
     git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', 'initial');
-    const added = parseJsonResponse(await createHandlers(workspaceRoot).add_skills_manifest_repo({ folderPath: projectDir, url: `file://${repoDir}`, name: 'local-skills' }));
+    const added = parseJsonResponse(await createHandlers(workspaceRoot).add_skills_manifest_repo({ folderPath: projectDir, url: repoDir, name: 'local-skills' }));
     // An agent never sees the repository owner's HOME/XDG/global Git view, so
     // it cannot prove which excludes policy is live: nothing is written and
     // the host refresh (`ploinky update`) publishes the private exclusions.
@@ -921,4 +954,37 @@ test('skill changes in a Git project write no tracked rules and defer private ex
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }
+});
+
+test('workspace-only recommendations add the live checkout rather than the installed copy', async t => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'explorer-local-recommendation-'));
+  t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
+  const local = await createLocalSkillRepo(workspaceRoot);
+  const name = path.basename(local);
+  await fs.mkdir(path.join(local, 'skills/incomplete'));
+  const sourceModule = new URL('../../../../ploinky/cli/utils/skillRepositorySource.js', import.meta.url).href;
+  await writeFile(path.join(local, 'skills/alpha-skill/SKILL.md'), '---\nname: alpha-skill\ndescription: Local skill\n---\nLOCAL EDIT\n');
+  await writeFile(path.join(workspaceRoot, 'ploinky/cli/utils/repos.js'), `
+import { listWorkspaceSkillRepositories } from '${sourceModule}';
+export function getSkillRepositoryRecommendations(options) {
+  return listWorkspaceSkillRepositories(options).map(repo => ({
+    name: repo.name, url: repo.source, kind: 'skills', skillSource: repo, warnings: repo.warnings || []
+  }));
+}
+`);
+  await writeFile(path.join(workspaceRoot, '.ploinky/repos', name, 'skills/alpha-skill/SKILL.md'), 'STALE CACHE');
+  const project = path.join(workspaceRoot, 'project');
+  await fs.mkdir(project);
+  const handlers = createHandlers(workspaceRoot);
+  const initial = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: project }));
+  assert.equal(initial.skillRepositories[0].url, local);
+  assert.deepEqual(initial.skillRepositories[0].warnings, ['skills/incomplete: missing SKILL.md']);
+  await handlers.add_skills_manifest_repo({ folderPath: project, url: local, name });
+  const state = parseJsonResponse(await handlers.read_skills_manifest_state({ folderPath: project }));
+  assert.equal(state.repositories[0].repoPath, local);
+  assert.match(await fs.readFile(path.join(project, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'), /LOCAL EDIT/);
+  await fs.rm(path.join(local, 'skills/alpha-skill'), { recursive: true });
+  const pruned = syncPloinkyExports({ folder: project, owner: 'manifest', mode: 'symlink', sources: [] });
+  assert.deepEqual(pruned.removed, ['alpha-skill']);
+  await assert.rejects(fs.lstat(path.join(project, '.agents/skills/alpha-skill')), { code: 'ENOENT' });
 });

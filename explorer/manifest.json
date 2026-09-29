@@ -24,12 +24,14 @@
         "proxies/soul-gateway no-wait",
         "webAssist no-wait",
         "UmamiAgent/umamiAgent no-wait",
-        "workspaceMonitorAgent no-wait"
+        "workspaceMonitorAgent no-wait",
+        "local-llms/local-llm no-wait"
     ],
     "repos": {
         "container-image-builds": "https://github.com/AssistOS-AI/container-image-builds.git",
         "OnlyOfficeAgent": "https://github.com/AssistOS-AI/OnlyOfficeAgent.git",
-        "UmamiAgent": "https://github.com/AssistOS-AI/UmamiAgent.git"
+        "UmamiAgent": "https://github.com/AssistOS-AI/UmamiAgent.git",
+        "local-llms": "https://github.com/AssistOS-AI/local-llms.git"
     },
     "applicationPlugins": {
         "git": true,

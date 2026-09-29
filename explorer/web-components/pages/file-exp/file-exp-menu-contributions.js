@@ -86,12 +86,16 @@ function getNewFileLabel(fileExp) {
 
 export async function buildFileExpMenuContext(fileExp, slot, target = null) {
     const currentPath = fileExp.normalizePath(fileExp.state.path || '/');
+    // Menu plugins such as Copilot's "Open Copilot here" turn selected paths
+    // into workspace-relative launch parameters, as toolbar plugins do.
+    const workspaceFsRoot = await resolveExplorerPathToFilesystemPath('/');
     if (slot === FILE_EXP_MENU_SLOTS.newMenu) {
         return {
             slot,
             currentPath,
             currentDirectory: currentPath,
             currentFsPath: await resolveExplorerPathToFilesystemPath(currentPath),
+            workspaceFsRoot,
             isConfidential: isDpuManagedPath(currentPath)
         };
     }
@@ -105,6 +109,7 @@ export async function buildFileExpMenuContext(fileExp, slot, target = null) {
         currentFsPath: await resolveExplorerPathToFilesystemPath(currentPath),
         selectedPath: entryPath,
         selectedFsPath: await resolveExplorerPathToFilesystemPath(entryPath),
+        workspaceFsRoot,
         selectedName: entryName,
         selectedType: entryType,
         isFile: entryType === 'file',

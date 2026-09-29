@@ -9,7 +9,6 @@
         <button type="button" class="settings-tab" data-local-action="switchTab account" data-tab="account" role="tab" aria-selected="false">My Account</button>
         <button type="button" class="settings-tab" data-local-action="switchTab agents" data-tab="agents" role="tab" aria-selected="true">Agents</button>
         <button type="button" class="settings-tab" data-local-action="switchTab plugins" data-tab="plugins" role="tab" aria-selected="false">Plugins</button>
-        <button type="button" class="settings-tab" data-local-action="switchTab copilot" data-tab="copilot" role="tab" aria-selected="false">Copilot</button>
         <button type="button" class="settings-tab" data-local-action="switchTab users" data-tab="users" data-admin-tab hidden role="tab" aria-selected="false">Administration</button>
         <button type="button" class="settings-tab" data-local-action="switchTab keymap" data-tab="keymap" role="tab" aria-selected="false">Keymap</button>
         <button type="button" class="settings-tab" data-local-action="switchTab editor" data-tab="editor" role="tab" aria-selected="false">Editor</button>
@@ -66,13 +65,6 @@
             <p class="plugin-settings-description">Configure agent behavior from one workspace-scoped settings surface.</p>
             <div class="plugin-settings-status" id="agentSettingsStatus" role="status" aria-live="polite"></div>
             <div class="plugin-settings-list" id="agentSettingsList"></div>
-        </section>
-
-        <section class="settings-section hidden" data-section="copilot">
-            <p class="plugin-settings-description">Browse instruction skills and save selection through RoboTeam. The catalog shows defaults unless a conversation is explicitly selected.</p>
-            <div class="plugin-settings-status" id="copilotSettingsStatus" role="status" aria-live="polite"></div>
-            <button type="button" class="gray-button" data-local-action="loadCopilotSettingsData">Refresh skills</button>
-            <div class="plugin-settings-list" id="copilotSettingsList"></div>
         </section>
 
         <section class="settings-section hidden" data-section="avatar">

@@ -17,7 +17,7 @@ test('Marketplace status reads use only the authorized JSON catalog with session
         },
     });
     assert.equal(result, catalog);
-    assert.deepEqual(calls, [['/api/marketplace', {
+    assert.deepEqual(calls, [['/api/marketplace/agents', {
         credentials: 'include', cache: 'no-store', signal: controller.signal,
         headers: {Accept: 'application/json'},
     }]]);

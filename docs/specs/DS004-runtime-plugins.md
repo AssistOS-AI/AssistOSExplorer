@@ -33,6 +33,8 @@ Toolbar panels use Explorer's shared `openExpandedModal` shell. A `toolbarModal`
 
 The shared expanded dialog must derive its accessible name from its visible title using `aria-labelledby`, so initial and updated panel titles remain consistent for assistive technology and semantic browser controls.
 
+An embedded iframe page can fold its own header into the shell: it marks the header with `data-embed-header` and its breadcrumb navigation with `data-embed-breadcrumbs`, and the shell hides that page header and mirrors the breadcrumbs into the modal header, replacing the title. Breadcrumb links navigate the embedded frame, dynamic breadcrumb leaves stay in sync, and `Open in new tab` opens the frame's current URL. Pages without the markers keep the plain modal title.
+
 An unavailable plugin component or dependent agent must produce a visible, recoverable interface error without preventing unrelated Explorer functionality from loading.
 
 Runtime content that unauthenticated guests can reach must reference assets only through the publicly served routes (`/shared/*` and `/web-components/components/*`) or through the plugin's own public path. Explorer's `/assets/*` tree is not public, so guest-facing components and iframes must not depend on it; shared guest assets live under `shared/`.

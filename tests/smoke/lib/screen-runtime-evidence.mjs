@@ -5,7 +5,7 @@ import {
   sameLiveBoxGeneration,
   validateLiveBoxEvidence,
 } from './live-box.mjs';
-import { normalizeOuterPortBindings } from './box-evidence.mjs';
+import { normalizeOuterPortBindings, readExpectedGpuGrant } from './box-evidence.mjs';
 
 const MANAGED_LABEL = 'io.assistos.ploinky.managed';
 const BOX_ROLE_LABEL = 'io.assistos.ploinky-box.role';
@@ -295,6 +295,7 @@ export function validateBoxScreenEvidence(input, {
   nowMs = Date.now(),
   generationMaxAgeMs = DEFAULT_GENERATION_MAX_AGE_MS,
   imageMaxAgeMs,
+  expectedGpuGrant = null,
 } = {}) {
   const evidence = exactRecord(input, 'Box screen evidence');
   if (evidence.deployment !== 'box') throw new Error('Box screen evidence deployment must equal box.');
@@ -309,6 +310,7 @@ export function validateBoxScreenEvidence(input, {
     nowMs,
     generationMaxAgeMs,
     imageMaxAgeMs,
+    expectedGpuGrant,
   });
   if (box.capturedAt !== capturedAt.text) {
     throw new Error('Box screen evidence capture is not bound to its exact outer Box evidence.');
@@ -337,6 +339,7 @@ export function collectBoxScreenEvidence({
   nowMs = Date.now(),
   generationMaxAgeMs = DEFAULT_GENERATION_MAX_AGE_MS,
   imageMaxAgeMs,
+  expectedGpuGrant = readExpectedGpuGrant(),
   command = defaultCommand,
   ...boxOptions
 } = {}) {
@@ -346,6 +349,7 @@ export function collectBoxScreenEvidence({
     nowMs,
     generationMaxAgeMs,
     imageMaxAgeMs,
+    expectedGpuGrant,
     command,
   });
   const outerContainerId = box.box.containerId;
@@ -374,6 +378,7 @@ export function collectBoxScreenEvidence({
     nowMs,
     generationMaxAgeMs,
     imageMaxAgeMs,
+    expectedGpuGrant,
   });
 }
 
@@ -389,13 +394,14 @@ export function collectScreenRuntimeEvidence({
 export function validateScreenRuntimeEvidence(input, {
   baseURL,
   nowMs = Date.now(),
+  expectedGpuGrant = null,
 } = {}) {
   const evidence = exactRecord(input, 'screen runtime evidence');
   if (evidence.deployment === 'local') {
     return validateHostLocalScreenEvidence(evidence, { baseURL, nowMs });
   }
   if (evidence.deployment === 'box') {
-    return validateBoxScreenEvidence(evidence, { baseURL, nowMs });
+    return validateBoxScreenEvidence(evidence, { baseURL, nowMs, expectedGpuGrant });
   }
   throw new Error('Screen runtime evidence deployment must be local or box.');
 }

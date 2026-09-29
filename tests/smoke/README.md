@@ -525,6 +525,19 @@ use the wildcard publication when testing LAN login and loopback WebMeet media
 on the same Box. The separate screen-share and external-network gates retain
 their existing loopback-publication requirements.
 
+When the Box has GPU wiring (an installed agent declares
+`containerSecurity.gpu: true`, the operator ran `ploinky gpu grant`, or the
+operator revoked such access), Ploinky adds the `io.assistos.ploinky-box.gpu-grant`
+label with the grant fingerprint and a read-only bind of the grant marker
+(`/etc/ploinky-box-gpu-grant.json`) from that fingerprint's grant directory.
+Active wiring, on a host with an NVIDIA GPU, also binds the CDI spec
+(`/etc/cdi/ploinky-gpu.json`) from the same directory and the driver files under
+`/usr/local/nvidia`; stale or revoked wiring binds only the marker. Set
+`SMOKE_BOX_GPU_GRANT` to that exact 64-hex fingerprint for such a Box. Without
+it, shared Box evidence (including the screen-share and network-matrix gates)
+rejects the label, and it rejects marker, CDI spec, or driver mounts when the
+label is absent; it never infers the expectation from the running container.
+
 For the screen-share gate in Box mode, exactly one outer container must publish
 `127.0.0.1:<SMOKE_BASE_URL port>:8080/tcp` and
 `0.0.0.0:7882:7882/udp`, carry the exact semantic Box ownership labels, and use a freshly built
@@ -742,15 +755,16 @@ SMOKE_ALLOW_BROWSER_ERRORS=1 npm test
 `lib/explorer-graph.mjs` walks every manifest reachable from
 `explorer/manifest.json`. Qualified enable refs (`repo/agent`) resolve to
 checkouts placed **next to** this repository, except `AchillesIDE/...`, which
-names this repository itself. The known siblings are `AchillesCLI`, `proxies`
-and `UmamiAgent` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
+names this repository itself. The known siblings are `AchillesCLI`, `proxies`,
+`UmamiAgent` and `local-llms` (`KNOWN_SIBLINGS` in the helper), expected in the Explorer
 repository's parent directory. `lib/deploy-qa-userpersisto.test.mjs` and
 `explorer/tests/unit/retiredLocalModelGraph.test.js` (which runs under
 `cd explorer && npm test`) both use the helper.
 
 Minimum revisions are recorded per enabled agent ref (`MINIMUM_REVISIONS` in
-the helper). None is recorded, because no agent the current graph enables
-needs one. The controls in `explorer/tests/unit/retiredLocalModelGraph.test.js`
+the helper). One is recorded: `local-llms/local-llm` needs a local-llms
+checkout that contains `1990959` (the first local-llms revision with the
+agent; local-llms `main` contains it). The controls in `explorer/tests/unit/retiredLocalModelGraph.test.js`
 pass a synthetic entry through the helper's `minimumRevisions` option to
 exercise the rule.
 

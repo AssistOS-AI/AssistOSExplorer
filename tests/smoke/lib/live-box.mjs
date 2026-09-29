@@ -7,6 +7,7 @@ import { inspectBoxWorkspace, validateSamePathWorkspaceMount } from './box-works
 import {
   buildBoxEvidence,
   normalizeOuterPortBindings,
+  readExpectedGpuGrant,
   validateBoxEvidence,
 } from './box-evidence.mjs';
 import {
@@ -318,6 +319,7 @@ export function selectLocalScreenContainer(containerInspects, port, { expectedRo
 export function validateLiveBoxEvidence(input, {
   baseURL,
   expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
+  expectedGpuGrant = null,
   nowMs = Date.now(),
   generationMaxAgeMs,
   imageMaxAgeMs,
@@ -334,6 +336,7 @@ export function validateLiveBoxEvidence(input, {
     baseURL: local.baseURL,
     publicIPv4: String(input.box?.publicIPv4 || ''),
     expectedRouterBindAddress,
+    expectedGpuGrant,
   });
   if (box.selectedRouterHostPort !== local.port) {
     throw new Error('Live Box Router publication does not match SMOKE_BASE_URL.');
@@ -355,6 +358,7 @@ export function validateLiveBoxEvidence(input, {
 export function collectLiveBoxEvidence({
   baseURL,
   expectedRouterBindAddress = readExpectedRouterBindAddress(),
+  expectedGpuGrant = readExpectedGpuGrant(),
   expectedContainerName = '',
   expectedImageId = '',
   expectedImageRef = '',
@@ -396,6 +400,7 @@ export function collectLiveBoxEvidence({
     baseURL: local.baseURL,
     publicIPv4: String(publicIPv4 || ''),
     expectedRouterBindAddress,
+    expectedGpuGrant,
   });
   const validated = validateLiveBoxEvidence({
     capturedAt: new Date(nowMs).toISOString(),
@@ -406,7 +411,7 @@ export function collectLiveBoxEvidence({
       : null,
     requireFreshImage,
     box,
-  }, { baseURL: local.baseURL, nowMs, expectedRouterBindAddress });
+  }, { baseURL: local.baseURL, nowMs, expectedRouterBindAddress, expectedGpuGrant });
   const observedWorkspace = inspectBoxWorkspace(selected);
   const ploinkySourceMount = expectedPloinkySource
     ? validateReadOnlyPloinkySourceMount(

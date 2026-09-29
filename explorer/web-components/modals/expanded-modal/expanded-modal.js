@@ -53,6 +53,9 @@ export class ExpandedModal {
         this.stateNode = this.element.querySelector("#expandedModalState");
         this.stateMessage = this.element.querySelector("#expandedModalStateMessage");
         this.fullscreenButton = this.element.querySelector("#expandedModalFullscreen");
+        this.titleNode = this.element.querySelector("#expandedModalTitle");
+        this.breadcrumbsNode = this.element.querySelector("#expandedModalBreadcrumbs");
+        this.breadcrumbsNode?.addEventListener("click", this.handleBreadcrumbClick);
         this.mode = this.attr("mode") || (this.attr("component") ? "component" : "iframe");
         const reloadButton = this.element.querySelector("#expandedModalReload");
         if (reloadButton) reloadButton.hidden = this.mode !== "iframe";
@@ -60,6 +63,75 @@ export class ExpandedModal {
         this.bindResizeHandles();
         this.bindHeaderDrag();
         this.setState("Loading…");
+    }
+
+    // Breadcrumb links cloned from the embedded page must navigate that frame,
+    // never the host document.
+    handleBreadcrumbClick = (event) => {
+        const link = event.target?.closest?.("a");
+        if (!link || !this.frame) return;
+        event.preventDefault();
+        // Prefer the source link's resolved href captured while folding; fall back
+        // to resolving against the embedded document's base.
+        let href = link.getAttribute("data-href") || "";
+        if (!href) {
+            let base = "";
+            try { base = this.frame.contentDocument?.baseURI || this.frame.contentWindow.location.href; }
+            catch (_) { base = ""; }
+            try { href = base ? new URL(link.getAttribute("href") || "", base).href : ""; }
+            catch (_) { href = ""; }
+        }
+        if (href) this.frame.src = href;
+    };
+
+    stopHeaderObserver() {
+        this.headerObserver?.disconnect();
+        this.headerObserver = null;
+    }
+
+    showModalTitle() {
+        this.stopHeaderObserver();
+        if (this.breadcrumbsNode) {
+            this.breadcrumbsNode.hidden = true;
+            this.breadcrumbsNode.replaceChildren();
+        }
+        if (this.titleNode) this.titleNode.hidden = false;
+    }
+
+    // Fold an embedded page's marked header into the modal header: hide the page
+    // hero and mirror its breadcrumbs, keeping dynamic leaves in sync.
+    syncFrameHeader() {
+        let doc = null;
+        try { doc = this.frame?.contentDocument; } catch (_) { doc = null; }
+        if (this.mode !== "iframe" || !doc || !this.breadcrumbsNode || !this.titleNode) {
+            this.showModalTitle();
+            return;
+        }
+        const hero = doc.querySelector("[data-embed-header]");
+        const source = doc.querySelector("[data-embed-breadcrumbs]");
+        if (!hero || !source) {
+            this.showModalTitle();
+            return;
+        }
+        hero.style.display = "none";
+        this.stopHeaderObserver();
+        const render = () => {
+            if (!this.breadcrumbsNode || !this.titleNode || !source.isConnected) return;
+            this.breadcrumbsNode.replaceChildren(...[...source.childNodes].map((node) => node.cloneNode(true)));
+            const sourceLinks = [...source.querySelectorAll("a")];
+            const cloneLinks = [...this.breadcrumbsNode.querySelectorAll("a")];
+            cloneLinks.forEach((link, index) => {
+                const original = sourceLinks[index];
+                if (original?.href) link.setAttribute("data-href", original.href);
+            });
+            this.breadcrumbsNode.hidden = false;
+            this.titleNode.hidden = true;
+        };
+        render();
+        if (typeof MutationObserver === "function") {
+            this.headerObserver = new MutationObserver(render);
+            this.headerObserver.observe(source, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden", "href"] });
+        }
     }
 
     startContent() {
@@ -81,6 +153,7 @@ export class ExpandedModal {
     cancelLoading() {
         this.loadController.abort();
         this.finishWait?.();
+        this.stopHeaderObserver();
         if (this.frame) {
             this.frame.removeAttribute("src");
             this.frame.remove();
@@ -355,6 +428,7 @@ export class ExpandedModal {
         frame.setAttribute("allow", this.attr("allow") || DEFAULT_ALLOW);
         frame.addEventListener("load", () => {
             if (this.loadController.signal.aborted || frame !== this.frame) return;
+            this.syncFrameHeader();
             if (this.isFrameReady()) {
                 this.clearRetry();
                 this.setState("");
@@ -462,7 +536,11 @@ export class ExpandedModal {
 
     openInNewTab() {
         if (typeof window === "undefined") return;
-        window.open(window.location.href, "_blank", "noopener,noreferrer");
+        let url = "";
+        try { if (this.mode === "iframe" && this.frame?.contentWindow) url = this.frame.contentWindow.location.href; }
+        catch (_) { url = ""; }
+        if (!url) url = this.frame?.getAttribute("src") || window.location.href;
+        window.open(url, "_blank", "noopener,noreferrer");
     }
 
     async notifyFrameUserClose() {

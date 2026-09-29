@@ -23,6 +23,16 @@ const BOX_LABELS = Object.freeze({
   agentLibSourceRelativePath: 'io.assistos.ploinky-box.agentlib-source-path',
   agentLibCommit: 'io.assistos.ploinky-box.agentlib-commit',
 });
+// Ploinky adds this label and a read-only grant marker from the grant's
+// fingerprint directory whenever the Box has GPU wiring. Active wiring also
+// binds the CDI spec from that same directory and the NVIDIA driver files
+// under /usr/local/nvidia; stale or revoked wiring binds only the marker. A
+// gate accepts that surface only when the operator names the exact
+// fingerprint in SMOKE_BOX_GPU_GRANT.
+export const GPU_GRANT_LABEL = 'io.assistos.ploinky-box.gpu-grant';
+const GPU_GRANT_MARKER_PATH = '/etc/ploinky-box-gpu-grant.json';
+const GPU_GRANT_CDI_SPEC_PATH = '/etc/cdi/ploinky-gpu.json';
+const GPU_DRIVER_DIRECTORY = '/usr/local/nvidia';
 const ROUTER_TARGET = '8080/tcp';
 const MEDIA_TARGET = '7882/udp';
 const TCP_SCAN_START = 1;
@@ -104,20 +114,86 @@ function exactAgentLibCommit(value, name) {
   return text;
 }
 
+function exactGpuGrant(value, name) {
+  const text = String(value ?? '');
+  if (!/^[0-9a-f]{64}$/.test(text)) {
+    throw new Error(`${name} must be exactly 64 lowercase hexadecimal characters.`);
+  }
+  return text;
+}
+
+export function readExpectedGpuGrant(env = process.env) {
+  const text = String(env.SMOKE_BOX_GPU_GRANT ?? '').trim();
+  return text ? exactGpuGrant(text, 'SMOKE_BOX_GPU_GRANT') : null;
+}
+
+function assertGpuGrantLabel(labels, expectedGpuGrant) {
+  const expected = expectedGpuGrant == null ? null : exactGpuGrant(expectedGpuGrant, 'expected Box GPU grant');
+  const present = Object.hasOwn(labels, GPU_GRANT_LABEL);
+  if (expected === null) {
+    if (present) {
+      throw new Error(`Outer container Box ${GPU_GRANT_LABEL} label requires an explicit SMOKE_BOX_GPU_GRANT expectation.`);
+    }
+    return null;
+  }
+  if (labels[GPU_GRANT_LABEL] !== expected) {
+    throw new Error(`Outer container Box ${GPU_GRANT_LABEL} label must equal ${expected}.`);
+  }
+  return expected;
+}
+
+function grantFileDirectory(found, file, gpuGrant) {
+  const source = found[0]?.Source;
+  if (found.length !== 1 || found[0].Type !== 'bind' || found[0].RW !== false
+    || typeof source !== 'string' || !path.posix.isAbsolute(source)
+    || path.posix.normalize(source) !== source || path.posix.basename(source) !== file
+    || path.posix.basename(path.posix.dirname(source)) !== gpuGrant) {
+    throw new Error(`Box gpu-grant label requires exactly one read-only ${file} bind from its ${gpuGrant} grant directory.`);
+  }
+  return path.posix.dirname(source);
+}
+
+function requireGpuGrantMounts(mounts, gpuGrant) {
+  if (!Array.isArray(mounts)) throw new Error('GPU grant evidence requires the inspected container mount inventory.');
+  const at = (destination) => mounts.filter((mount) => mount?.Destination === destination);
+  const marker = at(GPU_GRANT_MARKER_PATH);
+  const spec = at(GPU_GRANT_CDI_SPEC_PATH);
+  const drivers = mounts.filter((mount) => typeof mount?.Destination === 'string'
+    && (mount.Destination === GPU_DRIVER_DIRECTORY || mount.Destination.startsWith(`${GPU_DRIVER_DIRECTORY}/`)));
+  if (gpuGrant === null) {
+    if (marker.length || spec.length || drivers.length) {
+      throw new Error('GPU grant marker, CDI spec, or driver mounts require the Box gpu-grant label.');
+    }
+    return;
+  }
+  const directory = grantFileDirectory(marker, 'marker.json', gpuGrant);
+  if (spec.length === 0) {
+    // Stale or revoked wiring: Ploinky keeps only the marker.
+    if (drivers.length) throw new Error('A Box GPU grant without a CDI spec must not bind GPU driver files.');
+    return;
+  }
+  if (grantFileDirectory(spec, 'box.json', gpuGrant) !== directory) {
+    throw new Error('Box GPU grant marker and CDI spec must come from the same grant directory.');
+  }
+}
+
 function exactBoxLabels(labels, {
   expectedImageRef,
   expectedImageId,
   selectedRouterHostPort,
   selectedMediaHostPort,
   expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
+  expectedGpuGrant = null,
 } = {}) {
   const source = record(labels, 'outer container Config.Labels');
   const routerBindAddress = assertRouterBindAddressLabel(source, expectedRouterBindAddress);
+  const gpuGrant = assertGpuGrantLabel(source, expectedGpuGrant);
   const semanticEntries = Object.entries(source)
     .sort(([left], [right]) => left.localeCompare(right));
   const expectedNames = [
     ...Object.values(BOX_LABELS),
     ...(routerBindAddress === DEFAULT_ROUTER_BIND_ADDRESS ? [] : [ROUTER_BIND_ADDRESS_LABEL]),
+    ...(gpuGrant === null ? [] : [GPU_GRANT_LABEL]),
   ].sort();
   if (JSON.stringify(semanticEntries.map(([name]) => name)) !== JSON.stringify(expectedNames)) {
     throw new Error(`Outer container Box labels must be exactly ${JSON.stringify(expectedNames)}.`);
@@ -208,6 +284,7 @@ function exactBoxLabels(labels, {
     agentLibFingerprint,
     agentLibSourceRelativePath,
     agentLibCommit,
+    ...(gpuGrant === null ? {} : { gpuGrant }),
   });
 }
 
@@ -335,6 +412,7 @@ export function buildBoxEvidence({
   baseURL,
   publicIPv4,
   expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
+  expectedGpuGrant = null,
 }) {
   const container = oneInspectRecord(containerInspect, 'outer container inspection');
   const image = oneInspectRecord(imageInspect, 'outer image inspection');
@@ -376,8 +454,10 @@ export function buildBoxEvidence({
     selectedRouterHostPort,
     selectedMediaHostPort,
     expectedRouterBindAddress,
+    expectedGpuGrant,
   });
   if (semanticLabels.agentLibMode === 'image') requireUnshadowedImageAgentLib(container.Mounts);
+  requireGpuGrantMounts(container.Mounts, semanticLabels.gpuGrant ?? null);
   inspectBoxWorkspace(container);
   return validateBoxEvidence({
     containerName,
@@ -399,6 +479,7 @@ export function buildBoxEvidence({
     baseURL,
     publicIPv4,
     expectedRouterBindAddress,
+    expectedGpuGrant,
   });
 }
 
@@ -409,6 +490,7 @@ export function validateBoxEvidence(input, {
   baseURL,
   publicIPv4,
   expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
+  expectedGpuGrant = null,
 } = {}) {
   const evidence = record(input, 'Box evidence');
   if (evidence.containerName !== expectedContainerName) throw new Error('Box evidence container name mismatch.');
@@ -435,8 +517,17 @@ export function validateBoxEvidence(input, {
       ...Object.entries(BOX_LABELS).map(([name, label]) => [label, evidence.semanticLabels?.[name]]),
       ...(Object.hasOwn(evidence.semanticLabels || {}, 'routerBindAddress')
         ? [[ROUTER_BIND_ADDRESS_LABEL, evidence.semanticLabels.routerBindAddress]] : []),
+      ...(Object.hasOwn(evidence.semanticLabels || {}, 'gpuGrant')
+        ? [[GPU_GRANT_LABEL, evidence.semanticLabels.gpuGrant]] : []),
     ]),
-    { expectedImageRef, expectedImageId: requiredImageId, selectedRouterHostPort, selectedMediaHostPort, expectedRouterBindAddress },
+    {
+      expectedImageRef,
+      expectedImageId: requiredImageId,
+      selectedRouterHostPort,
+      selectedMediaHostPort,
+      expectedRouterBindAddress,
+      expectedGpuGrant,
+    },
   );
   return Object.freeze({
     containerName: evidence.containerName,

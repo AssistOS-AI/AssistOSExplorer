@@ -18,7 +18,7 @@ test('disabled secretary preserves settings until Marketplace enables it', async
     let active = false;
     let saves = 0;
     t.mock.method(globalThis, 'fetch', async (url, options) => {
-        assert.equal(url, '/api/marketplace');
+        assert.equal(url, '/api/marketplace/agents');
         assert.equal(options.credentials, 'include');
         return { ok: true, json: async () => ({ marketplace: { agents: [
             { ref: 'AchillesIDE/webmeetScribeAgent', active },

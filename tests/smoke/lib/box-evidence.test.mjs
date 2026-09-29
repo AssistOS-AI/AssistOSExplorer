@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
   buildBoxEvidence,
+  GPU_GRANT_LABEL,
   normalizeOuterPortBindings,
+  readExpectedGpuGrant,
   validateExternalTcpNegativeEvidence,
   validateBoxEvidence,
 } from './box-evidence.mjs';
@@ -247,6 +249,93 @@ test('live collection carries an explicit wildcard expectation through discovery
   } finally {
     if (prior === undefined) delete process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS;
     else process.env.SMOKE_BOX_ROUTER_BIND_ADDRESS = prior;
+  }
+});
+
+const GPU_GRANT = '9'.repeat(64);
+const GPU_GRANT_DIRECTORY = `/home/operator/.ploinky-box/gpu-grants/${CONTAINER}/${GPU_GRANT}`;
+
+function gpuContainerInspect(grant = GPU_GRANT) {
+  const inspection = containerInspect();
+  inspection[0].Config.Labels[GPU_GRANT_LABEL] = grant;
+  inspection[0].Mounts.push(
+    { Type: 'bind', Source: '/usr/lib/x86_64-linux-gnu/libcuda.so.1', Destination: '/usr/local/nvidia/lib64/libcuda.so.1', RW: false },
+    { Type: 'bind', Source: `${GPU_GRANT_DIRECTORY}/box.json`, Destination: '/etc/cdi/ploinky-gpu.json', RW: false },
+    { Type: 'bind', Source: `${GPU_GRANT_DIRECTORY}/marker.json`, Destination: '/etc/ploinky-box-gpu-grant.json', RW: false },
+  );
+  return inspection;
+}
+
+test('GPU-wired Box evidence requires the exact expected grant label and its read-only grant mounts', () => {
+  const options = { ...expected(), expectedGpuGrant: GPU_GRANT };
+  const build = (value = gpuContainerInspect(), overrides = {}) => buildBoxEvidence({
+    containerInspect: value, imageInspect: imageInspect(), ...options, ...overrides,
+  });
+  const verified = build();
+  assert.equal(verified.semanticLabels.gpuGrant, GPU_GRANT);
+  assert.deepEqual(validateBoxEvidence(JSON.parse(JSON.stringify(verified)), options), verified);
+  assert.throws(() => build(gpuContainerInspect(), { expectedGpuGrant: null }), /requires an explicit SMOKE_BOX_GPU_GRANT/);
+  assert.throws(() => build(gpuContainerInspect(), { expectedGpuGrant: '8'.repeat(64) }), /gpu-grant label must equal/);
+  assert.throws(() => build(gpuContainerInspect(), { expectedGpuGrant: 'A'.repeat(64) }), /64 lowercase hexadecimal/);
+  assert.throws(() => validateBoxEvidence(verified, expected()), /requires an explicit SMOKE_BOX_GPU_GRANT/);
+  assert.throws(() => build(containerInspect()), /gpu-grant label must equal/);
+
+  const find = (value, destination) => value.Mounts.find((mount) => mount.Destination === destination);
+  for (const [mutate, message] of [
+    [(value) => { value.Mounts = value.Mounts.filter((mount) => mount.Destination !== '/etc/ploinky-box-gpu-grant.json'); }, /read-only marker\.json bind/],
+    [(value) => { find(value, '/etc/cdi/ploinky-gpu.json').RW = true; }, /read-only box\.json bind/],
+    [(value) => { find(value, '/etc/ploinky-box-gpu-grant.json').Source = `/tmp/${'8'.repeat(64)}/marker.json`; }, /read-only marker\.json bind/],
+    [(value) => { find(value, '/etc/ploinky-box-gpu-grant.json').Source = `${GPU_GRANT_DIRECTORY}/../${GPU_GRANT}/marker.json`; }, /read-only marker\.json bind/],
+    [(value) => { value.Mounts.push({ ...find(value, '/etc/ploinky-box-gpu-grant.json') }); }, /read-only marker\.json bind/],
+    [(value) => { find(value, '/etc/cdi/ploinky-gpu.json').Source = `/tmp/${GPU_GRANT}/box.json`; }, /same grant directory/],
+    // Without the CDI spec the grant is stale or revoked, which carries no driver files.
+    [(value) => { value.Mounts = value.Mounts.filter((mount) => mount.Destination !== '/etc/cdi/ploinky-gpu.json'); }, /must not bind GPU driver files/],
+  ]) {
+    const altered = structuredClone(gpuContainerInspect());
+    mutate(altered[0]);
+    assert.throws(() => build(altered), message);
+  }
+
+  // Stale or revoked wiring: Ploinky keeps the label and only the marker bind.
+  const markerOnly = gpuContainerInspect();
+  markerOnly[0].Mounts = markerOnly[0].Mounts.filter((mount) => !mount.Destination.startsWith('/usr/local/nvidia/')
+    && mount.Destination !== '/etc/cdi/ploinky-gpu.json');
+  assert.equal(build(markerOnly).semanticLabels.gpuGrant, GPU_GRANT);
+
+  const unlabelled = gpuContainerInspect();
+  delete unlabelled[0].Config.Labels[GPU_GRANT_LABEL];
+  assert.throws(() => build(unlabelled, { expectedGpuGrant: null }), /mounts require the Box gpu-grant label/);
+  const driversOnly = containerInspect();
+  driversOnly[0].Mounts.push({ ...gpuContainerInspect()[0].Mounts.find((mount) => mount.Destination.startsWith('/usr/local/nvidia/')) });
+  assert.throws(() => build(driversOnly, { expectedGpuGrant: null }), /driver mounts require the Box gpu-grant label/);
+  const unexpected = gpuContainerInspect();
+  unexpected[0].Config.Labels['unexpected-label'] = 'unexpected';
+  assert.throws(() => build(unexpected), /labels must be exactly/);
+});
+
+test('live collection reads the GPU grant expectation from SMOKE_BOX_GPU_GRANT', () => {
+  const prior = process.env.SMOKE_BOX_GPU_GRANT;
+  try {
+    const inspection = gpuContainerInspect();
+    const image = imageInspect();
+    image[0].Created = STARTED_AT;
+    const command = (_executable, args) => {
+      if (args[0] === 'container' && args[1] === 'ls') return CONTAINER_ID;
+      if (args[0] === 'container' && args[1] === 'inspect') return inspection;
+      if (args[0] === 'image' && args[1] === 'inspect') return image;
+      throw new Error('Unexpected inspection command');
+    };
+    const options = { baseURL: 'http://127.0.0.1:18080', nowMs: Date.parse(STARTED_AT) + 1000, command };
+    delete process.env.SMOKE_BOX_GPU_GRANT;
+    assert.equal(readExpectedGpuGrant(), null);
+    assert.throws(() => collectLiveBoxEvidence(options), /requires an explicit SMOKE_BOX_GPU_GRANT/);
+    process.env.SMOKE_BOX_GPU_GRANT = GPU_GRANT;
+    assert.equal(collectLiveBoxEvidence(options).box.semanticLabels.gpuGrant, GPU_GRANT);
+    process.env.SMOKE_BOX_GPU_GRANT = 'not-a-fingerprint';
+    assert.throws(() => readExpectedGpuGrant(), /SMOKE_BOX_GPU_GRANT must be exactly 64 lowercase hexadecimal/);
+  } finally {
+    if (prior === undefined) delete process.env.SMOKE_BOX_GPU_GRANT;
+    else process.env.SMOKE_BOX_GPU_GRANT = prior;
   }
 });
 

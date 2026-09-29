@@ -18,7 +18,7 @@ function isPermanentRequestError(error) {
 
 export async function readMarketplaceAgent(agentRef, { signal } = {}) {
     try {
-        const response = await fetch('/api/marketplace', {
+        const response = await fetch('/api/marketplace/agents', {
             credentials: 'same-origin',
             headers: { accept: 'application/json' },
             cache: 'no-store',

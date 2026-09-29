@@ -8,6 +8,7 @@ import {
 import { stopAndAttachRedactedTrace } from '../lib/redacted-trace.mjs';
 import { createReleaseGateFailureCollector } from '../lib/release-gate-failures.mjs';
 import { explorerUrl } from '../lib/explorer.mjs';
+import { readExpectedGpuGrant } from '../lib/box-evidence.mjs';
 import {
   collectScreenRuntimeEvidence,
   sameScreenRuntimeGeneration,
@@ -159,6 +160,7 @@ test.describe('WebMeet rooms', () => {
         try {
           screenRuntimeEvidence = validateScreenRuntimeEvidence(JSON.parse(serializedRuntimeEvidence), {
             baseURL: smokeConfig.baseURL,
+            expectedGpuGrant: readExpectedGpuGrant(),
           });
         } catch (error) {
           throw new Error(`SMOKE_WEBMEET_SCREEN deployment evidence is invalid: ${error instanceof Error ? error.message : String(error)}`);

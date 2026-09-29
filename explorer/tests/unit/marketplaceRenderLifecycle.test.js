@@ -73,13 +73,18 @@ test('Marketplace reads omit admin proof and mutations attach a fresh proof', as
     await modal.requestMarketplace({ action: 'enable_agent', agentRef: 'proxies/searchAgent' });
 
     assert.equal(proofCalls, 1);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.equal(calls[0].method, 'GET');
+    assert.equal(calls[0].path, '/api/marketplace/repos');
     assert.equal(calls[0].headers['x-ploinky-csrf-token'], undefined);
-    assert.equal(calls[1].method, 'POST');
-    assert.equal(calls[1].headers['x-ploinky-csrf-token'], 'v1.proof-1');
-    assert.equal(calls[1].headers['Content-Type'], 'application/json');
-    assert.equal(calls[1].body, JSON.stringify({ action: 'enable_agent', agentRef: 'proxies/searchAgent' }));
+    assert.equal(calls[1].method, 'GET');
+    assert.equal(calls[1].path, '/api/marketplace/agents');
+    assert.equal(calls[1].headers['x-ploinky-csrf-token'], undefined);
+    assert.equal(calls[2].method, 'POST');
+    assert.equal(calls[2].path, '/api/marketplace/agents');
+    assert.equal(calls[2].headers['x-ploinky-csrf-token'], 'v1.proof-1');
+    assert.equal(calls[2].headers['Content-Type'], 'application/json');
+    assert.equal(calls[2].body, JSON.stringify({ action: 'enable_agent', agentRef: 'proxies/searchAgent' }));
 });
 
 test('Marketplace retries once with a new proof only after csrf_invalid', async (t) => {
@@ -349,7 +354,7 @@ test('Marketplace stops polling and reports permanent authorization failure', as
     modal.state.marketplace = {permissions: {canManage: true}, agents: []};
     modal.renderStatus = () => {};
     modal.renderState = () => {};
-    modal.requestMarketplace = async () => { throw Object.assign(new Error('Administrator access is required.'), {status: 403}); };
+    modal.fetchMarketplaceHalf = async () => { throw Object.assign(new Error('Administrator access is required.'), {status: 403}); };
     t.after(() => clearTimeout(modal.agentStatusRefreshTimer));
     await modal.refreshAgentStatuses();
     assert.equal(modal.agentStatusRefreshStopped, true);
@@ -433,7 +438,7 @@ test('Marketplace keeps polling after an agent reaches Running without rebuildin
         busy: false,
         agentMutationBusyRef: ''
     };
-    modal.requestMarketplace = async () => ({
+    modal.fetchMarketplaceHalf = async () => ({
         agents: [{active: true, status: 'running', running: true}]
     });
     let agentRenders = 0;
@@ -464,7 +469,7 @@ test('Marketplace polling is serial and resumes after transient failure while pr
     modal.state.statusType = 'error';
     const request = deferred();
     let requests = 0;
-    modal.requestMarketplace = async () => {
+    modal.fetchMarketplaceHalf = async () => {
         requests += 1;
         await request.promise;
         throw Object.assign(new Error('Unavailable'), {status: 503});
@@ -486,7 +491,7 @@ test('Marketplace unload aborts an outstanding read and cannot render or schedul
     modal.state.marketplace = {agents: [], repositories: []};
     const request = deferred();
     let signal;
-    modal.requestMarketplace = async (_action, options) => { signal = options.signal; return request.promise; };
+    modal.fetchMarketplaceHalf = async (_resource, options) => { signal = options.signal; return request.promise; };
     modal.applyMarketplaceSnapshot = () => assert.fail('unmounted catalog cannot be applied');
     const refresh = modal.refreshAgentStatuses();
     modal.afterUnload();

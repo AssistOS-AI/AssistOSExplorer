@@ -73,6 +73,7 @@ async function runExplorerToolScript(scriptName, args, { timeoutMs = 30000 } = {
 }
 
 export function createToolHandlers({
+  repositoryClient: suppliedRepositoryClient = null,
   fs,
   path,
   schemas,
@@ -229,7 +230,6 @@ export function createToolHandlers({
   const canonicalAgentsDir = '.agents';
   const canonicalSkillsDir = path.join(canonicalAgentsDir, 'skills');
   const ploinkyRoot = path.join(workspaceRoot, 'ploinky');
-  let ploinkyReposServicePromise = null;
   const avatarSettingsStore = createAvatarSettingsStore({ fs, path, workspaceRoot });
   const markdownCrdtStore = createMarkdownCrdtStore({
     fs,
@@ -247,39 +247,25 @@ export function createToolHandlers({
     markdownCrdtStore
   });
 
-  async function loadPloinkyReposService() {
-    if (!ploinkyReposServicePromise) {
-      const modulePath = path.join(ploinkyRoot, 'cli', 'utils', 'repos.js');
-      ploinkyReposServicePromise = import(pathToFileURL(modulePath).href);
-    }
-    return ploinkyReposServicePromise;
+  let repositoryClientPromise;
+  const resolvedRepositoryNames = new Map();
+  const resolvedRepositorySources = new Map();
+  async function repositoriesClient() {
+    if (suppliedRepositoryClient) return suppliedRepositoryClient;
+    repositoryClientPromise ||= (async () => {
+      const bundled = '/Agent/client/RepositoryClient.mjs';
+      const modulePath = await fs.stat(bundled).then(() => bundled).catch(() => path.join(ploinkyRoot, 'Agent/client/RepositoryClient.mjs'));
+      return (await import(pathToFileURL(modulePath).href)).createRepositoryClient();
+    })();
+    return repositoryClientPromise;
   }
 
   async function listKnownSkillRepositories() {
-    const reposSvc = await loadPloinkyReposService();
-    const predefined = reposSvc.getPredefinedRepos?.() || {};
-    const sources = reposSvc.getRepoSources?.() || {};
-    const installed = new Set(reposSvc.getInstalledRepos?.(reposCacheRoot) || []);
-    const names = new Set([...Object.keys(predefined), ...Object.keys(sources), ...installed]);
-    const result = [];
-    for (const name of names) {
-      const predefinedEntry = predefined[name] || {};
-      const sourceEntry = sources[name] || {};
-      const kind = predefinedEntry.kind || sourceEntry.kind || reposSvc.classifyRepoKind?.(name) || 'unknown';
-      if (kind !== 'skills' && kind !== 'mixed') continue;
-      const url = predefinedEntry.url || sourceEntry.url || '';
-      if (!url) continue;
-      if (!predefinedEntry.url && path.isAbsolute(url) && !await repoPathExists(url)) continue;
-      result.push({
-        name,
-        label: predefinedEntry.description ? `${name} - ${predefinedEntry.description}` : name,
-        url,
-        branch: sourceEntry.branch || '',
-        installed: installed.has(name),
-        kind
-      });
-    }
-    return result.sort((left, right) => left.name.localeCompare(right.name));
+    const repositories = await (await repositoriesClient()).listRepositories();
+    return repositories.filter(repo => ['skills', 'mixed'].includes(repo.kind)).map(repo => ({
+      ...repo, label: repo.name, url: repo.url || repo.source,
+      installed: repo.origin !== 'remote', skillSource: { source: repo.source, origin: repo.origin }
+    }));
   }
 
   function deriveRepoNameFromUrl(url) {
@@ -326,7 +312,7 @@ export function createToolHandlers({
     if (!value) throw new Error('Repository URL or name is required.');
     if (!looksLikeRepoUrl(value)) {
       const skillRepos = await listKnownSkillRepositories();
-      const known = skillRepos.find((repo) => repo.name === value || repo.name.toLowerCase() === value.toLowerCase());
+      const known = skillRepos.find((repo) => repo.name === value || repo.name.toLowerCase() === value.toLowerCase() || repo.url === value || repo.skillSource?.source === value);
       if (!known) {
         throw new Error(`Unknown skill repository '${value}'. Use a git URL or a known repository name.`);
       }
@@ -413,32 +399,18 @@ export function createToolHandlers({
     return Boolean(stat?.isDirectory?.());
   }
 
-  async function ensureSkillRepoCached(entry, { pull = false } = {}) {
-    const repoName = normalizeRepoName(entry.name || deriveRepoNameFromUrl(entry.url));
-    const local = path.join(workspaceRoot, repoName);
-    const git = await fs.stat(path.join(local, '.git')).catch(() => null);
-    if (git && (git.isFile() || git.isDirectory())) {
-      const canonical = await fs.realpath(local);
-      const workspace = await fs.realpath(workspaceRoot);
-      if (!canonical.startsWith(`${workspace}${path.sep}`)) throw new Error('Skill repository escapes workspace');
-      return canonical;
+  async function ensureSkillRepoCached(entry) {
+    const client = await repositoriesClient();
+    let repositories = await client.listRepositories();
+    let repository = repositories.find(repo => repo.name === entry.name || repo.source === entry.url || repo.url === entry.url);
+    if (!repository || repository.origin === 'remote') {
+      repositories = await client.prepareRepository({ name: entry.name, url: entry.url, branch: entry.branch });
+      repository = repositories.find(repo => repo.name === entry.name || repo.url === entry.url);
     }
-    const repoPath = path.join(reposCacheRoot, repoName);
-    await fs.mkdir(reposCacheRoot, { recursive: true });
-    if (await repoPathExists(repoPath)) {
-      if (pull) {
-        const gitDir = path.join(repoPath, '.git');
-        if (await repoPathExists(gitDir)) {
-          execFileSync('git', ['-C', repoPath, 'pull', '--rebase', '--autostash'], { stdio: 'ignore' });
-        }
-      }
-      return repoPath;
-    }
-    const args = ['clone', '--quiet'];
-    if (entry.branch) args.push('--branch', entry.branch);
-    args.push(entry.url, repoPath);
-    execFileSync('git', args, { stdio: 'ignore' });
-    return repoPath;
+    if (!repository || repository.origin === 'remote') throw new Error('Repository source is unavailable');
+    resolvedRepositoryNames.set(entry.name, repository.name);
+    resolvedRepositorySources.set(entry.name, repository.source);
+    return repository.source;
   }
 
   async function listRepoSkillNames(repoPath) {
@@ -603,11 +575,11 @@ export function createToolHandlers({
       exportTransaction = { status: 'unknown' };
       diagnostics.push({ reason: 'skill-export-transaction-unreadable', message: error.message });
     }
-    const state = await readSkillExportOutputs(folder, selected, diagnostics, outputs);
+    const state = await readSkillExportOutputs(folder, entries, selected, diagnostics, outputs);
     return { ...state, exportTransaction };
   }
 
-  async function readSkillExportOutputs(folder, selected, diagnostics, outputs) {
+  async function readSkillExportOutputs(folder, entries, selected, diagnostics, outputs) {
     const agents = path.join(folder, canonicalAgentsDir);
     const skillsDir = path.join(folder, canonicalSkillsDir);
     for (const directory of [agents, skillsDir]) {
@@ -638,8 +610,13 @@ export function createToolHandlers({
         try { state = entry.isSymbolicLink() && skillTreeDigest(path.join(skillsDir, entry.name)) === record.digest ? 'managed' : 'modified'; }
         catch { state = 'modified'; }
       }
+      const selectedRepo = entries.find(repo => repo.skills.includes(entry.name));
+      if (entry.isSymbolicLink() && selectedRepo && resolvedRepositorySources.has(selectedRepo.name)) {
+        const source = path.resolve(skillsDir, await fs.readlink(path.join(skillsDir, entry.name)));
+        if (source === path.join(resolvedRepositorySources.get(selectedRepo.name), 'skills', entry.name)) state = 'managed';
+      }
       const descriptor = (entry.isDirectory() || entry.isSymbolicLink()) ? await fs.stat(path.join(skillsDir, entry.name, 'SKILL.md')).catch(() => null) : null;
-      outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || null });
+      outputs.push({ name: entry.name, state, selected: selected.has(entry.name), installed: Boolean(descriptor?.isFile()), source: record?.source || (state === 'managed' && selectedRepo ? { name: selectedRepo.name, url: selectedRepo.url } : null) });
       if (state === 'modified' || state === 'unsupported' || (selected.has(entry.name) && state === 'local')) diagnostics.push({ name: entry.name, reason: `${state}-output-preserved` });
     }
     for (const name of selected) if (!presentNames.has(name)) outputs.push({ name, state: 'missing', selected: true, installed: false });

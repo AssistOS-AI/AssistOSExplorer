@@ -581,6 +581,35 @@ export async function aggregateIdePlugins(rootDir) {
     }
   };
 
+  // Active routes own source selection. Read plugin metadata from the same
+  // source as the running agent before considering unselected repository copies.
+  let routing = {};
+  try {
+    routing = JSON.parse(await fs.readFile(path.join(rootDir, '.ploinky', 'routing.json'), 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const selectedAgents = new Map();
+  const physicalRoot = await fs.realpath(rootDir);
+  for (const route of Object.values(routing.routes || {})) {
+    if (!isNonEmptyString(route?.agent) || !isNonEmptyString(route?.hostPath)) continue;
+    const source = await fs.realpath(route.hostPath);
+    const relative = path.relative(physicalRoot, source);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error('Selected agent plugin source is outside the workspace.');
+    }
+    const previous = selectedAgents.get(route.agent);
+    if (previous && previous !== source) {
+      throw new Error(`Multiple selected plugin sources for agent '${route.agent}'.`);
+    }
+    selectedAgents.set(route.agent, source);
+  }
+  for (const [agentName, source] of selectedAgents) {
+    await processAgentDirectory(agentName, source);
+    // An absent plugin in the selected source must not resurrect an old copy.
+    visitedAgents.add(agentName);
+  }
+
   await scanAgentDirectories(rootDir);
   await addWorkspaceRepositories();
   await addRepoCollections(rootDir, true);

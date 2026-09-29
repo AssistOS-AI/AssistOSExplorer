@@ -11,7 +11,7 @@ test.describe('Marketplace lifecycle controls', () => {
     });
     let lifecycle = {active: true, status: 'starting', running: false};
     const startingDetail = 'Background startup is in progress.';
-    await page.route('**/api/marketplace', async (route) => {
+    await page.route('**/api/marketplace/agents', async (route) => {
       if (route.request().method() !== 'GET') {
         await route.continue();
         return;

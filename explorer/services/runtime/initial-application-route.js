@@ -1,9 +1,7 @@
 const DEFAULT_PAGE_NAME = 'file-exp';
 
-export function completeInitialApplicationRoute({ webSkel, presenter, windowRef = globalThis.window }) {
+export function completeInitialApplicationRoute({ webSkel, windowRef = globalThis.window }) {
     windowRef.webSkel = webSkel;
-    // Modal requests need the mounted application's tool clients and must not delay bootstrap until the user closes it.
-    return presenter?.openConversationSettingsFromLocation?.();
 }
 
 export function resolveInitialHashedRoute(hashValue) {
