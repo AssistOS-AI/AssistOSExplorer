@@ -12,7 +12,7 @@
     .request-log-heading h1 { margin: 0; font-size: 18px; color: var(--text); }
     .request-log-status { color: var(--muted); font-size: 13px; }
     #summaries { margin: 0; padding-left: 24px; }
-    #summaries li { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; margin-bottom: 16px; }
+    #summaries > li { white-space: normal; overflow-wrap: anywhere; line-height: 1.6; margin-bottom: 16px; }
     .request-log-page .phase-log { flex: 1 1 auto; max-height: none; }
   </style>
   <script>
@@ -36,6 +36,7 @@
       window.addEventListener('pageshow', syncTheme);
     })();
   </script>
+  <link rel="stylesheet" href="/webchat/assets/logMarkdown.css">
 </head>
 <body>
   <main class="request-log-page">

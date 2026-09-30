@@ -130,3 +130,11 @@ A [Workflow creator](../wiki.html#definition-workflow-creator) policy must alway
 ### Background task diagnostics
 
 WebChat task monitoring must emit version-1 __webchatDiagnostic records for operational warnings and recovery notices. Ploinky must route them to its server console and the browser diagnostic SSE event, without adding them to conversation text or session history. Diagnostics include a bounded, credential-redacted error message and code. Identical polling failures must be reported at most once per minute, with retries backing off to 30 seconds. Recovery resets the polling interval. A closed task manager must suppress late diagnostic and publication callbacks. Opening a new conversation does not delete the folder's task history; stopped workflow cards remain observed so later external continuations can be reflected.
+
+### Markdown output views
+
+ALA output in View thinking, workflow phase and generation logs, WebChat task logs, and human reports uses the same Markdown renderer as final WebChat messages. Consecutive output lines render as complete blocks so headings, lists, tables and fenced code survive live updates. Raw HTML is escaped and links allow only HTTP(S). File paths and words receive no custom token highlighting. Stored logs and report offsets remain unchanged.
+
+RoboTeam loads the shared log renderer and stylesheet from the same-origin Ploinky Router under `/webchat/assets/`. No copied Markdown parser or third-party renderer is bundled in RoboTeam.
+
+Final responses in Markdown logs use heavier text, a bordered panel and a subtle background, without an added label. View thinking always requests and renders plain text. The server returns text/plain regardless of Accept and identifies the completed response using x-log-final-offset and x-log-final-length headers, measured in JavaScript string characters. The viewer validates these optional offsets; older responses without them still render as Markdown. The renderer includes the final response when it was not recorded in the log and does not duplicate it when already present.

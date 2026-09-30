@@ -26,6 +26,7 @@
       window.addEventListener('pageshow', syncTheme);
     })();
   </script>
+  <link rel="stylesheet" href="/webchat/assets/logMarkdown.css">
 </head>
 <body class="generate-page">
   <main class="shell">
@@ -47,7 +48,7 @@
         <button id="skipButton" class="button" type="button" title="Skip generation and edit the workflow manually" aria-label="Skip generation and edit manually">Skip <span aria-hidden="true">→</span></button>
         <button id="cancelButton" class="button" type="button" hidden>Cancel</button>
       </div>
-      <pre id="generationLog" class="generation-log" aria-live="polite" aria-label="Generation logs" hidden></pre>
+      <div id="generationLog" class="generation-log" aria-live="polite" aria-label="Generation logs" hidden></div>
     </section>
   </main>
 

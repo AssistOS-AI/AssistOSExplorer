@@ -1,3 +1,4 @@
+import { renderLog } from './log-render.js';
 import { generateGraph } from './workflow-generator.js';
 import { endpoint } from './roboflow-api.js';
 
@@ -16,7 +17,7 @@ function setMessage(text, error = false) {
 }
 
 function setLog(text) {
-    logBox.textContent = text || '';
+    renderLog(logBox, text || '');
     logBox.hidden = false;
     logBox.scrollTop = logBox.scrollHeight;
 }

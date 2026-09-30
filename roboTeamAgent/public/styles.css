@@ -426,10 +426,10 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px
     border-radius: var(--radius-md);
     background: var(--surface-soft);
     color: var(--text-soft);
-    font-family: var(--mono-font);
+    font-family: inherit;
     font-size: var(--font-xs);
     line-height: 1.55;
-    white-space: pre-wrap;
+    white-space: normal;
     overflow-wrap: anywhere;
 }
 .generate-page .generation-log:empty::before { content: 'Generation logs will appear here.'; opacity: .7; }

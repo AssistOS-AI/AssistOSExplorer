@@ -23,7 +23,13 @@ async function load() {
             return;
         }
         if (!response.ok) throw new Error(`Request failed (${response.status})`);
-        renderLog(container, await response.text(), '');
+        const log = await response.text();
+        const offset = Number(response.headers.get('x-log-final-offset') ?? -1);
+        const length = Number(response.headers.get('x-log-final-length') ?? 0);
+        const finalResponse = Number.isSafeInteger(offset) && Number.isSafeInteger(length)
+            && offset >= 0 && length > 0 && offset + length <= log.length
+            ? log.slice(offset, offset + length) : '';
+        renderLog(container, log, finalResponse);
     } catch (error) {
         status.textContent = '';
         renderLog(container, error.message, '');

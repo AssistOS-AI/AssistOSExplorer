@@ -236,7 +236,7 @@ Continue with the tests.</code></pre>
 <p>In the workflow type editor, task cards with no matching robot keep their yellow warning border when switching tasks. A selected task also has a separate selection outline. Warnings clear when coverage validation finds a matching robot.</p>
 <p>At the start of a new conversation, RoboTeam instructs the robot to read the SKILL.md headers in .agents/skills and use those skills when needed. The prompt is built in copilot/src/lib/prompts.mjs without enumerating skills. This instruction is sent once, not repeated on conversation continuation.</p>
 <p>Prompt definitions are centralized in copilot/src/lib/prompts.mjs. When RoboFlow dispatches a task it supplies the complete graph, objective, current task ID and previous final responses. A task with multiple outgoing edges also receives routing instructions.</p>
-</main>
+<section><h2>Markdown output</h2><p>ALA output in View thinking, workflow phase and generation logs, WebChat task logs, and human reports uses the same Markdown renderer as final WebChat messages. Consecutive output lines render as complete blocks so headings, lists, tables and fenced code survive live updates. Raw HTML is escaped and links allow only HTTP(S). File paths and words receive no custom token highlighting. Stored logs and report offsets remain unchanged. Final responses in workflow phase logs use heavier text only, without a colored background, border or extra label. Other log views retain their bordered background. View thinking includes the completed response when it was not recorded in the log. It also accepts plain-text log responses from older running servers.</p></section></main>
 <script src="partials-loader.js"></script>
 </body>
 </html>

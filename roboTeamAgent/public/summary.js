@@ -1,3 +1,5 @@
+import { renderLogMarkdown } from '/webchat/assets/logMarkdown.js';
+
 const list = document.querySelector('#summaries');
 const status = document.querySelector('#summaryStatus');
 const query = new URL(location.href).searchParams;
@@ -15,7 +17,8 @@ async function load() {
         if (signature !== last) {
             list.replaceChildren(...summaries.map(({ text }) => {
                 const item = document.createElement('li');
-                item.textContent = text;
+                item.className = 'wa-log-markdown';
+                renderLogMarkdown(item, text);
                 return item;
             }));
             last = signature;

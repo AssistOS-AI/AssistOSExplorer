@@ -93,7 +93,16 @@ function readWebchatTurnLog(robotStore, workspaceRoot, sessionId, messageId) {
     const root = path.join(workingDir, '.achilles-cli', 'logs');
     const file = path.join(root, sessionId, `${messageId}.log`);
     if (!file.startsWith(`${root}${path.sep}`)) return null;
-    try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+    let log;
+    try { log = fs.readFileSync(file, 'utf8'); } catch { return null; }
+    let finalResponse = '';
+    try {
+        const session = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+        const message = session.messages?.find(entry => entry.id === messageId && entry.role === 'assistant' && entry.status === 'completed');
+        // The copilot appends this navigation link after receiving ALA's final text.
+        if (typeof message?.text === 'string') finalResponse = message.text.replace(/\n\n\[View Thinking\]\([^\r\n)]*\)\s*$/, '');
+    } catch { /* Historical logs remain readable without conversation metadata. */ }
+    return { log, finalResponse };
 }
 
 // HTML pages live under route paths such as /flow-types/new, so their relative
@@ -407,8 +416,20 @@ export function createRoboTeamServer(options) {
             if (logsPage && req.method === 'GET') return servePage(res, publicDir, 'webchat-logs.html', publicBasePath);
             const logsApi = pathname.match(/^\/api\/webchat\/logs\/([a-f0-9-]{36})\/([a-f0-9-]{36})$/);
             if (logsApi && req.method === 'GET') {
-                const log = readWebchatTurnLog(robotStore, runtimeManager.workspaceRoot, logsApi[1], logsApi[2]);
-                if (log === null) return sendError(res, 404, 'log not found');
+                const result = readWebchatTurnLog(robotStore, runtimeManager.workspaceRoot, logsApi[1], logsApi[2]);
+                if (result === null) return sendText(res, 404, 'log not found');
+                let { log, finalResponse } = result;
+                if (finalResponse) {
+                    let offset = log.lastIndexOf(finalResponse);
+                    if (offset < 0) {
+                        log = log ? `${log}\n\n` : '';
+                        offset = log.length;
+                        log += finalResponse;
+                    }
+                    // Character offsets identify the final block without a JSON envelope.
+                    res.setHeader('x-log-final-offset', String(offset));
+                    res.setHeader('x-log-final-length', String(finalResponse.length));
+                }
                 return sendText(res, 200, log);
             }
 
