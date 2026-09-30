@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,6 +11,51 @@ import { collectLocalSnapshotSourceBindings } from './local-snapshot-bindings.mj
 
 const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const GIT_COMMIT = /^[0-9a-f]{40}$/;
+
+// The build-time record of the achillesAgentLib copy a Box image packages.
+// An image-mode Box carries no AgentLib commit label, so this record is the
+// only statement of which AgentLib commit the running image supplies.
+export const IMAGE_AGENTLIB_PROVENANCE_PATH = '/usr/local/share/ploinky/agentlib/runtime-contract.json';
+
+export function parseImageAgentLibProvenance(text) {
+  let record;
+  try {
+    record = JSON.parse(String(text || ''));
+  } catch (error) {
+    throw new Error(`The Box image AgentLib provenance is not valid JSON: ${error.message}`);
+  }
+  if (record?.schema !== 'ploinky.box.library/v1'
+    || record?.library !== 'achillesAgentLib'
+    || !GIT_COMMIT.test(String(record?.commit || ''))) {
+    throw new Error('The Box image does not record an exact achillesAgentLib commit in its library provenance.');
+  }
+  return Object.freeze({
+    commit: record.commit,
+    repository: String(record.repository || ''),
+    packageVersion: String(record.packageVersion || ''),
+  });
+}
+
+// Reads the provenance from the verified immutable image itself, not from the
+// running container, in a throwaway container with no network and no pull.
+export function readImageAgentLibProvenance(imageId, { spawn = spawnSync } = {}) {
+  if (!IMAGE_DIGEST.test(String(imageId || ''))) {
+    throw new Error('Reading Box image AgentLib provenance requires an immutable sha256 image ID.');
+  }
+  const result = spawn('podman', [
+    'run', '--rm', '--network=none', '--pull=never', '--entrypoint', '/bin/cat', imageId, IMAGE_AGENTLIB_PROVENANCE_PATH,
+  ], {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Reading the Box image AgentLib provenance failed with exit ${result.status ?? 'unknown'}: ${String(result.stderr || '').trim()}`);
+  }
+  return parseImageAgentLibProvenance(result.stdout);
+}
 
 export async function collectCopilotReleaseEvidence({
   manifestPath,
@@ -25,6 +71,7 @@ export async function collectCopilotReleaseEvidence({
   loadVerifier = async (filePath) => import(pathToFileURL(filePath).href),
   collectLiveBox = collectLiveBoxEvidence,
   collectSnapshotBindings = collectLocalSnapshotSourceBindings,
+  readImageAgentLib = readImageAgentLibProvenance,
   realpathSync = fs.realpathSync,
 } = {}) {
   if (!['release', 'local-snapshot'].includes(verificationMode)) {
@@ -88,15 +135,25 @@ export async function collectCopilotReleaseEvidence({
     throw new Error('The running Box is not bound read-only to the verified Ploinky checkout.');
   }
   const liveAgentLib = liveBox?.box?.semanticLabels;
-  if (liveAgentLib?.agentLibCommit !== verifiedAgentLib.commit) {
-    throw new Error('The running Box AgentLib commit does not match SMOKE_RELEASE_MANIFEST.');
+  const imageMode = liveAgentLib?.agentLibMode === 'image';
+  // A local or managed Box labels its AgentLib commit. An image-mode Box has no
+  // commit label; its source identity is bound to the verified image ID by the
+  // live Box evidence, and that image records the commit it packaged.
+  const agentLibCommit = imageMode
+    ? readImageAgentLib(liveBox.box.imageId).commit
+    : liveAgentLib?.agentLibCommit;
+  if (agentLibCommit !== verifiedAgentLib.commit) {
+    throw new Error(imageMode
+      ? 'The running Box image records an AgentLib commit that does not match SMOKE_RELEASE_MANIFEST.'
+      : 'The running Box AgentLib commit does not match SMOKE_RELEASE_MANIFEST.');
   }
   const agentLib = Object.freeze({
     mode: liveAgentLib.agentLibMode,
     sourceIdHash: liveAgentLib.agentLibSourceIdHash,
-    fingerprint: liveAgentLib.agentLibFingerprint,
+    ...(liveAgentLib.agentLibFingerprint ? { fingerprint: liveAgentLib.agentLibFingerprint } : {}),
     sourceRelativePath: liveAgentLib.agentLibSourceRelativePath,
-    commit: liveAgentLib.agentLibCommit,
+    commit: agentLibCommit,
+    commitEvidence: imageMode ? 'image-provenance' : 'box-label',
   });
   const sourceBindings = verificationMode === 'local-snapshot'
     ? collectSnapshotBindings({ liveBox, repositories: verified.repositories, requireActiveAchillesCLI })

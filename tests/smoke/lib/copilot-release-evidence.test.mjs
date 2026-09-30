@@ -4,7 +4,10 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  IMAGE_AGENTLIB_PROVENANCE_PATH,
   collectCopilotReleaseEvidence,
+  parseImageAgentLibProvenance,
+  readImageAgentLibProvenance,
   sameCopilotReleaseGeneration,
 } from './copilot-release-evidence.mjs';
 
@@ -50,6 +53,40 @@ function liveBox(overrides = {}) {
   };
 }
 
+function imageModeLiveBox() {
+  const box = liveBox();
+  box.box.semanticLabels = {
+    seccompFingerprint: 'd'.repeat(64),
+    agentLibMode: 'image',
+    agentLibSourceIdHash: '4'.repeat(64),
+    agentLibSourceRelativePath: 'image',
+  };
+  return box;
+}
+
+function releaseVerifier(achillesAgentLibCommit = AGENTLIB_COMMIT) {
+  return async () => ({
+    verifyManifestFile: () => ({
+      imageDigest: DIGEST,
+      repositories: {
+        explorer: { commit: '1'.repeat(40) },
+        ploinky: { commit: '2'.repeat(40), repositoryPath: PLOINKY_SOURCE },
+        achillesAgentLib: { commit: achillesAgentLibCommit },
+      },
+    }),
+  });
+}
+
+const PROVENANCE_TEXT = JSON.stringify({
+  schema: 'ploinky.box.library/v1',
+  library: 'achillesAgentLib',
+  packageName: 'ploinky-agent-lib',
+  packageVersion: '0.1.0',
+  repository: 'https://github.com/AssistOS-AI/AchillesAgentLib.git',
+  branch: null,
+  commit: AGENTLIB_COMMIT,
+});
+
 test('ordinary Copilot release evidence binds the verified manifest digest to the live Box', async () => {
   const calls = [];
   const result = await collectCopilotReleaseEvidence({
@@ -77,8 +114,13 @@ test('ordinary Copilot release evidence binds the verified manifest digest to th
       calls.push(['box', options]);
       return liveBox();
     },
+    readImageAgentLib(imageId) {
+      calls.push(['image-provenance', imageId]);
+      throw new Error('a Box with an AgentLib commit label must not read image provenance');
+    },
     realpathSync: (value) => value,
   });
+  assert.equal(calls.some(([kind]) => kind === 'image-provenance'), false);
   assert.equal(result.imageDigest, DIGEST);
   assert.equal(result.applicationBaseURL, 'https://explorer-qa.axiologic.dev');
   assert.equal(result.boxBaseURL, 'http://127.0.0.1:8080');
@@ -98,7 +140,93 @@ test('ordinary Copilot release evidence binds the verified manifest digest to th
     fingerprint: '5'.repeat(64),
     sourceRelativePath: `.ploinky/agentlib/generations/${AGENTLIB_COMMIT}-${'5'.repeat(12)}`,
     commit: AGENTLIB_COMMIT,
+    commitEvidence: 'box-label',
   });
+});
+
+test('ordinary Copilot release evidence binds an image-mode Box through the AgentLib commit its image records', async () => {
+  const reads = [];
+  const result = await collectCopilotReleaseEvidence({
+    manifestPath: '/candidate/release.json',
+    verifierPath: '/candidate/verifier.mjs',
+    baseURL: 'http://127.0.0.1:8080',
+    loadVerifier: releaseVerifier(),
+    collectLiveBox: () => imageModeLiveBox(),
+    readImageAgentLib(imageId) {
+      reads.push(imageId);
+      return parseImageAgentLibProvenance(PROVENANCE_TEXT);
+    },
+    realpathSync: (value) => value,
+  });
+  assert.deepEqual(reads, [DIGEST], 'the provenance is read from the verified image, once');
+  assert.deepEqual(result.agentLib, {
+    mode: 'image',
+    sourceIdHash: '4'.repeat(64),
+    sourceRelativePath: 'image',
+    commit: AGENTLIB_COMMIT,
+    commitEvidence: 'image-provenance',
+  });
+  assert.equal(sameCopilotReleaseGeneration(result, structuredClone(result)), true);
+  const otherCommit = structuredClone(result);
+  otherCommit.agentLib.commit = '6'.repeat(40);
+  assert.equal(sameCopilotReleaseGeneration(result, otherCommit), false);
+});
+
+test('ordinary Copilot release evidence rejects an image-mode Box whose image records another AgentLib commit', async () => {
+  const collect = (readImageAgentLib) => collectCopilotReleaseEvidence({
+    manifestPath: '/candidate/release.json',
+    verifierPath: '/candidate/verifier.mjs',
+    baseURL: 'http://127.0.0.1:8080',
+    loadVerifier: releaseVerifier(),
+    collectLiveBox: () => imageModeLiveBox(),
+    readImageAgentLib,
+    realpathSync: (value) => value,
+  });
+  await assert.rejects(
+    () => collect(() => ({ commit: '6'.repeat(40) })),
+    /image records an AgentLib commit that does not match SMOKE_RELEASE_MANIFEST/,
+  );
+  await assert.rejects(
+    () => collect(() => { throw new Error('Reading the Box image AgentLib provenance failed with exit 125'); }),
+    /provenance failed with exit 125/,
+  );
+});
+
+test('image AgentLib provenance must be the exact library record with a full commit', () => {
+  assert.deepEqual(parseImageAgentLibProvenance(PROVENANCE_TEXT), {
+    commit: AGENTLIB_COMMIT,
+    repository: 'https://github.com/AssistOS-AI/AchillesAgentLib.git',
+    packageVersion: '0.1.0',
+  });
+  const record = JSON.parse(PROVENANCE_TEXT);
+  assert.throws(() => parseImageAgentLibProvenance('{'), /not valid JSON/);
+  for (const broken of [
+    { ...record, schema: 'ploinky.box.library/v2' },
+    { ...record, library: 'mcp-sdk' },
+    { ...record, commit: 'ef515b2d' },
+    { ...record, commit: null },
+  ]) {
+    assert.throws(() => parseImageAgentLibProvenance(JSON.stringify(broken)), /does not record an exact achillesAgentLib commit/);
+  }
+});
+
+test('image AgentLib provenance is read from the immutable image without network, pulls or a lasting container', () => {
+  const calls = [];
+  const spawn = (command, args) => {
+    calls.push([command, args]);
+    return { status: 0, stdout: PROVENANCE_TEXT, stderr: '' };
+  };
+  assert.equal(readImageAgentLibProvenance(DIGEST, { spawn }).commit, AGENTLIB_COMMIT);
+  assert.deepEqual(calls, [[
+    'podman',
+    ['run', '--rm', '--network=none', '--pull=never', '--entrypoint', '/bin/cat', DIGEST, IMAGE_AGENTLIB_PROVENANCE_PATH],
+  ]]);
+  assert.equal(IMAGE_AGENTLIB_PROVENANCE_PATH, '/usr/local/share/ploinky/agentlib/runtime-contract.json');
+  assert.throws(
+    () => readImageAgentLibProvenance(DIGEST, { spawn: () => ({ status: 125, stdout: '', stderr: 'no such image' }) }),
+    /provenance failed with exit 125: no such image/,
+  );
+  assert.throws(() => readImageAgentLibProvenance('latest', { spawn }), /immutable sha256 image ID/);
 });
 
 test('ordinary Copilot release evidence rejects missing manifest binding and wrong live image', async () => {

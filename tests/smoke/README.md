@@ -468,8 +468,12 @@ Opt-in checks:
   supplies (`image` mode) carries no fingerprint or commit label: its source
   identity must equal the hash of the exact outer image ID and the library
   name. The ordinary Copilot gate
-  requires that live AgentLib commit to equal the verified release-manifest
-  commit before and after Chromium. It requires a fresh outer-container
+  requires the live AgentLib commit to equal the verified release-manifest
+  commit before and after Chromium: the commit label of a local checkout, or,
+  for an `image`-mode Box, the commit the verified outer image records in
+  `/usr/local/share/ploinky/agentlib/runtime-contract.json`, read from that
+  exact image ID in a throwaway container with no network and no pull. It
+  requires a fresh outer-container
   generation and the manifest's exact immutable image digest/reference; unlike
   the screen and native network gates, it does not require that already-pinned
   release image to have been built within the last four hours. The browser never
