@@ -25,11 +25,11 @@ Loopback --> Outer</pre><figcaption><em>Podman-in-Podman runtime and authenticat
     C[Creator: robot and ALA] -->|Ordinary edge|T[Next ordinary task]
     C -->|Child plan and continuation edge|R[Run workflows: RoboFlow]
     R --> A[Child workflow A]
-    R --> B[Child workflow B]
-    A --> J[Wait for all children]
-    B --> J
-    J -->|All completed or failed|T
-    J -->|Any stopped|W[Wait for Resume]
-    W --> J
-</pre><figcaption><em>Creator-selected parallel workflows</em></figcaption></figure>
+    A -->|Completed|B[Child workflow B]
+    B -->|Completed|T
+    A -->|Failed or stopped|W[Wait for Continue or Resume]
+    W --> A
+    B -->|Failed or stopped|V[Wait for Continue or Resume]
+    V --> B
+</pre><figcaption><em>Creator-selected sequential workflows</em></figcaption></figure>
 </article></main><script src="partials-loader.js"></script></body></html>

@@ -8,18 +8,18 @@ export function codeDevelopmentWorkflowDefinition(documentationSource = 'Documen
     return {
         id: CODE_DEVELOPMENT_WORKFLOW_ID,
         name: 'Code Development',
-        description: 'Plan a code change, implement it in manageable parts through parallel child workflows, then validate the integrated result against the user request.',
+        description: 'Plan a code change, implement it in manageable parts through sequential child workflows, then validate the integrated result against the user request.',
         entryTaskId: 'planning',
         tasks: [
             {
                 id: 'planning', name: 'Planning', executionType: 'terminal',
                 skillsets: skills('gamp-specs', 'detect-main-behaviors'),
-                prompt: 'Read the user objective, repository instructions and relevant existing code. Produce a detailed implementation plan with acceptance criteria, affected files and interfaces, dependencies, ordered implementation steps, and a concrete testing strategy. Separate shared prerequisites from independent work that can run in parallel. Identify integration risks and how to validate the assembled result. Do not implement the changes in this phase. Return a self-contained plan for Execution and Validation.',
+                prompt: 'Read the user objective, repository instructions and relevant existing code. Produce a detailed implementation plan with acceptance criteria, affected files and interfaces, dependencies, ordered implementation steps, and a concrete testing strategy. Order prerequisites before dependent implementation, tests and documentation. Identify integration risks and how to validate the assembled result. Do not implement the changes in this phase. Return a self-contained plan for Execution and Validation.',
             },
             {
                 id: 'execution', name: 'Execution', executionType: 'terminal', creator: true,
                 skillsets: skills('node-coding-style', 'web-design', 'gamp-specs', 'detect-main-behaviors', 'unslop'),
-                prompt: 'Implement the Planning phase plan for the user objective in manageable parts; do not attempt the entire change in one undifferentiated step. Read the plan from previousFinalResponses and inspect the working tree. Delegate implementation parts through execution-to-subflows using one or more workflows from the supplied catalog. This is your only outgoing edge. Split independent deliverables into separate child prompts; keep dependent work together in one child. Complete shared prerequisites before delegation. Each child prompt must include its exact scope, relevant plan context, acceptance criteria, file ownership and appropriate tests. Children run in parallel in the same folder: avoid overlapping edits and do not make one child depend on another child finishing first. Testing may be a direct implementation step or an independent child task when its prerequisites already exist; integrated testing belongs to Validation. If using the default workflow, set executionType to terminal. For delegation select subflows-to-validation as afterWorkflowsEdgeId. Return the required creator response, describing completed work, delegated responsibilities and any limitations for Validation.',
+                prompt: 'Implement the Planning phase plan for the user objective in manageable parts; do not attempt the entire change in one undifferentiated step. Read the plan from previousFinalResponses and inspect the working tree. Delegate implementation parts through execution-to-subflows using one or more workflows from the supplied catalog. This is your only outgoing edge. Split the plan into ordered child workflows, placing prerequisite work before dependent implementation, tests and documentation. Each child prompt must include its exact scope, relevant plan context, acceptance criteria, file ownership and appropriate tests. Children run sequentially in array order in the same folder. Each child starts only after its predecessor completes successfully and receives the final response of the last task in that preceding workflow. A failed or stopped child blocks later work. Each child must inspect the files left by earlier children. Testing may be a later child task; integrated testing belongs to Validation. If using the default workflow, set executionType to terminal. For delegation select subflows-to-validation as afterWorkflowsEdgeId. Return the required creator response, describing completed work, delegated responsibilities and any limitations for Validation.',
             },
             {
                 id: 'validation', name: 'Validation', executionType: 'terminal',
@@ -50,13 +50,17 @@ export async function ensureCodeDevelopmentWorkflow(registry, skillService = {})
         const requirements = new Map(definition.tasks.map(task => [task.id, task.skillsets]));
         const skillsChanged = current.tasks.some(task => requirements.has(task.id)
             && JSON.stringify(task.skillsets) !== JSON.stringify(requirements.get(task.id)));
-        if (!routingChanged && !skillsChanged) return current;
+        const promptsChanged = current.description !== definition.description || current.tasks.some(task => {
+            const expected = definition.tasks.find(item => item.id === task.id);
+            return expected && task.prompt !== expected.prompt;
+        });
+        if (!routingChanged && !skillsChanged && !promptsChanged) return current;
         const updated = { ...current,
             description: definition.description,
             tasks: current.tasks.map(task => ({ ...task,
                 ...(requirements.has(task.id) ? { skillsets: requirements.get(task.id) } : {}),
-                ...(routingChanged && task.id === 'execution'
-                    ? { prompt: definition.tasks.find(item => item.id === 'execution').prompt } : {}),
+                ...(definition.tasks.find(item => item.id === task.id)?.prompt
+                    ? { prompt: definition.tasks.find(item => item.id === task.id).prompt } : {}),
             })),
             edges: current.edges.filter(edge => !(edge.sourceTaskId === 'execution' && edge.targetTaskId === 'validation')),
             revision: current.revision + 1, updatedAt: new Date().toISOString(),

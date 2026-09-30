@@ -159,13 +159,15 @@ export class LiveSkillCatalog {
         }
         entries.push(required);
         if (policy.workflowCreator) {
-            const sourcePath = path.join(copilotSkillsRoot, 'workflow-creator');
+            const root = await fs.realpath(copilotSkillsRoot);
+            const sourcePath = await fs.realpath(path.join(root, 'workflow-creator'));
+            if (!inside(root, sourcePath)) throw skillError('Required workflow creator skill is outside its repository');
             const inspected = await inspectSkill(sourcePath, directory => this.service.discover(directory));
             for (const entry of entries) if (entry.name === 'workflow-creator') {
                 entry.enabled = false; entry.readOnly = true; entry.state = 'shadowed';
             }
             entries.push({ ...inspected, identity: 'required/workflow-creator', source: 'RoboFlow', sourceId: 'required',
-                sourcePath, owner: copilotSkillsRoot, type: 'anthropic', required: true, readOnly: true,
+                sourcePath, owner: root, type: 'anthropic', required: true, readOnly: true,
                 enabled: true, explicit: true, state: 'selected' });
         }
         const groups = new Map();

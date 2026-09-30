@@ -51,7 +51,7 @@ export class RoboFlowService {
         await this.store.clearLegacyOnce();
         await ensureDefaultWorkflow(this.registry);
         await ensureCodeDevelopmentWorkflow(this.registry, this.skillsets);
-        for (const flow of await this.store.list()) if (!terminal(flow.status)) await this.store.update(flow.id, current => {
+        for (const flow of await this.store.list()) if (flow.status !== 'pending' && !terminal(flow.status)) await this.store.update(flow.id, current => {
             current.error = 'interrupted by service restart'; current.finishedAt = new Date().toISOString();
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'interrupted'; instance.error = current.error; instance.endedAt = current.finishedAt; }
             current.status = deriveFlowStatus(current.instances);
@@ -116,7 +116,7 @@ export class RoboFlowService {
             flow.instances.push(instance); flow.currentInstanceId = instance.id;
         });
     }
-    async _dispatch(id, instanceId = null) {
+    async _dispatch(id, instanceId = null, continuationPrompt = '') {
         let flow = await this.store.get(id);
         if (!flow || terminal(flow.status)) return;
         const instance = flow.instances.find(item => item.id === (instanceId || flow.currentInstanceId));
@@ -138,7 +138,16 @@ export class RoboFlowService {
                 response: visit.creatorInstanceId && visit.childFlowIds
                     ? JSON.stringify(await this.subflows.results(visit.childFlowIds))
                     : await this.store.readOutput(id, visit.id, 'result') });
-            const task = buildWorkflowTaskPrompt({ objective: flow.objective, currentTaskId: node.id, graph: flow.graph, previousFinalResponses: previous });
+            let previousSubflowFinalResponse;
+            if (flow.previousChildFlowId) {
+                const preceding = await this.store.get(flow.previousChildFlowId);
+                if (preceding?.status !== 'completed') throw invalid('The preceding sub-workflow must complete first');
+                const last = preceding.instances.at(-1);
+                if (!last) throw invalid('The preceding sub-workflow has no final task');
+                previousSubflowFinalResponse = await this.store.readOutput(preceding.id, last.id, 'result');
+            }
+            const task = buildWorkflowTaskPrompt({ objective: flow.objective, currentTaskId: node.id, graph: flow.graph,
+                previousFinalResponses: previous, continuationPrompt, previousSubflowFinalResponse });
             if (Buffer.byteLength(task, 'utf8') > 1024 * 1024) throw new Error('Workflow final-response context exceeds the 1 MiB input limit');
             const outgoing = flow.graph.edges.filter(edge => edge.sourceTaskId === node.id);
             const runtimeTaskId = crypto.randomUUID();
@@ -198,7 +207,7 @@ export class RoboFlowService {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
-            if (['completed', 'failed'].includes(flow.status)) return this.getFlow(id);
+            if (['pending', 'completed', 'failed'].includes(flow.status)) return this.getFlow(id);
             await this.store.update(id, current => { current.stopRequested = true; });
             await this.subflows.stopChildren(flow);
             await this._fail(id, 'Stopped by user', 'stopped');
@@ -217,6 +226,7 @@ export class RoboFlowService {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
+            await this.subflows.assertCanContinue(flow);
             if (!flow.instances.some(item => ['stopped', 'interrupted'].includes(item.state))) return this.getFlow(id);
             await this.store.update(id, current => { current.stopRequested = false; });
             const errors = [];
@@ -252,20 +262,22 @@ export class RoboFlowService {
     async _resumeInstance(id, instanceId, prompt) {
         const flow = await this.store.get(id);
         if (!flow) throw missing();
+        await this.subflows.assertCanContinue(flow);
         const instance = flow.instances.find(item => item.id === instanceId);
         if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
         if (!['stopped', 'interrupted', 'completed', 'failed'].includes(instance.state)) throw invalid('only a stopped, completed or failed phase can continue');
-        if (['stopped', 'interrupted'].includes(instance.state) && !instance.startedAt
+        const message = textField(prompt, 'prompt', 32768, false);
+        if (['stopped', 'interrupted', 'failed'].includes(instance.state) && !instance.startedAt
             && !isCoordinator(flow.graph.tasks.find(task => task.id === instance.taskId))) {
+            this.bindings.delete(instance.runtimeTaskId);
             await this.store.update(id, current => {
                 const phase = current.instances.find(item => item.id === instanceId);
                 phase.state = 'queued'; phase.runtimeTaskId = null; phase.error = null; phase.endedAt = null;
                 current.currentInstanceId = instanceId; current.stopRequested = false; this._derive(current);
             });
-            await this._dispatch(id, instanceId);
+            await this._dispatch(id, instanceId, message);
             return this.getFlow(id);
         }
-        const message = textField(prompt, 'prompt', 32768, false);
         const robot = await this.robotStore.getByName(instance.robotName);
         if (!robot) throw new Error('Robot is unavailable');
         const previous = { runtimeTaskId: instance.runtimeTaskId, state: instance.state, error: instance.error, endedAt: instance.endedAt };
@@ -358,7 +370,13 @@ export class RoboFlowService {
         if (flow.status === 'completed') flow.result = flow.instances.at(-1)?.finalResponse || '';
         return flow;
     }
-    async getInvocationLog(id, instanceId) { return this.store.readOutput(id, instanceId); }
+    async getInvocationLog(id, instanceId) {
+        try { return await this.store.readOutput(id, instanceId); }
+        catch (error) {
+            if (error.code === 'ENOENT') return '';
+            throw error;
+        }
+    }
     async generationCwd(folder) {
         if (folder) return this.runtimeManager.resolveCwd(folder);
         let directory = await this.runtimeManager.resolveCwd(this.workspaceRoot);

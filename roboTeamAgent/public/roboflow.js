@@ -35,11 +35,11 @@ let currentFlow = null;
 let selectedInstanceId = null;
 let selectedTaskId = null;
 let stageView = 'empty';
-let logCache = '';
+let logRequest = null;
 
 function setMessage(text, error = false) {
     const message = document.querySelector('#message');
-    message.textContent = text || '';
+    if (message.textContent !== (text || '')) message.textContent = text || '';
     message.classList.toggle('is-error', Boolean(error));
 }
 
@@ -73,7 +73,7 @@ function renderHeader(flow) {
     document.querySelector('#flowDuration').textContent = duration(flow);
     const error = document.querySelector('#flowError');
     error.hidden = !flow.error;
-    error.textContent = flow.error || '';
+    if (error.textContent !== (flow.error || '')) error.textContent = flow.error || '';
     const control = document.querySelector('#stopFlowButton');
     const paused = ['stopped', 'interrupted'].includes(flow.status);
     control.textContent = paused ? 'Resume workflow' : 'Stop workflow';
@@ -101,7 +101,7 @@ function phaseItem(task, instance) {
     head.className = 'phase-card-head';
     head.append(element('strong', `${instance.sequence + 1}. ${task.name}`));
     head.append(element('span', duration(instance)));
-    const meta = element('span', task.kind === 'run-workflows' ? `Parallel workflows · ${instance.state}`
+    const meta = element('span', task.kind === 'run-workflows' ? `Sequential workflows · ${instance.state}`
         : `${instance.robotName || 'Awaiting robot'} · ${instance.executionType || ''} · ${instance.state}`);
     meta.className = 'phase-card-meta';
     card.append(head, meta);
@@ -258,6 +258,8 @@ function renderStage() {
 }
 
 function renderSubflows(container, instance) {
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && (container.contains(selection.anchorNode) || container.contains(selection.focusNode))) return;
     container.replaceChildren();
     const children = instance.subflows || [];
     if (!children.length) { container.append(element('p', 'No sub-flows started for this phase.')); return; }
@@ -270,7 +272,10 @@ function renderSubflows(container, instance) {
         link.href = api(`flows?flowId=${encodeURIComponent(child.id)}`);
         const status = element('span', child.status); status.className = `phase-view-status is-${phaseStatusClass(child.status)}`;
         row.append(link, status, element('span', duration(child)));
-        if (child.error) row.append(element('p', child.error));
+        if (child.error) {
+            const error = element('p', child.error); error.className = 'workflow-error';
+            row.append(error);
+        }
         list.append(row);
     }
     container.append(list);
@@ -318,9 +323,16 @@ function skillsetLabel(id) {
 
 function renderPhaseDetail(container, instance) {
     const task = currentFlow.graph.tasks.find(candidate => candidate.id === instance.taskId);
+    const signature = JSON.stringify([task, instance.executionType, instance.robotName, instance.error]);
+    if (container.dataset.signature === signature) return;
+    container.dataset.signature = signature;
     container.replaceChildren();
+    if (instance.error) {
+        const error = element('p', instance.error); error.className = 'workflow-error';
+        container.append(error);
+    }
     const description = element('p', task?.kind === 'run-workflows'
-        ? 'Runs the creator’s selected workflows in parallel and waits for them before continuing on the selected edge.'
+        ? 'Runs the creator’s selected workflows sequentially. A failed or stopped child blocks later children; all must complete before continuing on the selected edge.'
         : task?.prompt || 'No prompt.');
     description.className = 'phase-description';
     container.append(description);
@@ -429,12 +441,35 @@ async function loadLog(instance) {
     if (!selected || !instance) return;
     const container = document.querySelector('#stageBody .phase-log');
     if (!container) return;
+    const key = JSON.stringify([selected, instance.id, instance.runtimeTaskId, instance.state, instance.endedAt]);
+    if (logRequest?.key !== key) logRequest = { key, pending: false, attempted: false, failures: 0, nextAt: 0 };
+    const request = logRequest;
+    if (request.pending) return;
+    if (terminalStatus(instance.state) && request.attempted) {
+        if (request.container !== container) {
+            renderLog(container, request.error || request.log || '', request.error ? '' : instance.finalResponse);
+            request.container = container;
+        }
+        return;
+    }
+    if (Date.now() < request.nextAt) return;
+    request.pending = true;
+    request.attempted = true;
     try {
         const log = await get(`api/roboflow/flows/${encodeURIComponent(selected)}/logs/${encodeURIComponent(instance.id)}`, true);
-        logCache = log;
-        renderLog(container, log, instance.finalResponse);
+        const changed = request.log !== log || request.error || request.container !== container;
+        request.log = log; request.error = ''; request.failures = 0; request.nextAt = Date.now() + 1000;
+        if (logRequest !== request || selectedInstanceId !== instance.id || !container.isConnected) return;
+        if (changed) renderLog(container, log, instance.finalResponse);
+        request.container = container;
     } catch (error) {
+        request.error = error.message;
+        request.nextAt = Date.now() + Math.min(30000, 1000 * 2 ** Math.min(++request.failures, 5));
+        if (logRequest !== request || selectedInstanceId !== instance.id || !container.isConnected) return;
         renderLog(container, error.message, '');
+        request.container = container;
+    } finally {
+        request.pending = false;
     }
 }
 
@@ -507,14 +542,7 @@ async function pollLog() {
     if (stageView !== 'log' || !selectedInstanceId || !currentFlow) return;
     const instance = currentFlow.instances.find(item => item.id === selectedInstanceId);
     if (!instance) return;
-    const container = document.querySelector('#stageBody .phase-log');
-    if (!container) return;
-    try {
-        const log = await get(`api/roboflow/flows/${encodeURIComponent(selected)}/logs/${encodeURIComponent(instance.id)}`, true);
-        if (log === logCache) return;
-        logCache = log;
-        renderLog(container, log, instance.finalResponse);
-    } catch { }
+    await loadLog(instance);
 }
 
 async function render() {
