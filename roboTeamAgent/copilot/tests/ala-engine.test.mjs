@@ -6,6 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createAlaEngine } from '../src/lib/execution/alaEngine.mjs';
 import { ConversationSessionStore } from '../src/lib/storage/conversationSessionStore.mjs';
+import { HUMAN_REPORT_INSTRUCTIONS, INITIAL_SKILL_INSTRUCTIONS } from '../src/lib/prompts.mjs';
 
 const childEntry = fileURLToPath(new URL('./fixtures/ala-engine-child.mjs', import.meta.url));
 
@@ -131,11 +132,12 @@ test('UI history is never replayed and subsequent turns resume the native conver
     const previous = await h.store.beginTurn({ sessionId: h.sessionId, text: 'LEGACY_MARKER' });
     await h.store.completeTurn(h.sessionId, previous.assistantMessageId, 'Legacy reply');
     const first = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Now' })).outputText);
-    assert.match(first.prompt, /^Task skills are available in \.agents\/skills\./);
+    assert.ok(first.prompt.includes(INITIAL_SKILL_INSTRUCTIONS));
+    assert.ok(first.prompt.includes(HUMAN_REPORT_INSTRUCTIONS));
     assert.ok(first.prompt.endsWith('\n\nNow'));
     assert.equal(first.prompt.includes('EXCLUDED_COMMAND_RESULT'), false);
     const second = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Again' })).outputText);
-    assert.equal(second.prompt, 'Again');
+    assert.equal(second.prompt, `${HUMAN_REPORT_INSTRUCTIONS}\n\nAgain`);
     assert.equal(second.resumed, true);
 });
 
@@ -174,7 +176,7 @@ test('coding provider names remain ordinary prompts without removed launcher rou
     const delegated = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Ask codex to review this project' })).outputText);
     assert.ok(delegated.prompt.endsWith('\n\nAsk codex to review this project'));
     const mentioned = JSON.parse((await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'What is Codex?' })).outputText);
-    assert.equal(mentioned.prompt, 'What is Codex?');
+    assert.equal(mentioned.prompt, `${HUMAN_REPORT_INSTRUCTIONS}\n\nWhat is Codex?`);
 });
 
 

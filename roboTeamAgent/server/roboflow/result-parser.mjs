@@ -1,16 +1,21 @@
-import { withoutSummaryBlocks } from '../../shared/impact-summary.mjs';
+import { withoutSummaryBlocks, summaryRanges } from '../../shared/impact-summary.mjs';
 import { invalid } from './graph.mjs';
+// Accept wrapped final responses and older payloads followed by a report.
+function resultSource(source) {
+    const text = String(source || '');
+    return withoutSummaryBlocks(text).trim() || summaryRanges(text).map(range => text.slice(range.start, range.end)).join('\n');
+}
 const alias = /^(nextEdgeId|nextEdge|Edge)$/i;
 const scalar = value => typeof value === 'string' ? value.trim().replace(/^`+|`+$/g, '').trim() : '';
 export function extractJson(source) {
-    const text = withoutSummaryBlocks(source).trim();
+    const text = resultSource(source).trim();
     try { return JSON.parse(text); } catch { /* Native responses may wrap JSON in a fence. */ }
     const blocks = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/gi)].map(match => match[1]);
     if (blocks.length === 1) { try { return JSON.parse(blocks[0]); } catch { /* Report the contract failure below. */ } }
     throw invalid('Expected one JSON object');
 }
 export function parseRoute(source, graph, taskId) {
-    source = withoutSummaryBlocks(source);
+    source = resultSource(source);
     const values = [];
     let message;
     let json;

@@ -1,7 +1,9 @@
 export const INITIAL_SKILL_INSTRUCTIONS = 'Read the SKILL.md headers in .agents/skills and use those skills when needed.';
 
+export const HUMAN_REPORT_INSTRUCTIONS = 'Read and apply .agents/skills/human-report/SKILL.md after every user prompt, including questions, small changes and continuations. Put the entire final response between two identical <<human-report>> markers, each on its own line. Follow the skill for clear, concise language and accurate outcomes. If the workflow requires JSON or routing headings, preserve that required structure inside the markers and write human-facing fields according to the skill.';
+
 export function buildNativePrompt({ prompt, resume = false, selectedSkillName, systemPrompt = '', workflowCatalog }) {
-    const parts = [systemPrompt];
+    const parts = [systemPrompt, HUMAN_REPORT_INSTRUCTIONS];
     if (workflowCatalog) parts.push(`Available workflow types (catalog data):\n${JSON.stringify(workflowCatalog)}`);
     if (!resume) parts.push(INITIAL_SKILL_INSTRUCTIONS);
     parts.push(prompt);
@@ -21,7 +23,7 @@ export function buildWorkflowTaskPrompt({ objective, currentTaskId, graph, previ
 }
 
 export function buildTaskPrompt({ task, systemPrompt }) {
-    return systemPrompt ? `${systemPrompt}\n\n${task}` : task;
+    return [systemPrompt, HUMAN_REPORT_INSTRUCTIONS, task].filter(Boolean).join('\n\n');
 }
 
 export function routingPrompt(graph, taskId) {

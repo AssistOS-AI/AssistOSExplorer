@@ -1,4 +1,4 @@
-import { buildNativePrompt } from '../prompts.mjs';
+import { buildNativePrompt, buildTaskPrompt } from '../prompts.mjs';
 import { advanceSummaryFile } from '../../../../shared/summary-file-index.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -251,6 +251,7 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
                 shell: false, detached: true, stdio: ['pipe', 'pipe', 'pipe'],
             });
             onControl?.((message) => {
+                if (message.type === 'message') message = { ...message, message: buildTaskPrompt({ task: message.message }) };
                 if (!child.stdin.destroyed && !controller.signal.aborted) child.stdin.write(JSON.stringify(message) + '\n');
             });
             childDone = consumeChild(child, { config: { ...config, skillExecution: snapshot.revision ? { revision: snapshot.revision, catalogId: snapshot.catalogId } : null }, controller, context: captured, sessionId, turnId,

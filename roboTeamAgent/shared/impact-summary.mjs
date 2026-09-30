@@ -1,5 +1,5 @@
 // Offsets refer to the original output; the index never stores summary text.
-export const SUMMARY_MARKER = '<<summarize-agent-impact>>';
+export const SUMMARY_MARKER = '<<human-report>>';
 export const SUMMARY_INDEX_VERSION = 1;
 
 export function scanSummaryLines(text, { offset = 0, bytes = false, final = true, state = {} } = {}) {
@@ -46,7 +46,7 @@ export function indexConversationSummaries(session, previous = null) {
     session.summaryIndexVersion = SUMMARY_INDEX_VERSION;
 }
 
-// Machine-readable workflow results may be followed by a user-facing summary.
+// Separate machine-readable payloads may be followed by a human report.
 export function withoutSummaryBlocks(source) {
     let text = String(source || '');
     for (const range of summaryRanges(text).reverse()) {

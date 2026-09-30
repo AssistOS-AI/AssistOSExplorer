@@ -9,7 +9,7 @@ let timer;
 async function load() {
     try {
         const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
-        if (!response.ok) throw new Error(`Could not load summaries (${response.status}).`);
+        if (!response.ok) throw new Error(`Could not load human reports (${response.status}).`);
         const { summaries, active } = await response.json();
         const signature = JSON.stringify(summaries);
         if (signature !== last) {
@@ -20,7 +20,7 @@ async function load() {
             }));
             last = signature;
         }
-        status.textContent = summaries.length ? (active ? 'Running…' : '') : 'No summaries yet.';
+        status.textContent = summaries.length ? (active ? 'Running…' : '') : 'No human reports yet.';
     } catch (error) { status.textContent = error.message; }
     finally { if (!stopped) timer = setTimeout(() => { if (document.hidden) schedule(); else void load(); }, 2000); }
 }

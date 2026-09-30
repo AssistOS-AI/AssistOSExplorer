@@ -640,7 +640,7 @@ export class RuntimeManager {
         }
         const message = String(prompt || '').trim();
         if (!message || message.length > 32768) throw new Error('Message must contain 1 to 32768 characters.');
-        const command = { type: 'message', id: crypto.randomUUID(), message };
+        const command = { type: 'message', id: crypto.randomUUID(), message: buildTaskPrompt({ task: message }) };
         if (!task.controlReady) {
             if (task.pendingMessages.length >= 100) throw new Error('Task message queue is full.');
             task.pendingMessages.push(command);

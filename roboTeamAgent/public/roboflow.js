@@ -213,8 +213,8 @@ function renderStage() {
         }
         const summary = document.createElement('iframe');
         summary.className = 'phase-session-frame';
-        summary.title = 'View Summary';
-        addTab('View Summary', summary, api(`summary?flow=${encodeURIComponent(selected)}&instance=${encodeURIComponent(instance.id)}`));
+        summary.title = 'human-report';
+        addTab('human-report', summary, api(`summary?flow=${encodeURIComponent(selected)}&instance=${encodeURIComponent(instance.id)}`));
         if (sessionUrl) {
             const frame = document.createElement('iframe');
             frame.className = 'phase-session-frame';

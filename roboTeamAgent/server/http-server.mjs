@@ -1,5 +1,5 @@
 import { conversationSummaries, workflowSummaries } from './impact-summaries.mjs';
-import { requiredImpactSkill } from './required-skills.mjs';
+import { requiredHumanReportSkill } from './required-skills.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
@@ -398,7 +398,7 @@ export function createRoboTeamServer(options) {
                 return sendJson(res, 200, await workflowSummaries(roboflow, flow, instance));
             }
             if (pathname === '/api/required-skills' && req.method === 'GET') {
-                const skill = await requiredImpactSkill(skillsets);
+                const skill = await requiredHumanReportSkill(skillsets);
                 const content = await fs.promises.readFile(path.join(skill.sourcePath, 'SKILL.md'), 'utf8');
                 return sendJson(res, 200, { skills: [{ name: skill.name, description: skill.description, content, required: true, readOnly: true }] });
             }

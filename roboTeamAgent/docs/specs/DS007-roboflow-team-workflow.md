@@ -138,8 +138,8 @@ The launch-workflow skill starts a flow and returns as soon as the native task i
 
 HTTP exposes workflow CRUD, skillset discovery, draft validation, generation, run start/state/stop/resume, per-phase stop, live prompt, continue and logs under /api/roboflow. Browser mutations require the existing Router CSRF proof. Generation uses the real MCP browser client, including task polling and cancellation. Credentials remain in the authenticated transport.
 
-### Phase summaries
+### Phase human reports
 
-Each executed phase exposes a View Summary tab using the same page as WebChat. Summary references belong to the phase instance and execution attempt, so repeated visits remain separate and manual continuation retains earlier summaries. The index stores offsets in existing log and result files in the task instance record; it does not duplicate summary text. Runtime output identifies assistant text separately from tool output and diagnostics. Workflow JSON and branch selectors are parsed after complete impact-summary blocks are excluded; the original response remains stored.
+Each executed phase exposes a human-report tab. WebChat has no View Summary button. Summary references belong to the phase instance and execution attempt, so repeated visits remain separate and manual continuation retains earlier summaries. The index stores offsets in existing log and result files in the task instance record; it does not duplicate summary text. Runtime output identifies assistant text separately from tool output and diagnostics. Every final response is enclosed in identical <<human-report>> markers. Workflow JSON and branch headings remain inside those markers. Parsers accept the enclosed payload and also accept an older payload followed by a separate report; the original response remains stored.
 
 Task cards retain their coverage warning when selected, deselected or rebuilt by the editor. A task with no matching robot keeps its yellow warning border; selecting it also adds a separate selection outline. A new coverage result updates or clears the warning.
