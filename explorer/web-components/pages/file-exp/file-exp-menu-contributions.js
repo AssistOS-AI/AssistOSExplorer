@@ -86,14 +86,14 @@ function getNewFileLabel(fileExp) {
 
 export async function buildFileExpMenuContext(fileExp, slot, target = null) {
     const currentPath = fileExp.normalizePath(fileExp.state.path || '/');
-    // Menu plugins such as Copilot's "Open Copilot here" turn selected paths
-    // into workspace-relative launch parameters, as toolbar plugins do.
+    // Keep the logical directory independent of filesystem-root discovery.
     const workspaceFsRoot = await resolveExplorerPathToFilesystemPath('/');
     if (slot === FILE_EXP_MENU_SLOTS.newMenu) {
         return {
             slot,
             currentPath,
             currentDirectory: currentPath,
+            workspaceDirectory: currentPath.replace(/^\/+/, '') || '.',
             currentFsPath: await resolveExplorerPathToFilesystemPath(currentPath),
             workspaceFsRoot,
             isConfidential: isDpuManagedPath(currentPath)
@@ -108,6 +108,7 @@ export async function buildFileExpMenuContext(fileExp, slot, target = null) {
         currentPath,
         currentFsPath: await resolveExplorerPathToFilesystemPath(currentPath),
         selectedPath: entryPath,
+        workspaceDirectory: entryPath.replace(/^\/+/, '') || '.',
         selectedFsPath: await resolveExplorerPathToFilesystemPath(entryPath),
         workspaceFsRoot,
         selectedName: entryName,

@@ -24,10 +24,12 @@ test('menu contribution contexts carry the workspace filesystem root', async () 
         assert.equal(directory.workspaceFsRoot, '/workspace/root');
         assert.equal(directory.selectedFsPath, '/workspace/root/docs/project');
         assert.equal(directory.isDirectory, true);
+        assert.equal(directory.workspaceDirectory, 'docs/project');
 
         const newMenu = await buildFileExpMenuContext(fileExp, FILE_EXP_MENU_SLOTS.newMenu);
         assert.equal(newMenu.workspaceFsRoot, '/workspace/root');
         assert.equal(newMenu.currentFsPath, '/workspace/root/docs');
+        assert.equal(newMenu.workspaceDirectory, 'docs');
     } finally {
         globalThis.window = previousWindow;
     }

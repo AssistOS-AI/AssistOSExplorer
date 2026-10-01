@@ -8,8 +8,8 @@ import { createLiveSkillsRuntimeReader, normalizeLiveSkillsImageId, readLiveSkil
 
 const digest = 'a'.repeat(64);
 const files = ['server/copilot-context.mjs', 'server/constants.mjs', 'server/robot-store.mjs',
-    'server/live-skill-catalog.mjs', 'server/skill-catalog-api.mjs', 'copilot/src/lib/conversationSessionStore.mjs',
-    'copilot/src/lib/robotSkillCatalog.mjs', 'copilot/src/lib/alaEngine.mjs', 'copilot/src/lib/webchatRuntime.mjs'];
+    'server/live-skill-catalog.mjs', 'server/skill-catalog-api.mjs', 'copilot/src/lib/storage/conversationSessionStore.mjs',
+    'copilot/src/lib/skills/robotSkillCatalog.mjs', 'copilot/src/lib/execution/alaEngine.mjs', 'copilot/src/lib/webchat/webchatRuntime.mjs'];
 
 function fixture(t) {
     const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'live-skill-runtime-')));
