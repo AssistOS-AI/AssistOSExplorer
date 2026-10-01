@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { collectLiveBoxEvidence, parseLocalScreenBaseUrl } from './live-box.mjs';
+import { assertBoxWorkspacePath } from './box-workspace.mjs';
 
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
 const EXEC_ID = /^[a-f0-9]{64}$/;
@@ -207,14 +208,11 @@ function segmentContains(root, candidate, separator = path.sep) {
 
 function sourceOnHost(source, workspaceRoot) {
   const normalized = normalizeDestination(source);
-  if (!normalized || !segmentContains('/workspace', normalized, '/')) return null;
-  const suffix = path.posix.relative('/workspace', normalized);
-  const candidate = path.resolve(workspaceRoot, ...suffix.split('/').filter(Boolean));
-  const relative = path.relative(workspaceRoot, candidate);
-  if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  const canonicalWorkspace = fs.realpathSync(workspaceRoot);
+  if (!normalized || !segmentContains(canonicalWorkspace, normalized, '/')) return null;
   try {
-    const real = fs.realpathSync(candidate);
-    return fs.statSync(real).isDirectory() ? real : null;
+    const real = fs.realpathSync(normalized);
+    return segmentContains(canonicalWorkspace, real) && fs.statSync(real).isDirectory() ? real : null;
   } catch (_) {
     return null;
   }
@@ -358,7 +356,7 @@ export function collectWebttyRuntimeEvidence({
   collectLiveBox = collectLiveBoxEvidence,
 } = {}) {
   const endpoint = resolveWebttyBoxEndpoint({ baseURL, boxBaseURL });
-  const canonicalWorkspace = fs.realpathSync(workspaceRoot);
+  const canonicalWorkspace = assertBoxWorkspacePath(fs.realpathSync(workspaceRoot));
   const canonicalSelected = fs.realpathSync(selectedDirectory);
   if (!segmentContains(canonicalWorkspace, canonicalSelected)) {
     throw new Error('WebTTY runtime evidence selection is outside the workspace.');
@@ -374,11 +372,11 @@ export function collectWebttyRuntimeEvidence({
     command,
   });
   const mountedWorkspace = exactObject(box.workspaceSourceMount, 'outer Box workspace source mount');
-  const mountedWorkspaceDestination = normalizeDestination(mountedWorkspace.destination);
-  if (mountedWorkspaceDestination !== '/workspace' || mountedWorkspace.readWrite !== true) {
-    throw new Error('Outer Box workspace source evidence must be the exact writable /workspace bind.');
+  if (mountedWorkspace.type !== 'bind' || mountedWorkspace.source !== canonicalWorkspace
+    || mountedWorkspace.destination !== canonicalWorkspace || mountedWorkspace.readWrite !== true) {
+    throw new Error('Outer Box workspace source evidence must be the exact writable same-path workspace bind.');
   }
-  const expectedWorkspaceHash = workspaceHash(mountedWorkspaceDestination);
+  const expectedWorkspaceHash = workspaceHash(canonicalWorkspace);
   const agents = [];
   for (const { containerName, record } of readRegistry(canonicalWorkspace)) {
     const candidate = exactRuntimeRecord(containerName, record);
@@ -408,6 +406,7 @@ export function collectWebttyRuntimeEvidence({
   }
   return Object.freeze({
     outerContainerId: box.box.containerId,
+    workspaceRoot: canonicalWorkspace,
     workspaceHash: expectedWorkspaceHash,
     selectedDirectory: canonicalSelected,
     agents: Object.freeze(agents),
@@ -565,10 +564,14 @@ export function collectNestedContainerEvents(evidence, agent, { since, until, co
 
 const ROUTING_SERVER_IDENTITY_PREAMBLE = String.raw`
 import fs from 'node:fs';
+import { boxWorkspacePath, readBoxWorkspaceRoot } from '/opt/ploinky/ploinky-box/contract/workspace-root.mjs';
 const NODE = '/usr/local/bin/node';
 const WATCHDOG = '/opt/ploinky/cli/server/Watchdog.js';
 const ROUTER = '/opt/ploinky/cli/server/RoutingServer.js';
-const PID_FILE = '/workspace/.ploinky/running/router.pid';
+const expectedWorkspace = JSON.parse(Buffer.from(process.argv[1] || '', 'base64url').toString('utf8'));
+const workspaceRoot = readBoxWorkspaceRoot();
+if (workspaceRoot !== expectedWorkspace) throw new Error('Router evidence workspace does not match the exact Box workspace');
+const PID_FILE = boxWorkspacePath(workspaceRoot, '.ploinky/running/router.pid');
 const RECORD_DIRECTORY = '/run/ploinky/webtty';
 const helperUid = process.getuid();
 function fail(message) { throw new Error(message); }
@@ -697,7 +700,7 @@ const READ_ROUTING_SERVER_SCRIPT = `${ROUTING_SERVER_IDENTITY_PREAMBLE}
 process.stdout.write(JSON.stringify(publicGeneration(inspectGeneration())));
 `;
 const CRASH_ROUTING_SERVER_SCRIPT = `${ROUTING_SERVER_IDENTITY_PREAMBLE}
-const expected = JSON.parse(Buffer.from(process.argv[1] || '', 'base64url').toString('utf8'));
+const expected = JSON.parse(Buffer.from(process.argv[2] || '', 'base64url').toString('utf8'));
 const expectedKeys = Object.keys(expected || {}).sort();
 if (JSON.stringify(expectedKeys) !== JSON.stringify(['containerId','containerName','enableGeneration','instanceId','runtime'])
     || expected.runtime !== 'podman') fail('invalid expected target');
@@ -722,9 +725,11 @@ function exactRouterProcessEvidence(evidence, script, command, extraArgs = []) {
   if (!CONTAINER_ID.test(String(evidence?.outerContainerId || ''))) {
     throw new Error('Exact live Box identity is required to inspect RoutingServer.');
   }
+  const workspaceRoot = assertBoxWorkspacePath(evidence?.workspaceRoot);
   const result = command('podman', [
     'exec', '--user', 'podman', evidence.outerContainerId,
     '/usr/local/bin/node', '--input-type=module', '--eval', script,
+    Buffer.from(JSON.stringify(workspaceRoot)).toString('base64url'),
     ...extraArgs,
   ], { json: true });
   const keys = Object.keys(result || {}).sort();
@@ -793,9 +798,11 @@ export function collectWebttyRecoveryDirectoryState(evidence, { command = run } 
   if (!CONTAINER_ID.test(String(evidence?.outerContainerId || ''))) {
     throw new Error('Exact live Box identity is required to inspect WebTTY recovery state.');
   }
+  const workspaceRoot = assertBoxWorkspacePath(evidence?.workspaceRoot);
   const result = command('podman', [
     'exec', '--user', 'podman', evidence.outerContainerId,
     '/usr/local/bin/node', '--input-type=module', '--eval', READ_RECOVERY_DIRECTORY_SCRIPT,
+    Buffer.from(JSON.stringify(workspaceRoot)).toString('base64url'),
   ], { json: true });
   if (JSON.stringify(result) !== JSON.stringify({ recordCount: 0, temporaryCount: 0, otherCount: 0 })) {
     throw new Error('WebTTY recovery directory retained runtime records or residue.');
