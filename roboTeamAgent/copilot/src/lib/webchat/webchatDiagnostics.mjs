@@ -12,5 +12,4 @@ export function emitTaskDiagnostic({ level = 'warn', message, taskId, error }, p
         message: safeText(message), ...(taskId ? { taskId: safeText(taskId, 80) } : {}),
         ...(error ? { code: safeText(error.code || 'task_poll_failed', 80), detail: safeText(error.message || error) } : {}) };
     if (protocol) process.stdout.write(`${JSON.stringify(diagnostic)}\n`);
-    else console[level === 'info' ? 'info' : 'warn']('[webchat-tasks]', diagnostic);
 }

@@ -158,15 +158,15 @@ export class LiveSkillCatalog {
             entry.reason = 'Provided automatically by DocumentationSkills';
         }
         entries.push(required);
-        if (policy.workflowCreator) {
+        for (const name of [policy.workflowCreator && 'workflow-creator', policy.allowsHumanInput && 'require-human-input'].filter(Boolean)) {
             const root = await fs.realpath(copilotSkillsRoot);
-            const sourcePath = await fs.realpath(path.join(root, 'workflow-creator'));
-            if (!inside(root, sourcePath)) throw skillError('Required workflow creator skill is outside its repository');
+            const sourcePath = await fs.realpath(path.join(root, name));
+            if (!inside(root, sourcePath)) throw skillError(`Required ${name} skill is outside its repository`);
             const inspected = await inspectSkill(sourcePath, directory => this.service.discover(directory));
-            for (const entry of entries) if (entry.name === 'workflow-creator') {
+            for (const entry of entries) if (entry.name === name) {
                 entry.enabled = false; entry.readOnly = true; entry.state = 'shadowed';
             }
-            entries.push({ ...inspected, identity: 'required/workflow-creator', source: 'RoboFlow', sourceId: 'required',
+            entries.push({ ...inspected, identity: `required/${name}`, source: 'RoboFlow', sourceId: 'required',
                 sourcePath, owner: root, type: 'anthropic', required: true, readOnly: true,
                 enabled: true, explicit: true, state: 'selected' });
         }

@@ -30,7 +30,7 @@ export async function runRobotTask(argv = process.argv.slice(2), contextOptions 
         runtime = await createCliRuntime({ workingDir: options['--cwd'], skillRoots: [],
             sessionId: options['--session-id'], resumeSession: Boolean(options['--resume-session']), skillSelection,
             execution: { captureTurnLogs: false, backend: options['--ca'] === 'auto' ? undefined : options['--ca'],
-                model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access' } });
+                model: options['--model'], mcpServers: options['--MCPServers'], permissions: 'full-access' } }, { reattachExistingTasks: false });
         let control;
         input = readline.createInterface({ input: process.stdin });
         input.on('line', (line) => {

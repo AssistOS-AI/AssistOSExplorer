@@ -442,6 +442,27 @@ test('a completed continuation persists its terminal state on the current turn',
     }
 });
 
+test('isolated task execution does not reattach the folder task history', async t => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-task-isolated-'));
+    t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+    await ingestTaskEvent(workspace, { task: {
+        id: 'task_444444444444444444444444', targetAgent: 'old-worker', remoteTaskId: 'old-task',
+        toolName: 'run-task', status: 'ongoing', remoteStatus: 'running',
+    } });
+    const clients = [];
+    const manager = await createWebchatBackgroundTaskManager({
+        workingDir: workspace, emitProtocol: false, reattachExistingTasks: false,
+        agentClientModule: {
+            setAgentTaskObserver() { return () => {}; },
+            async createAgentClient(name) { clients.push(name); throw new Error('Unexpected reattachment'); },
+        },
+    });
+    t.after(() => manager.close());
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.deepEqual(clients, []);
+    assert.equal(manager.activeCount(), 0);
+});
+
 test('reattachment starts a manual target agent before polling its task', async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'achilles-task-reattach-'));
     const taskId = 'task_444444444444444444444444';

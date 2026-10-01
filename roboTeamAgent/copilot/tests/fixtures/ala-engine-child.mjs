@@ -8,6 +8,9 @@ const value = (flag) => args[args.indexOf(flag) + 1];
 const home = value('--home');
 const cwd = value('--cwd');
 const id = value('--session-id');
+if (!args.includes('--ignore') || value('--ignore') !== path.resolve(cwd, '.achilles-cli')) {
+    throw new Error('Missing private workspace directory mask.');
+}
 const backend = value('--ca');
 if (args.includes('--ploinky-task')) throw new Error('Legacy Ploinky option was forwarded.');
 const folder = args[args.indexOf('as') - 1];
@@ -65,7 +68,7 @@ if (prompt.includes('MALFORMED')) {
         } finally { await plugin.dispose(); }
     }
     const output = JSON.stringify({ prompt, skill: args.includes('--skill') ? value('--skill') : null, choice, resumed: args.includes('--resume-session'), config,
-        openCodeModels,
+        openCodeModels, folders: args.flatMap((value, index) => value === '--folder' ? [{ source: args[index + 1], alias: args[index + 2] === 'as' ? args[index + 3] : null }] : []),
         repositories: process.env.ALA_TASK_REPOSITORIES, model: args.includes('--model') ? value('--model') : null,
         credential: process.env.PLOINKY_AGENT_SECRET || process.env.SSO_ACCESS_TOKEN || null,
         privatePrompt: !args.some((arg) => arg.includes('PRIVATE_USER_PROMPT')) });

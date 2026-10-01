@@ -90,7 +90,7 @@ function describeTask(agentName, toolName, args = {}) {
 function normalizeStatus(status) {
     const value = trim(status).toLowerCase();
     if (value === 'completed') return 'finished';
-    if (['cancelled', 'stopped', 'interrupted'].includes(value)) return 'stopped';
+    if (['cancelled', 'stopped', 'interrupted', 'terminated'].includes(value)) return 'stopped';
     if (value === 'failed' || value === 'not_found') return 'error';
     return 'ongoing';
 }
@@ -158,6 +158,7 @@ export async function createWebchatBackgroundTaskManager({
     workingDir,
     onTaskStarted = null,
     emitProtocol = true,
+    reattachExistingTasks = true,
     onPublish = null,
     agentClientModule: providedAgentClientModule = null,
 } = {}) {
@@ -241,7 +242,8 @@ export async function createWebchatBackgroundTaskManager({
             if (workflowIdForTask(record)) {
                 await syncWorkflow(record);
                 recovered(record);
-                schedulePoll(record, getTaskStatus);
+                if (record.remoteStatus === 'terminated') record.terminal = true;
+                else schedulePoll(record, getTaskStatus);
                 return;
             }
             const task = await getTaskStatus();
@@ -449,10 +451,10 @@ export async function createWebchatBackgroundTaskManager({
     });
 
     const reattachTimer = setTimeout(() => {
-        if (closed) return;
+        if (closed || !reattachExistingTasks) return;
         let ongoingTasks = [];
         try {
-            ongoingTasks = readWorkspaceTasks(workingDir).filter(task => task.status === 'ongoing' || workflowIdForTask(task));
+            ongoingTasks = readWorkspaceTasks(workingDir).filter(task => task.status === 'ongoing' || (workflowIdForTask(task) && task.remoteStatus !== 'terminated'));
         } catch (error) {
             diagnose('Unable to read task journal.', null, error);
             return;

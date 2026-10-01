@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { buildTaskPrompt } from '../copilot/src/lib/prompts.mjs';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
@@ -464,12 +465,12 @@ test('active message delivery waits for an ALA receipt and starting tasks queue 
     const task = { taskId: 'active-id', robotId: robot.id, state: 'starting', pendingMessages: [] };
     manager.tasks.set(task.taskId, task);
     assert.equal((await manager.sendTaskMessage(robot, task.taskId, 'first')).delivery, 'queued');
-    assert.equal(task.pendingMessages[0].message, 'first');
+    assert.equal(task.pendingMessages[0].message, buildTaskPrompt({ task: 'first' }));
     task.controlReady = true;
     task.state = 'running';
     task.child = { stdin: { write(line) {
         const command = JSON.parse(line);
-        assert.equal(command.message, 'live');
+        assert.equal(command.message, buildTaskPrompt({ task: 'live' }));
         const waiter = manager.messageWaiters.get(command.id);
         clearTimeout(waiter.timer);
         manager.messageWaiters.delete(command.id);
@@ -722,4 +723,48 @@ test('new work keeps manual control while a previous GUI task is still queued', 
     assert.equal(manager.taskStatus(robot.id, next.taskId).blockedReason, 'manual-control');
     assert.equal(manager.taskStatus(robot.id, next.taskId).state, 'queued');
     manager.shuttingDown = true;
+});
+
+test('workflow callback channel is scoped to each runtime attempt and removed before terminal notification', async t => {
+    const { requireHumanInput } = await import('../copilot/src/skills/require-human-input/scripts/run.mjs');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-human-'));
+    const robot = { id: 'human-a1b2c3', name: 'Human' };
+    const workspace = path.join(root, 'workspace');
+    const dataDir = path.join(root, 'data');
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(path.join(dataDir, 'robots', robot.id, 'home'), { recursive: true });
+    const children = [];
+    const callbacks = [];
+    const terminal = [];
+    const manager = new RuntimeManager({ dataDir, workspaceRoot: root, toolCache: preparedToolCache,
+        execFileImpl: async () => ({ stdout: '[]', stderr: '' }),
+        spawnImpl: (_command, _args, options) => {
+            const child = new EventEmitter();
+            child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true;
+            children.push({ child, directory: options.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY });
+            return child;
+        } });
+    manager.requestHumanInput = async (taskId, input) => { callbacks.push({ taskId, input }); return { id: 'question' }; };
+    manager.setTaskObserver(event => { if (event.kind === 'terminal') terminal.push(event); });
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const first = manager.startTask(robot, 'simple', { cwd: workspace, task: 'Ask', ca: 'codex', allowsHumanInput: true });
+    for (let i = 0; i < 200 && children.length < 1; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(children.length, 1);
+    const question = { question: 'Q?', options: ['A', 'B', 'C'] };
+    await requireHumanInput(question, { directory: children[0].directory });
+    assert.equal(callbacks[0].taskId, first.taskId);
+    children[0].child.emit('close', 0);
+    for (let i = 0; i < 200 && terminal.length < 1; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(terminal.length, 1);
+    await assert.rejects(fs.stat(children[0].directory), { code: 'ENOENT' });
+    const second = await manager.resumeTask(robot, first.taskId, 'My answer to your question is: A');
+    for (let i = 0; i < 200 && children.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(children.length, 2);
+    assert.notEqual(children[1].directory, children[0].directory);
+    await requireHumanInput(question, { directory: children[1].directory });
+    assert.equal(callbacks[1].taskId, second.taskId);
+    children[1].child.emit('close', 0);
+    for (let i = 0; i < 200 && terminal.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(terminal.length, 2);
+    await assert.rejects(fs.stat(children[1].directory), { code: 'ENOENT' });
 });

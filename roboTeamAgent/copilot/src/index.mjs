@@ -35,7 +35,7 @@ export { BUILT_IN_SKILLS } from './lib/constants.mjs';
 export { builtInSkillsDir, resolveSkillCatalogRoots } from './lib/skills/cliSkillRoots.mjs';
 export { parseCliOptions } from './lib/cli/cliOptions.mjs';
 
-export async function createCliRuntime(options, { webchat = false } = {}) {
+export async function createCliRuntime(options, { webchat = false, reattachExistingTasks = true } = {}) {
     const { workingDir } = options;
     const installation = await resolveAlaInstallation();
     const robotContext = getRobotContext();
@@ -80,6 +80,7 @@ export async function createCliRuntime(options, { webchat = false } = {}) {
         backgroundTasks = fs.existsSync('/Agent/client/AgentMcpClient.mjs') ? await createWebchatBackgroundTaskManager({
             workingDir,
             emitProtocol: webchat,
+            reattachExistingTasks,
             onTaskStarted: (task, origin) => attachTaskToSession(sessionStore, task, origin, { webchat }),
         }) : null;
         const engine = createAlaEngine({ workingDir, sessionStore, skillCatalog, settings, interactions, backgroundTasks, installation,

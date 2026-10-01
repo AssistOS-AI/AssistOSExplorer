@@ -6,7 +6,7 @@ import { skillError } from './skill-files.mjs';
 export const copilotSkillsRoot = path.resolve(fileURLToPath(new URL('../copilot/src/skills/', import.meta.url)));
 
 export function copilotSkillset() {
-    const skills = fs.readdirSync(copilotSkillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name !== 'workflow-creator').map((entry) => {
+    const skills = fs.readdirSync(copilotSkillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !['workflow-creator', 'require-human-input'].includes(entry.name)).map((entry) => {
         const text = fs.readFileSync(new URL(`../copilot/src/skills/${entry.name}/SKILL.md`, import.meta.url), 'utf8');
         return { name: entry.name, directory: entry.name,
             description: text.match(/^description:\s*(.+)$/m)?.[1] || entry.name };

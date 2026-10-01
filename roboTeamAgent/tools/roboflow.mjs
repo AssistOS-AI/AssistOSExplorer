@@ -1,7 +1,7 @@
 import process from 'node:process';
 
 const TASK_POLL_INTERVAL_MS = Math.max(50, Math.min(5000, Number(process.env.ROBOTEAM_TASK_POLL_INTERVAL_MS) || 500));
-const FLOW_TERMINAL = new Set(['completed', 'failed', 'stopped']);
+const FLOW_TERMINAL = new Set(['completed', 'failed', 'stopped', 'terminated']);
 const lifetime = new AbortController();
 process.once('SIGTERM', () => lifetime.abort());
 const FLOW_ID = /^flow_[0-9a-f]{24}$/;
@@ -82,8 +82,8 @@ async function startFlowUntilTerminal({ body, user }) {
             if (flow.status === 'failed') {
                 throw new Error(String(flow.error || '').trim() || `RoboFlow task flow ended ${flow.status}`);
             }
-            return { outputText: String(flow.result || '').trim() || (flow.status === 'stopped' ? 'Workflow stopped.' : ''),
-                flowId, status: flow.status, taskStatus: flow.status === 'stopped' ? 'cancelled' : 'completed' };
+            return { outputText: String(flow.result || '').trim() || (['stopped', 'terminated'].includes(flow.status) ? `Workflow ${flow.status}.` : ''),
+                flowId, status: flow.status, taskStatus: ['stopped', 'terminated'].includes(flow.status) ? 'cancelled' : 'completed' };
         }
         await sleep(TASK_POLL_INTERVAL_MS);
     }

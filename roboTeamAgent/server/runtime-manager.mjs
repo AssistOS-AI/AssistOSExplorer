@@ -1,3 +1,4 @@
+import { createHumanInputChannel } from './human-input-channel.mjs';
 import { buildTaskPrompt } from '../copilot/src/lib/prompts.mjs';
 import { registerProject, executionDirectory, saveTaskExecution, findProjectRecord } from './project-storage.mjs';
 import { requireWorkspaceRoot } from './workspace-root.mjs';
@@ -465,6 +466,7 @@ export class RuntimeManager {
 
     async _runTask(robot, task) {
         if (task.cancelRequested || task.state !== 'queued') return;
+        let humanInputChannel;
         const appendProgress = (chunk, output = {}) => {
             const previousLength = task.logTail.length;
             task.logTail = appendTail(task.logTail, chunk, TASK_LOG_TAIL_LIMIT);
@@ -556,6 +558,15 @@ export class RuntimeManager {
                 ...codingAgentEnvironment(codingAgents, process.env, this.toolCache.root),
                 ALA_EVENT_STREAM: '1',
             };
+            delete childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
+            if (task.request.allowsHumanInput) {
+                if (!this.requestHumanInput) throw new Error('Workflow human-input handler is unavailable');
+                humanInputChannel = await createHumanInputChannel({
+                    request: input => this.requestHumanInput(task.taskId, input),
+                    stop: () => this.stopTask(robot, task.type, task.taskId),
+                });
+                childEnv.ROBOTEAM_HUMAN_INPUT_DIRECTORY = humanInputChannel.directory;
+            }
             delete childEnv.ROBOTEAM_INTERNAL_TOKEN;
             delete childEnv.ROBOTEAM_TASK_SKILL_SELECTION;
             const child = this.spawnImpl(process.execPath, [fileURLToPath(new URL('./robot-task.mjs', import.meta.url)),
@@ -607,6 +618,7 @@ export class RuntimeManager {
                 task.state = 'failed'; task.error = String(error?.message || error); task.completedAt = new Date().toISOString();
             }
         } finally {
+            await humanInputChannel?.close().catch(() => {});
             task.child = null;
             task.controlReady = false;
             for (const [id, waiter] of this.messageWaiters) {
@@ -724,6 +736,7 @@ export class RuntimeManager {
             || !['stopped', 'completed', 'failed'].includes(internal.state)) {
             throw new Error('Robot has no matching task to continue.');
         }
+        await this.assertHumanInputAnswered?.(taskId, internal.request.workflowRunId);
         const message = String(prompt || '').trim() || 'Continue.';
         if (!/^[0-9a-f-]{36}$/u.test(internal.alaSessionId || '')) throw new Error('Task has no recoverable ALA session.');
         if ([...this.tasks.values()].some((task) => task.robotId === robot.id

@@ -26,14 +26,19 @@
 .task-editor-panel:empty { display: none; }
 .task-editor { border: 1px solid var(--border); border-radius: var(--radius-md, 8px); padding: 14px; display: grid; gap: 12px; align-content: start; background: var(--surface); }
 .task-editor h3 { margin: 0; font-size: var(--font-md, 1rem); }
-.task-editor-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: start; }
-.task-editor-row .field { flex: 0 1 260px; min-width: 170px; }
-.task-editor-row .field:nth-child(2) { flex-basis: 200px; }
+.task-editor textarea { height: 150px; }
+.task-editor-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: end; }
+.task-editor-row .field { flex: 1 1 200px; min-width: 170px; }
+.task-editor-row .field:nth-child(2) { flex: 0 1 170px; }
 .task-form-error { margin: 0; color: var(--danger, #b42318); }
-.entry-toggle { justify-self: start; align-self: start; padding: 8px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-md, 8px); background: var(--surface); color: var(--text); font-size: var(--font-sm); font-weight: 600; cursor: pointer; }
-.entry-toggle:hover:not(:disabled) { border-color: var(--accent); }
-.entry-toggle.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
-.entry-toggle.is-active:disabled { opacity: 1; }
+.task-options { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; min-height: 40px; padding: 8px 0; }
+.task-options .task-option { display: inline-flex; align-items: center; gap: 8px; color: var(--text); white-space: nowrap; cursor: pointer; }
+.task-options input[type="checkbox"] { width: 16px; height: 16px; padding: 0; margin: 0; flex: 0 0 16px; accent-color: var(--accent); cursor: pointer; }
+.task-option:has(input:disabled) { cursor: default; }
+@media (max-width: 700px) {
+    .task-editor-row .field { flex: 1 1 170px; min-width: 0; }
+}
+
 .task-delete { justify-self: start; }
 .task-delete:not(:disabled) { background: var(--danger, #b42318); border-color: var(--danger, #b42318); color: #fff; }
 .task-delete:not(:disabled):hover { background: color-mix(in srgb, var(--danger, #b42318) 85%, #000); border-color: color-mix(in srgb, var(--danger, #b42318) 85%, #000); }

@@ -3,8 +3,8 @@ import { hasCreators, isCoordinator, invalid, textField, workflowCatalogEntry } 
 import { EXECUTION_TYPES } from './constants.mjs';
 
 const stopped = state => ['stopped', 'interrupted'].includes(state);
-const finished = state => ['completed', 'failed'].includes(state);
-export const CONTINUE_PROMPT = 'Continuă de unde ai rămas';
+const finished = state => ['completed', 'failed', 'terminated'].includes(state);
+export const CONTINUE_PROMPT = 'Continue where you left off';
 
 export class Subflows {
     constructor(service) { this.service = service; }
@@ -86,7 +86,7 @@ export class Subflows {
                 await this.service._advance(id, visit.id, edge);
             } else {
                 const active = children.some(child => ['queued', 'starting', 'running', 'stopping'].includes(child.status));
-                const failed = children.find(child => child.status === 'failed');
+                const failed = children.find(child => ['failed', 'terminated'].includes(child.status));
                 const state = active ? 'running' : children.some(child => stopped(child.status)) ? 'stopped' : failed ? 'failed' : 'running';
                 const error = state === 'failed' ? `Sub-workflow ${failed.id} failed: ${failed.error || 'Execution failed'}` : null;
                 if (visit.state !== state || visit.error !== error) await store.update(id, current => {
@@ -132,6 +132,7 @@ export class Subflows {
         if (errors.length) throw new Error(errors.join('; '));
     }
     async assertCanContinue(flow) {
+        if (flow.status === 'terminated') throw invalid('Terminated workflows cannot be continued');
         if (!flow.parentFlowId) return;
         const parent = await this.service.store.get(flow.parentFlowId);
         if (!parent || parent.stopRequested) throw invalid('Resume the parent workflow before continuing this child');

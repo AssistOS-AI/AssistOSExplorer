@@ -252,5 +252,18 @@ test('a non-webchat turn keeps only the answer without a log link', async (t) =>
     const h = await harness(t, {}, { webchatLogsBase: '/base-agent-additional-server/roboTeamAgent/3001/webchat-logs' });
     const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'PLAIN' });
     assert.equal(result.session.messages.at(-1).text.includes('View Thinking'), false);
-    await assert.rejects(fs.stat(path.join(h.workingDir, '.achilles-cli', 'logs')), { code: 'ENOENT' });
+    assert.ok((await fs.stat(path.join(h.workingDir, '.achilles-cli', 'logs'))).isDirectory());
+});
+
+
+test('workflow human-input channel is mounted explicitly into the native sandbox', async t => {
+    const h = await harness(t);
+    const previous = process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
+    process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY = h.workingDir;
+    t.after(() => {
+        if (previous === undefined) delete process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY;
+        else process.env.ROBOTEAM_HUMAN_INPUT_DIRECTORY = previous;
+    });
+    const result = await h.engine.executeTurn({ sessionId: h.sessionId, prompt: 'Check workflow callback mount' });
+    assert.ok(JSON.parse(result.outputText).folders.some(folder => folder.source === h.workingDir && folder.alias === 'roboflow-human-input'));
 });

@@ -50,6 +50,7 @@
         <div class="flow-actions">
           <span id="flowDuration" class="phase-view-duration"></span>
           <span id="flowStatus" class="status-badge"></span>
+          <button id="terminateFlowButton" class="button danger" type="button">Terminate workflow</button>
           <button id="stopFlowButton" class="button danger" type="button">Stop workflow</button>
         </div>
       </header>
@@ -71,6 +72,15 @@
 
     <p id="message" class="message" role="status"></p>
   </main>
+  <dialog id="terminateFlowDialog" class="terminate-dialog" aria-labelledby="terminateDialogTitle" aria-describedby="terminateDialogDescription">
+    <h2 id="terminateDialogTitle">Terminate workflow?</h2>
+    <p id="terminateDialogDescription">Are you sure you want to terminate this workflow? This will also terminate its sub-flows. Resume will not be possible.</p>
+    <p id="terminateDialogError" class="message is-error" role="alert" hidden></p>
+    <div class="terminate-dialog-actions">
+      <button id="cancelTerminateButton" class="button" type="button" autofocus>Cancel</button>
+      <button id="confirmTerminateButton" class="button danger" type="button">Terminate workflow</button>
+    </div>
+  </dialog>
   <script type="module" src="roboflow.js"></script>
 </body>
 </html>

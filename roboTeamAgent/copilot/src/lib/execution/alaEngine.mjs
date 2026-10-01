@@ -234,11 +234,12 @@ export function createAlaEngine({ workingDir, sessionStore, skillCatalog, settin
             await sessionStore.bindEngine(sessionId, { home, cwd, backend, robotId: execution.robotId });
             const args = ['--ca', backend, '--home', home, '--cwd', cwd, '--session-id', sessionId,
                 '--control-stdin', '--permissions', permissionMode, '--taskFile', taskFile,
-                '--config', configFile];
+                '--config', configFile, '--ignore', path.resolve(cwd, '.achilles-cli')];
             // The workspace is mounted read-only at its canonical path; the writable
             // cwd is the --cwd grant. ALA mounts exactly what it is given.
             if (config.workspaceRoot !== cwd) args.push('--folder', config.workspaceRoot);
             args.push('--folder', scriptContext.directory, 'as', 'ploinky-runtime');
+            if (env.ROBOTEAM_HUMAN_INPUT_DIRECTORY) args.push('--folder', env.ROBOTEAM_HUMAN_INPUT_DIRECTORY, 'as', 'roboflow-human-input');
 
             if (config.resume) args.push('--resume-session');
             if (config.models[backend]) args.push('--model', config.models[backend]);

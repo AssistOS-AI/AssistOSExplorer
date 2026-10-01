@@ -16,20 +16,20 @@ async function fixture(t) {
         startTask(robot, type, request) { started.push({ robot, type, request }); return { taskId: request.runtimeTaskId, state: 'queued' }; },
         stopTask() {}, sendTaskMessage() { return { delivery: 'sent' }; },
         resumeTask(robot, taskId, prompt, options = {}) { return { taskId: options.runtimeTaskId, state: 'queued' }; }, activePort: () => null };
-    const roboflow = new RoboFlowService({ robotStore, runtimeManager, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }) });
+    const roboflow = new RoboFlowService({ robotStore, runtimeManager, skillsets: { repositoriesClient: { listRepositories: async () => [{ name: 'DocumentationSkills', source: root, origin: 'local' }] }, start: async (robot, input, enqueue) => enqueue(robot) }, databaseFile: path.join(root, 'roboflow.sqlite'), workflowsDirectory: path.join(root, 'old'), discoverSkillsets: async () => ({ skillsets: [], diagnostics: [] }) });
     await roboflow.initialize();
     const server = createRoboTeamServer({ robotStore, runtimeManager, roboflow, internalToken: 'test-token', publicBasePath: '/rt/' });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(async () => { await new Promise(resolve => server.close(resolve)); await roboflow.close(); await fs.rm(root, { recursive: true, force: true }); });
     const base = `http://127.0.0.1:${server.address().port}`;
     const request = (url, role = 'admin', body, method = body ? 'POST' : 'GET') => fetch(base + url, { method, headers: headers(role), ...(body ? { body: JSON.stringify(body) } : {}) });
-    return { request, roboflow, started };
+    return { request, roboflow, started, base };
 }
 test('graph HTTP CRUD and coverage preserve administrator boundaries', async t => {
     const f = await fixture(t);
     assert.equal((await f.request('/api/roboflow/workflows', 'user', graph)).status, 403);
     assert.equal((await f.request('/api/roboflow/workflows', 'admin', graph)).status, 201);
-    const { workflows } = await (await f.request('/api/roboflow/workflows', 'user')).json(); assert.equal(workflows.length, 2);
+    const { workflows } = await (await f.request('/api/roboflow/workflows', 'user')).json(); assert.equal(workflows.length, 3);
     assert.equal((await f.request('/api/roboflow/validate', 'user', graph)).status, 403);
     assert.equal((await f.request('/api/roboflow/generate', 'user', { description: 'Generate' })).status, 403);
     assert.equal((await f.request('/api/roboflow/validate', 'admin', graph)).status, 200);
@@ -85,4 +85,32 @@ test('HTTP async generation starts, streams logs and cancels', async t => {
     assert.equal(running.log, 'line one');
     assert.equal((await f.request(`/api/roboflow/generations/${id}`, 'admin', undefined, 'DELETE')).status, 200);
     assert.equal((await f.request(`/api/roboflow/generations/${id}`, 'user')).status, 404);
+});
+
+test('human-input answer route requires authentication and resumes with a validated choice', async t => {
+    const f = await fixture(t);
+    await f.request('/api/roboflow/workflows', 'admin', { ...graph, tasks: [{ ...graph.tasks[0], allowsHumanInput: true }] });
+    const { flow } = await (await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', objective: 'Work' })).json();
+    const taskId = f.started[0].request.runtimeTaskId;
+    const question = await f.roboflow.requestHumanInput(taskId, { question: 'Q?', options: ['A', 'B', 'C'] });
+    f.roboflow.onRuntimeTaskEvent({ kind: 'terminal', taskId, state: 'completed', result: 'Waiting' });
+    while (f.roboflow.chains.size) await Promise.allSettled(f.roboflow.chains.values());
+    const endpoint = `/api/roboflow/flows/${flow.id}/human-input/answer`;
+    assert.equal((await fetch(f.base + endpoint, { method: 'POST', body: '{}' })).status, 401);
+    const response = await f.request(endpoint, 'user', { requestId: question.id, option: 4 });
+    assert.equal(response.status, 400);
+    const answered = await f.request(endpoint, 'user', { requestId: question.id, option: 1 });
+    assert.equal(answered.status, 200);
+    assert.equal((await answered.json()).flow.humanInput.answer, 'B');
+    assert.equal((await f.request(endpoint, 'user', { requestId: question.id, option: 0 })).status, 409);
+});
+
+test('HTTP termination blocks workflow and phase continuation', async t => {
+    const f = await fixture(t); await f.request('/api/roboflow/workflows', 'admin', graph);
+    const { flow } = await (await f.request('/api/roboflow/flows', 'user', { workflowTypeId: 'example', objective: 'Work' })).json();
+    const response = await f.request(`/api/roboflow/flows/${flow.id}/terminate`, 'user', {});
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).flow.status, 'terminated');
+    assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/resume`, 'user', {})).status, 400);
+    assert.equal((await f.request(`/api/roboflow/flows/${flow.id}/instances/${flow.instances[0].id}/resume`, 'user', { prompt: 'Continue' })).status, 400);
 });

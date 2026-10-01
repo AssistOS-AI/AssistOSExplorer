@@ -35,6 +35,7 @@ export function routingPrompt(graph, taskId) {
 export function generationPrompt(catalog) {
     return [
         'You are a workflow planner. For the user task, produce an optimal directed graph: split the task into smaller tasks that each make sense, and find the execution paths that can lead the task to completion. A task can have several possible execution paths, not only a linear one.',
+        'An ordinary task may set allowsHumanInput:true when it should pause for unresolved business decisions and wait for a user answer. This is optional and defaults to false.',
         'Ordinary tasks are executed by a coding agent and must declare exactly one execution type:',
         '- terminal: the usual CLI coding-agent mode;',
         '- desktop: coding agents with computer-use MCP tools operating a virtual desktop;',

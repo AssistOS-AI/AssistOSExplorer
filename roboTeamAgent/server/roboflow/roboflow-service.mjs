@@ -14,7 +14,7 @@ import { ensureDefaultWorkflow } from './default-workflow.mjs';
 import { EXECUTION_TASK_TYPES, EXECUTION_TYPES, WORKFLOWS_DIR } from './constants.mjs';
 import { robotCodingAgents, GUI_CODING_AGENTS } from '../coding-agents.mjs';
 
-const terminal = state => ['completed', 'failed', 'stopped', 'interrupted'].includes(state);
+const terminal = state => ['completed', 'failed', 'stopped', 'interrupted', 'terminated'].includes(state);
 const missing = () => Object.assign(new Error('workflow run not found'), { statusCode: 404 });
 
 // A run has one status. Running wins over everything, then stop, then failure:
@@ -41,6 +41,19 @@ export class RoboFlowService {
         if (!Number.isSafeInteger(this.maxVisits) || this.maxVisits < 1) throw new Error('Workflow visit limit must be a positive integer');
         this.discover = options.discoverSkillsets || (() => discoverWorkflowSkillsets(this.skillsets?.repositoriesClient));
         this.bindings = new Map();
+        if (this.runtimeManager) {
+            this.runtimeManager.requestHumanInput = (taskId, input) => this.requestHumanInput(taskId, input);
+            this.runtimeManager.assertHumanInputAnswered = async (taskId, workflowRunId) => {
+                for (const flow of await this.store.list()) {
+                    if (flow.status === 'terminated' && (flow.id === workflowRunId || flow.instances.some(item => item.runtimeTaskId === taskId))) {
+                        throw invalid('Terminated workflows cannot be continued');
+                    }
+                }
+                if ((await this.store.list()).some(flow => flow.humanInput?.status === 'pending' && flow.humanInput.runtimeTaskId === taskId)) {
+                    throw invalid('Answer the pending human-input question before continuing');
+                }
+            };
+        }
         this.chains = new Map();
         this.subflows = new Subflows(this);
         this.generations = new Map();
@@ -56,6 +69,13 @@ export class RoboFlowService {
             for (const instance of current.instances) if (!terminal(instance.state)) { instance.state = 'interrupted'; instance.error = current.error; instance.endedAt = current.finishedAt; }
             current.status = deriveFlowStatus(current.instances);
         });
+        for (const flow of await this.store.list()) if (flow.humanInput?.status === 'pending') await this.store.update(flow.id, current => {
+            current.humanInput.executionEnded = true;
+            current.status = 'stopped';
+            const instance = current.instances.find(item => item.id === current.humanInput.instanceId);
+            if (instance) { instance.state = 'stopped'; instance.endedAt ||= new Date().toISOString(); }
+        });
+        for (const flow of await this.store.list()) if (flow.status === 'terminated') await this.terminateFlow(flow.id);
         this.store.onStatusChange = flow => {
             if (!flow.parentFlowId) return;
             void this._serialize(flow.parentFlowId, () => this.subflows.reconcile(flow.parentFlowId))
@@ -63,7 +83,8 @@ export class RoboFlowService {
         };
     }
     _derive(flow) {
-        flow.status = deriveFlowStatus(flow.instances);
+        if (flow.status === 'terminated') return;
+        flow.status = flow.humanInput?.status === 'pending' ? 'stopped' : deriveFlowStatus(flow.instances);
         flow.finishedAt = flow.status === 'running' ? null : new Date().toISOString();
         if (flow.status !== 'failed') flow.error = null;
     }
@@ -161,24 +182,25 @@ export class RoboFlowService {
             const required = node.skillsets.map(identity => selections.find(set => set.id === identity));
             const skillSets = required.filter(item => item.kind === 'skillset').map(item => item.selector);
             const skills = required.filter(item => item.kind === 'skill').map(item => item.selector);
-            const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, skillSets, skills,
-                requiredWorkflowSkillsets: node.skillsets, workflowCreator: node.creator === true,
-                systemPrompt: node.creator ? creatorPrompt(flow.graph, node.id, await this.subflows.catalog()) : outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '' });
+            const started = await this._startTask(robot, { cwd: flow.folder, task, taskType: EXECUTION_TASK_TYPES[mode], runtimeTaskId, workflowRunId: id, skillSets, skills,
+                requiredWorkflowSkillsets: node.skillsets, workflowCreator: node.creator === true, allowsHumanInput: node.allowsHumanInput === true,
+                systemPrompt: [node.creator ? creatorPrompt(flow.graph, node.id, await this.subflows.catalog()) : outgoing.length > 1 ? routingPrompt(flow.graph, node.id) : '',
+                    node.allowsHumanInput ? 'For a blocking business decision not answered by the prompt or context, use the required require-human-input skill. After its script succeeds, end this execution immediately without a route or creator plan; RoboFlow will wait for the user answer.' : ''].filter(Boolean).join('\n\n') });
             if (started?.sessionUrl) await this.store.update(id, current => {
                 const visit = current.instances.find(item => item.id === instance.id);
                 if (visit) visit.sessionUrl = started.sessionUrl;
             });
         } catch (error) { await this._fail(id, error.message); }
     }
-    async _startTask(robot, { skillSets = [], skills = [], taskType = 'simple', workflowCreator = false, ...request }) {
-        const start = (current, selection) => this.runtimeManager.startTask(current, taskType, { ...request, skillPolicyRef: selection?.policyId,
+    async _startTask(robot, { skillSets = [], skills = [], taskType = 'simple', workflowCreator = false, allowsHumanInput = false, ...request }) {
+        const start = (current, selection) => this.runtimeManager.startTask(current, taskType, { ...request, allowsHumanInput, skillPolicyRef: selection?.policyId,
             alaSessionId: selection?.policyId, ca: 'auto' });
         if (!this.skillsets) return start(robot);
-        return this.skillsets.start(robot, { cwd: request.cwd, skillSets, skills, task: request.task, ca: 'auto', workflowCreator }, start);
+        return this.skillsets.start(robot, { cwd: request.cwd, skillSets, skills, task: request.task, ca: 'auto', workflowCreator, allowsHumanInput }, start);
     }
     async _fail(id, message, status = 'failed') {
         const flow = await this.store.get(id);
-        if (!flow) return;
+        if (!flow || flow.status === 'terminated') return;
         const active = flow.instances.filter(instance => !terminal(instance.state));
         if (!active.length) return;
         if (!flow.stopRequested && active.some(instance => instance.creatorInstanceId)) {
@@ -207,10 +229,38 @@ export class RoboFlowService {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
-            if (['pending', 'completed', 'failed'].includes(flow.status)) return this.getFlow(id);
+            if (['pending', 'completed', 'failed', 'terminated'].includes(flow.status)) return this.getFlow(id);
             await this.store.update(id, current => { current.stopRequested = true; });
             await this.subflows.stopChildren(flow);
             await this._fail(id, 'Stopped by user', 'stopped');
+            return this.getFlow(id);
+        });
+    }
+    async terminateFlow(id) {
+        return this._serialize(id, async () => {
+            const flow = await this.store.get(id);
+            if (!flow) throw missing();
+            // Persist the irreversible gate before stopping processes or visiting children.
+            await this.store.update(id, current => {
+                current.status = 'terminated'; current.stopRequested = true;
+                current.terminatedAt ||= new Date().toISOString();
+                current.finishedAt = current.terminatedAt; current.error = null;
+                if (current.humanInput?.status === 'pending') current.humanInput.status = 'cancelled';
+                for (const visit of current.instances) if (visit.state !== 'completed') {
+                    visit.state = 'terminated'; visit.endedAt ||= current.finishedAt;
+                }
+            });
+            const children = [...new Set(flow.instances.flatMap(item => item.childFlowIds || []))];
+            const results = await Promise.allSettled(children.map(child => this.terminateFlow(child)));
+            for (const visit of flow.instances) if (visit.runtimeTaskId && !['completed', 'failed'].includes(visit.state)) {
+                this.bindings.delete(visit.runtimeTaskId);
+                const robot = await this.robotStore.getByName(visit.robotName);
+                if (robot) results.push(await Promise.resolve().then(() => this.runtimeManager.stopTask(
+                    robot, EXECUTION_TASK_TYPES[visit.executionType], visit.runtimeTaskId))
+                    .then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason })));
+            }
+            const failures = results.filter(result => result.status === 'rejected');
+            if (failures.length) throw new Error(`Workflow terminated, but stopping execution failed: ${failures.map(item => item.reason.message).join('; ')}`);
             return this.getFlow(id);
         });
     }
@@ -226,6 +276,7 @@ export class RoboFlowService {
         return this._serialize(id, async () => {
             const flow = await this.store.get(id);
             if (!flow) throw missing();
+            if (flow.humanInput?.status === 'pending') throw invalid('Answer the pending human-input question before resuming');
             await this.subflows.assertCanContinue(flow);
             if (!flow.instances.some(item => ['stopped', 'interrupted'].includes(item.state))) return this.getFlow(id);
             await this.store.update(id, current => { current.stopRequested = false; });
@@ -250,7 +301,7 @@ export class RoboFlowService {
         const robot = await this.robotStore.getByName(instance.robotName);
         if (!robot) throw new Error('Robot is unavailable');
         const delivery = await this.runtimeManager.sendTaskMessage(robot, instance.runtimeTaskId, message);
-        await this.store.writeOutput(id, instanceId, `you> ${message}\n`);
+        await this.store.writeOutput(id, instanceId, `\n${message.split(/\r?\n/).map(line => `you> ${line}`).join('\n')}\n\n`);
         return { ...delivery, flow: await this.getFlow(id) };
     }
     async resumeInstance(id, instanceId, prompt) {
@@ -259,9 +310,10 @@ export class RoboFlowService {
         if (instance && isCoordinator(flow.graph.tasks.find(task => task.id === instance.taskId))) return this.resumeFlow(id);
         return this._serialize(id, () => this._resumeInstance(id, instanceId, prompt));
     }
-    async _resumeInstance(id, instanceId, prompt) {
+    async _resumeInstance(id, instanceId, prompt, humanInputId = null, answeredBy = '') {
         const flow = await this.store.get(id);
         if (!flow) throw missing();
+        if (flow.humanInput?.status === 'pending' && flow.humanInput.id !== humanInputId) throw invalid('Answer the pending human-input question before continuing');
         await this.subflows.assertCanContinue(flow);
         const instance = flow.instances.find(item => item.id === instanceId);
         if (!instance) throw Object.assign(invalid('task instance not found'), { statusCode: 404 });
@@ -284,6 +336,7 @@ export class RoboFlowService {
         const runtimeTaskId = crypto.randomUUID();
         await this.store.update(id, current => {
             const visit = current.instances.find(item => item.id === instanceId);
+            if (humanInputId) current.humanInput = { ...current.humanInput, status: 'answered', answer: message.slice('My answer to your question is: '.length), answeredAt: new Date().toISOString(), answeredBy };
             visit.runtimeTaskId = runtimeTaskId; visit.state = 'running'; visit.error = null; visit.endedAt = null;
             current.status = deriveFlowStatus(current.instances); current.finishedAt = null; current.error = null; current.stopRequested = false;
         });
@@ -294,18 +347,19 @@ export class RoboFlowService {
             this.bindings.delete(runtimeTaskId);
             await this.store.update(id, current => {
                 const visit = current.instances.find(item => item.id === instanceId);
+                if (humanInputId) current.humanInput = flow.humanInput;
                 visit.runtimeTaskId = previous.runtimeTaskId; visit.state = previous.state; visit.error = previous.error; visit.endedAt = previous.endedAt;
                 current.status = deriveFlowStatus(current.instances);
                 if (current.status !== 'running') current.finishedAt = current.finishedAt || new Date().toISOString();
             }).catch(() => {});
             throw error;
         }
-        if (message) await this.store.writeOutput(id, instanceId, `you> ${message}\n`);
+        if (message) await this.store.writeOutput(id, instanceId, `\n${message.split(/\r?\n/).map(line => `you> ${line}`).join('\n')}\n\n`);
         return this.getFlow(id);
     }
     async _completed(binding, event) {
         const flow = await this.store.get(binding.flowId);
-        if (!flow || (terminal(flow.status) && !binding.manual)) return;
+        if (!flow || flow.humanInput?.status === 'pending' || (terminal(flow.status) && !binding.manual)) return;
         const instance = flow.instances.find(item => item.id === binding.instanceId);
         if (!instance || terminal(instance.state)) return;
         if (['stopped', 'interrupted'].includes(event.state)) return this._fail(flow.id, event.error || `Task ${instance.taskId} ${event.state}`, event.state);
@@ -338,7 +392,26 @@ export class RoboFlowService {
         if (event.kind === 'terminal') this.bindings.delete(event.taskId);
         void this._serialize(binding.flowId, async () => {
             const flow = await this.store.get(binding.flowId);
-            if (!flow || (terminal(flow.status) && !binding.manual)) return;
+            if (!flow || flow.status === 'terminated') return;
+            const visit = flow.instances.find(item => item.id === binding.instanceId);
+            if (!visit || visit.runtimeTaskId !== event.taskId) return;
+            if (flow.humanInput?.status === 'pending' && flow.humanInput.runtimeTaskId === event.taskId) {
+                if (event.kind === 'progress') await this.store.writeOutput(flow.id, visit.id, event.chunk, 'log', { assistant: event.outputKind === 'assistant', complete: event.outputComplete, outputId: event.outputId });
+                if (event.kind === 'terminal') {
+                    let outputUnavailable = false;
+                    try { await this.store.writeOutput(flow.id, visit.id, event.result || '', 'result'); }
+                    catch { outputUnavailable = true; }
+                    await this.store.update(flow.id, current => {
+                        current.humanInput.executionEnded = true;
+                        const phase = current.instances.find(item => item.id === visit.id);
+                        phase.state = 'stopped'; phase.endedAt = new Date().toISOString();
+                        if (outputUnavailable) phase.outputUnavailable = true;
+                        current.status = 'stopped';
+                    });
+                }
+                return;
+            }
+            if (terminal(flow.status) && !binding.manual) return;
             if (event.kind === 'progress') await this.store.writeOutput(flow.id, binding.instanceId, event.chunk, 'log', { assistant: event.outputKind === 'assistant', complete: event.outputComplete, outputId: event.outputId });
             else if (event.kind === 'state') await this.store.update(flow.id, current => {
                 const instance = current.instances.find(item => item.id === binding.instanceId);
@@ -348,6 +421,49 @@ export class RoboFlowService {
         }).catch(error => this._serialize(binding.flowId, () => this._fail(binding.flowId, error.message)).catch(() => {}));
     }
     async listFlows({ folder } = {}) { return (await this.store.list()).filter(flow => !folder || flow.folder === folder); }
+    async requestHumanInput(runtimeTaskId, input) {
+        const binding = this.bindings.get(runtimeTaskId);
+        if (!binding) throw invalid('This workflow execution is no longer active');
+        const question = textField(input?.question, 'question', 8000, true);
+        if (!Array.isArray(input.options) || input.options.length !== 3) throw invalid('Exactly three options are required');
+        const options = input.options.map(option => textField(option, 'option', 2000, true));
+        if (new Set(options).size !== 3) throw invalid('Options must be distinct');
+        return this._serialize(binding.flowId, async () => {
+            const flow = await this.store.get(binding.flowId);
+            const instance = flow?.instances.find(item => item.id === binding.instanceId);
+            if (!instance || instance.runtimeTaskId !== runtimeTaskId
+                || !flow.graph.tasks.find(task => task.id === instance.taskId)?.allowsHumanInput) throw invalid('Human input is not allowed for this execution');
+            if (flow.humanInput?.status === 'pending') {
+                if (flow.humanInput.runtimeTaskId === runtimeTaskId && flow.humanInput.question === question
+                    && JSON.stringify(flow.humanInput.options) === JSON.stringify(options)) return { id: flow.humanInput.id };
+                throw invalid('A human-input question is already pending');
+            }
+            if (flow.status !== 'running' || terminal(instance.state) || flow.stopRequested) throw invalid('This workflow execution is no longer active');
+            const request = { id: crypto.randomUUID(), instanceId: instance.id, runtimeTaskId, question, options,
+                status: 'pending', executionEnded: false, createdAt: new Date().toISOString() };
+            await this.store.update(flow.id, current => {
+                current.humanInput = request;
+                current.status = 'stopped'; current.finishedAt = request.createdAt; current.error = null;
+                const visit = current.instances.find(item => item.id === instance.id);
+                visit.startedAt ||= request.createdAt;
+                visit.state = 'stopped'; visit.endedAt = request.createdAt;
+            });
+            return { id: request.id };
+        });
+    }
+    async answerHumanInput(id, input, actorId = '') {
+        return this._serialize(id, async () => {
+            const flow = await this.store.get(id);
+            if (!flow) throw missing();
+            const request = flow.humanInput;
+            if (request?.status !== 'pending' || input?.requestId !== request.id) throw Object.assign(invalid('This question is no longer waiting for an answer'), { statusCode: 409 });
+            if (!request.executionEnded) throw Object.assign(invalid('The robot is still finishing its current execution. Try again shortly.'), { statusCode: 409 });
+            const choice = input.option;
+            if (!Number.isInteger(choice) || choice < 0 || choice > 3) throw invalid('Choose one of the four answer options');
+            const answer = choice === 3 ? textField(input.text, 'answer', 32000, true) : request.options[choice];
+            return this._resumeInstance(id, request.instanceId, `My answer to your question is: ${answer}`, request.id, actorId);
+        });
+    }
     async getFlow(id, { logMode = 'none' } = {}) {
         const flow = await this.store.get(id);
         if (!flow) throw missing();

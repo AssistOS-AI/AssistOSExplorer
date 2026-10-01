@@ -313,9 +313,19 @@ async function handleRoboFlow({ req, res, url, pathname, actor, roboflow, public
         sendJson(res, 200, { ok: true, flow: await roboflow.getFlow(flowId, { logMode }) });
         return true;
     }
+    const answerId = pathname.match(new RegExp(`^${FLOW_PATH}/human-input/answer$`))?.[1];
+    if (answerId && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, flow: await roboflow.answerHumanInput(answerId, await readJsonBody(req), actor.id) });
+        return true;
+    }
     const stopId = pathname.match(new RegExp(`^${FLOW_PATH}/stop$`))?.[1];
     if (stopId && req.method === 'POST') {
         sendJson(res, 200, { ok: true, flow: await roboflow.stopFlow(stopId) });
+        return true;
+    }
+    const terminateId = pathname.match(new RegExp(`^${FLOW_PATH}/terminate$`))?.[1];
+    if (terminateId && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, flow: await roboflow.terminateFlow(terminateId) });
         return true;
     }
     const resumeId = pathname.match(new RegExp(`^${FLOW_PATH}/resume$`))?.[1];

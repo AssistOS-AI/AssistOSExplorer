@@ -3,7 +3,7 @@ import { renderLog } from './log-render.js';
 
 const element = (tag, text) => { const node = document.createElement(tag); node.textContent = text; return node; };
 const api = path => new URL(path, document.baseURI).toString();
-const FLOW_TERMINAL = new Set(['completed', 'failed', 'stopped', 'interrupted']);
+const FLOW_TERMINAL = new Set(['completed', 'failed', 'stopped', 'interrupted', 'terminated']);
 
 async function get(path, text = false) {
     const response = await fetch(api(path), { credentials: 'include' });
@@ -79,7 +79,9 @@ function renderHeader(flow) {
     control.textContent = paused ? 'Resume workflow' : 'Stop workflow';
     control.classList.toggle('danger', !paused);
     control.classList.toggle('primary', paused);
-    control.disabled = ['completed', 'failed'].includes(flow.status);
+    control.disabled = ['completed', 'failed', 'terminated'].includes(flow.status);
+    control.hidden = flow.status === 'terminated';
+    document.querySelector('#terminateFlowButton').hidden = ['completed', 'terminated'].includes(flow.status);
     let parentLink = document.querySelector('#parentFlowLink');
     if (!parentLink && flow.parentFlowId) {
         parentLink = element('a', 'Parent workflow'); parentLink.id = 'parentFlowLink';
@@ -263,7 +265,7 @@ function renderSubflows(container, instance) {
     container.replaceChildren();
     const children = instance.subflows || [];
     if (!children.length) { container.append(element('p', 'No sub-flows started for this phase.')); return; }
-    const finished = children.filter(child => ['completed', 'failed'].includes(child.status)).length;
+    const finished = children.filter(child => ['completed', 'failed', 'terminated'].includes(child.status)).length;
     container.append(element('p', `${finished}/${children.length} sub-flows finished`));
     const list = document.createElement('ul');
     for (const child of children) {
@@ -285,7 +287,7 @@ function phaseStatusClass(state) {
     if (['running', 'queued', 'starting'].includes(state)) return 'running';
     if (state === 'completed') return 'finished';
     if (state === 'failed') return 'error';
-    if (['stopped', 'interrupted'].includes(state)) return 'stopped';
+    if (['stopped', 'interrupted', 'terminated'].includes(state)) return 'stopped';
     return 'ongoing';
 }
 
@@ -363,6 +365,7 @@ const COMPOSER_MIN_HEIGHT = 40;
 const COMPOSER_MAX_HEIGHT = 132;
 
 function composerMode(instance) {
+    if (currentFlow?.status === 'terminated') return '';
     if (currentFlow?.graph.tasks.find(task => task.id === instance.taskId)?.kind === 'run-workflows') return '';
     if (['queued', 'starting', 'running'].includes(instance.state)) return 'message';
     if (['stopped', 'completed', 'failed'].includes(instance.state)) return 'continue';
@@ -565,6 +568,38 @@ async function render() {
 }
 
 document.querySelector('#graphButton').onclick = () => { if (currentFlow) showGraph(); };
+const terminateDialog = document.querySelector('#terminateFlowDialog');
+const confirmTerminateButton = document.querySelector('#confirmTerminateButton');
+const cancelTerminateButton = document.querySelector('#cancelTerminateButton');
+const terminateDialogError = document.querySelector('#terminateDialogError');
+let terminating = false;
+document.querySelector('#terminateFlowButton').onclick = () => {
+    if (!selected || terminating || terminateDialog.open) return;
+    terminateDialogError.hidden = true;
+    terminateDialogError.textContent = '';
+    terminateDialog.showModal();
+};
+cancelTerminateButton.onclick = () => terminateDialog.close();
+terminateDialog.addEventListener('cancel', event => { if (terminating) event.preventDefault(); });
+confirmTerminateButton.onclick = async () => {
+    if (!selected || terminating) return;
+    terminating = true;
+    confirmTerminateButton.disabled = cancelTerminateButton.disabled = true;
+    confirmTerminateButton.textContent = 'Terminating…';
+    terminateDialogError.hidden = true;
+    try {
+        await post(`api/roboflow/flows/${encodeURIComponent(selected)}/terminate`);
+        terminateDialog.close();
+        await refresh().catch(error => setMessage(error.message, true));
+    } catch (error) {
+        terminateDialogError.textContent = error.message;
+        terminateDialogError.hidden = false;
+    } finally {
+        terminating = false;
+        confirmTerminateButton.disabled = cancelTerminateButton.disabled = false;
+        confirmTerminateButton.textContent = 'Terminate workflow';
+    }
+};
 document.querySelector('#stopFlowButton').onclick = () => void stopFlow();
 
 await render();

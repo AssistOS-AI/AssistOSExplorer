@@ -257,27 +257,40 @@ export function createWorkflowEditor({ api }) {
         const basics = node('div', null, 'task-editor-row');
         basics.append(field('Name', name), field('Execution type', mode));
         const isEntry = graph.entryTaskId === task.id;
-        const entryToggle = node('button', isEntry ? 'First node' : 'Mark as first node', 'entry-toggle');
-        entryToggle.type = 'button';
-        entryToggle.setAttribute('aria-pressed', String(isEntry));
-        if (isEntry) entryToggle.classList.add('is-active');
-        entryToggle.onclick = () => { graph.entryTaskId = task.id; changed(); renderBoard(); renderTaskEditor(); };
-        const creatorToggle = node('button', task.creator ? 'Workflow creator' : 'Mark as workflow creator', 'entry-toggle creator-toggle');
-        creatorToggle.type = 'button';
-        creatorToggle.setAttribute('aria-pressed', String(Boolean(task.creator)));
-        creatorToggle.classList.toggle('is-active', Boolean(task.creator));
-        creatorToggle.onclick = () => {
+        const checkbox = (text, checked) => {
+            const input = node('input'); input.type = 'checkbox'; input.checked = checked;
+            const label = node('label', null, 'task-option');
+            label.append(input, document.createTextNode(text));
+            return { input, label };
+        };
+        const entry = checkbox('First node', isEntry);
+        entry.input.onchange = () => {
+            // A graph always has one entry; selecting another task replaces it.
+            entry.input.checked = true;
+            if (graph.entryTaskId === task.id) return;
+            graph.entryTaskId = task.id; changed(); renderBoard(); renderList();
+        };
+        const creator = checkbox('Workflow creator', Boolean(task.creator));
+        creator.input.onchange = () => {
             if (task.creator && graph.tasks.filter(item => item.creator).length === 1
                 && graph.edges.some(edge => edge.sourceTaskId === 'run-workflows' || edge.targetTaskId === 'run-workflows')
-                && !confirm('Remove the last creator? Run workflows and its connections will be removed.')) return;
-            task.creator = !task.creator;
+                && !confirm('Remove the last creator? Run workflows and its connections will be removed.')) {
+                creator.input.checked = true;
+                return;
+            }
+            task.creator = creator.input.checked;
             syncCoordinator();
             if (task.creator && !graph.edges.some(edge => edge.sourceTaskId === task.id && edge.targetTaskId === 'run-workflows')) {
                 graph.edges.push({ id: `edge-${crypto.randomUUID()}`, sourceTaskId: task.id, targetTaskId: 'run-workflows', sourcePort: 'right', targetPort: 'left' });
             }
             changed(); renderList(); renderBoard(); renderTaskEditor();
         };
-        card.append(basics, entryToggle, creatorToggle, field('Prompt', prompt));
+        const humanInput = checkbox('Allows human input', task.allowsHumanInput === true);
+        humanInput.input.onchange = () => { task.allowsHumanInput = humanInput.input.checked; changed(); };
+        humanInput.label.title = 'Pause for a business decision missing from the prompt and context.';
+        const options = node('div', null, 'task-options');
+        options.append(entry.label, creator.label, humanInput.label);
+        card.append(basics, options, field('Prompt', prompt));
         if (task.creator) {
             const skill = node('details');
             skill.append(node('summary', 'workflow-creator · Required · View only'));
