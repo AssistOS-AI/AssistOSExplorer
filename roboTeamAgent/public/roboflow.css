@@ -182,9 +182,16 @@ body {
     flex-wrap: wrap;
 }
 
-.flow-heading { min-width: 0; }
+.flow-heading { min-width: 0; flex: 1 1 320px; }
 .flow-heading h2 { margin: 0; font-size: 20px; }
-.flow-objective { margin: 4px 0 0; color: var(--muted); }
+.flow-objective-container { position: relative; padding-right: 32px; }
+.flow-objective { margin: 4px 0 0; color: var(--muted); line-height: 1.5em; overflow-wrap: anywhere; }
+.flow-objective:not(.is-expanded) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; max-height: 3em; overflow: hidden; }
+.flow-objective-toggle { position: absolute; right: 0; top: 0; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--muted); cursor: pointer; }
+.flow-objective-toggle[hidden] { display: none; }
+.flow-objective-toggle:hover { color: var(--text); border-color: var(--accent); }
+.flow-objective-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.flow-objective-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
 .flow-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 .status-badge {

@@ -66,7 +66,9 @@ function instanceForTask(taskId) {
 
 function renderHeader(flow) {
     document.querySelector('#detail-title').textContent = flow.workflowName;
-    document.querySelector('#flowObjective').textContent = flow.objective || '';
+    const objective = document.querySelector('#flowObjective');
+    if (objective.textContent !== (flow.objective || '')) objective.textContent = flow.objective || '';
+    updateObjectiveToggle();
     const status = document.querySelector('#flowStatus');
     status.textContent = flow.status;
     status.dataset.status = flow.status;
@@ -567,6 +569,21 @@ async function render() {
     }
 }
 
+function updateObjectiveToggle() {
+    const objective = document.querySelector('#flowObjective');
+    const toggle = document.querySelector('#toggleFlowObjective');
+    const expanded = objective.classList.contains('is-expanded');
+    toggle.hidden = objective.scrollHeight <= parseFloat(getComputedStyle(objective).lineHeight) * 2 + 1;
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.setAttribute('aria-label', expanded ? 'View less' : 'View more');
+    toggle.title = expanded ? 'View less' : 'View more';
+}
+
+document.querySelector('#toggleFlowObjective').onclick = () => {
+    document.querySelector('#flowObjective').classList.toggle('is-expanded');
+    updateObjectiveToggle();
+};
+new ResizeObserver(updateObjectiveToggle).observe(document.querySelector('#flowObjective'));
 document.querySelector('#graphButton').onclick = () => { if (currentFlow) showGraph(); };
 const terminateDialog = document.querySelector('#terminateFlowDialog');
 const confirmTerminateButton = document.querySelector('#confirmTerminateButton');
