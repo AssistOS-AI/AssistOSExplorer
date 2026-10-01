@@ -1,0 +1,43 @@
+<div class="modal-body observability-body">
+    <nav class="observability-tabs" role="tablist" aria-label="Workflow status">
+        <button id="observability-tab-human" type="button" role="tab" data-tab="human" aria-controls="observability-panel" aria-selected="true">Requires human input <span data-count="human">0</span></button>
+        <button id="observability-tab-running" type="button" role="tab" data-tab="running" aria-controls="observability-panel" aria-selected="false" tabindex="-1">Running <span data-count="running">0</span></button>
+        <button id="observability-tab-history" type="button" role="tab" data-tab="history" aria-controls="observability-panel" aria-selected="false" tabindex="-1">History <span data-count="history">0</span></button>
+    </nav>
+    <div class="observability-error" data-error role="alert" hidden></div>
+    <section id="observability-panel" class="observability-layout" role="tabpanel" aria-labelledby="observability-tab-human">
+        <aside class="observability-sidebar" aria-label="Workflow executions">
+            <p class="settings-empty-state" data-empty-list>No stopped or failed workflows.</p>
+            <ul class="observability-list" data-workflow-list></ul>
+        </aside>
+        <div class="observability-content">
+            <p class="settings-empty-state" data-empty-detail>Select a workflow to see its details.</p>
+            <article data-detail hidden>
+                <div class="observability-detail-heading">
+                    <h2 data-name></h2>
+                    <span class="status-badge" data-state></span>
+                </div>
+                <dl class="observability-metrics">
+                    <div><dt>Started · local time</dt><dd data-started></dd></div>
+                    <div><dt>Execution time</dt><dd data-duration></dd></div>
+                    <div><dt>Nodes executed</dt><dd data-nodes></dd></div>
+                </dl>
+                <p class="observability-error" data-flow-error hidden></p>
+                <form class="observability-question" data-answer-form hidden>
+                    <fieldset>
+                        <legend data-question></legend>
+                        <div data-answer-options></div>
+                        <label class="observability-answer-option"><input type="radio" name="human-answer" value="3"> Other answer</label>
+                        <textarea class="form-input" data-custom-answer aria-label="Your answer" maxlength="32000" rows="4" placeholder="Write your answer" hidden></textarea>
+                    </fieldset>
+                    <p class="observability-hint" data-answer-status role="status"></p>
+                    <p class="observability-error" data-answer-error role="alert" hidden></p>
+                    <button class="general-button" type="submit" data-send-answer>Send answer</button>
+                </form>
+                <h3>Workflow prompt</h3>
+                <p class="observability-prompt" data-prompt></p>
+                <a class="general-button observability-open" data-open target="_blank" rel="noopener noreferrer">View workflow</a>
+            </article>
+        </div>
+    </section>
+</div>
