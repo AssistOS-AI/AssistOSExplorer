@@ -5,7 +5,7 @@ import {
   sameLiveBoxGeneration,
   validateLiveBoxEvidence,
 } from './live-box.mjs';
-import { normalizeOuterPortBindings, readExpectedGpuGrant } from './box-evidence.mjs';
+import { normalizeOuterPortBindings, readExpectedGpuGrant, readExpectedHardwareLimits, readExpectedMpsTools } from './box-evidence.mjs';
 
 const MANAGED_LABEL = 'io.assistos.ploinky.managed';
 const BOX_ROLE_LABEL = 'io.assistos.ploinky-box.role';
@@ -296,6 +296,8 @@ export function validateBoxScreenEvidence(input, {
   generationMaxAgeMs = DEFAULT_GENERATION_MAX_AGE_MS,
   imageMaxAgeMs,
   expectedGpuGrant = null,
+  expectedHardwareLimits = null,
+  expectedMpsTools = null,
 } = {}) {
   const evidence = exactRecord(input, 'Box screen evidence');
   if (evidence.deployment !== 'box') throw new Error('Box screen evidence deployment must equal box.');
@@ -311,6 +313,8 @@ export function validateBoxScreenEvidence(input, {
     generationMaxAgeMs,
     imageMaxAgeMs,
     expectedGpuGrant,
+    expectedHardwareLimits,
+    expectedMpsTools,
   });
   if (box.capturedAt !== capturedAt.text) {
     throw new Error('Box screen evidence capture is not bound to its exact outer Box evidence.');
@@ -340,6 +344,8 @@ export function collectBoxScreenEvidence({
   generationMaxAgeMs = DEFAULT_GENERATION_MAX_AGE_MS,
   imageMaxAgeMs,
   expectedGpuGrant = readExpectedGpuGrant(),
+  expectedHardwareLimits = readExpectedHardwareLimits(),
+  expectedMpsTools = readExpectedMpsTools(),
   command = defaultCommand,
   ...boxOptions
 } = {}) {
@@ -350,6 +356,8 @@ export function collectBoxScreenEvidence({
     generationMaxAgeMs,
     imageMaxAgeMs,
     expectedGpuGrant,
+    expectedHardwareLimits,
+    expectedMpsTools,
     command,
   });
   const outerContainerId = box.box.containerId;
@@ -379,6 +387,8 @@ export function collectBoxScreenEvidence({
     generationMaxAgeMs,
     imageMaxAgeMs,
     expectedGpuGrant,
+    expectedHardwareLimits,
+    expectedMpsTools,
   });
 }
 
@@ -395,13 +405,15 @@ export function validateScreenRuntimeEvidence(input, {
   baseURL,
   nowMs = Date.now(),
   expectedGpuGrant = null,
+  expectedHardwareLimits = null,
+  expectedMpsTools = null,
 } = {}) {
   const evidence = exactRecord(input, 'screen runtime evidence');
   if (evidence.deployment === 'local') {
     return validateHostLocalScreenEvidence(evidence, { baseURL, nowMs });
   }
   if (evidence.deployment === 'box') {
-    return validateBoxScreenEvidence(evidence, { baseURL, nowMs, expectedGpuGrant });
+    return validateBoxScreenEvidence(evidence, { baseURL, nowMs, expectedGpuGrant, expectedHardwareLimits, expectedMpsTools });
   }
   throw new Error('Screen runtime evidence deployment must be local or box.');
 }

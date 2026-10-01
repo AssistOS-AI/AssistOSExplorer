@@ -77,6 +77,11 @@
       "presenterClassName": "AdminSettingsPanel"
     },
     {
+      "name": "hardware-limits-panel",
+      "type": "components",
+      "presenterClassName": "HardwareLimitsPanel"
+    },
+    {
       "name": "admin-users-settings",
       "type": "components",
       "presenterClassName": "AdminUsersSettings"

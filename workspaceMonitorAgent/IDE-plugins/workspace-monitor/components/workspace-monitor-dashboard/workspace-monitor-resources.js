@@ -21,9 +21,22 @@ export function runtimeSeriesId(runtime, index = 0) {
 }
 
 export function runtimeIsReady(runtime) {
+  if (['refused', 'blocked', 'failed', 'stopped'].includes(runtime?.availability)) return false;
   return typeof runtime?.state?.ready === 'boolean'
     ? runtime.state.ready
     : Boolean(runtime?.state?.running);
+}
+
+export function hardwareResourceDisplay(runtime) {
+  const limits = runtime?.limits;
+  const cpu = limits?.cpu?.assurance === 'kernel' ? ` / ${limits.cpu.cores * 100}% quota (${limits.cpu.cores} cores, kernel)` : limits ? ' / no limit' : '';
+  const memory = limits?.memory?.assurance === 'kernel' ? ` / ${formatBytes(limits.memory.bytes)} kernel limit` : limits ? ' / no limit' : '';
+  const gpu = limits?.gpu?.assurance === 'best-effort' ? `GPU ${limits.gpu.smPercent}% SM / ${formatBytes(limits.gpu.vramBytes)} per CUDA process (best-effort)` : '';
+  const problem = runtime?.problem;
+  const reason = runtime?.availability === 'blocked'
+    ? `Blocked by ${problem?.blockedBy?.ref || problem?.blockedBy?.key || 'required dependency'}. ${problem?.rootCause ? `Root refusal ${problem.rootCause.ref || problem.rootCause.key || ''}. ` : ''}${problem?.rootCause?.reason || problem?.reason || ''} ${problem?.rootCause?.fix || problem?.fix || ''}`
+    : `${problem?.reason || ''} ${problem?.fix || ''}`;
+  return { cpu, memory, gpu, status: runtime?.availability || runtime?.state?.status || 'unknown', reason: reason.trim() };
 }
 
 function setText(root, role, value) {
@@ -147,9 +160,9 @@ export class WorkspaceMonitorResources {
       nameCell.append(selector);
       row.append(nameCell);
       const values = [
-        entry.runtime.state?.status || 'unknown',
-        entry.available ? `${entry.cpuPercent.toFixed(1)}%` : 'unavailable',
-        entry.available ? formatBytes(entry.memoryBytes) : 'unavailable'
+        hardwareResourceDisplay(entry.runtime).status,
+        entry.available ? `${entry.cpuPercent.toFixed(1)}%${hardwareResourceDisplay(entry.runtime).cpu}` : 'unavailable',
+        entry.available ? `${formatBytes(entry.memoryBytes)}${hardwareResourceDisplay(entry.runtime).memory}` : 'unavailable'
       ];
       for (const value of values) {
         const cell = document.createElement('td');
@@ -167,13 +180,16 @@ export class WorkspaceMonitorResources {
       setText(this.element, 'selected-runtime-name', 'No runtimes');
       for (const role of ['selected-runtime-status', 'selected-runtime-cpu', 'selected-runtime-memory']) setText(this.element, role, '—');
       setText(this.element, 'selected-runtime-chart-title', 'Runtime CPU load');
+      setText(this.element, 'selected-runtime-hardware', '');
       chart?.replaceChildren();
       return;
     }
     setText(this.element, 'selected-runtime-name', entry.name);
-    setText(this.element, 'selected-runtime-status', entry.runtime.state?.status || 'unknown');
-    setText(this.element, 'selected-runtime-cpu', entry.available ? `${entry.cpuPercent.toFixed(1)}%` : 'unavailable');
-    setText(this.element, 'selected-runtime-memory', entry.available ? formatBytes(entry.memoryBytes) : 'unavailable');
+    const hardware = hardwareResourceDisplay(entry.runtime);
+    setText(this.element, 'selected-runtime-status', hardware.status);
+    setText(this.element, 'selected-runtime-cpu', entry.available ? `${entry.cpuPercent.toFixed(1)}%${hardware.cpu}` : 'unavailable');
+    setText(this.element, 'selected-runtime-memory', entry.available ? `${formatBytes(entry.memoryBytes)}${hardware.memory}` : 'unavailable');
+    setText(this.element, 'selected-runtime-hardware', [hardware.gpu, hardware.reason].filter(Boolean).join('. '));
     setText(this.element, 'selected-runtime-chart-title', `${entry.name} CPU load`);
     if (!chart) return;
     const samples = this.runtimeSamples.get(entry.key) || [];

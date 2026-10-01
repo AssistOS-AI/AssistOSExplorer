@@ -1,5 +1,11 @@
 # Deployment helper dependencies
 
+The Hardware limits panel adds no dependency. Browser modules retain Explorer's
+existing `.js` ES-module convention and use native Fetch, AbortController,
+WebSkel lifecycle, and shared Explorer styles. Policy and lifecycle authority
+remain in Ploinky. Its unit checks use `node:test`; offline screenshot checks
+reuse the repository's existing Playwright test installation and Chromium cache.
+
 The QA in-place update helper adds no npm dependency. It uses Node.js built-ins,
 the existing QA-scoped Node 24.19.0 runtime, Git, the installed container engine,
 util-linux `flock`, and the exact already-deployed Ploinky targeted-restart CLI.

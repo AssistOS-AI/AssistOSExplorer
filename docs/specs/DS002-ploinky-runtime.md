@@ -85,6 +85,8 @@ Explicit local development verification uses `SMOKE_SOURCE_VERIFICATION=local-sn
 
 Explorer must enable RoboTeam globally and route Open Copilot here through the RoboTeam copilot plugin with `agent=roboTeamAgent`, `robot=default` and the selected workspace-relative directory. The action appears only on directory context menus, not in Tools. Invalid directory context must fail rather than omit the launch directory or fall back to the workspace root. Robot selection must remain in the WebChat launch query and declared MCP command-catalog arguments. Explorer must not enable a separate AchillesCLI agent or copy its persisted data. RoboTeam owns robot account configuration, conversational state and graphical task limits.
 
+Hardware refusal propagates only across blocking dependency edges and consumers explicitly waiting on a no-wait result. A refused optional no-wait child retains an inactive route and visible reason without blocking Explorer. A genuinely required refused dependency blocks its transitive consumers; those consumers are never ready. Hardware policy and administration follow DS008.
+
 ## Conclusion
 
 Ploinky provides the deployment and trust boundary; Explorer provides the workspace interface inside that boundary.

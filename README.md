@@ -41,6 +41,10 @@ Confidential resources appear below `/Confidential`. Explorer displays these res
 
 Repository documentation is available through the mounted path `/.ploinky/repos/AchillesIDE/docs/development.html` in a running workspace.
 
+### Hardware limits
+
+Administrators edit CPU cores, RAM percentage and eligible NVIDIA GPU shares in Settings → Hardware limits. Saving changes desired policy; Apply recreates selected exact instances. Instance rows distinguish pending and applied limits, usage, refusal and blocked dependency. Administration keeps its navigation links. Workspace Monitor reports applied limits without editing policy. See the [hardware limits workflow](docs/workspace-operations.html#hardware-limits) for the saved host gate, host status/clear recovery, GPU assurance and accepted administrator authority exposure.
+
 ## Development and verification
 
 Run the affected agent's tests before making a wider change:

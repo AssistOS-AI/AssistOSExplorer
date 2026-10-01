@@ -11,7 +11,7 @@ Explorer exposes settings surfaces for preferences and enabled integrations with
 
 ## Core Content
 
-The Settings modal must expose the confirmed My Account, Agents, Plugins, Keymap, Editor, Theme, Avatar, and administrator-only Administration surfaces. Settings controls must use shared WebSkel and Explorer UI components and must present loading, error, empty, and disabled states consistently.
+The Settings modal must expose the confirmed My Account, Agents, Plugins, Keymap, Editor, Theme, Avatar, and administrator-only Administration and Hardware limits surfaces. Settings controls must use shared WebSkel and Explorer UI components and must present loading, error, empty, and disabled states consistently.
 
 UserPersisto controls live in agent-owned pages opened in separate browser tabs. Settings → My Account contains links to the account dashboard and its personal sign-in security section, plus Authentication policy for accounts with settings-management capability. Settings → Administration contains links to Users and Applications, visible only to accounts with the corresponding management capability. These Settings surfaces contain no embedded account forms, user lists, application editors, or policy controls. Billing is hidden for now. The UserPersisto entry under Agents uses its declared `settingsUrl` for Configure, following the same external-page navigation contract as other agent dashboards.
 
@@ -38,6 +38,10 @@ The UserPersisto Users page requires email in user forms but allows an empty use
 The default Users list excludes accounts whose only role is `selfRegistered` and shows their global count. Accounts with an additional role remain visible. Search matches email, username, display name, or user ID by case-insensitive substring across every account, including self-registered users, before pagination. Typing or submitting a search resets to the first page; clearing restores the default list. Search results keep the existing role editor. Saving a role refreshes the results and count, and accounts promoted to `user` appear in the default list. The `POST api/admin/users/list` API accepts optional `search`, `excludeOnlyRole`, and `includeRoleCounts` filters and returns `singleRoleCounts` when requested; counts cover all accounts independently of search. The same persisted administrator capability and signed-request checks apply to filtered requests too.
 
 Administration loading, success, and error messages must remain visible in the owning UserPersisto page and retain their live-region semantics. Browser errors or lost authority must not reveal stale administrator data or leave management controls enabled.
+
+Hardware limits is a separate editable administrator tab; Administration remains a navigation surface containing links. The tab uses GET and POST `/api/marketplace/hardware-limits`, the Router's administrator session, exact-origin mutation proof and current policy token. It shows one policy editor per repository/agent and exact-instance subrows for aliases, desired/applied limits, usage, pending changes and refused/blocked causal fixes. Apply sends exact registry keys. Conflicts preserve unsaved edits while refreshing authoritative state. CPU/RAM assurance is kernel enforcement; GPU assurance is best-effort. Help discloses the accepted workspace-master-key authority exposure.
+
+Save compares a fresh policy token with the token observed when the draft began. A changed token prevents the mutation and marks the draft for review. Review and save sends the refreshed token only after an explicit subsequent action. Every mutation obtains a fresh session/origin proof, with one fresh-proof retry for the Router's CSRF rejection. The panel hides access after 401, 403 or not_in_box, while an authorized store failure remains visible. Background reads pause while a draft is dirty; Refresh preserves its values. Closing Settings aborts pending reads and mutations and ignores late replies.
 
 ## Conclusion
 

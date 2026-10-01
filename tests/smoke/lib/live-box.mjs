@@ -8,6 +8,8 @@ import {
   buildBoxEvidence,
   normalizeOuterPortBindings,
   readExpectedGpuGrant,
+  readExpectedHardwareLimits,
+  readExpectedMpsTools,
   validateBoxEvidence,
 } from './box-evidence.mjs';
 import {
@@ -320,6 +322,8 @@ export function validateLiveBoxEvidence(input, {
   baseURL,
   expectedRouterBindAddress = DEFAULT_ROUTER_BIND_ADDRESS,
   expectedGpuGrant = null,
+  expectedHardwareLimits = null,
+  expectedMpsTools = null,
   nowMs = Date.now(),
   generationMaxAgeMs,
   imageMaxAgeMs,
@@ -337,6 +341,8 @@ export function validateLiveBoxEvidence(input, {
     publicIPv4: String(input.box?.publicIPv4 || ''),
     expectedRouterBindAddress,
     expectedGpuGrant,
+    expectedHardwareLimits,
+    expectedMpsTools,
   });
   if (box.selectedRouterHostPort !== local.port) {
     throw new Error('Live Box Router publication does not match SMOKE_BASE_URL.');
@@ -359,6 +365,8 @@ export function collectLiveBoxEvidence({
   baseURL,
   expectedRouterBindAddress = readExpectedRouterBindAddress(),
   expectedGpuGrant = readExpectedGpuGrant(),
+  expectedHardwareLimits = readExpectedHardwareLimits(),
+  expectedMpsTools = readExpectedMpsTools(),
   expectedContainerName = '',
   expectedImageId = '',
   expectedImageRef = '',
@@ -379,6 +387,9 @@ export function collectLiveBoxEvidence({
   if (!ids.length) throw new Error('SMOKE_WEBMEET_SCREEN found no running Podman containers.');
   const containers = command('podman', ['container', 'inspect', ...ids], { json: true });
   const selected = selectLocalScreenContainer(containers, local.port, { expectedRouterBindAddress });
+  for (const source of [expectedHardwareLimits?.markerSource, expectedHardwareLimits?.storeSource, expectedMpsTools?.controlSource, expectedMpsTools?.serverSource].filter(Boolean)) {
+    if (realpathSync(source) !== source) throw new Error('Hardware and MPS evidence rejects symlink or noncanonical source paths.');
+  }
   const containerName = String(selected.Name || '').replace(/^\//, '');
   const labels = selected?.Config?.Labels || {};
   const imageRef = String(labels[BOX_IMAGE_REF_LABEL] || '').trim();
@@ -391,6 +402,12 @@ export function collectLiveBoxEvidence({
   const requiredImageRef = expectedImageRef || imageRef;
   const imageInspection = command('podman', ['image', 'inspect', requiredImageId], { json: true });
   const image = oneRecord(imageInspection, 'outer image inspection');
+  let observedGpuMarker = null;
+  if (expectedMpsTools) {
+    const text = String(command('podman', ['exec', selected.Id || selected.ID, 'cat', '/etc/ploinky-box-gpu-grant.json']) || '');
+    if (Buffer.byteLength(text) > 64 * 1024) throw new Error('GPU marker exceeds the bounded MPS evidence read.');
+    try { observedGpuMarker = JSON.parse(text); } catch { throw new Error('MPS evidence requires valid observed GPU marker JSON.'); }
+  }
   const box = buildBoxEvidence({
     containerInspect: [selected],
     imageInspect: imageInspection,
@@ -401,6 +418,9 @@ export function collectLiveBoxEvidence({
     publicIPv4: String(publicIPv4 || ''),
     expectedRouterBindAddress,
     expectedGpuGrant,
+    expectedHardwareLimits,
+    expectedMpsTools,
+    observedGpuMarker,
   });
   const validated = validateLiveBoxEvidence({
     capturedAt: new Date(nowMs).toISOString(),
@@ -411,7 +431,7 @@ export function collectLiveBoxEvidence({
       : null,
     requireFreshImage,
     box,
-  }, { baseURL: local.baseURL, nowMs, expectedRouterBindAddress, expectedGpuGrant });
+  }, { baseURL: local.baseURL, nowMs, expectedRouterBindAddress, expectedGpuGrant, expectedHardwareLimits, expectedMpsTools });
   const observedWorkspace = inspectBoxWorkspace(selected);
   const ploinkySourceMount = expectedPloinkySource
     ? validateReadOnlyPloinkySourceMount(
